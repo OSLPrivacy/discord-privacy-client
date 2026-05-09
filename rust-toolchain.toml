@@ -1,0 +1,6 @@
+[toolchain]
+# Bumped from 1.78 to 1.82 because ml-kem 0.2 transitively requires
+# hybrid-array 0.2 which needs rustc 1.81+. 1.82 leaves a small headroom.
+channel = "1.82.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

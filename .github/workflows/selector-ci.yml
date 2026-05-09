@@ -1,0 +1,25 @@
+name: Selector CI
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours
+  workflow_dispatch:
+
+jobs:
+  selector-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        working-directory: selector-ci
+        run: npm ci
+      - name: Run selector check
+        working-directory: selector-ci
+        run: npm run check
+      # TODO: alert on failure (issue, Discord webhook, email).
+      # TODO: drive WebView2 directly rather than vanilla Chromium —
+      # Playwright drives Edge, but our actual runtime is WebView2.
+      # See docs/design/key-server-api.md selector-resilience section.

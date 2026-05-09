@@ -1,0 +1,11 @@
+[package]
+name = "stego"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rand = { workspace = true }
+rand_core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

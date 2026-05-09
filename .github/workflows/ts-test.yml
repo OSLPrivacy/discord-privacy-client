@@ -1,0 +1,24 @@
+name: TypeScript Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install webview deps
+        working-directory: webview
+        run: npm ci
+      - name: Typecheck webview
+        working-directory: webview
+        run: npm run typecheck
+      - name: Test webview
+        working-directory: webview
+        run: npm test

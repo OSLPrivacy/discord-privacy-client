@@ -1,0 +1,21 @@
+[package]
+name = "transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Mullvad WireGuard (boringtun) and Tor (arti-client) are introduced when
+# the transport implementation lands. They are kept out of the v1 alpha
+# workspace because their pinned curve25519-dalek / x25519-dalek versions
+# (release-candidates) conflict with dryoc's curve25519-dalek requirement.
+# Resolution path: pick newer boringtun + arti-client compatible with
+# dryoc's curve25519-dalek line, or move WireGuard / Tor to their own
+# isolated mini-workspace.
+
+[features]
+default = []

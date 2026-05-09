@@ -1,0 +1,36 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Node
+node_modules/
+dist/
+build/
+.parcel-cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local config / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Build outputs
+*.msi
+*.exe
+*.dmg

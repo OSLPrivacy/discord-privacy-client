@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/crypto",
+    "crates/stego",
+    "crates/transport",
+    "crates/keystore",
+    "crates/selectors",
+    "crates/ipc",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "AGPL-3.0-only"
+rust-version = "1.82"
+
+[workspace.dependencies]
+zeroize = { version = "1.7", features = ["derive"] }
+subtle = "2.5"
+thiserror = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rand = "0.8"
+rand_core = "0.6"
+hkdf = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+tracing = "0.1"
+
+# Crypto primitives
+# `dryoc` was originally pinned as a pure-Rust libsodium reimplementation
+# for AEAD and X25519, but dryoc 0.7 turned out to lack both
+# `crypto_aead_xchacha20poly1305_ietf` and `crypto_scalarmult` — the two
+# primitives we need. Both moved to RustCrypto crates at the crate
+# level (`chacha20poly1305` and `x25519-dalek`). dryoc has no remaining
+# consumers in v1 alpha and is removed from the workspace. See
+# `CHANGELOG.md` for the swap history.
+
+# RustCrypto pure-Rust ML-KEM-768 (FIPS 203). Audit posture must be
+# verified or commissioned before v1 stable ship. Alternative:
+# pqcrypto-mlkem (C reference impl wrapper, harder to reproduce).
+ml-kem = "0.2"
+
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-build = "2"
+
+# Keystore
+keyring = "3"
+# Windows TPM access via TBS lives in the windows crate. tss-esapi is
+# Linux-focused and is intentionally not used here.
+windows = { version = "0.56", features = ["Win32_Foundation", "Win32_Security_Tpm"] }
+
+# Transport
+# boringtun and arti-client are removed from the v1 alpha workspace —
+# both pin release-candidate curve25519-dalek / x25519-dalek versions
+# that conflict with dryoc's curve25519-dalek line. Re-introduce when
+# the transport implementation lands, with newer compatible versions
+# (or in an isolated mini-workspace). See crates/transport/Cargo.toml.
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = "symbols"
+opt-level = 3
+
+[profile.release-deterministic]
+inherits = "release"
+# Reproducible-build profile. Build flags pinned in CI.
+# See docs/design/reproducible-builds.md (v2.5).

@@ -1,0 +1,31 @@
+[package]
+name = "discord-privacy-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+# Local crates
+crypto = { path = "../crates/crypto" }
+stego = { path = "../crates/stego" }
+transport = { path = "../crates/transport" }
+keystore = { path = "../crates/keystore" }
+selectors = { path = "../crates/selectors" }
+ipc = { path = "../crates/ipc" }
+
+[features]
+default = []
+
+[[bin]]
+name = "discord-privacy-client"
+path = "src/main.rs"

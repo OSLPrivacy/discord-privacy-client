@@ -1,0 +1,33 @@
+[package]
+name = "crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# AEAD: dryoc 0.7 doesn't expose XChaCha20-Poly1305-IETF AEAD with
+# caller-supplied nonce + AAD. Using RustCrypto chacha20poly1305
+# instead — same algorithm (CFRG draft), pure Rust. See aead.rs and
+# CHANGELOG.md.
+chacha20poly1305 = "0.10"
+
+# X25519: dryoc 0.7 doesn't expose crypto_scalarmult either. Using
+# RustCrypto x25519-dalek instead — same algorithm (RFC 7748), pure
+# Rust. See x25519.rs and CHANGELOG.md. The `static_secrets` feature
+# enables `StaticSecret`, which 2.0 gates behind a feature flag.
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+ml-kem = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }

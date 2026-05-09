@@ -1,0 +1,40 @@
+name: Reproducible Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        run: [1, 2]   # build twice; compare hashes
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.82.0'
+      - name: Build deterministic
+        run: cargo build --profile release-deterministic
+      - name: Hash artifact
+        shell: pwsh
+        run: |
+          Get-FileHash target\release-deterministic\discord-privacy-client.exe -Algorithm SHA256 | Out-File hash-${{ matrix.run }}.txt
+      - name: Upload hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: hash-${{ matrix.run }}
+          path: hash-${{ matrix.run }}.txt
+
+  compare:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Compare hashes
+        run: diff hash-1/hash-1.txt hash-2/hash-2.txt
