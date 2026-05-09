@@ -1,17 +1,26 @@
 use crypto::ml_kem_768;
-use keystore::{generate_identity, load_identity, save_identity, Error};
+use keystore::{
+    generate_identity, load_identity, save_identity, Error, MemorySealer, NoOpSealer,
+    Sealer,
+};
 use tempfile::TempDir;
 
+// Test fixture: a NoOpSealer constructed once per test. Storage tests
+// using NoOp confirm the on-disk layout (banner present, plaintext
+// inner, etc.). Other tests use MemorySealer to confirm the sealed
+// path round-trips.
+
 #[test]
-fn round_trip_to_disk() {
+fn round_trip_to_disk_with_noop_sealer() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
 
     let original = generate_identity("alice".to_string());
-    save_identity(&path, &original).unwrap();
+    save_identity(&path, &original, &sealer).unwrap();
     assert!(path.exists(), "file must be created");
 
-    let loaded = load_identity(&path).unwrap();
+    let loaded = load_identity(&path, &sealer).unwrap();
     assert_eq!(loaded.user_id, original.user_id);
     assert_eq!(
         loaded.x25519_secret.as_bytes(),
@@ -33,11 +42,29 @@ fn round_trip_to_disk() {
 }
 
 #[test]
+fn round_trip_to_disk_with_memory_sealer() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = MemorySealer::new();
+
+    let original = generate_identity("alice".to_string());
+    save_identity(&path, &original, &sealer).unwrap();
+    let loaded = load_identity(&path, &sealer).unwrap();
+    assert_eq!(loaded.user_id, original.user_id);
+    assert_eq!(
+        loaded.x25519_secret.as_bytes(),
+        original.x25519_secret.as_bytes(),
+    );
+    assert_eq!(loaded.mlkem_secret_bytes(), original.mlkem_secret_bytes());
+}
+
+#[test]
 fn save_creates_parent_directories() {
     let dir = TempDir::new().unwrap();
     let nested = dir.path().join("a/b/c/identity.json");
+    let sealer = NoOpSealer::new();
     let id = generate_identity("liam".to_string());
-    save_identity(&nested, &id).unwrap();
+    save_identity(&nested, &id, &sealer).unwrap();
     assert!(nested.exists());
 }
 
@@ -45,11 +72,12 @@ fn save_creates_parent_directories() {
 fn save_overwrites_existing_file() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
     let a = generate_identity("a".to_string());
     let b = generate_identity("b".to_string());
-    save_identity(&path, &a).unwrap();
-    save_identity(&path, &b).unwrap();
-    let loaded = load_identity(&path).unwrap();
+    save_identity(&path, &a, &sealer).unwrap();
+    save_identity(&path, &b, &sealer).unwrap();
+    let loaded = load_identity(&path, &sealer).unwrap();
     assert_eq!(loaded.user_id, "b");
 }
 
@@ -57,33 +85,63 @@ fn save_overwrites_existing_file() {
 fn load_rejects_version_mismatch() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
     let id = generate_identity("c".to_string());
-    save_identity(&path, &id).unwrap();
+    save_identity(&path, &id, &sealer).unwrap();
     // Hand-edit the file to bump its version field.
     let raw = std::fs::read_to_string(&path).unwrap();
-    let bumped = raw.replace("\"version\": 1", "\"version\": 999");
+    let bumped = raw.replace("\"version\": 3", "\"version\": 999");
     std::fs::write(&path, bumped).unwrap();
-    let res = load_identity(&path);
+    let res = load_identity(&path, &sealer);
     assert!(matches!(
         res,
-        Err(Error::BlobVersionMismatch { got: 999, expected: 1 })
+        Err(Error::BlobVersionMismatch { got: 999, expected: 3 })
     ));
 }
 
 #[test]
-fn load_rejects_short_field() {
+fn load_rejects_method_mismatch() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("identity.json");
+    let writer = NoOpSealer::new();
+    let reader = MemorySealer::new();
+    let id = generate_identity("c".to_string());
+    save_identity(&path, &id, &writer).unwrap();
+    let res = load_identity(&path, &reader);
+    assert!(
+        matches!(res, Err(Error::BlobMethodMismatch { .. })),
+        "method-mismatch must be a distinct error variant"
+    );
+}
+
+#[test]
+fn load_rejects_short_inner_field() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
     let id = generate_identity("d".to_string());
-    save_identity(&path, &id).unwrap();
-    // Replace the x25519_secret_b64 with a short byte string.
-    let raw = std::fs::read_to_string(&path).unwrap();
+    save_identity(&path, &id, &sealer).unwrap();
+
+    // With NoOpSealer the inner JSON sits in `sealed_b64` (which is
+    // base64 of the inner JSON bytes). Decode it, mutate the
+    // x25519_secret_b64 to a short value, re-encode, write back.
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
-    let short = STANDARD.encode(&[0u8; 16]);
-    let mutated = mutate_b64_field(&raw, "x25519_secret_b64", &short);
-    std::fs::write(&path, mutated).unwrap();
-    let res = load_identity(&path);
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let on_disk: keystore::IdentityOnDisk = serde_json::from_str(&raw).unwrap();
+    let inner_bytes = STANDARD.decode(&on_disk.sealed_b64).unwrap();
+    let inner_str = std::str::from_utf8(&inner_bytes).unwrap().to_string();
+    let mutated_inner = mutate_b64_field(
+        &inner_str,
+        "x25519_secret_b64",
+        &STANDARD.encode(&[0u8; 16]),
+    );
+    let new_sealed_b64 = STANDARD.encode(mutated_inner.as_bytes());
+    let mutated_outer = raw.replace(&on_disk.sealed_b64, &new_sealed_b64);
+    std::fs::write(&path, mutated_outer).unwrap();
+
+    let res = load_identity(&path, &sealer);
     assert!(matches!(
         res,
         Err(Error::BlobFieldLength { field: "x25519_secret", got: 16, expected: 32 })
@@ -91,27 +149,82 @@ fn load_rejects_short_field() {
 }
 
 #[test]
-fn insecure_banner_present_on_disk() {
+fn insecure_banner_present_for_noop_sealer() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
     let id = generate_identity("e".to_string());
-    save_identity(&path, &id).unwrap();
+    save_identity(&path, &id, &sealer).unwrap();
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(
         raw.contains("INSECURE prototype storage"),
-        "the on-disk file must carry an INSECURE banner field — it's the only \
-         in-band signal a future caller has that this format is not stable"
+        "NoOpSealer must surface the INSECURE banner — it's the only \
+         in-band signal that this on-disk blob is unencrypted"
     );
+    assert!(
+        raw.contains("\"method\": \"noop-insecure\""),
+        "method tag must record the sealer used"
+    );
+}
+
+#[test]
+fn insecure_banner_absent_for_memory_sealer() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = MemorySealer::new();
+    let id = generate_identity("e".to_string());
+    save_identity(&path, &id, &sealer).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !raw.contains("INSECURE prototype storage"),
+        "non-NoOp sealers must NOT emit the insecure banner"
+    );
+    assert!(raw.contains("\"method\": \"memory-test\""));
+}
+
+#[test]
+fn sealed_blob_is_opaque_on_disk_for_memory_sealer() {
+    // Confirm that with a real sealer the inner JSON is not visible
+    // in the on-disk file — a leak would defeat the whole point.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = MemorySealer::new();
+    let id = generate_identity("greeting-bytes-as-marker".to_string());
+    save_identity(&path, &id, &sealer).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !raw.contains("greeting-bytes-as-marker"),
+        "inner user_id must not appear in plaintext when sealed"
+    );
+}
+
+#[test]
+fn user_id_visible_on_disk_for_noop_sealer() {
+    // Sanity check that the NoOp path really is plain. (And that the
+    // prior "opaque" test for MemorySealer is a meaningful contrast.)
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
+    let id = generate_identity("noop-marker-1234".to_string());
+    save_identity(&path, &id, &sealer).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let on_disk: keystore::IdentityOnDisk = serde_json::from_str(&raw).unwrap();
+    let inner_bytes = STANDARD.decode(&on_disk.sealed_b64).unwrap();
+    let inner_str = std::str::from_utf8(&inner_bytes).unwrap();
+    assert!(inner_str.contains("noop-marker-1234"));
 }
 
 fn mutate_b64_field(json: &str, field: &str, new_b64: &str) -> String {
     // Naive but sufficient for tests: find the field's value via a
     // simple substring search and replace it with new_b64.
-    let needle = format!("\"{field}\": \"");
-    let start = json
-        .find(&needle)
-        .expect("field present in the test JSON")
-        + needle.len();
+    let needle = format!("\"{field}\":\"");
+    let start = json.find(&needle).map(|s| s + needle.len()).or_else(|| {
+        let alt = format!("\"{field}\": \"");
+        json.find(&alt).map(|s| s + alt.len())
+    });
+    let start = start.expect("field present in the test JSON");
     let end = start
         + json[start..]
             .find('"')
@@ -121,4 +234,10 @@ fn mutate_b64_field(json: &str, field: &str, new_b64: &str) -> String {
     out.push_str(new_b64);
     out.push_str(&json[end..]);
     out
+}
+
+#[test]
+fn _marker_traits_for_sealer() {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<dyn Sealer>();
 }

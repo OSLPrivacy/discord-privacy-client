@@ -18,6 +18,13 @@ chacha20poly1305 = "0.10"
 # enables `StaticSecret`, which 2.0 gates behind a feature flag.
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
+# Ed25519 signatures (B4 prekey infrastructure). The design doc's
+# "IK_X25519 signature" wants xeddsa signing with the X25519 identity
+# key; v1 alpha deviates and adds a separate Ed25519 identity-signing
+# key — simpler to wire end-to-end and avoids hand-rolling xeddsa.
+# v1 stable migrates to xeddsa per the design.
+ed25519-dalek = { version = "2.0", features = ["rand_core"] }
+
 ml-kem = { workspace = true }
 hkdf = { workspace = true }
 sha2 = { workspace = true }

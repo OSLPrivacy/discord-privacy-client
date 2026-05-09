@@ -573,6 +573,268 @@ resistance, USB monitoring, recorder scanning). Awaiting review
 before proceeding to Group B (TPM-sealed keys, password / duress,
 prekey infrastructure).]
 
+### Layer B1 — TPM-sealed identity keys
+
+- New `crates/keystore/src/sealer.rs` with the `Sealer` trait
+  (`method_label`, `is_tpm_backed`, `requires_insecure_banner`,
+  `seal`, `unseal`) and four implementations:
+    - **`TpmSealer`** (Windows-only, `cfg(windows)`): NCrypt with
+      `Microsoft Platform Crypto Provider`. Persistent RSA-2048
+      key (`DiscordPrivacyClientIdentityKeyV1`) created on first
+      use; per-seal hybrid wrap — fresh XChaCha20-Poly1305 data
+      key, RSA-PKCS#1 wraps the data key via the TPM-resident RSA
+      key, AEAD encrypts the payload. Wire format:
+      `u32 BE wrapped_len || wrapped || nonce || ciphertext+tag`.
+      `evict_tpm_key()` for the duress / B3 strip path. Win32 path
+      is unverified on WSL — same caveat as Group A's Win32 paths.
+    - **`KeyringSealer`**: keyring crate (Windows Credential
+      Manager / macOS Keychain / Linux Secret Service). 32-byte
+      XChaCha20-Poly1305 key persisted as base64 under
+      `discord-privacy-client / identity-data-key.v1`. Self-probe
+      on `new()` reads the stored key back and rejects if the
+      backend is non-persistent (e.g. WSL with a transient DBus
+      session).
+    - **`NoOpSealer`**: passthrough for the absolute-last-resort
+      fallback. `requires_insecure_banner == true` so storage
+      writes the loud `INSECURE prototype storage` banner field.
+    - **`MemorySealer`**: test-only, in-process random key. Used
+      by Linux test paths to exercise the sealed code path without
+      requiring TPM / DBus.
+- `select_best_sealer()` factory: TPM → keyring → NoOp.
+- `crates/keystore/src/storage.rs` rewrite: two-layer JSON
+  (`{ version, method, sealed_b64, insecure_banner? }` outer,
+  `{ user_id, x25519_*, mlkem_* }` inner). On-disk version bumped
+  `1 → 2`; v1 blobs are explicitly rejected with
+  `Error::BlobVersionMismatch`. New
+  `Error::BlobMethodMismatch { got, expected }` distinguishes
+  cross-sealer load attempts.
+- `crates/keystore/Cargo.toml`:
+    - `keyring = { workspace = true }` reinstated.
+    - Windows-gated `windows = "0.56"` extended with
+      `Win32_Security_Cryptography` for NCrypt / BCrypt.
+- `crates/ipc/src/commands.rs`: `cmd_save_identity` /
+  `cmd_load_identity` now call `select_best_sealer()` and thread
+  the sealer through.
+- 22 keystore tests pass:
+    - 10 sealer unit tests: NoOp / Memory round-trip, fresh-nonce
+      uniqueness, truncation + tamper rejection, cross-sealer
+      reject, empty plaintext, factory returns a working sealer.
+    - 12 storage tests: round-trip per sealer, version mismatch,
+      method mismatch, short inner field rejection, banner
+      present-for-NoOp / absent-for-Memory, opaque-on-disk for
+      Memory vs visible-for-NoOp, parent-dir creation,
+      overwrite, marker-trait `Send + Sync` for `dyn Sealer`.
+    - 32 total in keystore (10 sealer + 12 storage + 3 identity +
+      7 client).
+- The TPM path on Windows verifies via the user's Windows host
+  (same protocol as Group A Win32 paths). Linux WSL runs:
+  `select_best_sealer()` falls through to NoOp on this host
+  (keyring's secret-service backend errors against WSL's transient
+  DBus or the self-probe rejects); production Windows hosts will
+  pick TPM.
+
+### Layer B2 — Argon2id password feature
+
+- New `crates/keystore/src/password.rs`:
+    - `Argon2Params` with `production()` (m=64 MiB / t=3 / p=1 /
+      out=32) and `fast_for_tests()` (m=8 KiB / t=1) — production
+      meets the design doc's GPU-resistance floor.
+    - `PasswordHash::create(plaintext, params)` (random 16-byte
+      salt) and `PasswordHash::verify` (constant-time via
+      `subtle::ConstantTimeEq`).
+    - `validate_password` (>= 6 chars per design doc) and
+      `validate_setup_pair(unlock, duress)` (rejects identical
+      passwords).
+    - `PasswordRecord` (unlock_hash + optional duress_hash +
+      `failed_attempts` + threshold + inactivity_seconds);
+      defaults match design doc (10-attempt threshold, 900s /
+      15min inactivity).
+    - `verify_against_record` returns `VerifyOutcome` —
+      `Unlock` / `Duress` / `Wrong { attempts }` /
+      `DuressByThreshold`. Always checks both hashes (no
+      time-distinguishable difference between unlock and duress
+      paths). Successful unlock resets the counter; duress paths
+      do not (irreversible).
+    - `InactivityTimer` (in-memory, OS-idle source per design
+      doc): `mark_activity_at` / `should_reprompt_at` for
+      deterministic testing.
+    - `save_password_record` / `load_password_record` go through
+      the active `Sealer` — TPM-sealed when available, INSECURE
+      banner emitted otherwise. Mirrors identity on-disk shape:
+      version + method tag + sealed inner JSON. Method-mismatch
+      and version-mismatch rejected with the same `Error`
+      variants as identity load.
+- `keystore::Argon2Params`, `PasswordHash`, `PasswordRecord`,
+  `VerifyOutcome`, `InactivityTimer`, etc. re-exported at crate
+  root.
+- `argon2 = "0.5"` and `subtle = { workspace = true }` added to
+  `crates/keystore/Cargo.toml`.
+- 29 password tests pass:
+    - 7 policy tests (length floor, six-digit accept, alphanumeric
+      accept, identical-pair reject, unlock-only allowed, design
+      constants).
+    - 6 hash tests (round-trip, wrong / empty rejection,
+      random-salt-per-create, production params meet floor, test
+      params distinct from production).
+    - 8 record / verify tests (unlock match, duress match, wrong
+      increments, success resets, threshold triggers
+      `DuressByThreshold`, defaults match design, identical-pair
+      rejected at construction, short unlock rejected at
+      construction).
+    - 3 inactivity-timer tests (does not fire within window, fires
+      at threshold, resets on activity).
+    - 5 persistence tests (round-trip per sealer, banner present
+      for NoOp, method + version mismatch rejection,
+      failed-attempt count survives save/load).
+
+### Layer B3 — Duress flow execution
+
+- New `crates/keystore/src/duress.rs`:
+    - `WipeStep` enum (12 variants) covers every Phase-2 list item
+      in `docs/design/unlock-and-duress.md` plus Phase-3 strip
+      OPSEC; `WipeStep::ordered()` is the canonical execution
+      order. Step 4 (anonymous credentials, v2.3+) and steps 5–8
+      (prekeys, ratchet, sender keys, peer ratchets) are explicit
+      enum variants — **not** `unimplemented!()` / `todo!()` —
+      and run as `Skipped { reason }` when no handler is wired.
+    - `StepOutcome::{Wiped, AlreadyClean, Skipped { reason },
+      Failed { error }}` reports what each step actually did. A
+      failing step does NOT abort the run; the engine keeps going
+      and surfaces the failure in `DuressReport::failed_steps()`.
+    - `DuressEngine::execute` is the synchronous Phase 2 + 3
+      driver. `resume_if_pending()` reads the on-disk journal and
+      re-runs uncompleted steps so a crash mid-strip resumes
+      cleanly on relaunch.
+    - On-disk JSON journal at a caller-supplied path. Each step
+      writes its outcome AFTER it runs so even a panic between
+      step N and N+1 leaves N recorded. Successful clean runs
+      delete the journal; runs with any `Failed` step retain it
+      so future relaunches retry.
+    - Handlers wired in v1 alpha (no callback needed):
+        - `TpmEvict` — `evict_tpm_key()` (no-op on non-Windows /
+          if no key was created).
+        - `KeyringPurge` — `KeyringSealer::purge_keyring_entry()`.
+        - `IdentityFile` / `PasswordHashes` — idempotent file
+          deletion. Missing file → `AlreadyClean`, not failure.
+    - Handlers reserved for future layers via `DuressHandlers`:
+        - `wipe_local_cache_dir`, `wipe_anonymous_credentials`
+          (v2.3+), `wipe_prekeys` (B4), `wipe_double_ratchet`,
+          `wipe_sender_keys`, `wipe_peer_ratchets`,
+          `zeroize_in_memory`, `strip_opsec_files`. Each `None`
+          becomes a documented `Skipped` step at run time.
+- 11 duress tests pass:
+    - Walks every step in canonical order with no handlers wired
+      (deferred steps land as `Skipped` with non-empty reasons
+      that don't look like silent stubs).
+    - File-deletion idempotency: missing files yield
+      `AlreadyClean`; running twice doesn't break.
+    - Handlers run in declared order (recorded via shared `Vec`).
+    - A failing handler records `Failed { error }` and the engine
+      continues to subsequent steps.
+    - `resume_if_pending` returns `None` when no journal exists.
+    - Resuming from a hand-crafted partial journal skips the
+      already-completed steps (verified by leaving the identity
+      file on disk after the journal pre-records its deletion).
+    - Successful run removes the journal; failing run retains it.
+    - `DuressReport::skipped_steps()` / `failed_steps()` classify
+      correctly.
+    - `WipeStep::ordered()` covers every enum variant.
+
+### Layer B4 — Prekey infrastructure
+
+- `crates/crypto/src/ed25519.rs` (new): RFC 8032 Ed25519 sign /
+  verify wrapping `ed25519-dalek` 2.x. **Deviation from design
+  doc**: design specifies `IK_X25519`-signed SPKs (xeddsa); v1
+  alpha adds a separate `IK_Ed25519` identity-signing key
+  alongside `IK_X25519`. v1 stable migrates to xeddsa per the
+  design. 9 ed25519 tests pass including RFC 8032 §7.1 KAT vector
+  1.
+- `crates/keystore/src/identity.rs`:
+    - `Identity` gains `ed25519_secret` / `ed25519_public`.
+    - `IDENTITY_BLOB_VERSION` bumped 2 → 3 (inner blob shape).
+    - `from_bytes` extended; `generate_identity` generates both
+      keypairs.
+- `crates/keystore/src/storage.rs`: inner JSON gains
+  `ed25519_secret_b64` / `ed25519_public_b64` fields.
+- `crates/keystore/src/client.rs`:
+    - `RegisterRequest` + `PubkeysResponse` carry
+      `ik_ed25519_pub`.
+    - New `fetch_prekey_bundle(user_id)` (GET).
+    - New `replenish_prekeys(identity, spk?, opks)` (POST). Signs
+      the canonical batch bytes with `identity.ed25519_secret` and
+      ships them with the SPK section + OPK list.
+    - New `replenish_using_state(identity, &mut state,
+      server_remaining, now)` convenience: rotates SPK if due,
+      generates fresh OPKs to top up to target, signs, uploads,
+      mutates the local state.
+- `crates/keystore/src/prekeys.rs` (new):
+    - `PrekeyConfig { opk_pool_target = 100,
+      opk_replenish_threshold = 25, spk_rotation_seconds = 7 days }`
+      matches design doc defaults.
+    - `PrekeyState`: current SPK + previous SPK (retained one
+      rotation period) + OPK pool with monotonic ids.
+    - `PrekeyState::should_rotate_spk` / `rotate_spk` / `should_replenish`
+      / `replenish_count_to_target` / `add_opk_batch` / `consume_opk`.
+    - `canonical_replenish_bytes(user_id, spk?, opks)` — exact
+      byte-level mirror of the Node server's
+      `canonicalReplenishBytes`. Domain-separation label
+      `discord-privacy-client/prekey-replenish/v1` + length-prefixed
+      string fields. `sign_replenish_batch` Ed25519-signs the bytes
+      with the identity key.
+    - `iso_8601_from_unix_seconds` for SPK rotation timestamps
+      (matches Node `Date(t).toISOString()` for whole seconds:
+      `YYYY-MM-DDTHH:MM:SS.000Z`).
+    - `save_prekey_state` / `load_prekey_state` — sealed via the
+      active `Sealer`; same INSECURE-banner-conditional pattern as
+      identity / password storage.
+- `keyserver/`:
+    - `src/db.js`: `users` table gains `ik_ed25519_pub` column.
+      New `prekey_bundles` (per-user current + previous SPK) and
+      `opk_pool` (per-user OPK pool with `(user_id, opk_id)` PK)
+      tables. New `upsertPrekeyBundle` / `popPrekeyBundle`
+      transactional helpers; `popPrekeyBundle` does the atomic OPK
+      single-row delete.
+    - `src/canonical.js` (new): `canonicalReplenishBytes` matches
+      Rust's encoding byte-for-byte;
+      `verifyEd25519(rawPubKey32, message, signature64)` wraps raw
+      key in SPKI DER prefix and uses Node's built-in
+      `crypto.verify(null, ...)`.
+    - `src/server.js`: `POST /v1/register` requires
+      `ik_ed25519_pub`. New `GET /v1/prekey-bundle/:user_id`
+      (atomic OPK pop, returns identity + SPK + OPK +
+      `remaining_opk_count`; `opk: null` when pool empty per OPK
+      exhaustion fallback). New `POST /v1/prekey-bundle/replenish`:
+      verifies `batch_signature_b64` against the user's stored
+      `IK_Ed25519`, then transactionally replaces SPK
+      (current → previous) and appends OPKs. 401 on signature
+      mismatch; 404 before register; 409 on duplicate OPK id;
+      400 on shape errors.
+- 60 keystore tests pass (was 32; +9 ed25519, +19 prekeys, +2
+  prekey e2e through real keyserver subprocess; existing
+  identity/storage/client tests updated for v3 schema).
+- 31 keyserver tests pass (was 21; +10 prekey-bundle: 404 before
+  replenish, 401 on bad/tampered signature, 200 happy path,
+  atomic OPK pop until exhausted, SPK rotation moves current to
+  previous, 404 before register, 400 on missing fields, 409 on
+  duplicate id, `verifyEd25519` size-rejection).
+- The `prekeys_e2e_test` integration test spawns the real Node
+  keyserver as a subprocess on an ephemeral port, registers an
+  identity, replenishes, fetches — proves the Rust
+  `canonical_replenish_bytes` produces bytes that the Node
+  server's `canonicalReplenishBytes` reconstructs verbatim
+  (Ed25519 verification would fail otherwise). Skips automatically
+  when `node` isn't on PATH or the keyserver hasn't been
+  `npm install`-ed.
+- Identity blob v2 → v3: existing on-disk identity files from B1
+  fail to load with `Error::BlobVersionMismatch { got: 2,
+  expected: 3 }` — caller regenerates. Acceptable for v1 alpha;
+  no production data exists yet.
+
+[CHECKPOINT B — Group B complete (TPM-sealed identity, Argon2id
+password, duress flow, prekey infrastructure). Awaiting review
+before proceeding to Group C (burn flows, selector manifest, Stego
+Mode 1).]
+
 ### Build state
 
 `cargo check -p crypto --tests` and `cargo test -p crypto` both green

@@ -27,6 +27,7 @@ function initSchema(db) {
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
       ik_x25519_pub TEXT NOT NULL,
+      ik_ed25519_pub TEXT NOT NULL,
       ik_mlkem768_pub TEXT NOT NULL,
       ik_x25519_signature TEXT NOT NULL,
       registered_at TEXT NOT NULL,
@@ -51,6 +52,30 @@ function initSchema(db) {
 
     CREATE INDEX IF NOT EXISTS idx_wrapped_keys_recipient
       ON wrapped_keys (recipient_id);
+
+    -- B4: prekey infrastructure. Per-user signed prekey + (optional)
+    -- previous SPK retained for one rotation period; per-user OPK
+    -- pool. SPK is signed by the user's IK_Ed25519 (verified on
+    -- replenish). OPKs are popped one at a time by GET
+    -- /v1/prekey-bundle/:user_id.
+    CREATE TABLE IF NOT EXISTS prekey_bundles (
+      user_id TEXT PRIMARY KEY,
+      spk_pub TEXT NOT NULL,
+      spk_signature TEXT NOT NULL,
+      spk_rotated_at TEXT NOT NULL,
+      prev_spk_pub TEXT,
+      prev_spk_signature TEXT,
+      prev_spk_rotated_at TEXT,
+      FOREIGN KEY (user_id) REFERENCES users (user_id)
+    ) WITHOUT ROWID;
+
+    CREATE TABLE IF NOT EXISTS opk_pool (
+      user_id TEXT NOT NULL,
+      opk_id INTEGER NOT NULL,
+      opk_pub TEXT NOT NULL,
+      PRIMARY KEY (user_id, opk_id),
+      FOREIGN KEY (user_id) REFERENCES users (user_id)
+    );
   `);
 }
 
@@ -65,6 +90,7 @@ export function upsertUser(db, row) {
     db.prepare(
       `UPDATE users
          SET ik_x25519_pub = @ik_x25519_pub,
+             ik_ed25519_pub = @ik_ed25519_pub,
              ik_mlkem768_pub = @ik_mlkem768_pub,
              ik_x25519_signature = @ik_x25519_signature,
              last_rotated_at = @now
@@ -74,11 +100,11 @@ export function upsertUser(db, row) {
   }
   db.prepare(
     `INSERT INTO users
-       (user_id, ik_x25519_pub, ik_mlkem768_pub, ik_x25519_signature,
-        registered_at, last_rotated_at)
+       (user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
+        ik_x25519_signature, registered_at, last_rotated_at)
      VALUES
-       (@user_id, @ik_x25519_pub, @ik_mlkem768_pub, @ik_x25519_signature,
-        @now, NULL)`,
+       (@user_id, @ik_x25519_pub, @ik_ed25519_pub, @ik_mlkem768_pub,
+        @ik_x25519_signature, @now, NULL)`,
   ).run({ ...row, now });
   return { isNew: true, registered_at: now };
 }
@@ -86,11 +112,121 @@ export function upsertUser(db, row) {
 export function getUser(db, userId) {
   return db
     .prepare(
-      `SELECT user_id, ik_x25519_pub, ik_mlkem768_pub,
+      `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
               registered_at, last_rotated_at
          FROM users WHERE user_id = ?`,
     )
     .get(userId);
+}
+
+// ---- prekey bundles ----
+
+// Replace SPK + (optionally) append OPKs. `spk` may be null if the
+// caller is only adding to the OPK pool. `opks` is an array of
+// { id, pub_b64 }; ids must be unique per user (DB enforces).
+export function upsertPrekeyBundle(db, userId, spk, opks) {
+  const txn = db.transaction(() => {
+    if (spk) {
+      const existing = db
+        .prepare('SELECT * FROM prekey_bundles WHERE user_id = ?')
+        .get(userId);
+      if (existing) {
+        db.prepare(
+          `UPDATE prekey_bundles
+             SET prev_spk_pub = @existing_pub,
+                 prev_spk_signature = @existing_sig,
+                 prev_spk_rotated_at = @existing_rotated_at,
+                 spk_pub = @spk_pub,
+                 spk_signature = @spk_signature,
+                 spk_rotated_at = @spk_rotated_at
+             WHERE user_id = @user_id`,
+        ).run({
+          user_id: userId,
+          existing_pub: existing.spk_pub,
+          existing_sig: existing.spk_signature,
+          existing_rotated_at: existing.spk_rotated_at,
+          spk_pub: spk.pub_b64,
+          spk_signature: spk.signature_b64,
+          spk_rotated_at: spk.rotated_at,
+        });
+      } else {
+        db.prepare(
+          `INSERT INTO prekey_bundles
+             (user_id, spk_pub, spk_signature, spk_rotated_at)
+           VALUES (@user_id, @spk_pub, @spk_signature, @spk_rotated_at)`,
+        ).run({
+          user_id: userId,
+          spk_pub: spk.pub_b64,
+          spk_signature: spk.signature_b64,
+          spk_rotated_at: spk.rotated_at,
+        });
+      }
+    }
+    for (const o of opks) {
+      db.prepare(
+        `INSERT INTO opk_pool (user_id, opk_id, opk_pub)
+         VALUES (?, ?, ?)`,
+      ).run(userId, o.id, o.pub_b64);
+    }
+  });
+  txn();
+}
+
+// Atomically pop one OPK and return it along with the remaining
+// pool size and the user's identity / SPK. Returns null if the user
+// has no prekey bundle yet (callers treat as 404).
+export function popPrekeyBundle(db, userId) {
+  const txn = db.transaction(() => {
+    const user = db
+      .prepare(
+        `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub
+           FROM users WHERE user_id = ?`,
+      )
+      .get(userId);
+    if (!user) return null;
+    const spk = db
+      .prepare(
+        `SELECT spk_pub, spk_signature, spk_rotated_at
+           FROM prekey_bundles WHERE user_id = ?`,
+      )
+      .get(userId);
+    if (!spk) return null;
+    const opk = db
+      .prepare(
+        `SELECT opk_id, opk_pub FROM opk_pool
+           WHERE user_id = ?
+           ORDER BY opk_id ASC
+           LIMIT 1`,
+      )
+      .get(userId);
+    if (opk) {
+      db.prepare(
+        'DELETE FROM opk_pool WHERE user_id = ? AND opk_id = ?',
+      ).run(userId, opk.opk_id);
+    }
+    const remaining = db
+      .prepare('SELECT COUNT(*) AS c FROM opk_pool WHERE user_id = ?')
+      .get(userId).c;
+    return {
+      user_id: user.user_id,
+      ik_x25519_pub: user.ik_x25519_pub,
+      ik_ed25519_pub: user.ik_ed25519_pub,
+      ik_mlkem768_pub: user.ik_mlkem768_pub,
+      spk_pub: spk.spk_pub,
+      spk_signature: spk.spk_signature,
+      spk_rotated_at: spk.spk_rotated_at,
+      opk: opk ? { id: opk.opk_id, pub_b64: opk.opk_pub } : null,
+      remaining_opk_count: remaining,
+    };
+  });
+  return txn();
+}
+
+export function opkPoolSize(db, userId) {
+  const r = db
+    .prepare('SELECT COUNT(*) AS c FROM opk_pool WHERE user_id = ?')
+    .get(userId);
+  return r ? r.c : 0;
 }
 
 // ---- wrapped keys ----

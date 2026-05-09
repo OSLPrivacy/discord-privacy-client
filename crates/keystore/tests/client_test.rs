@@ -19,6 +19,9 @@ fn register_request_carries_correct_base64_keys() {
     let x25519_decoded = STANDARD.decode(&req.ik_x25519_pub).unwrap();
     assert_eq!(x25519_decoded, id.x25519_public.as_bytes());
 
+    let ed25519_decoded = STANDARD.decode(&req.ik_ed25519_pub).unwrap();
+    assert_eq!(ed25519_decoded, id.ed25519_public.as_bytes());
+
     let mlkem_decoded = STANDARD.decode(&req.ik_mlkem768_pub).unwrap();
     assert_eq!(mlkem_decoded.as_slice(), &id.mlkem_public_bytes[..]);
 
@@ -125,7 +128,7 @@ fn register_round_trips_through_mock_server() {
 
 #[test]
 fn fetch_pubkeys_round_trips_through_mock_server() {
-    let response_body = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
+    let response_body = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
     response.extend_from_slice(
@@ -147,7 +150,7 @@ fn fetch_pubkeys_round_trips_through_mock_server() {
 
 #[test]
 fn fetch_pubkeys_url_encodes_special_chars() {
-    let response_body = br#"{"user_id":"liam@discord","ik_x25519_pub":"AA","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
+    let response_body = br#"{"user_id":"liam@discord","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
     response.extend_from_slice(

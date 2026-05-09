@@ -28,6 +28,7 @@ async function inject(server, opts) {
 const VALID_REGISTRATION = {
   user_id: 'user-1',
   ik_x25519_pub: b64('x25519-pub'),
+  ik_ed25519_pub: b64('ed25519-pub'),
   ik_mlkem768_pub: b64('mlkem768-pub'),
   ik_x25519_signature: b64('selfsig'),
 };
@@ -95,7 +96,13 @@ test('register: re-registration returns 200 with key_rotation_recorded', async (
 
 test('register: missing required field returns 400', async () => {
   const s = newServer();
-  for (const f of ['user_id', 'ik_x25519_pub', 'ik_mlkem768_pub', 'ik_x25519_signature']) {
+  for (const f of [
+    'user_id',
+    'ik_x25519_pub',
+    'ik_ed25519_pub',
+    'ik_mlkem768_pub',
+    'ik_x25519_signature',
+  ]) {
     const payload = { ...VALID_REGISTRATION };
     delete payload[f];
     const r = await inject(s, {

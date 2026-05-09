@@ -11,7 +11,7 @@ use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::{aead, x25519};
-use keystore::{generate_identity, KeyServerClient};
+use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -118,7 +118,8 @@ pub fn cmd_generate_identity(
 }
 
 pub fn cmd_load_identity(state: &AppState, path: String) -> IpcResult<GenerateIdentityResponse> {
-    let id = keystore::load_identity(&PathBuf::from(path))?;
+    let sealer = select_best_sealer();
+    let id = keystore::load_identity(&PathBuf::from(path), sealer.as_ref())?;
     let resp = GenerateIdentityResponse {
         user_id: id.user_id.clone(),
         ik_x25519_pub_b64: STANDARD.encode(id.x25519_public.as_bytes()),
@@ -131,7 +132,8 @@ pub fn cmd_load_identity(state: &AppState, path: String) -> IpcResult<GenerateId
 pub fn cmd_save_identity(state: &AppState, path: String) -> IpcResult<()> {
     let guard = state.identity.lock().expect("identity mutex poisoned");
     let id = guard.as_ref().ok_or(IpcError::IdentityMissing)?;
-    keystore::save_identity(&PathBuf::from(path), id)?;
+    let sealer = select_best_sealer();
+    keystore::save_identity(&PathBuf::from(path), id, sealer.as_ref())?;
     Ok(())
 }
 

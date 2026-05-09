@@ -61,6 +61,7 @@
 
 pub mod aead;
 pub mod attachment;
+pub mod ed25519;
 pub mod error;
 pub mod hkdf;
 pub mod ml_kem_768;

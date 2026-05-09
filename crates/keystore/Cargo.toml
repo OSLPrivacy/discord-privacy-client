@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# v1 alpha prototype: plain-file storage. The keyring + windows TPM
-# deps are deferred to v1 stable when TPM-sealed identity blobs land.
-# Prototype path: load/save identity bytes through serde + a single
-# loud INSECURE comment.
+# B1: TPM-sealed identity blob (Windows NCrypt with Microsoft Platform
+# Crypto Provider) plus a `keyring`-crate fallback for systems
+# without TPM. Last-resort `NoOpSealer` keeps the prior plain-file
+# behaviour with the loud INSECURE banner intact.
 #
 # HTTP client is hand-rolled HTTP/1.1 over std::net::TcpStream. Reasons
 # for not pulling in ureq / reqwest / attohttpc:
@@ -21,10 +21,32 @@ license.workspace = true
 #   ~100 lines of code.
 crypto = { path = "../crypto" }
 base64 = "0.22"
+# B2 — Argon2id password hashing per docs/design/unlock-and-duress.md.
+# Production params: m_cost = 64 MiB, parallelism = 1, t_cost tuned to
+# ~250 ms on representative hardware. Tests use shrunk params via
+# `Argon2Params::fast_for_tests` so they run in milliseconds.
+argon2 = "0.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
+subtle = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+
+# Cross-platform fallback when TPM is unavailable (or on non-Windows
+# dev environments). Defaults: Windows Credential Manager, macOS
+# Keychain, Linux Secret Service via DBus. On Linux WSL without
+# DBus the runtime calls fail and `KeyringSealer::new` falls through
+# to the next-best sealer; this is a deliberate degradation path.
+keyring = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# B1 Windows path: NCryptOpenStorageProvider("Microsoft Platform
+# Crypto Provider") → TPM-bound RSA key → wrap an XChaCha20-Poly1305
+# data key. NCrypt + BCrypt status codes live under Win32_Security.
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
 
 [dev-dependencies]
 # tempfile 3.27 pulls in getrandom 0.4.2 which needs edition-2024

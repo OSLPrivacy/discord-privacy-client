@@ -30,12 +30,39 @@
 //!   `/v1/pubkeys/:user_id`).
 
 pub mod client;
+pub mod duress;
 pub mod identity;
+pub mod password;
+pub mod prekeys;
+pub mod sealer;
 pub mod storage;
 
-pub use client::{KeyServerClient, PubkeysResponse, RegisterResponse};
+pub use client::{
+    KeyServerClient, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
+    RegisterResponse, ReplenishResponse,
+};
+pub use prekeys::{
+    canonical_replenish_bytes, iso_8601_from_unix_seconds, load_prekey_state,
+    save_prekey_state, sign_replenish_batch, OpkEntry, PrekeyConfig, PrekeyState,
+    ReplenishOpk, ReplenishSpk, SpkEntry, REPLENISH_DOMAIN, SPK_ROTATION_INTERVAL_SECONDS,
+};
+pub use duress::{
+    DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
+    StepOutcome, WipeFn, WipeStep,
+};
 pub use identity::{generate_identity, Identity, IDENTITY_BLOB_VERSION};
-pub use storage::{load_identity, save_identity};
+pub use password::{
+    load_password_record, save_password_record, validate_password,
+    validate_setup_pair, verify_against_record, Argon2Params, InactivityTimer,
+    PasswordError, PasswordHash, PasswordRecord, VerifyOutcome,
+    DEFAULT_FAILED_ATTEMPT_THRESHOLD, DEFAULT_INACTIVITY_SECONDS,
+    MIN_PASSWORD_LENGTH,
+};
+pub use sealer::{
+    evict_tpm_key, select_best_sealer, KeyringSealer, MemorySealer, NoOpSealer, Sealer,
+    SealerError, TpmSealer, METHOD_KEYRING, METHOD_MEMORY, METHOD_NOOP, METHOD_TPM,
+};
+pub use storage::{load_identity, save_identity, IdentityOnDisk};
 
 use thiserror::Error;
 
@@ -53,6 +80,9 @@ pub enum Error {
     #[error("base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
 
+    #[error("sealing error: {0}")]
+    Sealer(#[from] sealer::SealerError),
+
     #[error("on-disk identity blob version mismatch: got {got}, expected {expected}")]
     BlobVersionMismatch { got: u32, expected: u32 },
 
@@ -62,6 +92,9 @@ pub enum Error {
         got: usize,
         expected: usize,
     },
+
+    #[error("on-disk identity blob method tag {got:?} disagrees with active sealer {expected:?}")]
+    BlobMethodMismatch { got: String, expected: String },
 
     #[error("HTTP transport error: {0}")]
     Transport(String),

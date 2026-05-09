@@ -10,10 +10,12 @@
 //   GET    /v1/pubkeys/:user_id
 //   POST   /v1/wrapped-keys
 //   GET    /v1/wrapped-keys/:content_id
+//   GET    /v1/prekey-bundle/:user_id
+//   POST   /v1/prekey-bundle/replenish
 //   GET    /v1/healthz
 //
-// All other endpoints in the design doc (prekey-bundle, replenish,
-// burn, sessions/rotate, tokens/issue) are deferred.
+// All other endpoints in the design doc (burn, sessions/rotate,
+// tokens/issue) are deferred.
 
 import Fastify from 'fastify';
 import {
@@ -22,7 +24,10 @@ import {
   getUser,
   insertWrappedKey,
   fetchWrappedKey,
+  upsertPrekeyBundle,
+  popPrekeyBundle,
 } from './db.js';
+import { canonicalReplenishBytes, verifyEd25519 } from './canonical.js';
 
 const ALLOWED_CONTENT_TYPES = new Set(['text', 'attachment', 'system']);
 const ALLOWED_SYSTEM_KINDS = new Set(['burn-alert']);
@@ -56,6 +61,7 @@ export function buildServer({ logger = false, dbFile = ':memory:' } = {}) {
     const required = [
       'user_id',
       'ik_x25519_pub',
+      'ik_ed25519_pub',
       'ik_mlkem768_pub',
       'ik_x25519_signature',
     ];
@@ -67,7 +73,12 @@ export function buildServer({ logger = false, dbFile = ':memory:' } = {}) {
     if (!isPlainString(body.user_id)) {
       return reply.code(400).send({ error: 'user_id must be a non-empty string' });
     }
-    for (const k of ['ik_x25519_pub', 'ik_mlkem768_pub', 'ik_x25519_signature']) {
+    for (const k of [
+      'ik_x25519_pub',
+      'ik_ed25519_pub',
+      'ik_mlkem768_pub',
+      'ik_x25519_signature',
+    ]) {
       if (!isNonEmptyBase64(body[k])) {
         return reply.code(400).send({ error: `${k} must be base64` });
       }
@@ -194,6 +205,91 @@ export function buildServer({ logger = false, dbFile = ':memory:' } = {}) {
       return reply.code(410).send({ error: 'tombstoned (past expires_at)' });
     }
     return reply.send(result.row);
+  });
+
+  // ---- GET /v1/prekey-bundle/:user_id ----
+  fastify.get('/v1/prekey-bundle/:user_id', async (request, reply) => {
+    const bundle = popPrekeyBundle(db, request.params.user_id);
+    if (!bundle) {
+      return reply
+        .code(404)
+        .send({ error: 'unknown user_id or no prekey bundle uploaded' });
+    }
+    // `opk: null` is the no-OPK fallback (per the design doc's
+    // "OPK exhaustion fallback").
+    return reply.send(bundle);
+  });
+
+  // ---- POST /v1/prekey-bundle/replenish ----
+  //
+  // Body:
+  //   {
+  //     user_id, batch_signature_b64,
+  //     spk?: { pub_b64, signature_b64, rotated_at },
+  //     opks: [ { id, pub_b64 }, ... ]
+  //   }
+  //
+  // The batch_signature is Ed25519 over `canonicalReplenishBytes(...)`
+  // by the user's IK_Ed25519. Server verifies before mutating state.
+  fastify.post('/v1/prekey-bundle/replenish', async (request, reply) => {
+    const b = request.body ?? {};
+    if (!isPlainString(b.user_id)) {
+      return reply.code(400).send({ error: 'user_id required' });
+    }
+    if (!isNonEmptyBase64(b.batch_signature_b64)) {
+      return reply.code(400).send({ error: 'batch_signature_b64 required' });
+    }
+    if (!Array.isArray(b.opks)) {
+      return reply.code(400).send({ error: 'opks must be an array' });
+    }
+    for (const o of b.opks) {
+      if (!Number.isInteger(o?.id) || o.id < 0) {
+        return reply.code(400).send({ error: 'opk.id must be u32' });
+      }
+      if (!isNonEmptyBase64(o?.pub_b64)) {
+        return reply.code(400).send({ error: 'opk.pub_b64 must be base64' });
+      }
+    }
+    if (b.spk != null) {
+      if (
+        !isNonEmptyBase64(b.spk.pub_b64) ||
+        !isNonEmptyBase64(b.spk.signature_b64) ||
+        !isPlainString(b.spk.rotated_at) ||
+        Number.isNaN(Date.parse(b.spk.rotated_at))
+      ) {
+        return reply.code(400).send({ error: 'spk fields malformed' });
+      }
+    }
+    const user = getUser(db, b.user_id);
+    if (!user) {
+      return reply
+        .code(404)
+        .send({ error: 'unknown user_id — register before replenish' });
+    }
+    const message = canonicalReplenishBytes({
+      user_id: b.user_id,
+      spk: b.spk ?? null,
+      opks: b.opks,
+    });
+    const ikEd25519 = Buffer.from(user.ik_ed25519_pub, 'base64');
+    const sig = Buffer.from(b.batch_signature_b64, 'base64');
+    if (!verifyEd25519(ikEd25519, message, sig)) {
+      return reply
+        .code(401)
+        .send({ error: 'batch_signature_b64 verification failed' });
+    }
+    try {
+      upsertPrekeyBundle(db, b.user_id, b.spk ?? null, b.opks);
+    } catch (err) {
+      if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+        return reply.code(409).send({ error: 'opk id already used' });
+      }
+      throw err;
+    }
+    return reply.code(200).send({
+      user_id: b.user_id,
+      opks_added: b.opks.length,
+    });
   });
 
   return fastify;
