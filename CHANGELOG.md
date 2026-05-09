@@ -150,6 +150,107 @@ and this project follows semver.
   app (or another VPN) externally. See `docs/THREAT_MODEL.md`
   "Network-layer protection (v1 alpha vs v2.2)".
 
+### Layer 2 — Attachment streaming AEAD
+
+- `crates/crypto/src/attachment.rs`:
+    - `wrap_attachment_key(MK_n, content_id, attachment_index)` —
+      HKDF-SHA256 wrap per the design doc's "Attachment integration"
+      subsection (`salt = MK_n`, `ikm = "attachment-key-wrap"`,
+      `info = content_id || u32_be(attachment_index)`).
+    - `ATTACHMENT_BUCKETS` = 256 KB / 1 MB / 5 MB / 10 MB / 25 MB,
+      `ATTACHMENT_CHUNK_SIZE` = 16 KB; bucket sizes are exact
+      multiples of chunk size.
+    - `StreamHeader` (versioned, length-prefixed `content_id`,
+      bucket / total-chunk / base-nonce-prefix metadata) with a
+      `"DPCATT\x01"` magic prefix and structural-invariant checks on
+      deserialize.
+    - `StreamEncryptor` / `StreamDecryptor` push-style streaming API
+      that holds at most one chunk (≤ 16 KB) of plaintext at a time;
+      per-chunk nonce = `base_nonce_prefix(20 B) || u32_be(chunk_index)`,
+      per-chunk AAD binds the serialized header bytes, the chunk
+      index, and an `is_final` flag (so reordering, header tampering,
+      and last-chunk truncation all break AEAD).
+    - `encrypt_attachment` / `decrypt_attachment` whole-buffer
+      conveniences that exercise the streaming path internally.
+- 26 attachment tests covering: HKDF wrap determinism + input
+  separation, round-trip across all 5 buckets at max capacity, empty
+  payload, bucket promotion across boundaries, oversized rejection,
+  byte-at-a-time streaming for both encryptor and decryptor, header
+  serialization round-trip, wrong-key / tampered-header / tampered-
+  ciphertext / swapped-chunks / truncated-tail / dangling-tail
+  rejection, and bad magic / version / bucket header rejection.
+
+### Layer 3 — Wire-format serialization
+
+- `crates/crypto/src/wire.rs`:
+    - `encode_ratchet_message` / `decode_ratchet_message` for
+      pairwise [`ratchet::EncryptedMessage`] (magic `"DPCRDM\x01"`).
+    - `encode_sender_keys_message` / `decode_sender_keys_message` for
+      group [`sender_keys::EncryptedMessage`] (magic `"DPCSKG\x01"` —
+      distinct from the pairwise envelope so receivers cannot
+      conflate them).
+    - `encode_initiator_handshake` / `decode_initiator_handshake` for
+      PQXDH [`pqxdh::InitiatorHandshake`] (magic `"DPCPQX\x01"`),
+      including consistency enforcement between the `no_opk` flag
+      and `opk_id` presence on both encode and decode.
+    - All envelopes carry a 7-byte magic + version-byte prefix and
+      length-prefix every variable-length field (`u32` BE);
+      receivers reject bad magic, unknown version, truncation,
+      oversized declared lengths, and trailing bytes.
+- `crates/crypto/src/ratchet.rs`, `sender_keys.rs`:
+    - Inner plaintext `Header` types promoted to `pub` with public
+      `to_bytes` / `from_bytes` (44 B for ratchet, 16 B for sender
+      keys); `HEADER_BYTES` constants exposed. The serialized bytes
+      live inside `enc_header` after AEAD-decryption — this commit
+      just makes the layout part of the public surface for
+      diagnostic / interop tooling.
+- 22 wire tests covering: round-trip through encode/decode for all
+  three envelope types (with-OPK + no-OPK PQXDH variants), magic /
+  version / truncation / trailing-garbage / oversized-length-prefix
+  rejection, distinct-magic separation between ratchet and
+  sender-keys, ML-KEM ciphertext-length validation, `no_opk` /
+  `opk_id` consistency rejection, inner header byte round-trip and
+  wrong-length rejection, plus stress with synthetic
+  random-byte-payload `EncryptedMessage` and an empty-fields edge
+  case to confirm the codec is a perfect inverse independent of
+  protocol-layer validation.
+
+### Layer 4 — Constant-time review pass
+
+Audit of all `crates/crypto/src/*.rs` for non-constant-time
+comparisons of secret-derived data. Findings:
+
+- **No code changes needed.** The crate already routes every
+  secret-dependent equality through a constant-time primitive:
+    - AEAD tag verification flows through RustCrypto
+      `chacha20poly1305`, which uses `subtle::CtOption` /
+      `ConstantTimeEq` internally.
+    - ML-KEM-768 decapsulation uses *implicit rejection* per
+      FIPS 203 §6.3 — wrong-key / tampered-ciphertext inputs return
+      a deterministic non-secret-revealing 32 B value.
+    - `x25519::diffie_hellman` rejects all-zero shared secrets via
+      `subtle::ConstantTimeEq::ct_eq` (small-subgroup contributory
+      behaviour, since `x25519-dalek` 2.0 does not error on
+      low-order peer points).
+- **No secret-typed struct derives `PartialEq`/`Eq`** — verified by
+  grep across the crate. Public-data types
+  ([`aead::Nonce`], [`x25519::PublicKey`],
+  [`ratchet::Header`], [`sender_keys::Header`],
+  [`attachment::StreamHeader`]) do, but their contents are
+  transmitted in the clear and admit no CT-relevant attack.
+- **Skipped-message-key cache** in `ratchet` / `sender_keys` uses a
+  linear early-exit AEAD-trial scan; matched-slot index leaks
+  through iteration count. This matches Signal's reference
+  implementation; the cap (1000) + 30-day TTL bound the leak.
+  Always-scan (1000×) constant-time variant rejected as a
+  perf regression for a leak the design accepts.
+- Findings recorded inline in `crates/crypto/src/lib.rs`'s
+  module-level docs so the reviewing cryptographer (paid engagement,
+  v1 stable prerequisite) sees them in one place.
+
+[CHECKPOINT — crypto crate complete; awaiting review before
+proceeding to Layer 5 (stego Mode 0).]
+
 ### Build state
 
 `cargo check -p crypto --tests` was attempted in WSL but blocked by

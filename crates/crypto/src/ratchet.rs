@@ -135,7 +135,7 @@ pub const SKIPPED_KEY_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Plaintext header layout: 32-byte `dh_pub` || u32_be(`PN`) ||
 /// u32_be(`N`) || u32_be(`session_version`).
-const HEADER_BYTES: usize = 32 + 4 + 4 + 4;
+pub const HEADER_BYTES: usize = 32 + 4 + 4 + 4;
 
 /// 32-byte symmetric ratchet chain key. Advances one-way via HKDF.
 #[derive(Clone, ZeroizeOnDrop)]
@@ -201,17 +201,24 @@ fn kdf_rk_he(
     Ok((new_rk, new_ck, new_nhk))
 }
 
-/// Plaintext header carried (encrypted) on every wire message.
-#[derive(Clone, Debug)]
-struct Header {
-    dh_pub: x25519::PublicKey,
-    prev_chain_length: u32,
-    counter: u32,
-    session_version: u32,
+/// Plaintext ratchet header. Carried on every wire message in
+/// AEAD-encrypted form (`enc_header`); never exposed on the outer
+/// wire as plaintext. Public so consumers can introspect the inner
+/// header after the wire `enc_header` has been opened in tests or
+/// diagnostic tooling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub dh_pub: x25519::PublicKey,
+    pub prev_chain_length: u32,
+    pub counter: u32,
+    pub session_version: u32,
 }
 
 impl Header {
-    fn serialize(&self) -> [u8; HEADER_BYTES] {
+    /// Fixed 44-byte serialization:
+    /// `dh_pub (32 B) || u32_be(prev_chain_length) || u32_be(counter)
+    ///  || u32_be(session_version)`.
+    pub fn to_bytes(&self) -> [u8; HEADER_BYTES] {
         let mut out = [0u8; HEADER_BYTES];
         out[..32].copy_from_slice(self.dh_pub.as_bytes());
         out[32..36].copy_from_slice(&self.prev_chain_length.to_be_bytes());
@@ -220,7 +227,8 @@ impl Header {
         out
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<Self> {
+    /// Parse 44 fixed bytes back into a [`Header`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != HEADER_BYTES {
             return Err(Error::Internal(format!(
                 "ratchet header: wrong length (got {}, want {})",
@@ -488,7 +496,7 @@ impl DoubleRatchet {
             counter,
             session_version: self.ctx.session_version,
         };
-        let header_bytes = header.serialize();
+        let header_bytes = header.to_bytes();
         let header_nonce = random::random_nonce();
         let enc_header = aead::seal(hks, &header_nonce, b"", &header_bytes)?;
 
@@ -544,7 +552,7 @@ impl DoubleRatchet {
         let header_via_hkr = self.hkr.as_ref().and_then(|hkr| {
             aead::open(hkr, &msg.header_nonce, b"", &msg.enc_header)
                 .ok()
-                .and_then(|bytes| Header::deserialize(&bytes).ok())
+                .and_then(|bytes| Header::from_bytes(&bytes).ok())
         });
 
         // 3) Else try NHKr (DH ratchet step).
@@ -561,7 +569,7 @@ impl DoubleRatchet {
                             )
                         },
                     )?;
-                let h = Header::deserialize(&bytes)?;
+                let h = Header::from_bytes(&bytes)?;
                 (h, true)
             }
         };
@@ -594,7 +602,7 @@ impl DoubleRatchet {
             if let Ok(header_bytes) =
                 aead::open(&entry.hk, &msg.header_nonce, b"", &msg.enc_header)
             {
-                if let Ok(header) = Header::deserialize(&header_bytes) {
+                if let Ok(header) = Header::from_bytes(&header_bytes) {
                     if header.counter == entry.counter {
                         matched_idx = Some(idx);
                         matched_header = Some(header);

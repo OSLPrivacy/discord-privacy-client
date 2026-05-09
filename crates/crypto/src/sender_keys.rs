@@ -145,7 +145,7 @@ pub const SKIPPED_KEY_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Plaintext header layout: u32_be(chain_id) || u32_be(n) ||
 /// u32_be(prev_chain_length) || u32_be(session_version).
-const HEADER_BYTES: usize = 16;
+pub const HEADER_BYTES: usize = 16;
 
 /// 32-byte sender-keys chain key. One-way HKDF advance, separate
 /// derivations for `MK` and `HK`. Zeroizes on drop.
@@ -212,16 +212,23 @@ fn derive_ck_0(root: &RotationRoot, chain_id: u32) -> Result<SenderChainKey> {
     Ok(SenderChainKey::from_bytes(bytes))
 }
 
-#[derive(Clone, Debug)]
-struct Header {
-    chain_id: u32,
-    n: u32,
-    prev_chain_length: u32,
-    session_version: u32,
+/// Plaintext sender-keys header. Carried on every wire message in
+/// AEAD-encrypted form (`enc_header`); never plaintext on the outer
+/// wire. Public so consumers can introspect the inner header after
+/// `enc_header` has been opened in tests or diagnostic tooling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub chain_id: u32,
+    pub n: u32,
+    pub prev_chain_length: u32,
+    pub session_version: u32,
 }
 
 impl Header {
-    fn serialize(&self) -> [u8; HEADER_BYTES] {
+    /// Fixed 16-byte serialization:
+    /// `u32_be(chain_id) || u32_be(n) || u32_be(prev_chain_length)
+    ///  || u32_be(session_version)`.
+    pub fn to_bytes(&self) -> [u8; HEADER_BYTES] {
         let mut out = [0u8; HEADER_BYTES];
         out[..4].copy_from_slice(&self.chain_id.to_be_bytes());
         out[4..8].copy_from_slice(&self.n.to_be_bytes());
@@ -230,7 +237,8 @@ impl Header {
         out
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<Self> {
+    /// Parse 16 fixed bytes back into a [`Header`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != HEADER_BYTES {
             return Err(Error::Internal(format!(
                 "sender keys header: wrong length (got {}, want {})",
@@ -432,7 +440,7 @@ impl SenderChain {
             prev_chain_length: self.prev_chain_length,
             session_version: ctx.session_version,
         };
-        let header_bytes = header.serialize();
+        let header_bytes = header.to_bytes();
         let header_nonce = random::random_nonce();
         let enc_header = aead::seal(&hk, &header_nonce, b"", &header_bytes)?;
 
@@ -544,7 +552,7 @@ impl ReceiverChain {
             if let Ok(header_bytes) =
                 aead::open(&hk, &msg.header_nonce, b"", &msg.enc_header)
             {
-                if let Ok(header) = Header::deserialize(&header_bytes) {
+                if let Ok(header) = Header::from_bytes(&header_bytes) {
                     if header.session_version != ctx.session_version {
                         return Err(Error::Internal(format!(
                             "sender keys decrypt: session_version mismatch \
@@ -632,7 +640,7 @@ impl ReceiverChain {
             if let Ok(header_bytes) =
                 aead::open(&entry.hk, &msg.header_nonce, b"", &msg.enc_header)
             {
-                if let Ok(header) = Header::deserialize(&header_bytes) {
+                if let Ok(header) = Header::from_bytes(&header_bytes) {
                     if header.chain_id == entry.chain_id && header.n == entry.n {
                         matched_idx = Some(idx);
                         matched_header = Some(header);
