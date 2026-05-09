@@ -8,8 +8,8 @@ import {
 import { buildServer } from '../src/server.js';
 import { canonicalReplenishBytes } from '../src/canonical.js';
 
-function newServer() {
-  return buildServer({ logger: false, dbFile: ':memory:' });
+async function newServer() {
+  return await buildServer({ logger: false, dbFile: ':memory:' });
 }
 
 async function inject(server, opts) {
@@ -80,7 +80,7 @@ function makeSpk(rotatedAt = '2026-05-08T12:00:00Z') {
 }
 
 test('prekey-bundle GET: 404 before any replenish', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const r = await inject(s, {
@@ -92,7 +92,7 @@ test('prekey-bundle GET: 404 before any replenish', async () => {
 });
 
 test('prekey-bundle replenish: 401 when batch signature wrong', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const opks = makeOpks(5);
@@ -120,7 +120,7 @@ test('prekey-bundle replenish: 401 when batch signature wrong', async () => {
 });
 
 test('prekey-bundle replenish: 401 when message tampered', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const opks = makeOpks(3);
@@ -150,7 +150,7 @@ test('prekey-bundle replenish: 401 when message tampered', async () => {
 });
 
 test('prekey-bundle replenish: 200 with valid signature, GET returns bundle', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const opks = makeOpks(5);
@@ -188,7 +188,7 @@ test('prekey-bundle replenish: 200 with valid signature, GET returns bundle', as
 });
 
 test('prekey-bundle GET: pops OPKs atomically until exhausted, then null', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const opks = makeOpks(3);
@@ -232,7 +232,7 @@ test('prekey-bundle GET: pops OPKs atomically until exhausted, then null', async
 });
 
 test('prekey-bundle replenish: SPK rotation moves current to prev', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const spkA = makeSpk('2026-05-01T00:00:00Z');
@@ -323,7 +323,7 @@ test('prekey-bundle replenish: SPK rotation moves current to prev', async () => 
 });
 
 test('prekey-bundle replenish: 404 before register', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('nope');
   const opks = makeOpks(1);
   const message = canonicalReplenishBytes({
@@ -346,7 +346,7 @@ test('prekey-bundle replenish: 404 before register', async () => {
 });
 
 test('prekey-bundle replenish: 400 on missing fields', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   for (const drop of ['user_id', 'batch_signature_b64', 'opks']) {
@@ -367,7 +367,7 @@ test('prekey-bundle replenish: 400 on missing fields', async () => {
 });
 
 test('prekey-bundle replenish: 409 on duplicate opk id', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('user-1');
   await registerIdentity(s, id);
   const opks = makeOpks(2);

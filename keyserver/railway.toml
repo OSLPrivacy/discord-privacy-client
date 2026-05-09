@@ -1,0 +1,42 @@
+# Railway deployment config for the OSL keyserver.
+#
+# Set the Railway service "Root Directory" to `keyserver/` in the
+# Railway UI so this file is picked up. (Railway resolves
+# railway.toml relative to the configured root directory, not the
+# repo root.)
+#
+# Required env vars (set in Railway UI → service → Variables):
+#   OSL_KEYSERVER_ADMIN_TOKEN     pre-shared bearer token (generate
+#                                 with: openssl rand -hex 32)
+#   OSL_KEYSERVER_ALLOWED_USERS   comma-separated user_ids permitted
+#                                 to register (e.g. "liam,henry")
+#   HOST                          set to "0.0.0.0" so Railway's
+#                                 reverse proxy can reach the app.
+#                                 Without this, the server binds
+#                                 loopback only and is unreachable.
+#   KEYSERVER_DB                  set to "/data/keyserver.db" with a
+#                                 Railway volume mounted at /data so
+#                                 the sqlite file survives redeploys.
+#                                 Without a volume, all registered
+#                                 identities are wiped on every push.
+#
+# Auto-set by Railway:
+#   PORT                          server.js reads this; do not override.
+
+[build]
+buildCommand = "npm install --omit=dev && npm rebuild better-sqlite3"
+
+[deploy]
+startCommand = "npm start"
+
+# Probes /v1/healthz; restarts the container if 3 consecutive checks
+# fail. Path matches the keyserver's public health endpoint (no auth
+# required by design).
+healthcheckPath = "/v1/healthz"
+healthcheckTimeout = 30
+
+# Restart on crash. The keyserver is stateless apart from the sqlite
+# file on the persistent volume, so an unexpected exit is always
+# safe to retry.
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

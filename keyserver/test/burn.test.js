@@ -4,8 +4,8 @@ import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { buildServer } from '../src/server.js';
 import { canonicalBurnBytes } from '../src/canonical.js';
 
-function newServer() {
-  return buildServer({ logger: false, dbFile: ':memory:' });
+async function newServer() {
+  return await buildServer({ logger: false, dbFile: ':memory:' });
 }
 
 async function inject(server, opts) {
@@ -70,7 +70,7 @@ function signBurn(privateKey, payload) {
 }
 
 test('burn single: deletes own content, leaves others', async () => {
-  const s = newServer();
+  const s = await newServer();
   const alice = makeIdentity('alice');
   const bob = makeIdentity('bob');
   await registerIdentity(s, alice);
@@ -119,7 +119,7 @@ test('burn single: deletes own content, leaves others', async () => {
 });
 
 test('burn single: cannot burn another user\'s content (signature is over alice but content is bob\'s)', async () => {
-  const s = newServer();
+  const s = await newServer();
   const alice = makeIdentity('alice');
   const bob = makeIdentity('bob');
   await registerIdentity(s, alice);
@@ -156,7 +156,7 @@ test('burn single: cannot burn another user\'s content (signature is over alice 
 });
 
 test('burn to_user: deletes only messages between sender and target', async () => {
-  const s = newServer();
+  const s = await newServer();
   const alice = makeIdentity('alice');
   const bob = makeIdentity('bob');
   const carol = makeIdentity('carol');
@@ -209,7 +209,7 @@ test('burn to_user: deletes only messages between sender and target', async () =
 });
 
 test('burn all: deletes every message alice sent', async () => {
-  const s = newServer();
+  const s = await newServer();
   const alice = makeIdentity('alice');
   const bob = makeIdentity('bob');
   await registerIdentity(s, alice);
@@ -252,7 +252,7 @@ test('burn all: deletes every message alice sent', async () => {
 });
 
 test('burn: 401 on bad signature', async () => {
-  const s = newServer();
+  const s = await newServer();
   const alice = makeIdentity('alice');
   const evil = makeIdentity('evil-other-key');
   await registerIdentity(s, alice);
@@ -281,7 +281,7 @@ test('burn: 401 on bad signature', async () => {
 });
 
 test('burn: 400 on missing fields', async () => {
-  const s = newServer();
+  const s = await newServer();
   for (const drop of ['scope', 'user_id', 'burn_signature_b64']) {
     const payload = {
       scope: 'all',
@@ -300,7 +300,7 @@ test('burn: 400 on missing fields', async () => {
 });
 
 test('burn single: 400 when target_content_id missing', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'DELETE',
     url: '/v1/wrapped-keys',
@@ -315,7 +315,7 @@ test('burn single: 400 when target_content_id missing', async () => {
 });
 
 test('burn to_user: 400 when target_user_id missing', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'DELETE',
     url: '/v1/wrapped-keys',
@@ -330,7 +330,7 @@ test('burn to_user: 400 when target_user_id missing', async () => {
 });
 
 test('burn all: 400 when target field present', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'DELETE',
     url: '/v1/wrapped-keys',
@@ -346,7 +346,7 @@ test('burn all: 400 when target field present', async () => {
 });
 
 test('burn: 400 on unknown scope', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'DELETE',
     url: '/v1/wrapped-keys',
@@ -361,7 +361,7 @@ test('burn: 400 on unknown scope', async () => {
 });
 
 test('burn: 404 before register', async () => {
-  const s = newServer();
+  const s = await newServer();
   const id = makeIdentity('nobody');
   const sig = signBurn(id.privateKey, {
     user_id: 'nobody',
@@ -386,7 +386,7 @@ test('burn-and-alert via wrapped-keys system message: caller signs system blob',
   // content_type=system, system_message_kind=burn-alert. This test
   // confirms the existing path still accepts allowed system kinds
   // alongside burns — there's no separate "alert" endpoint.
-  const s = newServer();
+  const s = await newServer();
   const alice = makeIdentity('alice');
   await registerIdentity(s, alice);
   // Upload a burn-alert system message.

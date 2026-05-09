@@ -15,6 +15,69 @@ Schema versioned via `wrapped_share_blob_version` and
 `bundle_format_version` fields in payloads, plus an `X-Schema-Version`
 response header. Mismatch returns 4xx with explicit upgrade guidance.
 
+## Phase B authentication (closed-beta deployable)
+
+The Phase B keyserver bridges the gap between v1-alpha-prototype
+(no auth at all) and v1-stable (Discord OAuth gate). It uses two
+defence-in-depth layers, both controlled by env vars at the
+deployed instance:
+
+1. **Pre-shared admin token** (`OSL_KEYSERVER_ADMIN_TOKEN`).
+   State-mutating routes — `POST /v1/register`,
+   `POST /v1/wrapped-keys`, `POST /v1/prekey-bundle/replenish`,
+   `DELETE /v1/wrapped-keys` — require
+   `Authorization: Bearer <token>`. Token comparison is
+   constant-time (SHA-256 + `crypto.timingSafeEqual`). Missing or
+   wrong header → 401 with the attempted user_id logged at
+   `warn` level.
+2. **User-id allowlist** (`OSL_KEYSERVER_ALLOWED_USERS`,
+   comma-separated). Only listed user_ids may register; others
+   get 403. Defence-in-depth: even if the admin token leaks, the
+   attacker still needs to know an allowlisted user_id to forge an
+   identity. Order of checks on `POST /v1/register`: token → 401
+   first, then allowlist → 403. So a leaked-token attempt logs as
+   "allowlist failed (token was valid)" — useful operator signal.
+
+GET routes serving public keys (`/v1/pubkeys/:user_id`,
+`/v1/prekey-bundle/:user_id`, `/v1/wrapped-keys/:content_id`,
+`/v1/healthz`, `/v1/selector-manifest`) stay unauthenticated. The
+recipient-public-key lookup IS the public-side of the design.
+
+**Local-dev mode** (env vars unset): no auth, no allowlist, no
+rate limit. Identical to v1-alpha behaviour.
+
+A light `@fastify/rate-limit` is auto-enabled at the entrypoint
+when the admin token is set: 10 req/min/IP per mutation route, 429
+with `Retry-After` on overflow. GETs are not rate-limited.
+
+### Transport (client side)
+
+The Rust client (`crates/keystore/src/client.rs`,
+[`KeyServerClient`]) uses `reqwest` 0.12 blocking + rustls-tls
+with the Mozilla `webpki-roots` CA bundle. Both `http://` and
+`https://` `base_url`s are accepted; deployed instances use
+HTTPS (Railway force-redirects HTTP→HTTPS at the edge), local
+dev keyservers use plain HTTP. No system cert chain dependency
+— the CA bundle is baked in at compile time.
+
+Certificate pinning is deferred to v1-stable. Until then, the
+trust anchor is the standard public-CA chain.
+
+What Phase B does **not** add (v1-stable scope):
+
+- TLS at the application layer (rely on Cloudflare/Railway).
+- Discord OAuth proof of `user_id` ownership.
+- Real verification of `ik_x25519_signature` on register (still
+  mocked client-side as `b64("PROTOTYPE_NO_SIG")`).
+- Per-user-id rate limits (current limit is per-IP only; a single
+  IP holding the admin token can still register up to 10 user_ids
+  per minute against the allowlist).
+
+Burn (`DELETE /v1/wrapped-keys`) and replenish
+(`POST /v1/prekey-bundle/replenish`) DO verify Ed25519 signatures
+by the registered identity-key, in addition to the admin token —
+two-factor authorization for those routes.
+
 ## Endpoints
 
 ### `POST /v1/register`

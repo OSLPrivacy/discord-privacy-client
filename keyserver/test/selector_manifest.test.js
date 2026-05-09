@@ -4,8 +4,8 @@ import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { buildServer } from '../src/server.js';
 import { canonicalManifestBytes } from '../src/canonical.js';
 
-function newServer(opts = {}) {
-  return buildServer({ logger: false, dbFile: ':memory:', ...opts });
+async function newServer(opts = {}) {
+  return await buildServer({ logger: false, dbFile: ':memory:', ...opts });
 }
 
 async function inject(server, opts) {
@@ -38,7 +38,7 @@ function signedManifestEnvelope(signer, manifest) {
 }
 
 test('selector-manifest: 503 when not configured', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, { method: 'GET', url: '/v1/selector-manifest' });
   assert.equal(r.statusCode, 503);
   await s.close();
@@ -54,7 +54,7 @@ test('selector-manifest: returns envelope verbatim when configured', async () =>
   };
   const envelope = signedManifestEnvelope(signer, manifest);
 
-  const s = newServer({ selectorManifest: envelope });
+  const s = await newServer({ selectorManifest: envelope });
   const r = await inject(s, { method: 'GET', url: '/v1/selector-manifest' });
   assert.equal(r.statusCode, 200);
   assert.equal(r.body.version, 1);

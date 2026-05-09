@@ -10,17 +10,26 @@ license.workspace = true
 # without TPM. Last-resort `NoOpSealer` keeps the prior plain-file
 # behaviour with the loud INSECURE banner intact.
 #
-# HTTP client is hand-rolled HTTP/1.1 over std::net::TcpStream. Reasons
-# for not pulling in ureq / reqwest / attohttpc:
-# - Plain HTTP only (the prototype keyserver is plain HTTP); no need
-#   for TLS dep tree.
-# - ureq 2.12 transitively depends on getrandom 0.4.2 which requires
-#   edition-2024 / rustc 1.85+, exceeding our pinned MSRV (1.82).
-# - reqwest pulls in tokio/hyper for blocking, > 100 transitive deps.
-# - The prototype only needs POST + GET with JSON body / response;
-#   ~100 lines of code.
+# HTTP client: reqwest 0.12 blocking + rustls-tls.
+#
+# Phase B (the Railway-deployable keyserver) needs HTTPS at the
+# application layer — Railway force-redirects HTTP→HTTPS at the
+# edge, so a plain-HTTP-only client can't talk to a deployed
+# instance. The original prototype rolled its own HTTP/1.1 over
+# `std::net::TcpStream` to keep the dep tree small and avoid TLS;
+# that trade-off only made sense while the keyserver was
+# localhost-plain-HTTP-only.
+#
+# `default-features = false` strips reqwest's default `default-tls`
+# (which would pull in native-tls / OpenSSL). `rustls-tls` aliases
+# to `rustls-tls-webpki-roots` in reqwest 0.12 — Mozilla CA bundle
+# baked in at compile time, no system cert dep, cross-compiles
+# cleanly to `x86_64-pc-windows-gnu`. `blocking` because the call
+# sites are synchronous (invoked from
+# `tauri::async_runtime::spawn_blocking`).
 crypto = { path = "../crypto" }
 base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # B2 — Argon2id password hashing per docs/design/unlock-and-duress.md.
 # Production params: m_cost = 64 MiB, parallelism = 1, t_cost tuned to
 # ~250 ms on representative hardware. Tests use shrunk params via

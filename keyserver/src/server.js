@@ -1,25 +1,39 @@
-// Prototype key server for discord-privacy-client.
+// Key server for discord-privacy-client.
 //
-// INSECURE BY DESIGN — see `db.js` and `keyserver/README.md`. This is
-// a v1-alpha-prototype scaffold. v1 stable replaces it with the
-// authenticated, TLS-only, OAuth-gated, rate-limited service in
+// Phase B (closed-beta deployable): pre-shared admin token gates
+// state-mutating routes; user-id allowlist gates registration; rate
+// limiting on mutations. Local-dev mode preserved: when no env vars
+// are set, behaviour is identical to the v0.0.1 prototype.
+//
+// What this is NOT: a TLS-terminating service (deploy behind
+// Cloudflare/Railway TLS), a Discord-OAuth-gated service (closed
+// beta = trusted-token model), or signature-verifying on register
+// (the prototype identity-key signature stays mocked client-side).
+// v1 stable still replaces this with the OAuth-gated service in
 // `docs/design/key-server-api.md`.
 //
-// Endpoints (subset of the design doc):
-//   POST   /v1/register
-//   GET    /v1/pubkeys/:user_id
-//   POST   /v1/wrapped-keys
-//   GET    /v1/wrapped-keys/:content_id
-//   DELETE /v1/wrapped-keys
-//   GET    /v1/prekey-bundle/:user_id
-//   POST   /v1/prekey-bundle/replenish
-//   GET    /v1/selector-manifest
-//   GET    /v1/healthz
+// Endpoints:
+//   POST   /v1/register                  [admin token + allowlist]
+//   GET    /v1/pubkeys/:user_id          [public]
+//   POST   /v1/wrapped-keys              [admin token]
+//   GET    /v1/wrapped-keys/:content_id  [public]
+//   DELETE /v1/wrapped-keys              [admin token + Ed25519 sig]
+//   GET    /v1/prekey-bundle/:user_id    [public]
+//   POST   /v1/prekey-bundle/replenish   [admin token + Ed25519 sig]
+//   GET    /v1/selector-manifest         [public]
+//   GET    /v1/healthz                   [public]
+//
+// "Public" means no admin token; the GET endpoints serve public
+// keys + read-only state, which is the design intent (anyone with
+// a user_id should be able to look up the recipient's public keys
+// to encrypt to them).
 //
 // Endpoints still deferred from the design doc: sessions/rotate,
 // tokens/issue.
 
+import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
+import rateLimitPlugin from '@fastify/rate-limit';
 import {
   openDatabase,
   upsertUser,
@@ -52,7 +66,65 @@ function isPlainString(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
-export function buildServer({
+// Constant-time comparison. Hashes both sides to SHA-256 first so the
+// length of `a` (the secret) doesn't leak via the comparator's
+// length precondition. Both digests are 32 bytes regardless of
+// input length.
+function constantTimeTokenEqual(provided, expected) {
+  const hp = createHash('sha256').update(provided, 'utf8').digest();
+  const he = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(hp, he);
+}
+
+// Build the admin-token preHandler. Returns `null` when no token is
+// configured (dev mode — passes through every request).
+//
+// The hook logs the rejected `attempted_user_id` (when the body
+// carries one) so operators monitoring the keyserver have a
+// fingerprint of who tried to forge a registration. The header
+// itself is NEVER logged — that would land secrets in operator
+// telemetry.
+function buildAdminAuthHook(adminToken) {
+  if (!adminToken) return null;
+  return async function adminAuthHook(request, reply) {
+    const header = request.headers.authorization;
+    let provided = '';
+    if (typeof header === 'string') {
+      const m = header.match(/^Bearer\s+(.+)$/i);
+      if (m) provided = m[1].trim();
+    }
+    // We always run the hash + comparison even on empty `provided`
+    // so a totally-missing header doesn't take a different timing
+    // path from a present-but-wrong header.
+    const ok = provided.length > 0 && constantTimeTokenEqual(provided, adminToken);
+    if (!ok) {
+      request.log.warn(
+        {
+          url: request.url,
+          method: request.method,
+          attempted_user_id:
+            (request.body && typeof request.body === 'object'
+              ? request.body.user_id
+              : null) ?? null,
+          had_header: header != null,
+        },
+        'admin token check failed'
+      );
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+  };
+}
+
+/**
+ * Build a configured (but not-yet-listening) Fastify instance.
+ *
+ * **Async** because the rate-limit plugin must finish registering
+ * before any route is added — otherwise its `onRoute` hook won't
+ * fire and per-route `config.rateLimit` is silently ignored. The
+ * old (Phase A) signature was sync; callers updating from prototype
+ * code need `await buildServer(...)`.
+ */
+export async function buildServer({
   logger = false,
   dbFile = ':memory:',
   // Pre-signed selector-manifest envelope JSON (the SignedManifest
@@ -61,9 +133,71 @@ export function buildServer({
   // through the CDN-mirror fallback path. The signing key is offline
   // in production; this server only ever serves the bytes.
   selectorManifest = null,
+  // Pre-shared admin token. State-mutating routes (POST /register,
+  // POST /wrapped-keys, POST /prekey-bundle/replenish, DELETE
+  // /wrapped-keys) require `Authorization: Bearer <token>` matching
+  // this value. When `null`/empty (the default), no auth is enforced
+  // — preserves the local-dev `npm start` workflow. Production sets
+  // this from `OSL_KEYSERVER_ADMIN_TOKEN` env var.
+  adminToken = null,
+  // User-id allowlist for /v1/register. When non-empty, only listed
+  // user_ids may register; others get 403. When `null`/empty, no
+  // allowlist enforcement. Defence-in-depth: even if the admin
+  // token leaks, the attacker still needs to know an allowlisted
+  // user_id to forge an identity. Production sets this from
+  // `OSL_KEYSERVER_ALLOWED_USERS` (comma-separated).
+  allowedUsers = null,
+  // Rate-limit configuration for mutation routes. Set to e.g.
+  // `{ max: 10, timeWindow: '1 minute' }` to enable. `false` (the
+  // default) skips plugin registration entirely so tests don't
+  // trip the limiter on rapid `server.inject` calls.
+  rateLimit = false,
 } = {}) {
   const fastify = Fastify({ logger });
   const db = openDatabase(dbFile);
+
+  // Normalise inputs once so per-route logic doesn't re-check
+  // emptiness/types each time.
+  const effectiveAdminToken =
+    typeof adminToken === 'string' && adminToken.length > 0 ? adminToken : null;
+  const effectiveAllowedUsers =
+    Array.isArray(allowedUsers) && allowedUsers.length > 0 ? allowedUsers : null;
+
+  if (!effectiveAdminToken) {
+    // Surface dev-mode at startup so operators know the server is
+    // running unauthenticated. Logger may be disabled in tests; the
+    // `request.log` and `fastify.log` paths are NoOps in that case.
+    fastify.log.warn(
+      'OSL keyserver: ADMIN TOKEN UNSET — state-mutating endpoints \
+are open. OK for localhost dev; DO NOT do this on a public host.'
+    );
+  }
+
+  // Register rate-limit plugin globally with `global: false` so
+  // routes opt-in via `config.rateLimit`. Skipping registration
+  // entirely (instead of a no-op config) keeps the default-test
+  // setup zero-overhead and avoids the plugin's onRequest hook.
+  //
+  // Pass max/timeWindow as plugin-register defaults so the
+  // `onRoute` hook (set up at register time) carries them; the
+  // per-route `config.rateLimit` block can override but doesn't
+  // need to. Crucially: this register call MUST be awaited before
+  // any route is added — fastify-plugin installs `onRoute` on
+  // load, and routes registered before then bypass the limiter.
+  if (rateLimit) {
+    const limitOpts = typeof rateLimit === 'object' ? rateLimit : {};
+    await fastify.register(rateLimitPlugin, {
+      global: false,
+      ...limitOpts,
+    });
+  }
+
+  // Pre-built per-route options for state-mutating endpoints.
+  // Computed once; same object reused across registrations.
+  const adminAuthHook = buildAdminAuthHook(effectiveAdminToken);
+  const mutationRouteOpts = {};
+  if (adminAuthHook) mutationRouteOpts.preHandler = adminAuthHook;
+  if (rateLimit) mutationRouteOpts.config = { rateLimit };
 
   fastify.addHook('onClose', async () => {
     db.close();
@@ -72,7 +206,7 @@ export function buildServer({
   fastify.get('/v1/healthz', async () => ({ ok: true }));
 
   // ---- POST /v1/register ----
-  fastify.post('/v1/register', async (request, reply) => {
+  fastify.post('/v1/register', mutationRouteOpts, async (request, reply) => {
     const body = request.body ?? {};
     const required = [
       'user_id',
@@ -88,6 +222,18 @@ export function buildServer({
     }
     if (!isPlainString(body.user_id)) {
       return reply.code(400).send({ error: 'user_id must be a non-empty string' });
+    }
+    // Allowlist check: post-token, pre-field-validation. We
+    // already know the caller has the admin token (the preHandler
+    // ran), so allowlist failure logs the *successful-token*
+    // attempt — useful operator signal that the token may have
+    // leaked.
+    if (effectiveAllowedUsers && !effectiveAllowedUsers.includes(body.user_id)) {
+      request.log.warn(
+        { attempted_user_id: body.user_id },
+        'register allowlist check failed (token was valid)'
+      );
+      return reply.code(403).send({ error: 'forbidden: user_id not on allowlist' });
     }
     for (const k of [
       'ik_x25519_pub',
@@ -121,7 +267,7 @@ export function buildServer({
   });
 
   // ---- POST /v1/wrapped-keys ----
-  fastify.post('/v1/wrapped-keys', async (request, reply) => {
+  fastify.post('/v1/wrapped-keys', mutationRouteOpts, async (request, reply) => {
     const b = request.body ?? {};
     const required = [
       'content_id',
@@ -247,7 +393,7 @@ export function buildServer({
   //
   // The batch_signature is Ed25519 over `canonicalReplenishBytes(...)`
   // by the user's IK_Ed25519. Server verifies before mutating state.
-  fastify.post('/v1/prekey-bundle/replenish', async (request, reply) => {
+  fastify.post('/v1/prekey-bundle/replenish', mutationRouteOpts, async (request, reply) => {
     const b = request.body ?? {};
     if (!isPlainString(b.user_id)) {
       return reply.code(400).send({ error: 'user_id required' });
@@ -323,7 +469,7 @@ export function buildServer({
   // (user_id, scope, target). Server verifies against the user's
   // stored IK_Ed25519. Only rows where `sender_id == user_id` are
   // deleted — you can't burn another user's content.
-  fastify.delete('/v1/wrapped-keys', async (request, reply) => {
+  fastify.delete('/v1/wrapped-keys', mutationRouteOpts, async (request, reply) => {
     const b = request.body ?? {};
     if (!isPlainString(b.scope) || !['single', 'to_user', 'all'].includes(b.scope)) {
       return reply
@@ -404,9 +550,15 @@ export function buildServer({
 }
 
 // ---- entrypoint when run as a script ----
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+import { pathToFileURL } from 'node:url';
+const isMain = import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const port = Number(process.env.PORT ?? 3000);
+  // Default loopback for local dev. Set HOST=0.0.0.0 (or '::') in
+  // production to bind all interfaces — required for Railway / any
+  // container hosting where the platform reverse-proxy talks to
+  // the app over the internal network.
+  const host = process.env.HOST ?? '127.0.0.1';
   const dbFile = process.env.KEYSERVER_DB ?? './keyserver.db';
   // SELECTOR_MANIFEST_PATH points at a JSON file holding the
   // SignedManifest envelope. Optional — without it the
@@ -418,12 +570,46 @@ if (isMain) {
     const txt = await fs.readFile(process.env.SELECTOR_MANIFEST_PATH, 'utf8');
     selectorManifest = JSON.parse(txt);
   }
-  const server = buildServer({ logger: true, dbFile, selectorManifest });
-  server.listen({ port, host: '127.0.0.1' }, (err) => {
+
+  // Auth + allowlist + rate-limit configuration. All optional;
+  // unset env vars revert to local-dev no-auth behaviour.
+  const adminToken = process.env.OSL_KEYSERVER_ADMIN_TOKEN || null;
+  const allowedUsers = process.env.OSL_KEYSERVER_ALLOWED_USERS
+    ? process.env.OSL_KEYSERVER_ALLOWED_USERS.split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : null;
+
+  // Rate limit applies to mutation routes only (see the per-route
+  // `mutationRouteOpts` in `buildServer`). Defaults are sized for
+  // closed-beta dogfood scale: 10 req/min/IP per mutation route.
+  // Production tuning would land here.
+  const rateLimit = adminToken
+    ? { max: 10, timeWindow: '1 minute' }
+    : false;
+
+  const server = await buildServer({
+    logger: true,
+    dbFile,
+    selectorManifest,
+    adminToken,
+    allowedUsers,
+    rateLimit,
+  });
+  server.listen({ port, host }, (err, address) => {
     if (err) {
       // eslint-disable-next-line no-console
       console.error(err);
       process.exit(1);
     }
+    server.log.info(
+      {
+        address,
+        admin_auth: adminToken ? 'enabled' : 'DISABLED (dev mode)',
+        allowlist: allowedUsers ? allowedUsers : 'disabled',
+        rate_limit: rateLimit ? rateLimit : 'disabled',
+      },
+      'OSL keyserver listening'
+    );
   });
 }

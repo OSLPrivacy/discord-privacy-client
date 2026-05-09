@@ -30,9 +30,13 @@ fn register_request_carries_correct_base64_keys() {
 }
 
 #[test]
-fn new_rejects_https_url() {
-    let res = KeyServerClient::new("https://example.com");
-    assert!(matches!(res, Err(Error::Transport(_))));
+fn new_accepts_https_url() {
+    // Phase B follow-up: HTTPS is required because Railway force-
+    // redirects HTTP→HTTPS at the edge. The pre-Phase-B prototype
+    // rejected `https://` because it had no TLS stack; reqwest +
+    // rustls now handles it.
+    KeyServerClient::new("https://example.com").unwrap();
+    KeyServerClient::new("https://keyserver.example.com:8443/api").unwrap();
 }
 
 #[test]
@@ -43,8 +47,10 @@ fn new_parses_host_port_and_base_path() {
     KeyServerClient::new("http://localhost").unwrap();
     KeyServerClient::new("http://localhost:8080/api").unwrap();
     KeyServerClient::new("http://127.0.0.1:3000/").unwrap();
+    // Wrong scheme rejected.
     assert!(KeyServerClient::new("ftp://x").is_err());
-    assert!(KeyServerClient::new("http://x:abc").is_err());
+    // Malformed URL rejected at construction (defensive parse).
+    assert!(KeyServerClient::new("http://").is_err());
 }
 
 /// One-shot mock HTTP server: accepts one connection, reads the
@@ -116,12 +122,18 @@ fn register_round_trips_through_mock_server() {
         Some("2026-05-08T10:00:00Z")
     );
 
-    // Confirm what the client sent on the wire.
+    // Confirm what the client sent on the wire. reqwest 0.12 emits
+    // lowercase header names per HTTP/1.1 normalization (the wire
+    // bytes hyper produces match the on-the-wire form HTTP/2 uses
+    // even on HTTP/1.1 connections); assertions are
+    // case-insensitive so this stays robust to reqwest's casing
+    // choices.
     let req_bytes = rx.recv().unwrap();
     let req_text = std::str::from_utf8(&req_bytes).unwrap();
-    assert!(req_text.starts_with("POST /v1/register HTTP/1.1\r\n"));
-    assert!(req_text.contains("Host: 127.0.0.1:"));
-    assert!(req_text.contains("Content-Type: application/json\r\n"));
+    let lower = req_text.to_ascii_lowercase();
+    assert!(lower.starts_with("post /v1/register http/1.1\r\n"));
+    assert!(lower.contains("host: 127.0.0.1:"));
+    assert!(lower.contains("content-type: application/json"));
     // The JSON body should mention the user_id.
     assert!(req_text.contains("alice"));
 }
@@ -145,7 +157,9 @@ fn fetch_pubkeys_round_trips_through_mock_server() {
 
     let req_bytes = rx.recv().unwrap();
     let req_text = std::str::from_utf8(&req_bytes).unwrap();
-    assert!(req_text.starts_with("GET /v1/pubkeys/bob HTTP/1.1\r\n"));
+    assert!(req_text
+        .to_ascii_lowercase()
+        .starts_with("get /v1/pubkeys/bob http/1.1\r\n"));
 }
 
 #[test]

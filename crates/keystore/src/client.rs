@@ -1,18 +1,24 @@
-//! Minimal HTTP/1.1 client for the prototype key server.
+//! HTTP client for the OSL key server.
 //!
-//! Hand-rolled over [`std::net::TcpStream`] with `Content-Length`
-//! framing and `Connection: close`. **Plain HTTP only.** v1 stable
-//! replaces with a real client + TLS + Discord OAuth + retries; see
-//! the crate-level INSECURE banner.
+//! Built on `reqwest` 0.12 blocking + rustls-tls (webpki-roots).
+//! Both `http://` and `https://` `base_url`s are accepted —
+//! Railway-deployed Phase B keyservers force-redirect to HTTPS at
+//! the edge, so the client must do TLS; localhost dev keyservers
+//! over plain HTTP still work for the inner-loop workflow.
 //!
 //! Endpoints exposed here mirror [`keyserver/src/server.js`]:
 //!
 //! - [`KeyServerClient::register`] → `POST /v1/register`
 //! - [`KeyServerClient::fetch_pubkeys`] → `GET /v1/pubkeys/:user_id`
+//! - [`KeyServerClient::fetch_prekey_bundle`] → `GET /v1/prekey-bundle/:user_id`
+//! - [`KeyServerClient::replenish_prekeys`] → `POST /v1/prekey-bundle/replenish`
+//! - [`KeyServerClient::burn`] → `DELETE /v1/wrapped-keys`
 //!
 //! All calls block on I/O. Tauri command handlers (Layer 8) drive
-//! these through `tokio::task::spawn_blocking` to avoid stalling the
-//! async runtime.
+//! these through `tokio::task::spawn_blocking` to avoid stalling
+//! the async runtime. reqwest's blocking client has its own
+//! Tokio runtime under the hood; that's fine — the outer Tauri
+//! runtime stays unblocked.
 
 use crate::burn::{sign_burn, BurnScope};
 use crate::identity::Identity;
@@ -23,8 +29,6 @@ use crate::{Error, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 /// Body of `POST /v1/register`.
@@ -129,44 +133,86 @@ struct ReplenishOpkWire {
     pub_b64: String,
 }
 
-/// Holds the parsed `host:port` derived from `base_url` and a default
-/// 30 s I/O timeout.
+/// HTTP client for the OSL key server.
+///
+/// Holds the canonicalised base URL, a `reqwest::blocking::Client`
+/// with rustls TLS configured, and an optional pre-shared admin
+/// token.
+///
+/// When `admin_token` is `Some(_)`, every state-mutating request
+/// (POST / PUT / DELETE) carries an `Authorization: Bearer <token>`
+/// header. GET requests never carry the header — the keyserver's
+/// public endpoints are intentionally unauthenticated.
 pub struct KeyServerClient {
-    host: String,
-    port: u16,
-    base_path: String,
-    timeout: Duration,
+    /// Canonicalised base URL. Includes scheme + host + optional
+    /// port + optional base path. Trailing `/` stripped so callers
+    /// can `format!("{}{}", base_url, "/v1/foo")` without
+    /// double-slash hazards.
+    base_url: String,
+    client: reqwest::blocking::Client,
+    admin_token: Option<String>,
 }
 
 impl KeyServerClient {
-    /// `base_url` must be of the form `http://host[:port][/base-path]`.
-    /// `https://` is rejected — the prototype is plain HTTP only.
+    /// `base_url` must start with `http://` or `https://`.
+    ///
+    /// Constructs a client with no admin token (works against
+    /// unsecured local keyservers). Use [`Self::with_admin_token`]
+    /// to attach a Phase-B-deployed keyserver token.
+    ///
+    /// The underlying `reqwest::blocking::Client` is built with a
+    /// 30-second timeout (matching the prior hand-rolled
+    /// transport's behaviour) and rustls-tls + webpki-roots
+    /// (Mozilla CA bundle). No certificate pinning — that's a
+    /// v1-stable feature.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self> {
         let url = base_url.as_ref();
-        let after_scheme = url.strip_prefix("http://").ok_or_else(|| {
-            Error::Transport(format!(
-                "base_url must start with http:// (prototype is plain HTTP only): {url:?}"
-            ))
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(Error::Transport(format!(
+                "base_url must start with http:// or https://: {url:?}"
+            )));
+        }
+        // Defensive parse: reject syntactically broken URLs early
+        // so callers get a clean error from `new` rather than from
+        // the first `send_request`. Discards the parsed `Url`
+        // because we keep the canonicalised string for path joining.
+        reqwest::Url::parse(url).map_err(|e| {
+            Error::Transport(format!("invalid base_url {url:?}: {e}"))
         })?;
-        let (authority, base_path) = match after_scheme.find('/') {
-            Some(i) => (&after_scheme[..i], after_scheme[i..].trim_end_matches('/').to_string()),
-            None => (after_scheme, String::new()),
-        };
-        let (host, port) = match authority.rfind(':') {
-            Some(i) => {
-                let port: u16 = authority[i + 1..].parse().map_err(|_| {
-                    Error::Transport(format!("invalid port in base_url: {authority:?}"))
-                })?;
-                (authority[..i].to_string(), port)
-            }
-            None => (authority.to_string(), 80),
-        };
+
+        let base_url = url.trim_end_matches('/').to_string();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            // Default redirect policy is "follow up to 10". That
+            // matches Railway's HTTP→HTTPS upgrade behaviour and
+            // reqwest's own default; spelling it out as a self-
+            // documenting line.
+            .redirect(reqwest::redirect::Policy::limited(10))
+            // User-Agent string mirrors the prior hand-rolled
+            // value so server-side log greps continue working.
+            .user_agent("discord-privacy-client/0.0.1")
+            .build()
+            .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
         Ok(KeyServerClient {
-            host,
-            port,
-            base_path,
-            timeout: Duration::from_secs(30),
+            base_url,
+            client,
+            admin_token: None,
         })
+    }
+
+    /// Attach (or clear, by passing `None`) the pre-shared admin
+    /// token used for state-mutating routes. Builder-style:
+    /// `KeyServerClient::new(url)?.with_admin_token(token)`.
+    ///
+    /// Empty strings are normalised to `None` — a configured-but-
+    /// empty token would otherwise mean "send a `Bearer ` header
+    /// with no token," which is a footgun.
+    pub fn with_admin_token(mut self, token: Option<String>) -> Self {
+        self.admin_token = match token {
+            Some(t) if !t.is_empty() => Some(t),
+            _ => None,
+        };
+        self
     }
 
     /// Build the registration request body for `identity`.
@@ -324,48 +370,63 @@ impl KeyServerClient {
         Ok(serde_json::from_slice(&resp.body)?)
     }
 
+    /// Issue an HTTP request via the underlying reqwest client.
+    /// Wraps reqwest's typed errors in [`Error::Transport`] (low-level
+    /// transport / TLS / serialization issues) and
+    /// [`Error::HttpStatus`] (server returned non-2xx).
+    ///
+    /// `path` MUST start with `/` and SHOULD be URL-encoded by the
+    /// caller for any `:user_id`-shaped segments (see
+    /// [`urlencode_segment`]). reqwest re-parses the resulting
+    /// `base_url + path` string into a [`reqwest::Url`] without
+    /// double-encoding pre-encoded sequences.
+    ///
+    /// Auth header is attached only on state-mutating methods —
+    /// GETs (pubkey lookup, prekey-bundle pop, healthz, manifest)
+    /// are designed to be public on the keyserver. Sending the
+    /// token on GETs would just be unnecessary header bloat with
+    /// no security benefit (and would make traffic analysis
+    /// easier — every request looks the same).
     fn send_request(
         &self,
         method: &str,
         path: &str,
         body: Option<(&str, &[u8])>,
     ) -> Result<HttpResponse> {
-        let full_path = format!("{}{}", self.base_path, path);
-        let host_header = if self.port == 80 {
-            self.host.clone()
-        } else {
-            format!("{}:{}", self.host, self.port)
+        let url = format!("{}{}", self.base_url, path);
+        let mut req = match method {
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            "PUT" => self.client.put(&url),
+            "DELETE" => self.client.delete(&url),
+            other => {
+                return Err(Error::Transport(format!(
+                    "unsupported HTTP method: {other:?}"
+                )));
+            }
         };
-
-        let addr = (self.host.as_str(), self.port)
-            .to_socket_addrs()
-            .map_err(|e| Error::Transport(format!("DNS resolve {}: {e}", self.host)))?
-            .next()
-            .ok_or_else(|| Error::Transport(format!("no addrs for {}", self.host)))?;
-        let mut stream = TcpStream::connect_timeout(&addr, self.timeout)
-            .map_err(|e| Error::Transport(format!("connect {addr}: {e}")))?;
-        stream.set_read_timeout(Some(self.timeout))?;
-        stream.set_write_timeout(Some(self.timeout))?;
-
-        let mut req = Vec::new();
-        req.extend_from_slice(format!("{method} {full_path} HTTP/1.1\r\n").as_bytes());
-        req.extend_from_slice(format!("Host: {host_header}\r\n").as_bytes());
-        req.extend_from_slice(b"User-Agent: discord-privacy-client/0.0.1\r\n");
-        req.extend_from_slice(b"Accept: application/json\r\n");
-        req.extend_from_slice(b"Connection: close\r\n");
-        if let Some((ctype, payload)) = body {
-            req.extend_from_slice(format!("Content-Type: {ctype}\r\n").as_bytes());
-            req.extend_from_slice(format!("Content-Length: {}\r\n", payload.len()).as_bytes());
-            req.extend_from_slice(b"\r\n");
-            req.extend_from_slice(payload);
-        } else {
-            req.extend_from_slice(b"Content-Length: 0\r\n\r\n");
+        req = req.header("Accept", "application/json");
+        if let Some(ref token) = self.admin_token {
+            if matches!(method, "POST" | "PUT" | "DELETE") {
+                req = req.bearer_auth(token);
+            }
         }
-        stream.write_all(&req)?;
+        if let Some((ctype, payload)) = body {
+            req = req.header("Content-Type", ctype).body(payload.to_vec());
+        }
 
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw)?;
-        parse_response(&raw)
+        let response = req
+            .send()
+            .map_err(|e| Error::Transport(format!("send {method} {url}: {e}")))?;
+        let status = response.status().as_u16();
+        let body_bytes = response
+            .bytes()
+            .map_err(|e| Error::Transport(format!("read response body: {e}")))?
+            .to_vec();
+        Ok(HttpResponse {
+            status,
+            body: body_bytes,
+        })
     }
 }
 
@@ -385,43 +446,14 @@ fn check_2xx(resp: &HttpResponse) -> Result<()> {
     }
 }
 
-/// Parse a minimal HTTP/1.1 response. Supports `Content-Length`
-/// framing and `Connection: close` (the only modes the prototype
-/// keyserver ever emits).
-fn parse_response(raw: &[u8]) -> Result<HttpResponse> {
-    // Find header / body split.
-    let split = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| Error::Transport("malformed response: no header terminator".into()))?;
-    let header_bytes = &raw[..split];
-    let body = raw[split + 4..].to_vec();
-
-    let header_text = std::str::from_utf8(header_bytes)
-        .map_err(|_| Error::Transport("malformed response: non-utf8 header".into()))?;
-    let mut lines = header_text.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let mut sl_parts = status_line.splitn(3, ' ');
-    let _http = sl_parts.next();
-    let status_str = sl_parts
-        .next()
-        .ok_or_else(|| Error::Transport(format!("malformed status line: {status_line:?}")))?;
-    let status: u16 = status_str
-        .parse()
-        .map_err(|_| Error::Transport(format!("non-numeric status: {status_str:?}")))?;
-
-    // We requested `Connection: close` — server returns body framed
-    // by either Content-Length (and we got at least that many bytes)
-    // or by the close. Either way, `body` already contains the full
-    // payload from `read_to_end`, so we don't need to honour
-    // Content-Length explicitly. Trim trailing chunked-marker bytes
-    // if any (we never advertise TE, and the prototype server doesn't
-    // chunk, but be defensive).
-    Ok(HttpResponse { status, body })
-}
-
 /// Encode each byte that isn't an unreserved URL character as %XX.
 /// Used for the `:user_id` path segment.
+///
+/// We pre-encode rather than relying on reqwest's URL parser
+/// because callers compose the path string before calling
+/// [`KeyServerClient::send_request`]; the encoded result round-
+/// trips through `Url::parse` unchanged (parser preserves existing
+/// `%XX` escapes, doesn't re-encode them).
 fn urlencode_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {

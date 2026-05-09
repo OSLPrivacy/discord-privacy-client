@@ -10,8 +10,8 @@ function b64(text) {
   return Buffer.from(text, 'utf8').toString('base64');
 }
 
-function newServer() {
-  return buildServer({ logger: false, dbFile: ':memory:' });
+async function newServer() {
+  return await buildServer({ logger: false, dbFile: ':memory:' });
 }
 
 async function inject(server, opts) {
@@ -50,7 +50,7 @@ const validWrappedKey = (overrides = {}) => ({
 // ---- /v1/healthz ----
 
 test('healthz returns ok', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, { method: 'GET', url: '/v1/healthz' });
   assert.equal(r.statusCode, 200);
   assert.deepEqual(r.body, { ok: true });
@@ -60,7 +60,7 @@ test('healthz returns ok', async () => {
 // ---- /v1/register ----
 
 test('register: initial registration returns 201 with timestamp', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/register',
@@ -76,7 +76,7 @@ test('register: initial registration returns 201 with timestamp', async () => {
 });
 
 test('register: re-registration returns 200 with key_rotation_recorded', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/register',
@@ -95,7 +95,7 @@ test('register: re-registration returns 200 with key_rotation_recorded', async (
 });
 
 test('register: missing required field returns 400', async () => {
-  const s = newServer();
+  const s = await newServer();
   for (const f of [
     'user_id',
     'ik_x25519_pub',
@@ -117,7 +117,7 @@ test('register: missing required field returns 400', async () => {
 });
 
 test('register: non-base64 key field returns 400', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/register',
@@ -130,7 +130,7 @@ test('register: non-base64 key field returns 400', async () => {
 // ---- /v1/pubkeys/:user_id ----
 
 test('pubkeys: returns registered keys', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/register',
@@ -146,7 +146,7 @@ test('pubkeys: returns registered keys', async () => {
 });
 
 test('pubkeys: returns last_rotated_at after re-registration', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/register',
@@ -165,7 +165,7 @@ test('pubkeys: returns last_rotated_at after re-registration', async () => {
 });
 
 test('pubkeys: 404 on unknown user', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, { method: 'GET', url: '/v1/pubkeys/nobody' });
   assert.equal(r.statusCode, 404);
   await s.close();
@@ -174,7 +174,7 @@ test('pubkeys: 404 on unknown user', async () => {
 // ---- /v1/wrapped-keys POST ----
 
 test('wrapped-keys POST: 201 on valid upload', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -186,7 +186,7 @@ test('wrapped-keys POST: 201 on valid upload', async () => {
 });
 
 test('wrapped-keys POST: 409 on duplicate content_id', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -202,7 +202,7 @@ test('wrapped-keys POST: 409 on duplicate content_id', async () => {
 });
 
 test('wrapped-keys POST: 400 on bad content_type', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -213,7 +213,7 @@ test('wrapped-keys POST: 400 on bad content_type', async () => {
 });
 
 test('wrapped-keys POST: 400 on system message without allow-listed kind', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -227,7 +227,7 @@ test('wrapped-keys POST: 400 on system message without allow-listed kind', async
 });
 
 test('wrapped-keys POST: accepts allow-listed system message', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -241,7 +241,7 @@ test('wrapped-keys POST: accepts allow-listed system message', async () => {
 });
 
 test('wrapped-keys POST: rejects non-system kind on non-system message', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -255,7 +255,7 @@ test('wrapped-keys POST: rejects non-system kind on non-system message', async (
 });
 
 test('wrapped-keys POST: requires display_duration_seconds when single_use', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -266,7 +266,7 @@ test('wrapped-keys POST: requires display_duration_seconds when single_use', asy
 });
 
 test('wrapped-keys POST: rejects display_duration_seconds when not single_use', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -279,7 +279,7 @@ test('wrapped-keys POST: rejects display_duration_seconds when not single_use', 
 // ---- /v1/wrapped-keys GET ----
 
 test('wrapped-keys GET: returns the row', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -297,7 +297,7 @@ test('wrapped-keys GET: returns the row', async () => {
 });
 
 test('wrapped-keys GET: 404 on unknown content_id', async () => {
-  const s = newServer();
+  const s = await newServer();
   const r = await inject(s, {
     method: 'GET',
     url: '/v1/wrapped-keys/nope',
@@ -307,7 +307,7 @@ test('wrapped-keys GET: 404 on unknown content_id', async () => {
 });
 
 test('wrapped-keys GET: single_use is consumed atomically', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -322,7 +322,7 @@ test('wrapped-keys GET: single_use is consumed atomically', async () => {
 });
 
 test('wrapped-keys GET: 410 on past-expiry tombstone', async () => {
-  const s = newServer();
+  const s = await newServer();
   await inject(s, {
     method: 'POST',
     url: '/v1/wrapped-keys',
@@ -339,7 +339,7 @@ test('wrapped-keys GET: 410 on past-expiry tombstone', async () => {
 // ---- end-to-end through the full set ----
 
 test('end-to-end: register, fetch pubkeys, upload, fetch wrapped key', async () => {
-  const s = newServer();
+  const s = await newServer();
   // Alice registers.
   const reg = await inject(s, {
     method: 'POST',
@@ -367,5 +367,309 @@ test('end-to-end: register, fetch pubkeys, upload, fetch wrapped key', async () 
   });
   assert.equal(fetched.statusCode, 200);
   assert.equal(fetched.body.recipient_id, 'user-2');
+  await s.close();
+});
+
+// ============================================================
+// Phase B: admin token + allowlist auth
+// ============================================================
+
+const ADMIN_TOKEN = 'test-token-deadbeefcafebabe1234567890abcdef';
+const WRONG_TOKEN = 'test-token-WRONG-WRONG-WRONG-WRONG-WRONG-WR';
+
+async function authedServer({ adminToken = ADMIN_TOKEN, allowedUsers = null } = {}) {
+  return await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    adminToken,
+    allowedUsers,
+  });
+}
+
+const bearer = (token) => ({ authorization: `Bearer ${token}` });
+
+// ---- token check on /v1/register ----
+
+test('admin auth: register without token returns 401 when token configured', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+  });
+  assert.equal(r.statusCode, 401);
+  assert.equal(r.body.error, 'unauthorized');
+  await s.close();
+});
+
+test('admin auth: register with wrong token returns 401', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+    headers: bearer(WRONG_TOKEN),
+  });
+  assert.equal(r.statusCode, 401);
+  await s.close();
+});
+
+test('admin auth: register with malformed Authorization header returns 401', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+    headers: { authorization: 'Basic abc123' },
+  });
+  assert.equal(r.statusCode, 401);
+  await s.close();
+});
+
+test('admin auth: register with correct token returns 201', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+    headers: bearer(ADMIN_TOKEN),
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+test('admin auth: case-insensitive Bearer prefix accepted', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+    headers: { authorization: `bearer ${ADMIN_TOKEN}` },
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+test('admin auth: dev mode (no token configured) accepts unauthed register', async () => {
+  const s = await newServer(); // no adminToken option
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+test('admin auth: empty-string token treated as dev mode', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    adminToken: '',
+  });
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+// ---- allowlist on /v1/register ----
+
+test('allowlist: register with disallowed user_id returns 403 (token was valid)', async () => {
+  const s = await authedServer({ allowedUsers: ['liam', 'henry'] });
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: { ...VALID_REGISTRATION, user_id: 'mallory' },
+    headers: bearer(ADMIN_TOKEN),
+  });
+  assert.equal(r.statusCode, 403);
+  assert.match(r.body.error, /allowlist/);
+  await s.close();
+});
+
+test('allowlist: register with allowed user_id returns 201', async () => {
+  const s = await authedServer({ allowedUsers: ['liam', 'henry'] });
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: { ...VALID_REGISTRATION, user_id: 'liam' },
+    headers: bearer(ADMIN_TOKEN),
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+test('allowlist: empty array treated as disabled (any user_id allowed)', async () => {
+  const s = await authedServer({ allowedUsers: [] });
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+    headers: bearer(ADMIN_TOKEN),
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+test('allowlist: token check runs before allowlist (no header → 401, not 403)', async () => {
+  const s = await authedServer({ allowedUsers: ['liam'] });
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: { ...VALID_REGISTRATION, user_id: 'mallory' },
+    // no Authorization header
+  });
+  assert.equal(r.statusCode, 401, 'token check should gate first');
+  await s.close();
+});
+
+// ---- token check on other mutation routes ----
+
+test('admin auth: POST /v1/wrapped-keys without token returns 401', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: validWrappedKey(),
+  });
+  assert.equal(r.statusCode, 401);
+  await s.close();
+});
+
+test('admin auth: POST /v1/wrapped-keys with token returns 201', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: validWrappedKey(),
+    headers: bearer(ADMIN_TOKEN),
+  });
+  assert.equal(r.statusCode, 201);
+  await s.close();
+});
+
+test('admin auth: DELETE /v1/wrapped-keys without token returns 401', async () => {
+  const s = await authedServer();
+  // Body is rejected at auth before sig validation runs.
+  const r = await inject(s, {
+    method: 'DELETE',
+    url: '/v1/wrapped-keys',
+    payload: {
+      scope: 'all',
+      user_id: 'user-1',
+      burn_signature_b64: b64('does-not-matter'),
+    },
+  });
+  assert.equal(r.statusCode, 401);
+  await s.close();
+});
+
+test('admin auth: POST /v1/prekey-bundle/replenish without token returns 401', async () => {
+  const s = await authedServer();
+  const r = await inject(s, {
+    method: 'POST',
+    url: '/v1/prekey-bundle/replenish',
+    payload: {
+      user_id: 'user-1',
+      batch_signature_b64: b64('does-not-matter'),
+      opks: [],
+    },
+  });
+  assert.equal(r.statusCode, 401);
+  await s.close();
+});
+
+// ---- GET endpoints stay public regardless of token ----
+
+test('admin auth: GET /v1/healthz works without token in authed mode', async () => {
+  const s = await authedServer();
+  const r = await inject(s, { method: 'GET', url: '/v1/healthz' });
+  assert.equal(r.statusCode, 200);
+  await s.close();
+});
+
+test('admin auth: GET /v1/pubkeys works without token in authed mode', async () => {
+  const s = await authedServer();
+  // Register first (with token).
+  await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: VALID_REGISTRATION,
+    headers: bearer(ADMIN_TOKEN),
+  });
+  // Lookup with no header.
+  const r = await inject(s, { method: 'GET', url: '/v1/pubkeys/user-1' });
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.body.user_id, 'user-1');
+  await s.close();
+});
+
+test('admin auth: GET /v1/wrapped-keys works without token in authed mode', async () => {
+  const s = await authedServer();
+  await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: validWrappedKey(),
+    headers: bearer(ADMIN_TOKEN),
+  });
+  const r = await inject(s, { method: 'GET', url: '/v1/wrapped-keys/msg-1' });
+  assert.equal(r.statusCode, 200);
+  await s.close();
+});
+
+test('admin auth: GET /v1/prekey-bundle works without token in authed mode', async () => {
+  const s = await authedServer();
+  // Empty pool returns 404 even with auth working — confirms the
+  // route ran past the auth layer.
+  const r = await inject(s, { method: 'GET', url: '/v1/prekey-bundle/nobody' });
+  assert.equal(r.statusCode, 404);
+  await s.close();
+});
+
+// ---- rate limit: opt-in via buildServer config ----
+
+test('rate limit: 11th mutation request within window returns 429', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    adminToken: ADMIN_TOKEN,
+    rateLimit: { max: 3, timeWindow: '1 minute' },
+  });
+  // Three OK, fourth limited.
+  for (let i = 0; i < 3; i++) {
+    const r = await inject(s, {
+      method: 'POST',
+      url: '/v1/register',
+      payload: { ...VALID_REGISTRATION, user_id: `u-${i}` },
+      headers: bearer(ADMIN_TOKEN),
+    });
+    assert.ok(r.statusCode === 201 || r.statusCode === 200, `req ${i}: ${r.statusCode}`);
+  }
+  const limited = await inject(s, {
+    method: 'POST',
+    url: '/v1/register',
+    payload: { ...VALID_REGISTRATION, user_id: 'u-4' },
+    headers: bearer(ADMIN_TOKEN),
+  });
+  assert.equal(limited.statusCode, 429);
+  await s.close();
+});
+
+test('rate limit: GET endpoints not rate-limited', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    adminToken: ADMIN_TOKEN,
+    rateLimit: { max: 3, timeWindow: '1 minute' },
+  });
+  // Hammer healthz past the limit; all should succeed.
+  for (let i = 0; i < 10; i++) {
+    const r = await inject(s, { method: 'GET', url: '/v1/healthz' });
+    assert.equal(r.statusCode, 200);
+  }
   await s.close();
 });

@@ -55,19 +55,27 @@ use keystore::{
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// On-disk schema for `<config_dir>/keyserver.json`. Both fields
-/// required; missing or malformed → bootstrap logs and skips.
+/// On-disk schema for `<config_dir>/keyserver.json`. `base_url`
+/// and `user_id` required; `admin_token` optional. Missing or
+/// malformed file → bootstrap logs and skips.
 #[derive(Debug, Deserialize)]
 struct KeyserverConfig {
-    /// Base URL of the prototype key server. Plain `http://` only
-    /// (the prototype server is plain HTTP — see
-    /// `keystore::client::KeyServerClient::new`).
+    /// Base URL of the key server. Plain `http://` only (TLS is
+    /// terminated upstream by the hosting platform — Cloudflare /
+    /// Railway / etc.). See `keystore::client::KeyServerClient::new`.
     base_url: String,
     /// User identifier this client registers as. Phase 4 dogfood:
     /// any opaque string the two peers agree on (`"alice"`,
     /// `"bob"`, the Discord username, whatever). Phase 5
     /// integrates this with Discord OAuth.
     user_id: String,
+    /// Phase B pre-shared admin token. Required for state-mutating
+    /// keyserver routes when the deployed keyserver has
+    /// `OSL_KEYSERVER_ADMIN_TOKEN` set. Leave unset in
+    /// `keyserver.json` (or set to `null`) when running against an
+    /// unsecured local-dev keyserver.
+    #[serde(default)]
+    admin_token: Option<String>,
 }
 
 /// Run the autostart sequence. Logs progress at `info!` (visible
@@ -267,8 +275,17 @@ fn init_keyserver_and_register(state: &AppState, cfg: &KeyserverConfig) {
             return;
         }
     };
+    // Attach admin token if configured. `with_admin_token` normalises
+    // empty strings to `None` so a `"admin_token": ""` in
+    // keyserver.json doesn't end up sending a bad header.
+    let client = client.with_admin_token(cfg.admin_token.clone());
     tracing::info!(
         base_url = %cfg.base_url,
+        admin_token = if cfg.admin_token.as_deref().unwrap_or("").is_empty() {
+            "absent (dev mode or local keyserver)"
+        } else {
+            "present"
+        },
         "OSL bootstrap: KeyServerClient initialised"
     );
 

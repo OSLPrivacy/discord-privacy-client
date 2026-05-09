@@ -71,9 +71,20 @@ fn init_keyserver_accepts_valid_url() {
 }
 
 #[test]
-fn init_keyserver_rejects_https() {
+fn init_keyserver_accepts_https() {
+    // Phase B follow-up: client now supports HTTPS via rustls so
+    // it can talk to Railway-deployed keyservers (which force-
+    // redirect HTTP→HTTPS at the edge). The pre-Phase-B test
+    // asserted the opposite — that test is obsolete.
     let state = AppState::new();
-    let res = cmd_init_keyserver(&state, "https://example.com".to_string());
+    cmd_init_keyserver(&state, "https://example.com".to_string()).unwrap();
+    assert!(state.has_keyserver());
+}
+
+#[test]
+fn init_keyserver_rejects_unsupported_scheme() {
+    let state = AppState::new();
+    let res = cmd_init_keyserver(&state, "ftp://example.com".to_string());
     assert!(matches!(res, Err(IpcError::Keystore(_))));
 }
 
