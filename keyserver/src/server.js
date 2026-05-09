@@ -10,12 +10,14 @@
 //   GET    /v1/pubkeys/:user_id
 //   POST   /v1/wrapped-keys
 //   GET    /v1/wrapped-keys/:content_id
+//   DELETE /v1/wrapped-keys
 //   GET    /v1/prekey-bundle/:user_id
 //   POST   /v1/prekey-bundle/replenish
+//   GET    /v1/selector-manifest
 //   GET    /v1/healthz
 //
-// All other endpoints in the design doc (burn, sessions/rotate,
-// tokens/issue) are deferred.
+// Endpoints still deferred from the design doc: sessions/rotate,
+// tokens/issue.
 
 import Fastify from 'fastify';
 import {
@@ -26,8 +28,13 @@ import {
   fetchWrappedKey,
   upsertPrekeyBundle,
   popPrekeyBundle,
+  burnWrappedKeys,
 } from './db.js';
-import { canonicalReplenishBytes, verifyEd25519 } from './canonical.js';
+import {
+  canonicalBurnBytes,
+  canonicalReplenishBytes,
+  verifyEd25519,
+} from './canonical.js';
 
 const ALLOWED_CONTENT_TYPES = new Set(['text', 'attachment', 'system']);
 const ALLOWED_SYSTEM_KINDS = new Set(['burn-alert']);
@@ -45,7 +52,16 @@ function isPlainString(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
-export function buildServer({ logger = false, dbFile = ':memory:' } = {}) {
+export function buildServer({
+  logger = false,
+  dbFile = ':memory:',
+  // Pre-signed selector-manifest envelope JSON (the SignedManifest
+  // shape from `crates/selectors/src/manifest.rs`). When unset, the
+  // /v1/selector-manifest endpoint replies 503 — clients fail closed
+  // through the CDN-mirror fallback path. The signing key is offline
+  // in production; this server only ever serves the bytes.
+  selectorManifest = null,
+} = {}) {
   const fastify = Fastify({ logger });
   const db = openDatabase(dbFile);
 
@@ -292,6 +308,98 @@ export function buildServer({ logger = false, dbFile = ':memory:' } = {}) {
     });
   });
 
+  // ---- DELETE /v1/wrapped-keys ----
+  //
+  // Body:
+  //   {
+  //     scope: "single" | "to_user" | "all",
+  //     user_id,                       // burning user
+  //     target_content_id?,            // iff scope == "single"
+  //     target_user_id?,               // iff scope == "to_user"
+  //     burn_signature_b64,            // Ed25519 over canonicalBurnBytes
+  //   }
+  //
+  // The burn signature is over the canonical encoding of
+  // (user_id, scope, target). Server verifies against the user's
+  // stored IK_Ed25519. Only rows where `sender_id == user_id` are
+  // deleted — you can't burn another user's content.
+  fastify.delete('/v1/wrapped-keys', async (request, reply) => {
+    const b = request.body ?? {};
+    if (!isPlainString(b.scope) || !['single', 'to_user', 'all'].includes(b.scope)) {
+      return reply
+        .code(400)
+        .send({ error: 'scope must be "single" | "to_user" | "all"' });
+    }
+    if (!isPlainString(b.user_id)) {
+      return reply.code(400).send({ error: 'user_id required' });
+    }
+    if (!isNonEmptyBase64(b.burn_signature_b64)) {
+      return reply.code(400).send({ error: 'burn_signature_b64 required' });
+    }
+    let target;
+    if (b.scope === 'single') {
+      if (!isPlainString(b.target_content_id)) {
+        return reply
+          .code(400)
+          .send({ error: 'target_content_id required for scope=single' });
+      }
+      target = { content_id: b.target_content_id };
+    } else if (b.scope === 'to_user') {
+      if (!isPlainString(b.target_user_id)) {
+        return reply
+          .code(400)
+          .send({ error: 'target_user_id required for scope=to_user' });
+      }
+      target = { user_id: b.target_user_id };
+    } else {
+      target = null;
+      if (b.target_content_id != null || b.target_user_id != null) {
+        return reply
+          .code(400)
+          .send({ error: 'scope=all rejects target fields' });
+      }
+    }
+    const user = getUser(db, b.user_id);
+    if (!user) {
+      return reply
+        .code(404)
+        .send({ error: 'unknown user_id — register before burn' });
+    }
+    const message = canonicalBurnBytes({
+      user_id: b.user_id,
+      scope: b.scope,
+      target: target ?? undefined,
+    });
+    const ikEd25519 = Buffer.from(user.ik_ed25519_pub, 'base64');
+    const sig = Buffer.from(b.burn_signature_b64, 'base64');
+    if (!verifyEd25519(ikEd25519, message, sig)) {
+      return reply
+        .code(401)
+        .send({ error: 'burn_signature_b64 verification failed' });
+    }
+    const { deleted_count } = burnWrappedKeys(db, b.user_id, b.scope, target);
+    return reply.send({
+      scope: b.scope,
+      deleted_count,
+    });
+  });
+
+  // ---- GET /v1/selector-manifest ----
+  //
+  // Returns the SignedManifest envelope verbatim. Clients verify the
+  // Ed25519 signature against their hard-coded release key — the
+  // server is *not* a trust anchor, just a delivery channel. When
+  // unconfigured, returns 503 so clients can fall through to the CDN
+  // mirror (`docs/design/key-server-api.md` § "Manifest mirror").
+  fastify.get('/v1/selector-manifest', async (request, reply) => {
+    if (!selectorManifest) {
+      return reply
+        .code(503)
+        .send({ error: 'selector manifest not configured on this keyserver' });
+    }
+    return reply.send(selectorManifest);
+  });
+
   return fastify;
 }
 
@@ -300,7 +408,17 @@ const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const port = Number(process.env.PORT ?? 3000);
   const dbFile = process.env.KEYSERVER_DB ?? './keyserver.db';
-  const server = buildServer({ logger: true, dbFile });
+  // SELECTOR_MANIFEST_PATH points at a JSON file holding the
+  // SignedManifest envelope. Optional — without it the
+  // /v1/selector-manifest endpoint returns 503 and clients fall
+  // through to the CDN mirror.
+  let selectorManifest = null;
+  if (process.env.SELECTOR_MANIFEST_PATH) {
+    const fs = await import('node:fs/promises');
+    const txt = await fs.readFile(process.env.SELECTOR_MANIFEST_PATH, 'utf8');
+    selectorManifest = JSON.parse(txt);
+  }
+  const server = buildServer({ logger: true, dbFile, selectorManifest });
   server.listen({ port, host: '127.0.0.1' }, (err) => {
     if (err) {
       // eslint-disable-next-line no-console

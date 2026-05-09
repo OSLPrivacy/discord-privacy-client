@@ -1,6 +1,7 @@
 use keystore::{
+    generate_identity, save_identity, save_password_record, save_prekey_state,
     Argon2Params, DuressEngine, DuressHandlers, DuressPaths, NoOpSealer, PasswordRecord,
-    StepOutcome, WipeStep, generate_identity, save_identity, save_password_record,
+    PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -13,11 +14,27 @@ fn fast() -> Argon2Params {
 fn build_paths(dir: &TempDir) -> (DuressPaths, std::path::PathBuf) {
     let identity_file = dir.path().join("identity.json");
     let password_file = dir.path().join("password.json");
+    let prekey_file = dir.path().join("prekeys.json");
     let journal_file = dir.path().join("duress.journal");
     (
         DuressPaths {
             identity_file,
             password_file,
+            prekey_file: Some(prekey_file),
+        },
+        journal_file,
+    )
+}
+
+fn build_paths_without_prekey(dir: &TempDir) -> (DuressPaths, std::path::PathBuf) {
+    let identity_file = dir.path().join("identity.json");
+    let password_file = dir.path().join("password.json");
+    let journal_file = dir.path().join("duress.journal");
+    (
+        DuressPaths {
+            identity_file,
+            password_file,
+            prekey_file: None,
         },
         journal_file,
     )
@@ -27,16 +44,25 @@ fn build_paths(dir: &TempDir) -> (DuressPaths, std::path::PathBuf) {
 fn execute_with_no_handlers_walks_every_step() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
-    // Pre-populate the on-disk identity + password so the file
-    // deletion steps actually have something to delete.
+    // Pre-populate the on-disk identity + password + prekey blob so
+    // the file-deletion steps actually have something to delete.
     let sealer = NoOpSealer::new();
     let id = generate_identity("alice".into());
     save_identity(&paths.identity_file, &id, &sealer).unwrap();
     let pw = PasswordRecord::new("111111", None, fast()).unwrap();
     save_password_record(&paths.password_file, &pw, &sealer).unwrap();
+    let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
+    save_prekey_state(
+        paths.prekey_file.as_ref().unwrap(),
+        &prekey_state,
+        &sealer,
+    )
+    .unwrap();
     assert!(paths.identity_file.exists());
     assert!(paths.password_file.exists());
+    assert!(paths.prekey_file.as_ref().unwrap().exists());
 
+    let prekey_path = paths.prekey_file.clone().unwrap();
     let engine =
         DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
@@ -46,17 +72,24 @@ fn execute_with_no_handlers_walks_every_step() {
     let got_order: Vec<WipeStep> = report.steps.iter().map(|(s, _)| *s).collect();
     assert_eq!(got_order, want_order);
 
-    // Files were deleted (Wiped) — explicit checks for the two we
-    // actually placed on disk.
-    let id_outcome = outcome_for(&report.steps, WipeStep::IdentityFile);
-    assert_eq!(id_outcome, &StepOutcome::Wiped);
-    let pw_outcome = outcome_for(&report.steps, WipeStep::PasswordHashes);
-    assert_eq!(pw_outcome, &StepOutcome::Wiped);
-    assert!(!report.failed_steps().iter().any(|(s, _)| *s == WipeStep::IdentityFile));
+    // Wired-today file-deletion steps must `Wiped`.
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::IdentityFile),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PasswordHashes),
+        &StepOutcome::Wiped
+    );
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PrekeyFile),
+        &StepOutcome::Wiped
+    );
 
     // Files are gone from disk.
-    assert!(!std::path::Path::new(&dir.path().join("identity.json")).exists());
-    assert!(!std::path::Path::new(&dir.path().join("password.json")).exists());
+    assert!(!dir.path().join("identity.json").exists());
+    assert!(!dir.path().join("password.json").exists());
+    assert!(!prekey_path.exists());
 
     // Each deferred handler step is `Skipped` with a non-empty reason.
     for s in [
@@ -75,14 +108,53 @@ fn execute_with_no_handlers_walks_every_step() {
                     !reason.is_empty(),
                     "skipped step {s:?} must carry a reason"
                 );
+                let lc = reason.to_lowercase();
                 assert!(
-                    !reason.contains("unimplemented") && !reason.contains("todo"),
-                    "skip reason for {s:?} must not look like a silent defer"
+                    !lc.contains("unimplemented") && !lc.contains("todo"),
+                    "skip reason for {s:?} must not look like a silent defer: {reason}"
+                );
+                // Must not point at a layer that has already landed.
+                // (B4 has landed; messages must not say "wired by B4".)
+                assert!(
+                    !lc.contains("layer b4"),
+                    "skip reason for {s:?} still cites a landed layer: {reason}"
                 );
             }
             other => panic!("step {s:?} expected Skipped, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn prekey_file_step_skipped_when_path_not_supplied() {
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths_without_prekey(&dir);
+    let engine =
+        DuressEngine::new(journal_path, paths, DuressHandlers::default());
+    let report = engine.execute().unwrap();
+    let outcome = outcome_for(&report.steps, WipeStep::PrekeyFile);
+    match outcome {
+        StepOutcome::Skipped { reason } => {
+            assert!(reason.contains("DuressPaths::prekey_file"));
+        }
+        other => panic!("expected Skipped, got {other:?}"),
+    }
+}
+
+#[test]
+fn prekey_file_step_already_clean_when_file_missing() {
+    // Path supplied but no file on disk — the engine reports
+    // `AlreadyClean` (idempotent file-deletion semantic).
+    let dir = TempDir::new().unwrap();
+    let (paths, journal_path) = build_paths(&dir);
+    assert!(!paths.prekey_file.as_ref().unwrap().exists());
+    let engine =
+        DuressEngine::new(journal_path, paths, DuressHandlers::default());
+    let report = engine.execute().unwrap();
+    assert_eq!(
+        outcome_for(&report.steps, WipeStep::PrekeyFile),
+        &StepOutcome::AlreadyClean
+    );
 }
 
 #[test]
@@ -331,6 +403,7 @@ fn wipe_step_ordered_covers_all_variants() {
         WipeStep::KeyringPurge,
         WipeStep::IdentityFile,
         WipeStep::PasswordHashes,
+        WipeStep::PrekeyFile,
         WipeStep::LocalCacheDir,
         WipeStep::AnonymousCredentials,
         WipeStep::Prekeys,

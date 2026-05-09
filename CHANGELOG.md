@@ -835,6 +835,255 @@ password, duress flow, prekey infrastructure). Awaiting review
 before proceeding to Group C (burn flows, selector manifest, Stego
 Mode 1).]
 
+### Layer B-fixup — duress prekey wiring
+
+- `WipeStep::PrekeyFile` (new) added to the duress engine. Wired
+  automatically when the caller supplies
+  `DuressPaths::prekey_file: Option<PathBuf>` — engine deletes the
+  sealed `prekeys.json` idempotently (missing file →
+  `AlreadyClean`, present file → `Wiped`). When `None`, reports
+  `Skipped` with a reason pointing at the path field.
+- The existing in-memory `WipeStep::Prekeys` step's deferred
+  message updated. Was: "handler wired by Layer B4 once prekey
+  infrastructure exists" (B4 has now landed); now: "in-memory
+  PrekeyState wipe handler not wired — caller sets
+  DuressHandlers::wipe_prekeys to drop the live state (the on-disk
+  file is handled by the PrekeyFile step)".
+- Added test
+  `execute_with_no_handlers_walks_every_step::skip_reasons` check:
+  any `Skipped` reason that contains "Layer B4" (case-insensitive)
+  fails the suite — locks in the invariant that landed-layer
+  references stay accurate.
+- 13 duress tests pass (+2 new: skipped-when-path-not-supplied,
+  already-clean-when-file-missing).
+- Total keystore: 62 tests (was 60; +2 duress).
+
+### Layer C1 — Burn flows (server endpoint + client primitives + signed alerts + revalidation cycle)
+
+- `keyserver/src/db.js` `burnWrappedKeys(db, burning_user_id, scope, target)`:
+  always filters `sender_id = burning_user_id` so a request can only
+  ever delete the caller's own rows. `scope = 'single' | 'to_user'
+  | 'all'` map to `(content_id, sender)`, `(sender, recipient)`,
+  and `(sender)` filters respectively. Returns `{ deleted_count }`.
+- `keyserver/src/canonical.js` `canonicalBurnBytes({ user_id,
+  scope, target })`: domain-prefixed length-prefixed encoding —
+  `domain (LP) || user_id (LP) || scope (LP) || target_kind (u8:
+  0 none, 1 content_id, 2 user_id) || [target_value (LP) if
+  target_kind != 0]`. Server signs nothing; this is what the
+  client signs and the server verifies.
+- `DELETE /v1/wrapped-keys` endpoint: required body `{ scope,
+  user_id, burn_signature_b64, target_content_id?,
+  target_user_id? }`. Validates shape, requires the caller to be
+  registered (404 before register), then `verifyEd25519` against
+  `users.ik_ed25519_pub`. Bad signature → 401, target shape
+  mismatch → 400, scope=`all` with target field → 400. On verify
+  success calls `burnWrappedKeys`.
+- Rust `keystore::burn` module: `BurnScope` enum (`Single { content_id }
+  | ToUser { user_id } | All`), `canonical_burn_bytes` (matches
+  Node byte-for-byte), `sign_burn` helper.
+- Rust `KeyServerClient::burn(identity, &BurnScope) -> Result<BurnResponse>`
+  signs canonical bytes with `identity.ed25519_secret` and issues
+  `DELETE /v1/wrapped-keys` over the existing send_request helper.
+  Body shape mirrors the server schema (skips absent target fields).
+- `keystore::burn_alert` module: signed payload for the
+  `system_message_kind = "burn-alert"` system-message path (no new
+  endpoint — reuses POST `/v1/wrapped-keys`). Domain
+  `discord-privacy-client/burn-alert/v1`; signs over `(sender_id,
+  recipient_id, scope_label, alert_text, issued_at_unix_seconds)`.
+  Recipients verify against the sender's `IK_Ed25519` so the
+  server can't forge alerts.
+- Re-validation cycle in new `runtime::revalidation` module:
+  `RevalidationLoop` is caller-driven (no internal task — tests
+  use `MockClock`, integration layer wires `poll()` to a tokio
+  interval). Tracks per-`content_id` state, fires
+  `TransitionCallback` on transitions
+  (`Present → Burned`/`Tombstoned`). Default 5-minute timer
+  (`docs/design/key-server-api.md` § "Re-validation"); also
+  exposes `probe_now()` for window-focus / interaction triggers.
+  Probe HTTP coupling left to a `Probe` trait so the integration
+  layer (in `src-tauri`) supplies the `KeyServerClient`-backed
+  implementation; runtime crate stays HTTP-free.
+- Cover-text fallback semantics implemented as
+  `runtime::revalidation::render_decision(WrappedKeyState,
+  ContentKind) -> Option<RenderDecision>`. Hard-coded per design
+  doc table: `text` → `KeepCoverText` (NO "[deleted]" marker;
+  observer indistinguishability), `attachment` →
+  `AttachmentUnavailable`, `system` → `SystemUnavailable`.
+- 12 keyserver burn tests (43 total, was 31): single deletes own +
+  leaves others, can't burn another user's content (deleted_count
+  = 0), to_user filters sender+recipient, all deletes every row
+  alice sent, 401 on bad sig, 400 on shape errors, 404 before
+  register, burn-and-alert via existing system-message path.
+- 8 Rust burn / burn-alert lib tests, 2 burn end-to-end tests
+  (round-trip + to_user) that spawn the real Node keyserver and
+  drive `KeyServerClient::burn` end-to-end — proves Rust
+  `canonical_burn_bytes` produces the same bytes Node's
+  `canonicalBurnBytes` reconstructs (Ed25519 would fail
+  otherwise).
+- 7 `runtime::revalidation` lib tests: render-decision table
+  matches design doc, poll below interval is no-op, poll at
+  interval fires callback on transition, `probe_now` fires
+  immediately + sticks-no-double-fire, `untrack` stops probing,
+  `last_state` query, `track` is idempotent on re-call.
+- Keystore now: 105 tests across lib + 9 integration files
+  (`+8` burn / burn_alert lib tests, `+2` burn e2e, others
+  unchanged from B-fixup). Runtime now: 66 tests across lib + 4
+  integration files (`+7` revalidation lib tests). Keyserver now:
+  43 tests (`+12` burn).
+
+### Layer C2 — Selector manifest (signing + fetch + fail-closed + CDN mirror)
+
+- `selectors::manifest`:
+  - `SelectorManifest { version, issued_at_unix_seconds,
+    client_min_version, selectors: BTreeMap<String, String> }`. The
+    `BTreeMap` keeps the on-wire order deterministic.
+  - `canonical_manifest_bytes` — length-prefixed encoding mirroring
+    the prekey / burn pattern: domain LP, version u32 BE,
+    issued_at u64 BE, client_min_version LP, selector_count u32 BE,
+    then each (key LP, value LP) sorted lexicographically by key.
+    Domain string `discord-privacy-client/selector-manifest/v1`.
+  - `sign_manifest(secret, public, &SelectorManifest) ->
+    SignedManifest` envelope: `{ version: 1, manifest_b64,
+    signature_b64, signing_key_b64 }`. The envelope carries the
+    canonical bytes directly (not the parsed JSON) so JSON
+    pretty-print quirks can never desynchronise the signed payload.
+  - `verify_manifest(&SignedManifest, trusted_pub_b64,
+    now_unix_seconds)` — five gates in order: envelope version == 1,
+    signing-key strict equality with the *trusted* constant
+    (server-presented key is never trusted on its own), Ed25519
+    signature, canonical-bytes round-trip equivalence (parsed
+    manifest → re-encoded must equal the signed bytes), 24-h
+    staleness gate (`MAX_MANIFEST_AGE_SECONDS` constant), future-
+    issued rejection.
+- `selectors::fetcher`:
+  - `ManifestSource` trait — supplies raw envelope JSON bytes; tests
+    use a queue-driven `MockSource`, integration layer wires
+    HTTP-backed sources for primary + CDN. Crate stays HTTP-free.
+  - `ManifestFetcher::refresh(now)` — try primary; on any failure
+    (transport / parse / signature / staleness) try CDN; on both
+    failures transition to `ManifestState::FailClosed { reason }`.
+    Reason string includes both source errors so the integration
+    layer can surface diagnostic detail.
+  - `ManifestState::{NotYetFetched, Loaded { manifest, from },
+    FailClosed { reason }}`. Initial state is `NotYetFetched`
+    (banner suppressed — we haven't *failed*, we just haven't
+    fetched yet).
+  - `reconsider_staleness(now)` — re-evaluate freshness without
+    fetching. Caller invokes on clock advance to flip `Loaded` →
+    `FailClosed` once age > 24 h, without waiting for the next
+    refresh tick.
+- Server-side: `keyserver/src/canonical.js` adds
+  `canonicalManifestBytes(manifest)` mirroring the Rust encoder.
+  `GET /v1/selector-manifest` endpoint serves the configured
+  envelope verbatim or 503 when unconfigured (so clients fall
+  through to the CDN mirror per design). `buildServer` accepts
+  `selectorManifest`; the script entrypoint loads from
+  `SELECTOR_MANIFEST_PATH` env var.
+- 20 selectors lib tests: round-trip sign+verify, reject
+  wrong-key (mismatched trusted constant), reject tampered
+  manifest_b64, reject when signed bytes ≠ provided bytes
+  (canonical-round-trip check), reject stale, accept at exact 24-h
+  boundary, reject future-issued, reject envelope version != 1,
+  canonical bytes deterministic under selector insert order, parse
+  envelope round-trip, empty selectors map round-trips, fetcher
+  primary success / fallback to CDN / both-fail FailClosed /
+  signature-fail-on-primary fallback / signature-fail-both
+  FailClosed / stale-on-both FailClosed / `reconsider_staleness`
+  flips Loaded→FailClosed at 25h, keeps Loaded at 12h, initial
+  state is `NotYetFetched`.
+- 2 selectors e2e tests (`crates/selectors/tests/keyserver_e2e_test.rs`):
+  spawn the real Node keyserver with a manifest envelope signed
+  *by Node* using `canonicalManifestBytes`, fetch via an
+  HTTP `ManifestSource` adapter, then run Rust
+  `verify_manifest` — proves Rust `canonical_manifest_bytes`
+  byte-equals Node's. Second test spawns two keyservers (primary
+  unconfigured returning 503, CDN serving the envelope) to
+  exercise the CDN-mirror fallback path against real HTTP. Skipped
+  when `node` isn't on PATH.
+- 4 keyserver manifest tests (47 total, was 43): 503 when
+  unconfigured, returns envelope verbatim when configured,
+  `canonicalManifestBytes` is stable under selector insert
+  order, exact byte layout matches the spec.
+- Selectors crate: 22 tests total (was 0 — the lib was a
+  scaffolding placeholder).
+
+### Layer C3 — Stego Mode 1 (templates + bit-packing + per-conversation salt)
+
+- `stego::mode1` module — fluent template-based stego encoder
+  layered alongside the existing Mode 0 base64 placeholder. Wire
+  prefix `DPC1::`. Each emitted sentence carries 20 bits of
+  payload: 4 bits select one of 16 templates, plus 2 × 8-bit slot
+  fills from per-conversation-permuted wordlists.
+- Per-message independence preserved (the design's hard
+  architectural invariant): every Mode 1 message decodes from
+  itself + the conversation cipher with no reference to any
+  other message — exercised by `mode1_test.rs ::
+  per_message_independence_each_message_decodes_alone`, which
+  shuffles encoded messages and decodes in reverse order.
+- `ConversationCipher::from_salt(&[u8])` derives three
+  permutations (16 templates / 256 nouns / 256 adjectives) via
+  `HKDF-SHA256` with domain
+  `discord-privacy-client/stego-mode1/permutation/v1`. Same salt
+  → identical permutations on encode + decode; different salts →
+  uncorrelated permutations so two parallel conversations
+  encoding the same payload produce different surface text.
+  Permutation built via Fisher-Yates with 16-bit random words
+  per swap (widens modulo-bias surface vs. naive `% (i+1)` on
+  single bytes).
+- Wire format: `DPC1::` prefix || rendered sentences. Bit stream
+  begins with a `u16 BE payload_len_bytes`; trailing bits in the
+  final sentence are zero-padded for stable test output. The
+  decoder reads the length prefix and stops after that many bytes.
+- `MODE1_MAX_RAW_LEN = 80` bytes (cap fits comfortably under
+  Discord's 2000-char limit; 80-byte payload encodes to ~70
+  sentences and ~1700 chars in worst case). Verified by
+  `fits_under_discord_2000_char_limit_at_max_raw`.
+- Static template pool: 16 templates each with exactly 2 slots,
+  unique skeletons (compile-time invariant
+  `template_skeletons_are_unique`). Wordlists are disjoint from
+  every template skeleton token (invariant
+  `wordlists_disjoint_from_template_skeletons`) — would create
+  decode ambiguity otherwise.
+- Decoder: tokenises the body via `split_whitespace`, walks each
+  template skeleton against the token stream, first match wins;
+  unknown tokens → `Mode1ParseError`, which is the parser-error
+  branch the integration layer routes back to "not stego, render
+  as plain text".
+- `stego::Error` gains `NotMode1`, `Mode1TooLong`,
+  `Mode1ParseError`. `decode_mode1` returning `Mode1ParseError`
+  is the cover-text-fallback signal — caller hands the message
+  through unchanged.
+- 15 mode1 lib tests + 6 mode1 integration tests:
+  - Round-trip across 0-byte / 1-byte / multi-length / max-length
+    payloads, several byte distributions (all-zero, all-FF,
+    alternating, 0..32, 0..MAX).
+  - `same_salt_is_deterministic`,
+    `different_salts_produce_different_cover_text`,
+    `cross_cipher_decode_does_not_recover_payload`.
+  - `permutation_is_a_bijection_for_templates` /
+    `_for_nouns` (sanity check on Fisher-Yates output).
+  - `cover_text_uses_only_known_words_and_skeleton_tokens`
+    (every emitted token round-trips back to either a wordlist
+    entry or a template fixed token).
+  - `template_pool_size_matches_expected_bit_budget`
+    (16 templates, 2 slots, 4 + 16 = 20 bits/sentence).
+  - `wordlists_disjoint_from_template_skeletons`,
+    `template_skeletons_are_unique` (compile-time invariants).
+  - `rejects_oversize_payload`, `rejects_missing_prefix`,
+    `rejects_empty_after_prefix`, `rejects_corrupted_token_in_middle`.
+  - `fits_under_discord_2000_char_limit_at_max_raw`.
+  - `per_message_independence_each_message_decodes_alone` (the
+    hard design invariant).
+  - `cross_cipher_decode_does_not_recover_payload` (per-
+    conversation salt actually changes output).
+  - `detects_mode1_vs_mode0_prefix`.
+- Stego crate: 32 tests total (was 11 — `+21` Mode 1 tests
+  across lib + integration). Mode 0 unchanged.
+
+[CHECKPOINT C — Group C complete (burn flows, selector manifest,
+Stego Mode 1). Awaiting review before proceeding to Discord
+integration (Layers 9-11) per docs/design/build-order.md.]
+
 ### Build state
 
 `cargo check -p crypto --tests` and `cargo test -p crypto` both green

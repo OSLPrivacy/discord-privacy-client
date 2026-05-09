@@ -9,6 +9,8 @@
 import { createPublicKey, verify as cryptoVerify } from 'node:crypto';
 
 const REPLENISH_DOMAIN = 'discord-privacy-client/prekey-replenish/v1';
+const BURN_DOMAIN = 'discord-privacy-client/burn/v1';
+const MANIFEST_DOMAIN = 'discord-privacy-client/selector-manifest/v1';
 
 // length-prefix helper: u32 BE length || bytes.
 function lpString(buf, s) {
@@ -65,6 +67,65 @@ export function canonicalReplenishBytes({ user_id, spk, opks }) {
   for (const o of opks) {
     u32(buf, o.id);
     lpString(buf, o.pub_b64);
+  }
+  return Buffer.concat(buf);
+}
+
+// Canonical encoding of a burn request. Both Rust client and Node
+// server reconstruct identical bytes for Ed25519 verification.
+//
+//   domain (LP)
+//   user_id (LP)
+//   scope_str (LP, "single" | "to_user" | "all")
+//   target_kind (u8: 0 = none, 1 = content_id, 2 = user_id)
+//   if target_kind != 0: target_value (LP)
+export function canonicalBurnBytes({ user_id, scope, target }) {
+  const buf = [];
+  lpString(buf, BURN_DOMAIN);
+  lpString(buf, user_id);
+  lpString(buf, scope);
+  if (scope === 'single') {
+    u8(buf, 1);
+    lpString(buf, target.content_id);
+  } else if (scope === 'to_user') {
+    u8(buf, 2);
+    lpString(buf, target.user_id);
+  } else {
+    u8(buf, 0);
+  }
+  return Buffer.concat(buf);
+}
+
+// Canonical encoding of a selector manifest. Mirrors
+// `crates/selectors/src/manifest.rs` `canonical_manifest_bytes`.
+//
+//   domain (LP)
+//   version (u32 BE)
+//   issued_at_unix_seconds (u64 BE)
+//   client_min_version (LP)
+//   selector_count (u32 BE)
+//   per selector (sorted by key, lex):
+//     key (LP)
+//     value (LP)
+//
+// `manifest` is `{ version, issued_at_unix_seconds, client_min_version,
+// selectors: Record<string, string> }`.
+export function canonicalManifestBytes(manifest) {
+  const buf = [];
+  lpString(buf, MANIFEST_DOMAIN);
+  u32(buf, manifest.version);
+  // Node's u64-BE: 8 bytes manually (Buffer.writeBigUInt64BE).
+  const issuedBuf = Buffer.alloc(8);
+  issuedBuf.writeBigUInt64BE(BigInt(manifest.issued_at_unix_seconds));
+  buf.push(issuedBuf);
+  lpString(buf, manifest.client_min_version);
+  const entries = Object.entries(manifest.selectors).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  u32(buf, entries.length);
+  for (const [k, v] of entries) {
+    lpString(buf, k);
+    lpString(buf, v);
   }
   return Buffer.concat(buf);
 }

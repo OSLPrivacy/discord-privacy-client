@@ -17,6 +17,7 @@
 
 pub mod clock;
 pub mod recorder;
+pub mod revalidation;
 pub mod rotation;
 pub mod screenshot;
 pub mod usb;
@@ -26,6 +27,10 @@ pub use recorder::{
     match_recorders, scan as scan_for_recorders, snapshot_running_processes,
     DetectionCallback, RecorderScanError, RecorderScanner, RecorderScannerConfig,
     RECORDER_PROCESS_NAMES,
+};
+pub use revalidation::{
+    render_decision, ContentKind, Probe, ProbeError, RenderDecision,
+    RevalidationConfig, RevalidationLoop, TransitionCallback, WrappedKeyState,
 };
 pub use rotation::{
     RotationConfig, RotationController, RotationReason, SuspiciousEventKind,

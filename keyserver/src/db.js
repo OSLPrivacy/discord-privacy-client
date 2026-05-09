@@ -229,6 +229,39 @@ export function opkPoolSize(db, userId) {
   return r ? r.c : 0;
 }
 
+// ---- burn ----
+//
+// All burns delete only rows where `sender_id = burning_user_id` —
+// you can't burn another user's content.
+//
+//   scope = 'single'   → match (sender, content_id)
+//   scope = 'to_user'  → match (sender, recipient = target_user)
+//   scope = 'all'      → match (sender)
+//
+// Returns { deleted_count }.
+export function burnWrappedKeys(db, burningUserId, scope, target) {
+  let stmt;
+  let params;
+  if (scope === 'single') {
+    stmt = db.prepare(
+      'DELETE FROM wrapped_keys WHERE content_id = ? AND sender_id = ?',
+    );
+    params = [target.content_id, burningUserId];
+  } else if (scope === 'to_user') {
+    stmt = db.prepare(
+      'DELETE FROM wrapped_keys WHERE sender_id = ? AND recipient_id = ?',
+    );
+    params = [burningUserId, target.user_id];
+  } else if (scope === 'all') {
+    stmt = db.prepare('DELETE FROM wrapped_keys WHERE sender_id = ?');
+    params = [burningUserId];
+  } else {
+    throw new Error(`unknown burn scope: ${scope}`);
+  }
+  const info = stmt.run(...params);
+  return { deleted_count: info.changes };
+}
+
 // ---- wrapped keys ----
 
 export function insertWrappedKey(db, row) {

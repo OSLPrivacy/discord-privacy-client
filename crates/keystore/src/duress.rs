@@ -36,6 +36,8 @@
 //! - Keyring purge (B1's `KeyringSealer::purge_keyring_entry`).
 //! - Identity-blob file deletion.
 //! - Password-record file deletion.
+//! - **Prekey-bundle file deletion** (B4: `prekeys.json` holds the
+//!   sealed `PrekeyState`).
 //! - In-memory zeroize (caller responsibility — the design's
 //!   "Phase 2 step 9" is a process-exit / drop concern, not
 //!   on-disk).
@@ -44,11 +46,13 @@
 //!   encryption config, etc.).
 //!
 //! Deferred — explicit non-stub callbacks reserved on
-//! [`DuressHandlers`] so future layers (B4 prekeys, future ratchet
+//! [`DuressHandlers`] so future layers (in-memory `PrekeyState`
+//! wipe at the integration layer that owns it, future ratchet
 //! registry, future sender-keys registry, v2.3+ anonymous-credential
 //! tokens) wire in by setting one field. Each handler defaults to
 //! `None`; when `None` the engine writes a `Skipped` entry in the
-//! journal AND in [`DuressReport::skipped_steps`]. **No
+//! journal AND in [`DuressReport::skipped_steps`] with a reason
+//! pointing at the integration layer responsible. **No
 //! `unimplemented!()` / `todo!()` is used.**
 
 use crate::sealer::{evict_tpm_key, KeyringSealer};
@@ -73,7 +77,13 @@ pub enum WipeStep {
     LocalCacheDir,
     /// Step 4 (v2.3+) — wipe anonymous-credential token store.
     AnonymousCredentials,
-    /// Step 5 — wipe prekey state (own + cached). Lands in B4.
+    /// Step 5a — delete the on-disk `prekeys.json` (sealed
+    /// `PrekeyState`). Wired automatically when the caller supplies
+    /// `DuressPaths::prekey_file`.
+    PrekeyFile,
+    /// Step 5b — wipe in-memory `PrekeyState`. Wired by the
+    /// integration layer that owns the live state (the Tauri shell
+    /// holds it in app state once layers 9–11 land).
     Prekeys,
     /// Step 6 — wipe Double Ratchet sessions + skipped-key cache.
     DoubleRatchet,
@@ -105,6 +115,7 @@ impl WipeStep {
             WipeStep::KeyringPurge,
             WipeStep::IdentityFile,
             WipeStep::PasswordHashes,
+            WipeStep::PrekeyFile,
             WipeStep::LocalCacheDir,
             WipeStep::AnonymousCredentials,
             WipeStep::Prekeys,
@@ -155,6 +166,10 @@ pub struct DuressHandlers {
 pub struct DuressPaths {
     pub identity_file: PathBuf,
     pub password_file: PathBuf,
+    /// Path to the sealed `prekeys.json` (B4). When `None` the
+    /// engine reports the [`WipeStep::PrekeyFile`] step as
+    /// `Skipped`; when `Some` it deletes the file idempotently.
+    pub prekey_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -313,6 +328,16 @@ impl DuressEngine {
             WipeStep::PasswordHashes => {
                 self.delete_file_idempotent(&self.paths.password_file)
             }
+            WipeStep::PrekeyFile => match self.paths.prekey_file.as_deref() {
+                Some(path) => self.delete_file_idempotent(path),
+                None => StepOutcome::Skipped {
+                    reason: "DuressPaths::prekey_file not supplied — \
+                             caller must set the path to the sealed \
+                             `prekeys.json` for B4's prekey-bundle blob \
+                             to be deleted at duress time"
+                        .to_string(),
+                },
+            },
             WipeStep::LocalCacheDir => self.run_handler(
                 self.handlers.wipe_local_cache_dir.as_ref(),
                 "local cache wipe handler not wired (caller passes \
@@ -324,8 +349,10 @@ impl DuressEngine {
             ),
             WipeStep::Prekeys => self.run_handler(
                 self.handlers.wipe_prekeys.as_ref(),
-                "prekey wipe deferred — handler wired by Layer B4 once \
-                 prekey infrastructure exists",
+                "in-memory PrekeyState wipe handler not wired — caller \
+                 sets DuressHandlers::wipe_prekeys to drop the live \
+                 state (the on-disk file is handled by the PrekeyFile \
+                 step)",
             ),
             WipeStep::DoubleRatchet => self.run_handler(
                 self.handlers.wipe_double_ratchet.as_ref(),

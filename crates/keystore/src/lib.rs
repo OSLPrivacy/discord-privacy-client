@@ -29,6 +29,8 @@
 //!   server endpoints used in this layer (`/v1/register`,
 //!   `/v1/pubkeys/:user_id`).
 
+pub mod burn;
+pub mod burn_alert;
 pub mod client;
 pub mod duress;
 pub mod identity;
@@ -37,8 +39,12 @@ pub mod prekeys;
 pub mod sealer;
 pub mod storage;
 
+pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
+pub use burn_alert::{
+    sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN,
+};
 pub use client::{
-    KeyServerClient, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
+    BurnResponse, KeyServerClient, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
     RegisterResponse, ReplenishResponse,
 };
 pub use prekeys::{

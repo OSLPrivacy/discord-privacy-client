@@ -12,7 +12,11 @@
       "Bash(rustup toolchain *)",
       "Bash(rustup install *)",
       "Bash(pkg-config *)",
-      "Bash(sudo apt-get update -qq)"
+      "Bash(sudo apt-get update -qq)",
+      "Bash(fuser /mnt/c/Users/liamw/projects/discord-privacy-client/target/debug/.cargo-lock)",
+      "Bash(kill 50513 50514 50510)",
+      "Bash(timeout 240 bash -c 'for c in crypto stego transport keystore selectors ipc runtime; do echo \"=== $c ===\"; cargo test -p $c 2>&1 | grep -E \"test result\"; done')",
+      "Bash(timeout 240 bash *)"
     ]
   }
 }

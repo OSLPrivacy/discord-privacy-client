@@ -44,10 +44,21 @@
 //! "every message in the configured private channel").
 
 mod mode0;
+mod mode1;
+mod mode1_templates;
+mod mode1_wordlists;
 
 pub use mode0::{
     decode_mode0, encode_mode0, is_mode0, MODE0_MAX_RAW_LEN, MODE0_PREFIX,
     MODE0_PREFIX_BYTES,
+};
+pub use mode1::{
+    decode_mode1, encode_mode1, is_mode1, ConversationCipher, MODE1_MAX_RAW_LEN,
+    MODE1_PREFIX, PERMUTATION_DOMAIN,
+};
+pub use mode1_templates::{
+    SlotKind, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES_LEN, TEMPLATE_BITS,
+    TOTAL_SLOTS,
 };
 
 use thiserror::Error;
@@ -63,6 +74,15 @@ pub enum Error {
 
     #[error("Mode 0 message exceeded the {max}-byte raw length limit (got {got})")]
     Mode0TooLong { got: usize, max: usize },
+
+    #[error("not a Mode 1 stego message (missing DPC1:: prefix)")]
+    NotMode1,
+
+    #[error("Mode 1 message exceeded the {max}-byte raw length limit (got {got})")]
+    Mode1TooLong { got: usize, max: usize },
+
+    #[error("Mode 1 parse error: {0}")]
+    Mode1ParseError(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

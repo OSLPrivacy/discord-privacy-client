@@ -14,6 +14,7 @@
 //! these through `tokio::task::spawn_blocking` to avoid stalling the
 //! async runtime.
 
+use crate::burn::{sign_burn, BurnScope};
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
@@ -86,6 +87,24 @@ pub struct PrekeyBundleResponse {
 pub struct ReplenishResponse {
     pub user_id: String,
     pub opks_added: u32,
+}
+
+/// Response body for `DELETE /v1/wrapped-keys`.
+#[derive(Debug, Deserialize)]
+pub struct BurnResponse {
+    pub scope: String,
+    pub deleted_count: u32,
+}
+
+#[derive(Serialize)]
+struct BurnRequest<'a> {
+    scope: &'a str,
+    user_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_content_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_user_id: Option<&'a str>,
+    burn_signature_b64: String,
 }
 
 #[derive(Serialize)]
@@ -274,6 +293,35 @@ impl KeyServerClient {
             Vec::new()
         };
         self.replenish_prekeys(identity, spk_to_send.as_ref(), &new_opks_owned)
+    }
+
+    /// `DELETE /v1/wrapped-keys`. Signs the canonical burn bytes
+    /// with the identity's Ed25519 key. The server filters
+    /// `sender_id = identity.user_id` so this only ever deletes the
+    /// caller's own rows. Returns `(scope, deleted_count)`.
+    pub fn burn(&self, identity: &Identity, scope: &BurnScope) -> Result<BurnResponse> {
+        let sig = sign_burn(identity, scope);
+        let sig_b64 = STANDARD.encode(sig.as_bytes());
+        let (target_content_id, target_user_id) = match scope {
+            BurnScope::Single { content_id } => (Some(content_id.as_str()), None),
+            BurnScope::ToUser { user_id } => (None, Some(user_id.as_str())),
+            BurnScope::All => (None, None),
+        };
+        let body = BurnRequest {
+            scope: scope.label(),
+            user_id: identity.user_id.as_str(),
+            target_content_id,
+            target_user_id,
+            burn_signature_b64: sig_b64,
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let resp = self.send_request(
+            "DELETE",
+            "/v1/wrapped-keys",
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&resp)?;
+        Ok(serde_json::from_slice(&resp.body)?)
     }
 
     fn send_request(

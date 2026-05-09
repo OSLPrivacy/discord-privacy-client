@@ -8,6 +8,11 @@ license.workspace = true
 # Mode 0 base64 placeholder. Modes 1+ (templates / Markov / LLM) will
 # add their own encoders alongside; this stays as the fallback.
 base64 = "0.22"
+# Mode 1 needs HKDF + SHA-256 to derive the per-conversation
+# wordlist permutations from the conversation salt (see
+# `mode1::permute_indices`).
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 rand = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }
