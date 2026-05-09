@@ -14,7 +14,7 @@ members = [
 version = "0.0.1"
 edition = "2021"
 license = "AGPL-3.0-only"
-rust-version = "1.82"
+rust-version = "1.88"
 
 [workspace.dependencies]
 zeroize = { version = "1.7", features = ["derive"] }

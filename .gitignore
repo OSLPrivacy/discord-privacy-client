@@ -34,3 +34,11 @@ desktop.ini
 *.msi
 *.exe
 *.dmg
+
+# Keyserver runtime artifacts
+keyserver/keyserver.db
+keyserver/keyserver.db-wal
+keyserver/keyserver.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

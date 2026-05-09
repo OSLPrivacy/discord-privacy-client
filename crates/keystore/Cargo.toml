@@ -5,10 +5,28 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-keyring = { workspace = true }
-zeroize = { workspace = true }
+# v1 alpha prototype: plain-file storage. The keyring + windows TPM
+# deps are deferred to v1 stable when TPM-sealed identity blobs land.
+# Prototype path: load/save identity bytes through serde + a single
+# loud INSECURE comment.
+#
+# HTTP client is hand-rolled HTTP/1.1 over std::net::TcpStream. Reasons
+# for not pulling in ureq / reqwest / attohttpc:
+# - Plain HTTP only (the prototype keyserver is plain HTTP); no need
+#   for TLS dep tree.
+# - ureq 2.12 transitively depends on getrandom 0.4.2 which requires
+#   edition-2024 / rustc 1.85+, exceeding our pinned MSRV (1.82).
+# - reqwest pulls in tokio/hyper for blocking, > 100 transitive deps.
+# - The prototype only needs POST + GET with JSON body / response;
+#   ~100 lines of code.
+crypto = { path = "../crypto" }
+base64 = "0.22"
 serde = { workspace = true }
+serde_json = { workspace = true }
+zeroize = { workspace = true }
 thiserror = { workspace = true }
 
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true }
+[dev-dependencies]
+# tempfile 3.27 pulls in getrandom 0.4.2 which needs edition-2024
+# (rustc 1.85+); pin to a 3.x that pre-dates that bump.
+tempfile = "=3.13"

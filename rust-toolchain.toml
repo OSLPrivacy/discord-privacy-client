@@ -1,6 +1,12 @@
 [toolchain]
-# Bumped from 1.78 to 1.82 because ml-kem 0.2 transitively requires
-# hybrid-array 0.2 which needs rustc 1.81+. 1.82 leaves a small headroom.
-channel = "1.82.0"
+# Bumped from 1.82 to 1.88 because tauri 2.11's transitive deps need
+# edition-2024 (1.85+) and several more (`time` 0.3.47, `serde_with`
+# macros 3.19, `wasip3` 0.4) require 1.87/1.88. 1.88 was released
+# 2025-06-23 and is widely supported.
+#
+# History: 1.78 → 1.82 in the crypto-foundation bring-up (ml-kem 0.2
+# / hybrid-array 0.2 needed 1.81+). 1.82 → 1.88 here for the Tauri
+# integration in Layer 8.
+channel = "1.88.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

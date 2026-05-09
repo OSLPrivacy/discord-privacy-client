@@ -5,6 +5,21 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-tauri = { workspace = true }
+# IPC keeps its surface Tauri-free: pure command functions, DTOs,
+# and the shared `AppState`. The `#[tauri::command]` attribute
+# wrappers live in `src-tauri/src/main.rs` because pulling Tauri in
+# here also pulls in Wry's gtk/webkit2gtk system-deps tree on Linux,
+# which prevents `cargo check -p ipc` from running on lean dev
+# environments. Layer 8 deliberately keeps the boundary clean so
+# this crate's test suite is portable.
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+base64 = "0.22"
+
+crypto = { path = "../crypto" }
+stego = { path = "../stego" }
+keystore = { path = "../keystore" }
+
+[dev-dependencies]
+tempfile = "=3.13"

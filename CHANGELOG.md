@@ -251,16 +251,144 @@ comparisons of secret-derived data. Findings:
 [CHECKPOINT — crypto crate complete; awaiting review before
 proceeding to Layer 5 (stego Mode 0).]
 
+### Layer 5 — Stego Mode 0 (base64 placeholder)
+
+- `crates/stego/src/lib.rs`, `mode0.rs`:
+    - `encode_mode0` / `decode_mode0` / `is_mode0` — base64-standard
+      body with a verbatim `DPC0::` magic prefix.
+    - `MODE0_MAX_RAW_LEN = 1400` raw bytes (≈ 1874 chars on the
+      wire after base64 + prefix), comfortably under Discord's
+      2000-char per-message limit.
+    - Per-message-independence requirement documented in module
+      docs and locked in by a test that decodes payloads in reverse
+      order to confirm no inter-message state.
+- 11 Mode 0 tests: empty / arbitrary-byte / max-length round-trip,
+  oversized rejection, prefix detection (case-sensitive, no
+  whitespace tolerance), invalid-base64 rejection, Discord-safe
+  charset verification, 2000-char-limit fit, per-message
+  independence, encoding determinism.
+- Stego dep added: `base64 = "0.22"`.
+- Mode 0 is a **placeholder**, not fluent stego: a human reading
+  the channel will see "DPC0::<base64>" and immediately recognise
+  an encrypted message. Acceptable for prototype mode (dev-to-dev
+  testing in private channels); v1 stable replaces with Mode 1
+  template-based fluency per the design doc.
+
+### Layer 6 — Key server scaffold
+
+- New sibling `keyserver/` directory: Node 22+, Fastify 4,
+  better-sqlite3 11. Plain HTTP, no auth, sqlite. **INSECURE BY
+  DESIGN** — prototype scaffold, dev-to-dev only.
+- Endpoints:
+    - `GET /v1/healthz` — liveness.
+    - `POST /v1/register` — upsert identity-key record (initial =
+      201, re-registration = 200 with `key_rotation_recorded`).
+    - `GET /v1/pubkeys/:user_id` — look up identity keys; 404 on
+      unknown user; surfaces `last_rotated_at` for client-side
+      verification UI.
+    - `POST /v1/wrapped-keys` — upload one wrapped-share blob.
+      Validates shape (allow-listed `content_type`,
+      `system_message_kind` allow-list with `burn-alert`,
+      `single_use` ↔ `display_duration_seconds` consistency,
+      base64 + ISO-8601). 409 on duplicate `content_id`.
+    - `GET /v1/wrapped-keys/:content_id` — fetch + (single_use)
+      consume. Atomic transaction: single_use rows are deleted in
+      the same statement that returns them. 404 unknown / burned;
+      410 Gone on past `expires_at` (lazy-tombstoned on read).
+- 21 tests pass via `npm test` (Node built-in test runner).
+- Deferred (per design doc, not in v1 alpha scope): Discord OAuth
+  registration gate, rate limiting, prekey-bundle / replenish, burn
+  endpoint, session rotation, anonymous-credential token issuance,
+  TLS, threshold-share fan-out across 5 jurisdictions.
+
+### Layer 7 — Identity gen + key registration glue
+
+- `crates/keystore/`:
+    - `identity.rs`: `Identity` (X25519 + ML-KEM-768 keypair +
+      `user_id`); `generate_identity` uses `OsRng`; ML-KEM
+      decapsulation key stored as `Zeroizing<[u8; 2400]>` because
+      RustCrypto `ml-kem` 0.2's `DecapsulationKey` is not `Clone`.
+      Reconstructed on demand via `mlkem_decapsulation_key()`.
+    - `storage.rs`: plain-JSON file with base64-encoded key bytes,
+      versioned blob (`IDENTITY_BLOB_VERSION = 1`), explicit
+      `insecure_banner` field on disk. Loader rejects version
+      mismatches and any field that decodes to the wrong byte length.
+    - `client.rs`: minimal hand-rolled HTTP/1.1 client over
+      `std::net::TcpStream`. Plain HTTP only (rejects `https://`).
+      Endpoints: `register` (POST /v1/register) and `fetch_pubkeys`
+      (GET /v1/pubkeys/:user_id, with `:user_id` percent-encoded).
+      Sync; Layer 8 will spawn it via `tokio::task::spawn_blocking`.
+- Dep churn: tempfile pinned to `=3.13` because 3.27 transitively
+  pulls in `getrandom 0.4.2` which requires edition-2024 / rustc
+  1.85+ (workspace MSRV is 1.82). Same reason no ureq / reqwest /
+  attohttpc — hand-rolled HTTP client avoids the deps-tree drift.
+- Old `keyring` and `windows` crate deps removed from
+  `crates/keystore/Cargo.toml` for prototype mode; reinstated when
+  TPM-sealed identity blobs land in v1 stable.
+- 16 keystore tests pass:
+    - 3 identity tests (generation, distinctness, byte-round-trip).
+    - 6 storage tests (round-trip, parent-dir creation, overwrite,
+      version-mismatch rejection, short-field rejection, INSECURE
+      banner present on disk).
+    - 7 client tests (request shape, https rejection, URL parsing
+      across forms, in-process mock-server round-trips for
+      register + fetch_pubkeys, percent-encoding of `user_id`,
+      HTTP error propagation).
+- Standing INSECURE notes documented in module-level docs and the
+  on-disk `insecure_banner` field. v1 stable replaces with TPM
+  seal + Argon2id passphrase + Discord OAuth + TLS.
+
+### Layer 8 — Rust ↔ JS bridge
+
+- `crates/ipc/`:
+    - `commands.rs`: pure functions for the bridge surface —
+      `cmd_generate_identity`, `cmd_load_identity`, `cmd_save_identity`,
+      `cmd_init_keyserver`, `cmd_register`, `cmd_fetch_pubkeys`,
+      `cmd_aead_seal`, `cmd_aead_open`, `cmd_stego_encode`,
+      `cmd_stego_decode`, `cmd_status`, `cmd_x25519_diffie_hellman`.
+      All testable without a Tauri runtime.
+    - `state.rs`: `AppState` holds `Mutex<Option<Identity>>` and
+      `Mutex<Option<KeyServerClient>>` — installed once via
+      Tauri's `manage` slot.
+    - `lib.rs`: `IpcError` is `Serialize` (tagged enum:
+      `{ kind, message }`) so JS sees a stable shape; `From` impls
+      collapse crypto / stego / keystore / base64 errors into the
+      IPC variants.
+    - **No Tauri dep in this crate.** Tauri's Wry runtime pulls in
+      gtk/webkit2gtk on Linux which would prevent `cargo check
+      -p ipc` from running on dev environments without the system
+      libs. The `#[tauri::command]` wrappers therefore live in
+      `src-tauri/src/main.rs` instead.
+- `src-tauri/src/main.rs`: 12 `#[tauri::command]` wrappers around
+  the `ipc::cmd_*` pure functions; `tauri::Builder::default()
+  .manage(AppState::new()) .invoke_handler(generate_handler![…])
+  .run(generate_context!())`. Sync HTTP work is driven through
+  `tauri::async_runtime::spawn_blocking` so the tokio runtime that
+  hosts Tauri commands never blocks on the keystore HTTP client.
+- 17 ipc tests pass (state seeding, save/load round-trip,
+  init-keyserver URL parsing + https rejection, register / fetch
+  prerequisite checks, AEAD seal/open round-trip + tampering
+  rejection + wrong-key-length rejection, stego round-trip + non-
+  Mode-0 rejection, status reflecting state, X25519 DH round-trip,
+  IPC error JSON shape).
+- Toolchain bump: rustc **1.82 → 1.88** because tauri 2.11 + its
+  transitive deps (uuid 1.23, indexmap 2.14, time 0.3.47,
+  serde_with macros 3.19, wasip3 0.4) require edition-2024 / 1.88.
+  rust-toolchain.toml + workspace `rust-version` updated. All
+  prior layers re-tested green on 1.88.
+- Build state: `cargo check -p src-tauri` requires gtk-3 +
+  webkit2gtk-4.1 + libsoup-3.0 system packages on Linux (or a
+  Windows / macOS host). Verification of the Tauri attribute glue
+  is deferred to the Windows host the user already verifies on; the
+  IPC pure-function surface (which is the part with logic) is
+  fully exercised by `cargo test -p ipc`.
+
+[CHECKPOINT — scaffolding complete; awaiting review before
+proceeding to Layer 9 (Tauri shell loading discord.com webview).]
+
 ### Build state
 
-`cargo check -p crypto --tests` was attempted in WSL but blocked by
-missing `build-essential` / `libc6-dev` on that machine (no `cc`
-linker). Verification is pending on a Windows-native dev env or a WSL
-env with `build-essential` installed.
-
-The most likely first-iteration issue if cargo check runs is the
-`dryoc::classic::crypto_aead_xchacha20poly1305_ietf::encrypt` /
-`decrypt` signature; if dryoc 0.7's actual API differs from the
-assumed `(ciphertext: &mut [u8], plaintext: &[u8], ad: Option<&[u8]>,
-nonce: &Nonce, key: &Key) → Result<(), _>` shape, `crates/crypto/src/aead.rs`
-is the only file affected.
+`cargo check -p crypto --tests` and `cargo test -p crypto` both green
+on Windows: 147/147 tests pass across the full crypto crate
+(aead, attachment, hkdf, ml_kem_768, padding, pqxdh, ratchet,
+sender_keys, wire, x25519). Verified at the layer-4 checkpoint.

@@ -1,38 +1,68 @@
-//! Scaffolding placeholder. Implementation pending design-doc review.
+//! Stego encoders for Discord-bound ciphertext.
 //!
-//! v1: Mode 1 template-based stego. Modes 2 (Markov) and 3 (Meteor LLM)
-//! deferred to v2.6.
+//! v1 alpha ships **Mode 0** only — a base64 placeholder with a
+//! recognisable magic prefix. Mode 0 is **not** fluent stego: a human
+//! scrolling a Discord channel will see "DPC0::<base64...>" and
+//! immediately know an encrypted message lives there. That's
+//! acceptable for prototype mode where both endpoints are dev devices
+//! and the Discord channel is private; v1 stable replaces Mode 0 with
+//! Mode 1 (template-based fluency).
 //!
-//! ## Hard architectural requirement: message-independence
+//! ## Hard architectural requirement: per-message independence
 //!
-//! Each stego'd message must be decodable from itself plus the shared
-//! secret, **without reference to any other message**. Discord may
-//! reorder, edit, or delete messages on its CDN; context-dependent
+//! Every stego'd message must be decodable from **itself plus the
+//! shared secret**, with no reference to any other message. Discord
+//! can reorder, edit, or delete messages on its CDN; context-dependent
 //! stego (where decoding message N depends on N-1, N-2, ...) breaks
-//! unrecoverably the moment any context message is lost. Making it
-//! reliable would require storing messages on our own server,
-//! converting the project from "privacy layer over Discord" into
-//! "Discord-skinned messenger with separate storage" — defeating
-//! the project thesis. Applies to Mode 1, Mode 2, and Mode 3 alike.
-//! See `docs/design/pqxdh-double-ratchet.md` "Stego encoding
-//! constraint" and `docs/THREAT_MODEL.md`.
+//! unrecoverably the moment any context message is lost. Making
+//! context-dependent stego reliable would require storing messages on
+//! our own server, converting the project from "privacy layer over
+//! Discord" into "Discord-skinned messenger with separate storage" —
+//! defeating the project thesis.
 //!
-//! ## Mode 1 quality bar
+//! Mode 0 trivially satisfies this (each message is a self-contained
+//! base64 string); the constraint is documented here as a design
+//! invariant for Modes 1, 2, and 3.
 //!
-//! Templates must pass Discord's automated scanning AND look like
-//! plausible chat when read by a human scrolling history. Burned
-//! messages render as their cover text (no "[deleted]" placeholder;
-//! see `docs/design/group-messaging.md` and `docs/THREAT_MODEL.md`),
-//! so an observer scrolling history must not be able to identify
-//! burned messages from the templates' style. Templates must be
-//! diverse enough that a recipient does not notice "every burned
-//! message has the same vibe."
+//! ## Wire format (Mode 0)
 //!
-//! ## Conversation-level stealth (documented limitation)
+//! ```text
+//! DPC0::<base64-standard-padding(ciphertext)>
+//! ```
 //!
-//! Per-message fluency does not imply multi-message coherence — a
-//! direct consequence of the message-independence requirement above.
-//! A close reader of conversation history may notice encrypted
-//! messages don't thread together. Mitigation lives at the user
-//! level: mix encrypted (sensitive) with plaintext (small-talk).
-//! See `docs/THREAT_MODEL.md` and `docs/ONBOARDING.md`.
+//! - Prefix `DPC0::` is the encoder identifier — `DPC` for Discord
+//!   Privacy Client, `0` for Mode 0, `::` as a delimiter that's
+//!   trivially scannable in plain text and won't be stripped or
+//!   "smart-quoted" by Discord's text rendering.
+//! - Body uses standard base64 alphabet (`A-Z a-z 0-9 + /`) with `=`
+//!   padding. Discord preserves these characters verbatim.
+//!
+//! Decoders that don't recognise the prefix MUST treat the message
+//! as cover plaintext and skip stego processing entirely (the
+//! prototype receiver only invokes the decoder when it has a reason
+//! to expect a stego'd message — for the v1 alpha test loop this is
+//! "every message in the configured private channel").
+
+mod mode0;
+
+pub use mode0::{
+    decode_mode0, encode_mode0, is_mode0, MODE0_MAX_RAW_LEN, MODE0_PREFIX,
+    MODE0_PREFIX_BYTES,
+};
+
+use thiserror::Error;
+
+/// Errors returned by the stego layer.
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("not a Mode 0 stego message (missing DPC0:: prefix)")]
+    NotMode0,
+
+    #[error("Mode 0 base64 decode failed: {0}")]
+    Mode0Base64(String),
+
+    #[error("Mode 0 message exceeded the {max}-byte raw length limit (got {got})")]
+    Mode0TooLong { got: usize, max: usize },
+}
+
+pub type Result<T> = core::result::Result<T, Error>;

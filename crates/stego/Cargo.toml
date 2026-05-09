@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Mode 0 base64 placeholder. Modes 1+ (templates / Markov / LLM) will
+# add their own encoders alongside; this stays as the fallback.
+base64 = "0.22"
 rand = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }

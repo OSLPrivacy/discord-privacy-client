@@ -1,0 +1,15 @@
+{
+  "name": "discord-privacy-keyserver",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Minimum prototype key server for discord-privacy-client. Register / fetch identity public keys, upload / fetch wrapped key blobs. Plain HTTP, no auth, sqlite backend. INSECURE BY DESIGN: prototype only.",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test 'test/**/*.test.js'"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "fastify": "^4.28.1"
+  }
+}
