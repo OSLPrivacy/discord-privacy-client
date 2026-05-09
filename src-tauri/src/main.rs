@@ -1,14 +1,25 @@
 // Tauri shell entry point.
 //
-// v1 alpha prototype: registers the IPC command surface (the pure
-// functions in `ipc::commands`) as `#[tauri::command]` wrappers, then
-// hands off to Tauri's default builder. The Tauri attribute glue lives
-// here, not in the `ipc` crate, so `ipc` itself has no Tauri dep —
-// keeping its tests portable across dev environments without GTK /
-// WebKit system libs.
+// Layer 9: the main window loads `https://discord.com/app` directly
+// (configured via `windows[0].url` in `tauri.conf.json`). WebView2's
+// default user-data folder under `%LOCALAPPDATA%\<bundle-id>\EBWebView`
+// persists cookies across restarts, so Discord login survives without
+// extra config. Discord serves its own CSP via response headers;
+// Tauri's `app.security.csp` is `null` so no local CSP gets injected
+// to clash with it (Tauri only injects into local content anyway, but
+// keeping it null documents the layer-9 intent).
 //
-// Layer 9 onward replaces this main with the discord.com-loading
-// shell + injection hooks.
+// Layer 10 will add Discord injection hooks; Layer 11 the encryption
+// UI overlays. This file currently exposes:
+//   - the IPC command surface (the pure functions in `ipc::commands`)
+//     wired as `#[tauri::command]` wrappers, and
+//   - the screenshot-resistance wiring (parent + WebView2 descendants
+//     via `runtime::apply_to_hwnd_and_children`), re-applied on every
+//     page load so newly-created WebView2 child HWNDs are covered.
+//
+// The Tauri attribute glue lives here, not in the `ipc` crate, so
+// `ipc` itself has no Tauri dep — keeping its tests portable across
+// dev environments without GTK / WebKit system libs.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -138,6 +149,15 @@ fn main() {
             // `set_screenshot_protection` command lets JS toggle it
             // later (e.g. when entering an unencrypted DM, the user
             // may want to relax protection).
+            //
+            // We also re-apply on every page load: WebView2's child
+            // HWND tree (Chrome_WidgetWin_* host + render surface) may
+            // not be fully constructed at `app.setup` time when the
+            // navigation to `discord.com/app` is still in flight, and
+            // any new child HWNDs Discord's SPA spawns later (e.g.
+            // for embeds, modals, popouts) need the affinity flag
+            // applied as well. `apply_to_hwnd_and_children` is
+            // idempotent so re-applying is safe.
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(e) =
                     screenshot::apply_to_window(&window, ScreenshotProtection::On)
@@ -148,6 +168,23 @@ fn main() {
                          continuing without it (Windows-only feature)"
                     );
                 }
+
+                window.clone().on_page_load(move |w, _payload| {
+                    // PageLoadPayload carries Started / Finished. We
+                    // re-apply on every event (Started catches the
+                    // initial WebView2 controller HWND tree;
+                    // Finished catches anything Discord's SPA built
+                    // during render). Idempotent on the parent;
+                    // best-effort on descendants.
+                    if let Err(e) =
+                        screenshot::apply_to_window(&w, ScreenshotProtection::On)
+                    {
+                        tracing::debug!(
+                            ?e,
+                            "screenshot protection re-apply on page load failed",
+                        );
+                    }
+                });
             }
             Ok(())
         })

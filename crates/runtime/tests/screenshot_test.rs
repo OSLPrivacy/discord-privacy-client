@@ -1,12 +1,14 @@
-use runtime::{apply_to_hwnd, ScreenshotProtection};
+use runtime::{apply_to_hwnd, apply_to_hwnd_and_children, ScreenshotProtection};
 
-// On Linux / macOS, `apply_to_hwnd` is a no-op stub. We exercise the
-// no-op path here to lock its behaviour in across cfg permutations.
+// On Linux / macOS, `apply_to_hwnd` and `apply_to_hwnd_and_children`
+// are no-op stubs. We exercise the no-op paths here to lock their
+// behaviour in across cfg permutations.
 //
 // Win32 behaviour is documented in `runtime::screenshot` and verified
 // by the user on a Windows host — there is no automated test for the
-// actual SetWindowDisplayAffinity call (capture protection is OS-level
-// and can only be confirmed visually with a screenshot tool).
+// actual SetWindowDisplayAffinity call or for `EnumChildWindows`
+// recursion across the WebView2 child tree (capture protection is
+// OS-level and can only be confirmed visually with a screenshot tool).
 
 #[cfg(not(windows))]
 #[test]
@@ -16,6 +18,17 @@ fn linux_macos_stub_is_a_noop_for_both_states() {
     // Any HWND-shaped value is accepted on the stub.
     apply_to_hwnd(0xDEADBEEF, ScreenshotProtection::On).expect("arbitrary hwnd");
     apply_to_hwnd(-1, ScreenshotProtection::Off).expect("negative hwnd value");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn linux_macos_stub_with_children_is_a_noop_for_both_states() {
+    apply_to_hwnd_and_children(0, ScreenshotProtection::On).expect("no-op On");
+    apply_to_hwnd_and_children(0, ScreenshotProtection::Off).expect("no-op Off");
+    apply_to_hwnd_and_children(0xDEADBEEF, ScreenshotProtection::On)
+        .expect("arbitrary hwnd");
+    apply_to_hwnd_and_children(-1, ScreenshotProtection::Off)
+        .expect("negative hwnd value");
 }
 
 #[test]

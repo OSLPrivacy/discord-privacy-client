@@ -1084,9 +1084,116 @@ Mode 1).]
 Stego Mode 1). Awaiting review before proceeding to Discord
 integration (Layers 9-11) per docs/design/build-order.md.]
 
-### Build state
+### Layer 9 — Tauri shell loading discord.com webview
 
-`cargo check -p crypto --tests` and `cargo test -p crypto` both green
-on Windows: 147/147 tests pass across the full crypto crate
-(aead, attachment, hkdf, ml_kem_768, padding, pqxdh, ratchet,
-sender_keys, wire, x25519). Verified at the layer-4 checkpoint.
+- `src-tauri/tauri.conf.json` `windows[0]`:
+    - `url = "https://discord.com/app"` — the main window now opens
+      directly on Discord's web app (`WebviewUrl::External`) rather
+      than a localhost stub. Width / height / resize chrome
+      unchanged from the Layer 8 placeholder.
+    - `userAgent =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+       (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36
+       Edg/130.0.0.0"` — pinned to a recent realistic Edge UA so
+      Discord's client-detection doesn't flag the WebView2 default
+      string. Bump when Discord starts warning about Chrome 130 being
+      old; no protocol consequence.
+- `app.security.csp` left at `null` (unchanged). Tauri only injects
+  CSP into local content; for the external-URL main window Discord's
+  server-sent CSP governs. An explicit Tauri-side allowlist would be
+  cosmetic and is deliberately omitted. Layer 11's local overlay UI
+  will revisit CSP for that window.
+- Cookie persistence: WebView2's default user-data folder under
+  `%LOCALAPPDATA%\org.discord-privacy.client\EBWebView` keeps cookies
+  across restarts with no extra config — Discord login survives a
+  full app close/reopen. Verified by the user on a Windows host
+  (deferred task — see below).
+- `crates/runtime/src/screenshot.rs`:
+    - New `apply_to_hwnd_and_children(hwnd, protection)` walks the
+      parent and every descendant via `EnumChildWindows` and calls
+      `SetWindowDisplayAffinity` on each. Per Microsoft Learn,
+      `EnumChildWindows` already recurses into grandchildren, so a
+      single call covers the WebView2 tree
+      (`Chrome_WidgetWin_*` host + `Chrome_RenderWidgetHostHWND`).
+    - Parent failure short-circuits with a typed `ScreenshotError`.
+      Descendant failures are recorded into a per-call `ChildState`
+      threaded through `LPARAM` and surfaced via `tracing::info!`
+      (visited / succeeded counts) and `tracing::debug!` (first error
+      message). Cross-process WebView2 render hosts may legitimately
+      fail with access-denied; not a reason to fail the whole call.
+    - Module docs explain the WebView2-propagation rationale (Tauri
+      parent + WebView2 children, observed propagation drift on some
+      Windows builds, why descendants need explicit application).
+    - Re-exported from `runtime::lib.rs` alongside the existing
+      `apply_to_hwnd`.
+- `src-tauri/src/screenshot.rs::apply_to_window` now forwards to
+  `runtime::apply_to_hwnd_and_children` instead of the parent-only
+  `apply_to_hwnd`, so both the startup application and the
+  `set_screenshot_protection` Tauri command benefit from the
+  child-walk path.
+- `src-tauri/src/main.rs::setup`:
+    - Calls `apply_to_window(..., ScreenshotProtection::On)` once at
+      startup (unchanged shape; uses the new child-walking impl
+      transparently).
+    - Adds a `WebviewWindow::on_page_load` callback that re-applies
+      the same protection on every page-load event. Catches
+      WebView2 child HWNDs that don't exist yet at `app.setup`
+      time (the navigation to discord.com is still in flight) and
+      any new descendants Discord's SPA spawns mid-session
+      (embeds, modals, popouts). `apply_to_hwnd_and_children` is
+      idempotent on the parent and best-effort on descendants, so
+      re-applying is safe.
+    - Module-level comment block updated to describe the layer-9
+      shell — replaces the old "Layer 9 onward replaces this main"
+      placeholder.
+- `crates/runtime/tests/screenshot_test.rs`: added
+  `linux_macos_stub_with_children_is_a_noop_for_both_states`
+  covering the new function on the non-Windows stub path. Pattern
+  matches the existing parent-only test. Mirrors existing parent-
+  only no-op invariants (arbitrary HWND values, both protection
+  states). 4 runtime screenshot tests now (was 3).
+- `webview/dist/index.html` placeholder added so Tauri's
+  `generate_context!()` macro can resolve the configured
+  `frontendDist` path. The placeholder is never visible at runtime
+  — the main window navigates to `https://discord.com/app`
+  directly. Will be replaced by the Layer 11 overlay-UI bundle
+  built from `webview/src/`.
+
+**Out of scope for Layer 9** (per build-order, deferred to Layers
+10–11): Discord SPA injection, webpack-selector hooks, message
+plumbing, encryption-UI overlays, `dangerousRemoteDomainIpcAccess`
+allowlist for IPC-from-Discord. None of those are touched in this
+layer.
+
+**Standing-instruction tests:** `cargo test -p runtime` exercises
+the cross-platform stub of `apply_to_hwnd_and_children` plus the
+existing ~80 runtime tests; on WSL this runs cleanly. `cargo check
+-p discord-privacy-client` still fails on WSL because of unrelated
+GTK / WebKit system-deps that the Tauri Linux feature gate pulls
+in (gio-sys / gobject-sys / glib-sys build scripts) — same caveat
+as Layer 8 and the Group A Win32 paths. The Tauri attribute glue,
+`webview/dist/index.html` resolution, and `tauri.conf.json` schema
+acceptance are deferred to the user's Windows host — see below.
+
+**Deferred Windows-host verification task** (explicitly):
+
+The actual end-to-end behaviour of this layer (Tauri window opens,
+discord.com renders, login persists across restart, capture
+protection applied to WebView2 children, cookies survive a relaunch)
+**cannot be tested in WSL or any headless CI environment**. There is
+no headless WebView2 runner, and `SetWindowDisplayAffinity` only
+takes effect against a real running Windows compositor.
+
+Verification steps are written up in
+`docs/design/layer-9-windows-verification.md`. Five hand-checks
+required on a Windows 10 build 2004+ or Windows 11 host with
+WebView2 Runtime installed:
+
+1. Tauri window opens at launch.
+2. discord.com loads and renders correctly.
+3. Login persists across restart (cookie persistence).
+4. Capture protection verifiable via Snipping Tool / `Win+Shift+S` —
+   chat panel must render as solid black in the snip output.
+5. Cookie persistence verified (covered by 3).
+
+Sign-off on those five checks marks Layer 9 verified.

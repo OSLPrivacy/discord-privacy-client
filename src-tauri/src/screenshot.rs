@@ -3,16 +3,24 @@
 //!
 //! Tauri's `WebviewWindow` is the v1 alpha source of truth for the
 //! main window's HWND; this module unwraps it and forwards to
-//! [`runtime::apply_to_hwnd`]. Splitting the unwrap from the Win32
-//! call keeps the cross-platform logic (and its tests) inside the
-//! `runtime` crate, which builds on Linux dev environments without
-//! GTK system libs.
+//! [`runtime::apply_to_hwnd_and_children`]. Splitting the unwrap from
+//! the Win32 call keeps the cross-platform logic (and its tests)
+//! inside the `runtime` crate, which builds on Linux dev environments
+//! without GTK system libs.
+//!
+//! Since Layer 9 the main window loads `https://discord.com/app`
+//! directly, so the HWND tree includes WebView2's child host windows
+//! and render surface. Setting affinity only on the parent has been
+//! reported to leak to capture on some Windows builds; the propagated
+//! variant in `runtime` walks every descendant via `EnumChildWindows`
+//! to close that gap.
 
 use ipc::{IpcError, IpcResult};
 use runtime::ScreenshotProtection;
 
-/// Apply `protection` to `window`. Maps Tauri / Win32 errors to
-/// [`ipc::IpcError`] for consistent return shape across the bridge.
+/// Apply `protection` to `window` and every WebView2 descendant HWND.
+/// Maps Tauri / Win32 errors to [`ipc::IpcError`] for consistent
+/// return shape across the bridge.
 #[cfg(windows)]
 pub fn apply_to_window(
     window: &tauri::WebviewWindow,
@@ -21,7 +29,7 @@ pub fn apply_to_window(
     let hwnd = window
         .hwnd()
         .map_err(|e| IpcError::Crypto(format!("Tauri window HWND: {e}")))?;
-    runtime::apply_to_hwnd(hwnd.0 as isize, protection)
+    runtime::apply_to_hwnd_and_children(hwnd.0 as isize, protection)
         .map_err(|e| IpcError::Crypto(e.to_string()))
 }
 
@@ -30,7 +38,9 @@ pub fn apply_to_window(
     _window: &tauri::WebviewWindow,
     _protection: ScreenshotProtection,
 ) -> IpcResult<()> {
-    // Non-Windows: runtime::apply_to_hwnd is a no-op; we still call
-    // through it for symmetry, even though we don't have an HWND.
-    runtime::apply_to_hwnd(0, _protection).map_err(|e| IpcError::Crypto(e.to_string()))
+    // Non-Windows: runtime::apply_to_hwnd_and_children is a no-op; we
+    // still call through it for symmetry, even though we don't have
+    // an HWND.
+    runtime::apply_to_hwnd_and_children(0, _protection)
+        .map_err(|e| IpcError::Crypto(e.to_string()))
 }
