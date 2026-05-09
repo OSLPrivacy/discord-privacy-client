@@ -22,6 +22,17 @@ transport = { path = "../crates/transport" }
 keystore = { path = "../crates/keystore" }
 selectors = { path = "../crates/selectors" }
 ipc = { path = "../crates/ipc" }
+runtime = { path = "../crates/runtime" }
+
+# Screenshot resistance (A2). Win32-only: SetWindowDisplayAffinity
+# with WDA_EXCLUDEFROMCAPTURE. Gated to cfg(windows) so non-Windows
+# builds still compile (the screenshot-resistance command becomes a
+# no-op on those platforms).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 default = []

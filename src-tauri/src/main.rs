@@ -12,6 +12,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod screenshot;
+
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity,
     cmd_init_keyserver, cmd_load_identity, cmd_register, cmd_save_identity,
@@ -21,6 +23,7 @@ use ipc::commands::{
     StegoEncodeRequest, StegoEncodeResponse,
 };
 use ipc::{AppState, IpcError, IpcResult};
+use runtime::ScreenshotProtection;
 use tauri::{Manager, State};
 
 #[tauri::command]
@@ -107,9 +110,47 @@ async fn x25519_diffie_hellman(
     cmd_x25519_diffie_hellman(secret_b64, peer_public_b64)
 }
 
+/// Tauri command: turn screenshot capture protection on or off for
+/// the main webview window. Wraps `SetWindowDisplayAffinity` on
+/// Windows; no-op on non-Windows targets.
+#[tauri::command]
+async fn set_screenshot_protection(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> IpcResult<()> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| IpcError::Crypto("main window not present".into()))?;
+    let protection = if enabled {
+        ScreenshotProtection::On
+    } else {
+        ScreenshotProtection::Off
+    };
+    screenshot::apply_to_window(&window, protection)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
+        .setup(|app| {
+            // Apply screenshot resistance to the main webview window
+            // as soon as it exists. This runs once at startup; the
+            // `set_screenshot_protection` command lets JS toggle it
+            // later (e.g. when entering an unencrypted DM, the user
+            // may want to relax protection).
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(e) =
+                    screenshot::apply_to_window(&window, ScreenshotProtection::On)
+                {
+                    tracing::warn!(
+                        ?e,
+                        "screenshot protection unavailable at startup; \
+                         continuing without it (Windows-only feature)"
+                    );
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             generate_identity,
             load_identity,
@@ -123,6 +164,7 @@ fn main() {
             stego_decode,
             status,
             x25519_diffie_hellman,
+            set_screenshot_protection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

@@ -8,6 +8,7 @@ members = [
     "crates/keystore",
     "crates/selectors",
     "crates/ipc",
+    "crates/runtime",
 ]
 
 [workspace.package]

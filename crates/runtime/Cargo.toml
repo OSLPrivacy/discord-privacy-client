@@ -1,0 +1,30 @@
+[package]
+name = "runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# OS-event glue: rotation triggers, screenshot resistance, USB +
+# process scanning. Cross-platform pure-Rust where possible; Windows-
+# only behaviours gated to `cfg(windows)` and tested via mocked
+# inputs on Linux.
+crypto = { path = "../crypto" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# A2: SetWindowDisplayAffinity (UI/WindowsAndMessaging).
+# A3: RegisterDeviceNotificationW + WM_DEVICECHANGE pump + KSCATEGORY_CAPTURE
+#     GUID (UI/WindowsAndMessaging + Devices/DeviceAndDriverInstallation +
+#     System/LibraryLoader for GetModuleHandleW).
+# A4: Toolhelp32Snapshot / Process32FirstW / Process32NextW
+#     (System/Diagnostics/ToolHelp).
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_WindowsAndMessaging",
+] }

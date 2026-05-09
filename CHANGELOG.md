@@ -386,6 +386,193 @@ proceeding to Layer 5 (stego Mode 0).]
 [CHECKPOINT — scaffolding complete; awaiting review before
 proceeding to Layer 9 (Tauri shell loading discord.com webview).]
 
+### Layer A1 — Sender-key rotation triggers
+
+- New `crates/runtime/` workspace member.
+    - `clock.rs`: `Clock` trait + `SystemClock` (production) +
+      `MockClock` (test-only, advance-by-Duration).
+    - `rotation.rs`: `RotationController` per-(sender, group) state
+      machine with `RotationConfig` (defaults from
+      `docs/design/sender-keys.md`: time 1h, message-count 500,
+      idle 6h, suspicious-cap 5min). `RotationReason` /
+      `SuspiciousEventKind` public enums.
+    - Caller-driven API: `note_message_sent`,
+      `note_rotation_completed`, `note_suspicious_event`,
+      `note_membership_change`, `note_recipient_request` +
+      `check_for_rotation` (returns `Option<RotationReason>`).
+    - Precedence per design doc: forced (membership / recipient) →
+      time → message-count → suspicious (with idle synthesis +
+      5-min DoS cap; cap exempts time / count / membership /
+      recipient).
+    - Idle is synthesised in `check_for_rotation` when
+      `idle_trigger` has elapsed since the last `note_message_sent`
+      and at least one message was sent on the chain. Emits at
+      most once per chain (re-arms on each `note_message_sent`).
+- 20 runtime tests pass:
+    - Time / message-count / idle each fire at configured threshold.
+    - Suspicious cap bounds rotations at 1 per 5 min; queued
+      events collapse to a single rotation.
+    - Time + message-count + membership are cap-exempt: fire even
+      while the suspicious cap window is active.
+    - Forced rotations (membership / recipient) take precedence
+      over all timer-driven triggers.
+    - End-to-end: controller drives a real
+      `crypto::sender_keys::SenderChain::rotate` after 500
+      messages.
+    - `RotationReason::is_cap_exempt` classification matches the
+      design doc.
+- Note: with the default config (time 1h, idle 6h), idle is
+  structurally redundant — the time trigger fires before idle ever
+  could. Tests use `time_trigger=100h` to isolate idle's
+  observable behaviour. v1 stable may invert the relationship if
+  cryptographer review prefers idle-first precedence.
+
+### Layer A2 — Screenshot resistance
+
+- `crates/runtime/src/screenshot.rs`: cross-platform interface
+  `apply_to_hwnd(hwnd_isize, ScreenshotProtection::{On, Off})`.
+    - `cfg(windows)` impl: `SetWindowDisplayAffinity` with
+      `WDA_EXCLUDEFROMCAPTURE` (or `WDA_NONE`).
+    - `cfg(not(windows))` stub: always `Ok(())`. Lets the rest of
+      the binary compile on Linux / macOS dev hosts.
+- `src-tauri/src/screenshot.rs`: thin wrapper that pulls the HWND
+  out of `tauri::WebviewWindow` and delegates to
+  `runtime::apply_to_hwnd`. Tauri-window unwrap kept out of the
+  cross-platform crate so `runtime`'s tests still build on Linux.
+- `src-tauri/src/main.rs`:
+    - On `app.setup`, fetches the main webview window and applies
+      `ScreenshotProtection::On`. Logs a tracing warning if it
+      fails (non-Windows targets always succeed via the stub).
+    - New `set_screenshot_protection(enabled)` Tauri command lets
+      the webview JS toggle protection at runtime — e.g. relaxing
+      it for a deliberately-public conversation.
+- `windows = "0.56"` dep added to both `crates/runtime/Cargo.toml`
+  and `src-tauri/Cargo.toml`, gated on `cfg(windows)`, with the
+  `Win32_Foundation` + `Win32_UI_WindowsAndMessaging` features
+  needed for `HWND` + `SetWindowDisplayAffinity` /
+  `WDA_EXCLUDEFROMCAPTURE` / `WDA_NONE`.
+- 3 runtime screenshot tests on Linux exercise the no-op stub
+  (both states, arbitrary HWND values) plus enum invariants
+  (`Copy`, `Eq`, `Debug`). Per the standing instructions and the
+  design doc, the actual capture-blocking on Windows is OS-level
+  and verified visually by the user — no automated test possible.
+- Caveats documented inline in `runtime/src/screenshot.rs`:
+  WDA_EXCLUDEFROMCAPTURE blocks OS-level capture only; cameras,
+  kernel-mode capture drivers, and HDMI capture cards downstream
+  of the GPU still work. Threat model already labels this a
+  deterrent rather than a guarantee.
+- Build state: `cargo check -p discord-privacy-client` still
+  fails on Linux because of unrelated gtk/webkit2gtk system-deps
+  (gio-sys / gobject-sys / glib-sys build scripts). Verification
+  of the src-tauri integration is deferred to the user's Windows
+  host as documented for Layer 8.
+
+### Layer A3 — USB device monitoring
+
+- `crates/runtime/src/usb.rs`:
+    - `UsbDeviceDescriptor` (base_class, video_streaming_present,
+      input_terminal_types) and pure `is_capture_device` filter
+      per design doc table: USB-IF base class `0x0E`, subclass
+      `0x02` (`SC_VIDEOSTREAMING`), with at least one Input
+      Terminal in `0x0200..=0x02FF` (camera / media transport) or
+      External Terminal in `0x0400..=0x04FF` (composite / S-video
+      / component connectors).
+    - `UsbMonitor::start(callback)` with platform-specific `imp`:
+        - **Windows**: hidden message-only window on a dedicated
+          `dpc-usb-monitor` thread. Registers
+          `RegisterDeviceNotificationW` against
+          `KSCATEGORY_CAPTURE`
+          (`{65E8773D-8F56-11D0-A3B9-00A0C9223196}`); WndProc
+          handles `WM_DEVICECHANGE` / `DBT_DEVICEARRIVAL` and
+          forwards to the callback. RAII cleanup on drop:
+          `PostThreadMessageW(WM_QUIT)`,
+          `UnregisterDeviceNotification`, `DestroyWindow`,
+          `UnregisterClassW`. **The Win32 monitor compiles only
+          under `cfg(windows)` and is unverified on the WSL
+          test host** — same caveat as A2's Win32 path; needs
+          Windows-host verification.
+        - **Non-Windows**: stub that holds the callback and never
+          fires it. `cargo test -p runtime` exercises this path.
+    - `windows = "0.56"` features extended with
+      `Win32_System_LibraryLoader`,
+      `Win32_System_Diagnostics_ToolHelp` (the latter for A4).
+- 21 USB tests pass:
+    - 5 capture-class positive cases (camera, media transport,
+      HDMI capture composite, S-video / component, multiple
+      terminals with one input).
+    - 7 non-capture USB-class negatives (HID, mass storage, audio,
+      hub, smart card, comms, printer).
+    - 5 video-class-but-not-capture negatives (no streaming, only
+      output terminals, no terminals, vendor input outside range,
+      just-outside-external-range).
+    - 1 boundary test for terminal-range edges
+      (`0x0200`/`0x02FF`/`0x0400`/`0x04FF`).
+    - 2 monitor lifecycle tests (construction succeeds on all
+      targets; non-Windows stub never fires callback).
+    - 1 integration test demonstrating the
+      `callback → RotationController::note_suspicious_event(UsbCaptureDevice)`
+      wiring shape.
+- src-tauri integration of the monitor is **deferred to A4**, where
+  all four Group-A trigger sources will wire into a shared
+  `RotationController` registry at app startup.
+
+### Layer A4 — Process scanning for screen recorders
+
+- `crates/runtime/src/recorder.rs`:
+    - `RECORDER_PROCESS_NAMES`: 35 lowercase basenames covering
+      OBS / OBS legacy, Bandicam, Camtasia + helpers, ShareX,
+      NVIDIA ShadowPlay / Share / Broadcast, Windows Game Bar +
+      helpers, Snipping Tool / Snip & Sketch, Snagit, XSplit,
+      Loom, vokoscreenNG, Screenpresso, Movavi, Mirillis Action!,
+      Fraps, Dxtory, Lightshot, Greenshot, FlashBack Express,
+      Ezvid, FastCap, Icecream Screen Recorder. Provenance comments
+      next to each entry.
+    - `match_recorders<S: AsRef<str>>(&[S]) -> Vec<&'static str>`:
+      pure case-insensitive match returning entries in
+      match-list order.
+    - `snapshot_running_processes()`: Win32
+      `CreateToolhelp32Snapshot` + `Process32FirstW/NextW`
+      enumeration on Windows; non-Windows stub returns
+      `Err(RecorderScanError::Win32("unsupported"))` so callers
+      degrade gracefully.
+    - `RecorderScanner::start(config, on_detect)`: dedicated
+      `dpc-recorder-scan` thread that periodically calls `scan()`
+      every `config.interval` (default 1 h) and fires
+      `on_detect(&matches)` only when at least one recorder is
+      found. RAII teardown via shared atomic stop-flag + bounded
+      tick sleeps. Errors logged via `tracing::debug!`; the loop
+      continues so transient enumeration failures don't disable
+      the trigger.
+- `windows = "0.56"` features extended with
+  `Win32_System_Diagnostics_ToolHelp` (already added in A3).
+- 15 recorder tests pass:
+    - 7 match-logic tests: positive / multi / case-insensitive /
+      innocuous-process empty / empty-input / full-path strings
+      not stripped / dedup-by-list-order.
+    - 4 list-invariant tests: lowercase, unique, .exe-suffixed,
+      design-doc examples present.
+    - 1 snapshot-platform test: returns Win32 error on non-Windows.
+    - 2 scanner-lifecycle tests: starts + stops cleanly,
+      `Drop` terminates thread within tick budget (asserted
+      `< 500 ms`).
+    - 1 integration test: detected recorders drive
+      `RotationController::note_suspicious_event(ScreenRecorder)`,
+      controller emits the matching `RotationReason`.
+- src-tauri integration: deliberately not yet wired into
+  `src-tauri/src/main.rs`. The unified Group-A startup hookup
+  (UsbMonitor + RecorderScanner + idle-tick driver feeding a
+  `RotationController` registry held in Tauri State) is a small,
+  bounded follow-up — but it can't be cargo-checked on the WSL
+  host (no GTK system libs), so leaving it for the user's
+  Windows-host integration pass keeps the verification surface
+  honest. Both monitors expose `*::start(callback)` constructors
+  ready to be glued into one `app.setup`-time block.
+
+[CHECKPOINT A — Group A complete (rotation triggers, screenshot
+resistance, USB monitoring, recorder scanning). Awaiting review
+before proceeding to Group B (TPM-sealed keys, password / duress,
+prekey infrastructure).]
+
 ### Build state
 
 `cargo check -p crypto --tests` and `cargo test -p crypto` both green
