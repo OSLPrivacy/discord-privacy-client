@@ -270,7 +270,8 @@ mod tpm {
     use windows::Win32::Security::Cryptography::{
         NCryptCreatePersistedKey, NCryptDecrypt, NCryptEncrypt, NCryptFinalizeKey,
         NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider, BCRYPT_PAD_PKCS1,
-        NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
+        CERT_KEY_SPEC, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_KEY_HANDLE,
+        NCRYPT_PROV_HANDLE,
     };
 
     const PROVIDER: PCWSTR = windows::core::w!("Microsoft Platform Crypto Provider");
@@ -292,28 +293,43 @@ mod tpm {
         pub fn new() -> Result<Self> {
             unsafe {
                 let mut prov: NCRYPT_PROV_HANDLE = NCRYPT_PROV_HANDLE::default();
+                // windows 0.56.0: NCrypt* now return `Result<(), Error>`
+                // directly (previously NTSTATUS with `.ok()`-to-Result).
+                // The `.ok()` step is dropped throughout this module.
                 NCryptOpenStorageProvider(&mut prov, PROVIDER, 0)
-                    .ok()
                     .map_err(|e| SealerError::Tpm(format!("OpenStorageProvider: {e}")))?;
 
                 // Try to open the persisted key; if missing, create
                 // a fresh 2048-bit RSA key, finalize, and proceed.
+                // windows 0.56.0: `dwlegacykeyspec` is `CERT_KEY_SPEC`,
+                // not raw u32 — pass `CERT_KEY_SPEC(0)` for "no legacy
+                // KSP / use CNG-native key spec".
                 let mut key: NCRYPT_KEY_HANDLE = NCRYPT_KEY_HANDLE::default();
-                let open = NCryptOpenKey(prov, &mut key, KEY_NAME, 0, NCRYPT_FLAGS(0));
+                let open = NCryptOpenKey(
+                    prov,
+                    &mut key,
+                    KEY_NAME,
+                    CERT_KEY_SPEC(0),
+                    NCRYPT_FLAGS(0),
+                );
                 if open.is_err() {
-                    NCryptCreatePersistedKey(prov, &mut key, ALGO_RSA, KEY_NAME, 0, NCRYPT_FLAGS(0))
-                        .ok()
-                        .map_err(|e| {
-                            let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
-                            SealerError::Tpm(format!("CreatePersistedKey: {e}"))
-                        })?;
-                    NCryptFinalizeKey(key, NCRYPT_FLAGS(0))
-                        .ok()
-                        .map_err(|e| {
-                            let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
-                            let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
-                            SealerError::Tpm(format!("FinalizeKey: {e}"))
-                        })?;
+                    NCryptCreatePersistedKey(
+                        prov,
+                        &mut key,
+                        ALGO_RSA,
+                        KEY_NAME,
+                        CERT_KEY_SPEC(0),
+                        NCRYPT_FLAGS(0),
+                    )
+                    .map_err(|e| {
+                        let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                        SealerError::Tpm(format!("CreatePersistedKey: {e}"))
+                    })?;
+                    NCryptFinalizeKey(key, NCRYPT_FLAGS(0)).map_err(|e| {
+                        let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
+                        let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                        SealerError::Tpm(format!("FinalizeKey: {e}"))
+                    })?;
                 }
 
                 let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
@@ -327,15 +343,19 @@ mod tpm {
         unsafe fn open() -> Result<(NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE)> {
             let mut prov = NCRYPT_PROV_HANDLE::default();
             NCryptOpenStorageProvider(&mut prov, PROVIDER, 0)
-                .ok()
                 .map_err(|e| SealerError::Tpm(format!("OpenStorageProvider: {e}")))?;
             let mut key = NCRYPT_KEY_HANDLE::default();
-            NCryptOpenKey(prov, &mut key, KEY_NAME, 0, NCRYPT_FLAGS(0))
-                .ok()
-                .map_err(|e| {
-                    let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
-                    SealerError::Tpm(format!("OpenKey: {e}"))
-                })?;
+            NCryptOpenKey(
+                prov,
+                &mut key,
+                KEY_NAME,
+                CERT_KEY_SPEC(0),
+                NCRYPT_FLAGS(0),
+            )
+            .map_err(|e| {
+                let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                SealerError::Tpm(format!("OpenKey: {e}"))
+            })?;
             Ok((prov, key))
         }
     }
@@ -360,16 +380,21 @@ mod tpm {
                 let (prov, key) = Self::open()?;
 
                 // RSA-wrap the data key using PKCS#1 v1.5 padding.
+                // windows 0.56.0:
+                //   - `pcboutput: *mut u32` (raw pointer, was
+                //     `Option<&mut u32>`).
+                //   - `dwflags: NCRYPT_FLAGS` (typed, was raw u32);
+                //     `BCRYPT_PAD_PKCS1` is a `BCRYPT_PAD_FLAG` so we
+                //     unwrap with `.0` and re-wrap as `NCRYPT_FLAGS`.
                 let mut wrapped_len: u32 = 0;
                 NCryptEncrypt(
                     key,
                     Some(data_key.as_bytes()),
                     None,
                     None,
-                    Some(&mut wrapped_len),
-                    BCRYPT_PAD_PKCS1.0,
+                    &mut wrapped_len as *mut u32,
+                    NCRYPT_FLAGS(BCRYPT_PAD_PKCS1.0),
                 )
-                .ok()
                 .map_err(|e| {
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
@@ -383,10 +408,9 @@ mod tpm {
                     Some(data_key.as_bytes()),
                     None,
                     Some(&mut wrapped),
-                    Some(&mut got),
-                    BCRYPT_PAD_PKCS1.0,
+                    &mut got as *mut u32,
+                    NCRYPT_FLAGS(BCRYPT_PAD_PKCS1.0),
                 )
-                .ok()
                 .map_err(|e| {
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
@@ -428,16 +452,17 @@ mod tpm {
             unsafe {
                 let (prov, key) = Self::open()?;
 
+                // windows 0.56.0: same pcboutput / dwflags shape
+                // changes as `seal` above.
                 let mut got: u32 = 0;
                 NCryptDecrypt(
                     key,
                     Some(wrapped),
                     None,
                     None,
-                    Some(&mut got),
-                    BCRYPT_PAD_PKCS1.0,
+                    &mut got as *mut u32,
+                    NCRYPT_FLAGS(BCRYPT_PAD_PKCS1.0),
                 )
-                .ok()
                 .map_err(|e| {
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
@@ -450,10 +475,9 @@ mod tpm {
                     Some(wrapped),
                     None,
                     Some(&mut data_key_bytes),
-                    Some(&mut got),
-                    BCRYPT_PAD_PKCS1.0,
+                    &mut got as *mut u32,
+                    NCRYPT_FLAGS(BCRYPT_PAD_PKCS1.0),
                 )
-                .ok()
                 .map_err(|e| {
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(key.0));
                     let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
@@ -484,10 +508,15 @@ mod tpm {
         unsafe {
             let mut prov = NCRYPT_PROV_HANDLE::default();
             NCryptOpenStorageProvider(&mut prov, PROVIDER, 0)
-                .ok()
                 .map_err(|e| SealerError::Tpm(format!("OpenStorageProvider: {e}")))?;
             let mut key = NCRYPT_KEY_HANDLE::default();
-            match NCryptOpenKey(prov, &mut key, KEY_NAME, 0, NCRYPT_FLAGS(0)) {
+            match NCryptOpenKey(
+                prov,
+                &mut key,
+                KEY_NAME,
+                CERT_KEY_SPEC(0),
+                NCRYPT_FLAGS(0),
+            ) {
                 Ok(_) => {
                     let _ =
                         windows::Win32::Security::Cryptography::NCryptDeleteKey(key, 0);

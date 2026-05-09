@@ -93,7 +93,10 @@ mod imp {
     }
 
     pub(super) fn apply(hwnd_isize: isize, protection: ScreenshotProtection) -> Result<()> {
-        let hwnd = HWND(hwnd_isize as *mut core::ffi::c_void);
+        // windows = "0.56.0": `HWND` is `pub struct HWND(pub isize);`
+        // — wrap the raw isize directly. Earlier `*mut c_void` casts
+        // here were a holdover from a different windows-rs version.
+        let hwnd = HWND(hwnd_isize);
         let flag = flag_for(protection);
         unsafe {
             SetWindowDisplayAffinity(hwnd, flag).map_err(|e| {
@@ -150,7 +153,8 @@ mod imp {
         // capture protection is unavailable on this build.
         apply(hwnd_isize, protection)?;
 
-        let parent = HWND(hwnd_isize as *mut core::ffi::c_void);
+        // windows = "0.56.0" `HWND(pub isize)`; see `apply` above.
+        let parent = HWND(hwnd_isize);
         let mut state = ChildState {
             protection,
             visited: 0,

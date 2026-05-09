@@ -112,7 +112,7 @@ mod imp {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        PostMessageW, RegisterClassExW, RegisterDeviceNotificationW, SetWindowLongPtrW,
+        RegisterClassExW, RegisterDeviceNotificationW, SetWindowLongPtrW,
         TranslateMessage, UnregisterClassW, UnregisterDeviceNotification,
         DBT_DEVICEARRIVAL, DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE,
         DEV_BROADCAST_DEVICEINTERFACE_W, DEV_BROADCAST_HDR, GWLP_USERDATA, HWND_MESSAGE,
@@ -243,10 +243,14 @@ mod imp {
             let hinstance = GetModuleHandleW(PCWSTR::null())
                 .map_err(|e| UsbMonitorError::Win32(format!("GetModuleHandleW: {e}")))?;
             let class_name = make_class_name();
+            // windows 0.56.0: `WNDCLASSEXW.hInstance` is `HINSTANCE`,
+            // and `GetModuleHandleW` returns `HMODULE`. The two are
+            // distinct tuple structs in this version; `.into()` calls
+            // the upstream `From<HMODULE> for HINSTANCE` impl.
             let wnd_class = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                 lpfnWndProc: Some(wnd_proc),
-                hInstance: hinstance,
+                hInstance: hinstance.into(),
                 lpszClassName: PCWSTR(class_name.as_ptr()),
                 ..Default::default()
             };
@@ -261,6 +265,9 @@ mod imp {
                 callback: callback.clone(),
             }));
 
+            // windows 0.56.0: `CreateWindowExW` returns `HWND` directly
+            // (not `Result<HWND>`); a NULL/zero return signals failure
+            // and the caller is expected to read `GetLastError`.
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 PCWSTR(class_name.as_ptr()),
@@ -274,13 +281,23 @@ mod imp {
                 None,
                 hinstance,
                 None,
-            )
-            .map_err(|e| UsbMonitorError::Win32(format!("CreateWindowExW: {e}")))?;
+            );
+            if hwnd.0 == 0 {
+                let err = windows::core::Error::from_win32();
+                return Err(UsbMonitorError::Win32(format!(
+                    "CreateWindowExW: {} (HRESULT 0x{:08X})",
+                    err.message(),
+                    err.code().0
+                )));
+            }
 
             // Stash pointer to our WindowState so WndProc can find it.
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
 
             // Register for KSCATEGORY_CAPTURE arrivals on this HWND.
+            // windows 0.56.0: `DBT_DEVTYP_DEVICEINTERFACE` is the
+            // typed wrapper `DEV_BROADCAST_HDR_DEVICE_TYPE(pub u32)`;
+            // the struct field expects raw `u32`, so unwrap with `.0`.
             let mut filter = DEV_BROADCAST_DEVICEINTERFACE_W {
                 dbcc_size: std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
                 dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
@@ -331,7 +348,13 @@ mod imp {
     ) -> LRESULT {
         if msg == WM_DEVICECHANGE && wparam.0 as u32 == DBT_DEVICEARRIVAL {
             let hdr = lparam.0 as *const DEV_BROADCAST_HDR;
-            if !hdr.is_null() && (*hdr).dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE.0 {
+            // windows 0.56.0 quirk: `DEV_BROADCAST_HDR.dbch_devicetype`
+            // is the typed wrapper `DEV_BROADCAST_HDR_DEVICE_TYPE`,
+            // whereas `DEV_BROADCAST_DEVICEINTERFACE_W.dbcc_devicetype`
+            // (used at registration time above) is raw u32. Same Win32
+            // constant, two struct field types — compare without `.0`
+            // here, with `.0` there.
+            if !hdr.is_null() && (*hdr).dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
                 let user_data = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
                     hwnd,
                     GWLP_USERDATA,

@@ -28,8 +28,13 @@ runtime = { path = "../crates/runtime" }
 # with WDA_EXCLUDEFROMCAPTURE. Gated to cfg(windows) so non-Windows
 # builds still compile (the screenshot-resistance command becomes a
 # no-op on those platforms).
+#
+# Pinned to `=0.56.0` (matches runtime/Cargo.toml + keystore/Cargo.toml)
+# so the workspace resolves a single windows-rs version. The HWND
+# constructor / typed flag constants shift on patch bumps; bump
+# deliberately when needed.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.56", features = [
+windows = { version = "=0.56.0", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }

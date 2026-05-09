@@ -4,9 +4,8 @@
   "version": "0.0.1",
   "identifier": "org.discord-privacy.client",
   "build": {
-    "frontendDist": "../webview/dist",
-    "devUrl": "http://localhost:1420"
-  },
+    "frontendDist": "../webview/dist"
+},
   "app": {
     "windows": [
       {

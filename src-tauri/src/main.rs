@@ -143,21 +143,48 @@ async fn set_screenshot_protection(
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
+        // Tauri 2: app-level page-load hook fires for every page-load
+        // event on every webview window. We use it to re-apply
+        // screenshot protection on every navigation: WebView2's child
+        // HWND tree (Chrome_WidgetWin_* host + render surface) may not
+        // be fully constructed at `app.setup` time when navigation to
+        // `discord.com/app` is still in flight, and any new child
+        // HWNDs Discord's SPA spawns later (embeds, modals, popouts)
+        // need the affinity flag applied as well.
+        //
+        // `apply_to_hwnd_and_children` is idempotent on the parent
+        // and best-effort on descendants, so re-applying is safe and
+        // the `PageLoadPayload::Started` vs `Finished` distinction
+        // doesn't matter — we want the flag set on whatever children
+        // exist at each event.
+        //
+        // Lives on the Builder rather than the WebviewWindow because
+        // Tauri 2 only exposes `on_page_load` on the builder side
+        // (`WebviewBuilder::on_page_load` during construction or
+        // `Builder::on_page_load` for app-wide). `WebviewWindow`
+        // post-creation doesn't have a page-load listener API.
+        .on_page_load(|webview, _payload| {
+            // Tauri 2's `Builder::on_page_load` callback delivers
+            // `&tauri::Webview` (not `&WebviewWindow`) because page
+            // loads are webview-scoped — Tauri 2 supports multiple
+            // webviews per window. `apply_to_webview` extracts the
+            // WebView2 surface HWND and walks descendants from there.
+            if let Err(e) =
+                screenshot::apply_to_webview(webview, ScreenshotProtection::On)
+            {
+                tracing::debug!(
+                    ?e,
+                    "screenshot protection re-apply on page load failed",
+                );
+            }
+        })
         .setup(|app| {
             // Apply screenshot resistance to the main webview window
             // as soon as it exists. This runs once at startup; the
             // `set_screenshot_protection` command lets JS toggle it
             // later (e.g. when entering an unencrypted DM, the user
-            // may want to relax protection).
-            //
-            // We also re-apply on every page load: WebView2's child
-            // HWND tree (Chrome_WidgetWin_* host + render surface) may
-            // not be fully constructed at `app.setup` time when the
-            // navigation to `discord.com/app` is still in flight, and
-            // any new child HWNDs Discord's SPA spawns later (e.g.
-            // for embeds, modals, popouts) need the affinity flag
-            // applied as well. `apply_to_hwnd_and_children` is
-            // idempotent so re-applying is safe.
+            // may want to relax protection). The `on_page_load` hook
+            // above re-applies on every subsequent navigation.
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(e) =
                     screenshot::apply_to_window(&window, ScreenshotProtection::On)
@@ -168,23 +195,6 @@ fn main() {
                          continuing without it (Windows-only feature)"
                     );
                 }
-
-                window.clone().on_page_load(move |w, _payload| {
-                    // PageLoadPayload carries Started / Finished. We
-                    // re-apply on every event (Started catches the
-                    // initial WebView2 controller HWND tree;
-                    // Finished catches anything Discord's SPA built
-                    // during render). Idempotent on the parent;
-                    // best-effort on descendants.
-                    if let Err(e) =
-                        screenshot::apply_to_window(&w, ScreenshotProtection::On)
-                    {
-                        tracing::debug!(
-                            ?e,
-                            "screenshot protection re-apply on page load failed",
-                        );
-                    }
-                });
             }
             Ok(())
         })

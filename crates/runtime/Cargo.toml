@@ -19,12 +19,26 @@ tracing = { workspace = true }
 # A2: SetWindowDisplayAffinity (UI/WindowsAndMessaging).
 # A3: RegisterDeviceNotificationW + WM_DEVICECHANGE pump + KSCATEGORY_CAPTURE
 #     GUID (UI/WindowsAndMessaging + Devices/DeviceAndDriverInstallation +
-#     System/LibraryLoader for GetModuleHandleW).
+#     System/LibraryLoader for GetModuleHandleW + System/Threading for
+#     GetCurrentThreadId on the dedicated monitor thread).
+# A3 also requires Win32_Graphics_Gdi: in windows 0.56.0, `WNDCLASSEXW`
+#     carries `HBRUSH` (background brush) and `HICON` fields whose
+#     types live under `Win32_Graphics_Gdi`. Without that feature,
+#     `WNDCLASSEXW` (and therefore `RegisterClassExW`) won't compile.
 # A4: Toolhelp32Snapshot / Process32FirstW / Process32NextW
 #     (System/Diagnostics/ToolHelp).
-windows = { version = "0.56", features = [
+#
+# Pinned to `=0.56.0` (not `0.56`) because the windows-rs API surface
+# drifts on patch bumps in ways that touch every `cfg(windows)` call
+# site (e.g. NCrypt return types, HWND inner type, typed flag
+# constants). Pinning here documents the version the code was
+# verified against; bump deliberately when needed and re-walk every
+# Win32 call site.
+windows = { version = "=0.56.0", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }

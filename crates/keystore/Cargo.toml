@@ -43,7 +43,12 @@ keyring = { workspace = true }
 # B1 Windows path: NCryptOpenStorageProvider("Microsoft Platform
 # Crypto Provider") → TPM-bound RSA key → wrap an XChaCha20-Poly1305
 # data key. NCrypt + BCrypt status codes live under Win32_Security.
-windows = { version = "0.56", features = [
+#
+# Pinned to `=0.56.0` (matches runtime/Cargo.toml + src-tauri/Cargo.toml).
+# The NCrypt* signatures shift on patch bumps (return types, dwflags
+# typing, pcboutput pointer shape, dwlegacykeyspec → `CERT_KEY_SPEC`);
+# bump deliberately and re-walk every NCrypt call site.
+windows = { version = "=0.56.0", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
 ] }

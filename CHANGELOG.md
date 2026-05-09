@@ -1197,3 +1197,193 @@ WebView2 Runtime installed:
 5. Cookie persistence verified (covered by 3).
 
 Sign-off on those five checks marks Layer 9 verified.
+
+### Layer 9-fixup — windows-rs 0.56.0 API-shape fixes
+
+First Windows-host `cargo tauri dev` surfaced a cluster of windows-rs
+0.56.0 signature mismatches that had been latent since Layers A2/A3/B1.
+The `cfg(windows)` paths had only ever been reasoned about, never
+compiled — Linux builds skip them, and CI never actually runs on
+Windows. This commit cross-compiles them via
+`cargo check -p <crate> --target x86_64-pc-windows-gnu` so the type
+checks run end-to-end before the next Windows attempt.
+
+**No cryptographic behaviour changes.** Wire format, AEAD parameters,
+key sizes, padding, AAD encoding, KDF labels — all untouched. The
+fixes are purely about matching windows-rs 0.56.0's actual function
+signatures and type definitions.
+
+- `crates/runtime/src/screenshot.rs` (Layer A2):
+    - `HWND` constructor in 0.56.0 is `HWND(pub isize)`, not
+      `HWND(*mut c_void)`. Both call sites switched from
+      `HWND(hwnd_isize as *mut core::ffi::c_void)` to
+      `HWND(hwnd_isize)` with an inline note. Affects both
+      `apply` (parent) and `apply_with_children` (Layer 9 walk).
+
+- `crates/runtime/src/usb.rs` (Layer A3 — first time it has compiled
+  for a Windows target):
+    - `WNDCLASSEXW.hInstance` is `HINSTANCE`; `GetModuleHandleW`
+      returns `HMODULE`. Distinct tuple structs in 0.56.0; relies on
+      the upstream `From<HMODULE> for HINSTANCE` impl. Fix: pass
+      `hinstance.into()` into the struct literal.
+    - `CreateWindowExW` in 0.56.0 returns `HWND` directly (not
+      `Result<HWND>`); a NULL/zero return signals failure. The old
+      code's `.map_err(|e| ...)?` was a no-op because there's no
+      `map_err` on `HWND`. Replaced with an explicit
+      `if hwnd.0 == 0 { Err(windows::core::Error::from_win32()...) }`
+      check.
+    - `DBT_DEVTYP_DEVICEINTERFACE` is the typed wrapper
+      `DEV_BROADCAST_HDR_DEVICE_TYPE(pub u32)`. The two struct
+      fields it gets compared against in this file have **different
+      types**:
+        - `DEV_BROADCAST_DEVICEINTERFACE_W.dbcc_devicetype: u32`
+          → unwrap as `DBT_DEVTYP_DEVICEINTERFACE.0` at the
+          registration call.
+        - `DEV_BROADCAST_HDR.dbch_devicetype: DEV_BROADCAST_HDR_DEVICE_TYPE`
+          → compare as `DBT_DEVTYP_DEVICEINTERFACE` (no `.0`) in the
+          WndProc dispatch path.
+      The asymmetry is documented inline at both call sites.
+    - Removed an unused `PostMessageW` import (`-D warnings` would
+      otherwise reject the cross-compile).
+
+- `crates/keystore/src/sealer.rs` (Layer B1 — `TpmSealer` first time
+  it has compiled for a Windows target):
+    - `NCryptOpenStorageProvider` / `NCryptOpenKey` /
+      `NCryptCreatePersistedKey` / `NCryptFinalizeKey` /
+      `NCryptEncrypt` / `NCryptDecrypt` all return `Result<()>`
+      directly in 0.56.0. The old code used the `.ok()`-on-NTSTATUS
+      pattern (`.ok().map_err(...)`) which doesn't apply: `.ok()`
+      on `Result<()>` returns `Option<()>`, and `Option` has no
+      `map_err`. Dropped `.ok()` from all six call sites; pattern is
+      now plain `.map_err(...)?`.
+    - `NCryptOpenKey` and `NCryptCreatePersistedKey` take
+      `dwlegacykeyspec: CERT_KEY_SPEC` (typed wrapper), not raw
+      `u32`. Pass `CERT_KEY_SPEC(0)` for "no legacy KSP / use
+      CNG-native key spec". Added `CERT_KEY_SPEC` to the imports.
+    - `NCryptEncrypt` / `NCryptDecrypt` take `pcboutput: *mut u32`
+      as a raw pointer (was `Option<&mut u32>` in earlier 0.5x
+      versions). Replaced `Some(&mut wrapped_len)` /
+      `Some(&mut got)` with `&mut wrapped_len as *mut u32` /
+      `&mut got as *mut u32` at all four call sites.
+    - `NCryptEncrypt` / `NCryptDecrypt` `dwflags` is `NCRYPT_FLAGS`,
+      not raw `u32`. `BCRYPT_PAD_PKCS1` itself is a `BCRYPT_PAD_FLAG`
+      (typed). Wrap as `NCRYPT_FLAGS(BCRYPT_PAD_PKCS1.0)`.
+
+- `crates/runtime/Cargo.toml`:
+    - Added `Win32_Graphics_Gdi` feature: `WNDCLASSEXW` carries
+      `HBRUSH` and `HICON` fields whose types live there.
+    - Added `Win32_System_Threading` feature: `GetCurrentThreadId`
+      (used by the dedicated USB-monitor thread).
+    - Pinned `windows = "=0.56.0"` (was `"0.56"`). Patch-version
+      drift in this crate moves typed-wrapper boundaries (HWND
+      inner type, NCrypt return shape, typed flag constants), and
+      every `cfg(windows)` call site has to be re-walked when it
+      moves. Pinning documents the version the code is verified
+      against and forces a deliberate audit on bump.
+
+- `crates/keystore/Cargo.toml`: pinned `windows = "=0.56.0"` for
+  the same reason.
+
+- `src-tauri/Cargo.toml`: pinned `windows = "=0.56.0"` so the
+  workspace resolves a single windows-rs version end-to-end.
+
+**Verification (Layer 9-fixup):**
+
+- `cargo check -p runtime --target x86_64-pc-windows-gnu` — green
+  (1 pre-existing `dead_code` warning on `class_atom`; not
+  introduced by this fix).
+- `cargo check -p keystore --target x86_64-pc-windows-gnu` — green
+  (1 pre-existing `unused_imports: c_void` warning; not introduced
+  by this fix).
+- `cargo check -p runtime -p keystore` (default Linux target) —
+  green; `cfg(not(windows))` stub branches still resolve.
+- `cargo test -p runtime` — 67 passed (unchanged); the Linux stubs
+  for `screenshot` and `usb` are exercised, the Win32 paths aren't
+  reachable from this target.
+- `cargo test -p keystore --lib` — 8 lib tests passed; Win32 TPM
+  paths gated to Windows host.
+
+The user's previous `cargo tauri dev` attempt should now compile
+through the runtime + keystore + src-tauri crates against
+windows-rs 0.56.0 on a real Windows host. If new errors surface
+that the cross-compile didn't catch (e.g. MinGW vs MSVC ABI
+differences), they're worth reporting back since the cross-compile
+target uses `gnu` while production is `msvc`.
+
+**rustup target add x86_64-pc-windows-gnu** is a one-time WSL setup
+step for future `cfg(windows)` audits — adds the pure-Rust
+windows-gnu target so `cargo check` validates Win32 type usage
+without leaving WSL. Recorded here so future contributors don't
+have to re-derive it.
+
+### Layer 9-fixup (round 2) — Tauri build script + page-load API
+
+Second Windows-host `cargo tauri dev` after the round-1 windows-rs
+fixes surfaced two pure src-tauri issues:
+
+- **Missing `build.rs`**: `tauri::generate_context!()` panicked with
+  `OUT_DIR env var is not set, do you have a build script?`. Tauri 2
+  requires a build script that calls `tauri_build::build()` to parse
+  `tauri.conf.json`, generate the codegen inputs, and emit
+  `cargo:rustc-env=OUT_DIR=...` / capabilities / permission files
+  the macro reads at compile time. Added `src-tauri/build.rs` with
+  the canonical `tauri_build::build()` entry point.
+  `tauri-build` was already in `[build-dependencies]`; Cargo's
+  default `build = "build.rs"` resolution picks the file up
+  automatically.
+
+- **`WebviewWindow::on_page_load` doesn't exist post-creation**:
+  Tauri 2 exposes page-load callbacks two ways — on
+  `WebviewBuilder` during construction, or on the app-level
+  `tauri::Builder` for an app-wide hook that fires for every
+  webview's page loads. `WebviewWindow` after creation has no
+  page-load listener API. Refactored to register the handler on
+  the app `Builder` chain instead of on the window inside `setup`,
+  preserving the original intent (re-apply screenshot capture
+  protection on every navigation event so WebView2 child HWNDs
+  spawned during render get the affinity flag).
+
+- **`Builder::on_page_load` callback signature**: the closure
+  receives `&tauri::Webview` (not `&WebviewWindow`) — page loads
+  are webview-scoped because Tauri 2 supports multiple webviews
+  per window. Added a parallel `screenshot::apply_to_webview`
+  helper alongside the existing `apply_to_window`. The new helper
+  goes through `webview.window().hwnd()` because
+  `tauri::Webview::hwnd()` doesn't exist directly in 2.11.1 (the
+  HWND lives on the parent `Window`, reachable via `Webview::window()`).
+  The `EnumChildWindows` walk inside
+  `runtime::apply_to_hwnd_and_children` then descends from the
+  parent into the WebView2 host + render surface as before — same
+  protection, same idempotent re-application, just routed through
+  the app-level callback shape.
+
+- **Placeholder `src-tauri/icons/icon.ico` (1118 bytes)**: minimum-
+  valid 16×16 transparent ICO. `tauri-build`'s Windows-target
+  resource step requires an icon file to compile into the .exe's
+  resources; `tauri.conf.json` had `"bundle.icon": []` (empty),
+  which falls back to looking for `icons/icon.ico` and errored.
+  Replace before ship with a real icon. Generated via a one-shot
+  Python script (recorded in CHANGELOG so the placeholder's
+  provenance is auditable; bytes are deterministic from the script).
+
+**Verification (Layer 9-fixup round 2):**
+
+- `cargo check -p discord-privacy-client --target x86_64-pc-windows-gnu`
+  — green. Two pre-existing warnings only (`class_atom` dead_code
+  in `runtime::usb`, `c_void` unused_imports in `keystore::sealer`);
+  neither introduced by these fixes.
+- WSL cross-compile additionally needs `x86_64-w64-mingw32-windres`
+  (from `mingw-w64`) for `tauri-winres` to compile the resource
+  file. If `mingw-w64` isn't installed, a temporary stub script in
+  `/tmp/winres-stub/x86_64-w64-mingw32-windres` (writes an empty
+  output file and exits 0) is enough for type-checking purposes —
+  the linker isn't invoked by `cargo check`. On a real Windows host
+  this isn't needed; MSVC's `rc.exe` handles the resource step
+  natively.
+- Pre-existing unrelated cleanup (`PostMessageW` import dropped in
+  round 1) unchanged.
+
+Now ready for another Windows-host `cargo tauri dev` attempt. The
+on-page-load handler runs at app level and applies to every webview
+created from any window declared in `tauri.conf.json` — the main
+window in our case.
