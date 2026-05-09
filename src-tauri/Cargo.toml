@@ -11,6 +11,12 @@ tauri-build = { workspace = true }
 [dependencies]
 tauri = { workspace = true }
 serde = { workspace = true }
+# Layer 10 / Phase 3: `osl_encrypt_message` accepts an opaque
+# `options: serde_json::Value` so the JS-side hook can pass through
+# arbitrary metadata (reply context, attachments) without a fixed
+# schema during the stub phase. Phase 4 may tighten this to a typed
+# struct once the Rust crypto pipeline knows what fields it needs.
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

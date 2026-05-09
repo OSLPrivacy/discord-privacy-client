@@ -1387,3 +1387,147 @@ Now ready for another Windows-host `cargo tauri dev` attempt. The
 on-page-load handler runs at app level and applies to every webview
 created from any window declared in `tauri.conf.json` — the main
 window in our case.
+
+### Layer 10 / Phase 3 — Injection harness with stub `osl_encrypt_message`
+
+Layer 10 ships in phases per `docs/design/layer-10-discord-internals.md`.
+**Phase 3** establishes the injection mechanism end-to-end with a
+stub IPC command, so the source-rewrite pipeline can be smoke-tested
+on Windows before any real cryptographic wiring lands. **Phase 4**
+(next) replaces the stub with the actual `crypto::*` + `stego::*`
+pipeline; the JS-side bootloader and IPC wire shape stay the same.
+
+**Verified anchor strings (live Discord, post-Phase-2 probes):**
+
+- Outer anchor `.handleSendMessage,onResize:` — 1 hit, module 806202
+  (the chat-input component).
+- Secondary anchor `getSendMessageOptions` — 2 hits (module 352043
+  + 806202); only 806202 has both, so the dual-anchor gate uniquely
+  identifies the chat-input module.
+- Splice point: the `E.A.sendMessage(h.id,_,void 0,I).then(...)`
+  shape inside `handleSendMessage`. Captured by regex
+  `/(\w+(?:\.\w+)+)\.sendMessage\((\w+)\.id,(\w+),void 0,(\w+)\)/g`
+  and replaced with
+  `window.__OSL_INTERCEPT__(<target>,"sendMessage",<chan>.id,<msg>,void 0,<opts>)`.
+
+Vencord's `findByPropsLazy("editMessage", "sendMessage")` finder
+that the upstream `MessageActions` binding relies on is broken on
+current Discord (post-Phase-2 verified: 0 modules expose
+`sendMessage` as a runtime property). This implementation does **not**
+depend on that finder — the dual-anchor gate identifies the module
+by source-substring presence, which is independent of the obfuscated
+runtime export shape.
+
+**Files added:**
+
+- `src-tauri/src/injection/mod.rs` — thin Rust module exposing
+  `pub const BOOT_SCRIPT: &str = include_str!("boot.js");`. Embeds
+  the JS at compile time so it ships in the binary with no loose
+  files in the installer payload.
+- `src-tauri/src/injection/boot.js` — the Vencord-style eager
+  source-rewriter:
+    - Replaces `window.webpackChunkdiscord_app.push` with a wrapper
+      that walks each chunk's factory map and rewrites factory
+      functions matching both anchors.
+    - Defensive loop processes pre-existing chunks (in case the
+      init-script-runs-first assumption ever drifts) before
+      installing the push wrapper.
+    - Reconstructs evaluable expressions from rewritten source
+      using Vencord's `"0," + "function" + sliced-params-and-body`
+      pattern; arrow factories skip the `"function"` insert.
+    - Logs `[OSL] Hooked module <id>` plus before/after context
+      windows around the anchor for every successful rewrite.
+      `console.error` for anchor-matched-but-regex-missed
+      (signals shape drift).
+    - Installs `window.__OSL_INTERCEPT__(target, methodName,
+      channelId, message, third, options)` — invoked at every send
+      from the rewritten call site. Calls `osl_encrypt_message` via
+      `window.__TAURI_INTERNALS__.invoke`, mutates `message.content`
+      with the returned cover text, then forwards to the original
+      `target[methodName](...)`. Empty-content / unexpected-shape /
+      IPC-not-present paths all passthrough plaintext rather than
+      drop the send (Phase 3 fail-open is acceptable; Phase 4 needs
+      a real fail-closed policy decision).
+- `src-tauri/capabilities/main.json` — Tauri 2 capability granting
+  the `main` window the `allow-osl-encrypt-message` permission
+  when loading any URL matching `https://discord.com/*` or
+  `https://*.discord.com/*`. `remote.urls` extends the IPC bridge
+  to the discord.com origin, which Tauri 2 otherwise blocks
+  by default for remote content. **Intentionally minimal** — only
+  the OSL bridge is exposed; the existing
+  `generate_identity` / `save_identity` / `register` / `aead_seal`
+  / etc. commands stay non-callable from Discord.
+- `src-tauri/permissions/osl-encrypt-message.toml` — explicit
+  permission declaration for the `osl_encrypt_message` command.
+  Tauri 2's auto-generation of permission entries is plugin-side
+  only; app-level commands need a manual `[[permission]]` entry
+  with `commands.allow = [...]`.
+
+**Files changed:**
+
+- `src-tauri/src/main.rs`:
+    - Added `mod injection;` and the imports `WebviewUrl,
+      WebviewWindowBuilder`.
+    - Added `osl_encrypt_message(channel_id, plaintext, _options)
+      -> Result<String, String>` Tauri command. Phase 3 body is the
+      stub `format!("[OSL-STUB] {plaintext}")`. Returns
+      `Result<String, String>` not `IpcResult` because the JS-side
+      catch path passes plaintext through on error and a plain
+      string is the most predictable shape for that path.
+    - `setup` rewritten to **build the main window programmatically**
+      via `WebviewWindowBuilder::new(app, "main",
+      WebviewUrl::External("https://discord.com/app"))` chained with
+      `.title()`, `.inner_size()`, `.user_agent()`, and
+      `.initialization_script(injection::BOOT_SCRIPT)`. Tauri 2
+      only exposes `initialization_script` on
+      `WebviewWindowBuilder` — config-built windows don't pass
+      through it, which is why the move from `tauri.conf.json` was
+      needed. Screenshot protection is applied to the just-built
+      window inline.
+    - `osl_encrypt_message` registered in `invoke_handler!`.
+- `src-tauri/Cargo.toml`: added `serde_json = { workspace = true }`.
+  The stub command takes `_options: serde_json::Value` so the JS
+  hook can pass arbitrary metadata (reply context, attachments)
+  without a fixed schema during shake-out. Phase 4 may tighten to a
+  typed struct.
+- `src-tauri/tauri.conf.json`: `app.windows: []` (was the
+  declaratively-configured Discord-loading window from Layer 9).
+  The window config moved into Rust code in `setup`; the
+  declarative path can't attach an init script.
+
+**Verification (cross-compile):**
+
+`PATH=/tmp/winres-stub:$PATH cargo check -p discord-privacy-client
+--target x86_64-pc-windows-gnu` is **green**. The two pre-existing
+warnings (`class_atom` dead_code in `runtime::usb`, `c_void`
+unused_imports in `keystore::sealer`) carry over from the Layer
+9-fixup commits; nothing new from this round.
+
+**Deferred Windows-host acceptance** (the four checks the user has
+to run on a Windows build of `cargo tauri dev` after this commit):
+
+1. Tauri shell launches and Discord loads normally (the hook
+   doesn't break anything that wasn't broken before).
+2. DevTools console shows
+   `[OSL] Boot script installed; hooking webpackChunkdiscord_app`
+   followed by `[OSL] Hooked module 806202` (or whichever module ID
+   the chat-input lives at after Discord's next bundle build).
+3. Sending a message in any channel logs
+   `[OSL] intercept: channel=<id> plaintext_len=<N>` and the
+   actually-sent message visible in Discord's UI is prefixed with
+   `[OSL-STUB] ` (Phase 3's defining acceptance signal).
+4. No console errors, no crashes. Specifically: no
+   `[OSL] anchors matched but SEND_PATTERN did not splice`
+   (signals shape drift — would need re-anchoring), no
+   `[OSL] Tauri IPC bridge not present on window` (signals
+   capability misconfiguration).
+
+If acceptance fails on (3) but the intercept log fires (so the hook
+is reaching IPC), check `capabilities/main.json` and Tauri 2's
+permission resolution. If acceptance fails on (2), the chat-input
+module ID has rotated or Discord's bundle structure has drifted —
+re-run the Phase 2 verification probes to find the new anchor.
+
+**Phase 3 does NOT change anything in `crypto/`, `keystore/`,
+`stego/`, `runtime/`, or the keyserver.** Phase 4 is where the stub
+flips to real crypto.

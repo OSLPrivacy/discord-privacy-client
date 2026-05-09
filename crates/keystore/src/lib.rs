@@ -36,6 +36,7 @@ pub mod duress;
 pub mod identity;
 pub mod password;
 pub mod prekeys;
+pub mod recipients;
 pub mod sealer;
 pub mod storage;
 
@@ -51,6 +52,9 @@ pub use prekeys::{
     canonical_replenish_bytes, iso_8601_from_unix_seconds, load_prekey_state,
     save_prekey_state, sign_replenish_batch, OpkEntry, PrekeyConfig, PrekeyState,
     ReplenishOpk, ReplenishSpk, SpkEntry, REPLENISH_DOMAIN, SPK_ROTATION_INTERVAL_SECONDS,
+};
+pub use recipients::{
+    get_recipients, get_recipients_from_path, osl_config_dir, RecipientError,
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,

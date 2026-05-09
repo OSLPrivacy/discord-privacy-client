@@ -1,21 +1,27 @@
 // Tauri shell entry point.
 //
-// Layer 9: the main window loads `https://discord.com/app` directly
-// (configured via `windows[0].url` in `tauri.conf.json`). WebView2's
-// default user-data folder under `%LOCALAPPDATA%\<bundle-id>\EBWebView`
-// persists cookies across restarts, so Discord login survives without
-// extra config. Discord serves its own CSP via response headers;
-// Tauri's `app.security.csp` is `null` so no local CSP gets injected
-// to clash with it (Tauri only injects into local content anyway, but
-// keeping it null documents the layer-9 intent).
+// Layer 9: the main window loads `https://discord.com/app` directly.
+// WebView2's default user-data folder under
+// `%LOCALAPPDATA%\<bundle-id>\EBWebView` persists cookies across
+// restarts so Discord login survives without extra config. Discord
+// serves its own CSP via response headers; Tauri's `app.security.csp`
+// is `null` so no local CSP gets injected to clash with it.
 //
-// Layer 10 will add Discord injection hooks; Layer 11 the encryption
-// UI overlays. This file currently exposes:
-//   - the IPC command surface (the pure functions in `ipc::commands`)
-//     wired as `#[tauri::command]` wrappers, and
-//   - the screenshot-resistance wiring (parent + WebView2 descendants
-//     via `runtime::apply_to_hwnd_and_children`), re-applied on every
-//     page load so newly-created WebView2 child HWNDs are covered.
+// Layer 10 / Phase 3: the main window is now built programmatically
+// (rather than declared in tauri.conf.json) so we can attach an
+// `initialization_script` that runs before Discord's bundle loads.
+// The script (`injection::BOOT_SCRIPT`) hooks
+// `webpackChunkdiscord_app` and source-rewrites the chat-input
+// module's sendMessage call site to route outbound content through
+// the `osl_encrypt_message` IPC command. Phase 3 of that command is a
+// stub returning `"[OSL-STUB] " + plaintext`; Phase 4 wires the real
+// crypto crate path.
+//
+// IPC from the discord.com origin is gated by
+// `capabilities/main.json` (Tauri 2 blocks IPC from remote URLs by
+// default) — only the `allow-osl-encrypt-message` permission is
+// granted, so the existing keystore / crypto / stego commands
+// declared below remain non-callable from Discord.
 //
 // The Tauri attribute glue lives here, not in the `ipc` crate, so
 // `ipc` itself has no Tauri dep — keeping its tests portable across
@@ -23,19 +29,21 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bootstrap;
+mod injection;
 mod screenshot;
 
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity,
-    cmd_init_keyserver, cmd_load_identity, cmd_register, cmd_save_identity,
-    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
-    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
-    GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
-    StegoEncodeRequest, StegoEncodeResponse,
+    cmd_init_keyserver, cmd_load_identity, cmd_osl_encrypt_message, cmd_register,
+    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
+    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
+    FetchPubkeysResponse, GenerateIdentityResponse, RegisterResponse, StatusResponse,
+    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
 };
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
-use tauri::{Manager, State};
+use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[tauri::command]
 async fn generate_identity(
@@ -140,6 +148,74 @@ async fn set_screenshot_protection(
     screenshot::apply_to_window(&window, protection)
 }
 
+/// Layer 10 / Phase 4 entry point. The injected boot script (see
+/// `injection::BOOT_SCRIPT`) intercepts outbound `/messages` /
+/// `/messages/edit` requests and routes the chat-input plaintext
+/// through this IPC command; the returned cover string is then
+/// substituted as the request's `content` body.
+///
+/// Phase 4 wires the real pipeline: recipient resolution
+/// (`keystore::recipients`) → per-recipient X25519 ECDH + HKDF →
+/// session-key wrap (XChaCha20-Poly1305) → bulk message AEAD →
+/// Mode 0 stego encode. The wire-format details and AEAD
+/// associated-data strings live alongside the implementation in
+/// `ipc::commands::cmd_osl_encrypt_message`.
+///
+/// Phase 5+ swaps the X25519 ECDH leg for the full PQXDH handshake
+/// + Double Ratchet header keys behind the same wire-shape
+/// contract: `(channel_id, plaintext, options) -> Result<String,
+/// String>` — boot.js requires no further edits.
+///
+/// Returns `Result<String, String>` (not `IpcResult`) deliberately:
+/// the JS bootloader's reject path simulates a network failure
+/// (Phase 4 boot.js update), so a flat string error message is the
+/// most predictable shape across that boundary. The keystore /
+/// crypto commands above use `IpcResult` because they're consumed
+/// by typed Rust callers (Layer 11 overlay UI) that benefit from
+/// structured error variants. Different audiences, different shapes.
+///
+/// The body runs in a `spawn_blocking` task because the underlying
+/// `KeyServerClient::fetch_pubkeys` call is synchronous (hand-rolled
+/// HTTP/1.1 over `std::net::TcpStream`) and will iterate
+/// once-per-recipient over network IO; we don't want to block the
+/// async runtime.
+#[tauri::command]
+async fn osl_encrypt_message(
+    app: tauri::AppHandle,
+    channel_id: String,
+    plaintext: String,
+    options: serde_json::Value,
+) -> Result<String, String> {
+    let plaintext_len = plaintext.len();
+    tracing::debug!(
+        channel_id = %channel_id,
+        plaintext_len,
+        "osl_encrypt_message Phase 4 invoked"
+    );
+    let app_handle = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_encrypt_message(state.inner(), channel_id, plaintext, options)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?;
+    if let Err(ref err) = result {
+        // Logged at warn so it's visible in `--release` runs without
+        // requiring debug filters; downstream callers will already
+        // see this surface as a Discord "Failed to send" toast.
+        tracing::warn!(
+            error = %err,
+            "osl_encrypt_message returning error (fail-closed)"
+        );
+    } else {
+        tracing::debug!(
+            plaintext_len,
+            "osl_encrypt_message succeeded"
+        );
+    }
+    result
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
@@ -179,23 +255,66 @@ fn main() {
             }
         })
         .setup(|app| {
-            // Apply screenshot resistance to the main webview window
-            // as soon as it exists. This runs once at startup; the
-            // `set_screenshot_protection` command lets JS toggle it
-            // later (e.g. when entering an unencrypted DM, the user
-            // may want to relax protection). The `on_page_load` hook
-            // above re-applies on every subsequent navigation.
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(e) =
-                    screenshot::apply_to_window(&window, ScreenshotProtection::On)
-                {
-                    tracing::warn!(
-                        ?e,
-                        "screenshot protection unavailable at startup; \
-                         continuing without it (Windows-only feature)"
-                    );
-                }
+            // Build the main window programmatically so we can attach
+            // the Layer 10 injection script via `initialization_script`
+            // — Tauri 2 only exposes that on `WebviewWindowBuilder`,
+            // not on config-built windows. URL / UA / dimensions
+            // moved here from `tauri.conf.json` (which now has
+            // `windows: []`).
+            //
+            // `WebviewUrl::External` parses the discord.com URL and
+            // marks the window as remote-content; the IPC bridge for
+            // it is gated by `capabilities/main.json` rather than
+            // automatically open as it would be for local content.
+            let main_url: tauri::Url = "https://discord.com/app"
+                .parse()
+                .expect("hardcoded discord.com URL parses");
+            let window = WebviewWindowBuilder::new(
+                app,
+                "main",
+                WebviewUrl::External(main_url),
+            )
+            .title("Discord Privacy Client")
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(940.0, 600.0)
+            .resizable(true)
+            .decorations(true)
+            // Pinned UA — see the Layer 9 verification doc. Bump
+            // when Discord starts complaining about Chrome 130.
+            .user_agent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+                 AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+            )
+            // Layer 10 injection. Runs before discord.com's bundle.
+            .initialization_script(injection::BOOT_SCRIPT)
+            .build()?;
+
+            // Apply screenshot resistance immediately. This runs
+            // once at startup; `set_screenshot_protection` lets a
+            // future overlay UI toggle it later. The `on_page_load`
+            // hook above also re-applies on every subsequent
+            // navigation event so newly-spawned WebView2 child HWNDs
+            // get the affinity flag too.
+            if let Err(e) =
+                screenshot::apply_to_window(&window, ScreenshotProtection::On)
+            {
+                tracing::warn!(
+                    ?e,
+                    "screenshot protection unavailable at startup; \
+                     continuing without it (Windows-only feature)"
+                );
             }
+
+            // Layer 10 / Phase 4 autostart: load identity +
+            // init_keyserver + register from on-disk config so the
+            // first `osl_encrypt_message` call from the Discord
+            // webview hits a fully initialised pipeline. Each step
+            // is fail-loud (warn-and-continue); see
+            // `bootstrap::run_autostart` docs.
+            let app_state = app.state::<AppState>();
+            bootstrap::run_autostart(app_state.inner());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -212,6 +331,7 @@ fn main() {
             status,
             x25519_diffie_hellman,
             set_screenshot_protection,
+            osl_encrypt_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

@@ -42,3 +42,7 @@ keyserver/keyserver.db-shm
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Reference clones for Layer 10 / 11 (Discord webpack research).
+# Vendored read-only via git clone — not part of the build.
+reference/

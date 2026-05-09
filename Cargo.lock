@@ -708,6 +708,7 @@ dependencies = [
  "runtime",
  "selectors 0.0.1",
  "serde",
+ "serde_json",
  "stego",
  "tauri",
  "tauri-build",
