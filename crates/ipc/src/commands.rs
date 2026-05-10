@@ -14,6 +14,8 @@ use crypto::{aead, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+use store::{StoreError, StoredMessage};
 
 // ---- DTOs ----
 
@@ -105,7 +107,9 @@ pub fn cmd_generate_identity(
     user_id: String,
 ) -> IpcResult<GenerateIdentityResponse> {
     if user_id.trim().is_empty() {
-        return Err(IpcError::InvalidArgument("user_id must be non-empty".into()));
+        return Err(IpcError::InvalidArgument(
+            "user_id must be non-empty".into(),
+        ));
     }
     let identity = generate_identity(user_id.clone());
     let resp = GenerateIdentityResponse {
@@ -176,8 +180,10 @@ pub fn cmd_fetch_pubkeys(state: &AppState, user_id: String) -> IpcResult<FetchPu
 
 pub fn cmd_aead_seal(req: AeadSealRequest) -> IpcResult<AeadSealResponse> {
     let key = aead::Key::from_bytes(b64_to_array::<{ aead::KEY_SIZE }>("key_b64", &req.key_b64)?);
-    let nonce =
-        aead::Nonce::from_bytes(b64_to_array::<{ aead::NONCE_SIZE }>("nonce_b64", &req.nonce_b64)?);
+    let nonce = aead::Nonce::from_bytes(b64_to_array::<{ aead::NONCE_SIZE }>(
+        "nonce_b64",
+        &req.nonce_b64,
+    )?);
     let ad = match req.ad_b64.as_deref() {
         Some(a) => b64_to_vec(a)?,
         None => Vec::new(),
@@ -191,8 +197,10 @@ pub fn cmd_aead_seal(req: AeadSealRequest) -> IpcResult<AeadSealResponse> {
 
 pub fn cmd_aead_open(req: AeadOpenRequest) -> IpcResult<AeadSealResponse> {
     let key = aead::Key::from_bytes(b64_to_array::<{ aead::KEY_SIZE }>("key_b64", &req.key_b64)?);
-    let nonce =
-        aead::Nonce::from_bytes(b64_to_array::<{ aead::NONCE_SIZE }>("nonce_b64", &req.nonce_b64)?);
+    let nonce = aead::Nonce::from_bytes(b64_to_array::<{ aead::NONCE_SIZE }>(
+        "nonce_b64",
+        &req.nonce_b64,
+    )?);
     let ad = match req.ad_b64.as_deref() {
         Some(a) => b64_to_vec(a)?,
         None => Vec::new(),
@@ -246,10 +254,7 @@ pub fn cmd_status(state: &AppState) -> StatusResponse {
 // X25519 helper (used by tests + for the eventual ratchet-handshake
 // command surface). Kept here so the IPC tests can verify the X25519
 // glue end-to-end without re-importing the whole crypto crate API.
-pub fn cmd_x25519_diffie_hellman(
-    secret_b64: String,
-    peer_public_b64: String,
-) -> IpcResult<String> {
+pub fn cmd_x25519_diffie_hellman(secret_b64: String, peer_public_b64: String) -> IpcResult<String> {
     let secret = x25519::SecretKey::from_bytes(b64_to_array::<{ x25519::SECRET_KEY_SIZE }>(
         "secret_b64",
         &secret_b64,
@@ -323,8 +328,7 @@ pub const OSL_PHASE4_PER_RECIPIENT_BYTES: usize =
     1 + aead::NONCE_SIZE + aead::KEY_SIZE + aead::TAG_SIZE;
 
 /// Fixed framing cost: `version(1) + N(1) + nonce_msg(24) + tag_msg(16)`.
-pub const OSL_PHASE4_FIXED_FRAMING_BYTES: usize =
-    1 + 1 + aead::NONCE_SIZE + aead::TAG_SIZE;
+pub const OSL_PHASE4_FIXED_FRAMING_BYTES: usize = 1 + 1 + aead::NONCE_SIZE + aead::TAG_SIZE;
 
 /// AEAD associated-data: static domain separator for the bulk
 /// message ciphertext leg. Static (no transcript binding) is
@@ -411,8 +415,7 @@ pub fn encrypt_osl_phase4_to_pubkeys(
     // recipient (e.g. tests, or future channels.json that lists
     // self) don't double up.
     let sender_pub = x25519::derive_public(sender_secret);
-    let mut effective: Vec<x25519::PublicKey> =
-        Vec::with_capacity(recipient_pubkeys.len() + 1);
+    let mut effective: Vec<x25519::PublicKey> = Vec::with_capacity(recipient_pubkeys.len() + 1);
     let mut seen_keys: Vec<[u8; x25519::PUBLIC_KEY_SIZE]> = Vec::new();
     for pk in recipient_pubkeys.iter() {
         let bytes = *pk.as_bytes();
@@ -437,9 +440,8 @@ pub fn encrypt_osl_phase4_to_pubkeys(
         ));
     }
 
-    let total_wire_len = OSL_PHASE4_FIXED_FRAMING_BYTES
-        + n * OSL_PHASE4_PER_RECIPIENT_BYTES
-        + plaintext_bytes.len();
+    let total_wire_len =
+        OSL_PHASE4_FIXED_FRAMING_BYTES + n * OSL_PHASE4_PER_RECIPIENT_BYTES + plaintext_bytes.len();
     if total_wire_len > stego::MODE0_MAX_RAW_LEN {
         let max_plaintext_for_n = stego::MODE0_MAX_RAW_LEN
             .saturating_sub(OSL_PHASE4_FIXED_FRAMING_BYTES + n * OSL_PHASE4_PER_RECIPIENT_BYTES);
@@ -465,9 +467,8 @@ pub fn encrypt_osl_phase4_to_pubkeys(
     for (slot_ix, peer_pub) in effective.iter().enumerate() {
         let shared = x25519::diffie_hellman(sender_secret, peer_pub)
             .map_err(|e| format!("OSL: ECDH (slot {slot_ix}): {e}"))?;
-        let wrap_key_bytes =
-            hkdf::derive_32(&[], shared.as_bytes(), OSL_PHASE4_HKDF_INFO_WRAP)
-                .map_err(|e| format!("OSL: HKDF wrap-key (slot {slot_ix}): {e}"))?;
+        let wrap_key_bytes = hkdf::derive_32(&[], shared.as_bytes(), OSL_PHASE4_HKDF_INFO_WRAP)
+            .map_err(|e| format!("OSL: HKDF wrap-key (slot {slot_ix}): {e}"))?;
         let wrap_key = aead::Key::from_bytes(wrap_key_bytes);
 
         let nonce_k = random::random_nonce();
@@ -503,8 +504,7 @@ pub fn encrypt_osl_phase4_to_pubkeys(
         ));
     }
 
-    let stego_msg = stego::encode_mode0(&wire)
-        .map_err(|e| format!("OSL: stego encode: {e}"))?;
+    let stego_msg = stego::encode_mode0(&wire).map_err(|e| format!("OSL: stego encode: {e}"))?;
     if stego_msg.len() > 2000 {
         return Err(format!(
             "OSL: stego output {} chars exceeds Discord 2000-char message cap",
@@ -547,8 +547,8 @@ pub fn cmd_osl_encrypt_message(
     plaintext: String,
     _options: serde_json::Value,
 ) -> Result<String, String> {
-    let recipients = keystore::get_recipients(&channel_id)
-        .map_err(|e| format!("OSL: recipient lookup: {e}"))?;
+    let recipients =
+        keystore::get_recipients(&channel_id).map_err(|e| format!("OSL: recipient lookup: {e}"))?;
 
     // Stable order: sort recipient ids ASCII so that the receiver
     // can scan slots deterministically.
@@ -581,7 +581,44 @@ pub fn cmd_osl_encrypt_message(
         }
         let mut peer_pub_bytes = [0u8; x25519::PUBLIC_KEY_SIZE];
         peer_pub_bytes.copy_from_slice(&peer_pub_vec);
+        // Send-side diagnostic, mirroring the receive-side
+        // `our_hint=…` / `hints=[…]` block. In dev builds, surface
+        // each recipient's pubkey first byte AS FETCHED from the
+        // keyserver (no client-side cache) so the user can sanity-
+        // check against the keyserver's `ik_x25519_pub` field for
+        // the same user_id. If these diverge across consecutive
+        // sends, something is rotating mid-session.
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[OSL] encrypt slot recipient={} pubkey_first_byte=0x{:02x}",
+            user_id, peer_pub_bytes[0]
+        );
         peer_pubkeys.push(x25519::PublicKey::from_bytes(peer_pub_bytes));
+    }
+
+    // Sender-side derived pub. Compare against keyserver-published
+    // pub for our own user_id: divergence here means
+    // `identity.x25519_public` (uploaded at register) drifted from
+    // `derive_public(secret)`. `load_identity` self-heals at load
+    // by re-deriving, but a session that started before the heal
+    // landed could still surface this.
+    #[cfg(debug_assertions)]
+    {
+        let derived_pub = x25519::derive_public(&identity.x25519_secret);
+        let stored_first = identity.x25519_public.as_bytes()[0];
+        let derived_first = derived_pub.as_bytes()[0];
+        eprintln!(
+            "[OSL] encrypt sender_user_id={} derived_first_byte=0x{:02x} \
+             stored_first_byte=0x{:02x}{}",
+            identity.user_id,
+            derived_first,
+            stored_first,
+            if derived_first != stored_first {
+                " DRIFT — register() uploaded stored, encrypt/decrypt use derived"
+            } else {
+                ""
+            }
+        );
     }
 
     encrypt_osl_phase4_to_pubkeys(&identity.x25519_secret, &peer_pubkeys, &plaintext)
@@ -645,6 +682,21 @@ pub enum DecodeError {
     /// triggers in normal operation.
     #[error("crypto primitive error: {0}")]
     Crypto(String),
+
+    /// The sender's Discord user_id is not present in
+    /// `peer_map.json`, so we can't translate it to an OSL
+    /// user_id and the keyserver lookup would 404. Phase 5 v1's
+    /// pre-decode resolution failure mode — distinct from
+    /// `NoMatchingSlot` (where we ARE configured to talk to the
+    /// sender but the message isn't addressed to us).
+    ///
+    /// JS hook treats this as "skip silently, leave cover in
+    /// place" — same UX as `NoMatchingSlot` and `BadPrefix`. The
+    /// `discord_id` is included so the hook can dedupe its
+    /// onboarding-hint log to one line per unmapped sender
+    /// rather than per message.
+    #[error("no peer mapping for discord_id={discord_id} (add to peer_map.json)")]
+    UnknownSender { discord_id: String },
 }
 
 /// Decode the Phase 4 wire-format raw bytes (post-`DPC0::`-strip,
@@ -735,9 +787,7 @@ pub fn decrypt_osl_phase4_from_wire(
         let nonce = aead::Nonce::from_bytes(nonce_bytes);
         let wrap_ct = &wire[wrap_start..wrap_end];
 
-        if let Ok(plaintext_bytes) =
-            aead::open(&wrap_key, &nonce, OSL_PHASE4_AD_WRAP, wrap_ct)
-        {
+        if let Ok(plaintext_bytes) = aead::open(&wrap_key, &nonce, OSL_PHASE4_AD_WRAP, wrap_ct) {
             if plaintext_bytes.len() == aead::KEY_SIZE && session_key.is_none() {
                 let mut sk = [0u8; aead::KEY_SIZE];
                 sk.copy_from_slice(&plaintext_bytes);
@@ -783,9 +833,7 @@ pub fn decrypt_osl_phase4_cover(
     sender_pub: &x25519::PublicKey,
     cover: &str,
 ) -> Result<Vec<u8>, DecodeError> {
-    let body = cover
-        .strip_prefix("DPC0::")
-        .ok_or(DecodeError::BadPrefix)?;
+    let body = cover.strip_prefix("DPC0::").ok_or(DecodeError::BadPrefix)?;
     let wire = STANDARD
         .decode(body)
         .map_err(|e| DecodeError::Base64(e.to_string()))?;
@@ -793,20 +841,27 @@ pub fn decrypt_osl_phase4_cover(
 }
 
 /// Layer 10 / Phase 5 IPC entry point: decrypt an incoming
-/// Discord message back to plaintext, given the sender's user_id
-/// (so the keyserver can resolve their X25519 public key).
+/// Discord message back to plaintext.
+///
+/// Takes `sender_discord_id` — the raw Discord snowflake the
+/// boot.js receive observer pulled out of the message DOM
+/// (`data-author-id`, avatar URL, etc.). Discord IDs aren't
+/// keyserver identifiers, so we resolve to OSL `user_id` via
+/// `AppState::peer_map` (loaded at bootstrap from
+/// `<osl_config_dir>/peer_map.json`) before any keyserver call.
 ///
 /// Caller (the JS hook on `MESSAGE_CREATE`) is expected to:
 /// 1. Pre-filter on the `DPC0::` prefix (so this command isn't
 ///    invoked for every message — the prefix scan in JS is far
 ///    cheaper than crossing the IPC bridge).
-/// 2. Pass the Discord `message.author.id` as `sender_user_id`.
+/// 2. Pass the Discord `message.author.id` as `sender_discord_id`.
 /// 3. Render the returned plaintext in place of the cover when
 ///    `Ok(_)` is returned.
 /// 4. Leave the cover visible when `Err(_)` returns. Failure
-///    branches: not a recipient (`NoMatchingSlot`), key rotation
-///    we haven't refetched yet (`MessageAeadFailed`), wire
-///    corruption (`TooShort` / `BadPrefix` / etc.).
+///    branches: peer not in map (`UnknownSender`), not a recipient
+///    (`NoMatchingSlot`), key rotation we haven't refetched yet
+///    (`MessageAeadFailed`), wire corruption (`TooShort` /
+///    `BadPrefix` / etc.).
 ///
 /// Returns `Result<String, String>` (matching encrypt's wire
 /// shape). On success, the plaintext is interpreted as UTF-8 and
@@ -815,9 +870,12 @@ pub fn decrypt_osl_phase4_cover(
 /// input, so this should never trigger absent corruption.
 ///
 /// Sender pubkey resolution is cached per `AppState`'s
-/// [`crate::state::SenderPubkeyCache`] (5-minute TTL); first hit
-/// per sender per 5-minute window pays a keyserver round-trip,
-/// subsequent hits are local.
+/// [`crate::state::SenderPubkeyCache`] (30-minute TTL); first hit
+/// per sender per window pays a keyserver round-trip, subsequent
+/// hits are local. Cache is keyed by **OSL user_id** (post peer-
+/// map resolution), not Discord id, so re-mapping a discord_id to
+/// a different OSL identity in `peer_map.json` doesn't pollute
+/// the cache.
 ///
 /// `_channel_id` is currently unused — the recipient mapping is
 /// not channel-keyed on the receive side (any message we can
@@ -827,8 +885,29 @@ pub fn decrypt_osl_phase4_cover(
 /// wire change.
 pub fn cmd_osl_decrypt_message(
     state: &AppState,
-    _channel_id: String,
-    sender_user_id: String,
+    channel_id: String,
+    sender_discord_id: String,
+    content: String,
+) -> Result<String, String> {
+    cmd_osl_decrypt_message_with_id(state, None, channel_id, sender_discord_id, content)
+}
+
+/// Same as [`cmd_osl_decrypt_message`] but accepts an optional
+/// `discord_message_id`. When `Some`, the decrypted plaintext is
+/// persisted to [`crate::state::AppState::message_store`] (Phase
+/// 5b2). When `None`, the decrypt path runs unchanged with no
+/// persistence side-effect (Phase 5b3 will wire boot.js to send
+/// the id, at which point persistence becomes the default).
+///
+/// Persistence failures are logged and swallowed: they never
+/// turn a successful decrypt into a user-visible error. The
+/// receive-side rendering path is the source of truth for "did
+/// it work?"; the store is a best-effort durability layer.
+pub fn cmd_osl_decrypt_message_with_id(
+    state: &AppState,
+    discord_message_id: Option<String>,
+    channel_id: String,
+    sender_discord_id: String,
     content: String,
 ) -> Result<String, String> {
     let id_guard = state.identity.lock().expect("identity mutex poisoned");
@@ -836,8 +915,29 @@ pub fn cmd_osl_decrypt_message(
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
 
-    // Pubkey lookup: cache → keyserver → cache-insert.
-    let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&sender_user_id) {
+    // Discord-id → OSL-user-id translation. Missing mapping is
+    // common (every non-peer in a channel triggers it) and is
+    // handled silently by the JS hook — surface a typed
+    // UnknownSender so the hook can dedupe its log.
+    let osl_user_id = {
+        let map_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        match map_guard.get(&sender_discord_id) {
+            Some(v) => v.clone(),
+            None => {
+                return Err(format!(
+                    "OSL: {}",
+                    DecodeError::UnknownSender {
+                        discord_id: sender_discord_id,
+                    }
+                ));
+            }
+        }
+    };
+
+    // Pubkey lookup: cache → keyserver → cache-insert. Keyed by
+    // OSL user_id (post-resolution) so the cache is stable across
+    // peer_map re-edits.
+    let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         cached
     } else {
         let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
@@ -845,14 +945,14 @@ pub fn cmd_osl_decrypt_message(
             .as_ref()
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
         let resp = client
-            .fetch_pubkeys(&sender_user_id)
-            .map_err(|e| format!("OSL: fetch_pubkeys({sender_user_id}): {e}"))?;
+            .fetch_pubkeys(&osl_user_id)
+            .map_err(|e| format!("OSL: fetch_pubkeys({osl_user_id}): {e}"))?;
         let pub_vec = STANDARD
             .decode(&resp.ik_x25519_pub)
-            .map_err(|e| format!("OSL: decode sender pubkey ({sender_user_id}): {e}"))?;
+            .map_err(|e| format!("OSL: decode sender pubkey ({osl_user_id}): {e}"))?;
         if pub_vec.len() != x25519::PUBLIC_KEY_SIZE {
             return Err(format!(
-                "OSL: sender pubkey wrong length ({sender_user_id}): got {}, want {}",
+                "OSL: sender pubkey wrong length ({osl_user_id}): got {}, want {}",
                 pub_vec.len(),
                 x25519::PUBLIC_KEY_SIZE
             ));
@@ -865,13 +965,239 @@ pub fn cmd_osl_decrypt_message(
         drop(ks_guard);
         state
             .sender_pubkey_cache
-            .insert(sender_user_id.clone(), pub_key.clone());
+            .insert(osl_user_id.clone(), pub_key.clone());
         pub_key
     };
 
     let plaintext_bytes =
-        decrypt_osl_phase4_cover(&identity.x25519_secret, &sender_pub, &content)
-            .map_err(|e| format!("OSL: {e}"))?;
-    String::from_utf8(plaintext_bytes)
-        .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())
+        match decrypt_osl_phase4_cover(&identity.x25519_secret, &sender_pub, &content) {
+            Ok(bytes) => bytes,
+            Err(DecodeError::NoMatchingSlot) => {
+                // Diagnostic: when NoMatchingSlot fires, surface the
+                // wire's slot hints alongside our recipient hint so a
+                // post-mortem can tell hint-mismatch (we're really
+                // not a recipient) apart from
+                // hint-match-but-AEAD-failed (key disagreement —
+                // which static-static ECDH should never produce
+                // intermittently). Falls back gracefully if the cover
+                // is ill-formed.
+                let recipient_pub = x25519::derive_public(&identity.x25519_secret);
+                let our_hint = recipient_pub.as_bytes()[0];
+                let diag = decode_slot_diagnostic(&content);
+                return Err(format!(
+                    "OSL: not a recipient of this message \
+                 [diag: our_hint=0x{our_hint:02x} {diag} osl_user_id={osl_user_id}]"
+                ));
+            }
+            Err(e) => return Err(format!("OSL: {e}")),
+        };
+    let plaintext = String::from_utf8(plaintext_bytes)
+        .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())?;
+
+    // Drop the identity guard before touching the store mutex so
+    // the two locks never overlap — keeps the lock graph trivially
+    // free of cycles even when future callers hold both.
+    drop(id_guard);
+
+    if let Some(message_id) = discord_message_id {
+        persist_decrypted(
+            state,
+            message_id,
+            channel_id,
+            sender_discord_id,
+            osl_user_id,
+            &plaintext,
+        );
+    }
+
+    Ok(plaintext)
+}
+
+/// Best-effort persistence of a freshly decrypted message into
+/// [`crate::state::AppState::message_store`]. Logs and swallows
+/// every failure so a store outage cannot regress decrypt UX.
+///
+/// Skipped silently when the store is `None` (open failed at
+/// bootstrap, or the user is running with persistence disabled).
+fn persist_decrypted(
+    state: &AppState,
+    discord_message_id: String,
+    channel_id: String,
+    sender_discord_id: String,
+    sender_osl_user_id: String,
+    plaintext: &str,
+) {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        tracing::debug!(
+            discord_message_id = %discord_message_id,
+            "OSL: message_store disabled; skipping persistence"
+        );
+        return;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let msg = StoredMessage {
+        discord_message_id: discord_message_id.clone(),
+        channel_id,
+        sender_discord_id,
+        sender_osl_user_id,
+        plaintext: plaintext.to_string(),
+        decrypted_at: now,
+        burned: false,
+    };
+    if let Err(e) = store.put(&msg) {
+        tracing::warn!(
+            discord_message_id = %discord_message_id,
+            error = %e,
+            "OSL: message_store.put failed; decrypt UX unaffected"
+        );
+    }
+}
+
+/// JS-facing DTO mirror of [`store::StoredMessage`]. The store
+/// crate intentionally does not depend on `serde` (it's a pure
+/// at-rest layer); this DTO crosses the IPC boundary and is the
+/// shape boot.js sees on `osl_load_channel_history`.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct StoredMessageDto {
+    pub discord_message_id: String,
+    pub channel_id: String,
+    pub sender_discord_id: String,
+    pub sender_osl_user_id: String,
+    pub plaintext: String,
+    pub decrypted_at: i64,
+    pub burned: bool,
+}
+
+impl From<StoredMessage> for StoredMessageDto {
+    fn from(m: StoredMessage) -> Self {
+        StoredMessageDto {
+            discord_message_id: m.discord_message_id,
+            channel_id: m.channel_id,
+            sender_discord_id: m.sender_discord_id,
+            sender_osl_user_id: m.sender_osl_user_id,
+            plaintext: m.plaintext,
+            decrypted_at: m.decrypted_at,
+            burned: m.burned,
+        }
+    }
+}
+
+/// Default cap for [`cmd_osl_load_channel_history`] when the
+/// caller passes `None`. Sized for a typical Discord channel
+/// scrollback view (~one screen of messages).
+pub const OSL_LOAD_HISTORY_DEFAULT_LIMIT: u32 = 100;
+
+/// Layer 10 / Phase 5b2 IPC entry point: list previously
+/// decrypted messages for a channel from the persistent store,
+/// newest-first.
+///
+/// Returns an empty vector (not an error) when the store is
+/// `None` — boot.js treats that as "no history to render" and
+/// proceeds normally. Any other store error surfaces to the
+/// caller as `Err(_)`.
+///
+/// `limit` defaults to [`OSL_LOAD_HISTORY_DEFAULT_LIMIT`] when
+/// `None`. Callers may pass a higher cap if they need bulk
+/// scrollback rehydration; the store's `list_by_channel`
+/// streams the rows, so memory pressure scales with the cap.
+pub fn cmd_osl_load_channel_history(
+    state: &AppState,
+    channel_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<StoredMessageDto>, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let cap = limit.unwrap_or(OSL_LOAD_HISTORY_DEFAULT_LIMIT);
+    let rows = store
+        .list_by_channel(&channel_id, cap)
+        .map_err(|e| format!("OSL: list_by_channel: {e}"))?;
+    Ok(rows.into_iter().map(StoredMessageDto::from).collect())
+}
+
+/// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
+/// in the persistent store. Subsequent `osl_load_channel_history`
+/// calls will not return it, and `get`-style lookups skip it.
+///
+/// Idempotent: a burn against a non-existent
+/// `discord_message_id` returns `Ok(())` (the row is gone or
+/// was never persisted; either way the caller's intent — "this
+/// message must not surface from the store" — is satisfied).
+/// All other store errors surface as `Err(_)`.
+///
+/// Returns `Ok(())` (no-op) when the store is `None` so a UI
+/// burn button doesn't error against a persistence-disabled
+/// session.
+pub fn cmd_osl_burn_message(state: &AppState, discord_message_id: String) -> Result<(), String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    match store.mark_burned(&discord_message_id) {
+        Ok(()) => Ok(()),
+        Err(StoreError::NotFound(_)) => Ok(()),
+        Err(e) => Err(format!("OSL: mark_burned: {e}")),
+    }
+}
+
+/// Pull diagnostic facts out of a Phase 4 cover string for the
+/// NoMatchingSlot error path. Returns a single-line summary like
+/// `version=0x01 N=2 hints=[0xab,0xcd]`, OR a fallback string
+/// describing why the wire couldn't be inspected. Never fails —
+/// designed to be safe to call on attacker-controlled covers.
+///
+/// **Information leak posture.** Slot hints are public (the
+/// sender writes them in the clear) and our recipient hint is a
+/// derived byte of our public identity key. Both are already
+/// observable to anyone watching the channel, so surfacing them
+/// in our own logs costs nothing.
+fn decode_slot_diagnostic(cover: &str) -> String {
+    let body = match cover.strip_prefix("DPC0::") {
+        Some(b) => b,
+        None => return "wire=<no DPC0:: prefix>".to_string(),
+    };
+    let raw = match STANDARD.decode(body) {
+        Ok(r) => r,
+        Err(e) => return format!("wire=<base64 error: {e}>"),
+    };
+    if raw.len() < 2 {
+        return format!("wire=<too short: {} bytes>", raw.len());
+    }
+    let version = raw[0];
+    let n = raw[1] as usize;
+    let slot_size = OSL_PHASE4_PER_RECIPIENT_BYTES;
+    let needed = OSL_PHASE4_FIXED_FRAMING_BYTES + n * slot_size;
+    if raw.len() < needed {
+        return format!(
+            "wire=<truncated: have {} bytes, need {} for N={}>",
+            raw.len(),
+            needed,
+            n
+        );
+    }
+    let mut hints = String::with_capacity(2 + n * 5);
+    hints.push('[');
+    for slot_ix in 0..n {
+        if slot_ix > 0 {
+            hints.push(',');
+        }
+        let base = 2 + slot_ix * slot_size;
+        hints.push_str(&format!("0x{:02x}", raw[base]));
+    }
+    hints.push(']');
+    format!("version=0x{version:02x} N={n} hints={hints}")
 }

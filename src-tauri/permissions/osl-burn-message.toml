@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission file for the Layer 10 / Phase 5b2 IPC command.
+# Tauri 2's permission system requires explicit declarations for
+# app-level commands; this file declares `allow-osl-burn-message`
+# and which command it grants. The capability `main-capability` (in
+# capabilities/main.json) references this permission to grant the
+# discord.com main webview access.
+
+[[permission]]
+identifier = "allow-osl-burn-message"
+description = "Permits the discord.com main webview to invoke `osl_burn_message` (mark a stored decrypted message burned so it stops surfacing from the at-rest store). Idempotent — burning an unknown id returns Ok. Note: this is NOT a crypto-shred — see crates/store/SECURITY.md § \"What mark_burned does\"."
+commands.allow = ["osl_burn_message"]

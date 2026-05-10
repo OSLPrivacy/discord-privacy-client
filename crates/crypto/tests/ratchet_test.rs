@@ -98,7 +98,9 @@ fn distinct_starting_chains_diverge_immediately() {
 #[test]
 fn round_trip_single_message() {
     let (mut alice, mut bob) = setup_pair();
-    let msg = alice.encrypt(b"hello, encrypted-header double ratchet").unwrap();
+    let msg = alice
+        .encrypt(b"hello, encrypted-header double ratchet")
+        .unwrap();
     assert_eq!(
         bob.decrypt(&msg).unwrap(),
         b"hello, encrypted-header double ratchet"
@@ -266,7 +268,11 @@ fn cache_evicts_oldest_at_cap() {
     assert_eq!(bob.skipped_count(), cap);
 
     bob.decrypt(&msgs[cap + 3]).unwrap();
-    assert_eq!(bob.skipped_count(), cap, "cache stays at cap after eviction");
+    assert_eq!(
+        bob.skipped_count(),
+        cap,
+        "cache stays at cap after eviction"
+    );
 
     assert!(bob.decrypt(&msgs[0]).is_err(), "slot 0 should be evicted");
     assert!(bob.decrypt(&msgs[1]).is_err(), "slot 1 should be evicted");
@@ -493,8 +499,12 @@ fn header_keys_rotate_on_dh_step() {
 
     let m1 = alice.encrypt(b"first").unwrap();
     bob.decrypt(&m1).unwrap();
-    let bob_hks_after_first_recv = bob.dbg_hks_bytes().expect("bob has HKs after first DH step");
-    let bob_hkr_after_first_recv = bob.dbg_hkr_bytes().expect("bob has HKr after first DH step");
+    let bob_hks_after_first_recv = bob
+        .dbg_hks_bytes()
+        .expect("bob has HKs after first DH step");
+    let bob_hkr_after_first_recv = bob
+        .dbg_hkr_bytes()
+        .expect("bob has HKr after first DH step");
     assert_eq!(
         bob_hkr_after_first_recv, alice_hks_initial,
         "bob's HKr after first DH step should equal alice's initial HKs (shared_hka)"
@@ -592,9 +602,8 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
 
     // Spot-check every length prefix.
     let mut pos = 0;
-    let read_u32_be = |b: &[u8], i: usize| -> u32 {
-        u32::from_be_bytes(b[i..i + 4].try_into().unwrap())
-    };
+    let read_u32_be =
+        |b: &[u8], i: usize| -> u32 { u32::from_be_bytes(b[i..i + 4].try_into().unwrap()) };
 
     assert_eq!(read_u32_be(&bytes_a, pos), 32);
     assert_eq!(&bytes_a[pos + 4..pos + 4 + 32], &sender_x);

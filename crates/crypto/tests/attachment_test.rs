@@ -100,13 +100,8 @@ fn promotes_to_next_bucket_when_payload_pushes_past_boundary() {
     // 256 KB - 8 = 262136 bytes fits exactly.
     let exactly_max_for_smallest = vec![0u8; 256 * 1024 - LENGTH_PREFIX_SIZE];
     let key = random_aead_key();
-    let wire = encrypt_attachment(
-        key.clone(),
-        &exactly_max_for_smallest,
-        b"cid".to_vec(),
-        0,
-    )
-    .unwrap();
+    let wire =
+        encrypt_attachment(key.clone(), &exactly_max_for_smallest, b"cid".to_vec(), 0).unwrap();
     let (header_a, _) = StreamHeader::deserialize(&wire).unwrap();
     assert_eq!(header_a.bucket_size, 256 * 1024);
 
@@ -176,8 +171,7 @@ fn streaming_decrypt_handles_byte_at_a_time_input() {
 #[test]
 fn header_round_trips_through_serialization() {
     let key = random_aead_key();
-    let (enc, header_bytes) =
-        StreamEncryptor::new(key, 100, b"some-cid".to_vec(), 42).unwrap();
+    let (enc, header_bytes) = StreamEncryptor::new(key, 100, b"some-cid".to_vec(), 42).unwrap();
     let (parsed, consumed) = StreamHeader::deserialize(&header_bytes).unwrap();
     assert_eq!(consumed, header_bytes.len());
     assert_eq!(&parsed, enc.header());
@@ -187,7 +181,10 @@ fn header_round_trips_through_serialization() {
     assert_eq!(parsed.attachment_index, 42);
     assert_eq!(parsed.content_id, b"some-cid");
     assert_eq!(parsed.chunk_size as usize, ATTACHMENT_CHUNK_SIZE);
-    assert_eq!(parsed.total_chunks, (256 * 1024) / ATTACHMENT_CHUNK_SIZE as u32);
+    assert_eq!(
+        parsed.total_chunks,
+        (256 * 1024) / ATTACHMENT_CHUNK_SIZE as u32
+    );
 }
 
 #[test]
@@ -285,8 +282,7 @@ fn header_rejects_bad_version() {
     // (the trailing "\x01" of "DPCATT\x01") to something else, which
     // makes the magic-prefix check fail.
     let key = random_aead_key();
-    let (_enc, mut header_bytes) =
-        StreamEncryptor::new(key, 100, b"cid".to_vec(), 0).unwrap();
+    let (_enc, mut header_bytes) = StreamEncryptor::new(key, 100, b"cid".to_vec(), 0).unwrap();
     header_bytes[6] = 0x99;
     assert!(StreamHeader::deserialize(&header_bytes).is_err());
 }
@@ -294,8 +290,7 @@ fn header_rejects_bad_version() {
 #[test]
 fn header_rejects_unknown_bucket_size() {
     let key = random_aead_key();
-    let (_enc, mut header_bytes) =
-        StreamEncryptor::new(key, 100, b"cid".to_vec(), 0).unwrap();
+    let (_enc, mut header_bytes) = StreamEncryptor::new(key, 100, b"cid".to_vec(), 0).unwrap();
     // bucket_size is at offset 7 (magic) + 4 (version) = 11.
     let bucket_off = 7 + 4;
     let bogus: u64 = 999_999;

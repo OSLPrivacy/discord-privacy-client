@@ -15,8 +15,7 @@
 //! interval. No tokio dependency in this crate.
 
 use crate::manifest::{
-    parse_signed_manifest, verify_manifest, ManifestError, SelectorManifest,
-    SignedManifest,
+    parse_signed_manifest, verify_manifest, ManifestError, SelectorManifest, SignedManifest,
 };
 use thiserror::Error;
 
@@ -126,28 +125,27 @@ impl ManifestFetcher {
     /// `now_unix_seconds` is the caller's clock — used for the 24-h
     /// staleness check inside [`verify_manifest`].
     pub fn refresh(&mut self, now_unix_seconds: u64) -> &ManifestState {
-        let primary_err =
-            match try_source(&*self.primary, &self.trusted_pub_b64, now_unix_seconds) {
-                Ok(manifest) => {
-                    self.state = ManifestState::Loaded {
-                        manifest,
-                        from: SourceLabel::Primary,
-                    };
-                    return &self.state;
-                }
-                Err(e) => format!("primary: {e}"),
-            };
-        let cdn_err =
-            match try_source(&*self.cdn, &self.trusted_pub_b64, now_unix_seconds) {
-                Ok(manifest) => {
-                    self.state = ManifestState::Loaded {
-                        manifest,
-                        from: SourceLabel::CdnMirror,
-                    };
-                    return &self.state;
-                }
-                Err(e) => format!("cdn: {e}"),
-            };
+        let primary_err = match try_source(&*self.primary, &self.trusted_pub_b64, now_unix_seconds)
+        {
+            Ok(manifest) => {
+                self.state = ManifestState::Loaded {
+                    manifest,
+                    from: SourceLabel::Primary,
+                };
+                return &self.state;
+            }
+            Err(e) => format!("primary: {e}"),
+        };
+        let cdn_err = match try_source(&*self.cdn, &self.trusted_pub_b64, now_unix_seconds) {
+            Ok(manifest) => {
+                self.state = ManifestState::Loaded {
+                    manifest,
+                    from: SourceLabel::CdnMirror,
+                };
+                return &self.state;
+            }
+            Err(e) => format!("cdn: {e}"),
+        };
         self.state = ManifestState::FailClosed {
             reason: format!("{primary_err}; {cdn_err}"),
         };
@@ -161,8 +159,7 @@ impl ManifestFetcher {
     /// without waiting for the next refresh tick.
     pub fn reconsider_staleness(&mut self, now_unix_seconds: u64) -> &ManifestState {
         if let ManifestState::Loaded { manifest, .. } = &self.state {
-            let age = now_unix_seconds
-                .saturating_sub(manifest.issued_at_unix_seconds);
+            let age = now_unix_seconds.saturating_sub(manifest.issued_at_unix_seconds);
             if age > crate::manifest::MAX_MANIFEST_AGE_SECONDS {
                 self.state = ManifestState::FailClosed {
                     reason: format!(
@@ -244,10 +241,7 @@ mod tests {
 
     /// Sign a manifest with a *different* key than the one we publish
     /// as trusted, so the fetcher rejects it.
-    fn make_signed_wrong_key(
-        trusted_pub_b64: &str,
-        now: u64,
-    ) -> (Vec<u8>, String) {
+    fn make_signed_wrong_key(trusted_pub_b64: &str, now: u64) -> (Vec<u8>, String) {
         let (s, p) = ed25519::generate_keypair();
         let mut sel = BTreeMap::new();
         sel.insert("MessageContent".to_string(), "abcd".to_string());
@@ -312,11 +306,8 @@ mod tests {
                 body: "cdn down".into(),
             })],
         );
-        let mut f = ManifestFetcher::new(
-            Box::new(primary),
-            Box::new(cdn),
-            "trusted_pub".to_string(),
-        );
+        let mut f =
+            ManifestFetcher::new(Box::new(primary), Box::new(cdn), "trusted_pub".to_string());
         let s = f.refresh(1_700_000_000);
         match s {
             ManifestState::FailClosed { reason } => {
@@ -364,7 +355,10 @@ mod tests {
         let mut f = ManifestFetcher::new(Box::new(primary), Box::new(cdn), pub_b64);
         let now = issued + 25 * 60 * 60;
         let s = f.refresh(now);
-        assert!(s.is_fail_closed(), "expected FailClosed for >24h, got {s:?}");
+        assert!(
+            s.is_fail_closed(),
+            "expected FailClosed for >24h, got {s:?}"
+        );
     }
 
     #[test]
@@ -403,11 +397,7 @@ mod tests {
     fn initial_state_is_not_yet_fetched() {
         let primary = MockSource::new(SourceLabel::Primary, vec![]);
         let cdn = MockSource::new(SourceLabel::CdnMirror, vec![]);
-        let f = ManifestFetcher::new(
-            Box::new(primary),
-            Box::new(cdn),
-            "trusted".to_string(),
-        );
+        let f = ManifestFetcher::new(Box::new(primary), Box::new(cdn), "trusted".to_string());
         assert!(matches!(f.state(), ManifestState::NotYetFetched));
         assert!(f.manifest().is_none());
     }

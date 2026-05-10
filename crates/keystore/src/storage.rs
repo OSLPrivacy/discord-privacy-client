@@ -47,8 +47,7 @@ use crypto::{ed25519, ml_kem_768, x25519};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-const INSECURE_BANNER: &str =
-    "INSECURE prototype storage — plain JSON, no passphrase, no TPM. \
+const INSECURE_BANNER: &str = "INSECURE prototype storage — plain JSON, no passphrase, no TPM. \
      v1 stable replaces with TPM-sealed blob; do NOT use with real users.";
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -132,22 +131,45 @@ pub fn load_identity(path: &Path, sealer: &dyn Sealer) -> Result<Identity> {
     let inner_bytes = sealer.unseal(&sealed)?;
     let inner: InnerIdentity = serde_json::from_slice(&inner_bytes)?;
 
-    let x25519_secret = decode_array::<{ x25519::SECRET_KEY_SIZE }>(
-        "x25519_secret",
-        &inner.x25519_secret_b64,
-    )?;
-    let x25519_public = decode_array::<{ x25519::PUBLIC_KEY_SIZE }>(
-        "x25519_public",
-        &inner.x25519_public_b64,
-    )?;
-    let ed25519_secret = decode_array::<{ ed25519::SECRET_KEY_SIZE }>(
-        "ed25519_secret",
-        &inner.ed25519_secret_b64,
-    )?;
-    let ed25519_public = decode_array::<{ ed25519::PUBLIC_KEY_SIZE }>(
-        "ed25519_public",
-        &inner.ed25519_public_b64,
-    )?;
+    let x25519_secret =
+        decode_array::<{ x25519::SECRET_KEY_SIZE }>("x25519_secret", &inner.x25519_secret_b64)?;
+    let on_disk_x25519_public =
+        decode_array::<{ x25519::PUBLIC_KEY_SIZE }>("x25519_public", &inner.x25519_public_b64)?;
+    // Re-derive the X25519 public from the secret. The on-disk
+    // `x25519_public_b64` is informational; the math source of
+    // truth is the secret + base point. If the two disagree
+    // (partial save, hand-edit, or any prior bug that wrote a
+    // mismatched pair), production code paths that derive the
+    // public from the secret (encoder's `sender_pub`, decoder's
+    // `our_hint`) would silently disagree with `register()` —
+    // which uploads `identity.x25519_public` directly. The
+    // keyserver would then publish the stale field, every peer
+    // would fetch the stale value, and decryption would fail
+    // intermittently in ways that look like cache poisoning.
+    //
+    // Fix: always trust the secret. Stamp `x25519_public` from
+    // the derived value. Surface the disagreement to stderr so
+    // the user notices the on-disk corruption and re-saves.
+    let derived_secret = x25519::SecretKey::from_bytes(x25519_secret);
+    let derived_pub = x25519::derive_public(&derived_secret);
+    let x25519_public = if *derived_pub.as_bytes() != on_disk_x25519_public {
+        eprintln!(
+            "[OSL] WARN identity.json x25519_public_b64 disagrees with derived \
+             public from x25519_secret_b64. Re-deriving (math source of truth). \
+             Re-saving the identity (e.g. via Tauri's save_identity command) \
+             will refresh the on-disk field. on_disk_first_byte=0x{:02x} \
+             derived_first_byte=0x{:02x}",
+            on_disk_x25519_public[0],
+            derived_pub.as_bytes()[0]
+        );
+        *derived_pub.as_bytes()
+    } else {
+        on_disk_x25519_public
+    };
+    let ed25519_secret =
+        decode_array::<{ ed25519::SECRET_KEY_SIZE }>("ed25519_secret", &inner.ed25519_secret_b64)?;
+    let ed25519_public =
+        decode_array::<{ ed25519::PUBLIC_KEY_SIZE }>("ed25519_public", &inner.ed25519_public_b64)?;
     let mlkem_secret = decode_array::<{ ml_kem_768::DECAPSULATION_KEY_SIZE }>(
         "mlkem_secret",
         &inner.mlkem_secret_b64,

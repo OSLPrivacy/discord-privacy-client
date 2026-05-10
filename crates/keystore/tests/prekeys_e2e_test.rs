@@ -121,8 +121,7 @@ fn prekey_round_trip_through_real_keyserver() {
         return;
     }
     let server = spawn_keyserver();
-    let client =
-        KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
 
     // 1. Register identity (which now includes Ed25519 pub).
     let id = generate_identity("alice".to_string());
@@ -162,8 +161,7 @@ fn replenish_using_state_tops_up_to_target() {
         return;
     }
     let server = spawn_keyserver();
-    let client =
-        KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{}", server.port)).unwrap();
 
     let id = generate_identity("alice".to_string());
     client.register(&id).unwrap();

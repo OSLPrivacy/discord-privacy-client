@@ -48,8 +48,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-pub const MANIFEST_DOMAIN: &[u8] =
-    b"discord-privacy-client/selector-manifest/v1";
+pub const MANIFEST_DOMAIN: &[u8] = b"discord-privacy-client/selector-manifest/v1";
 
 /// 24-hour staleness window per design doc § "Selector resilience".
 pub const MAX_MANIFEST_AGE_SECONDS: u64 = 24 * 60 * 60;
@@ -143,13 +142,8 @@ pub enum ManifestError {
         source: base64::DecodeError,
     },
 
-    #[error(
-        "signing key mismatch: server presented {presented}, client trusts {trusted}"
-    )]
-    SigningKeyMismatch {
-        presented: String,
-        trusted: String,
-    },
+    #[error("signing key mismatch: server presented {presented}, client trusts {trusted}")]
+    SigningKeyMismatch { presented: String, trusted: String },
 
     #[error("signature length wrong: got {got}, expected 64")]
     SignatureLength { got: usize },
@@ -175,7 +169,9 @@ pub enum ManifestError {
         max_age: u64,
     },
 
-    #[error("manifest issued in the future: signed at {issued_at_unix_seconds}, now {now_unix_seconds}")]
+    #[error(
+        "manifest issued in the future: signed at {issued_at_unix_seconds}, now {now_unix_seconds}"
+    )]
     Future {
         issued_at_unix_seconds: u64,
         now_unix_seconds: u64,
@@ -240,12 +236,13 @@ pub fn verify_manifest(
     pub_arr.copy_from_slice(&pub_bytes);
     let pubkey = ed25519::PublicKey::from_bytes(pub_arr);
 
-    let sig_bytes = STANDARD
-        .decode(&signed.signature_b64)
-        .map_err(|source| ManifestError::Base64 {
-            field: "signature_b64",
-            source,
-        })?;
+    let sig_bytes =
+        STANDARD
+            .decode(&signed.signature_b64)
+            .map_err(|source| ManifestError::Base64 {
+                field: "signature_b64",
+                source,
+            })?;
     if sig_bytes.len() != 64 {
         return Err(ManifestError::SignatureLength {
             got: sig_bytes.len(),
@@ -255,12 +252,13 @@ pub fn verify_manifest(
     sig_arr.copy_from_slice(&sig_bytes);
     let sig = ed25519::Signature::from_bytes(sig_arr);
 
-    let manifest_bytes = STANDARD
-        .decode(&signed.manifest_b64)
-        .map_err(|source| ManifestError::Base64 {
-            field: "manifest_b64",
-            source,
-        })?;
+    let manifest_bytes =
+        STANDARD
+            .decode(&signed.manifest_b64)
+            .map_err(|source| ManifestError::Base64 {
+                field: "manifest_b64",
+                source,
+            })?;
 
     let ok = ed25519::verify(&pubkey, &manifest_bytes, &sig)
         .map_err(|e| ManifestError::CryptoVerify(format!("{e}")))?;
@@ -306,11 +304,8 @@ fn decode_canonical_bytes(bytes: &[u8]) -> Result<SelectorManifest, ManifestErro
         return Err(ManifestError::BadSignature);
     }
     let version = r.read_u32_be().ok_or(ManifestError::BadSignature)?;
-    let issued_at_unix_seconds =
-        r.read_u64_be().ok_or(ManifestError::BadSignature)?;
-    let client_min_version = r
-        .read_lp_str()
-        .ok_or(ManifestError::BadSignature)?;
+    let issued_at_unix_seconds = r.read_u64_be().ok_or(ManifestError::BadSignature)?;
+    let client_min_version = r.read_lp_str().ok_or(ManifestError::BadSignature)?;
     let count = r.read_u32_be().ok_or(ManifestError::BadSignature)?;
     let mut selectors = BTreeMap::new();
     for _ in 0..count {
@@ -518,7 +513,10 @@ mod tests {
             client_min_version: "0.0.1".to_string(),
             selectors: b,
         };
-        assert_eq!(canonical_manifest_bytes(&m_a), canonical_manifest_bytes(&m_b));
+        assert_eq!(
+            canonical_manifest_bytes(&m_a),
+            canonical_manifest_bytes(&m_b)
+        );
     }
 
     #[test]
@@ -541,6 +539,9 @@ mod tests {
             selectors: BTreeMap::new(),
         };
         let signed = sign_manifest(&s, &p, &m);
-        assert_eq!(verify_manifest(&signed, &pub_b64, 1_700_000_000).unwrap(), m);
+        assert_eq!(
+            verify_manifest(&signed, &pub_b64, 1_700_000_000).unwrap(),
+            m
+        );
     }
 }

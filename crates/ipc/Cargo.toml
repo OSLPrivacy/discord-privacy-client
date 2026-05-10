@@ -15,11 +15,13 @@ license.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 base64 = "0.22"
 
 crypto = { path = "../crypto" }
 stego = { path = "../stego" }
 keystore = { path = "../keystore" }
+store = { path = "../store" }
 
 [dev-dependencies]
 tempfile = "=3.13"

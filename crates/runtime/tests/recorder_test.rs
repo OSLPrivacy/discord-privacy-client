@@ -1,6 +1,6 @@
 use runtime::{
-    match_recorders, scan_for_recorders, snapshot_running_processes,
-    RecorderScanError, RECORDER_PROCESS_NAMES,
+    match_recorders, scan_for_recorders, snapshot_running_processes, RecorderScanError,
+    RECORDER_PROCESS_NAMES,
 };
 
 // ---- pure match logic ----
@@ -65,8 +65,10 @@ fn match_handles_full_paths_after_basename_strip() {
     // match_recorders. This test demonstrates the contract: we
     // match the EXACT string supplied (case-insensitive).
     let processes = [r"C:\Windows\System32\notepad.exe"];
-    assert!(match_recorders(&processes).is_empty(),
-        "match_recorders compares full strings — caller must basename-strip");
+    assert!(
+        match_recorders(&processes).is_empty(),
+        "match_recorders compares full strings — caller must basename-strip"
+    );
 
     let processes = ["obs64.exe"];
     assert_eq!(match_recorders(&processes), vec!["obs64.exe"]);
@@ -144,9 +146,7 @@ fn recorder_list_covers_design_doc_examples() {
         ("gamebar", "Windows Game Bar"),
     ];
     for (substr, label) in categories {
-        let any_match = RECORDER_PROCESS_NAMES
-            .iter()
-            .any(|e| e.contains(substr));
+        let any_match = RECORDER_PROCESS_NAMES.iter().any(|e| e.contains(substr));
         assert!(any_match, "{label} not represented in match list");
     }
 }
@@ -158,7 +158,10 @@ fn recorder_list_covers_design_doc_examples() {
 fn snapshot_returns_unsupported_on_non_windows() {
     let res = snapshot_running_processes();
     assert!(matches!(res, Err(RecorderScanError::Win32(_))));
-    assert!(matches!(scan_for_recorders(), Err(RecorderScanError::Win32(_))));
+    assert!(matches!(
+        scan_for_recorders(),
+        Err(RecorderScanError::Win32(_))
+    ));
 }
 
 #[cfg(windows)]
@@ -227,8 +230,7 @@ fn scanner_drop_terminates_thread_promptly() {
 #[test]
 fn detected_recorders_drive_rotation_controller() {
     use runtime::{
-        Clock, MockClock, RotationConfig, RotationController, RotationReason,
-        SuspiciousEventKind,
+        Clock, MockClock, RotationConfig, RotationController, RotationReason, SuspiciousEventKind,
     };
     use std::sync::Arc;
     use std::time::Instant;
@@ -254,6 +256,8 @@ fn detected_recorders_drive_rotation_controller() {
 
     assert_eq!(
         ctrl.check_for_rotation(),
-        Some(RotationReason::Suspicious(SuspiciousEventKind::ScreenRecorder))
+        Some(RotationReason::Suspicious(
+            SuspiciousEventKind::ScreenRecorder
+        ))
     );
 }

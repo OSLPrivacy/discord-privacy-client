@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission file for the Layer 10 / Phase 5b2 IPC command.
+# Tauri 2's permission system requires explicit declarations for
+# app-level commands; this file declares
+# `allow-osl-load-channel-history` and which command it grants. The
+# capability `main-capability` (in capabilities/main.json) references
+# this permission to grant the discord.com main webview access.
+
+[[permission]]
+identifier = "allow-osl-load-channel-history"
+description = "Permits the discord.com main webview to invoke `osl_load_channel_history` (the read-side bridge from boot.js to the at-rest-encrypted message store). Returns up to N previously decrypted messages for a channel newest-first so boot.js can rehydrate scrollback after a Discord refresh or Tauri restart. Returns an empty list when the store is disabled (open failed at bootstrap)."
+commands.allow = ["osl_load_channel_history"]

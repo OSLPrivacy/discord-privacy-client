@@ -1,7 +1,7 @@
 use keystore::{
-    generate_identity, save_identity, save_password_record, save_prekey_state,
-    Argon2Params, DuressEngine, DuressHandlers, DuressPaths, NoOpSealer, PasswordRecord,
-    PrekeyConfig, PrekeyState, StepOutcome, WipeStep,
+    generate_identity, save_identity, save_password_record, save_prekey_state, Argon2Params,
+    DuressEngine, DuressHandlers, DuressPaths, NoOpSealer, PasswordRecord, PrekeyConfig,
+    PrekeyState, StepOutcome, WipeStep,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -52,19 +52,13 @@ fn execute_with_no_handlers_walks_every_step() {
     let pw = PasswordRecord::new("111111", None, fast()).unwrap();
     save_password_record(&paths.password_file, &pw, &sealer).unwrap();
     let prekey_state = PrekeyState::new(&id, PrekeyConfig::default(), 1_700_000_000);
-    save_prekey_state(
-        paths.prekey_file.as_ref().unwrap(),
-        &prekey_state,
-        &sealer,
-    )
-    .unwrap();
+    save_prekey_state(paths.prekey_file.as_ref().unwrap(), &prekey_state, &sealer).unwrap();
     assert!(paths.identity_file.exists());
     assert!(paths.password_file.exists());
     assert!(paths.prekey_file.as_ref().unwrap().exists());
 
     let prekey_path = paths.prekey_file.clone().unwrap();
-    let engine =
-        DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+    let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
 
     // Every step in the canonical order must appear.
@@ -104,10 +98,7 @@ fn execute_with_no_handlers_walks_every_step() {
     ] {
         match outcome_for(&report.steps, s) {
             StepOutcome::Skipped { reason } => {
-                assert!(
-                    !reason.is_empty(),
-                    "skipped step {s:?} must carry a reason"
-                );
+                assert!(!reason.is_empty(), "skipped step {s:?} must carry a reason");
                 let lc = reason.to_lowercase();
                 assert!(
                     !lc.contains("unimplemented") && !lc.contains("todo"),
@@ -129,8 +120,7 @@ fn execute_with_no_handlers_walks_every_step() {
 fn prekey_file_step_skipped_when_path_not_supplied() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths_without_prekey(&dir);
-    let engine =
-        DuressEngine::new(journal_path, paths, DuressHandlers::default());
+    let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
     let outcome = outcome_for(&report.steps, WipeStep::PrekeyFile);
     match outcome {
@@ -148,8 +138,7 @@ fn prekey_file_step_already_clean_when_file_missing() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
     assert!(!paths.prekey_file.as_ref().unwrap().exists());
-    let engine =
-        DuressEngine::new(journal_path, paths, DuressHandlers::default());
+    let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
     assert_eq!(
         outcome_for(&report.steps, WipeStep::PrekeyFile),
@@ -165,8 +154,7 @@ fn idempotent_execute_can_be_called_twice() {
     let id = generate_identity("alice".into());
     save_identity(&paths.identity_file, &id, &sealer).unwrap();
 
-    let engine =
-        DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
+    let engine = DuressEngine::new(journal_path.clone(), paths, DuressHandlers::default());
     let r1 = engine.execute().unwrap();
     assert!(r1.completed);
     // Second execute on a clean state — no journal exists, so a
@@ -182,8 +170,7 @@ fn missing_files_yield_already_clean_not_failure() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
     // Don't pre-create any files.
-    let engine =
-        DuressEngine::new(journal_path, paths, DuressHandlers::default());
+    let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
     assert_eq!(
         outcome_for(&report.steps, WipeStep::IdentityFile),
@@ -306,8 +293,11 @@ fn resume_picks_up_partial_journal() {
         ],
         "started_at_unix_seconds": 0
     });
-    std::fs::write(&journal_path, serde_json::to_vec_pretty(&prefilled).unwrap())
-        .unwrap();
+    std::fs::write(
+        &journal_path,
+        serde_json::to_vec_pretty(&prefilled).unwrap(),
+    )
+    .unwrap();
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_for_cb = calls.clone();
@@ -383,8 +373,7 @@ fn failing_run_retains_journal_for_resume() {
 fn report_helpers_classify_outcomes() {
     let dir = TempDir::new().unwrap();
     let (paths, journal_path) = build_paths(&dir);
-    let engine =
-        DuressEngine::new(journal_path, paths, DuressHandlers::default());
+    let engine = DuressEngine::new(journal_path, paths, DuressHandlers::default());
     let report = engine.execute().unwrap();
     let skipped = report.skipped_steps();
     assert!(skipped.contains(&WipeStep::Prekeys));
@@ -419,10 +408,7 @@ fn wipe_step_ordered_covers_all_variants() {
     assert_eq!(listed.len(), expected.len());
 }
 
-fn outcome_for<'a>(
-    steps: &'a [(WipeStep, StepOutcome)],
-    target: WipeStep,
-) -> &'a StepOutcome {
+fn outcome_for<'a>(steps: &'a [(WipeStep, StepOutcome)], target: WipeStep) -> &'a StepOutcome {
     &steps
         .iter()
         .find(|(s, _)| *s == target)

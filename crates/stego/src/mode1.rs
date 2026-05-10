@@ -37,8 +37,8 @@
 //! sentence punctuation).
 
 use crate::mode1_templates::{
-    SlotKind, Template, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES, TEMPLATES_LEN,
-    TEMPLATE_BITS, TOTAL_SLOTS,
+    SlotKind, Template, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES, TEMPLATES_LEN, TEMPLATE_BITS,
+    TOTAL_SLOTS,
 };
 use crate::mode1_wordlists::{ADJECTIVES, ADJ_COUNT, NOUNS, NOUN_COUNT};
 use crate::{Error, Result};
@@ -118,10 +118,7 @@ impl ConversationCipher {
 }
 
 /// Encode raw ciphertext bytes as a Mode 1 cover-text message.
-pub fn encode_mode1(
-    cipher: &ConversationCipher,
-    ciphertext: &[u8],
-) -> Result<String> {
+pub fn encode_mode1(cipher: &ConversationCipher, ciphertext: &[u8]) -> Result<String> {
     if ciphertext.len() > MODE1_MAX_RAW_LEN {
         return Err(Error::Mode1TooLong {
             got: ciphertext.len(),
@@ -137,8 +134,8 @@ pub fn encode_mode1(
     // Pad to whole-sentence boundary with zeros so the decoder reads
     // a complete final sentence.
     let total_payload_bits = 16 + (ciphertext.len() * 8) as u32;
-    let pad_to = ((total_payload_bits + BITS_PER_SENTENCE - 1) / BITS_PER_SENTENCE)
-        * BITS_PER_SENTENCE;
+    let pad_to =
+        ((total_payload_bits + BITS_PER_SENTENCE - 1) / BITS_PER_SENTENCE) * BITS_PER_SENTENCE;
     let pad = pad_to - total_payload_bits;
     if pad > 0 {
         bits.write(0, pad);
@@ -156,9 +153,7 @@ pub fn encode_mode1(
         let template = &TEMPLATES[t_idx];
         let mut slot_idxs: [u8; TOTAL_SLOTS] = [0u8; TOTAL_SLOTS];
         for (i, kind) in template.slots.iter().enumerate() {
-            let raw = reader
-                .read(SLOT_BITS)
-                .expect("just-checked remaining bits") as u8;
+            let raw = reader.read(SLOT_BITS).expect("just-checked remaining bits") as u8;
             slot_idxs[i] = raw;
             let _ = kind;
         }
@@ -179,10 +174,7 @@ pub fn is_mode1(msg: &str) -> bool {
 }
 
 /// Decode a Mode 1 cover-text message back to raw ciphertext bytes.
-pub fn decode_mode1(
-    cipher: &ConversationCipher,
-    msg: &str,
-) -> Result<Vec<u8>> {
+pub fn decode_mode1(cipher: &ConversationCipher, msg: &str) -> Result<Vec<u8>> {
     let body = msg.strip_prefix(MODE1_PREFIX).ok_or(Error::NotMode1)?;
     let body = body.trim();
     if body.is_empty() {
@@ -248,14 +240,12 @@ fn match_one_sentence(
             let raw = cipher.raw_index_for_template(t_idx) as u32;
             writer.write(raw, TEMPLATE_BITS);
             for (kind, word) in template.slots.iter().zip(slot_words.iter()) {
-                let slot_raw = cipher
-                    .raw_index_for_slot(*kind, word)
-                    .ok_or_else(|| {
-                        Error::Mode1ParseError(format!(
-                            "decoder saw {kind:?} slot value {word:?} \
+                let slot_raw = cipher.raw_index_for_slot(*kind, word).ok_or_else(|| {
+                    Error::Mode1ParseError(format!(
+                        "decoder saw {kind:?} slot value {word:?} \
                              which is not in the wordlist"
-                        ))
-                    })?;
+                    ))
+                })?;
                 writer.write(slot_raw as u32, SLOT_BITS);
             }
             return Ok(consumed);
@@ -267,10 +257,7 @@ fn match_one_sentence(
 /// Walk the template skeleton against `tokens`, treating each
 /// `SLOT_TOKEN` marker as "consume one token here". Returns
 /// `(slot_words, tokens_consumed)` on full match; `None` otherwise.
-fn match_template<'a>(
-    template: &Template,
-    tokens: &[&'a str],
-) -> Option<(Vec<&'a str>, usize)> {
+fn match_template<'a>(template: &Template, tokens: &[&'a str]) -> Option<(Vec<&'a str>, usize)> {
     let mut t_cursor = 0usize;
     let mut s_cursor = 0usize;
     let mut slot_words = Vec::with_capacity(template.slots.len());
@@ -411,10 +398,7 @@ impl<'a> BitReader<'a> {
 /// → same permutation; different salts → uncorrelated permutations.
 /// Must be deterministic: encode and decode build the same cipher
 /// from the same salt.
-fn derive_permutation<const N: usize>(
-    conversation_salt: &[u8],
-    info: &[u8],
-) -> [u8; N] {
+fn derive_permutation<const N: usize>(conversation_salt: &[u8], info: &[u8]) -> [u8; N] {
     debug_assert!(N <= 256, "permutation derivation only supports N <= 256");
     // Seed bytes — N stream bytes for the Fisher-Yates shuffle. We
     // use HKDF over (salt = PERMUTATION_DOMAIN || info,
@@ -543,7 +527,10 @@ mod tests {
         let c1 = ConversationCipher::from_salt(b"deterministic");
         let c2 = ConversationCipher::from_salt(b"deterministic");
         let payload = b"\x01\x02\x03\x04\x05";
-        assert_eq!(encode_mode1(&c1, payload).unwrap(), encode_mode1(&c2, payload).unwrap());
+        assert_eq!(
+            encode_mode1(&c1, payload).unwrap(),
+            encode_mode1(&c2, payload).unwrap()
+        );
     }
 
     #[test]

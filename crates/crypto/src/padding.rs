@@ -37,14 +37,15 @@ pub fn pad_text(plaintext: &[u8]) -> Result<Vec<u8>> {
             got: plaintext.len(),
         })?;
 
-    let bucket = TEXT_BUCKETS
-        .iter()
-        .copied()
-        .find(|&b| b >= needed)
-        .ok_or(Error::PaddingOverflow {
-            max: max_text_plaintext_size(),
-            got: plaintext.len(),
-        })?;
+    let bucket =
+        TEXT_BUCKETS
+            .iter()
+            .copied()
+            .find(|&b| b >= needed)
+            .ok_or(Error::PaddingOverflow {
+                max: max_text_plaintext_size(),
+                got: plaintext.len(),
+            })?;
 
     let len = u32::try_from(plaintext.len()).map_err(|_| Error::PaddingOverflow {
         max: max_text_plaintext_size(),

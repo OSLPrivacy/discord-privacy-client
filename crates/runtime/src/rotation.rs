@@ -208,8 +208,7 @@ impl RotationController {
     }
 
     pub fn note_membership_change(&mut self) {
-        self.forced_pending
-            .push_back(RotationReason::Membership);
+        self.forced_pending.push_back(RotationReason::Membership);
     }
 
     pub fn note_recipient_request(&mut self) {

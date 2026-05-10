@@ -41,41 +41,41 @@ use thiserror::Error;
 /// Lowercase basename match list. Comments record the product
 /// referenced by each entry.
 pub const RECORDER_PROCESS_NAMES: &[&str] = &[
-    "obs64.exe",                  // OBS Studio (64-bit)
-    "obs32.exe",                  // OBS Studio (32-bit, legacy)
-    "obs.exe",                    // OBS Studio (older builds)
-    "bandicam.exe",               // Bandicam
-    "camtasia.exe",               // Camtasia (TechSmith)
-    "camtasia_studio.exe",        // Camtasia (older builds)
-    "camrec.exe",                 // Camtasia recorder helper
-    "sharex.exe",                 // ShareX
-    "nvcontainer.exe",            // NVIDIA ShadowPlay container
-    "nvidia share.exe",           // NVIDIA Share / GeForce Experience overlay
-    "nvidia overlay.exe",         // NVIDIA overlay process (capture path)
-    "broadcast.exe",              // NVIDIA Broadcast (uses capture)
-    "gamebar.exe",                // Windows Game Bar
-    "gamebarpresencewriter.exe",  // Windows Game Bar helper
-    "screenrec.exe",              // Screenrec
-    "fraps.exe",                  // Fraps
-    "dxtory.exe",                 // Dxtory
-    "actionnow.exe",              // Mirillis Action!
-    "screenpresso.exe",           // Screenpresso
+    "obs64.exe",                    // OBS Studio (64-bit)
+    "obs32.exe",                    // OBS Studio (32-bit, legacy)
+    "obs.exe",                      // OBS Studio (older builds)
+    "bandicam.exe",                 // Bandicam
+    "camtasia.exe",                 // Camtasia (TechSmith)
+    "camtasia_studio.exe",          // Camtasia (older builds)
+    "camrec.exe",                   // Camtasia recorder helper
+    "sharex.exe",                   // ShareX
+    "nvcontainer.exe",              // NVIDIA ShadowPlay container
+    "nvidia share.exe",             // NVIDIA Share / GeForce Experience overlay
+    "nvidia overlay.exe",           // NVIDIA overlay process (capture path)
+    "broadcast.exe",                // NVIDIA Broadcast (uses capture)
+    "gamebar.exe",                  // Windows Game Bar
+    "gamebarpresencewriter.exe",    // Windows Game Bar helper
+    "screenrec.exe",                // Screenrec
+    "fraps.exe",                    // Fraps
+    "dxtory.exe",                   // Dxtory
+    "actionnow.exe",                // Mirillis Action!
+    "screenpresso.exe",             // Screenpresso
     "icecream screen recorder.exe", // Icecream Screen Recorder
-    "snippingtool.exe",           // Windows Snipping Tool (legacy)
-    "screenclippinghost.exe",     // Windows Snip & Sketch host
-    "screensketch.exe",           // Windows Snip & Sketch
-    "loom.exe",                   // Loom desktop
-    "vokoscreenng.exe",           // vokoscreenNG
-    "flashback.exe",              // FlashBack Express
-    "movavi screen recorder.exe", // Movavi Screen Recorder
-    "ezvid.exe",                  // Ezvid
-    "fastcap.exe",                // FastCap
-    "snagit32.exe",               // Snagit (TechSmith)
-    "snagiteditor.exe",           // Snagit editor (record helper)
-    "xsplit.core.exe",            // XSplit Broadcaster
-    "xsplit.gamecaster.exe",      // XSplit Gamecaster
-    "lightshot.exe",              // Lightshot (screen-region capture)
-    "greenshot.exe",              // Greenshot
+    "snippingtool.exe",             // Windows Snipping Tool (legacy)
+    "screenclippinghost.exe",       // Windows Snip & Sketch host
+    "screensketch.exe",             // Windows Snip & Sketch
+    "loom.exe",                     // Loom desktop
+    "vokoscreenng.exe",             // vokoscreenNG
+    "flashback.exe",                // FlashBack Express
+    "movavi screen recorder.exe",   // Movavi Screen Recorder
+    "ezvid.exe",                    // Ezvid
+    "fastcap.exe",                  // FastCap
+    "snagit32.exe",                 // Snagit (TechSmith)
+    "snagiteditor.exe",             // Snagit editor (record helper)
+    "xsplit.core.exe",              // XSplit Broadcaster
+    "xsplit.gamecaster.exe",        // XSplit Gamecaster
+    "lightshot.exe",                // Lightshot (screen-region capture)
+    "greenshot.exe",                // Greenshot
 ];
 
 #[derive(Debug, Error)]
@@ -122,8 +122,7 @@ pub fn scan() -> Result<Vec<&'static str>> {
 /// scan. Receives the list of matched names so the caller can log /
 /// audit them. `Send + Sync + 'static` because the scanner thread
 /// invokes it.
-pub type DetectionCallback =
-    Box<dyn Fn(&[&'static str]) + Send + Sync + 'static>;
+pub type DetectionCallback = Box<dyn Fn(&[&'static str]) + Send + Sync + 'static>;
 
 /// Periodic recorder scanner. Spawns a dedicated thread that calls
 /// [`scan`] every `interval`. The default interval is 1 hour
@@ -160,10 +159,7 @@ impl Default for RecorderScannerConfig {
 impl RecorderScanner {
     /// Spawn the scanner. `on_detect` fires on each scan that finds
     /// at least one recorder; an empty match-list does NOT fire it.
-    pub fn start(
-        config: RecorderScannerConfig,
-        on_detect: DetectionCallback,
-    ) -> Self {
+    pub fn start(config: RecorderScannerConfig, on_detect: DetectionCallback) -> Self {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_for_thread = stop.clone();
         let join = std::thread::Builder::new()
@@ -205,8 +201,7 @@ impl RecorderScanner {
 
 impl Drop for RecorderScanner {
     fn drop(&mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -224,9 +219,8 @@ mod imp {
 
     pub(super) fn snapshot() -> Result<Vec<String>> {
         unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| {
-                RecorderScanError::Win32(format!("CreateToolhelp32Snapshot: {e}"))
-            })?;
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+                .map_err(|e| RecorderScanError::Win32(format!("CreateToolhelp32Snapshot: {e}")))?;
 
             let mut entry = PROCESSENTRY32W {
                 dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,

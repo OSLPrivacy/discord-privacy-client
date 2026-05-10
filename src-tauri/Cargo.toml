@@ -29,6 +29,7 @@ keystore = { path = "../crates/keystore" }
 selectors = { path = "../crates/selectors" }
 ipc = { path = "../crates/ipc" }
 runtime = { path = "../crates/runtime" }
+store = { path = "../crates/store" }
 
 # Screenshot resistance (A2). Win32-only: SetWindowDisplayAffinity
 # with WDA_EXCLUDEFROMCAPTURE. Gated to cfg(windows) so non-Windows

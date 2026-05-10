@@ -47,12 +47,9 @@ fn one_to_one_roundtrip() {
     .expect("encrypt");
 
     assert!(cover.starts_with("DPC0::"), "cover should be Mode 0 stego");
-    let recovered = decrypt_osl_phase4_cover(
-        &recipient.x25519_secret,
-        &sender.x25519_public,
-        &cover,
-    )
-    .expect("decode");
+    let recovered =
+        decrypt_osl_phase4_cover(&recipient.x25519_secret, &sender.x25519_public, &cover)
+            .expect("decode");
     assert_eq!(recovered, plaintext.as_bytes());
 }
 
@@ -81,10 +78,13 @@ fn multi_recipient_each_can_decrypt() {
         ("carol", &r2.x25519_secret),
         ("dave", &r3.x25519_secret),
     ] {
-        let recovered =
-            decrypt_osl_phase4_cover(secret, &sender.x25519_public, &cover)
-                .unwrap_or_else(|e| panic!("decode for {label}: {e}"));
-        assert_eq!(recovered, plaintext.as_bytes(), "decrypt mismatch for {label}");
+        let recovered = decrypt_osl_phase4_cover(secret, &sender.x25519_public, &cover)
+            .unwrap_or_else(|e| panic!("decode for {label}: {e}"));
+        assert_eq!(
+            recovered,
+            plaintext.as_bytes(),
+            "decrypt mismatch for {label}"
+        );
     }
 }
 
@@ -106,8 +106,7 @@ fn non_recipient_cannot_decrypt() {
     // but lacks the recipient's secret. Decoding must fail
     // (no slot matches her pub_hint, or wrap AEAD tag fails on
     // any 1/256 collisions).
-    let result =
-        decrypt_osl_phase4_cover(&stranger.x25519_secret, &sender.x25519_public, &cover);
+    let result = decrypt_osl_phase4_cover(&stranger.x25519_secret, &sender.x25519_public, &cover);
     assert!(
         result.is_err(),
         "stranger should not be able to decode; got {:?}",
@@ -158,9 +157,8 @@ fn zero_recipients_with_sender_only_still_succeeds() {
     let sender = generate_identity("alice".to_string());
     let cover = encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[], "personal note")
         .expect("encrypt to self should succeed");
-    let recovered =
-        decrypt_osl_phase4_cover(&sender.x25519_secret, &sender.x25519_public, &cover)
-            .expect("self-decrypt");
+    let recovered = decrypt_osl_phase4_cover(&sender.x25519_secret, &sender.x25519_public, &cover)
+        .expect("self-decrypt");
     assert_eq!(recovered, b"personal note");
 }
 
@@ -204,9 +202,8 @@ fn wire_format_self_consistency_check() {
 
     let body = cover.strip_prefix("DPC0::").expect("Mode 0 prefix");
     let raw = STANDARD.decode(body).expect("base64 decode");
-    let expected_len = OSL_PHASE4_FIXED_FRAMING_BYTES
-        + 2 * OSL_PHASE4_PER_RECIPIENT_BYTES
-        + plaintext.len();
+    let expected_len =
+        OSL_PHASE4_FIXED_FRAMING_BYTES + 2 * OSL_PHASE4_PER_RECIPIENT_BYTES + plaintext.len();
     assert_eq!(
         raw.len(),
         expected_len,
@@ -248,9 +245,8 @@ fn sender_can_decrypt_own_message() {
 
     // Sender decrypts using their own secret + their own public
     // (the auto-appended slot in the wire).
-    let recovered =
-        decrypt_osl_phase4_cover(&sender.x25519_secret, &sender.x25519_public, &cover)
-            .expect("sender self-decrypt");
+    let recovered = decrypt_osl_phase4_cover(&sender.x25519_secret, &sender.x25519_public, &cover)
+        .expect("sender self-decrypt");
     assert_eq!(recovered, b"hello, future me");
 }
 
@@ -266,7 +262,7 @@ fn explicit_self_recipient_deduped() {
     let cover = encrypt_osl_phase4_to_pubkeys(
         &sender.x25519_secret,
         &[
-            sender.x25519_public.clone(),    // explicit self
+            sender.x25519_public.clone(), // explicit self
             recipient.x25519_public.clone(),
         ],
         "deduped",

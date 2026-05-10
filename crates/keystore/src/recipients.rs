@@ -200,12 +200,14 @@ pub fn get_recipients_from_path(
             source: e,
         })?;
 
-    let entry = parsed.channels.get(channel_id).ok_or_else(|| {
-        RecipientError::ChannelNotConfigured {
-            channel_id: channel_id.to_string(),
-            path: path.to_path_buf(),
-        }
-    })?;
+    let entry =
+        parsed
+            .channels
+            .get(channel_id)
+            .ok_or_else(|| RecipientError::ChannelNotConfigured {
+                channel_id: channel_id.to_string(),
+                path: path.to_path_buf(),
+            })?;
 
     if entry.recipients.is_empty() {
         return Err(RecipientError::EmptyRecipients {
@@ -256,10 +258,7 @@ mod tests {
     #[test]
     fn missing_channel_is_not_configured_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = write_config(
-            tmp.path(),
-            r#"{"channels":{"123":{"recipients":["aaa"]}}}"#,
-        );
+        let path = write_config(tmp.path(), r#"{"channels":{"123":{"recipients":["aaa"]}}}"#);
         let err = get_recipients_from_path(&path, "999").unwrap_err();
         assert!(matches!(err, RecipientError::ChannelNotConfigured { .. }));
     }
@@ -267,10 +266,7 @@ mod tests {
     #[test]
     fn empty_recipients_is_distinct_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = write_config(
-            tmp.path(),
-            r#"{"channels":{"123":{"recipients":[]}}}"#,
-        );
+        let path = write_config(tmp.path(), r#"{"channels":{"123":{"recipients":[]}}}"#);
         let err = get_recipients_from_path(&path, "123").unwrap_err();
         assert!(matches!(err, RecipientError::EmptyRecipients { .. }));
     }

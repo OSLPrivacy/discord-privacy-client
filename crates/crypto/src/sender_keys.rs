@@ -204,11 +204,7 @@ impl RotationRoot {
 }
 
 fn derive_ck_0(root: &RotationRoot, chain_id: u32) -> Result<SenderChainKey> {
-    let bytes = hkdf::derive_32(
-        root.as_bytes(),
-        &chain_id.to_le_bytes(),
-        CHAIN_INIT_INFO,
-    )?;
+    let bytes = hkdf::derive_32(root.as_bytes(), &chain_id.to_le_bytes(), CHAIN_INIT_INFO)?;
     Ok(SenderChainKey::from_bytes(bytes))
 }
 
@@ -333,10 +329,11 @@ struct SkippedKeyCache {
 
 impl SkippedKeyCache {
     fn sweep_expired(&mut self, now: SystemTime) {
-        self.keys.retain(|k| match now.duration_since(k.inserted_at) {
-            Ok(elapsed) => elapsed < SKIPPED_KEY_TTL,
-            Err(_) => true,
-        });
+        self.keys
+            .retain(|k| match now.duration_since(k.inserted_at) {
+                Ok(elapsed) => elapsed < SKIPPED_KEY_TTL,
+                Err(_) => true,
+            });
     }
 
     fn insert(&mut self, entry: SkippedKey) {
@@ -420,11 +417,7 @@ impl SenderChain {
         *self.ck_n.as_bytes()
     }
 
-    pub fn encrypt(
-        &mut self,
-        plaintext: &[u8],
-        ctx: &SenderContext,
-    ) -> Result<EncryptedMessage> {
+    pub fn encrypt(&mut self, plaintext: &[u8], ctx: &SenderContext) -> Result<EncryptedMessage> {
         let mk = self.ck_n.message_key()?;
         let hk = self.ck_n.header_key()?;
         self.ck_n.advance()?;
@@ -494,11 +487,7 @@ impl ReceiverChain {
     /// Replace the active chain with a new `(chain_id, rotation_root)`.
     /// The skipped-key cache is **retained** so late-arriving messages
     /// from the previous chain can still decrypt.
-    pub fn rotate_to(
-        &mut self,
-        chain_id: u32,
-        rotation_root: &[u8; 32],
-    ) -> Result<()> {
+    pub fn rotate_to(&mut self, chain_id: u32, rotation_root: &[u8; 32]) -> Result<()> {
         let root = RotationRoot::from_bytes(*rotation_root);
         let ck_0 = derive_ck_0(&root, chain_id)?;
         self.chain_id = chain_id;
@@ -519,11 +508,7 @@ impl ReceiverChain {
         self.skipped.len()
     }
 
-    pub fn decrypt(
-        &mut self,
-        msg: &EncryptedMessage,
-        ctx: &SenderContext,
-    ) -> Result<Vec<u8>> {
+    pub fn decrypt(&mut self, msg: &EncryptedMessage, ctx: &SenderContext) -> Result<Vec<u8>> {
         self.decrypt_at(msg, ctx, SystemTime::now())
     }
 
@@ -549,9 +534,7 @@ impl ReceiverChain {
         let mut matched: Option<(aead::Key, Header)> = None;
         for _ in 0..=MAX_SKIPPED_PER_CHAIN {
             let hk = tentative_ck.header_key()?;
-            if let Ok(header_bytes) =
-                aead::open(&hk, &msg.header_nonce, b"", &msg.enc_header)
-            {
+            if let Ok(header_bytes) = aead::open(&hk, &msg.header_nonce, b"", &msg.enc_header) {
                 if let Ok(header) = Header::from_bytes(&header_bytes) {
                     if header.session_version != ctx.session_version {
                         return Err(Error::Internal(format!(
@@ -637,8 +620,7 @@ impl ReceiverChain {
         let mut matched_idx: Option<usize> = None;
         let mut matched_header: Option<Header> = None;
         for (idx, entry) in self.skipped.keys.iter().enumerate() {
-            if let Ok(header_bytes) =
-                aead::open(&entry.hk, &msg.header_nonce, b"", &msg.enc_header)
+            if let Ok(header_bytes) = aead::open(&entry.hk, &msg.header_nonce, b"", &msg.enc_header)
             {
                 if let Ok(header) = Header::from_bytes(&header_bytes) {
                     if header.chain_id == entry.chain_id && header.n == entry.n {
@@ -718,9 +700,10 @@ impl SenderKeyState {
     }
 
     pub fn rotate_sender(&mut self) -> Result<()> {
-        let s = self.sender.as_mut().ok_or_else(|| {
-            Error::Internal("sender keys: no sender chain to rotate".into())
-        })?;
+        let s = self
+            .sender
+            .as_mut()
+            .ok_or_else(|| Error::Internal("sender keys: no sender chain to rotate".into()))?;
         s.rotate()
     }
 
@@ -760,14 +743,11 @@ impl SenderKeyState {
         self.receivers.get_mut(peer_id)
     }
 
-    pub fn encrypt(
-        &mut self,
-        plaintext: &[u8],
-        ctx: &SenderContext,
-    ) -> Result<EncryptedMessage> {
-        let s = self.sender.as_mut().ok_or_else(|| {
-            Error::Internal("sender keys: no sender chain installed".into())
-        })?;
+    pub fn encrypt(&mut self, plaintext: &[u8], ctx: &SenderContext) -> Result<EncryptedMessage> {
+        let s = self
+            .sender
+            .as_mut()
+            .ok_or_else(|| Error::Internal("sender keys: no sender chain installed".into()))?;
         s.encrypt(plaintext, ctx)
     }
 

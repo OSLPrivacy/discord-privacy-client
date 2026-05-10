@@ -111,12 +111,13 @@ pub fn max_attachment_plaintext_size() -> u64 {
 }
 
 fn pick_bucket(plaintext_len: u64) -> Result<u64> {
-    let needed = plaintext_len
-        .checked_add(LENGTH_PREFIX_SIZE as u64)
-        .ok_or(Error::PaddingOverflow {
-            max: max_attachment_plaintext_size() as usize,
-            got: usize::MAX,
-        })?;
+    let needed =
+        plaintext_len
+            .checked_add(LENGTH_PREFIX_SIZE as u64)
+            .ok_or(Error::PaddingOverflow {
+                max: max_attachment_plaintext_size() as usize,
+                got: usize::MAX,
+            })?;
     ATTACHMENT_BUCKETS
         .iter()
         .copied()
@@ -407,7 +408,9 @@ impl StreamEncryptor {
     /// any complete chunks emitted by this call. May return an empty
     /// vector if the call did not fill a chunk.
     pub fn write(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let new_consumed = self.plaintext_consumed.saturating_add(plaintext.len() as u64);
+        let new_consumed = self
+            .plaintext_consumed
+            .saturating_add(plaintext.len() as u64);
         if new_consumed > self.header.plaintext_len {
             return Err(Error::Internal(format!(
                 "attachment encrypt: write({}) past declared plaintext_len {} (already consumed {})",
@@ -428,10 +431,8 @@ impl StreamEncryptor {
             self.pending.extend_from_slice(&input[..take]);
             input = &input[take..];
             if self.pending.len() == ATTACHMENT_CHUNK_SIZE {
-                let chunk = std::mem::replace(
-                    &mut self.pending,
-                    Vec::with_capacity(ATTACHMENT_CHUNK_SIZE),
-                );
+                let chunk =
+                    std::mem::replace(&mut self.pending, Vec::with_capacity(ATTACHMENT_CHUNK_SIZE));
                 let ct = self.emit_chunk(&chunk)?;
                 out.extend_from_slice(&ct);
             }

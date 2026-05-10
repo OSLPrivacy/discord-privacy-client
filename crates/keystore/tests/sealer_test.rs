@@ -1,6 +1,4 @@
-use keystore::{
-    select_best_sealer, MemorySealer, NoOpSealer, Sealer, METHOD_MEMORY, METHOD_NOOP,
-};
+use keystore::{select_best_sealer, MemorySealer, NoOpSealer, Sealer, METHOD_MEMORY, METHOD_NOOP};
 
 #[test]
 fn noop_round_trip() {

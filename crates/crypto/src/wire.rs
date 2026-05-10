@@ -76,7 +76,9 @@ fn check_magic(bytes: &[u8], magic: &[u8; 7], what: &str) -> Result<usize> {
 
 fn read_u32(bytes: &[u8], off: usize, what: &str) -> Result<(u32, usize)> {
     if bytes.len() < off + 4 {
-        return Err(Error::Internal(format!("{what}: truncated u32 at offset {off}")));
+        return Err(Error::Internal(format!(
+            "{what}: truncated u32 at offset {off}"
+        )));
     }
     let v = u32::from_be_bytes(bytes[off..off + 4].try_into().unwrap());
     Ok((v, off + 4))
@@ -95,12 +97,7 @@ fn read_lp<'a>(bytes: &'a [u8], off: usize, what: &str) -> Result<(&'a [u8], usi
     Ok((slice, off))
 }
 
-fn read_fixed<'a>(
-    bytes: &'a [u8],
-    off: usize,
-    n: usize,
-    what: &str,
-) -> Result<(&'a [u8], usize)> {
+fn read_fixed<'a>(bytes: &'a [u8], off: usize, n: usize, what: &str) -> Result<(&'a [u8], usize)> {
     if bytes.len() < off + n {
         return Err(Error::Internal(format!(
             "{what}: truncated fixed {n}-byte field at offset {off}"
@@ -269,7 +266,9 @@ const HANDSHAKE_OPK_FLAG_ABSENT: u8 = 0x00;
 /// implies `opk_id_present = 0`, and vice versa. The decoder enforces
 /// this and rejects mismatches.
 pub fn encode_initiator_handshake(handshake: &InitiatorHandshake) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(HANDSHAKE_MAGIC.len() + 32 + 4 + ml_kem_768::CIPHERTEXT_SIZE + 1 + 1 + 4);
+    let mut buf = Vec::with_capacity(
+        HANDSHAKE_MAGIC.len() + 32 + 4 + ml_kem_768::CIPHERTEXT_SIZE + 1 + 1 + 4,
+    );
     buf.extend_from_slice(&HANDSHAKE_MAGIC);
     buf.extend_from_slice(handshake.ek_x25519_pub.as_bytes());
     let ct_bytes = handshake.mlkem_ciphertext.to_bytes();

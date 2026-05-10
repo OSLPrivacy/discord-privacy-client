@@ -36,6 +36,7 @@
 //! `IpcError::Rejected` once the protocol is stable.
 
 pub mod commands;
+pub mod peer_map;
 pub mod state;
 
 pub use commands::{

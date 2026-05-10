@@ -52,8 +52,7 @@ fn build_ratchet_pair() -> (DoubleRatchet, DoubleRatchet) {
 
     let alice =
         DoubleRatchet::new_initiator(&alice_sk, &bob_spk_pub, alice_ctx).expect("init alice");
-    let bob =
-        DoubleRatchet::new_responder(&bob_sk, &bob_spk_sec, bob_ctx).expect("init bob");
+    let bob = DoubleRatchet::new_responder(&bob_sk, &bob_spk_sec, bob_ctx).expect("init bob");
     (alice, bob)
 }
 
@@ -166,11 +165,9 @@ fn sender_keys_message_round_trip_through_wire() {
 
     // Round-trip through a receiver chain to confirm protocol survives
     // the wire layer.
-    let mut receiver = sender_keys::ReceiverChain::install(
-        chain.current_chain_id(),
-        &chain.rotation_root_bytes(),
-    )
-    .expect("receiver install");
+    let mut receiver =
+        sender_keys::ReceiverChain::install(chain.current_chain_id(), &chain.rotation_root_bytes())
+            .expect("receiver install");
     let recovered = receiver.decrypt(&decoded, &ctx).expect("decrypt");
     assert_eq!(recovered, plaintext);
 }
@@ -221,7 +218,10 @@ fn handshake_round_trip_with_opk() {
     assert_eq!(&bytes[..7], &HANDSHAKE_MAGIC);
 
     let decoded = decode_initiator_handshake(&bytes).expect("decode");
-    assert_eq!(decoded.ek_x25519_pub.as_bytes(), handshake.ek_x25519_pub.as_bytes());
+    assert_eq!(
+        decoded.ek_x25519_pub.as_bytes(),
+        handshake.ek_x25519_pub.as_bytes()
+    );
     assert_eq!(
         decoded.mlkem_ciphertext.to_bytes(),
         handshake.mlkem_ciphertext.to_bytes()
@@ -237,14 +237,8 @@ fn handshake_round_trip_no_opk() {
     let (_bob_spk_sec, bob_spk_pub) = x25519::generate_keypair();
     let (_bob_dk, bob_ek) = ml_kem_768::generate_keypair();
 
-    let (_sk, handshake) = pqxdh::initiate(
-        &alice_ik_sec,
-        &bob_ik_pub,
-        &bob_spk_pub,
-        None,
-        &bob_ek,
-    )
-    .expect("initiate no-opk");
+    let (_sk, handshake) = pqxdh::initiate(&alice_ik_sec, &bob_ik_pub, &bob_spk_pub, None, &bob_ek)
+        .expect("initiate no-opk");
     assert!(handshake.no_opk);
     assert!(handshake.opk_id.is_none());
 
@@ -252,7 +246,10 @@ fn handshake_round_trip_no_opk() {
     let decoded = decode_initiator_handshake(&bytes).expect("decode");
     assert!(decoded.no_opk);
     assert!(decoded.opk_id.is_none());
-    assert_eq!(decoded.ek_x25519_pub.as_bytes(), handshake.ek_x25519_pub.as_bytes());
+    assert_eq!(
+        decoded.ek_x25519_pub.as_bytes(),
+        handshake.ek_x25519_pub.as_bytes()
+    );
     assert_eq!(
         decoded.mlkem_ciphertext.to_bytes(),
         handshake.mlkem_ciphertext.to_bytes()
@@ -354,8 +351,7 @@ fn sender_keys_header_byte_round_trip() {
     };
     let bytes = header.to_bytes();
     assert_eq!(bytes.len(), sender_keys::HEADER_BYTES);
-    let recovered =
-        sender_keys::Header::from_bytes(&bytes).expect("sender keys header decode");
+    let recovered = sender_keys::Header::from_bytes(&bytes).expect("sender keys header decode");
     assert_eq!(recovered, header);
 }
 

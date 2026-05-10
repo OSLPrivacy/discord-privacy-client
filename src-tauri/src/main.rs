@@ -34,13 +34,13 @@ mod injection;
 mod screenshot;
 
 use ipc::commands::{
-    cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity,
-    cmd_init_keyserver, cmd_load_identity, cmd_osl_decrypt_message,
-    cmd_osl_encrypt_message, cmd_register, cmd_save_identity, cmd_status,
-    cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
+    cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
+    cmd_load_identity, cmd_osl_burn_message, cmd_osl_decrypt_message_with_id,
+    cmd_osl_encrypt_message, cmd_osl_load_channel_history, cmd_register, cmd_save_identity,
+    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
     AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
-    RegisterResponse, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
-    StegoEncodeResponse,
+    RegisterResponse, StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
+    StoredMessageDto,
 };
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
@@ -84,10 +84,7 @@ async fn register(app: tauri::AppHandle) -> IpcResult<RegisterResponse> {
 }
 
 #[tauri::command]
-async fn fetch_pubkeys(
-    app: tauri::AppHandle,
-    user_id: String,
-) -> IpcResult<FetchPubkeysResponse> {
+async fn fetch_pubkeys(app: tauri::AppHandle, user_id: String) -> IpcResult<FetchPubkeysResponse> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -123,10 +120,7 @@ async fn status(state: State<'_, AppState>) -> IpcResult<StatusResponse> {
 }
 
 #[tauri::command]
-async fn x25519_diffie_hellman(
-    secret_b64: String,
-    peer_public_b64: String,
-) -> IpcResult<String> {
+async fn x25519_diffie_hellman(secret_b64: String, peer_public_b64: String) -> IpcResult<String> {
     cmd_x25519_diffie_hellman(secret_b64, peer_public_b64)
 }
 
@@ -134,10 +128,7 @@ async fn x25519_diffie_hellman(
 /// the main webview window. Wraps `SetWindowDisplayAffinity` on
 /// Windows; no-op on non-Windows targets.
 #[tauri::command]
-async fn set_screenshot_protection(
-    app: tauri::AppHandle,
-    enabled: bool,
-) -> IpcResult<()> {
+async fn set_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> IpcResult<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| IpcError::Crypto("main window not present".into()))?;
@@ -209,76 +200,127 @@ async fn osl_encrypt_message(
             "osl_encrypt_message returning error (fail-closed)"
         );
     } else {
-        tracing::debug!(
-            plaintext_len,
-            "osl_encrypt_message succeeded"
-        );
+        tracing::debug!(plaintext_len, "osl_encrypt_message succeeded");
     }
     result
 }
 
 /// Layer 10 / Phase 5 entry point. The injected boot script
-/// (`injection::BOOT_SCRIPT`) subscribes to Discord's FluxDispatcher
-/// for `MESSAGE_CREATE` / `MESSAGE_UPDATE` events; when a message's
-/// `content` carries the `DPC0::` prefix, the JS hook routes it
-/// through this IPC command. On success the JS hook re-dispatches
-/// a synthetic `MESSAGE_UPDATE` with the decrypted content;
-/// `Err(_)` returns leave the cover string visible (the recipient
-/// is not us, the wire is corrupt, or the key is stale).
+/// (`injection::BOOT_SCRIPT`) installs a DOM `MutationObserver`
+/// on `document.body`; when a rendered message's first text
+/// child carries the `DPC0::` prefix, the JS hook routes it
+/// through this IPC command. On success the JS hook replaces
+/// `textContent` in place with the decrypted plaintext;
+/// `Err(_)` returns leave the cover string visible (the
+/// recipient is not us, the wire is corrupt, the sender isn't
+/// in `peer_map.json`, or the key is stale).
 ///
-/// `sender_user_id` is the Discord message author's `user.id` —
-/// passed through verbatim. v1 closed beta: OSL identities use
-/// Discord IDs, so this is also the keyserver lookup key. v2
-/// would map Discord ID → OSL UUID locally per peer; see
-/// `docs/design/key-server-api.md`.
+/// `sender_discord_id` is the raw Discord snowflake the boot.js
+/// observer extracted from the message DOM (`data-author-id` or
+/// avatar-URL fallback). The IPC layer translates it to an OSL
+/// `user_id` via `AppState::peer_map` (loaded at bootstrap from
+/// `<osl_config_dir>/peer_map.json`) before any keyserver call.
+/// An unmapped id surfaces as
+/// `OSL: no peer mapping for discord_id=…` and the JS hook
+/// handles it silently with a one-time onboarding hint per
+/// unique discord_id.
 ///
 /// Body runs in `spawn_blocking` because the keyserver lookup
 /// (cache miss path) is sync HTTP. The
-/// `crate::state::SenderPubkeyCache` (5-min TTL) absorbs repeat
-/// lookups — first message from a sender pays a roundtrip, the
-/// next ~5 minutes' worth are local.
+/// `crate::state::SenderPubkeyCache` (30-min TTL, keyed by OSL
+/// user_id post-resolution) absorbs repeat lookups — first
+/// message from a peer pays a roundtrip, the next half-hour's
+/// worth are local.
 #[tauri::command]
 async fn osl_decrypt_message(
     app: tauri::AppHandle,
     channel_id: String,
-    sender_user_id: String,
+    sender_discord_id: String,
     content: String,
+    discord_message_id: Option<String>,
 ) -> Result<String, String> {
     let content_len = content.len();
-    let sender_dbg = sender_user_id.clone();
+    let sender_dbg = sender_discord_id.clone();
     tracing::debug!(
         channel_id = %channel_id,
-        sender_user_id = %sender_user_id,
+        sender_discord_id = %sender_discord_id,
         content_len,
+        message_id_present = discord_message_id.is_some(),
         "osl_decrypt_message Phase 5 invoked"
     );
     let app_handle = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_decrypt_message(state.inner(), channel_id, sender_user_id, content)
+        cmd_osl_decrypt_message_with_id(
+            state.inner(),
+            discord_message_id,
+            channel_id,
+            sender_discord_id,
+            content,
+        )
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?;
     match &result {
         Ok(plaintext) => tracing::debug!(
-            sender_user_id = %sender_dbg,
+            sender_discord_id = %sender_dbg,
             plaintext_len = plaintext.len(),
             "osl_decrypt_message succeeded"
         ),
         Err(err) => {
-            // The common case here is `NoMatchingSlot` (we're not a
-            // recipient of a multi-party DM message, or it's a
-            // non-OSL message we tried to decrypt anyway).
-            // Logged at debug, NOT warn — we expect frequent
-            // not-our-message rejections in normal operation.
+            // The common cases here are `UnknownSender` (peer
+            // not in peer_map.json) and `NoMatchingSlot` (we're
+            // not a recipient of a multi-party DM message, or
+            // it's a non-OSL message). Logged at debug, NOT
+            // warn — we expect frequent not-our-message
+            // rejections in normal operation.
             tracing::debug!(
-                sender_user_id = %sender_dbg,
+                sender_discord_id = %sender_dbg,
                 error = %err,
                 "osl_decrypt_message returning error (cover left in place)"
             );
         }
     }
     result
+}
+
+/// Layer 10 / Phase 5b2 IPC entry point: list previously
+/// decrypted messages for a channel from the at-rest-encrypted
+/// store, newest-first. boot.js calls this on channel-switch /
+/// fresh-load to rehydrate the scrollback so prior decryptions
+/// survive Discord refresh + Tauri restart.
+///
+/// Returns an empty vector when the store is disabled (open
+/// failed at bootstrap) so the JS hook can render that as
+/// "nothing to rehydrate" without an error toast.
+#[tauri::command]
+async fn osl_load_channel_history(
+    app: tauri::AppHandle,
+    channel_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<StoredMessageDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_load_channel_history(state.inner(), channel_id, limit)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
+/// in the at-rest store. Subsequent
+/// `osl_load_channel_history` calls will not return it. Burns
+/// against unknown ids return `Ok(())` (idempotent).
+#[tauri::command]
+async fn osl_burn_message(app: tauri::AppHandle, discord_message_id: String) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_burn_message(state.inner(), discord_message_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
 fn main() {
@@ -310,13 +352,8 @@ fn main() {
             // loads are webview-scoped — Tauri 2 supports multiple
             // webviews per window. `apply_to_webview` extracts the
             // WebView2 surface HWND and walks descendants from there.
-            if let Err(e) =
-                screenshot::apply_to_webview(webview, ScreenshotProtection::On)
-            {
-                tracing::debug!(
-                    ?e,
-                    "screenshot protection re-apply on page load failed",
-                );
+            if let Err(e) = screenshot::apply_to_webview(webview, ScreenshotProtection::On) {
+                tracing::debug!(?e, "screenshot protection re-apply on page load failed",);
             }
         })
         .setup(|app| {
@@ -334,26 +371,22 @@ fn main() {
             let main_url: tauri::Url = "https://discord.com/app"
                 .parse()
                 .expect("hardcoded discord.com URL parses");
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(main_url),
-            )
-            .title("Discord Privacy Client")
-            .inner_size(1280.0, 800.0)
-            .min_inner_size(940.0, 600.0)
-            .resizable(true)
-            .decorations(true)
-            // Pinned UA — see the Layer 9 verification doc. Bump
-            // when Discord starts complaining about Chrome 130.
-            .user_agent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(main_url))
+                .title("Discord Privacy Client")
+                .inner_size(1280.0, 800.0)
+                .min_inner_size(940.0, 600.0)
+                .resizable(true)
+                .decorations(true)
+                // Pinned UA — see the Layer 9 verification doc. Bump
+                // when Discord starts complaining about Chrome 130.
+                .user_agent(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
                  AppleWebKit/537.36 (KHTML, like Gecko) \
                  Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
-            )
-            // Layer 10 injection. Runs before discord.com's bundle.
-            .initialization_script(injection::BOOT_SCRIPT)
-            .build()?;
+                )
+                // Layer 10 injection. Runs before discord.com's bundle.
+                .initialization_script(injection::BOOT_SCRIPT)
+                .build()?;
 
             // Apply screenshot resistance immediately. This runs
             // once at startup; `set_screenshot_protection` lets a
@@ -361,9 +394,7 @@ fn main() {
             // hook above also re-applies on every subsequent
             // navigation event so newly-spawned WebView2 child HWNDs
             // get the affinity flag too.
-            if let Err(e) =
-                screenshot::apply_to_window(&window, ScreenshotProtection::On)
-            {
+            if let Err(e) = screenshot::apply_to_window(&window, ScreenshotProtection::On) {
                 tracing::warn!(
                     ?e,
                     "screenshot protection unavailable at startup; \
@@ -398,6 +429,8 @@ fn main() {
             set_screenshot_protection,
             osl_encrypt_message,
             osl_decrypt_message,
+            osl_load_channel_history,
+            osl_burn_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

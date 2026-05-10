@@ -187,10 +187,7 @@ impl RootKey {
 /// `KDF_RK_HE` per Signal's encrypted-headers spec — HKDF-SHA256
 /// expand to 96 bytes, split into
 /// `(new_root_key, new_chain_key, next_header_key)`.
-fn kdf_rk_he(
-    root_key: &[u8; 32],
-    dh_out: &[u8; 32],
-) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+fn kdf_rk_he(root_key: &[u8; 32], dh_out: &[u8; 32]) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
     let bytes = hkdf::derive(root_key, dh_out, ROOT_KDF_HE_INFO, 96)?;
     let mut new_rk = [0u8; 32];
     let mut new_ck = [0u8; 32];
@@ -325,10 +322,11 @@ struct SkippedKeyCache {
 
 impl SkippedKeyCache {
     fn sweep_expired(&mut self, now: SystemTime) {
-        self.keys.retain(|k| match now.duration_since(k.inserted_at) {
-            Ok(elapsed) => elapsed < SKIPPED_KEY_TTL,
-            Err(_) => true,
-        });
+        self.keys
+            .retain(|k| match now.duration_since(k.inserted_at) {
+                Ok(elapsed) => elapsed < SKIPPED_KEY_TTL,
+                Err(_) => true,
+            });
     }
 
     fn insert(&mut self, entry: SkippedKey) {
@@ -559,16 +557,14 @@ impl DoubleRatchet {
         let (header, is_dh_step) = match header_via_hkr {
             Some(h) => (h, false),
             None => {
-                let bytes =
-                    aead::open(&self.nhkr, &msg.header_nonce, b"", &msg.enc_header).map_err(
-                        |_| {
-                            Error::Internal(
-                                "ratchet decrypt: header AEAD failed (neither HKr nor NHKr \
+                let bytes = aead::open(&self.nhkr, &msg.header_nonce, b"", &msg.enc_header)
+                    .map_err(|_| {
+                        Error::Internal(
+                            "ratchet decrypt: header AEAD failed (neither HKr nor NHKr \
                              could open the wire header)"
-                                    .into(),
-                            )
-                        },
-                    )?;
+                                .into(),
+                        )
+                    })?;
                 let h = Header::from_bytes(&bytes)?;
                 (h, true)
             }
@@ -599,8 +595,7 @@ impl DoubleRatchet {
         let mut matched_idx: Option<usize> = None;
         let mut matched_header: Option<Header> = None;
         for (idx, entry) in self.skipped.keys.iter().enumerate() {
-            if let Ok(header_bytes) =
-                aead::open(&entry.hk, &msg.header_nonce, b"", &msg.enc_header)
+            if let Ok(header_bytes) = aead::open(&entry.hk, &msg.header_nonce, b"", &msg.enc_header)
             {
                 if let Ok(header) = Header::from_bytes(&header_bytes) {
                     if header.counter == entry.counter {
@@ -654,14 +649,11 @@ impl DoubleRatchet {
 
         let recv_chain = self.receiving_chain.as_ref().ok_or_else(|| {
             Error::Internal(
-                "ratchet decrypt: same-chain path with no receiving chain (impossible)"
-                    .into(),
+                "ratchet decrypt: same-chain path with no receiving chain (impossible)".into(),
             )
         })?;
         let hkr = self.hkr.as_ref().ok_or_else(|| {
-            Error::Internal(
-                "ratchet decrypt: same-chain path with no HKr (impossible)".into(),
-            )
+            Error::Internal("ratchet decrypt: same-chain path with no HKr (impossible)".into())
         })?;
         let mut tentative_chain = recv_chain.clone();
         let mut tentative_counter = self.receiving_counter;
@@ -729,9 +721,7 @@ impl DoubleRatchet {
 
         // Phase 1: skip remaining keys on the OLD receiving chain
         // (cached with the OLD HKr).
-        if let (Some(chain), Some(hkr)) =
-            (tentative_old_chain.as_mut(), self.hkr.as_ref())
-        {
+        if let (Some(chain), Some(hkr)) = (tentative_old_chain.as_mut(), self.hkr.as_ref()) {
             while tentative_old_counter < header.prev_chain_length {
                 let mk = chain.message_key()?;
                 new_skipped.push(SkippedKey {
@@ -750,8 +740,7 @@ impl DoubleRatchet {
         // Phase 2: tentative DH ratchet step.
         let new_dhr = header.dh_pub;
         let dh1 = x25519::diffie_hellman(&self.dhs_secret, &new_dhr)?;
-        let (rk1, ckr_bytes, new_nhkr_bytes) =
-            kdf_rk_he(self.root_key.as_bytes(), dh1.as_bytes())?;
+        let (rk1, ckr_bytes, new_nhkr_bytes) = kdf_rk_he(self.root_key.as_bytes(), dh1.as_bytes())?;
         let (new_dhs_secret, new_dhs_pub) = x25519::generate_keypair();
         let dh2 = x25519::diffie_hellman(&new_dhs_secret, &new_dhr)?;
         let (rk2, cks_bytes, new_nhks_bytes) = kdf_rk_he(&rk1, dh2.as_bytes())?;
@@ -804,14 +793,8 @@ impl DoubleRatchet {
         self.receiving_chain = Some(tentative_new_recv);
 
         // Promote NHKs/NHKr → HKs/HKr; install fresh NHKs/NHKr.
-        let promoted_hks = std::mem::replace(
-            &mut self.nhks,
-            aead::Key::from_bytes(new_nhks_bytes),
-        );
-        let promoted_hkr = std::mem::replace(
-            &mut self.nhkr,
-            aead::Key::from_bytes(new_nhkr_bytes),
-        );
+        let promoted_hks = std::mem::replace(&mut self.nhks, aead::Key::from_bytes(new_nhks_bytes));
+        let promoted_hkr = std::mem::replace(&mut self.nhkr, aead::Key::from_bytes(new_nhkr_bytes));
         self.hks = Some(promoted_hks);
         self.hkr = Some(promoted_hkr);
 

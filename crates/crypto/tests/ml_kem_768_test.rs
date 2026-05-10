@@ -17,9 +17,9 @@
 //! `ml-kem` 0.2 has its own internal KAT suite.
 
 use crypto::ml_kem_768::{
-    decapsulate, encapsulate, generate_keypair, generate_keypair_with_rng,
-    pqxdh_combine_stub, Ciphertext, DecapsulationKey, EncapsulationKey, CIPHERTEXT_SIZE,
-    DECAPSULATION_KEY_SIZE, ENCAPSULATION_KEY_SIZE, SHARED_SECRET_SIZE,
+    decapsulate, encapsulate, generate_keypair, generate_keypair_with_rng, pqxdh_combine_stub,
+    Ciphertext, DecapsulationKey, EncapsulationKey, CIPHERTEXT_SIZE, DECAPSULATION_KEY_SIZE,
+    ENCAPSULATION_KEY_SIZE, SHARED_SECRET_SIZE,
 };
 use rand_core::{CryptoRng, RngCore};
 

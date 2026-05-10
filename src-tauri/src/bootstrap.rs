@@ -46,14 +46,22 @@
 //!
 //! `channels.json` is read on-demand by `osl_encrypt_message` per
 //! call (see `keystore::recipients`); bootstrap doesn't touch it.
+//!
+//! - `peer_map.json` — Discord-id → OSL-user-id translation for
+//!   the Phase 5 receive-side decoder. Loaded into
+//!   `AppState::peer_map`. Missing or malformed file is
+//!   non-fatal: we log an onboarding-friendly hint and start
+//!   with an empty map (every receive returns `UnknownSender`,
+//!   which the JS hook handles silently).
 
+use ipc::peer_map::{load_peer_map_from_path, PeerMapError};
 use ipc::AppState;
 use keystore::{
-    generate_identity, load_identity, save_identity, select_best_sealer,
-    KeyServerClient,
+    generate_identity, load_identity, save_identity, select_best_sealer, KeyServerClient,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
+use store::MessageStore;
 
 /// On-disk schema for `<config_dir>/keyserver.json`. `base_url`
 /// and `user_id` required; `admin_token` optional. Missing or
@@ -112,7 +120,111 @@ pub fn run_autostart(state: &AppState) {
         }
     }
 
+    if identity_loaded {
+        open_message_store(state, &dir);
+    } else {
+        tracing::info!(
+            "OSL bootstrap: skipping message_store open (no identity loaded; \
+             persistence stays disabled until next launch)"
+        );
+    }
+
+    load_peer_map(state, &dir);
+
     tracing::info!("OSL bootstrap: done");
+}
+
+/// Open the at-rest-encrypted [`MessageStore`] under
+/// `<config_dir>/store/` keyed off the loaded identity secret.
+/// On open failure (sealer mismatch, schema-newer-than-binary,
+/// disk error), log loudly at `warn!` and leave the store as
+/// `None`; the decrypt path swallows persistence errors and the
+/// `osl_load_channel_history` IPC returns an empty list, so a
+/// store outage doesn't take Discord with it.
+///
+/// Caller must have already populated `state.identity` (we read
+/// the secret bytes from there). This function is a no-op if
+/// `state.identity` is `None`, but the caller already gates on
+/// `identity_loaded` before invoking this.
+fn open_message_store(state: &AppState, dir: &std::path::Path) {
+    let store_dir = dir.join("store");
+    let secret_bytes: [u8; 32] = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let Some(id) = id_guard.as_ref() else {
+            tracing::warn!(
+                "OSL bootstrap: open_message_store called without identity; \
+                 leaving message_store disabled"
+            );
+            return;
+        };
+        // x25519::SecretKey::as_bytes returns &[u8; 32] — copy
+        // out so we can drop the identity lock before the
+        // potentially slow disk + sqlite path.
+        *id.x25519_secret.as_bytes()
+    };
+    match MessageStore::open(&store_dir, &secret_bytes) {
+        Ok(store) => {
+            tracing::info!(
+                path = %store_dir.display(),
+                "OSL bootstrap: message_store opened"
+            );
+            *state
+                .message_store
+                .lock()
+                .expect("message_store mutex poisoned") = Some(store);
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %store_dir.display(),
+                "OSL bootstrap: message_store open failed; persistence disabled \
+                 for this session (decrypt path still works, history won't \
+                 rehydrate after restart)"
+            );
+        }
+    }
+}
+
+/// Read `<dir>/peer_map.json` into `AppState::peer_map`. Every
+/// failure mode is non-fatal:
+///
+/// - File missing: log an onboarding hint with the absolute path
+///   so the user knows where to create it; leave the map empty.
+/// - Read or parse failure: log the inner error so the user can
+///   find the typo; leave the map empty.
+///
+/// Receive-side decryption is a no-op until the user populates
+/// the file; send-side and identity bootstrap are unaffected.
+fn load_peer_map(state: &AppState, dir: &std::path::Path) {
+    let path = dir.join("peer_map.json");
+    match load_peer_map_from_path(&path) {
+        Ok(map) => {
+            let n = map.len();
+            *state.peer_map.lock().expect("peer_map mutex poisoned") = map;
+            tracing::info!(
+                path = %path.display(),
+                entries = n,
+                "OSL bootstrap: peer_map loaded"
+            );
+        }
+        Err(PeerMapError::NotFound { .. }) => {
+            tracing::info!(
+                path = %path.display(),
+                "OSL bootstrap: peer_map.json not found, decrypt will skip all \
+                 incoming messages — create this file with \
+                 {{\"<discord_id>\":\"<osl_user_id>\", ...}} to enable \
+                 receive-side decryption"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "OSL bootstrap: peer_map.json could not be loaded; receive-side \
+                 decryption disabled until the file is fixed"
+            );
+        }
+    }
 }
 
 /// Read `<dir>/keyserver.json`. Returns `None` for any failure

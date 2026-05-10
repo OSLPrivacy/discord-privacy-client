@@ -1,9 +1,8 @@
 use crypto::ed25519;
 use keystore::{
-    canonical_replenish_bytes, generate_identity, iso_8601_from_unix_seconds,
-    load_prekey_state, save_prekey_state, sign_replenish_batch, MemorySealer,
-    NoOpSealer, PrekeyConfig, PrekeyState, ReplenishOpk, ReplenishSpk,
-    SPK_ROTATION_INTERVAL_SECONDS,
+    canonical_replenish_bytes, generate_identity, iso_8601_from_unix_seconds, load_prekey_state,
+    save_prekey_state, sign_replenish_batch, MemorySealer, NoOpSealer, PrekeyConfig, PrekeyState,
+    ReplenishOpk, ReplenishSpk, SPK_ROTATION_INTERVAL_SECONDS,
 };
 use tempfile::TempDir;
 
@@ -129,8 +128,14 @@ fn rotate_spk_moves_current_to_previous() {
 #[test]
 fn canonical_bytes_deterministic_for_identical_input() {
     let opks = vec![
-        ReplenishOpk { id: 0, pub_b64: "AAA=".into() },
-        ReplenishOpk { id: 1, pub_b64: "BBB=".into() },
+        ReplenishOpk {
+            id: 0,
+            pub_b64: "AAA=".into(),
+        },
+        ReplenishOpk {
+            id: 1,
+            pub_b64: "BBB=".into(),
+        },
     ];
     let spk = ReplenishSpk {
         pub_b64: "spk-pub".into(),
@@ -144,7 +149,10 @@ fn canonical_bytes_deterministic_for_identical_input() {
 
 #[test]
 fn canonical_bytes_change_with_user_id() {
-    let opks = vec![ReplenishOpk { id: 0, pub_b64: "AAA=".into() }];
+    let opks = vec![ReplenishOpk {
+        id: 0,
+        pub_b64: "AAA=".into(),
+    }];
     let a = canonical_replenish_bytes("alice", None, &opks);
     let b = canonical_replenish_bytes("bob", None, &opks);
     assert_ne!(a, b);
@@ -152,7 +160,10 @@ fn canonical_bytes_change_with_user_id() {
 
 #[test]
 fn canonical_bytes_change_with_spk_presence() {
-    let opks = vec![ReplenishOpk { id: 0, pub_b64: "AAA=".into() }];
+    let opks = vec![ReplenishOpk {
+        id: 0,
+        pub_b64: "AAA=".into(),
+    }];
     let with_spk = canonical_replenish_bytes(
         "alice",
         Some(&ReplenishSpk {
@@ -169,12 +180,24 @@ fn canonical_bytes_change_with_spk_presence() {
 #[test]
 fn canonical_bytes_change_with_opk_order() {
     let a_opks = vec![
-        ReplenishOpk { id: 0, pub_b64: "A".into() },
-        ReplenishOpk { id: 1, pub_b64: "B".into() },
+        ReplenishOpk {
+            id: 0,
+            pub_b64: "A".into(),
+        },
+        ReplenishOpk {
+            id: 1,
+            pub_b64: "B".into(),
+        },
     ];
     let b_opks = vec![
-        ReplenishOpk { id: 1, pub_b64: "B".into() },
-        ReplenishOpk { id: 0, pub_b64: "A".into() },
+        ReplenishOpk {
+            id: 1,
+            pub_b64: "B".into(),
+        },
+        ReplenishOpk {
+            id: 0,
+            pub_b64: "A".into(),
+        },
     ];
     let a = canonical_replenish_bytes("alice", None, &a_opks);
     let b = canonical_replenish_bytes("alice", None, &b_opks);
@@ -186,7 +209,10 @@ fn canonical_bytes_change_with_opk_order() {
 #[test]
 fn batch_signature_verifies_with_identity_ed25519_pub() {
     let id = generate_identity("alice".to_string());
-    let opks = vec![ReplenishOpk { id: 0, pub_b64: "AAA".into() }];
+    let opks = vec![ReplenishOpk {
+        id: 0,
+        pub_b64: "AAA".into(),
+    }];
     let sig = sign_replenish_batch(&id, "alice", None, &opks);
     let bytes = canonical_replenish_bytes("alice", None, &opks);
     assert!(ed25519::verify(&id.ed25519_public, &bytes, &sig).unwrap());
@@ -196,7 +222,10 @@ fn batch_signature_verifies_with_identity_ed25519_pub() {
 fn batch_signature_invalid_with_other_identity() {
     let alice = generate_identity("alice".to_string());
     let bob = generate_identity("bob".to_string());
-    let opks = vec![ReplenishOpk { id: 0, pub_b64: "AAA".into() }];
+    let opks = vec![ReplenishOpk {
+        id: 0,
+        pub_b64: "AAA".into(),
+    }];
     let sig = sign_replenish_batch(&alice, "alice", None, &opks);
     let bytes = canonical_replenish_bytes("alice", None, &opks);
     assert!(!ed25519::verify(&bob.ed25519_public, &bytes, &sig).unwrap());
@@ -233,22 +262,11 @@ fn save_load_round_trip_with_memory_sealer() {
     let loaded = load_prekey_state(&path, &sealer).unwrap();
     assert_eq!(loaded.config, original.config);
     assert_eq!(loaded.opk_pool.len(), original.opk_pool.len());
-    assert_eq!(
-        loaded.current_spk.public,
-        original.current_spk.public
-    );
-    assert_eq!(
-        loaded.current_spk.signature,
-        original.current_spk.signature
-    );
+    assert_eq!(loaded.current_spk.public, original.current_spk.public);
+    assert_eq!(loaded.current_spk.signature, original.current_spk.signature);
     // SPK signature still verifies after round-trip.
     let sig = ed25519::Signature::from_bytes(loaded.current_spk.signature);
-    assert!(ed25519::verify(
-        &id.ed25519_public,
-        &loaded.current_spk.public,
-        &sig
-    )
-    .unwrap());
+    assert!(ed25519::verify(&id.ed25519_public, &loaded.current_spk.public, &sig).unwrap());
 }
 
 #[test]

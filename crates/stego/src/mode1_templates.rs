@@ -67,11 +67,21 @@ pub static TEMPLATES: [Template; TEMPLATES_LEN] = [
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Yesterday", "the", SLOT_TOKEN, "found", "a", SLOT_TOKEN, "."],
+        &[
+            "Yesterday",
+            "the",
+            SLOT_TOKEN,
+            "found",
+            "a",
+            SLOT_TOKEN,
+            ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Maybe", "I", "should", "buy", "a", SLOT_TOKEN, SLOT_TOKEN, "."],
+        &[
+            "Maybe", "I", "should", "buy", "a", SLOT_TOKEN, SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
@@ -79,51 +89,94 @@ pub static TEMPLATES: [Template; TEMPLATES_LEN] = [
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["She", "said", "the", SLOT_TOKEN, "was", "near", "the", SLOT_TOKEN, "."],
+        &[
+            "She", "said", "the", SLOT_TOKEN, "was", "near", "the", SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Noun, SlotKind::Noun],
     ),
     Template::new(
-        &["He", "asked", "if", "the", SLOT_TOKEN, "had", "any", SLOT_TOKEN, "."],
+        &[
+            "He", "asked", "if", "the", SLOT_TOKEN, "had", "any", SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Noun, SlotKind::Noun],
     ),
     Template::new(
-        &["Apparently", SLOT_TOKEN, "is", "quite", SLOT_TOKEN, "today", "."],
+        &[
+            "Apparently",
+            SLOT_TOKEN,
+            "is",
+            "quite",
+            SLOT_TOKEN,
+            "today",
+            ".",
+        ],
         &[SlotKind::Noun, SlotKind::Adj],
     ),
     Template::new(
-        &["Honestly", "the", SLOT_TOKEN, "looked", "more", SLOT_TOKEN, "than", "usual", "."],
+        &[
+            "Honestly", "the", SLOT_TOKEN, "looked", "more", SLOT_TOKEN, "than", "usual", ".",
+        ],
         &[SlotKind::Noun, SlotKind::Adj],
     ),
     Template::new(
-        &["Nobody", "noticed", "how", SLOT_TOKEN, "the", SLOT_TOKEN, "had", "become", "."],
+        &[
+            "Nobody", "noticed", "how", SLOT_TOKEN, "the", SLOT_TOKEN, "had", "become", ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Everybody", "wondered", "where", "the", SLOT_TOKEN, SLOT_TOKEN, "went", "."],
+        &[
+            "Everybody",
+            "wondered",
+            "where",
+            "the",
+            SLOT_TOKEN,
+            SLOT_TOKEN,
+            "went",
+            ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Last", "week", "we", "rented", "a", SLOT_TOKEN, SLOT_TOKEN, "."],
+        &[
+            "Last", "week", "we", "rented", "a", SLOT_TOKEN, SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Every", "morning", "the", SLOT_TOKEN, "feels", SLOT_TOKEN, "."],
+        &[
+            "Every", "morning", "the", SLOT_TOKEN, "feels", SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Noun, SlotKind::Adj],
     ),
     Template::new(
-        &["Sometimes", "I", "miss", "that", SLOT_TOKEN, SLOT_TOKEN, "."],
+        &[
+            "Sometimes",
+            "I",
+            "miss",
+            "that",
+            SLOT_TOKEN,
+            SLOT_TOKEN,
+            ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Without", "warning", "the", SLOT_TOKEN, "turned", SLOT_TOKEN, "."],
+        &[
+            "Without", "warning", "the", SLOT_TOKEN, "turned", SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Noun, SlotKind::Adj],
     ),
     Template::new(
-        &["Across", "the", "street", "a", SLOT_TOKEN, SLOT_TOKEN, "appeared", "."],
+        &[
+            "Across", "the", "street", "a", SLOT_TOKEN, SLOT_TOKEN, "appeared", ".",
+        ],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
     Template::new(
-        &["Until", "tomorrow", "leave", "the", SLOT_TOKEN, "near", "the", SLOT_TOKEN, "."],
+        &[
+            "Until", "tomorrow", "leave", "the", SLOT_TOKEN, "near", "the", SLOT_TOKEN, ".",
+        ],
         &[SlotKind::Noun, SlotKind::Noun],
     ),
 ];
@@ -142,10 +195,7 @@ pub struct Template {
 }
 
 impl Template {
-    pub const fn new(
-        skeleton: &'static [&'static str],
-        slots: &'static [SlotKind],
-    ) -> Self {
+    pub const fn new(skeleton: &'static [&'static str], slots: &'static [SlotKind]) -> Self {
         Template { skeleton, slots }
     }
 }

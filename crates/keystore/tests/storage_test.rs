@@ -1,7 +1,6 @@
 use crypto::ml_kem_768;
 use keystore::{
-    generate_identity, load_identity, save_identity, Error, MemorySealer, NoOpSealer,
-    Sealer,
+    generate_identity, load_identity, save_identity, Error, MemorySealer, NoOpSealer, Sealer,
 };
 use tempfile::TempDir;
 
@@ -95,7 +94,10 @@ fn load_rejects_version_mismatch() {
     let res = load_identity(&path, &sealer);
     assert!(matches!(
         res,
-        Err(Error::BlobVersionMismatch { got: 999, expected: 3 })
+        Err(Error::BlobVersionMismatch {
+            got: 999,
+            expected: 3
+        })
     ));
 }
 
@@ -144,7 +146,11 @@ fn load_rejects_short_inner_field() {
     let res = load_identity(&path, &sealer);
     assert!(matches!(
         res,
-        Err(Error::BlobFieldLength { field: "x25519_secret", got: 16, expected: 32 })
+        Err(Error::BlobFieldLength {
+            field: "x25519_secret",
+            got: 16,
+            expected: 32
+        })
     ));
 }
 
@@ -225,10 +231,7 @@ fn mutate_b64_field(json: &str, field: &str, new_b64: &str) -> String {
         json.find(&alt).map(|s| s + alt.len())
     });
     let start = start.expect("field present in the test JSON");
-    let end = start
-        + json[start..]
-            .find('"')
-            .expect("closing quote present");
+    let end = start + json[start..].find('"').expect("closing quote present");
     let mut out = String::with_capacity(json.len());
     out.push_str(&json[..start]);
     out.push_str(new_b64);
@@ -240,4 +243,93 @@ fn mutate_b64_field(json: &str, field: &str, new_b64: &str) -> String {
 fn _marker_traits_for_sealer() {
     fn assert_send_sync<T: Send + Sync + ?Sized>() {}
     assert_send_sync::<dyn Sealer>();
+}
+
+// ---- Phase 5 receive bug: stale x25519_public_b64 vs secret ----
+//
+// `register()` uploads `identity.x25519_public` to the keyserver,
+// but encrypt/decrypt math derives the public from the secret.
+// If the on-disk blob's `x25519_public_b64` ever drifts from
+// `derive_public(x25519_secret)` (any partial save, hand edit,
+// or prior bug that wrote a mismatched pair), every peer fetches
+// the stale uploaded pub while liam's local crypto uses the
+// derived pub — decryption fails intermittently in ways that
+// look like cache poisoning.
+//
+// Fix in `load_identity`: re-derive from the secret, ignore the
+// on-disk public field if it disagrees, surface a stderr WARN
+// so the user can re-save to refresh the on-disk blob.
+
+#[test]
+fn load_recovers_when_x25519_public_disagrees_with_secret() {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = NoOpSealer::new();
+
+    // Save a fresh identity, then tamper the on-disk
+    // `x25519_public_b64` to a pub generated for a *different*
+    // identity. The secret is left untouched, so the on-disk
+    // blob's pub now disagrees with the secret's derived pub.
+    let real = generate_identity("liam".to_string());
+    save_identity(&path, &real, &sealer).unwrap();
+    let other = generate_identity("not-liam".to_string());
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let on_disk: keystore::IdentityOnDisk = serde_json::from_str(&raw).unwrap();
+    let inner_bytes = STANDARD.decode(&on_disk.sealed_b64).unwrap();
+    let inner_str = std::str::from_utf8(&inner_bytes).unwrap().to_string();
+    let bogus_pub_b64 = STANDARD.encode(other.x25519_public.as_bytes());
+    let mutated_inner = mutate_b64_field(&inner_str, "x25519_public_b64", &bogus_pub_b64);
+    let new_sealed_b64 = STANDARD.encode(mutated_inner.as_bytes());
+    let mutated_outer = raw.replace(&on_disk.sealed_b64, &new_sealed_b64);
+    std::fs::write(&path, mutated_outer).unwrap();
+
+    let loaded = load_identity(&path, &sealer)
+        .expect("load_identity should succeed by re-deriving the pub from the secret");
+
+    // Expectations:
+    // 1. Secret survives untouched.
+    assert_eq!(
+        loaded.x25519_secret.as_bytes(),
+        real.x25519_secret.as_bytes(),
+        "secret must round-trip"
+    );
+    // 2. Loaded pub matches the SECRET's derived value, NOT the
+    //    bogus on-disk field.
+    assert_eq!(
+        loaded.x25519_public.as_bytes(),
+        real.x25519_public.as_bytes(),
+        "loaded pub must match derive_public(secret), not the stale on-disk field"
+    );
+    assert_ne!(
+        loaded.x25519_public.as_bytes(),
+        other.x25519_public.as_bytes(),
+        "loaded pub must NOT be the bogus tampered field"
+    );
+    // 3. Sanity: derive_public(loaded_secret) == loaded_pub.
+    let rederived = crypto::x25519::derive_public(&loaded.x25519_secret);
+    assert_eq!(
+        rederived.as_bytes(),
+        loaded.x25519_public.as_bytes(),
+        "loaded Identity must satisfy derive_public(secret) == public invariant"
+    );
+}
+
+#[test]
+fn load_preserves_pub_when_disk_field_matches_secret() {
+    // Sanity check: the heal path in load_identity doesn't mutate
+    // the loaded pub when the on-disk field is already in sync.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("identity.json");
+    let sealer = MemorySealer::new();
+    let original = generate_identity("liam".to_string());
+    save_identity(&path, &original, &sealer).unwrap();
+    let loaded = load_identity(&path, &sealer).unwrap();
+    assert_eq!(
+        loaded.x25519_public.as_bytes(),
+        original.x25519_public.as_bytes()
+    );
 }

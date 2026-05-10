@@ -246,11 +246,7 @@ pub struct DuressEngine {
 }
 
 impl DuressEngine {
-    pub fn new(
-        journal_path: PathBuf,
-        paths: DuressPaths,
-        handlers: DuressHandlers,
-    ) -> Self {
+    pub fn new(journal_path: PathBuf, paths: DuressPaths, handlers: DuressHandlers) -> Self {
         DuressEngine {
             journal_path,
             paths,
@@ -325,9 +321,7 @@ impl DuressEngine {
                     error: e.to_string(),
                 }),
             WipeStep::IdentityFile => self.delete_file_idempotent(&self.paths.identity_file),
-            WipeStep::PasswordHashes => {
-                self.delete_file_idempotent(&self.paths.password_file)
-            }
+            WipeStep::PasswordHashes => self.delete_file_idempotent(&self.paths.password_file),
             WipeStep::PrekeyFile => match self.paths.prekey_file.as_deref() {
                 Some(path) => self.delete_file_idempotent(path),
                 None => StepOutcome::Skipped {
@@ -384,11 +378,7 @@ impl DuressEngine {
         }
     }
 
-    fn run_handler(
-        &self,
-        handler: Option<&WipeFn>,
-        skip_reason: &'static str,
-    ) -> StepOutcome {
+    fn run_handler(&self, handler: Option<&WipeFn>, skip_reason: &'static str) -> StepOutcome {
         match handler {
             Some(f) => match f() {
                 Ok(_) => StepOutcome::Wiped,
@@ -415,8 +405,7 @@ impl DuressEngine {
     fn read_or_init_journal(&self) -> std::result::Result<DuressJournal, DuressError> {
         if self.journal_path.exists() {
             let bytes = std::fs::read(&self.journal_path)?;
-            serde_json::from_slice(&bytes)
-                .map_err(|e| DuressError::Journal(format!("parse: {e}")))
+            serde_json::from_slice(&bytes).map_err(|e| DuressError::Journal(format!("parse: {e}")))
         } else {
             if let Some(parent) = self.journal_path.parent() {
                 if !parent.as_os_str().is_empty() {

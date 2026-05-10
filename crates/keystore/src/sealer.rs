@@ -231,8 +231,7 @@ impl KeyringSealer {
     /// `KeyringSealer::new` regenerates a fresh key. Used by the
     /// duress-flow strip path (B3) and by integration tests.
     pub fn purge_keyring_entry() -> Result<()> {
-        match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-            .and_then(|e| e.delete_credential())
+        match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).and_then(|e| e.delete_credential())
         {
             Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(SealerError::Keyring(format!("delete_credential: {e}"))),
@@ -270,8 +269,7 @@ mod tpm {
     use windows::Win32::Security::Cryptography::{
         NCryptCreatePersistedKey, NCryptDecrypt, NCryptEncrypt, NCryptFinalizeKey,
         NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider, BCRYPT_PAD_PKCS1,
-        CERT_KEY_SPEC, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_KEY_HANDLE,
-        NCRYPT_PROV_HANDLE,
+        CERT_KEY_SPEC, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
     };
 
     const PROVIDER: PCWSTR = windows::core::w!("Microsoft Platform Crypto Provider");
@@ -305,13 +303,8 @@ mod tpm {
                 // not raw u32 — pass `CERT_KEY_SPEC(0)` for "no legacy
                 // KSP / use CNG-native key spec".
                 let mut key: NCRYPT_KEY_HANDLE = NCRYPT_KEY_HANDLE::default();
-                let open = NCryptOpenKey(
-                    prov,
-                    &mut key,
-                    KEY_NAME,
-                    CERT_KEY_SPEC(0),
-                    NCRYPT_FLAGS(0),
-                );
+                let open =
+                    NCryptOpenKey(prov, &mut key, KEY_NAME, CERT_KEY_SPEC(0), NCRYPT_FLAGS(0));
                 if open.is_err() {
                     NCryptCreatePersistedKey(
                         prov,
@@ -345,17 +338,12 @@ mod tpm {
             NCryptOpenStorageProvider(&mut prov, PROVIDER, 0)
                 .map_err(|e| SealerError::Tpm(format!("OpenStorageProvider: {e}")))?;
             let mut key = NCRYPT_KEY_HANDLE::default();
-            NCryptOpenKey(
-                prov,
-                &mut key,
-                KEY_NAME,
-                CERT_KEY_SPEC(0),
-                NCRYPT_FLAGS(0),
-            )
-            .map_err(|e| {
-                let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
-                SealerError::Tpm(format!("OpenKey: {e}"))
-            })?;
+            NCryptOpenKey(prov, &mut key, KEY_NAME, CERT_KEY_SPEC(0), NCRYPT_FLAGS(0)).map_err(
+                |e| {
+                    let _ = NCryptFreeObject(NCRYPT_HANDLE(prov.0));
+                    SealerError::Tpm(format!("OpenKey: {e}"))
+                },
+            )?;
             Ok((prov, key))
         }
     }
@@ -439,8 +427,7 @@ mod tpm {
                     "TPM sealed blob shorter than 4-byte length prefix".into(),
                 ));
             }
-            let wrapped_len =
-                u32::from_be_bytes(ciphertext[..4].try_into().unwrap()) as usize;
+            let wrapped_len = u32::from_be_bytes(ciphertext[..4].try_into().unwrap()) as usize;
             if ciphertext.len() < 4 + wrapped_len {
                 return Err(SealerError::Malformed(format!(
                     "TPM sealed blob truncated: declared wrapped len {wrapped_len} > input"
@@ -510,16 +497,9 @@ mod tpm {
             NCryptOpenStorageProvider(&mut prov, PROVIDER, 0)
                 .map_err(|e| SealerError::Tpm(format!("OpenStorageProvider: {e}")))?;
             let mut key = NCRYPT_KEY_HANDLE::default();
-            match NCryptOpenKey(
-                prov,
-                &mut key,
-                KEY_NAME,
-                CERT_KEY_SPEC(0),
-                NCRYPT_FLAGS(0),
-            ) {
+            match NCryptOpenKey(prov, &mut key, KEY_NAME, CERT_KEY_SPEC(0), NCRYPT_FLAGS(0)) {
                 Ok(_) => {
-                    let _ =
-                        windows::Win32::Security::Cryptography::NCryptDeleteKey(key, 0);
+                    let _ = windows::Win32::Security::Cryptography::NCryptDeleteKey(key, 0);
                 }
                 Err(_) => {
                     // Already gone — nothing to do.
@@ -560,10 +540,14 @@ impl Sealer for TpmSealer {
         false
     }
     fn seal(&self, _plaintext: &[u8]) -> Result<Vec<u8>> {
-        Err(SealerError::Tpm("TPM sealer not available on this OS".into()))
+        Err(SealerError::Tpm(
+            "TPM sealer not available on this OS".into(),
+        ))
     }
     fn unseal(&self, _ciphertext: &[u8]) -> Result<Vec<u8>> {
-        Err(SealerError::Tpm("TPM sealer not available on this OS".into()))
+        Err(SealerError::Tpm(
+            "TPM sealer not available on this OS".into(),
+        ))
     }
 }
 

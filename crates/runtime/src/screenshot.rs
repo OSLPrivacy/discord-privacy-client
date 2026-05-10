@@ -79,13 +79,12 @@ mod imp {
     use super::{Result, ScreenshotError, ScreenshotProtection};
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
-        WDA_NONE,
+        EnumChildWindows, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
     };
 
-    fn flag_for(protection: ScreenshotProtection)
-        -> windows::Win32::UI::WindowsAndMessaging::WINDOW_DISPLAY_AFFINITY
-    {
+    fn flag_for(
+        protection: ScreenshotProtection,
+    ) -> windows::Win32::UI::WindowsAndMessaging::WINDOW_DISPLAY_AFFINITY {
         match protection {
             ScreenshotProtection::Off => WDA_NONE,
             ScreenshotProtection::On => WDA_EXCLUDEFROMCAPTURE,
@@ -100,11 +99,7 @@ mod imp {
         let flag = flag_for(protection);
         unsafe {
             SetWindowDisplayAffinity(hwnd, flag).map_err(|e| {
-                ScreenshotError::Win32(format!(
-                    "{} (HRESULT 0x{:08X})",
-                    e.message(),
-                    e.code().0
-                ))
+                ScreenshotError::Win32(format!("{} (HRESULT 0x{:08X})", e.message(), e.code().0))
             })?;
         }
         Ok(())
@@ -134,11 +129,8 @@ mod imp {
             Ok(()) => state.succeeded += 1,
             Err(e) => {
                 if state.first_failure.is_none() {
-                    state.first_failure = Some(format!(
-                        "{} (HRESULT 0x{:08X})",
-                        e.message(),
-                        e.code().0
-                    ));
+                    state.first_failure =
+                        Some(format!("{} (HRESULT 0x{:08X})", e.message(), e.code().0));
                 }
             }
         }

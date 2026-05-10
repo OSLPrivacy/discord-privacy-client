@@ -226,8 +226,7 @@ pub fn respond(
         }
     } else if handshake.opk_id.is_none() || recipient_opk_secret.is_none() {
         return Err(Error::Internal(
-            "PQXDH respond: handshake.no_opk is false but opk_id or opk_secret is missing"
-                .into(),
+            "PQXDH respond: handshake.no_opk is false but opk_id or opk_secret is missing".into(),
         ));
     }
 
@@ -237,7 +236,10 @@ pub fn respond(
     let dh2 = x25519::diffie_hellman(recipient_ik_secret, &handshake.ek_x25519_pub)?;
     let dh3 = x25519::diffie_hellman(recipient_spk_secret, &handshake.ek_x25519_pub)?;
     let dh4 = match recipient_opk_secret {
-        Some(opk_secret) => Some(x25519::diffie_hellman(opk_secret, &handshake.ek_x25519_pub)?),
+        Some(opk_secret) => Some(x25519::diffie_hellman(
+            opk_secret,
+            &handshake.ek_x25519_pub,
+        )?),
         None => None,
     };
 

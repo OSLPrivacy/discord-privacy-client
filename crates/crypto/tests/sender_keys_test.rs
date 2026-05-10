@@ -112,7 +112,11 @@ fn cache_evicts_oldest_at_cap() {
     assert_eq!(receiver.skipped_count(), cap);
 
     receiver.decrypt(&msgs[cap + 3], &ctx).unwrap();
-    assert_eq!(receiver.skipped_count(), cap, "cache stays at cap after eviction");
+    assert_eq!(
+        receiver.skipped_count(),
+        cap,
+        "cache stays at cap after eviction"
+    );
 
     assert!(receiver.decrypt(&msgs[0], &ctx).is_err(), "slot 0 evicted");
     assert!(receiver.decrypt(&msgs[1], &ctx).is_err(), "slot 1 evicted");
@@ -268,8 +272,7 @@ fn wrong_session_version_rejected() {
     let ctx_v2 = make_sender_ctx(0xaa, b"group", SESSION_VERSION_V1 + 1);
 
     let mut receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes())
-            .unwrap();
+        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
     let m = sender.encrypt(b"v1-only", &ctx_v1).unwrap();
     let err = receiver.decrypt(&m, &ctx_v2).unwrap_err();
     let err_msg = format!("{err}");
@@ -321,8 +324,7 @@ fn canonical_ad_encoding_deterministic_and_lp_correct() {
                      + 4 + 4; // session_version
     assert_eq!(bytes_a.len(), expected_len);
 
-    let read_u32_be =
-        |b: &[u8], i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
+    let read_u32_be = |b: &[u8], i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
     let mut pos = 0;
 
     assert_eq!(read_u32_be(&bytes_a, pos), 32);
@@ -439,9 +441,7 @@ fn make_sender_ctx(ik_seed: u8, group_id: &[u8], session_version: u32) -> Sender
 fn setup() -> (SenderChain, ReceiverChain, SenderContext) {
     let sender = SenderChain::new().unwrap();
     let receiver =
-        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes())
-            .unwrap();
+        ReceiverChain::install(sender.current_chain_id(), &sender.rotation_root_bytes()).unwrap();
     let ctx = make_sender_ctx(0xaa, b"group-default", SESSION_VERSION_V1);
     (sender, receiver, ctx)
 }
-

@@ -1,6 +1,4 @@
-use stego::{
-    decode_mode0, encode_mode0, is_mode0, Error, MODE0_MAX_RAW_LEN, MODE0_PREFIX,
-};
+use stego::{decode_mode0, encode_mode0, is_mode0, Error, MODE0_MAX_RAW_LEN, MODE0_PREFIX};
 
 #[test]
 fn round_trip_empty_payload() {
@@ -46,7 +44,10 @@ fn detects_prefix_correctly() {
     assert!(!is_mode0("hello world"));
     assert!(!is_mode0("DPC1::AAAA"));
     assert!(!is_mode0("dpc0::AAAA"), "case-sensitive prefix");
-    assert!(!is_mode0(" DPC0::AAAA"), "leading whitespace must not match");
+    assert!(
+        !is_mode0(" DPC0::AAAA"),
+        "leading whitespace must not match"
+    );
 }
 
 #[test]
@@ -99,10 +100,7 @@ fn per_message_independence_each_message_decodes_alone() {
         b"second message with different content".to_vec(),
         (0u8..=99u8).collect(),
     ];
-    let wires: Vec<String> = payloads
-        .iter()
-        .map(|p| encode_mode0(p).unwrap())
-        .collect();
+    let wires: Vec<String> = payloads.iter().map(|p| encode_mode0(p).unwrap()).collect();
     for (wire, expected) in wires.iter().zip(payloads.iter()).rev() {
         let recovered = decode_mode0(wire).unwrap();
         assert_eq!(&recovered, expected);

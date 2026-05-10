@@ -206,22 +206,8 @@ fn distinct_initiators_yield_distinct_sk() {
     let (ik_secret_1, _) = x25519::generate_keypair();
     let (ik_secret_2, _) = x25519::generate_keypair();
 
-    let (sk1, _) = initiate(
-        &ik_secret_1,
-        &bob.ik_pub,
-        &bob.spk_pub,
-        None,
-        &bob.mlkem_ek,
-    )
-    .unwrap();
-    let (sk2, _) = initiate(
-        &ik_secret_2,
-        &bob.ik_pub,
-        &bob.spk_pub,
-        None,
-        &bob.mlkem_ek,
-    )
-    .unwrap();
+    let (sk1, _) = initiate(&ik_secret_1, &bob.ik_pub, &bob.spk_pub, None, &bob.mlkem_ek).unwrap();
+    let (sk2, _) = initiate(&ik_secret_2, &bob.ik_pub, &bob.spk_pub, None, &bob.mlkem_ek).unwrap();
 
     assert_ne!(
         sk1.as_bytes(),
@@ -337,8 +323,7 @@ fn derive_sk_matches_initiate_when_inputs_align() {
 
     // Recreate the same EK by replaying the same seed prefix
     // (32 bytes for x25519 ephemeral keygen).
-    let (ek_secret, _) =
-        x25519::generate_keypair_with_rng(&mut FixedRng::new(&seed[..32]));
+    let (ek_secret, _) = x25519::generate_keypair_with_rng(&mut FixedRng::new(&seed[..32]));
 
     let dh1 = x25519::diffie_hellman(&alice_ik_secret, &bob.spk_pub).unwrap();
     let dh2 = x25519::diffie_hellman(&ek_secret, &bob.ik_pub).unwrap();

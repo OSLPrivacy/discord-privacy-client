@@ -145,11 +145,7 @@ pub struct RevalidationLoop {
 }
 
 impl RevalidationLoop {
-    pub fn new(
-        clock: Box<dyn Clock>,
-        probe: Box<dyn Probe>,
-        config: RevalidationConfig,
-    ) -> Self {
+    pub fn new(clock: Box<dyn Clock>, probe: Box<dyn Probe>, config: RevalidationConfig) -> Self {
         let last = clock.now();
         RevalidationLoop {
             clock,
@@ -163,7 +159,12 @@ impl RevalidationLoop {
     /// Begin tracking `content_id` with its content kind. Caller
     /// supplies the initial state observed at fetch time (typically
     /// `Present`). No-op if already tracked.
-    pub fn track(&mut self, content_id: impl Into<String>, kind: ContentKind, initial: WrappedKeyState) {
+    pub fn track(
+        &mut self,
+        content_id: impl Into<String>,
+        kind: ContentKind,
+        initial: WrappedKeyState,
+    ) {
         let id = content_id.into();
         self.entries.entry(id).or_insert(Entry {
             kind,
@@ -291,9 +292,7 @@ pub(crate) mod testing {
                     return Ok(state);
                 }
             }
-            Ok(*g.last
-                .get(content_id)
-                .unwrap_or(&WrappedKeyState::Present))
+            Ok(*g.last.get(content_id).unwrap_or(&WrappedKeyState::Present))
         }
     }
 }
@@ -318,7 +317,9 @@ mod tests {
         Box::new(|_id, _state| {})
     }
 
-    fn collect_cb(events: Arc<std::sync::Mutex<Vec<(String, WrappedKeyState)>>>) -> TransitionCallback {
+    fn collect_cb(
+        events: Arc<std::sync::Mutex<Vec<(String, WrappedKeyState)>>>,
+    ) -> TransitionCallback {
         Box::new(move |id, state| {
             events.lock().unwrap().push((id.to_string(), state));
         })
@@ -360,11 +361,7 @@ mod tests {
     #[test]
     fn poll_below_interval_is_noop() {
         let clock = Arc::new(MockClock::new());
-        let mut loop_ = build_loop(
-            clock,
-            MockProbe::new(),
-            RevalidationConfig::default(),
-        );
+        let mut loop_ = build_loop(clock, MockProbe::new(), RevalidationConfig::default());
         loop_.track("c1", ContentKind::Text, WrappedKeyState::Present);
         let ran = loop_.poll(&mut no_op_cb());
         assert!(!ran);
@@ -449,11 +446,7 @@ mod tests {
     #[test]
     fn double_track_is_idempotent() {
         let clock = Arc::new(MockClock::new());
-        let mut loop_ = build_loop(
-            clock,
-            MockProbe::new(),
-            RevalidationConfig::default(),
-        );
+        let mut loop_ = build_loop(clock, MockProbe::new(), RevalidationConfig::default());
         loop_.track("c1", ContentKind::Text, WrappedKeyState::Present);
         loop_.track("c1", ContentKind::Attachment, WrappedKeyState::Burned);
         // Idempotent: first registration wins; subsequent calls don't

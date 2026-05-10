@@ -112,12 +112,11 @@ mod imp {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        RegisterClassExW, RegisterDeviceNotificationW, SetWindowLongPtrW,
-        TranslateMessage, UnregisterClassW, UnregisterDeviceNotification,
-        DBT_DEVICEARRIVAL, DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE,
-        DEV_BROADCAST_DEVICEINTERFACE_W, DEV_BROADCAST_HDR, GWLP_USERDATA, HWND_MESSAGE,
-        MSG, REGISTER_NOTIFICATION_FLAGS, WINDOW_EX_STYLE, WM_DESTROY, WM_DEVICECHANGE,
-        WM_QUIT, WNDCLASSEXW,
+        RegisterClassExW, RegisterDeviceNotificationW, SetWindowLongPtrW, TranslateMessage,
+        UnregisterClassW, UnregisterDeviceNotification, DBT_DEVICEARRIVAL,
+        DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
+        DEV_BROADCAST_HDR, GWLP_USERDATA, HWND_MESSAGE, MSG, REGISTER_NOTIFICATION_FLAGS,
+        WINDOW_EX_STYLE, WM_DESTROY, WM_DEVICECHANGE, WM_QUIT, WNDCLASSEXW,
     };
 
     fn ksc_capture_guid() -> GUID {
@@ -256,9 +255,7 @@ mod imp {
             };
             let atom = RegisterClassExW(&wnd_class);
             if atom == 0 {
-                return Err(UsbMonitorError::Win32(
-                    "RegisterClassExW returned 0".into(),
-                ));
+                return Err(UsbMonitorError::Win32("RegisterClassExW returned 0".into()));
             }
 
             let state = Box::into_raw(Box::new(WindowState {
@@ -310,9 +307,7 @@ mod imp {
                 &mut filter as *mut _ as *mut _,
                 REGISTER_NOTIFICATION_FLAGS(DEVICE_NOTIFY_WINDOW_HANDLE.0),
             )
-            .map_err(|e| {
-                UsbMonitorError::Win32(format!("RegisterDeviceNotificationW: {e}"))
-            })?;
+            .map_err(|e| UsbMonitorError::Win32(format!("RegisterDeviceNotificationW: {e}")))?;
 
             // Bundle for RAII cleanup on pump exit.
             let _bundle = PumpState {
@@ -355,10 +350,8 @@ mod imp {
             // constant, two struct field types — compare without `.0`
             // here, with `.0` there.
             if !hdr.is_null() && (*hdr).dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
-                let user_data = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
-                    hwnd,
-                    GWLP_USERDATA,
-                );
+                let user_data =
+                    windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                 if user_data != 0 {
                     let state = &*(user_data as *const WindowState);
                     let cb = state.callback.clone();

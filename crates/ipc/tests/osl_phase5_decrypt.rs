@@ -61,12 +61,8 @@ fn too_short_when_wire_below_minimum() {
     let sender = generate_identity("alice".to_string());
     // 8 raw bytes < OSL_PHASE4_FIXED_FRAMING_BYTES (42).
     let cover = format!("DPC0::{}", STANDARD.encode([0u8; 8]));
-    let err = decrypt_osl_phase4_cover(
-        &recipient.x25519_secret,
-        &sender.x25519_public,
-        &cover,
-    )
-    .expect_err("undersized wire should error");
+    let err = decrypt_osl_phase4_cover(&recipient.x25519_secret, &sender.x25519_public, &cover)
+        .expect_err("undersized wire should error");
     assert!(matches!(err, DecodeError::TooShort { .. }), "got {err:?}");
 }
 
@@ -80,12 +76,8 @@ fn unsupported_version_byte() {
     wire[1] = 0; // N=0; the version check fires first so this
                  // doesn't matter, but pick a value that wouldn't
                  // bypass the assertion.
-    let err = decrypt_osl_phase4_from_wire(
-        &recipient.x25519_secret,
-        &sender.x25519_public,
-        &wire,
-    )
-    .expect_err("unknown version should error");
+    let err = decrypt_osl_phase4_from_wire(&recipient.x25519_secret, &sender.x25519_public, &wire)
+        .expect_err("unknown version should error");
     match err {
         DecodeError::UnsupportedVersion { got, expected } => {
             assert_eq!(got, 0x99);
@@ -103,12 +95,8 @@ fn zero_recipients_in_header() {
     let mut wire = vec![0u8; 42];
     wire[0] = OSL_PHASE4_WIRE_VERSION;
     wire[1] = 0;
-    let err = decrypt_osl_phase4_from_wire(
-        &recipient.x25519_secret,
-        &sender.x25519_public,
-        &wire,
-    )
-    .expect_err("N=0 should error");
+    let err = decrypt_osl_phase4_from_wire(&recipient.x25519_secret, &sender.x25519_public, &wire)
+        .expect_err("N=0 should error");
     assert!(matches!(err, DecodeError::ZeroRecipients), "got {err:?}");
 }
 
@@ -137,11 +125,7 @@ fn no_matching_slot_when_not_recipient() {
     let mut saw_aead_fail = false;
     for _ in 0..50 {
         let stranger = generate_identity("eve".to_string());
-        match decrypt_osl_phase4_cover(
-            &stranger.x25519_secret,
-            &sender.x25519_public,
-            &cover,
-        ) {
+        match decrypt_osl_phase4_cover(&stranger.x25519_secret, &sender.x25519_public, &cover) {
             Err(DecodeError::NoMatchingSlot) => saw_no_match = true,
             Err(DecodeError::MessageAeadFailed(_)) => saw_aead_fail = true,
             Ok(_) => panic!("stranger should not decrypt"),
@@ -175,12 +159,8 @@ fn message_aead_failed_when_msg_ciphertext_corrupted() {
     let last = raw.len() - 1;
     raw[last] ^= 0x01;
 
-    let err = decrypt_osl_phase4_from_wire(
-        &recipient.x25519_secret,
-        &sender.x25519_public,
-        &raw,
-    )
-    .expect_err("corrupted msg ct should fail");
+    let err = decrypt_osl_phase4_from_wire(&recipient.x25519_secret, &sender.x25519_public, &raw)
+        .expect_err("corrupted msg ct should fail");
     assert!(
         matches!(err, DecodeError::MessageAeadFailed(_)),
         "got {err:?}"
@@ -209,10 +189,10 @@ fn sender_decrypts_own_message_with_auto_appended_slot() {
     // pubkey by the message author's user_id (which IS the
     // sender themselves on bounce-back), pass to decoder.
     let recovered = decrypt_osl_phase4_cover(
-        &sender.x25519_secret,    // recipient_secret = own secret
-        &sender.x25519_public,    // sender_pub = own pub (it's
-                                  // their own message, so the
-                                  // "sender" in the wire IS them)
+        &sender.x25519_secret, // recipient_secret = own secret
+        &sender.x25519_public, // sender_pub = own pub (it's
+        // their own message, so the
+        // "sender" in the wire IS them)
         &cover,
     )
     .expect("self-decrypt");
@@ -243,12 +223,8 @@ fn recipient_uses_sender_pub_not_their_own() {
     assert!(wrong.is_err(), "wrong sender pub should not decrypt");
 
     // Right: bob using alice's pub.
-    let right = decrypt_osl_phase4_cover(
-        &bob.x25519_secret,
-        &alice.x25519_public,
-        &cover,
-    )
-    .expect("correct sender pub should decrypt");
+    let right = decrypt_osl_phase4_cover(&bob.x25519_secret, &alice.x25519_public, &cover)
+        .expect("correct sender pub should decrypt");
     assert_eq!(right, b"from alice to bob");
 }
 

@@ -50,6 +50,36 @@ docs/
   design/         Per-feature design docs (review gate)
 ```
 
+## First-time setup (closed beta)
+
+After installing and launching the Tauri shell once (so it creates
+`%APPDATA%\osl\` on Windows or `~/.config/osl/` on Linux), populate
+two config files in that directory:
+
+1. **`keyserver.json`** — points the client at the keyserver and
+   declares your OSL identity. `admin_token` is optional, present
+   only on hardened deployments.
+   ```json
+   {
+     "base_url": "https://your-keyserver.example/",
+     "user_id": "liam"
+   }
+   ```
+2. **`peer_map.json`** — translates each peer's Discord user_id
+   (snowflake — copy from Discord's "Copy User ID" with developer
+   mode on) to their OSL identity registered with the keyserver.
+   Without this file, every receive-side decrypt is skipped:
+   ```json
+   {
+     "1477008451799482419": "liam",
+     "1502770642930634812": "henry"
+   }
+   ```
+
+Restart the Tauri shell after editing. `[OSL] peer_map loaded:
+N entries` in the logs (or DevTools console) confirms the file
+was picked up.
+
 ## Known limitations (v1 alpha)
 
 Surfaced here so users running closed-beta dogfood builds know what
@@ -57,6 +87,14 @@ to expect. Full rationale + v2 mitigation path in
 [`docs/design/layer-10-discord-internals.md`](docs/design/layer-10-discord-internals.md)
 §14.6.
 
+- **Hand-edited `peer_map.json` is required for receive-side
+  decryption.** v1 has no in-app UI for peer management; if a
+  Discord user_id doesn't appear in `peer_map.json`, messages
+  from that user render as the `DPC0::<base64>` cover string with
+  no decryption attempt. The console logs the missing
+  discord_id once per unique sender as an onboarding hint. v2
+  adds an in-app peer-management flow round-tripped through the
+  keyserver.
 - **Brief flash of cover string on incoming messages.** The receive
   hook uses a DOM `MutationObserver` to swap `DPC0::<base64>` for
   the decrypted plaintext after Discord renders. Typical flash
@@ -81,11 +119,13 @@ to expect. Full rationale + v2 mitigation path in
   (Proxy-wrapped `fetch` + `XMLHttpRequest.prototype.{open,send}`,
   `Function.prototype.toString` spoofing, compile-time DEBUG
   strip) covers the **send** path only.
-- **Keyserver privacy linkage.** v1 uses your Discord user_id as
-  your OSL identity, so the keyserver sees a graph of "Discord
-  users registered to OSL." Acceptable for closed-beta dogfood
-  with a known peer set; v2 moves to client-generated UUIDs with
-  per-peer Discord-ID → UUID mapping kept locally.
+- **Keyserver privacy linkage.** v1 OSL identities are arbitrary
+  strings (`liam`, `henry`) chosen at registration; the keyserver
+  sees those strings, not your Discord ID. The local
+  `peer_map.json` keeps the Discord-id → OSL-id mapping
+  client-side, so the keyserver never learns who-is-who in
+  Discord terms. v2 moves to client-generated UUIDs and adds
+  per-peer mapping UI.
 - **No edits, deletes, or attachments.** Phase 6.
 - **No PQXDH handshake or Double Ratchet yet.** Phase 7+. Current
   wire format is X25519 ECDH + HKDF-SHA256 + XChaCha20-Poly1305

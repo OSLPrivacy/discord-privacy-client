@@ -13,8 +13,8 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use selectors::{
-    parse_signed_manifest, verify_manifest, FetchError, ManifestFetcher,
-    ManifestSource, ManifestState, SourceLabel,
+    parse_signed_manifest, verify_manifest, FetchError, ManifestFetcher, ManifestSource,
+    ManifestState, SourceLabel,
 };
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -256,11 +256,7 @@ fn rust_verifies_node_signed_manifest_via_real_keyserver() {
         path: "/does-not-exist".into(), // will 404 → forced primary success
     };
 
-    let mut f = ManifestFetcher::new(
-        Box::new(primary),
-        Box::new(cdn),
-        trusted_pub_b64.clone(),
-    );
+    let mut f = ManifestFetcher::new(Box::new(primary), Box::new(cdn), trusted_pub_b64.clone());
     let state = f.refresh(issued);
     match state {
         ManifestState::Loaded { manifest, from } => {
@@ -311,11 +307,7 @@ fn fetcher_falls_back_to_cdn_when_primary_503s() {
         path: "/v1/selector-manifest".into(),
     };
 
-    let mut f = ManifestFetcher::new(
-        Box::new(primary),
-        Box::new(cdn),
-        trusted_pub_b64,
-    );
+    let mut f = ManifestFetcher::new(Box::new(primary), Box::new(cdn), trusted_pub_b64);
     let state = f.refresh(issued);
     match state {
         ManifestState::Loaded { from, .. } => {

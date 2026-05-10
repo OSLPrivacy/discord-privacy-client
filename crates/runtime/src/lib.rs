@@ -24,17 +24,14 @@ pub mod usb;
 
 pub use clock::{Clock, MockClock, SystemClock};
 pub use recorder::{
-    match_recorders, scan as scan_for_recorders, snapshot_running_processes,
-    DetectionCallback, RecorderScanError, RecorderScanner, RecorderScannerConfig,
-    RECORDER_PROCESS_NAMES,
+    match_recorders, scan as scan_for_recorders, snapshot_running_processes, DetectionCallback,
+    RecorderScanError, RecorderScanner, RecorderScannerConfig, RECORDER_PROCESS_NAMES,
 };
 pub use revalidation::{
-    render_decision, ContentKind, Probe, ProbeError, RenderDecision,
-    RevalidationConfig, RevalidationLoop, TransitionCallback, WrappedKeyState,
+    render_decision, ContentKind, Probe, ProbeError, RenderDecision, RevalidationConfig,
+    RevalidationLoop, TransitionCallback, WrappedKeyState,
 };
-pub use rotation::{
-    RotationConfig, RotationController, RotationReason, SuspiciousEventKind,
-};
+pub use rotation::{RotationConfig, RotationController, RotationReason, SuspiciousEventKind};
 pub use screenshot::{
     apply_to_hwnd, apply_to_hwnd_and_children, ScreenshotError, ScreenshotProtection,
 };

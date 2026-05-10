@@ -25,10 +25,8 @@ fn linux_macos_stub_is_a_noop_for_both_states() {
 fn linux_macos_stub_with_children_is_a_noop_for_both_states() {
     apply_to_hwnd_and_children(0, ScreenshotProtection::On).expect("no-op On");
     apply_to_hwnd_and_children(0, ScreenshotProtection::Off).expect("no-op Off");
-    apply_to_hwnd_and_children(0xDEADBEEF, ScreenshotProtection::On)
-        .expect("arbitrary hwnd");
-    apply_to_hwnd_and_children(-1, ScreenshotProtection::Off)
-        .expect("negative hwnd value");
+    apply_to_hwnd_and_children(0xDEADBEEF, ScreenshotProtection::On).expect("arbitrary hwnd");
+    apply_to_hwnd_and_children(-1, ScreenshotProtection::Off).expect("negative hwnd value");
 }
 
 #[test]

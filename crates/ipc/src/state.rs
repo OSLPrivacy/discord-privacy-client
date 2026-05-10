@@ -13,11 +13,13 @@
 //! v1 stable extends this with: ratchet state per peer, sender-keys
 //! state per group, wrapped-key cache, manifest cache, etc.
 
+use crate::peer_map::PeerMap;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use store::MessageStore;
 
 /// Time-to-live for cached sender public keys. Bounded staleness
 /// when a peer rotates their identity key — Phase 5 doesn't have
@@ -107,7 +109,10 @@ impl SenderPubkeyCache {
     /// evicted expired ones). Diagnostic and used by integration
     /// tests; production code rarely calls this.
     pub fn len(&self) -> usize {
-        self.entries.lock().expect("pubkey cache mutex poisoned").len()
+        self.entries
+            .lock()
+            .expect("pubkey cache mutex poisoned")
+            .len()
     }
 
     /// Whether the cache has zero entries. Provided so clippy
@@ -122,6 +127,21 @@ pub struct AppState {
     pub identity: Mutex<Option<Identity>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
     pub sender_pubkey_cache: SenderPubkeyCache,
+    /// Discord-id → OSL-user-id translation for receive-side
+    /// decryption. Populated at bootstrap from
+    /// `<osl_config_dir>/peer_map.json`. Empty by default — an
+    /// empty map causes every receive to return `UnknownSender`,
+    /// which the JS hook treats as "leave cover in place." See
+    /// [`crate::peer_map`].
+    pub peer_map: Mutex<PeerMap>,
+
+    /// Persistent at-rest-encrypted message store. Opened at
+    /// bootstrap once the identity secret is available; held as
+    /// `None` if open fails, in which case `cmd_osl_decrypt_message`
+    /// still succeeds (plaintext is just not persisted) and
+    /// `cmd_osl_load_channel_history` returns an empty list. See
+    /// `crates/store` for the on-disk crypto + schema posture.
+    pub message_store: Mutex<Option<MessageStore>>,
 }
 
 impl AppState {
@@ -130,10 +150,16 @@ impl AppState {
     }
 
     pub fn has_identity(&self) -> bool {
-        self.identity.lock().expect("identity mutex poisoned").is_some()
+        self.identity
+            .lock()
+            .expect("identity mutex poisoned")
+            .is_some()
     }
 
     pub fn has_keyserver(&self) -> bool {
-        self.keyserver.lock().expect("keyserver mutex poisoned").is_some()
+        self.keyserver
+            .lock()
+            .expect("keyserver mutex poisoned")
+            .is_some()
     }
 }

@@ -176,9 +176,8 @@ impl KeyServerClient {
         // so callers get a clean error from `new` rather than from
         // the first `send_request`. Discards the parsed `Url`
         // because we keep the canonicalised string for path joining.
-        reqwest::Url::parse(url).map_err(|e| {
-            Error::Transport(format!("invalid base_url {url:?}: {e}"))
-        })?;
+        reqwest::Url::parse(url)
+            .map_err(|e| Error::Transport(format!("invalid base_url {url:?}: {e}")))?;
 
         let base_url = url.trim_end_matches('/').to_string();
         let client = reqwest::blocking::Client::builder()
@@ -270,9 +269,7 @@ impl KeyServerClient {
         let replenish_spk = spk.map(|s| ReplenishSpk {
             pub_b64: STANDARD.encode(s.public),
             signature_b64: STANDARD.encode(s.signature),
-            rotated_at: crate::prekeys::iso_8601_from_unix_seconds(
-                s.rotated_at_unix_seconds,
-            ),
+            rotated_at: crate::prekeys::iso_8601_from_unix_seconds(s.rotated_at_unix_seconds),
         });
         let replenish_opks: Vec<ReplenishOpk> = opks
             .iter()
@@ -458,11 +455,8 @@ fn urlencode_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {
         let c = *b;
-        let unreserved = c.is_ascii_alphanumeric()
-            || c == b'-'
-            || c == b'.'
-            || c == b'_'
-            || c == b'~';
+        let unreserved =
+            c.is_ascii_alphanumeric() || c == b'-' || c == b'.' || c == b'_' || c == b'~';
         if unreserved {
             out.push(c as char);
         } else {

@@ -72,10 +72,7 @@ impl BurnAlertPayload {
 }
 
 /// Sign a `BurnAlertPayload` with the sender's identity Ed25519 key.
-pub fn sign_burn_alert(
-    sender: &Identity,
-    payload: &BurnAlertPayload,
-) -> ed25519::Signature {
+pub fn sign_burn_alert(sender: &Identity, payload: &BurnAlertPayload) -> ed25519::Signature {
     let bytes = payload.canonical_bytes();
     ed25519::sign(&sender.ed25519_secret, &bytes)
 }
@@ -144,13 +141,7 @@ mod tests {
     #[test]
     fn from_scope_picks_correct_label() {
         let alice = generate_identity("alice".to_string());
-        let p = BurnAlertPayload::from_scope(
-            &alice,
-            "bob",
-            &BurnScope::All,
-            "wiped",
-            123,
-        );
+        let p = BurnAlertPayload::from_scope(&alice, "bob", &BurnScope::All, "wiped", 123);
         assert_eq!(p.scope_label, "all");
         assert_eq!(p.sender_id, "alice");
         assert_eq!(p.recipient_id, "bob");

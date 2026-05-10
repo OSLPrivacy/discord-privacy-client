@@ -109,14 +109,13 @@ fn spawn_keyserver() -> ServerHandle {
 /// Use a separate HTTP request to upload a wrapped key. Goes through
 /// the existing keyserver POST /v1/wrapped-keys path. Returns nothing
 /// on success.
-fn upload_wrapped_key(
-    base_url: &str,
-    content_id: &str,
-    sender: &str,
-    recipient: &str,
-) {
+fn upload_wrapped_key(base_url: &str, content_id: &str, sender: &str, recipient: &str) {
     use std::io::{Read, Write};
-    let parts: Vec<&str> = base_url.strip_prefix("http://").unwrap().split(':').collect();
+    let parts: Vec<&str> = base_url
+        .strip_prefix("http://")
+        .unwrap()
+        .split(':')
+        .collect();
     let host = parts[0];
     let port: u16 = parts[1].parse().unwrap();
 
@@ -146,7 +145,11 @@ fn upload_wrapped_key(
 /// Confirm GET /v1/wrapped-keys/:id returns the given status code.
 fn assert_wrapped_status(base_url: &str, content_id: &str, expected: u16) {
     use std::io::{Read, Write};
-    let parts: Vec<&str> = base_url.strip_prefix("http://").unwrap().split(':').collect();
+    let parts: Vec<&str> = base_url
+        .strip_prefix("http://")
+        .unwrap()
+        .split(':')
+        .collect();
     let host = parts[0];
     let port: u16 = parts[1].parse().unwrap();
 

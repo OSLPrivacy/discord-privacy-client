@@ -106,9 +106,7 @@ fn register_round_trips_through_mock_server() {
     let response_body = br#"{"user_id":"alice","registered_at":"2026-05-08T10:00:00Z"}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
-    response.extend_from_slice(
-        format!("Content-Length: {}\r\n", response_body.len()).as_bytes(),
-    );
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
     response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
     response.extend_from_slice(response_body);
     let (port, rx) = one_shot_server(response);
@@ -117,10 +115,7 @@ fn register_round_trips_through_mock_server() {
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
     let resp = client.register(&id).unwrap();
     assert_eq!(resp.user_id, "alice");
-    assert_eq!(
-        resp.registered_at.as_deref(),
-        Some("2026-05-08T10:00:00Z")
-    );
+    assert_eq!(resp.registered_at.as_deref(), Some("2026-05-08T10:00:00Z"));
 
     // Confirm what the client sent on the wire. reqwest 0.12 emits
     // lowercase header names per HTTP/1.1 normalization (the wire
@@ -143,9 +138,7 @@ fn fetch_pubkeys_round_trips_through_mock_server() {
     let response_body = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
-    response.extend_from_slice(
-        format!("Content-Length: {}\r\n", response_body.len()).as_bytes(),
-    );
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
     response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
     response.extend_from_slice(response_body);
     let (port, rx) = one_shot_server(response);
@@ -167,9 +160,7 @@ fn fetch_pubkeys_url_encodes_special_chars() {
     let response_body = br#"{"user_id":"liam@discord","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
-    response.extend_from_slice(
-        format!("Content-Length: {}\r\n", response_body.len()).as_bytes(),
-    );
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
     response.extend_from_slice(b"\r\n");
     response.extend_from_slice(response_body);
     let (port, rx) = one_shot_server(response);
@@ -187,9 +178,7 @@ fn http_status_error_propagates_body() {
     let response_body = br#"{"error":"unknown user_id"}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 404 Not Found\r\n");
-    response.extend_from_slice(
-        format!("Content-Length: {}\r\n", response_body.len()).as_bytes(),
-    );
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
     response.extend_from_slice(b"\r\n");
     response.extend_from_slice(response_body);
     let (port, _rx) = one_shot_server(response);

@@ -1,8 +1,7 @@
 use crypto::sender_keys::{SenderChain, SenderContext, SESSION_VERSION_V1};
 use crypto::x25519;
 use runtime::{
-    Clock, MockClock, RotationConfig, RotationController, RotationReason,
-    SuspiciousEventKind,
+    Clock, MockClock, RotationConfig, RotationController, RotationReason, SuspiciousEventKind,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -268,10 +267,7 @@ fn membership_change_triggers_immediate_rotation() {
     let clock = Arc::new(MockClock::new());
     let mut ctrl = build_controller_with_clock(clock.clone());
     ctrl.note_membership_change();
-    assert_eq!(
-        ctrl.check_for_rotation(),
-        Some(RotationReason::Membership)
-    );
+    assert_eq!(ctrl.check_for_rotation(), Some(RotationReason::Membership));
 }
 
 #[test]
@@ -279,10 +275,7 @@ fn recipient_request_triggers_immediate_rotation() {
     let clock = Arc::new(MockClock::new());
     let mut ctrl = build_controller_with_clock(clock.clone());
     ctrl.note_recipient_request();
-    assert_eq!(
-        ctrl.check_for_rotation(),
-        Some(RotationReason::Recipient)
-    );
+    assert_eq!(ctrl.check_for_rotation(), Some(RotationReason::Recipient));
 }
 
 #[test]
@@ -291,15 +284,9 @@ fn forced_rotations_stack_and_drain_one_per_check() {
     let mut ctrl = build_controller_with_clock(clock.clone());
     ctrl.note_membership_change();
     ctrl.note_recipient_request();
-    assert_eq!(
-        ctrl.check_for_rotation(),
-        Some(RotationReason::Membership)
-    );
+    assert_eq!(ctrl.check_for_rotation(), Some(RotationReason::Membership));
     ctrl.note_rotation_completed();
-    assert_eq!(
-        ctrl.check_for_rotation(),
-        Some(RotationReason::Recipient)
-    );
+    assert_eq!(ctrl.check_for_rotation(), Some(RotationReason::Recipient));
 }
 
 #[test]
@@ -312,10 +299,7 @@ fn membership_fires_even_during_suspicious_cap_window() {
 
     clock.advance(Duration::from_secs(60));
     ctrl.note_membership_change();
-    assert_eq!(
-        ctrl.check_for_rotation(),
-        Some(RotationReason::Membership)
-    );
+    assert_eq!(ctrl.check_for_rotation(), Some(RotationReason::Membership));
 }
 
 // ---- precedence ----

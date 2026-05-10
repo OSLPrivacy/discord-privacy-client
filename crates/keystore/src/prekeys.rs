@@ -46,8 +46,7 @@ use crypto::{ed25519, x25519};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const REPLENISH_DOMAIN: &[u8] =
-    b"discord-privacy-client/prekey-replenish/v1";
+pub const REPLENISH_DOMAIN: &[u8] = b"discord-privacy-client/prekey-replenish/v1";
 
 /// Per the design doc.
 pub const SPK_ROTATION_INTERVAL_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -164,9 +163,7 @@ impl PrekeyState {
 
     /// Compute the count short of the configured target.
     pub fn replenish_count_to_target(&self, server_remaining: u32) -> u32 {
-        self.config
-            .opk_pool_target
-            .saturating_sub(server_remaining)
+        self.config.opk_pool_target.saturating_sub(server_remaining)
     }
 
     /// Remove the OPK with `id` from the local pool (called after a
@@ -324,11 +321,7 @@ struct PrekeyStateOnDisk {
     insecure_banner: Option<String>,
 }
 
-pub fn save_prekey_state(
-    path: &Path,
-    state: &PrekeyState,
-    sealer: &dyn Sealer,
-) -> Result<()> {
+pub fn save_prekey_state(path: &Path, state: &PrekeyState, sealer: &dyn Sealer) -> Result<()> {
     let inner = serde_json::to_vec(state)?;
     let sealed = sealer.seal(&inner)?;
     let on_disk = PrekeyStateOnDisk {

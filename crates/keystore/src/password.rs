@@ -124,11 +124,7 @@ impl PasswordHash {
         salt.copy_from_slice(&bytes);
         let mut hash = [0u8; 32];
         hash_into(&plaintext.as_bytes(), &salt, params, &mut hash)?;
-        Ok(PasswordHash {
-            salt,
-            hash,
-            params,
-        })
+        Ok(PasswordHash { salt, hash, params })
     }
 
     /// Verify `plaintext` against this hash. Constant-time comparison
@@ -154,7 +150,11 @@ fn hash_into(
     params: Argon2Params,
     out: &mut [u8; 32],
 ) -> std::result::Result<(), PasswordError> {
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params.to_argon_params()?);
+    let argon = Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        params.to_argon_params()?,
+    );
     argon
         .hash_password_into(password, salt, out)
         .map_err(|e| PasswordError::Argon2(format!("hash_password_into: {e}")))
@@ -312,10 +312,7 @@ impl InactivityTimer {
 
     /// Test/diagnostic constructor: lets the caller seed the
     /// last-activity instant explicitly.
-    pub fn with_last_activity(
-        seconds: u64,
-        last_activity: std::time::Instant,
-    ) -> Self {
+    pub fn with_last_activity(seconds: u64, last_activity: std::time::Instant) -> Self {
         InactivityTimer {
             threshold: std::time::Duration::from_secs(seconds),
             last_activity,

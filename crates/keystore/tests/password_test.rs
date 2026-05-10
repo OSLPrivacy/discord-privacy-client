@@ -1,8 +1,7 @@
 use keystore::{
-    load_password_record, save_password_record, validate_password,
-    validate_setup_pair, verify_against_record, Argon2Params, Error,
-    InactivityTimer, MemorySealer, NoOpSealer, PasswordError, PasswordHash,
-    PasswordRecord, VerifyOutcome, DEFAULT_FAILED_ATTEMPT_THRESHOLD,
+    load_password_record, save_password_record, validate_password, validate_setup_pair,
+    verify_against_record, Argon2Params, Error, InactivityTimer, MemorySealer, NoOpSealer,
+    PasswordError, PasswordHash, PasswordRecord, VerifyOutcome, DEFAULT_FAILED_ATTEMPT_THRESHOLD,
     DEFAULT_INACTIVITY_SECONDS, MIN_PASSWORD_LENGTH,
 };
 use std::time::{Duration, Instant};
@@ -159,7 +158,10 @@ fn threshold_exceeded_returns_duress_by_threshold() {
 #[test]
 fn default_threshold_matches_design_doc() {
     let rec = PasswordRecord::new("111111", None, fast()).unwrap();
-    assert_eq!(rec.failed_attempt_threshold, DEFAULT_FAILED_ATTEMPT_THRESHOLD);
+    assert_eq!(
+        rec.failed_attempt_threshold,
+        DEFAULT_FAILED_ATTEMPT_THRESHOLD
+    );
     assert_eq!(rec.inactivity_seconds, DEFAULT_INACTIVITY_SECONDS);
     assert_eq!(rec.failed_attempts, 0);
 }
@@ -173,7 +175,10 @@ fn record_creation_rejects_identical_passwords() {
 #[test]
 fn record_creation_rejects_short_unlock() {
     let res = PasswordRecord::new("12345", None, fast());
-    assert!(matches!(res, Err(PasswordError::TooShort { got: 5, min: 6 })));
+    assert!(matches!(
+        res,
+        Err(PasswordError::TooShort { got: 5, min: 6 })
+    ));
 }
 
 // ---- inactivity timer ----
@@ -276,7 +281,10 @@ fn load_rejects_version_mismatch() {
     std::fs::write(&path, bumped).unwrap();
     assert!(matches!(
         load_password_record(&path, &sealer),
-        Err(Error::BlobVersionMismatch { got: 999, expected: 1 })
+        Err(Error::BlobVersionMismatch {
+            got: 999,
+            expected: 1
+        })
     ));
 }
 
