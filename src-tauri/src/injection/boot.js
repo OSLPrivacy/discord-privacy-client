@@ -2803,10 +2803,10 @@
 
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", recvInstallObserver);
-        document.addEventListener("DOMContentLoaded", editTabStartObserver);
+        // document.addEventListener("DOMContentLoaded", editTabStartObserver);  // disabled: broken Slate-model swap, pending overlay rewrite
     } else {
         recvInstallObserver();
-        editTabStartObserver();
+        // editTabStartObserver();  // disabled: broken Slate-model swap, pending overlay rewrite
     }
 })();
 
