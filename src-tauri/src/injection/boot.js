@@ -1149,6 +1149,28 @@
     // user navigates away and back, we re-apply from cache
     // without re-dispatching IPC.
     const recvPlaintext = new Map();
+
+    // Phase 5b3: per-channel rehydration cache populated by
+    // `osl_load_channel_history` on channel switch. Keyed by
+    // discord_message_id. Distinct from `recvPlaintext`:
+    //   - `recvPlaintext` is filled by *this session's* successful
+    //     decrypts.
+    //   - `loadedHistory` is filled from on-disk store rows
+    //     decrypted in *prior* sessions, surviving Tauri restart.
+    // `recvDispatchDecrypt` consults this map before dispatching
+    // a backend call so a lazy-rendered scrollback message
+    // resolves instantly without a keyserver round-trip. Entries
+    // are not aged out; the v1 alpha workload (two-peer dogfood,
+    // bounded channel scrollback) doesn't justify a TTL yet.
+    const loadedHistory = new Map();
+    // Last channel_id we kicked off `osl_load_channel_history`
+    // against. Updated synchronously *before* the invoke so a
+    // re-tick during the load doesn't double-fire. Stays set
+    // when the user navigates to a non-channel route (settings,
+    // friends list) so returning to the same channel doesn't
+    // re-load — only a switch to a *different* channel does.
+    let lastLoadedChannelId = null;
+    window.__OSL_LOADED_HISTORY__ = loadedHistory;
     // Periodic sweep cadence. 1s feels right: long enough that
     // it's not a CPU sink, short enough that a user who scrolls
     // back to a channel sees plaintext within a beat. Critical
@@ -1540,6 +1562,24 @@
             return;
         }
 
+        // Phase 5b3 short-circuit: if the channel-switch hook
+        // already pulled this message's plaintext out of the
+        // on-disk store, skip the IPC entirely. The DOM apply
+        // here covers the lazy-render case where the span
+        // wasn't yet mounted at history-load time.
+        const fromHistory = loadedHistory.get(messageId);
+        if (typeof fromHistory === "string") {
+            recvApplyPlaintext(div, fromHistory);
+            recvPlaintext.set(messageId, fromHistory);
+            recvDone.add(messageId);
+            console.log(
+                "[OSL] decrypt cache hit msg=" +
+                    messageId +
+                    " (from history)"
+            );
+            return;
+        }
+
         const channelId = recvExtractChannelId();
         if (!channelId) {
             console.log(
@@ -1611,6 +1651,13 @@
                     ")"
             );
         }
+        // Phase 5b3: surface the persist field on the wire.
+        // Always-on (not gated on DEBUG) so the line appears in
+        // release logs as evidence the at-rest store is being
+        // populated this run.
+        console.log(
+            "[OSL] decrypt invoke msg=" + messageId + " (with persist)"
+        );
 
         let timeoutHandle;
         const timeoutPromise = new Promise(function (_, reject) {
@@ -1622,6 +1669,10 @@
             channelId: channelId,
             senderDiscordId: senderDiscordId,
             content: coverText,
+            // Phase 5b3: opt into at-rest persistence. The
+            // backend treats this as `Option<String>` (`None`
+            // skips the store, `Some` writes the row).
+            discordMessageId: messageId,
         });
 
         Promise.race([ipcPromise, timeoutPromise])
@@ -1831,6 +1882,100 @@
     }
 
     /**
+     * Phase 5b3 channel-history rehydration. Called from the
+     * periodic sweep when the URL's channel_id changes; reads
+     * up to `RECV_HISTORY_LIMIT` previously decrypted messages
+     * for the channel from the at-rest store and:
+     *
+     *   - Stashes plaintext in `loadedHistory` (keyed by
+     *     discord_message_id) so a lazy-rendered scrollback
+     *     message can short-circuit through the
+     *     `recvDispatchDecrypt` cache check.
+     *   - For messages already mounted in the DOM whose
+     *     content still shows the `DPC0::` cover, applies
+     *     plaintext immediately and adds to `recvDone` so the
+     *     receive observer / sweep doesn't re-dispatch.
+     *
+     * Wrapped in try/catch end-to-end: a broken history load
+     * must NOT regress the live decrypt pipeline. The IPC
+     * itself is also try/wrapped on the rejection path.
+     */
+    const RECV_HISTORY_LIMIT = 100;
+    function recvLoadHistory(channelId) {
+        const invoke = getTauriInvoke();
+        if (typeof invoke !== "function") {
+            console.log(
+                "[OSL] history load failed channel=" +
+                    channelId +
+                    " reason=no_invoke"
+            );
+            return;
+        }
+        invoke("osl_load_channel_history", {
+            channelId: channelId,
+            limit: RECV_HISTORY_LIMIT,
+        })
+            .then(function (rows) {
+                try {
+                    const list = Array.isArray(rows) ? rows : [];
+                    console.log(
+                        "[OSL] history load channel=" +
+                            channelId +
+                            " count=" +
+                            list.length
+                    );
+                    for (const dto of list) {
+                        if (
+                            !dto ||
+                            typeof dto.discord_message_id !== "string" ||
+                            typeof dto.plaintext !== "string"
+                        ) {
+                            continue;
+                        }
+                        const mid = dto.discord_message_id;
+                        loadedHistory.set(mid, dto.plaintext);
+                        const span = document.getElementById(
+                            RECV_MESSAGE_ID_PREFIX + mid
+                        );
+                        let rendered = false;
+                        if (span) {
+                            const t = span.textContent || "";
+                            if (t.indexOf(RECV_PREFIX) === 0) {
+                                recvApplyPlaintext(span, dto.plaintext);
+                                recvPlaintext.set(mid, dto.plaintext);
+                                recvDone.add(mid);
+                                rendered = true;
+                            }
+                        }
+                        console.log(
+                            "[OSL] history apply msg=" +
+                                mid +
+                                " rendered=" +
+                                String(rendered)
+                        );
+                    }
+                } catch (e) {
+                    console.log(
+                        "[OSL] history apply threw channel=" +
+                            channelId +
+                            " reason=" +
+                            (e && e.message ? e.message : String(e))
+                    );
+                }
+            })
+            .catch(function (err) {
+                const msg =
+                    err && err.message ? err.message : String(err);
+                console.log(
+                    "[OSL] history load failed channel=" +
+                        channelId +
+                        " reason=" +
+                        msg
+                );
+            });
+    }
+
+    /**
      * Periodic sweep — every `RECV_SWEEP_INTERVAL_MS`, walk
      * every `[id^="message-content-"]` div in the document.
      *
@@ -1852,6 +1997,24 @@
      */
     function recvPeriodicSweep() {
         try {
+            // Phase 5b3 channel-switch detection. Cheap to read
+            // each tick; only triggers a load on a real switch
+            // to a different valid channel. Wrapped in its own
+            // try/catch so a broken history-load path can't
+            // poison the rest of the sweep tick.
+            try {
+                const here = recvExtractChannelId();
+                if (here && here !== lastLoadedChannelId) {
+                    lastLoadedChannelId = here;
+                    recvLoadHistory(here);
+                }
+            } catch (e) {
+                console.log(
+                    "[OSL] history channel-switch threw: " +
+                        (e && e.message ? e.message : e)
+                );
+            }
+
             const divs = document.querySelectorAll(RECV_MESSAGE_DIV_SELECTOR);
             let cachedCount = 0;
             let dispatchedCount = 0;
