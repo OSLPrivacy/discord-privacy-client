@@ -1126,6 +1126,80 @@ pub fn cmd_osl_load_channel_history(
     Ok(rows.into_iter().map(StoredMessageDto::from).collect())
 }
 
+/// Layer 10 / Phase 6a IPC entry point: re-persist a stored
+/// message under a new plaintext after the user edited it
+/// through Discord's edit flow.
+///
+/// Boot.js calls this from the PATCH-response load listener
+/// once the edit's outbound network leg succeeds. The flow is:
+///
+/// 1. User edits a `DPC0::` message in Discord.
+/// 2. Boot.js intercepts the PATCH, swaps `content` for a
+///    fresh `DPC0::<base64>` cover, lets the request continue.
+/// 3. Discord's response acknowledges the edit (200/204).
+/// 4. Load listener calls this IPC with the *plaintext the
+///    user typed* and the message_id from the URL.
+///
+/// On a known id: looks up the existing row to preserve
+/// channel_id + sender_discord_id + sender_osl_user_id, then
+/// upserts with `new_plaintext` and a fresh `decrypted_at`
+/// (treating the edit time as the new "decrypted at" since
+/// that's the moment the local store learned this plaintext).
+/// `burned` is preserved as `false` — burned rows are filtered
+/// from `store.get` so we'd already be on the unknown-id path
+/// for those.
+///
+/// On an unknown id: idempotent no-op returning `Ok(())`. The
+/// 2-arg signature can't construct a complete row without
+/// channel/sender metadata, and the receive observer's normal
+/// decrypt-and-persist path handles edit-before-decrypt
+/// (which is exotic anyway — we'd have to have edited a
+/// message we never saw bounce back, or one whose row was
+/// burned). Surfacing an error here would only confuse the
+/// boot.js caller, since the receive observer is also racing
+/// to persist the same edit through the regular path.
+///
+/// Persistence is disabled when `state.message_store` is
+/// `None`; we return `Ok(())` for the same reason
+/// `cmd_osl_burn_message` does.
+pub fn cmd_osl_persist_edit(
+    state: &AppState,
+    discord_message_id: String,
+    new_plaintext: String,
+) -> Result<(), String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    let existing = store
+        .get(&discord_message_id)
+        .map_err(|e| format!("OSL: persist_edit get: {e}"))?;
+    let Some(prior) = existing else {
+        // Edit-before-decrypt path — see fn-doc.
+        return Ok(());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let updated = StoredMessage {
+        discord_message_id: prior.discord_message_id,
+        channel_id: prior.channel_id,
+        sender_discord_id: prior.sender_discord_id,
+        sender_osl_user_id: prior.sender_osl_user_id,
+        plaintext: new_plaintext,
+        decrypted_at: now,
+        burned: false,
+    };
+    store
+        .put(&updated)
+        .map_err(|e| format!("OSL: persist_edit put: {e}"))?;
+    Ok(())
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the persistent store. Subsequent `osl_load_channel_history`
 /// calls will not return it, and `get`-style lookups skip it.

@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission file for the Layer 10 / Phase 6a IPC command.
+# Tauri 2's permission system requires explicit declarations for
+# app-level commands; this file declares `allow-osl-persist-edit`
+# and which command it grants. The capability `main-capability`
+# (in capabilities/main.json) references this permission to grant
+# the discord.com main webview access.
+
+[[permission]]
+identifier = "allow-osl-persist-edit"
+description = "Permits the discord.com main webview to invoke `osl_persist_edit` (re-persist a stored decrypted message under a fresh plaintext after the user edited it through Discord's edit flow). The IPC takes the *original plaintext* the user typed plus the discord_message_id from the PATCH URL; the existing row's channel_id and sender metadata are preserved, and decrypted_at advances to the edit time. Idempotent no-op when the row is unknown (edit-before-decrypt corner case)."
+commands.allow = ["osl_persist_edit"]

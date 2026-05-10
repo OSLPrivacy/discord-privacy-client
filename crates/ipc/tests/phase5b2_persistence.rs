@@ -85,12 +85,8 @@ fn fresh_state_without_store(loaded: Identity, counterpart: &Identity) -> AppSta
 /// Sender encrypts to a single counterpart; returns the
 /// `DPC0::<base64>` cover string the JS hook would put on the wire.
 fn encrypt_one_to_one(sender: &Identity, recipient: &Identity, plaintext: &str) -> String {
-    encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public],
-        plaintext,
-    )
-    .expect("encrypt should succeed for valid inputs")
+    encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], plaintext)
+        .expect("encrypt should succeed for valid inputs")
 }
 
 // ---- decrypt-then-load-history ----

@@ -36,11 +36,11 @@ mod screenshot;
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_burn_message, cmd_osl_decrypt_message_with_id,
-    cmd_osl_encrypt_message, cmd_osl_load_channel_history, cmd_register, cmd_save_identity,
-    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
-    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
-    RegisterResponse, StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
-    StoredMessageDto,
+    cmd_osl_encrypt_message, cmd_osl_load_channel_history, cmd_osl_persist_edit, cmd_register,
+    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
+    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
+    GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
+    StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
 };
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
@@ -308,6 +308,27 @@ async fn osl_load_channel_history(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Layer 10 / Phase 6a IPC entry point: re-persist a stored
+/// message under a fresh plaintext after the user edited it
+/// through Discord's edit flow. Boot.js calls this from the
+/// PATCH-response load listener; the *original plaintext* the
+/// user typed is the second arg (we don't need to round-trip
+/// through decrypt — the typed bytes are authoritative).
+#[tauri::command]
+async fn osl_persist_edit(
+    app: tauri::AppHandle,
+    discord_message_id: String,
+    new_plaintext: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_persist_edit(state.inner(), discord_message_id, new_plaintext)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -431,6 +452,7 @@ fn main() {
             osl_decrypt_message,
             osl_load_channel_history,
             osl_burn_message,
+            osl_persist_edit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

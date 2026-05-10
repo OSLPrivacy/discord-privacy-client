@@ -13,6 +13,7 @@
     "allow-osl-encrypt-message",
     "allow-osl-decrypt-message",
     "allow-osl-load-channel-history",
-    "allow-osl-burn-message"
+    "allow-osl-burn-message",
+    "allow-osl-persist-edit"
   ]
 }

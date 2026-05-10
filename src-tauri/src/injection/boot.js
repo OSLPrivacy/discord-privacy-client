@@ -1,4 +1,4 @@
-/* OSL boot script — Layer 10 / Phase 3 round 6.
+﻿/* OSL boot script â€” Layer 10 / Phase 3 round 6.
  *
  * Runs as the Tauri WebView's initialization_script BEFORE Discord's
  * bundle initialises. Wraps both `window.fetch` and
@@ -33,14 +33,14 @@
  *         Proxy whose apply trap consults a `WeakMap<hookedFn,
  *         spoofString>`. This handles
  *         `Function.prototype.toString.call(window.fetch)`, which
- *         bypasses instance-level toString overrides — without this
+ *         bypasses instance-level toString overrides â€” without this
  *         layer, naive detection would still see the wrapper source.
  *
  *   3. **Compile-time DEBUG strip** (the `DEBUG` const at the top
  *      of the IIFE). All `[OSL]`-prefixed `console.log` /
  *      `console.warn` calls are gated by `if (DEBUG)`. With
  *      `DEBUG = false` in release builds, V8/SpiderMonkey dead-code
- *      eliminate the gated blocks during optimisation — the
+ *      eliminate the gated blocks during optimisation â€” the
  *      `[OSL]` literals don't even appear in the JIT'd code, so a
  *      console-output scan finds nothing. `console.error` calls are
  *      NOT gated: real failures (IPC missing, encryption rejected)
@@ -55,7 +55,7 @@
  *
  * What this does NOT defend against (intentional v1 non-goals;
  * v2 overlay architecture sidesteps detection entirely):
- *   - `Reflect.getPrototypeOf` / Proxy introspection — Proxies are
+ *   - `Reflect.getPrototypeOf` / Proxy introspection â€” Proxies are
  *     detectable by sufficiently-determined adversaries (e.g.
  *     measuring the wall-clock cost of a Proxy hop, comparing
  *     descriptor shapes deeply, observing Reflect handler
@@ -66,7 +66,7 @@
  *     iframe creation to close this.
  *   - `Object.prototype.toString.call(proxy)` returns
  *     `"[object Function]"` for our function-Proxy (correct), so
- *     this isn't a detection vector — but it's worth noting the
+ *     this isn't a detection vector â€” but it's worth noting the
  *     classification is preserved, not spoofed.
  *
  * Sophisticated detection is an arms race that v1's modify-Discord-
@@ -95,12 +95,12 @@
     //     `cached=0` because that scope's decrypt success path
     //     populates a different Map than the one its sweep
     //     queries on the next tick (the closures aren't shared).
-    //   - decrypt RPCs fire 2× per message, and over a long
+    //   - decrypt RPCs fire 2Ã— per message, and over a long
     //     session the dispatched count grows unboundedly.
     //
-    // The guard is keyed on a single `window` flag — both
+    // The guard is keyed on a single `window` flag â€” both
     // contexts share `window` because they evaluate in the same
-    // frame — so the second evaluation short-circuits before
+    // frame â€” so the second evaluation short-circuits before
     // installing anything.
     // ============================================================
     if (window.__OSL_BOOT_INSTALLED__) {
@@ -119,7 +119,7 @@
     // `[OSL]` literals in the executable. Console-output scanners
     // for log fingerprints find nothing.
     //
-    // `console.error` calls are intentionally NOT gated — failures
+    // `console.error` calls are intentionally NOT gated â€” failures
     // are signal we want to surface even in production builds.
     // ============================================================
     const DEBUG = true;
@@ -180,7 +180,7 @@
         if (typeof invoke !== "function") {
             return Promise.reject(
                 new Error(
-                    "[OSL] Tauri IPC bridge not present on window — check " +
+                    "[OSL] Tauri IPC bridge not present on window â€” check " +
                         "capabilities/main.json grants `allow-osl-encrypt-message` " +
                         "and `remote.urls` includes `https://discord.com/*`."
                 )
@@ -200,7 +200,7 @@
      * does NOT see `window.__TAURI__` because Tauri 2 keeps that
      * API in the isolated world. So a developer can't open the
      * console and call `__TAURI__.core.invoke('osl_decrypt_message',
-     * …)` directly — the global is undefined. This wrapper
+     * â€¦)` directly â€” the global is undefined. This wrapper
      * exposes the same IPC path the receive observer uses, but
      * callable interactively, for diagnosing the "first decrypt
      * succeeds, subsequent hang" symptom.
@@ -215,7 +215,7 @@
      *   );
      *
      * Resolves to the decrypted plaintext, rejects with the same
-     * `OSL: …` strings the receive observer sees. Includes a
+     * `OSL: â€¦` strings the receive observer sees. Includes a
      * `[OSL] __OSL_DEBUG_DECRYPT__ id=N` log on dispatch + result
      * so the user can correlate with the receive observer's
      * `el#N` logs and tell whether the IPC layer is alive.
@@ -301,13 +301,13 @@
      *
      * Three exit callbacks, distinct by privacy meaning:
      *
-     * - `onMutated(newBodyJson)` — encryption succeeded, send the
+     * - `onMutated(newBodyJson)` â€” encryption succeeded, send the
      *   ciphertext-bearing body.
-     * - `onPassthrough()` — there was no plaintext to encrypt
+     * - `onPassthrough()` â€” there was no plaintext to encrypt
      *   (sticker-only / attachment-only sends with a missing or
      *   empty `content` field). Original body is forwarded as-is.
      *   This is **safe**: nothing was meant to be encrypted.
-     * - `onAbort(err)` — Phase 4 fail-closed. We **tried** to
+     * - `onAbort(err)` â€” Phase 4 fail-closed. We **tried** to
      *   encrypt but the pipeline rejected (IPC throw, non-Promise,
      *   non-string result, JSON re-serialisation failure, or
      *   `__OSL_INTERCEPT__` rejected). The caller MUST simulate a
@@ -436,6 +436,432 @@
     }
 
     /**
+     * Phase 6a: fire-and-forget persist call for an edited
+     * message. The original plaintext (what the user typed) is
+     * the source of truth â€” we don't round-trip through decrypt.
+     * Failures log but never propagate; the receive observer's
+     * normal decrypt-and-persist path provides a fallback.
+     */
+    function runPersistEdit(messageId, plaintext) {
+        const invoke = getTauriInvoke();
+        if (typeof invoke !== "function") return;
+        invoke("osl_persist_edit", {
+            discordMessageId: messageId,
+            newPlaintext: plaintext,
+        })
+            .then(function () {
+                console.log(
+                    "[OSL] selfEdit persist msg=" +
+                        messageId +
+                        " plaintext_len=" +
+                        plaintext.length
+                );
+            })
+            .catch(function (err) {
+                console.error(
+                    "[OSL] selfEdit persist failed msg=" +
+                        messageId +
+                        ": " +
+                        (err && err.message ? err.message : String(err))
+                );
+            });
+    }
+
+    /**
+     * Phase 6a fetch-side edit interception. Top-level entry
+     * called from the fetch Proxy when a PATCH /messages/{id}
+     * URL is observed. Resolves the body across fetch's three
+     * calling conventions (string body, Request object,
+     * everything else â†’ passthrough), then hands off to
+     * `interceptEditBody` for the encrypt + persist chain.
+     *
+     * Edit semantics differ from sends in two ways: the URL
+     * carries the message_id (so we can scope persist), and a
+     * 200/204 response means the edit landed (so the persist
+     * call has a hook). Sends use POST and the response carries
+     * the assigned id; edits use PATCH and the id was assigned
+     * earlier.
+     */
+    function handleFetchEdit(
+        target,
+        thisArg,
+        args,
+        input,
+        init,
+        channelId,
+        messageId
+    ) {
+        const initBody = init && init.body;
+        if (typeof initBody === "string") {
+            return interceptEditBody(
+                "fetch",
+                target,
+                thisArg,
+                args,
+                init,
+                null,
+                channelId,
+                messageId,
+                initBody,
+                true
+            );
+        }
+        const isRequestObj =
+            typeof Request !== "undefined" && input instanceof Request;
+        if (isRequestObj) {
+            let cloned;
+            try {
+                cloned = input.clone();
+            } catch (e) {
+                console.error(
+                    "[OSL] failed to clone Request (fetch edit); passthrough",
+                    e
+                );
+                return Reflect.apply(target, thisArg, args);
+            }
+            return cloned.text().then(
+                function (bodyText) {
+                    if (!bodyText) {
+                        return Reflect.apply(target, thisArg, args);
+                    }
+                    return interceptEditBody(
+                        "fetch",
+                        target,
+                        thisArg,
+                        args,
+                        init,
+                        input,
+                        channelId,
+                        messageId,
+                        bodyText,
+                        false
+                    );
+                },
+                function (err) {
+                    console.error(
+                        "[OSL] failed to read Request body (fetch edit); passthrough",
+                        err
+                    );
+                    return Reflect.apply(target, thisArg, args);
+                }
+            );
+        }
+        if (initBody != null && DEBUG) {
+            const bodyKind =
+                (initBody.constructor && initBody.constructor.name) ||
+                typeof initBody;
+            console.log(
+                "[OSL] outgoing edit (fetch PATCH): channel=" +
+                    channelId +
+                    " msg=" +
+                    messageId +
+                    " non-string init.body (" +
+                    bodyKind +
+                    "); passthrough"
+            );
+        }
+        return Reflect.apply(target, thisArg, args);
+    }
+
+    /**
+     * Encrypt-and-persist body of an edit request, parameterised
+     * over fetch / XHR. The XHR caller passes its own callbacks
+     * for `onMutated` / `onPassthrough` / `onAbort` because the
+     * dispatch shape differs (no Promise, has to synthesise a
+     * load event via the meta-stash); the fetch caller uses the
+     * default Promise-chained path baked into this fn via
+     * `viaInit` / `requestInput`.
+     *
+     * Both flows:
+     *  - early-return if `parsed.content` is missing, empty, or
+     *    already DPC0::-prefixed (defensive non-double-encrypt)
+     *  - capture `parsed.content` as the *original plaintext*
+     *  - hand off to `interceptBody` to swap in the cover
+     *  - on success log the spec-shaped one-line edit summary
+     *    (`[OSL] outgoing edit (<source>): channel=â€¦ msg=â€¦
+     *     orig_len=â€¦ wire_len=â€¦`) and queue
+     *    `runPersistEdit(messageId, origPlaintext)` for after the
+     *    network leg returns 200/204.
+     */
+    function interceptEditBody(
+        source,
+        target,
+        thisArg,
+        args,
+        init,
+        requestInput,
+        channelId,
+        messageId,
+        bodyText,
+        viaInit
+    ) {
+        let parsed;
+        try {
+            parsed = JSON.parse(bodyText);
+        } catch (e) {
+            return Reflect.apply(target, thisArg, args);
+        }
+        if (typeof parsed.content !== "string" || parsed.content === "") {
+            // Non-content edit (flags, mentions toggle, etc.) â€”
+            // nothing to encrypt.
+            return Reflect.apply(target, thisArg, args);
+        }
+        if (parsed.content.indexOf("DPC0::") === 0) {
+            console.log(
+                "[OSL] editTab safetynet HIT (" +
+                    source +
+                    " PATCH): channel=" +
+                    channelId +
+                    " msg=" +
+                    messageId +
+                    " content still DPC0:: at submit time " +
+                    "â€” Slate swap failed; edit submitted as no-op"
+            );
+            return Reflect.apply(target, thisArg, args);
+        }
+        const origPlaintext = parsed.content;
+
+        return interceptBody(
+            source + " edit",
+            channelId,
+            bodyText,
+            function (newBody) {
+                let wireLen = -1;
+                try {
+                    const newParsed = JSON.parse(newBody);
+                    if (typeof newParsed.content === "string") {
+                        wireLen = newParsed.content.length;
+                    }
+                } catch (e) {
+                    // Log-only; swallow.
+                }
+                console.log(
+                    "[OSL] outgoing edit (" +
+                        source +
+                        "): channel=" +
+                        channelId +
+                        " msg=" +
+                        messageId +
+                        " orig_len=" +
+                        origPlaintext.length +
+                        " wire_len=" +
+                        wireLen
+                );
+                let newArgs;
+                if (viaInit) {
+                    const newInit = Object.assign({}, init, {
+                        body: newBody,
+                    });
+                    newArgs = [args[0], newInit];
+                } else {
+                    newArgs = [
+                        new Request(requestInput, { body: newBody }),
+                    ];
+                }
+                const fetchResult = Reflect.apply(target, thisArg, newArgs);
+                if (fetchResult && typeof fetchResult.then === "function") {
+                    fetchResult.then(
+                        function (resp) {
+                            try {
+                                if (resp && resp.ok) {
+                                    runPersistEdit(messageId, origPlaintext);
+                                }
+                            } catch (e) {
+                                console.error(
+                                    "[OSL] persist-edit chain (fetch) threw",
+                                    e
+                                );
+                            }
+                        },
+                        function () {
+                            // Fetch rejected by the encrypt path
+                            // or network; no persist call.
+                        }
+                    );
+                }
+                return fetchResult;
+            },
+            function () {
+                return Reflect.apply(target, thisArg, args);
+            },
+            function () {
+                return Promise.reject(new TypeError("Failed to fetch"));
+            }
+        );
+    }
+
+    /**
+     * Phase 6a XHR-side edit interception. Mirrors
+     * `handleFetchEdit` but with the XHR dispatch shape:
+     * `xhr.send(body)` returns `undefined` synchronously, so
+     * the encrypt path runs through `interceptBody` and the
+     * mutated `Reflect.apply(target, xhrInst, [newBody])` is
+     * fire-and-forget. The persist call rides a passive
+     * `addEventListener("load", â€¦)` on the XHR instance,
+     * matching the existing send-side selfSentAuthors pattern.
+     */
+    function handleXhrEdit(target, thisArg, args, body, channelId, messageId) {
+        const xhrInst = thisArg;
+        if (typeof body !== "string") {
+            if (DEBUG && body !== undefined && body !== null) {
+                const bodyKind =
+                    (body.constructor && body.constructor.name) ||
+                    typeof body;
+                console.log(
+                    "[OSL] outgoing edit (XHR PATCH): channel=" +
+                        channelId +
+                        " msg=" +
+                        messageId +
+                        " non-string body (" +
+                        bodyKind +
+                        "); passthrough"
+                );
+            }
+            return Reflect.apply(target, thisArg, args);
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(body);
+        } catch (e) {
+            return Reflect.apply(target, thisArg, args);
+        }
+        if (typeof parsed.content !== "string" || parsed.content === "") {
+            return Reflect.apply(target, thisArg, args);
+        }
+        if (parsed.content.indexOf("DPC0::") === 0) {
+            console.log(
+                "[OSL] editTab safetynet HIT (XHR PATCH): channel=" +
+                    channelId +
+                    " msg=" +
+                    messageId +
+                    " content still DPC0:: at submit time " +
+                    "â€” Slate swap failed; edit submitted as no-op"
+            );
+            return Reflect.apply(target, thisArg, args);
+        }
+        const origPlaintext = parsed.content;
+        const origBody = body;
+
+        // Passive load listener â€” runs persist on a 200/204
+        // edit response. Defensively populates selfSentAuthors
+        // too, in case the user is editing a message they sent
+        // before this session started (no prior /messages POST
+        // populated the cache for that id).
+        xhrInst.addEventListener("load", function () {
+            try {
+                if (xhrInst.readyState !== 4) return;
+                if (xhrInst.status !== 200 && xhrInst.status !== 204) {
+                    return;
+                }
+                try {
+                    const respText = xhrInst.responseText || "";
+                    if (respText) {
+                        const parsedResp = JSON.parse(respText);
+                        if (
+                            parsedResp &&
+                            typeof parsedResp.id === "string" &&
+                            parsedResp.author &&
+                            typeof parsedResp.author.id === "string"
+                        ) {
+                            selfSentAuthors.set(
+                                parsedResp.id,
+                                parsedResp.author.id
+                            );
+                            while (
+                                selfSentAuthors.size > SELF_SENT_AUTHORS_MAX
+                            ) {
+                                const oldest = selfSentAuthors
+                                    .keys()
+                                    .next().value;
+                                if (oldest === undefined) break;
+                                selfSentAuthors.delete(oldest);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // Response missing / non-JSON â€” fine, just
+                    // skip the defensive populate.
+                }
+                runPersistEdit(messageId, origPlaintext);
+            } catch (e) {
+                // Listener never throws.
+            }
+        });
+
+        const result = interceptBody(
+            "XHR edit",
+            channelId,
+            body,
+            function (newBody) {
+                let wireLen = -1;
+                try {
+                    const newParsed = JSON.parse(newBody);
+                    if (typeof newParsed.content === "string") {
+                        wireLen = newParsed.content.length;
+                    }
+                } catch (e) {
+                    // Log-only; swallow.
+                }
+                console.log(
+                    "[OSL] outgoing edit (XHR): channel=" +
+                        channelId +
+                        " msg=" +
+                        messageId +
+                        " orig_len=" +
+                        origPlaintext.length +
+                        " wire_len=" +
+                        wireLen
+                );
+                try {
+                    Reflect.apply(target, xhrInst, [newBody]);
+                } catch (e) {
+                    console.error(
+                        "[OSL] origSend with mutated body threw (XHR edit)",
+                        e
+                    );
+                }
+            },
+            function () {
+                try {
+                    Reflect.apply(target, xhrInst, [origBody]);
+                } catch (e) {
+                    console.error(
+                        "[OSL] origSend (passthrough) threw (XHR edit)",
+                        e
+                    );
+                }
+            },
+            function () {
+                // Fail-closed â€” synthesise the same
+                // error/loadend pair the send path uses on a
+                // failed encrypt, so Discord shows "Failed to
+                // edit" rather than a stuck spinner.
+                setTimeout(function () {
+                    try {
+                        xhrInst.dispatchEvent(new ProgressEvent("error"));
+                        xhrInst.dispatchEvent(new ProgressEvent("loadend"));
+                    } catch (e) {
+                        console.error(
+                            "[OSL] XHR edit failure synthesis dispatchEvent threw",
+                            e
+                        );
+                    }
+                }, 0);
+            }
+        );
+
+        if (result && typeof result.catch === "function") {
+            result.catch(function (err) {
+                console.error(
+                    "[OSL] XHR edit intercept tail caught (rare):",
+                    err
+                );
+            });
+        }
+        return undefined;
+    }
+
+    /**
      * Resolve `(input, init)` to a stable {url, method} pair across
      * the three calling conventions Fetch supports.
      */
@@ -501,7 +927,7 @@
                 // Return a spoof function. We bind it freshly each
                 // call rather than caching, so the returned function
                 // identity matches what a fresh property access
-                // would produce on a native — defeats simple
+                // would produce on a native â€” defeats simple
                 // identity-comparison checks like
                 // `fn1.toString === fn2.toString` (would-be true on
                 // native, false on cached spoof).
@@ -530,15 +956,15 @@
 
                 const editMatch = EDIT_RE.exec(url);
                 if (editMatch && method === "PATCH") {
-                    if (DEBUG)
-                        console.log(
-                            "[OSL] outgoing edit (fetch PATCH): channel=" +
-                                editMatch[1] +
-                                " message=" +
-                                editMatch[2] +
-                                "; passthrough (Phase 4 territory)"
-                        );
-                    return Reflect.apply(target, thisArg, args);
+                    return handleFetchEdit(
+                        target,
+                        thisArg,
+                        args,
+                        input,
+                        init,
+                        editMatch[1],
+                        editMatch[2]
+                    );
                 }
 
                 const sendMatch = SEND_RE.exec(url);
@@ -564,12 +990,12 @@
                             ]);
                         },
                         function () {
-                            // onPassthrough — no plaintext to
+                            // onPassthrough â€” no plaintext to
                             // encrypt; safe to forward.
                             return Reflect.apply(target, thisArg, args);
                         },
                         function () {
-                            // onAbort — Phase 4 fail-closed.
+                            // onAbort â€” Phase 4 fail-closed.
                             // Reject the fetch Promise to simulate
                             // a network failure; Discord shows the
                             // message as "Failed to send" rather
@@ -622,12 +1048,12 @@
                                     ]);
                                 },
                                 function () {
-                                    // onPassthrough — see string-
+                                    // onPassthrough â€” see string-
                                     // body branch above.
                                     return Reflect.apply(target, thisArg, args);
                                 },
                                 function () {
-                                    // onAbort — Phase 4 fail-closed.
+                                    // onAbort â€” Phase 4 fail-closed.
                                     return Promise.reject(
                                         new TypeError("Failed to fetch")
                                     );
@@ -694,15 +1120,14 @@
 
                 const editMatch = EDIT_RE.exec(meta.url);
                 if (editMatch && meta.method === "PATCH") {
-                    if (DEBUG)
-                        console.log(
-                            "[OSL] outgoing edit (XHR PATCH): channel=" +
-                                editMatch[1] +
-                                " message=" +
-                                editMatch[2] +
-                                "; passthrough (Phase 4 territory)"
-                        );
-                    return Reflect.apply(target, thisArg, args);
+                    return handleXhrEdit(
+                        target,
+                        thisArg,
+                        args,
+                        body,
+                        editMatch[1],
+                        editMatch[2]
+                    );
                 }
 
                 const sendMatch = SEND_RE.exec(meta.url);
@@ -738,7 +1163,7 @@
                 // continuation list-item without
                 // `data-author-id`. Wired via
                 // `addEventListener` rather than `xhr.onload =`
-                // so it's additive — we don't displace any
+                // so it's additive â€” we don't displace any
                 // handler Discord may have set. The whole body
                 // is wrapped in try/catch to ensure the listener
                 // never throws regardless of response shape.
@@ -779,7 +1204,7 @@
                                 parsed.author.id
                         );
                     } catch (e) {
-                        // Swallowed — listener never throws.
+                        // Swallowed â€” listener never throws.
                     }
                 });
 
@@ -798,7 +1223,7 @@
                         }
                     },
                     function () {
-                        // onPassthrough — no plaintext to encrypt.
+                        // onPassthrough â€” no plaintext to encrypt.
                         try {
                             Reflect.apply(target, xhrInst, [origBody]);
                         } catch (e) {
@@ -809,7 +1234,7 @@
                         }
                     },
                     function () {
-                        // onAbort — Phase 4 fail-closed.
+                        // onAbort â€” Phase 4 fail-closed.
                         //
                         // XHR has no Promise to reject (we already
                         // returned `undefined` from the apply trap
@@ -820,7 +1245,7 @@
                         // rather than a stuck-sending spinner.
                         //
                         // Caveat (documented in Phase 4 design
-                        // notes §13): `xhr.readyState` and `status`
+                        // notes Â§13): `xhr.readyState` and `status`
                         // stay at their pre-send values (1 / 0).
                         // Most callers gate on the error event
                         // firing rather than reading those, but
@@ -876,15 +1301,15 @@
         // Round 6 diagnostic confirmed: Sentry's instrumentation
         // overwrites `window.fetch` after our init script runs
         // (delayed @+3s probe showed `window.fetch === fetchProxy`
-        // → false in one of the two webview contexts; toString
+        // â†’ false in one of the two webview contexts; toString
         // returned Sentry's wrapper source). Our Proxy and FPT trap
-        // were correct — just displaced.
+        // were correct â€” just displaced.
         //
         // Lock the property non-writable + non-configurable so
         // Sentry's later `window.fetch = sentryWrapper` assignment
         // cannot displace us:
         //   - In strict mode: assignment throws TypeError. Sentry
-        //     wraps its instrumentation in try/catch (they have to —
+        //     wraps its instrumentation in try/catch (they have to â€”
         //     they can't crash apps), so the throw is swallowed and
         //     Sentry's wrapper simply doesn't install.
         //   - In sloppy mode: assignment silently fails. Same
@@ -907,8 +1332,8 @@
         // other observability (unhandled rejections, console
         // capture, etc.) is unaffected. Net: Discord loses one
         // dimension of breadcrumb data on this client; for the OSL
-        // threat model — Discord shouldn't be able to read message
-        // content — this is an acceptable trade.
+        // threat model â€” Discord shouldn't be able to read message
+        // content â€” this is an acceptable trade.
         Object.defineProperty(window, "fetch", {
             value: fetchProxy,
             writable: false,
@@ -1064,7 +1489,7 @@
     //
     // ## Why DOM-layer (vs FluxDispatcher / WebSocket)
     //
-    // Layer 10 §14 walks through three rounds of internal-hook
+    // Layer 10 Â§14 walks through three rounds of internal-hook
     // recon (FluxDispatcher store discovery, WebSocket gateway
     // intercept). Both are reachable but couple the mod tightly
     // to Discord's reducer ordering and obfuscated module IDs;
@@ -1072,19 +1497,19 @@
     // the one Discord-facing API that's observable, public, and
     // stable enough to bet on for v1.
     //
-    // ## Accepted v1 limitations (documented in §14.6 + README)
+    // ## Accepted v1 limitations (documented in Â§14.6 + README)
     //
     //   1. **Brief flash** of the DPC0:: cover before async
-    //      decrypt completes — typically tens to a few hundred
+    //      decrypt completes â€” typically tens to a few hundred
     //      milliseconds.
     //   2. **DOM-mutation fragility**: any major Discord
     //      message-renderer refactor can break the observer.
     //      Treated as ongoing maintenance.
-    //   3. **Sender's own messages flash too** — the encoder
+    //   3. **Sender's own messages flash too** â€” the encoder
     //      auto-includes the sender as a recipient slot so the
     //      flow is symmetrical, but the cover still renders
     //      first and is replaced by the observer.
-    //   4. **Best-effort author_id extraction** — pulled from
+    //   4. **Best-effort author_id extraction** â€” pulled from
     //      avatar URL or `data-author-id`; if neither is present
     //      we skip rather than guess (safe default).
     //
@@ -1100,7 +1525,7 @@
     // by React on every re-render, but this outer div persists
     // across re-renders. Anchoring on it (and keying all our
     // state by the message_id extracted from its `id`) survives
-    // span replacement — when React swaps the inner span back to
+    // span replacement â€” when React swaps the inner span back to
     // the cover, our cached plaintext re-applies via
     // `div.textContent = cached`, which removes the new span and
     // installs a single text node. The next React render may
@@ -1109,7 +1534,7 @@
     // net for renders that don't fire useful mutations.
     const RECV_MESSAGE_DIV_SELECTOR = '[id^="message-content-"]';
     const RECV_MESSAGE_ID_PREFIX = "message-content-";
-    // Permanent disposition (decrypt completed — success OR
+    // Permanent disposition (decrypt completed â€” success OR
     // unrecoverable Rust-side rejection). Keyed by message_id
     // so the marker survives React replacing the inner span.
     const recvDone = new Set();
@@ -1119,8 +1544,8 @@
     // is pending. Cleared on resolve / reject / timeout.
     const recvInFlight = new Set();
     // Per-message retry counter for IPC-layer timeouts (Tauri's
-    // postMessage fallback on Discord — which CSP-blocks the
-    // custom protocol — has been observed to drop calls after
+    // postMessage fallback on Discord â€” which CSP-blocks the
+    // custom protocol â€” has been observed to drop calls after
     // the first roundtrip). Incremented only on rejection /
     // timeout, not pre-call, so a transient hang doesn't burn
     // through the budget while the IPC layer is wedged.
@@ -1128,7 +1553,7 @@
     const RECV_MAX_RETRIES = 3;
     // IPC timeout. Tuned to be longer than a typical keyserver
     // round-trip (cache-miss fetch_pubkeys is the slowest path,
-    // ~1–2s on a healthy connection) but short enough that a
+    // ~1â€“2s on a healthy connection) but short enough that a
     // hung postMessage transport recovers within a few seconds
     // rather than locking the cover string in place forever.
     const RECV_IPC_TIMEOUT_MS = 10000;
@@ -1145,10 +1570,22 @@
     const RECV_REJECTION_LOG_CAP = 50;
     // Plaintext cache, keyed by message_id. Populated on
     // successful decrypt. Survives React replacing the inner
-    // span, channel switches, and DOM re-mounts — so when the
+    // span, channel switches, and DOM re-mounts â€” so when the
     // user navigates away and back, we re-apply from cache
     // without re-dispatching IPC.
     const recvPlaintext = new Map();
+
+    // Phase 6a: last-seen DPC0:: cover string per messageId,
+    // recorded whenever we successfully apply plaintext to a
+    // div. Used by the remote-edit detector in `recvHandleDiv`:
+    // if the observer sees a *different* DPC0:: cover for a
+    // messageId we've already cached plaintext for, that's a
+    // remote edit and the cached plaintext is stale â€” we
+    // invalidate the caches and fall through to a fresh
+    // decrypt dispatch. Without this map, the existing
+    // recvPlaintext short-circuit would re-apply the OLD
+    // plaintext indefinitely after an edit.
+    const recvCovers = new Map();
 
     // Phase 5b3: per-channel rehydration cache populated by
     // `osl_load_channel_history` on channel switch. Keyed by
@@ -1168,13 +1605,40 @@
     // re-tick during the load doesn't double-fire. Stays set
     // when the user navigates to a non-channel route (settings,
     // friends list) so returning to the same channel doesn't
-    // re-load — only a switch to a *different* channel does.
+    // re-load â€” only a switch to a *different* channel does.
     let lastLoadedChannelId = null;
     window.__OSL_LOADED_HISTORY__ = loadedHistory;
+
+    // Phase 6a UX fix: edit-tab textbox observer + Slate-aware
+    // plaintext swap.
+    //
+    // Problem: when the user clicks Edit on a DPC0:: message,
+    // Discord's Slate.js editor pulls initial content from
+    // React state (the ciphertext), not from our painted-over
+    // span. Without intervention the user sees `DPC0::AQFC...`
+    // in the edit box.
+    //
+    // Fix: a MutationObserver on document.body watches for the
+    // edit textbox appearing inside an `li[id^='chat-messages-']`
+    // (which excludes the main composer at the channel bottom).
+    // When found with DPC0:: content, we resolve the plaintext
+    // from `loadedHistory` / `recvPlaintext` and replace the
+    // textbox content via execCommand("insertText"), which
+    // Slate handles as a real edit and updates its internal
+    // model. On submit, the existing PATCH interceptor sees
+    // plaintext in `parsed.content` and re-encrypts normally.
+    //
+    // Safety net: `interceptEditBody` already passes-through on
+    // DPC0::-prefixed content (lines ~608-622). If the swap
+    // silently fails, the edit becomes a no-op rather than
+    // corrupting the message.
+    let editTabObserver = null;
+    const EDIT_TAB_PLACEHOLDER =
+        "[message from before persistence â€” cannot edit]";
     // Periodic sweep cadence. 1s feels right: long enough that
     // it's not a CPU sink, short enough that a user who scrolls
     // back to a channel sees plaintext within a beat. Critical
-    // for correctness — empirically the MutationObserver does
+    // for correctness â€” empirically the MutationObserver does
     // NOT reliably fire on newly-rendered messages added to a
     // pre-existing message list (Discord likely renders new
     // messages by mutating an inner span on a pre-mounted
@@ -1186,7 +1650,7 @@
 
     // Expose the receive-side state on `window` so the developer
     // can inspect cache health from DevTools without needing a
-    // Rust round-trip. These are READ-ONLY references — mutating
+    // Rust round-trip. These are READ-ONLY references â€” mutating
     // the Map / Set from the console will affect the live state.
     //
     //   window.__OSL_RECV_PLAINTEXT_MAP__.size  // count of cached decrypts
@@ -1200,7 +1664,7 @@
     // Per-message attempt counter for the `recvExtractAuthorId`
     // returns-null path. Discord's freshly-rendered own-sent
     // messages frequently have no avatar block / no
-    // `data-author-id` for the first few paints — the metadata
+    // `data-author-id` for the first few paints â€” the metadata
     // is wired in during a later React commit. We retry up to
     // RECV_AUTHOR_MAX_RETRIES times (driven by the periodic
     // sweep, ~1s cadence). After the cap we mark the message
@@ -1211,7 +1675,7 @@
     const recvAuthorRetryCount = new Map();
     const RECV_AUTHOR_MAX_RETRIES = 10;
 
-    // Outbound-capture cache of own-sent (message_id → author_id).
+    // Outbound-capture cache of own-sent (message_id â†’ author_id).
     // Populated by the XHR `load` listener installed in
     // `makeSendHandler` for every /channels/{cid}/messages POST
     // whose response carries `{id, author: {id}}`. Consulted at
@@ -1250,7 +1714,7 @@
         return null;
     }
 
-    /** Extract the Discord message_id from a `message-content-…` div. */
+    /** Extract the Discord message_id from a `message-content-â€¦` div. */
     function recvMessageIdOf(div) {
         return div.id.slice(RECV_MESSAGE_ID_PREFIX.length);
     }
@@ -1264,7 +1728,7 @@
      *
      *  1. **Paint invalidation.** Live diagnostics on Windows
      *     showed `textContent` updates persisting in the DOM
-     *     for 5+ seconds without React re-rendering — yet the
+     *     for 5+ seconds without React re-rendering â€” yet the
      *     screen kept showing the prior `DPC0::` cover. The
      *     browser was rendering a stale visual snapshot that
      *     `textContent =` didn't dirty. Constructing a brand-
@@ -1273,7 +1737,7 @@
      *     cached, forcing a real repaint.
      *
      *  2. **Native shape.** Discord renders message content as
-     *     `<div id="message-content-…"><span>…</span></div>`.
+     *     `<div id="message-content-â€¦"><span>â€¦</span></div>`.
      *     Our replacement matches that shape exactly, so any
      *     CSS / styling rules that target `> span` keep
      *     applying. `textContent =` collapses children to a
@@ -1289,17 +1753,17 @@
     /**
      * Pull the sender's Discord user_id (== OSL user_id in v1)
      * from the DOM context surrounding `el`. Walks up to the
-     * `chat-messages___…` list-item ancestor, then tries:
+     * `chat-messages___â€¦` list-item ancestor, then tries:
      *   1. `data-author-id` attribute on item or any descendant.
-     *   2. Avatar `<img src="…/avatars/<snowflake>/…">` scan.
-     * Returns null on failure — caller skips the request.
+     *   2. Avatar `<img src="â€¦/avatars/<snowflake>/â€¦">` scan.
+     * Returns null on failure â€” caller skips the request.
      */
     function recvExtractAuthorId(el) {
         // Self-sent capture cache hit. The XHR `load` listener
-        // populates `selfSentAuthors` with (msg_id → author_id)
+        // populates `selfSentAuthors` with (msg_id â†’ author_id)
         // for every successful own-send. Cozy-grouped
         // continuation list-items drop `data-author-id` from
-        // the DOM, so the DOM walks below would return null —
+        // the DOM, so the DOM walks below would return null â€”
         // but the response-side capture has the mapping. Try
         // the cache before any DOM work.
         if (
@@ -1347,7 +1811,7 @@
         }
 
         // Cozy-grouping fallback. Discord renders consecutive
-        // messages from the same author as a "group" — only the
+        // messages from the same author as a "group" â€” only the
         // first message in the group carries the avatar block and
         // the `data-author-id` attribute; subsequent messages in
         // the group ship as bare list-items with just the message
@@ -1401,6 +1865,194 @@
     }
 
     /**
+     * Phase 6a UX fix: resolve plaintext for an edit-target
+     * message_id. Checks the in-memory caches in order:
+     *   1. `loadedHistory` â€” populated from on-disk store on
+     *      channel switch; survives Tauri restart.
+     *   2. `recvPlaintext` â€” populated by *this session's*
+     *      successful decrypts.
+     *
+     * Returns `{ plaintext, source }` on hit or `null` on miss
+     * (caller substitutes EDIT_TAB_PLACEHOLDER).
+     */
+    function editTabResolvePlaintext(messageId) {
+        const fromHistory = loadedHistory.get(messageId);
+        if (typeof fromHistory === "string") {
+            return { plaintext: fromHistory, source: "loadedHistory" };
+        }
+        const fromSession = recvPlaintext.get(messageId);
+        if (typeof fromSession === "string") {
+            return { plaintext: fromSession, source: "recvPlaintext" };
+        }
+        return null;
+    }
+
+    /**
+     * Phase 6a UX fix: replace the contents of an edit textbox
+     * with `plaintext`, using `document.execCommand("insertText")`
+     * so Discord's Slate.js editor updates its internal model.
+     *
+     * `execCommand` is deprecated but remains the only reliable
+     * way to drive Slate from outside React: it dispatches the
+     * `beforeinput` events Slate listens for and triggers a
+     * proper React re-render. A raw `textContent =` assignment
+     * paints the DOM but leaves Slate's model holding the
+     * ciphertext; on submit Slate would serialise the stale
+     * model and Discord would receive the original DPC0:: blob.
+     *
+     * Fallback path: synthesise an `InputEvent` with
+     * `inputType: "insertReplacementText"`. Some Slate versions
+     * accept this; others ignore it. The PATCH interceptor's
+     * existing DPC0::-passthrough is the final safety net if
+     * both paths fail â€” the edit becomes a no-op (Discord is
+     * sent the same ciphertext it already has) rather than
+     * corrupting the message.
+     *
+     * Marks `textboxEl.dataset.oslSwapped = messageId` so the
+     * observer doesn't re-fire on every mutation tick.
+     */
+    function editTabSwapTextbox(textboxEl, messageId, plaintext, sourceLabel) {
+        try {
+            textboxEl.focus();
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(textboxEl);
+            sel.removeAllRanges();
+            sel.addRange(range);
+
+            let ok = false;
+            try {
+                ok = document.execCommand("insertText", false, plaintext);
+            } catch (e) {
+                ok = false;
+            }
+            if (!ok) {
+                const ev = new InputEvent("beforeinput", {
+                    bubbles: true,
+                    cancelable: true,
+                    inputType: "insertReplacementText",
+                    data: plaintext,
+                });
+                textboxEl.dispatchEvent(ev);
+                console.log(
+                    "[OSL] editTab swap msg=" +
+                        messageId +
+                        " path=inputEvent (execCommand returned false)"
+                );
+            } else {
+                console.log(
+                    "[OSL] editTab swap msg=" +
+                        messageId +
+                        " path=execCommand source=" +
+                        sourceLabel +
+                        " plaintext_len=" +
+                        plaintext.length
+                );
+            }
+            textboxEl.dataset.oslSwapped = messageId;
+        } catch (e) {
+            console.error(
+                "[OSL] editTab swap threw msg=" + messageId,
+                e
+            );
+        }
+    }
+
+    /**
+     * Phase 6a UX fix: inspect a candidate edit textbox and, if
+     * it carries DPC0::-prefixed content, swap to plaintext.
+     *
+     * No-op when:
+     *   - already swapped (dataset.oslSwapped matches this mid)
+     *   - no `li[id^='chat-messages-']` ancestor (means this
+     *     isn't an in-message edit textbox â€” most likely the
+     *     main composer at the channel bottom; ignore)
+     *   - id parse fails
+     *   - textContent doesn't start with `DPC0::`
+     */
+    function editTabHandleTextbox(textboxEl) {
+        const li = textboxEl.closest("li[id^='chat-messages-']");
+        if (!li) return;
+        const m = /chat-messages-\d{15,22}-(\d{15,22})/.exec(li.id);
+        if (!m) return;
+        const messageId = m[1];
+        if (textboxEl.dataset.oslSwapped === messageId) return;
+        const text = (textboxEl.textContent || "").trim();
+        if (text.indexOf("DPC0::") !== 0) return;
+
+        const resolved = editTabResolvePlaintext(messageId);
+        if (resolved) {
+            editTabSwapTextbox(
+                textboxEl,
+                messageId,
+                resolved.plaintext,
+                resolved.source
+            );
+        } else {
+            console.log(
+                "[OSL] editTab no_history msg=" +
+                    messageId +
+                    " reason=miss_loadedHistory_and_recvPlaintext"
+            );
+            editTabSwapTextbox(
+                textboxEl,
+                messageId,
+                EDIT_TAB_PLACEHOLDER,
+                "placeholder"
+            );
+        }
+    }
+
+    /**
+     * Phase 6a UX fix: lazy-init the edit-tab observer.
+     * Watches document.body for added textboxes and attribute
+     * changes on existing ones (Discord sometimes mounts the
+     * textbox first and toggles `contenteditable` after).
+     *
+     * Idempotent: subsequent calls are no-ops once started.
+     */
+    function editTabStartObserver() {
+        if (editTabObserver) return;
+        editTabObserver = new MutationObserver(function (mutations) {
+            for (const mut of mutations) {
+                if (mut.type === "childList") {
+                    for (const node of mut.addedNodes) {
+                        if (node.nodeType !== 1) continue;
+                        if (
+                            node.matches &&
+                            node.matches('div[role="textbox"]')
+                        ) {
+                            editTabHandleTextbox(node);
+                        }
+                        if (node.querySelectorAll) {
+                            const inner = node.querySelectorAll(
+                                'div[role="textbox"]'
+                            );
+                            for (const tb of inner) {
+                                editTabHandleTextbox(tb);
+                            }
+                        }
+                    }
+                } else if (
+                    mut.type === "attributes" &&
+                    mut.target &&
+                    mut.target.matches &&
+                    mut.target.matches('div[role="textbox"]')
+                ) {
+                    editTabHandleTextbox(mut.target);
+                }
+            }
+        });
+        editTabObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["contenteditable", "role"],
+        });
+        console.log("[OSL] editTab observer started");
+    }
+
+    /**
      * If `el` carries a DPC0:: cover string, request decryption
      * and replace textContent on success. No-op when:
      *   - element already settled (success or permanent failure)
@@ -1412,10 +2064,10 @@
      *
      * **Timeout behaviour.** Tauri's IPC over postMessage (used on
      * pages where CSP blocks the `http://ipc.localhost` custom
-     * protocol — i.e. discord.com) has been observed to silently
+     * protocol â€” i.e. discord.com) has been observed to silently
      * drop calls after the first successful roundtrip. We wrap
      * the invoke promise in a `Promise.race` against a setTimeout;
-     * a timeout does NOT mark `recvDone` — the next observer tick
+     * a timeout does NOT mark `recvDone` â€” the next observer tick
      * gets a fresh chance, bounded by `RECV_MAX_RETRIES`. The
      * retry counter increments only on rejection / timeout, NOT
      * pre-call, so a transient hang doesn't burn through the
@@ -1425,15 +2077,15 @@
      * Decide what to do with a `[id^="message-content-"]` div
      * that's been observed (mutation, sweep, or initial scan):
      *
-     *   - textContent doesn't start with `DPC0::` → already
+     *   - textContent doesn't start with `DPC0::` â†’ already
      *     plaintext or non-OSL content; do nothing.
-     *   - cached plaintext for this message_id → re-apply via
+     *   - cached plaintext for this message_id â†’ re-apply via
      *     `recvApplyPlaintext` synchronously. No IPC.
-     *   - settled with no cache (permanent decrypt failure) →
+     *   - settled with no cache (permanent decrypt failure) â†’
      *     do nothing.
-     *   - in-flight decrypt → do nothing; let the resolution
+     *   - in-flight decrypt â†’ do nothing; let the resolution
      *     handle the apply.
-     *   - otherwise → dispatch a fresh decrypt.
+     *   - otherwise â†’ dispatch a fresh decrypt.
      *
      * No burst cap on re-apply: live diagnostics confirm
      * `textContent` updates persist on Discord's
@@ -1488,6 +2140,28 @@
             return;
         }
         const messageId = recvMessageIdOf(div);
+
+        // Phase 6a: remote-edit detection. If we've previously
+        // applied plaintext to this messageId and recorded the
+        // DPC0:: cover that decrypted to it, but the *current*
+        // cover differs, the message was edited (remotely or
+        // locally â€” either way our cached plaintext is wrong).
+        // Invalidate every cache that would short-circuit the
+        // dispatch and fall through; the existing
+        // recvDispatchDecrypt path will re-decrypt + re-apply
+        // + re-persist via cmd_osl_decrypt_message_with_id.
+        const lastCover = recvCovers.get(messageId);
+        if (lastCover !== undefined && lastCover !== text) {
+            console.log(
+                "[OSL] recvEdit detected msg=" +
+                    messageId +
+                    " reason=cache_miss_on_DPC0"
+            );
+            recvPlaintext.delete(messageId);
+            loadedHistory.delete(messageId);
+            recvDone.delete(messageId);
+            recvCovers.delete(messageId);
+        }
 
         const cached = recvPlaintext.get(messageId);
         if (cached) {
@@ -1571,6 +2245,7 @@
         if (typeof fromHistory === "string") {
             recvApplyPlaintext(div, fromHistory);
             recvPlaintext.set(messageId, fromHistory);
+            recvCovers.set(messageId, coverText);
             recvDone.add(messageId);
             console.log(
                 "[OSL] decrypt cache hit msg=" +
@@ -1691,9 +2366,13 @@
                 // doesn't lose the plaintext. The next observer
                 // tick or sweep re-applies from this cache.
                 recvPlaintext.set(messageId, plaintext);
+                // Phase 6a: bind the cover that produced this
+                // plaintext so the remote-edit detector can
+                // tell a stale cache from a re-mount.
+                recvCovers.set(messageId, coverText);
                 recvDone.add(messageId);
 
-                // Apply on the live messageContent div — look it
+                // Apply on the live messageContent div â€” look it
                 // up fresh by id, since `div` may have been
                 // detached and re-mounted between dispatch and
                 // resolve.
@@ -1766,7 +2445,7 @@
                                 delayed.length +
                                 ")" +
                                 (reverted
-                                    ? " REVERTED — sweep will re-apply"
+                                    ? " REVERTED â€” sweep will re-apply"
                                     : " STUCK")
                         );
                     }, 100);
@@ -1779,7 +2458,7 @@
                 const isTimeout = msg === RECV_TIMEOUT_SENTINEL;
 
                 if (isTimeout) {
-                    // Hung IPC — increment retry counter, leave
+                    // Hung IPC â€” increment retry counter, leave
                     // recvDone UNSET so the next observer/sweep
                     // tick re-dispatches. Logged unconditionally
                     // since this is a real diagnostic signal.
@@ -1798,7 +2477,7 @@
                     return;
                 }
 
-                // Rust-side rejection — increment retries and
+                // Rust-side rejection â€” increment retries and
                 // mark settled. Most rejections are permanent
                 // (UnknownSender, NoMatchingSlot, BadPrefix).
                 recvRetries.set(messageId, tries + 1);
@@ -1845,7 +2524,7 @@
      *  1. `root` itself is a messageContent div (the addedNode
      *     was the full div).
      *  2. `root` contains messageContent divs as descendants
-     *     (the addedNode was a wrapper higher up — initial
+     *     (the addedNode was a wrapper higher up â€” initial
      *     channel load, scrollback batches).
      *  3. `root` is INSIDE a pre-existing messageContent div
      *     (the addedNode was an inner span/text added to a
@@ -1943,6 +2622,8 @@
                             if (t.indexOf(RECV_PREFIX) === 0) {
                                 recvApplyPlaintext(span, dto.plaintext);
                                 recvPlaintext.set(mid, dto.plaintext);
+                                // Phase 6a: bind cover â†” plaintext.
+                                recvCovers.set(mid, t);
                                 recvDone.add(mid);
                                 rendered = true;
                             }
@@ -1976,14 +2657,14 @@
     }
 
     /**
-     * Periodic sweep — every `RECV_SWEEP_INTERVAL_MS`, walk
+     * Periodic sweep â€” every `RECV_SWEEP_INTERVAL_MS`, walk
      * every `[id^="message-content-"]` div in the document.
      *
      * **This is the primary mechanism for finding new messages.**
      * The MutationObserver is unreliable for live messages
      * appended to a pre-mounted message list (Discord swaps the
      * inner span without firing addedNodes on the outer div).
-     * The sweep doesn't depend on any mutation signal — it polls
+     * The sweep doesn't depend on any mutation signal â€” it polls
      * and does the right thing.
      *
      * Per-tick log surfaces what the sweep saw and did so the
@@ -1992,7 +2673,7 @@
      *   `[OSL] periodic sweep tick (msgs=N, cached=M, dispatched=K)`
      *
      * The body runs inside try/catch so a single bad div doesn't
-     * kill the interval — exceptions are logged and the sweep
+     * kill the interval â€” exceptions are logged and the sweep
      * continues on the next tick.
      */
     function recvPeriodicSweep() {
@@ -2046,7 +2727,7 @@
             }
         } catch (e) {
             // Don't let a transient DOM exception kill the
-            // interval — log and let the next tick try again.
+            // interval â€” log and let the next tick try again.
             console.log(
                 "[OSL] periodic sweep tick threw: " +
                     (e && e.message ? e.message : e)
@@ -2082,7 +2763,7 @@
             characterData: true,
         });
 
-        // Initial sweep — catches anything Discord rendered
+        // Initial sweep â€” catches anything Discord rendered
         // before the observer attached.
         recvScanSubtree(document.body);
 
@@ -2122,7 +2803,10 @@
 
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", recvInstallObserver);
+        document.addEventListener("DOMContentLoaded", editTabStartObserver);
     } else {
         recvInstallObserver();
+        editTabStartObserver();
     }
 })();
+
