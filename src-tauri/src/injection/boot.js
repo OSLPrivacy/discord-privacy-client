@@ -94,6 +94,7 @@
     // ============================================================
     const DEBUG = true;
 
+
     // ============================================================
     // Helpers (IIFE-scoped, recreated each invocation).
     // ============================================================
@@ -849,5 +850,253 @@
                 "[OSL] Boot script: all hooks already installed; skipping"
             );
         }
+    }
+
+
+    // ============================================================
+    // Phase 5 v1: DOM MutationObserver receive hook.
+    //
+    // Watches message-content elements as Discord renders them,
+    // matches our cover-string prefix ("DPC0::"), pulls the
+    // sender's user_id out of the surrounding DOM context, then
+    // asks Rust to decrypt. On success we replace `textContent`
+    // in-place so the user reads the plaintext rather than the
+    // base64 cover.
+    //
+    // ## Why DOM-layer (vs FluxDispatcher / WebSocket)
+    //
+    // Layer 10 §14 walks through three rounds of internal-hook
+    // recon (FluxDispatcher store discovery, WebSocket gateway
+    // intercept). Both are reachable but couple the mod tightly
+    // to Discord's reducer ordering and obfuscated module IDs;
+    // a single bundle refactor breaks them silently. The DOM is
+    // the one Discord-facing API that's observable, public, and
+    // stable enough to bet on for v1.
+    //
+    // ## Accepted v1 limitations (documented in §14.6 + README)
+    //
+    //   1. **Brief flash** of the DPC0:: cover before async
+    //      decrypt completes — typically tens to a few hundred
+    //      milliseconds.
+    //   2. **DOM-mutation fragility**: any major Discord
+    //      message-renderer refactor can break the observer.
+    //      Treated as ongoing maintenance.
+    //   3. **Sender's own messages flash too** — the encoder
+    //      auto-includes the sender as a recipient slot so the
+    //      flow is symmetrical, but the cover still renders
+    //      first and is replaced by the observer.
+    //   4. **Best-effort author_id extraction** — pulled from
+    //      avatar URL or `data-author-id`; if neither is present
+    //      we skip rather than guess (safe default).
+    //
+    // v2 design: separate overlay window with its own message
+    // store; receive-decrypt happens at the gateway WebSocket
+    // before any rendering, so no flash and no DOM coupling.
+    // ============================================================
+
+    const RECV_PREFIX = "DPC0::";
+    // Permanent disposition (success OR unrecoverable failure).
+    const recvDone = new WeakSet();
+    // Per-element retry counter to bound React re-render churn.
+    const recvRetries = new WeakMap();
+    const RECV_MAX_RETRIES = 3;
+
+    /**
+     * Pull the sender's Discord user_id (== OSL user_id in v1)
+     * from the DOM context surrounding `el`. Walks up to the
+     * `chat-messages___…` list-item ancestor, then tries:
+     *   1. `data-author-id` attribute on item or any descendant.
+     *   2. Avatar `<img src="…/avatars/<snowflake>/…">` scan.
+     * Returns null on failure — caller skips the request.
+     */
+    function recvExtractAuthorId(el) {
+        let node = el;
+        let item = null;
+        for (let i = 0; i < 12 && node; i++) {
+            const id =
+                node.getAttribute && node.getAttribute("data-list-item-id");
+            if (id && id.indexOf("chat-messages___") === 0) {
+                item = node;
+                break;
+            }
+            node = node.parentElement;
+        }
+        const root = item || el;
+        const directOnSelf =
+            root.getAttribute && root.getAttribute("data-author-id");
+        if (typeof directOnSelf === "string" && /^\d{15,22}$/.test(directOnSelf)) {
+            return directOnSelf;
+        }
+        const directDescendant =
+            root.querySelector && root.querySelector("[data-author-id]");
+        if (directDescendant && directDescendant.getAttribute) {
+            const v = directDescendant.getAttribute("data-author-id");
+            if (typeof v === "string" && /^\d{15,22}$/.test(v)) return v;
+        }
+        if (root.querySelectorAll) {
+            const imgs = root.querySelectorAll(
+                "img[src*='cdn.discordapp.com/avatars/']"
+            );
+            for (const img of imgs) {
+                const m = img.src && img.src.match(/\/avatars\/(\d{15,22})\//);
+                if (m) return m[1];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Read channel_id from the current URL. Discord routes are
+     * `/channels/<guild_id|@me>/<channel_id>[/<message_id>]`.
+     * Returns null when the user isn't on a channel route.
+     */
+    function recvExtractChannelId() {
+        const m = window.location.pathname.match(
+            /\/channels\/[^/]+\/(\d{15,22})/
+        );
+        return m ? m[1] : null;
+    }
+
+    /**
+     * If `el` carries a DPC0:: cover string, request decryption
+     * and replace textContent on success. No-op when:
+     *   - element already settled (success or permanent failure)
+     *   - retry counter exhausted
+     *   - prefix absent
+     *   - author_id / channel_id unavailable
+     *   - Tauri IPC bridge missing
+     */
+    function recvTryDecrypt(el) {
+        if (!el || el.nodeType !== 1) return;
+        if (recvDone.has(el)) return;
+        const text = el.textContent;
+        if (!text || text.indexOf(RECV_PREFIX) !== 0) return;
+        const tries = recvRetries.get(el) || 0;
+        if (tries >= RECV_MAX_RETRIES) {
+            recvDone.add(el);
+            return;
+        }
+        recvRetries.set(el, tries + 1);
+
+        const channelId = recvExtractChannelId();
+        if (!channelId) return;
+        const senderUserId = recvExtractAuthorId(el);
+        if (!senderUserId) return;
+        const invoke = getTauriInvoke();
+        if (typeof invoke !== "function") return;
+
+        invoke("osl_decrypt_message", {
+            channelId: channelId,
+            senderUserId: senderUserId,
+            content: text,
+        })
+            .then(function (plaintext) {
+                // React may have re-rendered between request and
+                // resolve; only mutate if our cover is still here.
+                if (
+                    el.isConnected &&
+                    typeof el.textContent === "string" &&
+                    el.textContent.indexOf(RECV_PREFIX) === 0
+                ) {
+                    el.textContent = plaintext;
+                }
+                recvDone.add(el);
+            })
+            .catch(function (err) {
+                if (DEBUG) {
+                    console.log(
+                        "[OSL] decrypt rejected (expected for non-OSL " +
+                            "messages or stale slots): " +
+                            (err && err.message ? err.message : err)
+                    );
+                }
+                // Mark settled — most rejections are permanent
+                // (NoMatchingSlot for messages we're not a
+                // recipient of, BadPrefix for non-OSL cover-
+                // looking text). React clobbers reset the marker
+                // through the characterData branch below.
+                recvDone.add(el);
+            });
+    }
+
+    /**
+     * Walk `root` for elements whose first child is a text node
+     * starting with RECV_PREFIX. Used for the initial sweep
+     * AND for each `addedNodes` entry on a childList mutation.
+     */
+    function recvScanSubtree(root) {
+        if (!root || root.nodeType !== 1) return;
+        if (
+            root.firstChild &&
+            root.firstChild.nodeType === 3 &&
+            typeof root.firstChild.nodeValue === "string" &&
+            root.firstChild.nodeValue.indexOf(RECV_PREFIX) === 0
+        ) {
+            recvTryDecrypt(root);
+        }
+        if (root.querySelectorAll) {
+            const cands = root.querySelectorAll("*");
+            for (const c of cands) {
+                if (
+                    c.firstChild &&
+                    c.firstChild.nodeType === 3 &&
+                    typeof c.firstChild.nodeValue === "string" &&
+                    c.firstChild.nodeValue.indexOf(RECV_PREFIX) === 0
+                ) {
+                    recvTryDecrypt(c);
+                }
+            }
+        }
+    }
+
+    function recvInstallObserver() {
+        if (window.__OSL_RECV_INSTALLED__) return;
+        if (!document.body) return;
+        window.__OSL_RECV_INSTALLED__ = true;
+
+        const obs = new MutationObserver(function (records) {
+            for (const r of records) {
+                if (r.type === "childList") {
+                    for (const n of r.addedNodes) {
+                        recvScanSubtree(n);
+                    }
+                } else if (r.type === "characterData") {
+                    // React re-rendered an existing message back
+                    // to the cover string — clear the settled
+                    // marker and try again (retry counter still
+                    // bounds churn).
+                    const parent = r.target && r.target.parentElement;
+                    if (
+                        parent &&
+                        typeof r.target.nodeValue === "string" &&
+                        r.target.nodeValue.indexOf(RECV_PREFIX) === 0
+                    ) {
+                        recvDone.delete(parent);
+                        recvTryDecrypt(parent);
+                    }
+                }
+            }
+        });
+        obs.observe(document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
+
+        // Initial sweep — catches anything Discord rendered
+        // before the observer attached.
+        recvScanSubtree(document.body);
+
+        if (DEBUG) {
+            console.log(
+                "[OSL] Phase 5 receive observer installed on document.body"
+            );
+        }
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", recvInstallObserver);
+    } else {
+        recvInstallObserver();
     }
 })();

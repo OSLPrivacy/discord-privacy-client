@@ -1531,3 +1531,134 @@ re-run the Phase 2 verification probes to find the new anchor.
 **Phase 3 does NOT change anything in `crypto/`, `keystore/`,
 `stego/`, `runtime/`, or the keyserver.** Phase 4 is where the stub
 flips to real crypto.
+
+### Layer 10 / Phase 5 — DOM MutationObserver receive hook (v0.0.6-phase5-dom-receive)
+
+Phase 5 ships the receive half: when Discord renders a message
+whose `content` carries the `DPC0::` cover prefix, we ask Rust
+to decrypt it and replace `textContent` in place so the user
+reads plaintext.
+
+**Architecture: DOM MutationObserver** (see
+`docs/design/layer-10-discord-internals.md` §14.1.4 + §14.3 +
+§14.6 for the full rationale, accepted limitations, and v2 path).
+
+Three rounds of internal-hook recon are concluded — none of the
+internal-hook strategies were viable for v1:
+
+1. **FluxDispatcher store discovery via `webpackChunkdiscord_app.push`**
+   — three filter generations, all 22 candidates were i18n
+   adapters; the dispatcher itself initialises in an unreachable
+   code path. **Conclusion:** unreachable through the chunk hook.
+2. **Gateway WebSocket capture + frame mutation** — read works
+   end-to-end (constructor Proxy + `DecompressionStream('deflate')`
+   captures and decompresses zlib-stream frames cleanly); mutation
+   doesn't propagate (synthetic re-emit lands after Discord's
+   reducer has consumed the original, duplicate is deduped).
+   **Conclusion:** structurally incompatible, not a code-level fix.
+3. **DOM MutationObserver** — works. The DOM is a public,
+   observable, reasonably stable Discord-facing surface.
+
+**Files added:**
+
+- `crates/ipc/src/state.rs::SenderPubkeyCache` — bounded TTL
+  cache from `user_id` to `x25519::PublicKey`. 30-minute TTL
+  (`SENDER_PUBKEY_CACHE_TTL`); lazy eviction on read; `get` /
+  `insert` / `clear` / `len` / `is_empty` API. Cache is cleared
+  by `cmd_init_keyserver` when the keyserver URL changes.
+- `AppState::sender_pubkey_cache: SenderPubkeyCache` field —
+  shares the same `Mutex`-guarded pattern as the existing
+  identity / keyserver fields.
+- `crates/ipc/src/commands.rs::decrypt_osl_phase4_from_wire` /
+  `decrypt_osl_phase4_cover` — pure decoder over the Phase 4
+  wire format. Iterates **all** wire slots (no early break) so
+  legitimate `pub_hint` collisions don't leak which slot is ours
+  to a timing-aware observer; non-matching hints are skipped (the
+  hint is public, iterating non-matching slots is wasted work,
+  not a leak).
+- `crates/ipc/src/commands.rs::cmd_osl_decrypt_message(state,
+  channel_id, sender_user_id, content) -> Result<String, String>`
+  — IPC entry: identity from `AppState`, sender pubkey from
+  cache (insert on miss via `KeyServerClient::fetch_pubkeys`),
+  pure-decoder call, UTF-8 decode. `channel_id` is unused on
+  receive (any message we can decrypt is ours); kept for
+  symmetry with encrypt and for future per-channel ratchet
+  state. Logged at `debug` (not `warn`) on `Err` since
+  not-our-message rejections are expected normal traffic.
+- `crates/ipc/src/commands.rs::DecodeError` — typed error enum.
+  Variants: `BadPrefix`, `Base64`, `TooShort`, `UnsupportedVersion`,
+  `ZeroRecipients`, `NoMatchingSlot`, `MessageAeadFailed`, `Crypto`.
+  `BadPrefix` and `NoMatchingSlot` are common-path "leave the
+  cover string in place" signals; the others indicate corruption
+  or a Discord-side schema change.
+- `src-tauri/permissions/osl-decrypt-message.toml` — explicit
+  `allow-osl-decrypt-message` permission entry.
+- `src-tauri/src/main.rs::osl_decrypt_message` Tauri command —
+  `spawn_blocking`, `AppHandle::state::<AppState>()` pattern,
+  mirrors `osl_encrypt_message`.
+- `crates/ipc/tests/osl_phase5_decrypt.rs` — 13 tests covering
+  every `DecodeError` variant, sender self-decrypt under
+  auto-include-sender, and `SenderPubkeyCache` get / insert /
+  expiry / clear semantics.
+
+**Files changed:**
+
+- `src-tauri/src/injection/boot.js`:
+    - **Removed** the entire `RECON` flag + `installRecon()`
+      block (Phase 1–7 recon scaffolding: webpack chunk hook
+      with structural / behavioral / i18n-exclusion filters,
+      WebSocket constructor Proxy + `DecompressionStream` zlib
+      decoder, addEventListener instrumentation, MessageStore
+      method-discovery probes, `OSLPROBE` gate). All gory
+      details preserved in git history; design-doc summary in
+      §14.5.
+    - **Added** the Phase 5 receive observer:
+      `MutationObserver(document.body, {childList: true,
+      subtree: true, characterData: true})`. Element selection:
+      `Element` whose first child is a `Text` node whose
+      `nodeValue` starts with `DPC0::`. `recvDone: WeakSet`
+      marks settled elements; `recvRetries: WeakMap` caps
+      React-clobber retries at 3. `recvExtractAuthorId` walks
+      up to 12 parents looking for `data-list-item-id` starting
+      with `chat-messages___`, tries `data-author-id`, falls
+      back to scanning `<img src="…/avatars/<snowflake>/…">`
+      to recover the snowflake. `recvExtractChannelId` reads
+      from `window.location.pathname` (`/channels/<guild>/<chan>`).
+      Initial sweep over `document.body.querySelectorAll('*')`
+      catches messages rendered before the observer attached
+      (channel switches, scrollback). Send-side hook (Phase 3
+      round 6 fetch + XHR + Function.prototype.toString
+      detection mitigations) unchanged.
+- `src-tauri/capabilities/main.json` — `permissions` list now
+  includes both `allow-osl-encrypt-message` and
+  `allow-osl-decrypt-message`.
+
+**Accepted v1 limitations** (documented in §14.6, surfaced in
+README):
+
+1. **Brief flash of cover string** before async decrypt resolves
+   (tens to a few hundred ms).
+2. **DOM-mutation fragility** against Discord renderer
+   refactors — manageable as ongoing maintenance; regressions
+   surface loudly as cover strings staying visible.
+3. **Best-effort author_id extraction** — no-op when neither
+   `data-author-id` nor an avatar URL is recoverable from the
+   surrounding DOM.
+4. **Sender's own messages flash too** — the encoder auto-
+   includes the sender as a recipient slot, so the sender CAN
+   decrypt their bounced message, but the cover still renders
+   first.
+5. **Receive-side rewriting is detectable from outside** — v1
+   anti-detection only covers the send path.
+
+v2 overlay-window architecture eliminates all five.
+
+**Verification:**
+
+- `cargo test -p ipc -p keystore` — full IPC + keystore suites
+  pass on host.
+- `cargo check --target x86_64-pc-windows-gnu -p ipc -p
+  discord-privacy-client` — clean.
+- `node --check src-tauri/src/injection/boot.js` — clean.
+
+Tag: `v0.0.6-phase5-dom-receive`.

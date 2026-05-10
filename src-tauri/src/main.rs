@@ -35,11 +35,12 @@ mod screenshot;
 
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity,
-    cmd_init_keyserver, cmd_load_identity, cmd_osl_encrypt_message, cmd_register,
-    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
-    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
-    FetchPubkeysResponse, GenerateIdentityResponse, RegisterResponse, StatusResponse,
-    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
+    cmd_init_keyserver, cmd_load_identity, cmd_osl_decrypt_message,
+    cmd_osl_encrypt_message, cmd_register, cmd_save_identity, cmd_status,
+    cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
+    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
+    RegisterResponse, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
+    StegoEncodeResponse,
 };
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
@@ -216,6 +217,70 @@ async fn osl_encrypt_message(
     result
 }
 
+/// Layer 10 / Phase 5 entry point. The injected boot script
+/// (`injection::BOOT_SCRIPT`) subscribes to Discord's FluxDispatcher
+/// for `MESSAGE_CREATE` / `MESSAGE_UPDATE` events; when a message's
+/// `content` carries the `DPC0::` prefix, the JS hook routes it
+/// through this IPC command. On success the JS hook re-dispatches
+/// a synthetic `MESSAGE_UPDATE` with the decrypted content;
+/// `Err(_)` returns leave the cover string visible (the recipient
+/// is not us, the wire is corrupt, or the key is stale).
+///
+/// `sender_user_id` is the Discord message author's `user.id` —
+/// passed through verbatim. v1 closed beta: OSL identities use
+/// Discord IDs, so this is also the keyserver lookup key. v2
+/// would map Discord ID → OSL UUID locally per peer; see
+/// `docs/design/key-server-api.md`.
+///
+/// Body runs in `spawn_blocking` because the keyserver lookup
+/// (cache miss path) is sync HTTP. The
+/// `crate::state::SenderPubkeyCache` (5-min TTL) absorbs repeat
+/// lookups — first message from a sender pays a roundtrip, the
+/// next ~5 minutes' worth are local.
+#[tauri::command]
+async fn osl_decrypt_message(
+    app: tauri::AppHandle,
+    channel_id: String,
+    sender_user_id: String,
+    content: String,
+) -> Result<String, String> {
+    let content_len = content.len();
+    let sender_dbg = sender_user_id.clone();
+    tracing::debug!(
+        channel_id = %channel_id,
+        sender_user_id = %sender_user_id,
+        content_len,
+        "osl_decrypt_message Phase 5 invoked"
+    );
+    let app_handle = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_decrypt_message(state.inner(), channel_id, sender_user_id, content)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?;
+    match &result {
+        Ok(plaintext) => tracing::debug!(
+            sender_user_id = %sender_dbg,
+            plaintext_len = plaintext.len(),
+            "osl_decrypt_message succeeded"
+        ),
+        Err(err) => {
+            // The common case here is `NoMatchingSlot` (we're not a
+            // recipient of a multi-party DM message, or it's a
+            // non-OSL message we tried to decrypt anyway).
+            // Logged at debug, NOT warn — we expect frequent
+            // not-our-message rejections in normal operation.
+            tracing::debug!(
+                sender_user_id = %sender_dbg,
+                error = %err,
+                "osl_decrypt_message returning error (cover left in place)"
+            );
+        }
+    }
+    result
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
@@ -332,6 +397,7 @@ fn main() {
             x25519_diffie_hellman,
             set_screenshot_protection,
             osl_encrypt_message,
+            osl_decrypt_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

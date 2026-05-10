@@ -352,8 +352,28 @@ pub const OSL_PHASE4_HKDF_INFO_WRAP: &[u8] = b"OSL/P4/wrap-key/v1";
 /// that need deterministic output should mock or fix the random
 /// source separately.
 ///
+/// # Auto-include sender as recipient
+///
+/// The sender's own X25519 public key is always added to the
+/// recipient slot list (deduped against the explicit
+/// `recipient_pubkeys`). Two reasons:
+///
+/// - **Optimistic-render UX.** When the sender hits Enter, the
+///   server bounces the encrypted message back as a
+///   `MESSAGE_CREATE` event; without a sender slot, the sender's
+///   own client can't decrypt their own message and would render
+///   the `DPC0::` cover instead of plaintext. The auto-slot fixes
+///   this for the common case.
+/// - **Search consistency.** Discord's Cmd-F search runs against
+///   the rendered message text (post-decrypt). Without a sender
+///   slot, the sender can't search their own past messages.
+///
+/// Cost: one extra slot per message (73 bytes inside the Mode 0
+/// payload). Worth it.
+///
 /// `recipient_pubkeys` order determines the slot order in the
-/// wire format. Callers should pre-sort to whatever ordering the
+/// wire format up to the sender slot, which is appended last.
+/// Callers should pre-sort the input to whatever ordering the
 /// receive-side decoder expects (the IPC wrapper
 /// [`cmd_osl_encrypt_message`] sorts by recipient `user_id` ASCII
 /// before reaching this function).
@@ -361,7 +381,8 @@ pub const OSL_PHASE4_HKDF_INFO_WRAP: &[u8] = b"OSL/P4/wrap-key/v1";
 /// Caps enforced here:
 /// - Empty plaintext rejected.
 /// - `plaintext.len() > OSL_PHASE4_PLAINTEXT_BYTE_CAP`.
-/// - `recipient_pubkeys.len() == 0` or `> 255`.
+/// - Effective recipient count (input + sender, post-dedup) `0`
+///   or `> 255`.
 /// - Total wire length `> stego::MODE0_MAX_RAW_LEN`.
 /// - Stego output length `> 2000` chars (Discord message cap).
 ///
@@ -384,7 +405,29 @@ pub fn encrypt_osl_phase4_to_pubkeys(
         ));
     }
 
-    let n = recipient_pubkeys.len();
+    // Build the effective slot list: input recipients plus the
+    // sender's own pubkey (auto-included). Dedup by raw pubkey
+    // bytes so callers passing the sender as an explicit
+    // recipient (e.g. tests, or future channels.json that lists
+    // self) don't double up.
+    let sender_pub = x25519::derive_public(sender_secret);
+    let mut effective: Vec<x25519::PublicKey> =
+        Vec::with_capacity(recipient_pubkeys.len() + 1);
+    let mut seen_keys: Vec<[u8; x25519::PUBLIC_KEY_SIZE]> = Vec::new();
+    for pk in recipient_pubkeys.iter() {
+        let bytes = *pk.as_bytes();
+        if !seen_keys.iter().any(|b| b == &bytes) {
+            seen_keys.push(bytes);
+            effective.push(pk.clone());
+        }
+    }
+    let sender_bytes = *sender_pub.as_bytes();
+    if !seen_keys.iter().any(|b| b == &sender_bytes) {
+        seen_keys.push(sender_bytes);
+        effective.push(sender_pub);
+    }
+
+    let n = effective.len();
     if n == 0 {
         return Err("OSL: zero recipients after lookup".to_string());
     }
@@ -419,7 +462,7 @@ pub fn encrypt_osl_phase4_to_pubkeys(
     wire.push(OSL_PHASE4_WIRE_VERSION);
     wire.push(n as u8);
 
-    for (slot_ix, peer_pub) in recipient_pubkeys.iter().enumerate() {
+    for (slot_ix, peer_pub) in effective.iter().enumerate() {
         let shared = x25519::diffie_hellman(sender_secret, peer_pub)
             .map_err(|e| format!("OSL: ECDH (slot {slot_ix}): {e}"))?;
         let wrap_key_bytes =
@@ -542,4 +585,293 @@ pub fn cmd_osl_encrypt_message(
     }
 
     encrypt_osl_phase4_to_pubkeys(&identity.x25519_secret, &peer_pubkeys, &plaintext)
+}
+
+// ---- Layer 10 / Phase 5: receive-side decoder + IPC command ----
+
+/// Errors returned by the Phase 4 wire-format decoder.
+///
+/// `Display` strings are user-visible (the IPC bridge maps them
+/// straight into the JS hook's reject path), so they're worded as
+/// brief diagnostic phrases rather than internal-state dumps.
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeError {
+    /// The cover string didn't carry the `DPC0::` magic prefix —
+    /// not an OSL message at all. The JS hook treats this as
+    /// "leave content alone" and never surfaces it as a user
+    /// error.
+    #[error("cover string missing DPC0:: prefix")]
+    BadPrefix,
+
+    /// The base64 body of the cover string failed to decode.
+    /// Fragmented send, truncation, or someone manually editing
+    /// the cover. Renders as "Failed to decode" in the UI.
+    #[error("base64 decode of cover body failed: {0}")]
+    Base64(String),
+
+    /// Wire bytes shorter than the minimum framing requires for
+    /// the declared recipient count. Always corruption.
+    #[error("wire too short: {got} bytes, expected at least {expected}")]
+    TooShort { got: usize, expected: usize },
+
+    /// Wire version byte didn't match Phase 4's `0x01`. Indicates
+    /// either a future version (Phase 5+ ratchet wire) we can't
+    /// yet decode, or junk.
+    #[error("unsupported wire version 0x{got:02x} (this client only decodes 0x{expected:02x})")]
+    UnsupportedVersion { got: u8, expected: u8 },
+
+    /// Recipient count byte `N` was zero. A well-formed encoder
+    /// rejects this; if we see it, the wire is junk.
+    #[error("recipient count is zero in wire header")]
+    ZeroRecipients,
+
+    /// We are not a recipient of this message — no slot's wrap
+    /// AEAD opened under our identity key. The JS hook treats
+    /// this as "leave content alone" so non-recipients in a
+    /// channel still see the cover string normally.
+    #[error("not a recipient of this message")]
+    NoMatchingSlot,
+
+    /// A wrap slot opened (revealing a session key candidate),
+    /// but the bulk message AEAD failed under that key. Indicates
+    /// either a corrupted wire or a deliberate splice. Distinct
+    /// from `NoMatchingSlot` for diagnostics.
+    #[error("wrap slot opened but message AEAD failed: {0}")]
+    MessageAeadFailed(String),
+
+    /// Underlying X25519 / HKDF / AEAD primitive returned an
+    /// error not otherwise classified. Surfaces the inner
+    /// message verbatim — useful when debugging primitives, never
+    /// triggers in normal operation.
+    #[error("crypto primitive error: {0}")]
+    Crypto(String),
+}
+
+/// Decode the Phase 4 wire-format raw bytes (post-`DPC0::`-strip,
+/// post-base64-decode) into the recovered plaintext bytes.
+///
+/// Pure: takes pre-resolved sender + recipient keys, no `AppState`,
+/// no IO. Tests exercise this directly with hand-built keypairs.
+///
+/// # Constant-time-ish slot iteration
+///
+/// The loop runs **all** slots that match our `pub_hint` —
+/// it does not break on first successful unwrap. Two slots
+/// could share a `pub_hint` byte (1/256 probability per
+/// collision), and breaking early would let a timing-aware
+/// observer narrow down which slot is ours. The cost is one
+/// extra AEAD attempt per legitimate hint collision; usually
+/// zero such collisions in practice.
+///
+/// We do still skip slots whose `pub_hint` doesn't match ours.
+/// The `pub_hint` is public information (sender writes the
+/// recipient's public-key low byte into the wire), so iterating
+/// over non-matching slots is wasted work, not a leak.
+///
+/// We do not (and cannot reasonably) make "are we a recipient at
+/// all?" constant-time relative to "we are a recipient" — those
+/// states are externally observable via whether we re-dispatch a
+/// `MESSAGE_UPDATE` afterwards.
+pub fn decrypt_osl_phase4_from_wire(
+    recipient_secret: &x25519::SecretKey,
+    sender_pub: &x25519::PublicKey,
+    wire: &[u8],
+) -> Result<Vec<u8>, DecodeError> {
+    if wire.len() < OSL_PHASE4_FIXED_FRAMING_BYTES {
+        return Err(DecodeError::TooShort {
+            got: wire.len(),
+            expected: OSL_PHASE4_FIXED_FRAMING_BYTES,
+        });
+    }
+    let version = wire[0];
+    if version != OSL_PHASE4_WIRE_VERSION {
+        return Err(DecodeError::UnsupportedVersion {
+            got: version,
+            expected: OSL_PHASE4_WIRE_VERSION,
+        });
+    }
+    let n = wire[1] as usize;
+    if n == 0 {
+        return Err(DecodeError::ZeroRecipients);
+    }
+    let expected_min = OSL_PHASE4_FIXED_FRAMING_BYTES + n * OSL_PHASE4_PER_RECIPIENT_BYTES;
+    if wire.len() < expected_min {
+        return Err(DecodeError::TooShort {
+            got: wire.len(),
+            expected: expected_min,
+        });
+    }
+
+    // Compute receiver's own pub_hint to find candidate slots.
+    let recipient_pub = x25519::derive_public(recipient_secret);
+    let our_hint = recipient_pub.as_bytes()[0];
+
+    // Recover the shared secret + wrap key once — every slot
+    // belonging to us derives from the same `(recipient_sk,
+    // sender_pk)` pair.
+    let shared = x25519::diffie_hellman(recipient_secret, sender_pub)
+        .map_err(|e| DecodeError::Crypto(format!("ECDH: {e}")))?;
+    let wrap_key_bytes = hkdf::derive_32(&[], shared.as_bytes(), OSL_PHASE4_HKDF_INFO_WRAP)
+        .map_err(|e| DecodeError::Crypto(format!("HKDF wrap-key: {e}")))?;
+    let wrap_key = aead::Key::from_bytes(wrap_key_bytes);
+
+    // Walk all slots; for any with a matching `pub_hint`, attempt
+    // wrap-decrypt. Don't break on first success — see the
+    // "constant-time-ish" note in the docstring above.
+    let slot_size = OSL_PHASE4_PER_RECIPIENT_BYTES;
+    let mut session_key: Option<aead::Key> = None;
+    for slot_ix in 0..n {
+        let base = 2 + slot_ix * slot_size;
+        let hint = wire[base];
+        if hint != our_hint {
+            continue;
+        }
+        let nonce_start = base + 1;
+        let nonce_end = nonce_start + aead::NONCE_SIZE;
+        let wrap_start = nonce_end;
+        let wrap_end = wrap_start + aead::KEY_SIZE + aead::TAG_SIZE;
+        let mut nonce_bytes = [0u8; aead::NONCE_SIZE];
+        nonce_bytes.copy_from_slice(&wire[nonce_start..nonce_end]);
+        let nonce = aead::Nonce::from_bytes(nonce_bytes);
+        let wrap_ct = &wire[wrap_start..wrap_end];
+
+        if let Ok(plaintext_bytes) =
+            aead::open(&wrap_key, &nonce, OSL_PHASE4_AD_WRAP, wrap_ct)
+        {
+            if plaintext_bytes.len() == aead::KEY_SIZE && session_key.is_none() {
+                let mut sk = [0u8; aead::KEY_SIZE];
+                sk.copy_from_slice(&plaintext_bytes);
+                session_key = Some(aead::Key::from_bytes(sk));
+                // Deliberately no `break` — see docstring.
+            }
+            // Wrong-length plaintext from a "successful" open is
+            // pathological (AEAD tag matched against a corrupted
+            // body). Treat as not-our-slot and keep going.
+        }
+        // Failed AEAD: not our slot under this hint collision; keep going.
+    }
+    let session_key = session_key.ok_or(DecodeError::NoMatchingSlot)?;
+
+    // Bulk message decrypt. Position is fixed: nonce at
+    // `2 + n * slot_size`, ciphertext to end of wire.
+    let msg_nonce_start = 2 + n * slot_size;
+    let msg_nonce_end = msg_nonce_start + aead::NONCE_SIZE;
+    if wire.len() < msg_nonce_end + aead::TAG_SIZE {
+        return Err(DecodeError::TooShort {
+            got: wire.len(),
+            expected: msg_nonce_end + aead::TAG_SIZE,
+        });
+    }
+    let mut msg_nonce_bytes = [0u8; aead::NONCE_SIZE];
+    msg_nonce_bytes.copy_from_slice(&wire[msg_nonce_start..msg_nonce_end]);
+    let msg_nonce = aead::Nonce::from_bytes(msg_nonce_bytes);
+    let ct_msg = &wire[msg_nonce_end..];
+    aead::open(&session_key, &msg_nonce, OSL_PHASE4_AD_MSG, ct_msg)
+        .map_err(|e| DecodeError::MessageAeadFailed(e.to_string()))
+}
+
+/// Higher-level decoder: takes the on-the-wire `DPC0::<base64>`
+/// cover string, strips the prefix, base64-decodes the body, then
+/// hands off to [`decrypt_osl_phase4_from_wire`].
+///
+/// Returns `BadPrefix` for non-OSL content so the JS hook can
+/// trivially distinguish "this isn't ours, leave it alone" from
+/// "this is ours but we're not a recipient." Same effective UX
+/// (cover stays visible) but useful for log-grep separation.
+pub fn decrypt_osl_phase4_cover(
+    recipient_secret: &x25519::SecretKey,
+    sender_pub: &x25519::PublicKey,
+    cover: &str,
+) -> Result<Vec<u8>, DecodeError> {
+    let body = cover
+        .strip_prefix("DPC0::")
+        .ok_or(DecodeError::BadPrefix)?;
+    let wire = STANDARD
+        .decode(body)
+        .map_err(|e| DecodeError::Base64(e.to_string()))?;
+    decrypt_osl_phase4_from_wire(recipient_secret, sender_pub, &wire)
+}
+
+/// Layer 10 / Phase 5 IPC entry point: decrypt an incoming
+/// Discord message back to plaintext, given the sender's user_id
+/// (so the keyserver can resolve their X25519 public key).
+///
+/// Caller (the JS hook on `MESSAGE_CREATE`) is expected to:
+/// 1. Pre-filter on the `DPC0::` prefix (so this command isn't
+///    invoked for every message — the prefix scan in JS is far
+///    cheaper than crossing the IPC bridge).
+/// 2. Pass the Discord `message.author.id` as `sender_user_id`.
+/// 3. Render the returned plaintext in place of the cover when
+///    `Ok(_)` is returned.
+/// 4. Leave the cover visible when `Err(_)` returns. Failure
+///    branches: not a recipient (`NoMatchingSlot`), key rotation
+///    we haven't refetched yet (`MessageAeadFailed`), wire
+///    corruption (`TooShort` / `BadPrefix` / etc.).
+///
+/// Returns `Result<String, String>` (matching encrypt's wire
+/// shape). On success, the plaintext is interpreted as UTF-8 and
+/// returned verbatim. Non-UTF-8 plaintext returns a
+/// `OSL: invalid UTF-8` error — the encoder accepts only UTF-8
+/// input, so this should never trigger absent corruption.
+///
+/// Sender pubkey resolution is cached per `AppState`'s
+/// [`crate::state::SenderPubkeyCache`] (5-minute TTL); first hit
+/// per sender per 5-minute window pays a keyserver round-trip,
+/// subsequent hits are local.
+///
+/// `_channel_id` is currently unused — the recipient mapping is
+/// not channel-keyed on the receive side (any message we can
+/// decrypt belongs to us regardless of which channel it landed
+/// in). Carried in the IPC signature for symmetry with encrypt
+/// and so future per-channel ratchet state can plug in without a
+/// wire change.
+pub fn cmd_osl_decrypt_message(
+    state: &AppState,
+    _channel_id: String,
+    sender_user_id: String,
+    content: String,
+) -> Result<String, String> {
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+
+    // Pubkey lookup: cache → keyserver → cache-insert.
+    let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&sender_user_id) {
+        cached
+    } else {
+        let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let client = ks_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+        let resp = client
+            .fetch_pubkeys(&sender_user_id)
+            .map_err(|e| format!("OSL: fetch_pubkeys({sender_user_id}): {e}"))?;
+        let pub_vec = STANDARD
+            .decode(&resp.ik_x25519_pub)
+            .map_err(|e| format!("OSL: decode sender pubkey ({sender_user_id}): {e}"))?;
+        if pub_vec.len() != x25519::PUBLIC_KEY_SIZE {
+            return Err(format!(
+                "OSL: sender pubkey wrong length ({sender_user_id}): got {}, want {}",
+                pub_vec.len(),
+                x25519::PUBLIC_KEY_SIZE
+            ));
+        }
+        let mut bytes = [0u8; x25519::PUBLIC_KEY_SIZE];
+        bytes.copy_from_slice(&pub_vec);
+        let pub_key = x25519::PublicKey::from_bytes(bytes);
+        // Drop the keyserver lock before inserting into the cache
+        // (the cache has its own mutex).
+        drop(ks_guard);
+        state
+            .sender_pubkey_cache
+            .insert(sender_user_id.clone(), pub_key.clone());
+        pub_key
+    };
+
+    let plaintext_bytes =
+        decrypt_osl_phase4_cover(&identity.x25519_secret, &sender_pub, &content)
+            .map_err(|e| format!("OSL: {e}"))?;
+    String::from_utf8(plaintext_bytes)
+        .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())
 }

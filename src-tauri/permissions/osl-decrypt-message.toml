@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission file for the Layer 10 / Phase 5 receive-side IPC command.
+# Tauri 2's permission system requires explicit declarations for
+# app-level commands; this file declares `allow-osl-decrypt-message`
+# and which command it grants. The capability `main-capability` (in
+# capabilities/main.json) references this permission to grant the
+# discord.com main webview access to the command.
+
+[[permission]]
+identifier = "allow-osl-decrypt-message"
+description = "Permits the discord.com main webview to invoke `osl_decrypt_message` (the receive-side bridge from Discord's FluxDispatcher MESSAGE_CREATE / MESSAGE_UPDATE events to the Rust crypto pipeline). The JS hook strips the DPC0:: prefix, hands the wire bytes plus the Discord message author user_id to this command, and on `Ok(_)` substitutes the decrypted plaintext back into the message store via a synthetic MESSAGE_UPDATE. On `Err(_)` the cover string stays visible (we are not a recipient / wire is corrupt / sender pubkey rotated)."
+commands.allow = ["osl_decrypt_message"]

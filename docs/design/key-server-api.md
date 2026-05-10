@@ -63,6 +63,35 @@ dev keyservers use plain HTTP. No system cert chain dependency
 Certificate pinning is deferred to v1-stable. Until then, the
 trust anchor is the standard public-CA chain.
 
+### v1 user_id semantics — Discord ID == OSL user_id
+
+**v1 closed-beta choice (current):** the OSL `user_id`
+registered with the keyserver IS the sender's Discord
+`user.id`. This is a pragmatic decision that lets Phase 5's
+receive hook resolve a sender's pubkey from
+`message.author.id` (which Discord puts on every dispatcher
+event) without an additional Discord-ID → OSL-UUID mapping
+table.
+
+**Privacy trade-off:** the keyserver now has visibility into
+"which Discord user_ids have registered for OSL." For closed-
+beta dogfood with a small known peer set this is acceptable —
+the peers already know each other's Discord IDs by definition.
+
+**v2 plan:** OSL `user_id`s become client-generated UUIDs, with
+each peer maintaining a local Discord-ID → OSL-UUID mapping
+table out-of-band (e.g. exchanged via QR code or signal-style
+safety-number flow at first contact). The keyserver then sees
+only opaque OSL UUIDs with no link to the Discord identity
+graph. Receive-side decoder consults the local mapping table
+to translate `message.author.id` to the OSL UUID before
+calling `fetch_pubkeys`.
+
+This isolation is not free — it adds first-contact friction
+(peers must exchange UUIDs, not just Discord usernames) and a
+new client-side state file. v1 ships the simpler model
+deliberately, with the upgrade path documented here.
+
 What Phase B does **not** add (v1-stable scope):
 
 - TLS at the application layer (rely on Cloudflare/Railway).
