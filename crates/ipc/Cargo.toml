@@ -28,6 +28,21 @@ base64 = "0.22"
 # no-std-friendly, no_unsafe.
 ciborium = "0.2"
 
+# 7d-B1 main password gate.
+# - `argon2`: KDF that derives a 64-byte stream from the user's
+#   6-char password. First 32 bytes = stored verification hash;
+#   last 32 bytes = AES-GCM key for the recovery-phrase blob.
+#   Single argon2 call serves both roles; argon2id output is
+#   uniformly random so splitting is safe.
+# - `aes-gcm`: AEAD on the BIP39 recovery phrase so the phrase
+#   only re-exposes after a successful password.
+# - `bip39`: standard English wordlist + 128-bit-entropy phrase
+#   generation. `serde` feature off — phrases never serialize.
+argon2 = "0.5"
+aes-gcm = "0.10"
+bip39 = { version = "2", default-features = false, features = ["std"] }
+subtle = { workspace = true }
+
 crypto = { path = "../crypto" }
 stego = { path = "../stego" }
 keystore = { path = "../keystore" }

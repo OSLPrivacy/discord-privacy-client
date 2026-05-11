@@ -29,6 +29,11 @@
     "allow-osl-list-pending-invitations",
     "allow-osl-get-self-user-id",
     "allow-osl-get-identity-info",
-    "allow-osl-list-all-whitelists"
+    "allow-osl-list-all-whitelists",
+    "allow-osl-password-status",
+    "allow-osl-set-main-password",
+    "allow-osl-change-main-password",
+    "allow-osl-remove-main-password",
+    "allow-osl-view-recovery-phrase"
   ]
 }

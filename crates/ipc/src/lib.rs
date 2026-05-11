@@ -38,6 +38,7 @@
 pub mod commands;
 pub mod control_messages;
 pub mod fresh_start;
+pub mod main_password;
 pub mod peer_map;
 pub mod pending_invitations;
 pub mod scope;

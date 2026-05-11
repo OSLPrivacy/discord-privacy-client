@@ -36,17 +36,20 @@ mod screenshot;
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_message,
-    cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
-    cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_scope_encryption_state,
-    cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists, cmd_osl_list_pending_invitations,
-    cmd_osl_load_channel_history, cmd_osl_persist_edit, cmd_osl_send_burn_marker,
-    cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response, cmd_osl_set_whitelist,
-    cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_register, cmd_save_identity,
+    cmd_osl_change_main_password, cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2,
+    cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
+    cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
+    cmd_osl_list_pending_invitations, cmd_osl_load_channel_history, cmd_osl_lockout_status,
+    cmd_osl_password_status, cmd_osl_persist_edit, cmd_osl_remove_main_password,
+    cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
+    cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery, cmd_osl_set_whitelist,
+    cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_osl_verify_main_password,
+    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register, cmd_save_identity,
     cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
     AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
-    IdentityInfoDto, PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
-    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
-    WhitelistRowDto,
+    IdentityInfoDto, LockoutStatusDto, PasswordStatusDto, PendingInvitationDto, RegisterResponse,
+    ScopeEncryptionState, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
+    StegoEncodeResponse, StoredMessageDto, WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -621,6 +624,89 @@ async fn osl_list_all_whitelists(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+// ===== Phase 7d-B1: main-password gate commands. =====
+// argon2id verification runs on a blocking thread; recovery-phrase
+// generation pulls from the OS RNG. All eight wrappers follow the
+// same spawn_blocking shape.
+
+#[tauri::command]
+async fn osl_password_status() -> Result<PasswordStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_password_status)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_set_main_password(password: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_set_main_password(password))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_change_main_password(current: String, new: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_change_main_password(current, new))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_remove_main_password(current: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_remove_main_password(current))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_view_recovery_phrase(current: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_view_recovery_phrase(current))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_verify_main_password(password: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_verify_main_password(password))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_verify_recovery_phrase(
+    app: tauri::AppHandle,
+    phrase: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_verify_recovery_phrase(state.inner(), phrase)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_set_main_password_after_recovery(
+    app: tauri::AppHandle,
+    new_password: String,
+    token: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_set_main_password_after_recovery(state.inner(), new_password, token)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_lockout_status() -> Result<LockoutStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_lockout_status)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -636,9 +722,33 @@ async fn osl_burn_message(app: tauri::AppHandle, discord_message_id: String) -> 
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 7d-B1: bundled boot-gate HTML. Served via the
+/// `osl-gate://` custom URI scheme when `password_marker.json`
+/// exists in the OSL config dir. The page handles password +
+/// recovery-phrase entry, then `window.location.href`-navigates
+/// to discord.com when the user authenticates successfully.
+const PASSWORD_GATE_HTML: &str = include_str!("../assets/password_gate.html");
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
+        // Phase 7d-B1: serve the bundled password-gate HTML at
+        // osl-gate://localhost. WebView2 routes the request here
+        // synchronously; we return the embedded bytes with a
+        // text/html content-type and the page renders. IPC works
+        // from this origin because Tauri 2 injects __TAURI_INTERNALS__
+        // on every webview load regardless of URL scheme, and the
+        // `password-gate-capability` (see capabilities/) grants the
+        // minimal command surface (verify + recovery + lockout).
+        .register_uri_scheme_protocol("osl-gate", |_app, _request| {
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .header("Cache-Control", "no-store")
+                .body(PASSWORD_GATE_HTML.as_bytes().to_vec())
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::new(b"<h1>OSL gate render failed</h1>".to_vec())
+                })
+        })
         // Tauri 2: app-level page-load hook fires for every page-load
         // event on every webview window. We use it to re-apply
         // screenshot protection on every navigation: WebView2's child
@@ -681,10 +791,32 @@ fn main() {
             // marks the window as remote-content; the IPC bridge for
             // it is gated by `capabilities/main.json` rather than
             // automatically open as it would be for local content.
-            let main_url: tauri::Url = "https://discord.com/app"
-                .parse()
-                .expect("hardcoded discord.com URL parses");
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(main_url))
+            // Phase 7d-B1: route the initial URL based on
+            // password-marker presence. Marker exists → load the
+            // local boot-gate page first; absent → load
+            // discord.com directly (preserves pre-7d-B1 behavior
+            // for users who haven't set a password).
+            let gate_required = match keystore::osl_config_dir() {
+                Ok(dir) => ipc::main_password::marker_exists(&dir),
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        "OSL boot: cannot resolve config dir — \
+                         skipping password gate, loading discord.com directly"
+                    );
+                    false
+                }
+            };
+            let initial_url: tauri::Url = if gate_required {
+                tracing::info!("OSL boot: password_marker.json present, loading boot gate");
+                "osl-gate://localhost".parse().expect("osl-gate URL parses")
+            } else {
+                tracing::info!("OSL boot: no password marker, loading discord.com directly");
+                "https://discord.com/app"
+                    .parse()
+                    .expect("hardcoded discord.com URL parses")
+            };
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(initial_url))
                 .title("Discord Privacy Client")
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(940.0, 600.0)
@@ -760,6 +892,15 @@ fn main() {
             osl_get_self_user_id,
             osl_get_identity_info,
             osl_list_all_whitelists,
+            osl_password_status,
+            osl_set_main_password,
+            osl_change_main_password,
+            osl_remove_main_password,
+            osl_view_recovery_phrase,
+            osl_verify_main_password,
+            osl_verify_recovery_phrase,
+            osl_set_main_password_after_recovery,
+            osl_lockout_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

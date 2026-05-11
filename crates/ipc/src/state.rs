@@ -161,6 +161,15 @@ pub struct AppState {
     /// commands write-through to disk via
     /// `crate::pending_invitations::write_pending_invitations`.
     pub pending_invitations: Mutex<PendingInvitations>,
+
+    /// Phase 7d-B1: one-time recovery token issued by
+    /// `osl_verify_recovery_phrase` and consumed by
+    /// `osl_set_main_password_after_recovery`. Tuple is
+    /// (token, expiry_unix_secs, phrase). In-memory only — a
+    /// crash between phrase verify and password set discards the
+    /// token; the user re-enters the phrase. Cleared (`take()`)
+    /// by the consume path regardless of match.
+    pub recovery_token: Mutex<Option<(String, i64, String)>>,
 }
 
 impl AppState {

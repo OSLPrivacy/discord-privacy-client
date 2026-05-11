@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-B1: forgot-password recovery path. Issues a one-time
+# in-process token that the next set-after-recovery call consumes.
+[[permission]]
+identifier = "allow-osl-verify-recovery-phrase"
+description = "Permits the password_gate origin to invoke `osl_verify_recovery_phrase` (verify the BIP39 phrase; on success returns a one-time token for the followup set-password call). Phase 7d-B1."
+commands.allow = ["osl_verify_recovery_phrase"]

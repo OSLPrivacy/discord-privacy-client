@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-B1: countdown display for the boot gate.
+[[permission]]
+identifier = "allow-osl-lockout-status"
+description = "Permits the password_gate origin (and main webview) to invoke `osl_lockout_status` (read-only — returns current lockout windows and attempt counters for both password and recovery-phrase paths). Phase 7d-B1."
+commands.allow = ["osl_lockout_status"]

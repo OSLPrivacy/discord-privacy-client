@@ -2452,10 +2452,13 @@
         const liveItems = [
             { id: "identity", label: "Identity" },
             { id: "whitelist", label: "Whitelist Manager" },
+            // 7d-B1: Passwords page is live (main password only —
+            // Stealth / Burn sections inside the page remain dimmed
+            // until 7d-B2 / 7d-B3).
+            { id: "passwords", label: "Passwords" },
             { id: "about", label: "About" },
         ];
         const futureItems = [
-            { id: "_passwords", label: "Passwords" },
             { id: "_keybinds", label: "Keybinds" },
             { id: "_duress", label: "Duress" },
             { id: "_danger", label: "Danger Zone" },
@@ -2498,7 +2501,7 @@
         content.className = "osl-settings-content";
         content.setAttribute("data-osl-content-root", "1");
 
-        for (const id of ["identity", "whitelist", "about"]) {
+        for (const id of ["identity", "whitelist", "passwords", "about"]) {
             const pane = document.createElement("div");
             pane.setAttribute("data-osl-page-content", id);
             pane.style.display = "none";
@@ -2603,6 +2606,8 @@
             oslSettingsRenderIdentity();
         } else if (pageId === "whitelist") {
             oslSettingsRenderWhitelist();
+        } else if (pageId === "passwords") {
+            oslSettingsRenderPasswords();
         } else if (pageId === "about") {
             oslSettingsRenderAbout();
         }
@@ -3297,6 +3302,722 @@
         pane.appendChild(ul);
     }
 
+    // ---- Passwords page (7d-B1) ----
+
+    /**
+     * 7d-B1: open a modal hosting a sequence of step-pages built by
+     * the caller. `steps` is an array of `(host) => Promise<result>`
+     * factories: each factory builds its UI into the supplied host
+     * div and resolves when the user advances. Resolving with a
+     * sentinel `oslPasswordCancel` aborts the whole sequence.
+     *
+     * Single stable z-index 100002 backdrop (same as confirm
+     * dialogs). Escape closes; backdrop click does NOT close (these
+     * are form-bearing modals — accidental dismissal loses data).
+     */
+    const OSL_PASSWORD_CANCEL = Symbol("osl_password_cancel");
+
+    function oslPasswordWizard(initialBuilder) {
+        return new Promise(function (resolve) {
+            const backdrop = document.createElement("div");
+            backdrop.className = "osl-settings-confirm-backdrop";
+            backdrop.setAttribute(SETTINGS_CONFIRM_ATTR, "1");
+            const box = document.createElement("div");
+            box.className = "osl-settings-confirm-box";
+            box.style.minWidth = "360px";
+            box.style.maxWidth = "480px";
+            const host = document.createElement("div");
+            box.appendChild(host);
+            backdrop.appendChild(box);
+
+            const close = function (result) {
+                document.removeEventListener("keydown", onKey, true);
+                if (backdrop.parentNode)
+                    backdrop.parentNode.removeChild(backdrop);
+                resolve(result);
+            };
+            const onKey = function (e) {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    close(OSL_PASSWORD_CANCEL);
+                }
+            };
+            backdrop.addEventListener("click", function (e) {
+                if (e.target === backdrop) {
+                    e.stopPropagation();
+                    // No close — user must use Cancel button.
+                }
+            });
+            document.addEventListener("keydown", onKey, true);
+
+            document.body.appendChild(backdrop);
+            // Each builder takes (host, advance, cancel). Builder
+            // calls `advance(value)` to move to next step or
+            // `cancel()` to abort.
+            const advance = function (value) {
+                close(value);
+            };
+            const cancel = function () {
+                close(OSL_PASSWORD_CANCEL);
+            };
+            try {
+                initialBuilder(host, advance, cancel);
+            } catch (e) {
+                console.error("[OSL] password wizard threw", e);
+                close(OSL_PASSWORD_CANCEL);
+            }
+        });
+    }
+
+    function oslPasswordValidAscii(s) {
+        for (let i = 0; i < s.length; i++) {
+            const c = s.charCodeAt(i);
+            if (c < 0x20 || c > 0x7e) return false;
+        }
+        return true;
+    }
+
+    function oslPasswordMakeInput(placeholder) {
+        const wrap = document.createElement("div");
+        wrap.style.marginBottom = "12px";
+        const label = document.createElement("div");
+        label.className = "osl-settings-field-label";
+        label.textContent = placeholder;
+        const input = document.createElement("input");
+        input.type = "password";
+        input.maxLength = 6;
+        input.autocomplete = "off";
+        input.autocapitalize = "off";
+        input.spellcheck = false;
+        input.className = "osl-settings-field-value";
+        input.style.fontFamily = "Consolas,Menlo,monospace";
+        input.style.fontSize = "16px";
+        input.style.letterSpacing = "0.3em";
+        input.style.padding = "8px 10px";
+        input.style.width = "100%";
+        input.style.background = "var(--background-tertiary,#1e1f22)";
+        input.style.border =
+            "1px solid var(--background-modifier-accent,#3f4147)";
+        input.style.color = "var(--text-normal,#dbdee1)";
+        input.style.outline = "none";
+        input.style.borderRadius = "4px";
+        const counter = document.createElement("div");
+        counter.style.fontSize = "11px";
+        counter.style.color = "var(--text-muted,#949ba4)";
+        counter.style.textAlign = "right";
+        counter.style.marginTop = "2px";
+        counter.textContent = "0/6";
+        input.addEventListener("input", function () {
+            counter.textContent = String(input.value.length) + "/6";
+        });
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        wrap.appendChild(counter);
+        return { wrap, input, counter };
+    }
+
+    function oslPasswordRowButtons(host, primary, onPrimary, onCancel) {
+        const row = document.createElement("div");
+        row.className = "osl-settings-confirm-row";
+        const cancel = document.createElement("button");
+        cancel.className =
+            "osl-settings-confirm-btn osl-settings-confirm-btn-cancel";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", function (e) {
+            e.stopPropagation();
+            onCancel();
+        });
+        const go = document.createElement("button");
+        go.className =
+            "osl-settings-confirm-btn osl-settings-confirm-btn-go";
+        go.textContent = primary;
+        go.disabled = true;
+        go.style.opacity = "0.5";
+        go.style.cursor = "not-allowed";
+        go.addEventListener("click", function (e) {
+            e.stopPropagation();
+            if (go.disabled) return;
+            onPrimary();
+        });
+        row.appendChild(cancel);
+        row.appendChild(go);
+        host.appendChild(row);
+        return { go, cancel };
+    }
+
+    function oslPasswordEnableBtn(btn, enabled) {
+        btn.disabled = !enabled;
+        btn.style.opacity = enabled ? "1" : "0.5";
+        btn.style.cursor = enabled ? "pointer" : "not-allowed";
+    }
+
+    function oslPasswordError(host, text) {
+        let err = host.querySelector(".osl-pw-err");
+        if (!err) {
+            err = document.createElement("div");
+            err.className = "osl-pw-err";
+            err.style.color = "#ed4245";
+            err.style.fontSize = "12px";
+            err.style.margin = "8px 0 0 0";
+            host.appendChild(err);
+        }
+        err.textContent = text || "";
+    }
+
+    async function oslSettingsOnSetPassword() {
+        // Step 1: collect new + confirm.
+        const step1 = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "Set Main Password";
+            host.appendChild(title);
+            const body = document.createElement("p");
+            body.className = "osl-settings-confirm-body";
+            body.textContent =
+                "Choose a 6-character password. You'll need this every time OSL starts.";
+            host.appendChild(body);
+            const a = oslPasswordMakeInput("New password (6 characters)");
+            const b = oslPasswordMakeInput("Confirm password");
+            host.appendChild(a.wrap);
+            host.appendChild(b.wrap);
+            const errHost = document.createElement("div");
+            host.appendChild(errHost);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Continue",
+                function () {
+                    advance({ value: a.input.value });
+                },
+                cancel
+            );
+            function check() {
+                let err = "";
+                const v = a.input.value;
+                const c = b.input.value;
+                if (v.length === 6 && !oslPasswordValidAscii(v)) {
+                    err = "Only standard keyboard characters allowed.";
+                } else if (c.length === 6 && v !== c) {
+                    err = "Passwords don't match.";
+                }
+                oslPasswordError(errHost, err);
+                oslPasswordEnableBtn(
+                    go,
+                    v.length === 6 &&
+                        c.length === 6 &&
+                        v === c &&
+                        oslPasswordValidAscii(v)
+                );
+            }
+            a.input.addEventListener("input", check);
+            b.input.addEventListener("input", check);
+            nativeSetTimeout(function () {
+                a.input.focus();
+            }, 0);
+        });
+        if (step1 === OSL_PASSWORD_CANCEL) return;
+        const password = step1.value;
+        // Call set-password Tauri command.
+        const setResult = await oslInvoke("osl_set_main_password", {
+            password: password,
+        });
+        if (!setResult.ok) {
+            oslToast("Set password failed: " + setResult.error);
+            return;
+        }
+        const phrase = setResult.value;
+        // Step 2: show recovery phrase, require acknowledgment.
+        const step2 = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "Your Recovery Phrase";
+            host.appendChild(title);
+            const body = document.createElement("p");
+            body.className = "osl-settings-confirm-body";
+            body.textContent =
+                "Write these 12 words down somewhere safe. If you forget " +
+                "your password, this phrase is the only way back in. " +
+                "Anyone with this phrase can reset your password.";
+            host.appendChild(body);
+            const grid = document.createElement("div");
+            grid.style.display = "grid";
+            grid.style.gridTemplateColumns = "1fr 1fr 1fr";
+            grid.style.gap = "6px";
+            grid.style.fontFamily = "Consolas,Menlo,monospace";
+            grid.style.fontSize = "13px";
+            grid.style.background = "var(--background-tertiary,#1e1f22)";
+            grid.style.padding = "12px";
+            grid.style.borderRadius = "4px";
+            grid.style.userSelect = "text";
+            const words = phrase.split(/\s+/);
+            words.forEach(function (w, i) {
+                const cell = document.createElement("div");
+                cell.textContent = (i + 1) + ". " + w;
+                grid.appendChild(cell);
+            });
+            host.appendChild(grid);
+            const copyRow = document.createElement("div");
+            copyRow.style.marginTop = "8px";
+            const copy = document.createElement("button");
+            copy.className = "osl-settings-copy-btn";
+            copy.textContent = "Copy phrase";
+            copy.addEventListener("click", function (e) {
+                e.stopPropagation();
+                try {
+                    navigator.clipboard.writeText(phrase).then(
+                        function () {
+                            copy.textContent = "Copied!";
+                            nativeSetTimeout(function () {
+                                copy.textContent = "Copy phrase";
+                            }, 1500);
+                        },
+                        function () {
+                            copy.textContent = "Copy failed";
+                        }
+                    );
+                } catch (_) {
+                    copy.textContent = "Copy failed";
+                }
+            });
+            copyRow.appendChild(copy);
+            host.appendChild(copyRow);
+            const ackWrap = document.createElement("label");
+            ackWrap.style.display = "flex";
+            ackWrap.style.alignItems = "center";
+            ackWrap.style.gap = "8px";
+            ackWrap.style.margin = "16px 0 0 0";
+            ackWrap.style.fontSize = "13px";
+            ackWrap.style.cursor = "pointer";
+            const ack = document.createElement("input");
+            ack.type = "checkbox";
+            const ackLabel = document.createElement("span");
+            ackLabel.textContent = "I have written this down";
+            ackWrap.appendChild(ack);
+            ackWrap.appendChild(ackLabel);
+            host.appendChild(ackWrap);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Confirm",
+                function () {
+                    advance(true);
+                },
+                cancel
+            );
+            ack.addEventListener("change", function () {
+                oslPasswordEnableBtn(go, ack.checked);
+            });
+        });
+        if (step2 === OSL_PASSWORD_CANCEL) {
+            // User aborted the ack — but the password IS already
+            // set on disk. Inform them.
+            oslToast(
+                "Password set. Recovery phrase NOT acknowledged — " +
+                    "view it via Settings → Passwords → View Recovery Phrase."
+            );
+        } else {
+            oslToast("Main password set. Required on next launch.");
+        }
+        oslSettingsRenderPasswords();
+    }
+
+    async function oslSettingsOnChangePassword() {
+        const step1 = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "Change Main Password";
+            host.appendChild(title);
+            const cur = oslPasswordMakeInput("Current password");
+            const a = oslPasswordMakeInput("New password (6 characters)");
+            const b = oslPasswordMakeInput("Confirm new password");
+            host.appendChild(cur.wrap);
+            host.appendChild(a.wrap);
+            host.appendChild(b.wrap);
+            const errHost = document.createElement("div");
+            host.appendChild(errHost);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Continue",
+                function () {
+                    advance({ current: cur.input.value, new: a.input.value });
+                },
+                cancel
+            );
+            function check() {
+                let err = "";
+                if (
+                    a.input.value.length === 6 &&
+                    !oslPasswordValidAscii(a.input.value)
+                ) {
+                    err = "Only standard keyboard characters allowed.";
+                } else if (
+                    b.input.value.length === 6 &&
+                    a.input.value !== b.input.value
+                ) {
+                    err = "New passwords don't match.";
+                }
+                oslPasswordError(errHost, err);
+                oslPasswordEnableBtn(
+                    go,
+                    cur.input.value.length === 6 &&
+                        a.input.value.length === 6 &&
+                        b.input.value.length === 6 &&
+                        a.input.value === b.input.value &&
+                        oslPasswordValidAscii(a.input.value)
+                );
+            }
+            cur.input.addEventListener("input", check);
+            a.input.addEventListener("input", check);
+            b.input.addEventListener("input", check);
+            nativeSetTimeout(function () {
+                cur.input.focus();
+            }, 0);
+        });
+        if (step1 === OSL_PASSWORD_CANCEL) return;
+        const result = await oslInvoke("osl_change_main_password", {
+            current: step1.current,
+            new: step1.new,
+        });
+        if (!result.ok) {
+            oslToast("Change failed: " + result.error);
+            return;
+        }
+        const phrase = result.value;
+        const step2 = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "New Recovery Phrase";
+            host.appendChild(title);
+            const body = document.createElement("p");
+            body.className = "osl-settings-confirm-body";
+            body.textContent =
+                "Changing the password rotates your recovery phrase. " +
+                "Write down the new phrase — the old one no longer works.";
+            host.appendChild(body);
+            const grid = document.createElement("div");
+            grid.style.display = "grid";
+            grid.style.gridTemplateColumns = "1fr 1fr 1fr";
+            grid.style.gap = "6px";
+            grid.style.fontFamily = "Consolas,Menlo,monospace";
+            grid.style.fontSize = "13px";
+            grid.style.background = "var(--background-tertiary,#1e1f22)";
+            grid.style.padding = "12px";
+            grid.style.borderRadius = "4px";
+            grid.style.userSelect = "text";
+            phrase.split(/\s+/).forEach(function (w, i) {
+                const cell = document.createElement("div");
+                cell.textContent = (i + 1) + ". " + w;
+                grid.appendChild(cell);
+            });
+            host.appendChild(grid);
+            const ackWrap = document.createElement("label");
+            ackWrap.style.display = "flex";
+            ackWrap.style.alignItems = "center";
+            ackWrap.style.gap = "8px";
+            ackWrap.style.margin = "16px 0 0 0";
+            ackWrap.style.fontSize = "13px";
+            ackWrap.style.cursor = "pointer";
+            const ack = document.createElement("input");
+            ack.type = "checkbox";
+            const ackLabel = document.createElement("span");
+            ackLabel.textContent = "I have written this down";
+            ackWrap.appendChild(ack);
+            ackWrap.appendChild(ackLabel);
+            host.appendChild(ackWrap);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Confirm",
+                function () {
+                    advance(true);
+                },
+                cancel
+            );
+            ack.addEventListener("change", function () {
+                oslPasswordEnableBtn(go, ack.checked);
+            });
+        });
+        oslToast("Password changed.");
+        oslSettingsRenderPasswords();
+    }
+
+    async function oslSettingsOnRemovePassword() {
+        const step = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "Remove Main Password";
+            host.appendChild(title);
+            const body = document.createElement("p");
+            body.className = "osl-settings-confirm-body";
+            body.textContent =
+                "Without a password, OSL boots directly into Discord " +
+                "without a gate. Your state files on disk are unaffected " +
+                "(encryption-at-rest is not yet implemented).";
+            host.appendChild(body);
+            const cur = oslPasswordMakeInput("Confirm with current password");
+            host.appendChild(cur.wrap);
+            const errHost = document.createElement("div");
+            host.appendChild(errHost);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Remove password",
+                function () {
+                    advance({ current: cur.input.value });
+                },
+                cancel
+            );
+            go.style.background = "#ed4245";
+            cur.input.addEventListener("input", function () {
+                oslPasswordEnableBtn(go, cur.input.value.length === 6);
+            });
+            nativeSetTimeout(function () {
+                cur.input.focus();
+            }, 0);
+        });
+        if (step === OSL_PASSWORD_CANCEL) return;
+        const result = await oslInvoke("osl_remove_main_password", {
+            current: step.current,
+        });
+        if (!result.ok) {
+            oslToast("Remove failed: " + result.error);
+            return;
+        }
+        oslToast("Main password removed. Discord loads directly on next launch.");
+        oslSettingsRenderPasswords();
+    }
+
+    async function oslSettingsOnViewPhrase() {
+        const step1 = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "View Recovery Phrase";
+            host.appendChild(title);
+            const body = document.createElement("p");
+            body.className = "osl-settings-confirm-body";
+            body.textContent =
+                "This is your recovery phrase. Anyone with it can reset " +
+                "your password. View it in private and never share it.";
+            host.appendChild(body);
+            const cur = oslPasswordMakeInput(
+                "Enter current password to view phrase"
+            );
+            host.appendChild(cur.wrap);
+            const errHost = document.createElement("div");
+            host.appendChild(errHost);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Show phrase",
+                function () {
+                    advance({ current: cur.input.value });
+                },
+                cancel
+            );
+            cur.input.addEventListener("input", function () {
+                oslPasswordEnableBtn(go, cur.input.value.length === 6);
+            });
+            nativeSetTimeout(function () {
+                cur.input.focus();
+            }, 0);
+        });
+        if (step1 === OSL_PASSWORD_CANCEL) return;
+        const result = await oslInvoke("osl_view_recovery_phrase", {
+            current: step1.current,
+        });
+        if (!result.ok) {
+            oslToast("View phrase failed: " + result.error);
+            return;
+        }
+        const phrase = result.value;
+        await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "Your Recovery Phrase";
+            host.appendChild(title);
+            const grid = document.createElement("div");
+            grid.style.display = "grid";
+            grid.style.gridTemplateColumns = "1fr 1fr 1fr";
+            grid.style.gap = "6px";
+            grid.style.fontFamily = "Consolas,Menlo,monospace";
+            grid.style.fontSize = "13px";
+            grid.style.background = "var(--background-tertiary,#1e1f22)";
+            grid.style.padding = "12px";
+            grid.style.borderRadius = "4px";
+            grid.style.userSelect = "text";
+            phrase.split(/\s+/).forEach(function (w, i) {
+                const cell = document.createElement("div");
+                cell.textContent = (i + 1) + ". " + w;
+                grid.appendChild(cell);
+            });
+            host.appendChild(grid);
+            const copy = document.createElement("button");
+            copy.className = "osl-settings-copy-btn";
+            copy.style.marginTop = "10px";
+            copy.textContent = "Copy phrase";
+            copy.addEventListener("click", function (e) {
+                e.stopPropagation();
+                try {
+                    navigator.clipboard.writeText(phrase).then(
+                        function () {
+                            copy.textContent = "Copied!";
+                            nativeSetTimeout(function () {
+                                copy.textContent = "Copy phrase";
+                            }, 1500);
+                        },
+                        function () {
+                            copy.textContent = "Copy failed";
+                        }
+                    );
+                } catch (_) {
+                    copy.textContent = "Copy failed";
+                }
+            });
+            host.appendChild(copy);
+            const row = document.createElement("div");
+            row.className = "osl-settings-confirm-row";
+            row.style.marginTop = "16px";
+            const close = document.createElement("button");
+            close.className =
+                "osl-settings-confirm-btn osl-settings-confirm-btn-go";
+            close.textContent = "Close";
+            close.addEventListener("click", function (e) {
+                e.stopPropagation();
+                advance(true);
+            });
+            row.appendChild(close);
+            host.appendChild(row);
+        });
+    }
+
+    async function oslSettingsRenderPasswords() {
+        const pane = oslSettingsRoot.querySelector(
+            "[data-osl-page-content='passwords']"
+        );
+        if (!pane) return;
+        pane.innerHTML = "";
+        const h1 = document.createElement("h1");
+        h1.className = "osl-settings-h1";
+        h1.textContent = "Passwords";
+        pane.appendChild(h1);
+
+        const loading = document.createElement("div");
+        loading.className = "osl-settings-hint";
+        loading.textContent = "Loading…";
+        pane.appendChild(loading);
+        const status = await oslInvoke("osl_password_status", {});
+        loading.remove();
+        if (!status.ok) {
+            const err = document.createElement("div");
+            err.className = "osl-settings-empty";
+            err.textContent = "Could not load password status: " + status.error;
+            pane.appendChild(err);
+            return;
+        }
+        const isSet = !!status.value.is_set;
+
+        // Section: Main Password.
+        const mh = document.createElement("h2");
+        mh.className = "osl-settings-h2";
+        mh.textContent = "Main Password";
+        pane.appendChild(mh);
+
+        const statusP = document.createElement("p");
+        statusP.style.margin = "0 0 12px 0";
+        statusP.style.fontSize = "13px";
+        statusP.style.color = "var(--text-normal,#dbdee1)";
+        statusP.textContent = isSet
+            ? "Password is set. Required at boot."
+            : "No password set. OSL boots without a password gate.";
+        pane.appendChild(statusP);
+
+        const btnRow = document.createElement("div");
+        btnRow.style.display = "flex";
+        btnRow.style.gap = "8px";
+        const setBtn = document.createElement("button");
+        setBtn.className = "osl-settings-row-btn osl-settings-row-btn-remove";
+        setBtn.style.padding = "8px 16px";
+        setBtn.textContent = isSet ? "Change Password" : "Set Password";
+        setBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            if (isSet) oslSettingsOnChangePassword();
+            else oslSettingsOnSetPassword();
+        });
+        btnRow.appendChild(setBtn);
+        if (isSet) {
+            const rm = document.createElement("button");
+            rm.className = "osl-settings-row-btn osl-settings-row-btn-burn";
+            rm.style.padding = "8px 16px";
+            rm.textContent = "Remove Password";
+            rm.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsOnRemovePassword();
+            });
+            btnRow.appendChild(rm);
+        }
+        pane.appendChild(btnRow);
+
+        // Section: Recovery Phrase.
+        const rh = document.createElement("h2");
+        rh.className = "osl-settings-h2";
+        rh.textContent = "Recovery Phrase";
+        pane.appendChild(rh);
+        const rp = document.createElement("p");
+        rp.style.margin = "0 0 12px 0";
+        rp.style.fontSize = "13px";
+        rp.style.color = "var(--text-normal,#dbdee1)";
+        rp.textContent = isSet
+            ? "A recovery phrase was created when you set your password. " +
+              "Keep it somewhere safe."
+            : "Set a main password first.";
+        pane.appendChild(rp);
+        if (isSet) {
+            const view = document.createElement("button");
+            view.className = "osl-settings-row-btn osl-settings-row-btn-remove";
+            view.style.padding = "8px 16px";
+            view.textContent = "View Recovery Phrase";
+            view.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsOnViewPhrase();
+            });
+            pane.appendChild(view);
+        }
+
+        // Stealth password — dimmed (7d-B2 placeholder).
+        oslSettingsAppendDimmedSection(
+            pane,
+            "Stealth Password",
+            "Coming soon (Phase 7d-B2)"
+        );
+        // Burn password — dimmed (7d-B3 placeholder).
+        oslSettingsAppendDimmedSection(
+            pane,
+            "Burn Password",
+            "Coming soon (Phase 7d-B3)"
+        );
+    }
+
+    function oslSettingsAppendDimmedSection(pane, label, tooltip) {
+        const h = document.createElement("h2");
+        h.className = "osl-settings-h2";
+        h.style.opacity = "0.45";
+        h.style.display = "flex";
+        h.style.alignItems = "center";
+        h.style.gap = "8px";
+        const text = document.createElement("span");
+        text.textContent = label;
+        const tag = document.createElement("span");
+        tag.textContent = "Soon";
+        tag.style.fontSize = "10px";
+        tag.style.opacity = "0.7";
+        tag.style.padding = "1px 6px";
+        tag.style.borderRadius = "8px";
+        tag.style.background =
+            "var(--background-modifier-accent, #4f545c)";
+        tag.style.textTransform = "none";
+        tag.style.letterSpacing = "normal";
+        h.title = tooltip;
+        h.appendChild(text);
+        h.appendChild(tag);
+        pane.appendChild(h);
+    }
+
     // ---- Gear icon injection ----
 
     function oslSettingsGearSvg() {
@@ -3308,6 +4029,56 @@
         );
     }
 
+    /**
+     * 7d-B1 Task 1: locate the icon-row container inside panels__
+     * (the inline row holding Mute / Deafen / User Settings) so the
+     * OSL gear sits next to Discord's gear, not below the whole
+     * panels__ section as a stray row.
+     *
+     * Try ordered selectors, first match wins:
+     *   1. The User Settings button's parent — most semantic anchor.
+     *   2. A panels__ descendant with class containing "container"
+     *      that contains the Mute button.
+     *   3. The last <div> child of panels__ that has at least one
+     *      <button> — heuristic fallback.
+     *
+     * Returns null when none match; caller falls back to appending
+     * to the panels__ section root (the old, ugly placement) and
+     * logs once so future selector drift is observable.
+     */
+    function oslSettingsFindIconRow(panel) {
+        const userSettingsBtn = panel.querySelector(
+            'button[aria-label*="User Settings"]'
+        );
+        if (userSettingsBtn && userSettingsBtn.parentElement) {
+            return userSettingsBtn.parentElement;
+        }
+        // Fallback 2: container with the Mute button inside.
+        const muteBtn = panel.querySelector('button[aria-label*="Mute"]');
+        if (muteBtn) {
+            let cur = muteBtn.parentElement;
+            while (cur && cur !== panel) {
+                if (
+                    typeof cur.className === "string" &&
+                    cur.className.indexOf("container") !== -1
+                ) {
+                    return cur;
+                }
+                cur = cur.parentElement;
+            }
+            // Fallback within fallback: muteBtn's direct parent if no
+            // container__ ancestor in the chain.
+            if (muteBtn.parentElement) return muteBtn.parentElement;
+        }
+        // Fallback 3: last child <div> of panels__ that contains a <button>.
+        const children = panel.querySelectorAll(":scope > div");
+        for (let i = children.length - 1; i >= 0; i--) {
+            if (children[i].querySelector("button")) return children[i];
+        }
+        return null;
+    }
+
+    let oslGearFallbackLogged = false;
     function oslSettingsGearInject() {
         // SAFETY (round-3 lesson): idempotency check FIRST, before
         // any DOM read/write that could trigger a React reconcile
@@ -3327,26 +4098,56 @@
             if (!panelNow) return;
             if (panelNow.querySelector("[" + SETTINGS_GEAR_ATTR + "='1']"))
                 return;
+            // 7d-B1 Task 1: try to mount inside Discord's icon row so
+            // the gear sits inline with Mute / Deafen / User Settings.
+            // Fall back to panels__ root if the row anchor can't be
+            // located, so the gear still appears somewhere.
+            const row = oslSettingsFindIconRow(panelNow);
+            const mountInline = !!row;
+            if (!mountInline && !oslGearFallbackLogged) {
+                oslGearFallbackLogged = true;
+                console.log(
+                    "[OSL] gear placement: panels__ icon row not found, " +
+                        "falling back to panels__ append"
+                );
+            }
+            // Sample an existing button in the icon row so we can
+            // mirror its class list (gives us the right hover ring,
+            // sizing, color from Discord's own CSS without us
+            // hard-coding pixel values that drift between builds).
+            const sample = row
+                ? row.querySelector("button") ||
+                  row.querySelector('[class*="iconWrapper"]')
+                : null;
             const btn = document.createElement("div");
             btn.setAttribute("role", "button");
             btn.setAttribute("tabindex", "0");
             btn.setAttribute("aria-label", "OSL Settings");
             btn.setAttribute(SETTINGS_GEAR_ATTR, "1");
             btn.title = "OSL Settings";
+            if (sample && sample.className) {
+                btn.className = sample.className;
+            }
             btn.style.display = "inline-flex";
             btn.style.alignItems = "center";
             btn.style.justifyContent = "center";
             btn.style.cursor = "pointer";
-            btn.style.width = "32px";
-            btn.style.height = "32px";
-            btn.style.marginLeft = "4px";
-            btn.style.color = "var(--interactive-normal, #b5bac1)";
+            // Only paint our own size/margin when we couldn't sample
+            // a sibling button (fallback append). Inline mounts let
+            // Discord's icon-row flex layout handle spacing.
+            if (!sample) {
+                btn.style.width = "32px";
+                btn.style.height = "32px";
+                btn.style.marginLeft = "4px";
+                btn.style.color = "var(--interactive-normal, #b5bac1)";
+            }
             btn.innerHTML = oslSettingsGearSvg();
             btn.addEventListener("click", function (e) {
                 e.stopPropagation();
                 oslSettingsOpen();
             });
-            panelNow.appendChild(btn);
+            const mount = mountInline ? row : panelNow;
+            mount.appendChild(btn);
         });
     }
 

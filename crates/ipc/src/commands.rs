@@ -2606,3 +2606,81 @@ pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowD
     }
     Ok(out)
 }
+
+// =====================================================================
+// Phase 7d-B1: main-password gate commands. Each delegates to the
+// `crate::main_password` module which holds the marker/lockout file
+// layout, argon2id derivation, AES-GCM phrase blob, and BIP39
+// phrase generation. Tauri wrappers in `src-tauri/src/main.rs`.
+// =====================================================================
+
+pub use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
+
+pub fn cmd_osl_password_status() -> Result<PasswordStatusDto, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    Ok(crate::main_password::password_status(&dir))
+}
+
+pub fn cmd_osl_set_main_password(password: String) -> Result<String, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::set_main_password(&dir, &password)
+}
+
+pub fn cmd_osl_change_main_password(
+    current: String,
+    new: String,
+) -> Result<String, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::change_main_password(&dir, &current, &new)
+}
+
+pub fn cmd_osl_remove_main_password(current: String) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::remove_main_password(&dir, &current)
+}
+
+pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::view_recovery_phrase(&dir, &current)
+}
+
+pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::verify_main_password(&dir, &password)
+}
+
+pub fn cmd_osl_verify_recovery_phrase(
+    state: &AppState,
+    phrase: String,
+) -> Result<String, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::verify_recovery_phrase(state, &dir, &phrase)
+}
+
+pub fn cmd_osl_set_main_password_after_recovery(
+    state: &AppState,
+    new_password: String,
+    token: String,
+) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::set_main_password_after_recovery(
+        state,
+        &dir,
+        &new_password,
+        &token,
+    )
+}
+
+pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    Ok(crate::main_password::lockout_status(&dir))
+}
