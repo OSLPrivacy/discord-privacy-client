@@ -131,6 +131,45 @@ pub fn run_autostart(state: &AppState) {
 
     load_peer_map(state, &dir);
 
+    // 7d-FIX3: verify peer_map has a self-entry that matches the
+    // loaded identity. If the identity has a snowflake but
+    // peer_map doesn't (e.g. after a backup restore, or after a
+    // pre-FIX3 install upgraded), repair the entry in place and
+    // persist. If the identity has no snowflake yet, defer to
+    // boot.js to extract it from Discord runtime and call
+    // `osl_register_self_snowflake`.
+    if identity_loaded {
+        match ipc::commands::verify_and_persist_peer_map_self_entry(state) {
+            Ok((snowflake, repaired)) => {
+                if repaired {
+                    eprintln!("[OSL][bootstrap] self-entry repaired for snowflake={snowflake}");
+                } else {
+                    eprintln!("[OSL][bootstrap] self-entry verified");
+                }
+            }
+            Err(reason) if reason == "no_discord_snowflake" => {
+                eprintln!(
+                    "[OSL][bootstrap] no discord snowflake on identity; \
+                     deferring self-entry to boot.js"
+                );
+            }
+            Err(reason) if reason == "identity_not_loaded" => {
+                // Already gated above; defensive log.
+                tracing::warn!(
+                    "OSL bootstrap: verify_peer_map_self_entry reported \
+                     identity_not_loaded despite identity_loaded gate"
+                );
+            }
+            Err(other) => {
+                tracing::warn!(
+                    error = %other,
+                    "OSL bootstrap: verify_peer_map_self_entry failed; \
+                     continuing — boot.js can retry via osl_register_self_snowflake"
+                );
+            }
+        }
+    }
+
     // 7d-FIX1: load burned_scopes.json into AppState. Best-effort:
     // a missing file is normal on a fresh install; a parse error
     // leaves the ledger empty (no burns are enforced) which is

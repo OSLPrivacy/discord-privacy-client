@@ -47,6 +47,12 @@ pub struct Identity {
     /// FIPS 203 byte serialization of the ML-KEM-768 encapsulation
     /// key (1184 bytes). Public; safe to expose.
     pub mlkem_public_bytes: [u8; ml_kem_768::ENCAPSULATION_KEY_SIZE],
+    /// 7d-FIX3: Discord snowflake associated with this identity.
+    /// Populated lazily via `osl_register_self_snowflake` on first
+    /// launch from boot.js (which extracts it from Discord's
+    /// React fiber tree). Existing identities load with `None`
+    /// via the InnerIdentity serde default; no version bump needed.
+    pub discord_snowflake: Option<String>,
 }
 
 impl Identity {
@@ -69,6 +75,7 @@ impl Identity {
             ed25519_public: ed25519::PublicKey::from_bytes(ed25519_public_bytes),
             mlkem_secret_bytes: Zeroizing::new(mlkem_secret_bytes),
             mlkem_public_bytes,
+            discord_snowflake: None,
         }
     }
 
@@ -112,5 +119,6 @@ pub fn generate_identity(user_id: String) -> Identity {
         ed25519_public,
         mlkem_secret_bytes,
         mlkem_public_bytes: mlkem_encap.to_bytes(),
+        discord_snowflake: None,
     }
 }

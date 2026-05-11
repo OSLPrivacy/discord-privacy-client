@@ -70,6 +70,12 @@ struct InnerIdentity {
     ed25519_public_b64: String,
     mlkem_secret_b64: String,
     mlkem_public_b64: String,
+    /// 7d-FIX3: Discord snowflake associated with this identity.
+    /// `serde(default)` keeps backward compat with pre-FIX3 sealed
+    /// blobs — they deserialize with `None` and the bootstrap repair
+    /// path defers self-entry creation to boot.js registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    discord_snowflake: Option<String>,
 }
 
 /// Save `identity` to `path` sealed under `sealer`.
@@ -82,6 +88,7 @@ pub fn save_identity(path: &Path, identity: &Identity, sealer: &dyn Sealer) -> R
         ed25519_public_b64: STANDARD.encode(identity.ed25519_public.as_bytes()),
         mlkem_secret_b64: STANDARD.encode(identity.mlkem_secret_bytes()),
         mlkem_public_b64: STANDARD.encode(identity.mlkem_public_bytes),
+        discord_snowflake: identity.discord_snowflake.clone(),
     };
     let inner_bytes = serde_json::to_vec(&inner)?;
     let sealed = sealer.seal(&inner_bytes)?;
@@ -179,7 +186,7 @@ pub fn load_identity(path: &Path, sealer: &dyn Sealer) -> Result<Identity> {
         &inner.mlkem_public_b64,
     )?;
 
-    Ok(Identity::from_bytes(
+    let mut identity = Identity::from_bytes(
         inner.user_id,
         x25519_secret,
         x25519_public,
@@ -187,7 +194,9 @@ pub fn load_identity(path: &Path, sealer: &dyn Sealer) -> Result<Identity> {
         ed25519_public,
         mlkem_secret,
         mlkem_public,
-    ))
+    );
+    identity.discord_snowflake = inner.discord_snowflake;
+    Ok(identity)
 }
 
 fn decode_array<const N: usize>(field: &'static str, b64: &str) -> Result<[u8; N]> {

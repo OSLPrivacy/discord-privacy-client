@@ -42,17 +42,17 @@ use ipc::commands::{
     cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
     cmd_osl_list_burned_scopes, cmd_osl_list_pending_invitations, cmd_osl_load_channel_history,
     cmd_osl_lockout_status, cmd_osl_mark_scope_burned, cmd_osl_password_status,
-    cmd_osl_persist_edit, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
-    cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation,
-    cmd_osl_send_whitelist_response, cmd_osl_set_burn_password, cmd_osl_set_main_password,
-    cmd_osl_set_main_password_after_recovery, cmd_osl_set_stealth_password, cmd_osl_set_whitelist,
-    cmd_osl_stealth_mode_engage, cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption,
-    cmd_osl_unburn_scope, cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password,
-    cmd_osl_verify_main_password, cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase,
-    cmd_register, cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
-    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
-    BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
-    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
+    cmd_osl_persist_edit, cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password,
+    cmd_osl_remove_main_password, cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker,
+    cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response, cmd_osl_set_burn_password,
+    cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
+    cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
+    cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
+    cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
+    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register, cmd_save_identity,
+    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
+    AeadSealRequest, AeadSealResponse, BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse,
+    GateVerifyDto, GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
     PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
     WhitelistRowDto,
@@ -604,6 +604,33 @@ async fn osl_get_self_user_id(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 7d-FIX3: persist a Discord snowflake on the loaded
+/// identity and repair the peer_map self-entry to match. Called
+/// from boot.js's `oslExtractDiscordSnowflakeFromRuntime` flow on
+/// first launch (or after a state restore that wiped the entry).
+#[tauri::command]
+async fn osl_register_self_snowflake(
+    app: tauri::AppHandle,
+    snowflake: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    let result: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_register_self_snowflake(state.inner(), snowflake)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?;
+    // Emit the cross-window event after the persisted write so
+    // listeners observe a consistent state (snowflake is in
+    // identity.json AND in peer_map).
+    if result.is_ok() {
+        if let Err(e) = app.emit("osl:self_registered", ()) {
+            tracing::debug!(?e, "OSL: emit self_registered event failed");
+        }
+    }
+    result
+}
+
 /// Phase 7d-A: settings-menu Identity page payload.
 #[tauri::command]
 async fn osl_get_identity_info(app: tauri::AppHandle) -> Result<IdentityInfoDto, String> {
@@ -1116,6 +1143,78 @@ fn main() {
                 )
                 // Layer 10 injection. Runs before discord.com's bundle.
                 .initialization_script(injection::BOOT_SCRIPT)
+                // Phase 7d-FIX3: rewrite Discord's CSP response header
+                // to allow Tauri's IPC origin in `connect-src`. Without
+                // this, `window.__TAURI__.event.listen` fails on the
+                // main webview because the underlying fetch to
+                // ipc.localhost / tauri.localhost is CSP-blocked,
+                // breaking cross-window event registration. 7d-FIX2
+                // tried this via a meta-tag patch in boot.js, but
+                // Discord's CSP is delivered HTTP-header-only so the
+                // meta-tag approach never had a target. Tauri 2's
+                // `on_web_resource_request` lets us mutate the
+                // response headers before they reach the WebView.
+                //
+                // Scope: only applied to discord.com / discordapp.com
+                // / canary.discord.com origins. Other resources keep
+                // their original CSP unchanged.
+                .on_web_resource_request(|request, response| {
+                    let host = request.uri().host().unwrap_or("");
+                    let is_discord = host == "discord.com"
+                        || host.ends_with(".discord.com")
+                        || host == "cdn.discordapp.com"
+                        || host.ends_with(".discordapp.com")
+                        || host == "canary.discord.com"
+                        || host == "ptb.discord.com";
+                    if !is_discord {
+                        return;
+                    }
+                    let headers = response.headers_mut();
+                    let Some(csp_value) = headers.get("content-security-policy") else {
+                        return;
+                    };
+                    let Ok(csp_str) = csp_value.to_str() else {
+                        return;
+                    };
+                    if csp_str.contains("ipc.localhost") {
+                        return; // already patched (idempotent)
+                    }
+                    let extended = if csp_str.contains("connect-src ") {
+                        // Inject ipc/tauri localhost origins right
+                        // after the `connect-src` directive's keyword.
+                        csp_str.replacen(
+                            "connect-src ",
+                            "connect-src http://ipc.localhost https://ipc.localhost \
+                             http://tauri.localhost https://tauri.localhost ",
+                            1,
+                        )
+                    } else {
+                        // No connect-src in Discord's CSP — append one.
+                        // CSP merge semantics treat absent directives as
+                        // falling back to default-src; an explicit
+                        // connect-src overrides default-src for fetch.
+                        format!(
+                            "{}; connect-src 'self' http://ipc.localhost https://ipc.localhost \
+                             http://tauri.localhost https://tauri.localhost",
+                            csp_str.trim_end_matches(';')
+                        )
+                    };
+                    match tauri::http::HeaderValue::from_str(&extended) {
+                        Ok(new_value) => {
+                            headers.insert("content-security-policy", new_value);
+                            tracing::debug!(
+                                host = %host,
+                                "[OSL][csp] discord response header rewritten"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                ?e,
+                                "[OSL][csp] failed to construct rewritten CSP HeaderValue"
+                            );
+                        }
+                    }
+                })
                 .build()?;
 
             // Apply screenshot resistance immediately. This runs
@@ -1175,6 +1274,7 @@ fn main() {
             osl_toggle_scope_encryption,
             osl_list_pending_invitations,
             osl_get_self_user_id,
+            osl_register_self_snowflake,
             osl_get_identity_info,
             osl_list_all_whitelists,
             osl_password_status,
