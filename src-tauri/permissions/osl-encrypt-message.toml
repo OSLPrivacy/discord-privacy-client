@@ -1,6 +1,6 @@
 "$schema" = "../gen/schemas/desktop-schema.json"
 
-# Permission file for the Layer 10 / Phase 3 IPC command.
+# Permission file for the legacy Layer 10 IPC encryption command.
 # Tauri 2's permission system requires explicit declarations for
 # app-level commands (auto-generation is plugin-side only). This
 # file declares the `allow-osl-encrypt-message` permission and which
@@ -10,5 +10,5 @@
 
 [[permission]]
 identifier = "allow-osl-encrypt-message"
-description = "Permits the discord.com main webview to invoke `osl_encrypt_message` (the bridge between Discord's chat-input source-rewrite and the Rust crypto pipeline). Phase 3: command is a stub returning `\"[OSL-STUB] \" + plaintext`. Phase 4: real PQXDH + stego pipeline behind the same wire shape."
+description = "Permits the discord.com main webview to invoke `osl_encrypt_message` (the legacy bridge between Discord's chat-input source-rewrite and the Rust crypto pipeline)."
 commands.allow = ["osl_encrypt_message"]

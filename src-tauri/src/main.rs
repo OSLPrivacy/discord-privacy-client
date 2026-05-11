@@ -7,21 +7,20 @@
 // serves its own CSP via response headers; Tauri's `app.security.csp`
 // is `null` so no local CSP gets injected to clash with it.
 //
-// Layer 10 / Phase 3: the main window is now built programmatically
+// Layer 10: the main window is built programmatically
 // (rather than declared in tauri.conf.json) so we can attach an
 // `initialization_script` that runs before Discord's bundle loads.
 // The script (`injection::BOOT_SCRIPT`) hooks
 // `webpackChunkdiscord_app` and source-rewrites the chat-input
 // module's sendMessage call site to route outbound content through
-// the `osl_encrypt_message` IPC command. Phase 3 of that command is a
-// stub returning `"[OSL-STUB] " + plaintext`; Phase 4 wires the real
-// crypto crate path.
+// the OSL IPC encryption commands.
 //
 // IPC from the discord.com origin is gated by
 // `capabilities/main.json` (Tauri 2 blocks IPC from remote URLs by
-// default) — only the `allow-osl-encrypt-message` permission is
-// granted, so the existing keystore / crypto / stego commands
-// declared below remain non-callable from Discord.
+// default). `capabilities/main.json` grants the Discord origin only
+// the message and whitelist operations needed by the injected
+// workflow; raw crypto, identity-generation, filesystem-backed, and
+// password/recovery commands remain off the remote origin.
 //
 // The Tauri attribute glue lives here, not in the `ipc` crate, so
 // `ipc` itself has no Tauri dep — keeping its tests portable across

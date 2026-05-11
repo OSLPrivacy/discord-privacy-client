@@ -6,12 +6,12 @@ resistance, and metadata protection. Companion repo: `discord-privacy-keyserver`
 
 ## Status
 
-**Pre-alpha. No implementation code is in this repository yet.**
+**Pre-alpha implementation. Not production-ready.**
 
-This is repository scaffolding. Crypto and injection design docs are under
-[`docs/design/`](docs/design/) and must be reviewed before any implementation
-begins. A paid third-party cryptographic review is a hard prerequisite for the
-v1 ship.
+The repository contains working Rust/Tauri, crypto, injection, storage, and
+prototype keyserver code for closed-beta dogfooding. The implementation is
+still expected to change materially before v1. A paid third-party
+cryptographic review is a hard prerequisite for the v1 ship.
 
 ## Threat model
 
