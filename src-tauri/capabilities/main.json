@@ -37,7 +37,6 @@
     "allow-osl-list-burned-scopes",
     "allow-osl-open-settings-window",
     "allow-osl-close-settings-window-if-open",
-    "allow-osl-register-self-snowflake",
     "core:event:allow-listen"
   ]
 }
