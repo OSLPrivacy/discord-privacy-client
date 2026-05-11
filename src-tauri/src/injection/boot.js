@@ -980,6 +980,11 @@
     const OSL_RESULT_INVITATION_RECEIVED =
         "__OSL_CONTROL_INVITATION_RECEIVED__";
     const OSL_RESULT_RESPONSE_RECEIVED = "__OSL_CONTROL_RESPONSE_RECEIVED__";
+    // Phase 8: recv-side sentinel for an attachment envelope. The
+    // full result string is `OSL_RESULT_ATTACHMENT_PREFIX + json`,
+    // where the JSON carries the per-attachment AEAD key + filenames
+    // + MIME for boot.js to feed into `osl_open_attachment`.
+    const OSL_RESULT_ATTACHMENT_PREFIX = "__OSL_CONTROL_ATTACHMENT__|";
 
     /**
      * Phase 7b: encrypt `plaintext` for the whitelist-resolved
@@ -1173,6 +1178,14 @@
      */
     function oslHandleDecryptResult(msgId, result) {
         if (typeof result !== "string") return false;
+        // Phase 8: attachment-envelope sentinel uses a `<prefix>|<json>`
+        // shape so we can't switch/case on the exact string.
+        if (result.indexOf(OSL_RESULT_ATTACHMENT_PREFIX) === 0) {
+            console.log(
+                "[OSL] v=2 attachment envelope received msg=" + msgId
+            );
+            return true;
+        }
         switch (result) {
             case OSL_RESULT_BURN_APPLIED:
                 console.log("[OSL] v=2 burn applied msg=" + msgId);
@@ -1226,6 +1239,208 @@
         const wire = await oslEncryptV2(plaintext, scope, members, selfDiscordId);
         if (!wire) return null;
         return await oslSendControlMessage(channelId, wire);
+    };
+
+    // ============================================================
+    // Phase 8: attachment send pipeline (helpers + intercept hook)
+    //
+    // Discord's attachment upload is a three-step flow:
+    //   1. POST /api/v9/channels/{cid}/attachments — Discord-side
+    //      pre-upload; response carries `upload_url` (GCS-signed
+    //      PUT URL) + `upload_filename` for each file in the
+    //      request's `files[]` body.
+    //   2. PUT to the GCS URL with the raw file bytes.
+    //   3. POST /messages with `attachments[]` referencing the
+    //      uploaded files + `content`.
+    //
+    // The OSL intercept replaces step-2 body bytes with the
+    // sealed-attachment blob (decoy PNG + OSL-ATT1 + AEAD wire),
+    // and overrides step-3's `content` with a v=2 envelope
+    // (MSG_TYPE_ATTACHMENT) carrying the per-attachment AEAD key.
+    //
+    // Per-build URL patterns for steps 1/2 drift across Discord
+    // releases (different CDN providers, signed-URL shapes); the
+    // helper `oslSealAttachmentForUpload` below does the encryption
+    // + envelope build in pure JS and is callable from DevTools, so
+    // a manual end-to-end test works regardless. The
+    // `oslAttachmentUploadHooks` block then wires it into Discord's
+    // actual fetch traffic — adjust the URL-matchers in that block
+    // if Discord's flow changes.
+    // ============================================================
+
+    /**
+     * Phase 8: seal a File (as picked by Discord's composer) for
+     * upload. Returns `{ sealedBlob, sealedFilename, envelopeWire,
+     * mimeType, originalFilename }` — the caller PUTs `sealedBlob`
+     * to Discord's CDN under `sealedFilename` and POSTs to
+     * /messages with `content = envelopeWire`.
+     */
+    async function oslSealAttachmentForUpload(file, scopeInput, channelMembers, selfDiscordId) {
+        if (!file || typeof file.arrayBuffer !== "function") {
+            throw new Error("oslSealAttachmentForUpload: invalid File");
+        }
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = "";
+        const CHUNK = 32 * 1024;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+            const slice = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+            binary += String.fromCharCode.apply(null, slice);
+        }
+        const b64 = btoa(binary);
+        const sealRes = await oslInvoke("osl_seal_attachment", {
+            originalBytesB64: b64,
+            originalFilename: file.name,
+        });
+        if (!sealRes.ok) {
+            throw new Error("osl_seal_attachment failed: " + sealRes.error);
+        }
+        const sealed = sealRes.value;
+        // Build the v=2 envelope wire that carries the AEAD key
+        // to whitelisted recipients.
+        const envRes = await oslInvoke("osl_encrypt_attachment_envelope", {
+            scopeInput: scopeInput,
+            channelMembers: channelMembers,
+            selfDiscordId: selfDiscordId,
+            attKeyB64: sealed.attKeyB64,
+            originalFilename: file.name,
+            randomFilename: sealed.randomFilename,
+            mimeType: sealed.mimeType,
+        });
+        if (!envRes.ok) {
+            throw new Error(
+                "osl_encrypt_attachment_envelope failed: " + envRes.error
+            );
+        }
+        // Decode the sealed blob b64 back into a Blob ready for
+        // Discord's CDN PUT.
+        const sealedBinary = atob(sealed.fileBlobB64);
+        const sealedBytes = new Uint8Array(sealedBinary.length);
+        for (let i = 0; i < sealedBinary.length; i++) {
+            sealedBytes[i] = sealedBinary.charCodeAt(i);
+        }
+        const sealedBlob = new Blob([sealedBytes], { type: "image/png" });
+        return {
+            sealedBlob: sealedBlob,
+            sealedFilename: sealed.randomFilename,
+            envelopeWire: envRes.value,
+            mimeType: sealed.mimeType,
+            originalFilename: file.name,
+        };
+    }
+
+    // Bookkeeping for the intercept hook. Discord's POST /attachments
+    // response carries an `upload_url` and we need to remember which
+    // file the user picked for each one, so when we observe the
+    // matching PUT we can swap the body. Keys are upload_url strings,
+    // values are `{ originalFile, sealed }` where `sealed` is
+    // populated lazily on first PUT-time observation.
+    window.__oslPendingUploads = new Map();
+
+    /**
+     * Phase 8 send-side hook: scan a fetch invocation and, if it's
+     * a Discord-side attachment upload (POST /attachments → PUT to
+     * CDN → POST /messages), perform the OSL swap. Returns either:
+     *   - `{ handled: true, promise }` — we already dispatched the
+     *     fetch (possibly with mutated args); caller returns this
+     *     promise.
+     *   - `{ handled: false }` — caller falls through to its normal
+     *     Reflect.apply path.
+     *
+     * This is intentionally a thin shell that delegates each branch
+     * to a dedicated function so the integration points are easy to
+     * adjust as Discord's flow changes.
+     */
+    function oslAttachmentUploadHooks(target, thisArg, args, url, method) {
+        // POST /channels/{cid}/attachments — Discord's pre-upload.
+        // For now we just LOG so the user can confirm the URL
+        // pattern matches their build. Full registration of the
+        // (upload_url → file) mapping happens here in the v1.1 hook
+        // — until then, oslDebugUploadAttachment below is the
+        // manual upload path.
+        if (method === "POST" && /\/channels\/\d+\/attachments(?:\?|$|\/)/.test(url)) {
+            console.log(
+                "[OSL] attachment pre-upload POST detected url=" +
+                    url +
+                    " — observe in DevTools to capture the upload_url / filename"
+            );
+        }
+        return { handled: false };
+    }
+
+    /**
+     * Phase 8 DevTools-side end-to-end debug helper. Pick a File
+     * (e.g. via a `<input type=file>` in DevTools) and call:
+     *
+     *     await window.__oslDebugUploadAttachment(channelId, file)
+     *
+     * The helper seals the file, sends the v=2 envelope as the
+     * message content, and POSTs the sealed blob as a plain
+     * multipart upload via the message-send endpoint (Discord's
+     * legacy single-step path). Doesn't go through the new
+     * pre-upload+CDN flow — that's where the production hook
+     * needs to land — but it lets you verify recv-side decoding
+     * end-to-end before the upload hook is wired.
+     */
+    window.__oslDebugUploadAttachment = async function (channelId, file) {
+        if (!channelId || !file) {
+            throw new Error(
+                "usage: __oslDebugUploadAttachment(channelId, file)"
+            );
+        }
+        const ctx = oslCurrentChannelContext();
+        const scope = ctx && oslScopeForCurrentContext(ctx);
+        if (!scope) {
+            throw new Error("could not resolve current scope");
+        }
+        const selfId = await oslSelfDiscordId();
+        if (!selfId) {
+            throw new Error("could not resolve self discord id");
+        }
+        const members = (ctx.members || []).map(function (m) {
+            return typeof m === "string" ? m : (m && (m.id || m.user_id)) || null;
+        }).filter(Boolean);
+        const sealed = await oslSealAttachmentForUpload(
+            file,
+            scope,
+            members,
+            selfId
+        );
+        console.log(
+            "[OSL] debug-upload sealed file=" +
+                sealed.originalFilename +
+                " → upload=" +
+                sealed.sealedFilename +
+                " bytes=" +
+                sealed.sealedBlob.size +
+                " envelope_len=" +
+                sealed.envelopeWire.length
+        );
+        // Build a multipart payload Discord accepts on the
+        // /messages endpoint (legacy single-step upload).
+        const fd = new FormData();
+        const payload = {
+            content: sealed.envelopeWire,
+            attachments: [
+                {
+                    id: "0",
+                    filename: sealed.sealedFilename,
+                },
+            ],
+        };
+        fd.append("payload_json", JSON.stringify(payload));
+        fd.append("files[0]", sealed.sealedBlob, sealed.sealedFilename);
+        const url =
+            "https://discord.com/api/v9/channels/" + channelId + "/messages";
+        const resp = await fetch(url, {
+            method: "POST",
+            credentials: "include",
+            body: fd,
+        });
+        console.log(
+            "[OSL] debug-upload posted message HTTP " + resp.status
+        );
+        return resp;
     };
 
     /**
@@ -2822,6 +3037,306 @@
         );
     }
 
+    // ---- Phase 8: attachment recv pipeline ----
+    //
+    // On a v=2 attachment-envelope decrypt, the message-text result
+    // is the sentinel `OSL_RESULT_ATTACHMENT_PREFIX + <json>` and the
+    // actual encrypted bytes live in the Discord CDN. The envelope
+    // JSON carries the per-attachment AEAD key + original filename +
+    // random upload filename + MIME. We:
+    //   1. Find the message's `<li>` in the DOM.
+    //   2. Scan for `<img>` / `<a>` elements whose src/href points
+    //      at the Discord CDN AND whose filename matches the
+    //      envelope's random_filename (so we don't accidentally
+    //      swap an unrelated attachment in a multi-attachment
+    //      message).
+    //   3. Fetch the URL → arrayBuffer → base64.
+    //   4. Call `osl_open_attachment` with the envelope's AEAD key
+    //      and the file bytes; the Rust side scans for OSL-ATT1,
+    //      decrypts, returns plaintext + MIME.
+    //   5. Build a Blob, mint a blob URL, swap the rendered
+    //      element's src/href.
+    //
+    // Cache: `__oslAttachmentDecrypted` is a Map keyed by message_id
+    // with `{ blobUrl, mime }`. We cap at 50 entries (LRU eviction
+    // via insertion order) so heavy scrolling doesn't pin large
+    // video Blobs forever.
+    if (!window.__oslAttachmentDecrypted) {
+        window.__oslAttachmentDecrypted = new Map();
+    }
+    const OSL_ATT_CACHE_CAP = 50;
+
+    function oslAttachmentCacheEvictIfFull() {
+        const m = window.__oslAttachmentDecrypted;
+        while (m.size > OSL_ATT_CACHE_CAP) {
+            // Map iteration is insertion order; first key is the
+            // oldest entry.
+            const first = m.keys().next().value;
+            const old = m.get(first);
+            if (old && Array.isArray(old.blobUrls)) {
+                for (const u of old.blobUrls) {
+                    try {
+                        URL.revokeObjectURL(u);
+                    } catch (_) {}
+                }
+            }
+            m.delete(first);
+        }
+    }
+
+    /**
+     * Find the message `<li>` for `msgId` in the current DOM.
+     * Returns null if not yet rendered (channel switched, message
+     * scrolled out, etc.) — caller drops the decrypt in that case.
+     */
+    function oslFindMessageListItem(msgId) {
+        if (!msgId) return null;
+        return document.querySelector('li[id$="-' + msgId + '"]');
+    }
+
+    /**
+     * Inside `li`, find every CDN-hosted media element (<img> for
+     * images, <a> with class containing "originalLink" for video
+     * thumbnails) whose filename matches `randomFilename`. The
+     * filename match is conservative: we look for the last
+     * URL path segment so query strings (Discord auth tokens) are
+     * ignored.
+     */
+    function oslFindAttachmentTargets(li, randomFilename) {
+        if (!li || !randomFilename) return [];
+        const out = [];
+        const candidates = li.querySelectorAll(
+            "img, video, a[href*='discord']"
+        );
+        candidates.forEach(function (el) {
+            const url =
+                el.tagName === "A"
+                    ? el.getAttribute("href")
+                    : el.getAttribute("src");
+            if (typeof url !== "string") return;
+            // Extract the last path segment, drop any query string.
+            const path = url.split("?")[0];
+            const segs = path.split("/");
+            const last = segs[segs.length - 1] || "";
+            if (last === randomFilename) {
+                out.push({ el, url });
+            }
+        });
+        return out;
+    }
+
+    /**
+     * Promise-returning helper: fetch the attachment URL as bytes,
+     * convert to base64 (chunked to avoid blowing the string-arg
+     * size for `String.fromCharCode` on large videos).
+     */
+    async function oslFetchAttachmentBase64(url) {
+        const resp = await fetch(url, { credentials: "omit" });
+        if (!resp.ok) {
+            throw new Error(
+                "attachment fetch HTTP " + resp.status + " for " + url
+            );
+        }
+        const buf = await resp.arrayBuffer();
+        // Chunked base64 — 32 KB at a time so a 24 MB blob doesn't
+        // synthesize a 24 MB argument string for fromCharCode.
+        const bytes = new Uint8Array(buf);
+        let binary = "";
+        const CHUNK = 32 * 1024;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+            const slice = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+            binary += String.fromCharCode.apply(null, slice);
+        }
+        return btoa(binary);
+    }
+
+    /**
+     * Swap a single rendered element to point at `blobUrl`. For
+     * <img> we just replace src; for <a> linking to a video we
+     * mutate the closest containing tile to inline a <video> element.
+     */
+    function oslSwapAttachmentElement(target, blobUrl, mime) {
+        try {
+            if (target.el.tagName === "IMG") {
+                target.el.setAttribute("src", blobUrl);
+                target.el.removeAttribute("srcset");
+                return;
+            }
+            if (target.el.tagName === "VIDEO") {
+                target.el.setAttribute("src", blobUrl);
+                target.el.setAttribute("type", mime);
+                return;
+            }
+            if (target.el.tagName === "A" && mime.indexOf("video/") === 0) {
+                // Replace the link with an inline video element.
+                const video = document.createElement("video");
+                video.setAttribute("src", blobUrl);
+                video.setAttribute("controls", "controls");
+                video.setAttribute("preload", "metadata");
+                video.style.maxWidth = "100%";
+                video.style.maxHeight = "440px";
+                video.style.borderRadius = "4px";
+                target.el.replaceWith(video);
+                return;
+            }
+            // <a> linking to an image: append the decrypted image
+            // alongside the link so it shows inline without
+            // disturbing other rendering.
+            if (target.el.tagName === "A") {
+                const img = document.createElement("img");
+                img.setAttribute("src", blobUrl);
+                img.style.maxWidth = "100%";
+                img.style.borderRadius = "4px";
+                target.el.replaceWith(img);
+            }
+        } catch (e) {
+            console.warn(
+                "[OSL] attachment swap failed for " + target.url + ":",
+                e
+            );
+        }
+    }
+
+    /**
+     * Top-level attachment recv handler. Called from the
+     * `oslHandleDecryptResult` wrapper when the recv sentinel
+     * matches the attachment prefix. Idempotent: cached entries
+     * are short-circuited.
+     */
+    async function oslHandleAttachmentEnvelope(msgId, env) {
+        if (!msgId || !env) return;
+        if (
+            !env.attKey ||
+            !env.randomFilename ||
+            !env.originalFilename ||
+            !env.mimeType
+        ) {
+            console.warn(
+                "[OSL] attachment envelope missing fields msg=" + msgId,
+                env
+            );
+            return;
+        }
+        // Burned scope: don't decrypt — the receive observer
+        // already treats this scope as "leave ciphertext alone."
+        try {
+            const ctx = oslCurrentChannelContext();
+            const scope = ctx && oslScopeForCurrentContext(ctx);
+            if (
+                scope &&
+                oslBurnedScopesShouldSkip(scope.channel_id || scope.id)
+            ) {
+                console.log(
+                    "[OSL] attachment decrypt skipped: msg=" +
+                        msgId +
+                        " reason=scope_burned"
+                );
+                return;
+            }
+        } catch (_) {}
+
+        if (window.__oslAttachmentDecrypted.has(msgId)) {
+            // Already decoded earlier in this session — re-apply
+            // the cached blob URLs in case the DOM re-rendered.
+            const entry = window.__oslAttachmentDecrypted.get(msgId);
+            const li = oslFindMessageListItem(msgId);
+            if (li && entry && entry.blobUrls && entry.blobUrls.length > 0) {
+                const targets = oslFindAttachmentTargets(
+                    li,
+                    env.randomFilename
+                );
+                targets.forEach(function (t) {
+                    oslSwapAttachmentElement(t, entry.blobUrls[0], entry.mime);
+                });
+            }
+            return;
+        }
+
+        const li = oslFindMessageListItem(msgId);
+        if (!li) {
+            console.log(
+                "[OSL] attachment decrypt deferred: msg=" +
+                    msgId +
+                    " reason=li_not_rendered"
+            );
+            return;
+        }
+        const targets = oslFindAttachmentTargets(li, env.randomFilename);
+        if (targets.length === 0) {
+            console.log(
+                "[OSL] attachment decrypt skipped: msg=" +
+                    msgId +
+                    " reason=no_matching_cdn_element"
+            );
+            return;
+        }
+
+        const url = targets[0].url;
+        console.log(
+            "[OSL] attachment detected: msg=" +
+                msgId +
+                " original=" +
+                env.originalFilename +
+                " random=" +
+                env.randomFilename +
+                " mime=" +
+                env.mimeType +
+                " url=" +
+                url.substring(0, 80)
+        );
+
+        let fileB64;
+        try {
+            fileB64 = await oslFetchAttachmentBase64(url);
+        } catch (err) {
+            console.error(
+                "[OSL] attachment fetch failed msg=" + msgId + ":",
+                err
+            );
+            return;
+        }
+        const decRes = await oslInvoke("osl_open_attachment", {
+            attKeyB64: env.attKey,
+            fileBytesB64: fileB64,
+        });
+        if (!decRes.ok) {
+            console.error(
+                "[OSL] attachment decrypt failed msg=" +
+                    msgId +
+                    " error=" +
+                    decRes.error
+            );
+            return;
+        }
+        const plain = decRes.value;
+        // Build a blob from the base64 plaintext.
+        const binary = atob(plain.plaintextB64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: plain.mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+        window.__oslAttachmentDecrypted.set(msgId, {
+            blobUrls: [blobUrl],
+            mime: plain.mimeType,
+        });
+        oslAttachmentCacheEvictIfFull();
+        targets.forEach(function (t) {
+            oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
+        });
+        console.log(
+            "[OSL] attachment decrypted: msg=" +
+                msgId +
+                " original=" +
+                plain.originalFilename +
+                " mime=" +
+                plain.mimeType +
+                " size=" +
+                bytes.length
+        );
+    }
+
     // ---- Section 4e (7d-FIX1): burned-scopes ledger cache ----
     //
     // The receive observer's 1000ms sweep otherwise re-decrypts
@@ -3256,6 +3771,27 @@
                     "OSL: a peer accepted/declined your whitelist invitation."
                 );
                 oslRefreshHeaderState();
+            } else if (
+                typeof result === "string" &&
+                result.indexOf(OSL_RESULT_ATTACHMENT_PREFIX) === 0
+            ) {
+                // Phase 8: dispatch to the attachment recv handler.
+                // Fire-and-forget — DOM swap happens asynchronously
+                // once the CDN fetch + decrypt resolves. Errors are
+                // logged inside the handler; we never block the
+                // recv-observer thread here.
+                const json = result.slice(OSL_RESULT_ATTACHMENT_PREFIX.length);
+                try {
+                    const env = JSON.parse(json);
+                    oslHandleAttachmentEnvelope(msgId, env);
+                } catch (parseErr) {
+                    console.error(
+                        "[OSL] attachment envelope JSON parse failed msg=" +
+                            msgId +
+                            ":",
+                        parseErr
+                    );
+                }
             }
         } catch (e) {
             console.log(
@@ -4550,6 +5086,14 @@
                         editMatch[2]
                     );
                 }
+
+                // Phase 8: observe Discord's attachment pre-upload
+                // request so the user can capture URL patterns in
+                // DevTools while the production upload hook is
+                // being calibrated for their Discord build.
+                try {
+                    oslAttachmentUploadHooks(target, thisArg, args, url, method);
+                } catch (_) {}
 
                 const sendMatch = SEND_RE.exec(url);
                 if (!sendMatch || method !== "POST") {

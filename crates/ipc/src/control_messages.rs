@@ -99,6 +99,21 @@ pub struct WhitelistResponse {
     pub responded_at: i64,
 }
 
+/// Phase 8 type=0x04: "I'm sending you an attachment in this scope."
+/// The message-text plaintext for an attachment send is a CBOR-encoded
+/// instance of this struct — it carries everything the recipient
+/// needs to fetch + decrypt the CDN-hosted blob. The plaintext-side
+/// `random_filename` is whatever name we uploaded to Discord with
+/// (so the recv side can match it against `attachments[N].filename`
+/// when multiple attachments are present in the same message).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentEnvelope {
+    pub att_key: [u8; 32],
+    pub original_filename: String,
+    pub random_filename: String,
+    pub mime_type: String,
+}
+
 // ---- CBOR wire reps ----
 //
 // We could derive Serialize/Deserialize directly on the structs
@@ -126,6 +141,14 @@ struct WhitelistResponseWire {
     scope: ScopeInput,
     accepted: bool,
     responded_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttachmentEnvelopeWire {
+    att_key: [u8; 32],
+    original_filename: String,
+    random_filename: String,
+    mime_type: String,
 }
 
 // ---- Serialize ----
@@ -188,6 +211,25 @@ pub fn deserialize_whitelist_response(bytes: &[u8]) -> Result<WhitelistResponse,
         scope: Scope::try_from(wire.scope)?,
         accepted: wire.accepted,
         responded_at: wire.responded_at,
+    })
+}
+
+pub fn serialize_attachment_envelope(m: &AttachmentEnvelope) -> Result<Vec<u8>, ControlError> {
+    cbor_encode(&AttachmentEnvelopeWire {
+        att_key: m.att_key,
+        original_filename: m.original_filename.clone(),
+        random_filename: m.random_filename.clone(),
+        mime_type: m.mime_type.clone(),
+    })
+}
+
+pub fn deserialize_attachment_envelope(bytes: &[u8]) -> Result<AttachmentEnvelope, ControlError> {
+    let wire: AttachmentEnvelopeWire = cbor_decode(bytes)?;
+    Ok(AttachmentEnvelope {
+        att_key: wire.att_key,
+        original_filename: wire.original_filename,
+        random_filename: wire.random_filename,
+        mime_type: wire.mime_type,
     })
 }
 

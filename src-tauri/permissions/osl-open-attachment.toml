@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission for Phase 8 attachment decryption (recv side).
+[[permission]]
+identifier = "allow-osl-open-attachment"
+description = "Permits the discord.com main webview to invoke `osl_open_attachment` to decrypt a CDN-served blob using the per-attachment AEAD key recovered from the v=2 attachment envelope. Phase 8."
+commands.allow = ["osl_open_attachment"]

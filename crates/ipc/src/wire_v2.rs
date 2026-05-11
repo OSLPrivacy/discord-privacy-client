@@ -103,6 +103,14 @@ pub const MSG_TYPE_WHITELIST_INVITATION: u8 = 0x02;
 /// envelope with accept/decline + the originating invitation id.
 pub const MSG_TYPE_WHITELIST_RESPONSE: u8 = 0x03;
 
+/// Phase 8 message-type byte: attachment envelope. Body is a CBOR-
+/// encoded [`AttachmentEnvelope`] carrying the per-attachment AEAD
+/// key + the random/original filenames + the MIME type. The actual
+/// encrypted attachment lives in Discord's CDN at the URL Discord
+/// reports for `attachments[N].url`; the recv side fetches that
+/// file, scans for the OSL-ATT1 magic, and decrypts with `att_key`.
+pub const MSG_TYPE_ATTACHMENT: u8 = 0x04;
+
 /// Length of the per-recipient pubkey-hash prefix on the wire
 /// (8 bytes = leading bytes of SHA-256(recipient_pubkey)). 8 bytes
 /// = 1/2^64 ≈ 5.4e-20 collision probability for the small N this

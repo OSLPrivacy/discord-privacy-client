@@ -35,6 +35,7 @@
 //! work: collapse all rejection paths into a single
 //! `IpcError::Rejected` once the protocol is stable.
 
+pub mod attachment_wire;
 pub mod burned_scopes_file;
 pub mod commands;
 pub mod control_messages;

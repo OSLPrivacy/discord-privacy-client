@@ -1655,6 +1655,80 @@ pub fn cmd_osl_unburn_scope_after_encrypt(
     cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope_input.id).unwrap_or(false)
 }
 
+/// Phase 8: encrypt an [`AttachmentEnvelope`] as a v=2
+/// `MSG_TYPE_ATTACHMENT` message, distributing the per-attachment
+/// AEAD key to every scope-whitelisted recipient. The cover string
+/// returned is the message-text payload boot.js drops into the
+/// `/messages` POST body (replacing the user's typed plaintext
+/// when an encrypted attachment is being sent).
+pub fn cmd_osl_encrypt_attachment_envelope(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    att_key_b64: String,
+    original_filename: String,
+    random_filename: String,
+    mime_type: String,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+
+    let key_bytes = STANDARD
+        .decode(&att_key_b64)
+        .map_err(|e| format!("OSL: att_key b64 decode: {e}"))?;
+    if key_bytes.len() != 32 {
+        return Err(format!(
+            "OSL: att_key must be 32 bytes, got {}",
+            key_bytes.len()
+        ));
+    }
+    let mut att_key = [0u8; 32];
+    att_key.copy_from_slice(&key_bytes);
+
+    let env = crate::control_messages::AttachmentEnvelope {
+        att_key,
+        original_filename,
+        random_filename,
+        mime_type,
+    };
+    let env_bytes = crate::control_messages::serialize_attachment_envelope(&env)
+        .map_err(|e| format!("OSL: serialize attachment envelope: {e}"))?;
+
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    let self_pk = identity.x25519_public;
+    drop(id_guard);
+
+    let recipients = {
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        crate::whitelist::recipients_for_scope(
+            &ws_guard,
+            &pm_guard,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+        )
+    };
+
+    crate::wire_v2::encrypt_v2(
+        &env_bytes,
+        &recipients,
+        crate::wire_v2::MSG_TYPE_ATTACHMENT,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2 (attachment envelope): {e}"))
+}
+
 /// Layer 10 / Phase 7b: send a burn marker for `scope` to the
 /// channel members who'd have been able to decrypt content in it
 /// (so they wipe their decryption capability).
@@ -1826,6 +1900,13 @@ pub const OSL_RESULT_INVITATION_RECEIVED: &str = "__OSL_CONTROL_INVITATION_RECEI
 /// `peer_map.outgoing_whitelist_responses`.
 pub const OSL_RESULT_RESPONSE_RECEIVED: &str = "__OSL_CONTROL_RESPONSE_RECEIVED__";
 
+/// Phase 8 attachment-envelope sentinel prefix. The recv path returns
+/// `__OSL_CONTROL_ATTACHMENT__|<json-envelope>` when a v=2
+/// `MSG_TYPE_ATTACHMENT` message is decrypted; boot.js splits on the
+/// `|` and uses the JSON to call `osl_open_attachment` against the
+/// CDN-fetched blob.
+pub const OSL_RESULT_ATTACHMENT_PREFIX: &str = "__OSL_CONTROL_ATTACHMENT__|";
+
 /// Phase 7b recv-path entry point covering both wire versions.
 /// Peeks the wire's version byte after base64 decode and routes
 /// to the appropriate path:
@@ -1933,6 +2014,33 @@ pub fn cmd_osl_decrypt_message_v2(
                     .map_err(|e| format!("OSL: deserialize response: {e}"))?;
             apply_response_recv(state, &sender_discord_id, &response)?;
             Ok(OSL_RESULT_RESPONSE_RECEIVED.to_string())
+        }
+        crate::wire_v2::MSG_TYPE_ATTACHMENT => {
+            // Phase 8: enforce the same per-scope acceptance gate
+            // that MSG_TYPE_CONTENT does. Anyone whitelisted in the
+            // scope can decrypt the attachment; anyone NOT
+            // whitelisted should see the decoy + ciphertext, just
+            // like an unwhitelisted text message.
+            if let Some(scope) = scope_opt.as_ref() {
+                let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+                if !crate::whitelist::should_decrypt_from(&pm_guard, scope, &sender_discord_id) {
+                    return Err("sender_not_accepted_in_scope".to_string());
+                }
+            }
+            let env =
+                crate::control_messages::deserialize_attachment_envelope(&recovered.plaintext)
+                    .map_err(|e| format!("OSL: deserialize attachment envelope: {e}"))?;
+            // Serialize for JS as JSON. JS dispatches on the
+            // sentinel prefix and feeds the JSON into
+            // `osl_open_attachment` along with the CDN-fetched
+            // file bytes.
+            let json = serde_json::json!({
+                "attKey": STANDARD.encode(env.att_key),
+                "originalFilename": env.original_filename,
+                "randomFilename": env.random_filename,
+                "mimeType": env.mime_type,
+            });
+            Ok(format!("{}{}", OSL_RESULT_ATTACHMENT_PREFIX, json))
         }
         other => Err(format!(
             "OSL: v=2 msg_type 0x{other:02x} not supported by this client"

@@ -46,6 +46,12 @@ subtle = { workspace = true }
 # at-rest file_storage_key derivation. RustCrypto `hmac` paired
 # with the existing workspace `sha2`.
 hmac = "0.12"
+# Phase 8 attachment decoy: a solid-color PNG is prepended to every
+# encrypted attachment so non-OSL viewers see a placeholder image
+# (rather than corrupt-binary garbage) when they open the file from
+# Discord's CDN. `png` is pure Rust, already in the lockfile via
+# tauri's icon handling, and has zero unsafe.
+png = "0.17"
 
 crypto = { path = "../crypto" }
 stego = { path = "../stego" }

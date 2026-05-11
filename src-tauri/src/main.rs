@@ -405,6 +405,88 @@ async fn osl_encrypt_message_v2(
     result
 }
 
+// ---- Phase 8: attachment encrypt + decrypt Tauri wrappers ----
+
+/// Phase 8: seal a user-attached file. Generates a fresh AEAD key,
+/// runs the streaming AEAD over `original_bytes`, prepends the
+/// decoy PNG, returns the upload-ready bytes (base64) + the
+/// random upload filename + the AEAD key (base64) so JS can
+/// hand it to the recipients via [`osl_encrypt_attachment_envelope`].
+#[tauri::command]
+async fn osl_seal_attachment(
+    app: tauri::AppHandle,
+    original_bytes_b64: String,
+    original_filename: String,
+) -> Result<ipc::attachment_wire::SealedAttachment, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::attachment_wire::cmd_osl_seal_attachment_b64(
+            state.inner(),
+            &original_bytes_b64,
+            original_filename,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 8: decrypt a CDN-served attachment. JS fetches the
+/// Discord-hosted file, base64-encodes it, and calls this with the
+/// AEAD key recovered from the message's attachment envelope.
+#[tauri::command]
+async fn osl_open_attachment(
+    app: tauri::AppHandle,
+    att_key_b64: String,
+    file_bytes_b64: String,
+) -> Result<ipc::attachment_wire::OpenedAttachment, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::attachment_wire::cmd_osl_open_attachment_b64(
+            state.inner(),
+            att_key_b64,
+            &file_bytes_b64,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 8: build the v=2 cover string that carries an attachment
+/// envelope (per-attachment AEAD key + filenames + MIME) to every
+/// whitelisted recipient in the scope. Returned string is what
+/// boot.js sets as the message-text body when an encrypted
+/// attachment is being sent.
+#[tauri::command]
+async fn osl_encrypt_attachment_envelope(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    att_key_b64: String,
+    original_filename: String,
+    random_filename: String,
+    mime_type: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_encrypt_attachment_envelope(
+            state.inner(),
+            scope_input,
+            channel_members,
+            self_discord_id,
+            att_key_b64,
+            original_filename,
+            random_filename,
+            mime_type,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 7b: build the wire-format burn marker for a
 /// scope. Caller (boot.js) ships the wire string through
 /// Discord's API; the same scope's local state is then mutated
@@ -1316,6 +1398,9 @@ fn main() {
             osl_burn_message,
             osl_persist_edit,
             osl_encrypt_message_v2,
+            osl_seal_attachment,
+            osl_open_attachment,
+            osl_encrypt_attachment_envelope,
             osl_send_burn_marker,
             osl_send_whitelist_invitation,
             osl_send_whitelist_response,

@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission for Phase 8 attachment encryption (send side).
+[[permission]]
+identifier = "allow-osl-seal-attachment"
+description = "Permits the discord.com main webview to invoke `osl_seal_attachment` to encrypt a file with a fresh AEAD key and prepend the decoy PNG before uploading to Discord's CDN. Phase 8."
+commands.allow = ["osl_seal_attachment"]

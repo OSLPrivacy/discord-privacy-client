@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission for Phase 8 attachment-envelope (v=2 MSG_TYPE_ATTACHMENT) build.
+[[permission]]
+identifier = "allow-osl-encrypt-attachment-envelope"
+description = "Permits the discord.com main webview to invoke `osl_encrypt_attachment_envelope` to build the v=2 cover that carries the per-attachment AEAD key + filenames + MIME to every whitelisted recipient. Phase 8."
+commands.allow = ["osl_encrypt_attachment_envelope"]
