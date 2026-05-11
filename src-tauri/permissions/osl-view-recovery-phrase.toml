@@ -3,5 +3,5 @@
 # Phase 7d-B1: re-display recovery phrase. Requires current password.
 [[permission]]
 identifier = "allow-osl-view-recovery-phrase"
-description = "Permits the discord.com main webview to invoke `osl_view_recovery_phrase` (verify current password, decrypt and return the BIP39 phrase). Phase 7d-B1."
+description = "Permits trusted local UI surfaces to invoke `osl_view_recovery_phrase` (verify current password, decrypt and return the BIP39 phrase). Phase 7d-B1."
 commands.allow = ["osl_view_recovery_phrase"]
