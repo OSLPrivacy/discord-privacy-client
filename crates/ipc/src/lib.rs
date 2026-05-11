@@ -36,10 +36,13 @@
 //! `IpcError::Rejected` once the protocol is stable.
 
 pub mod commands;
+pub mod control_messages;
 pub mod fresh_start;
 pub mod peer_map;
 pub mod pending_invitations;
+pub mod scope;
 pub mod state;
+pub mod whitelist;
 pub mod whitelist_state;
 pub mod wire_v2;
 

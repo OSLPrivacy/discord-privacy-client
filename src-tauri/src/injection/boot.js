@@ -356,6 +356,22 @@
         if (parsed.content === "") {
             return onPassthrough();
         }
+        // Phase 7b safety-net: content already starts with the
+        // DPC0:: cover prefix. Either the caller pre-encrypted
+        // (e.g. `oslSendControlMessage` shipping a v=2 control
+        // message via the regular fetch path), or Discord echoed
+        // back our own cover in a follow-up request. Either way,
+        // re-encrypting would double-wrap and corrupt; pass the
+        // body through untouched.
+        if (parsed.content.indexOf("DPC0::") === 0) {
+            if (DEBUG)
+                console.log(
+                    "[OSL] outgoing /messages (" +
+                        source +
+                        "): content already DPC0::; passthrough (pre-encrypted)"
+                );
+            return onPassthrough();
+        }
 
         const plaintext = parsed.content;
         if (DEBUG)
@@ -466,6 +482,251 @@
                 );
             });
     }
+
+    // ===== Phase 7b: v=2 send + control message plumbing =====
+    //
+    // No UI surface — that's 7c. These helpers exist so 7b can be
+    // exercised end-to-end via `window.__oslDebugSendV2` and so
+    // the recv path's control-message dispatch sentinels surface
+    // as console logs.
+    //
+    // OSL_RESULT_* sentinel strings must match the Rust constants
+    // in `crates/ipc/src/commands.rs`. If those change, update
+    // here.
+    const OSL_RESULT_BURN_APPLIED = "__OSL_CONTROL_BURN_APPLIED__";
+    const OSL_RESULT_INVITATION_RECEIVED =
+        "__OSL_CONTROL_INVITATION_RECEIVED__";
+    const OSL_RESULT_RESPONSE_RECEIVED = "__OSL_CONTROL_RESPONSE_RECEIVED__";
+
+    /**
+     * Phase 7b: encrypt `plaintext` for the whitelist-resolved
+     * recipients of `scopeInput` across `channelMembers`. Returns
+     * the wire-format string (`DPC0::<base64>`) or null on error.
+     *
+     * Failure modes (all logged + null-returned, never thrown):
+     *   - no Tauri invoke
+     *   - no identity loaded
+     *   - empty whitelist for the scope
+     *   - inner crypto error
+     *
+     * `selfDiscordId` is required because the Rust layer needs to
+     * exclude self from the channel-member recipient walk (we
+     * include self_pubkey via identity, separately). Boot.js
+     * pulls our Discord id from the page state.
+     */
+    async function oslEncryptV2(
+        plaintext,
+        scopeInput,
+        channelMembers,
+        selfDiscordId
+    ) {
+        const invoke = getTauriInvoke();
+        if (typeof invoke !== "function") {
+            console.log("[OSL] oslEncryptV2 FAIL reason=no_invoke");
+            return null;
+        }
+        try {
+            const wire = await invoke("osl_encrypt_message_v2", {
+                plaintext: plaintext,
+                scopeInput: scopeInput,
+                channelMembers: channelMembers,
+                selfDiscordId: selfDiscordId,
+            });
+            if (typeof wire === "string" && wire.indexOf("DPC0::") === 0) {
+                return wire;
+            }
+            console.log(
+                "[OSL] oslEncryptV2 FAIL reason=non_string_or_missing_prefix"
+            );
+            return null;
+        } catch (err) {
+            const msg = err && err.message ? err.message : String(err);
+            console.log("[OSL] oslEncryptV2 FAIL reason=" + msg);
+            return null;
+        }
+    }
+
+    /**
+     * Phase 7b: ship a pre-encrypted wire string to `channelId`
+     * via Discord's REST API. The send-side `interceptBody` has a
+     * DPC0:: passthrough guard so this fetch doesn't get
+     * re-encrypted on the way out. Authenticated via the same
+     * token capture used by the Phase 6a edit overlay (we re-read
+     * `editOverlayAuthToken` from the IIFE scope).
+     *
+     * Fire-and-forget: returns the fetch Response on success or
+     * null on failure (logged).
+     */
+    async function oslSendControlMessage(channelId, wireString) {
+        if (!editOverlayAuthToken) {
+            console.log(
+                "[OSL] oslSendControlMessage FAIL reason=no_auth_token"
+            );
+            return null;
+        }
+        if (
+            typeof wireString !== "string" ||
+            wireString.indexOf("DPC0::") !== 0
+        ) {
+            console.log(
+                "[OSL] oslSendControlMessage FAIL reason=not_dpc0_wire"
+            );
+            return null;
+        }
+        const url = "/api/v9/channels/" + channelId + "/messages";
+        try {
+            const resp = await fetch(url, {
+                method: "POST",
+                headers: {
+                    Authorization: editOverlayAuthToken,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ content: wireString }),
+            });
+            if (resp && resp.ok) {
+                console.log(
+                    "[OSL] oslSendControlMessage OK channel=" +
+                        channelId +
+                        " wire_len=" +
+                        wireString.length
+                );
+            } else {
+                console.log(
+                    "[OSL] oslSendControlMessage FAIL channel=" +
+                        channelId +
+                        " status=" +
+                        (resp ? resp.status : "?")
+                );
+            }
+            return resp;
+        } catch (err) {
+            console.error(
+                "[OSL] oslSendControlMessage threw channel=" + channelId,
+                err
+            );
+            return null;
+        }
+    }
+
+    /**
+     * Phase 7b: build a ScopeInput from Discord channel metadata.
+     *
+     * `channelType` is the standard Discord channel-type number:
+     *   0 = server text channel
+     *   1 = DM
+     *   3 = group DM (GC)
+     *
+     * For DM: caller passes `peerDiscordId` as `gcMembers[0]`
+     * (the lone peer's id). We extract that as the scope id.
+     *
+     * For server_full: not derivable from a single channel —
+     * returns null. The 7c UI will set server_full scopes via
+     * an explicit picker.
+     *
+     * Returns a ScopeInput object or null when the scope can't
+     * be inferred from this channel alone.
+     */
+    function oslDetectScope(channelId, channelType, serverId, gcMembers) {
+        if (channelType === 1) {
+            // DM: peer's discord_id is the scope id.
+            const peer =
+                Array.isArray(gcMembers) && gcMembers.length > 0
+                    ? gcMembers[0]
+                    : null;
+            if (!peer) return null;
+            return {
+                kind: "dm",
+                id: peer,
+                channel_id: channelId,
+            };
+        }
+        if (channelType === 3) {
+            return {
+                kind: "gc",
+                id: channelId,
+                channel_id: channelId,
+            };
+        }
+        if (channelType === 0) {
+            if (!serverId) return null;
+            return {
+                kind: "server_channel",
+                id: serverId + ":" + channelId,
+                server_id: serverId,
+                channel_id: channelId,
+            };
+        }
+        return null;
+    }
+
+    /**
+     * Phase 7b: dispatch on a v=2 decrypt result string. The
+     * Rust recv path returns either a plaintext content string
+     * (for `msg_type=0x00`) or one of the OSL_RESULT_* sentinel
+     * strings for control messages. For 7b this is a logging
+     * stub — 7c's UI consumes the sentinels and updates the
+     * banner / channel-header state accordingly.
+     *
+     * Returns `true` if the result was a control sentinel
+     * (caller should NOT render as plaintext), `false` for
+     * normal content.
+     */
+    function oslHandleDecryptResult(msgId, result) {
+        if (typeof result !== "string") return false;
+        switch (result) {
+            case OSL_RESULT_BURN_APPLIED:
+                console.log("[OSL] v=2 burn applied msg=" + msgId);
+                return true;
+            case OSL_RESULT_INVITATION_RECEIVED:
+                console.log(
+                    "[OSL] v=2 invitation received msg=" + msgId
+                );
+                return true;
+            case OSL_RESULT_RESPONSE_RECEIVED:
+                console.log(
+                    "[OSL] v=2 response received msg=" + msgId
+                );
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Phase 7b debug-only: send a v=2 message from DevTools to
+     * verify wire format end-to-end.
+     *
+     *     window.__oslDebugSendV2(
+     *         "1234567890",                // channel_id
+     *         "hello from v2",             // plaintext
+     *         { kind: "dm", id: "5678" },  // scope override (optional)
+     *         ["5678"],                    // channel members (optional)
+     *         "9999"                       // self discord id (required)
+     *     );
+     *
+     * Returns the fetch Response on success or null on failure.
+     */
+    window.__oslDebugSendV2 = async function (
+        channelId,
+        plaintext,
+        scopeOverride,
+        channelMembers,
+        selfDiscordId
+    ) {
+        const scope = scopeOverride || null;
+        if (!scope) {
+            console.log("[OSL] __oslDebugSendV2 FAIL reason=no_scope");
+            return null;
+        }
+        if (!selfDiscordId) {
+            console.log("[OSL] __oslDebugSendV2 FAIL reason=no_self_id");
+            return null;
+        }
+        const members = Array.isArray(channelMembers) ? channelMembers : [];
+        const wire = await oslEncryptV2(plaintext, scope, members, selfDiscordId);
+        if (!wire) return null;
+        return await oslSendControlMessage(channelId, wire);
+    };
 
     /**
      * Phase 6a fetch-side edit interception. Top-level entry

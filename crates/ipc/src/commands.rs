@@ -1278,3 +1278,927 @@ fn decode_slot_diagnostic(cover: &str) -> String {
     hints.push(']');
     format!("version=0x{version:02x} N={n} hints={hints}")
 }
+
+// ---- Phase 7b: wire v=2 send-path commands ----
+//
+// All five send-path commands share the same shape: take an
+// AppState reference + the caller's intent, construct a v=2 wire
+// blob, and return it as a string for boot.js to ship through
+// Discord's API. Persistence (writing the on-disk
+// peer_map/whitelist_state/pending_invitations side-effects) is
+// handled by separate "apply" commands; the send-side stays
+// stateless beyond reading current state.
+
+/// Helper: resolve the on-disk pubkey for a single Discord id, or
+/// surface a stable string error suitable for boot.js logging.
+fn lookup_peer_pubkey(
+    peer_map: &crate::peer_map::PeerMap,
+    discord_id: &str,
+) -> Result<crypto::x25519::PublicKey, String> {
+    let entry = peer_map
+        .get(discord_id)
+        .ok_or_else(|| format!("OSL: no peer entry for discord_id={discord_id}"))?;
+    let b64 = entry
+        .pubkey
+        .as_deref()
+        .ok_or_else(|| format!("OSL: no pubkey for discord_id={discord_id}"))?;
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|e| format!("OSL: peer pubkey base64 decode failed: {e}"))?;
+    if bytes.len() != crypto::x25519::PUBLIC_KEY_SIZE {
+        return Err(format!(
+            "OSL: peer pubkey length {} != {}",
+            bytes.len(),
+            crypto::x25519::PUBLIC_KEY_SIZE
+        ));
+    }
+    let mut arr = [0u8; crypto::x25519::PUBLIC_KEY_SIZE];
+    arr.copy_from_slice(&bytes);
+    Ok(crypto::x25519::PublicKey::from_bytes(arr))
+}
+
+/// Current unix-seconds timestamp, falling back to 0 if the clock
+/// is somehow before the epoch.
+fn now_unix_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Layer 10 / Phase 7b IPC entry point: encrypt a v=2 content
+/// message for the whitelist-resolved recipients in `scope`.
+///
+/// Reads:
+/// - `state.identity` for our x25519 (secret + public).
+/// - `state.whitelist_state` + `state.peer_map` for scope
+///   resolution.
+///
+/// Behaviour:
+/// 1. Resolve recipients via
+///    [`crate::whitelist::recipients_for_scope`]. Always includes
+///    self.
+/// 2. If the only recipient is self (no one to actually encrypt
+///    *to*), return `"no_whitelisted_recipients"`. The
+///    auto-self-include means the recipient list is never empty,
+///    so we test against `len == 1` for the "no peers" case.
+/// 3. Call [`crate::wire_v2::encrypt_v2`] with
+///    `msg_type = MSG_TYPE_CONTENT (0x00)`.
+/// 4. Return the `DPC0::<base64>` wire string.
+///
+/// Persistence of the local message row is deferred to the recv
+/// path (when our own bounced message arrives) so the v=2
+/// send-side stays uniform with v=1's existing flow.
+pub fn cmd_osl_encrypt_message_v2(
+    state: &AppState,
+    plaintext: String,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    let self_pk = identity.x25519_public;
+    drop(id_guard);
+
+    let recipients = {
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        crate::whitelist::recipients_for_scope(
+            &ws_guard,
+            &pm_guard,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+        )
+    };
+
+    // recipients always includes self_pk (len >= 1). A list of
+    // exactly self means no peer matched — surface the named
+    // error so boot.js can render it as "your whitelist is empty
+    // for this scope" (UI in 7c).
+    if recipients.len() <= 1 {
+        return Err("no_whitelisted_recipients".to_string());
+    }
+
+    crate::wire_v2::encrypt_v2(
+        plaintext.as_bytes(),
+        &recipients,
+        crate::wire_v2::MSG_TYPE_CONTENT,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2: {e}"))
+}
+
+/// Layer 10 / Phase 7b: send a burn marker for `scope` to the
+/// channel members who'd have been able to decrypt content in it
+/// (so they wipe their decryption capability).
+///
+/// Recipient set is computed via `recipients_for_scope` **before**
+/// the local burn-state mutation lands — callers must call this
+/// before `cmd_osl_apply_burn` updates `peer_map.burned_scopes`,
+/// otherwise the burned recipients would be filtered out of the
+/// recipient list and never receive the burn notice. The Tauri
+/// wrapper in `cmd_osl_unwhitelist_scope` enforces this ordering.
+pub fn cmd_osl_send_burn_marker(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    let self_pk = identity.x25519_public;
+    drop(id_guard);
+
+    let recipients = {
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        crate::whitelist::recipients_for_scope(
+            &ws_guard,
+            &pm_guard,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+        )
+    };
+    if recipients.len() <= 1 {
+        return Err("no_whitelisted_recipients".to_string());
+    }
+
+    let marker = crate::control_messages::BurnMarker {
+        scope,
+        burned_at: now_unix_secs(),
+    };
+    let body = crate::control_messages::serialize_burn_marker(&marker)
+        .map_err(|e| format!("OSL: serialize burn_marker: {e}"))?;
+    crate::wire_v2::encrypt_v2(
+        &body,
+        &recipients,
+        crate::wire_v2::MSG_TYPE_BURN,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2 burn_marker: {e}"))
+}
+
+/// Layer 10 / Phase 7b: build + encrypt a whitelist invitation
+/// for `to_discord_id` covering `scope`. The receiver's UI
+/// surfaces this as a banner; on accept they'll set
+/// `peer_map[<sender>].incoming_decrypt_accepted[scope_key]
+/// = true` and our subsequent v=2 messages in `scope` decrypt
+/// for them.
+///
+/// `from_discord_id` is supplied by the caller (boot.js, which
+/// extracts our Discord user_id from the page state). The
+/// [`Identity`] only carries the keyserver `user_id`, not the
+/// Discord snowflake.
+pub fn cmd_osl_send_whitelist_invitation(
+    state: &AppState,
+    to_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    from_discord_id: String,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    let from_pubkey = identity.x25519_public;
+    drop(id_guard);
+
+    let to_pubkey = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        lookup_peer_pubkey(&pm_guard, &to_discord_id)?
+    };
+
+    let invitation = crate::control_messages::WhitelistInvitation {
+        from_discord_id,
+        from_pubkey,
+        scope,
+        sent_at: now_unix_secs(),
+    };
+    let body = crate::control_messages::serialize_whitelist_invitation(&invitation)
+        .map_err(|e| format!("OSL: serialize whitelist_invitation: {e}"))?;
+    crate::wire_v2::encrypt_v2(
+        &body,
+        &[to_pubkey],
+        crate::wire_v2::MSG_TYPE_WHITELIST_INVITATION,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2 whitelist_invitation: {e}"))
+}
+
+/// Layer 10 / Phase 7b: build + encrypt a whitelist response
+/// (accept or decline) to `to_discord_id` for `scope`. The
+/// original inviter's UI consumes this to mark the
+/// outgoing-whitelist entry as accepted/declined.
+pub fn cmd_osl_send_whitelist_response(
+    state: &AppState,
+    to_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    accepted: bool,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    drop(id_guard);
+
+    let to_pubkey = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        lookup_peer_pubkey(&pm_guard, &to_discord_id)?
+    };
+
+    let response = crate::control_messages::WhitelistResponse {
+        scope,
+        accepted,
+        responded_at: now_unix_secs(),
+    };
+    let body = crate::control_messages::serialize_whitelist_response(&response)
+        .map_err(|e| format!("OSL: serialize whitelist_response: {e}"))?;
+    crate::wire_v2::encrypt_v2(
+        &body,
+        &[to_pubkey],
+        crate::wire_v2::MSG_TYPE_WHITELIST_RESPONSE,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2 whitelist_response: {e}"))
+}
+
+// ---- Phase 7b: recv-path branching + helper commands ----
+//
+// Sentinel return strings for `cmd_osl_decrypt_message_v2` when
+// the body is a control message rather than user-visible content.
+// boot.js dispatches on these prefixes via `oslHandleDecryptResult`.
+
+/// Returned by the recv path when a v=2 burn marker was
+/// processed (peer_map + sqlite mutated). Boot.js re-renders the
+/// message as ciphertext when it sees this.
+pub const OSL_RESULT_BURN_APPLIED: &str = "__OSL_CONTROL_BURN_APPLIED__";
+
+/// Returned when a v=2 invitation was queued in
+/// `pending_invitations`.
+pub const OSL_RESULT_INVITATION_RECEIVED: &str = "__OSL_CONTROL_INVITATION_RECEIVED__";
+
+/// Returned when a v=2 response updated
+/// `peer_map.outgoing_whitelist_responses`.
+pub const OSL_RESULT_RESPONSE_RECEIVED: &str = "__OSL_CONTROL_RESPONSE_RECEIVED__";
+
+/// Phase 7b recv-path entry point covering both wire versions.
+/// Peeks the wire's version byte after base64 decode and routes
+/// to the appropriate path:
+///
+/// - v=1 → delegate to [`cmd_osl_decrypt_message_with_id`] (the
+///   Phase 5/6 path, untouched).
+/// - v=2 → run the v=2 decode + dispatch on msg_type:
+///   - 0x00 content: gate via [`crate::whitelist::should_decrypt_from`]
+///     when `scope_input` is `Some`, return plaintext as String.
+///   - 0x01 burn marker: apply the burn locally, return
+///     [`OSL_RESULT_BURN_APPLIED`].
+///   - 0x02 invitation: enqueue in pending_invitations, return
+///     [`OSL_RESULT_INVITATION_RECEIVED`].
+///   - 0x03 response: update peer_map.outgoing_whitelist_responses,
+///     return [`OSL_RESULT_RESPONSE_RECEIVED`].
+///
+/// `scope_input` is **optional**: callers that don't yet know
+/// the scope (legacy Phase 5/6 boot.js) pass `None` and the v=2
+/// gate is skipped. Phase 7c boot.js will populate it.
+///
+/// `config_dir` is required for the invitation-enqueue side
+/// effect (writes pending_invitations.json). Passed by the
+/// Tauri wrapper as `keystore::osl_config_dir()`.
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_osl_decrypt_message_v2(
+    state: &AppState,
+    discord_message_id: Option<String>,
+    channel_id: String,
+    sender_discord_id: String,
+    content: String,
+    scope_input: Option<crate::scope::ScopeInput>,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    // Peek the wire version.
+    let version = peek_wire_version(&content);
+    if version != Some(crate::wire_v2::WIRE_VERSION_V2) {
+        // v=1 (or unknown): preserve the existing Phase 5 path.
+        return cmd_osl_decrypt_message_with_id(
+            state,
+            discord_message_id,
+            channel_id,
+            sender_discord_id,
+            content,
+        );
+    }
+
+    // v=2 path.
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let our_sk = identity.x25519_secret.clone();
+    drop(id_guard);
+
+    // Resolve sender pubkey from peer_map (v=2 carries it via
+    // invitations, so by the time we have content from a peer
+    // we should have their pubkey). Fall back to the keyserver
+    // round-trip path used by v=1 if it's not on file yet.
+    let sender_pub = resolve_sender_pubkey(state, &sender_discord_id)?;
+
+    let scope_opt: Option<crate::scope::Scope> = match scope_input {
+        Some(input) => Some(
+            input
+                .try_into()
+                .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?,
+        ),
+        None => None,
+    };
+
+    let recovered = crate::wire_v2::decrypt_v2(&content, &our_sk, &sender_pub)
+        .map_err(|e| format!("OSL: {e}"))?;
+
+    match recovered.msg_type {
+        crate::wire_v2::MSG_TYPE_CONTENT => {
+            if let Some(scope) = scope_opt.as_ref() {
+                let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+                if !crate::whitelist::should_decrypt_from(&pm_guard, scope, &sender_discord_id) {
+                    return Err("sender_not_accepted_in_scope".to_string());
+                }
+            }
+            String::from_utf8(recovered.plaintext)
+                .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())
+        }
+        crate::wire_v2::MSG_TYPE_BURN => {
+            let marker = crate::control_messages::deserialize_burn_marker(&recovered.plaintext)
+                .map_err(|e| format!("OSL: deserialize burn_marker: {e}"))?;
+            apply_burn_recv(state, &sender_discord_id, &marker)?;
+            Ok(OSL_RESULT_BURN_APPLIED.to_string())
+        }
+        crate::wire_v2::MSG_TYPE_WHITELIST_INVITATION => {
+            let invitation =
+                crate::control_messages::deserialize_whitelist_invitation(&recovered.plaintext)
+                    .map_err(|e| format!("OSL: deserialize invitation: {e}"))?;
+            enqueue_invitation_recv(
+                state,
+                &sender_discord_id,
+                &invitation,
+                config_dir.as_deref(),
+            )?;
+            Ok(OSL_RESULT_INVITATION_RECEIVED.to_string())
+        }
+        crate::wire_v2::MSG_TYPE_WHITELIST_RESPONSE => {
+            let response =
+                crate::control_messages::deserialize_whitelist_response(&recovered.plaintext)
+                    .map_err(|e| format!("OSL: deserialize response: {e}"))?;
+            apply_response_recv(state, &sender_discord_id, &response)?;
+            Ok(OSL_RESULT_RESPONSE_RECEIVED.to_string())
+        }
+        other => Err(format!(
+            "OSL: v=2 msg_type 0x{other:02x} not supported by this client"
+        )),
+    }
+}
+
+/// Peek the wire version byte. Returns `None` for non-DPC0::
+/// content or malformed base64.
+fn peek_wire_version(cover: &str) -> Option<u8> {
+    let body = cover.strip_prefix("DPC0::")?;
+    let bytes = STANDARD.decode(body).ok()?;
+    bytes.first().copied()
+}
+
+/// Resolve sender pubkey. Prefers `peer_map[sender].pubkey` (v=2
+/// invitations carry pubkeys, so by content-message time we
+/// expect this populated); falls back to the legacy
+/// keyserver round-trip via `peer_map[sender].osl_user_id`.
+fn resolve_sender_pubkey(
+    state: &AppState,
+    sender_discord_id: &str,
+) -> Result<crypto::x25519::PublicKey, String> {
+    let osl_user_id_for_lookup = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        if let Ok(pk) = lookup_peer_pubkey(&pm_guard, sender_discord_id) {
+            return Ok(pk);
+        }
+        // Fall back to keyserver path: need the osl_user_id.
+        pm_guard
+            .get(sender_discord_id)
+            .and_then(|e| e.osl_user_id.clone())
+    };
+    let osl_user_id = osl_user_id_for_lookup.ok_or_else(|| {
+        format!(
+            "OSL: {}",
+            DecodeError::UnknownSender {
+                discord_id: sender_discord_id.to_string(),
+            }
+        )
+    })?;
+    if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
+        return Ok(cached);
+    }
+    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+    let client = ks_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+    let resp = client
+        .fetch_pubkeys(&osl_user_id)
+        .map_err(|e| format!("OSL: fetch_pubkeys({osl_user_id}): {e}"))?;
+    let pub_vec = STANDARD
+        .decode(&resp.ik_x25519_pub)
+        .map_err(|e| format!("OSL: decode sender pubkey ({osl_user_id}): {e}"))?;
+    if pub_vec.len() != crypto::x25519::PUBLIC_KEY_SIZE {
+        return Err(format!(
+            "OSL: sender pubkey wrong length ({osl_user_id}): got {}",
+            pub_vec.len()
+        ));
+    }
+    let mut bytes = [0u8; crypto::x25519::PUBLIC_KEY_SIZE];
+    bytes.copy_from_slice(&pub_vec);
+    let pub_key = crypto::x25519::PublicKey::from_bytes(bytes);
+    drop(ks_guard);
+    state.sender_pubkey_cache.insert(osl_user_id, pub_key);
+    Ok(pub_key)
+}
+
+/// Apply a received burn marker:
+/// - Append a [`crate::peer_map::BurnedScope`] entry to
+///   `peer_map[sender].burned_scopes` (idempotent — duplicates
+///   skipped).
+/// - Wipe `wrapped_key` on matching rows in `messages.sqlite`
+///   (best-effort; failures logged, not propagated).
+fn apply_burn_recv(
+    state: &AppState,
+    sender_discord_id: &str,
+    marker: &crate::control_messages::BurnMarker,
+) -> Result<(), String> {
+    use crate::peer_map::BurnedScope as B;
+    let burned_at_iso = format_iso8601_secs(marker.burned_at).unwrap_or_else(|| "?".to_string());
+    let entry = match marker.scope.kind {
+        crate::scope::ScopeKind::Dm => B::Dm {
+            burned_at: burned_at_iso,
+        },
+        crate::scope::ScopeKind::Gc => B::Gc {
+            id: marker.scope.id.clone(),
+            burned_at: burned_at_iso,
+        },
+        crate::scope::ScopeKind::ServerChannel => B::ServerChannel {
+            server_id: marker.scope.server_id.clone().unwrap_or_default(),
+            channel_id: marker.scope.channel_id.clone().unwrap_or_default(),
+            burned_at: burned_at_iso,
+        },
+        crate::scope::ScopeKind::ServerFull => B::ServerFull {
+            server_id: marker.scope.server_id.clone().unwrap_or_default(),
+            burned_at: burned_at_iso,
+        },
+    };
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
+        if !pe.burned_scopes.iter().any(|b| same_burn(b, &entry)) {
+            pe.burned_scopes.push(entry);
+        }
+    }
+    // Wipe sqlite wrapped_keys for the scope (best-effort).
+    if let Some(store) = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned")
+        .as_ref()
+    {
+        let (scope_type, scope_id) = scope_storage_pair(&marker.scope);
+        if let Err(e) = store.wipe_wrapped_keys_in_scope(&scope_type, &scope_id) {
+            tracing::warn!(error = %e, "OSL: wipe wrapped_keys failed; burn proceeded in peer_map only");
+        }
+    }
+    Ok(())
+}
+
+/// Enqueue a whitelist invitation in pending_invitations. ID
+/// shape: `from_<sender_discord_id>_<scope_storage_key>` for
+/// idempotency — re-receiving the same invitation is a no-op.
+fn enqueue_invitation_recv(
+    state: &AppState,
+    sender_discord_id: &str,
+    invitation: &crate::control_messages::WhitelistInvitation,
+    config_dir: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use crate::pending_invitations::{InvitationStatus, PendingInvitation};
+    let invitation_id = format!(
+        "from_{}_{}",
+        sender_discord_id,
+        invitation.scope.storage_key()
+    );
+    let entry = PendingInvitation {
+        from: sender_discord_id.to_string(),
+        scope: format!("{:?}", invitation.scope.kind).to_ascii_lowercase(),
+        scope_id: Some(invitation.scope.storage_key()),
+        received_at: format_iso8601_secs(invitation.sent_at).unwrap_or_else(|| "?".to_string()),
+        status: InvitationStatus::Pending,
+    };
+    {
+        let mut pi_guard = state
+            .pending_invitations
+            .lock()
+            .expect("pending_invitations mutex poisoned");
+        pi_guard.entry(invitation_id).or_insert(entry);
+    }
+    // Persist the sender's pubkey eagerly — the invitation
+    // carries it.
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
+        pe.pubkey = Some(STANDARD.encode(invitation.from_pubkey.as_bytes()));
+        pe.discord_id
+            .get_or_insert_with(|| sender_discord_id.to_string());
+    }
+    // Write-through to disk if we have a config_dir.
+    if let Some(dir) = config_dir {
+        let pi_path = dir.join("pending_invitations.json");
+        let pi_guard = state
+            .pending_invitations
+            .lock()
+            .expect("pending_invitations mutex poisoned");
+        if let Err(e) = crate::pending_invitations::write_pending_invitations(&pi_path, &pi_guard) {
+            tracing::warn!(error = %e, "OSL: write pending_invitations failed");
+        }
+    }
+    Ok(())
+}
+
+/// Apply a received whitelist response: update
+/// `peer_map[sender].outgoing_whitelist_responses[scope]`.
+fn apply_response_recv(
+    state: &AppState,
+    sender_discord_id: &str,
+    response: &crate::control_messages::WhitelistResponse,
+) -> Result<(), String> {
+    let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+    let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
+    pe.outgoing_whitelist_responses
+        .insert(response.scope.storage_key(), response.accepted);
+    Ok(())
+}
+
+fn same_burn(a: &crate::peer_map::BurnedScope, b: &crate::peer_map::BurnedScope) -> bool {
+    use crate::peer_map::BurnedScope as B;
+    match (a, b) {
+        (B::Dm { .. }, B::Dm { .. }) => true,
+        (B::Gc { id: a, .. }, B::Gc { id: bid, .. }) => a == bid,
+        (
+            B::ServerChannel {
+                server_id: sa,
+                channel_id: ca,
+                ..
+            },
+            B::ServerChannel {
+                server_id: sb,
+                channel_id: cb,
+                ..
+            },
+        ) => sa == sb && ca == cb,
+        (B::ServerFull { server_id: a, .. }, B::ServerFull { server_id: b, .. }) => a == b,
+        _ => false,
+    }
+}
+
+fn scope_storage_pair(s: &crate::scope::Scope) -> (String, String) {
+    use crate::scope::ScopeKind as K;
+    let kind = match s.kind {
+        K::Dm => "dm",
+        K::Gc => "gc",
+        K::ServerChannel => "server_channel",
+        K::ServerFull => "server_full",
+    };
+    (kind.to_string(), s.id.clone())
+}
+
+/// Stringify a unix-seconds timestamp for storage in the
+/// `burned_at` / `enabled_at` / `received_at` ISO-style fields on
+/// `peer_map` / `pending_invitations`. The design doc shows
+/// ISO-8601, but Phase 7b stores the raw unix-seconds string
+/// (e.g. `"1700000000"`) to avoid pulling a date-formatting
+/// dep — every consumer in the v=7 codepaths treats these fields
+/// as opaque strings already. Phase 7c can swap to true
+/// ISO-8601 when the UI needs it (and the JS layer renders
+/// formatted dates from a fresh `Date.now()` anyway).
+fn format_iso8601_secs(unix_secs: i64) -> Option<String> {
+    if unix_secs < 0 {
+        return None;
+    }
+    Some(unix_secs.to_string())
+}
+
+// ---- Phase 7b: helper Tauri-callable commands ----
+
+/// Apply a local burn for `scope`. Updates self-side state only —
+/// the wire burn marker is sent by `cmd_osl_unwhitelist_scope` /
+/// `cmd_osl_send_burn_marker` before this is called, so by the
+/// time we're here the recipients have already been notified.
+///
+/// Effects:
+/// - Wipes `wrapped_key` on matching rows in messages.sqlite
+///   (so we can't re-decrypt our outgoing history in `scope`).
+/// - **Does not** mutate any peer_map entry. Peer-side burn
+///   tracking lives in their burned_scopes; ours is implicit
+///   via the wiped wrapped_keys + the scope no longer being in
+///   whitelist_state.
+pub fn cmd_osl_apply_burn(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<(), String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let (scope_type, scope_id) = scope_storage_pair(&scope);
+    if let Some(store) = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned")
+        .as_ref()
+    {
+        store
+            .wipe_wrapped_keys_in_scope(&scope_type, &scope_id)
+            .map_err(|e| format!("OSL: wipe wrapped_keys: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Accept a pending whitelist invitation. Side effects:
+/// - Set `peer_map[from].incoming_decrypt_accepted[scope] = true`
+///   so subsequent v=2 content from that sender + scope decrypts.
+/// - Remove the entry from pending_invitations (Phase 7c could
+///   alternatively mark it `Accepted` for a brief confirmation
+///   banner before removal; 7b removes outright).
+pub fn cmd_osl_accept_invitation(state: &AppState, invitation_id: String) -> Result<(), String> {
+    apply_invitation_decision(state, &invitation_id, true)
+}
+
+/// Decline a pending whitelist invitation. Side effects: same
+/// shape as `accept` but stores `false`.
+pub fn cmd_osl_decline_invitation(state: &AppState, invitation_id: String) -> Result<(), String> {
+    apply_invitation_decision(state, &invitation_id, false)
+}
+
+fn apply_invitation_decision(
+    state: &AppState,
+    invitation_id: &str,
+    accepted: bool,
+) -> Result<(), String> {
+    // Pull the invitation out of pending.
+    let invitation = {
+        let mut pi_guard = state
+            .pending_invitations
+            .lock()
+            .expect("pending_invitations mutex poisoned");
+        pi_guard
+            .remove(invitation_id)
+            .ok_or_else(|| format!("OSL: invitation '{invitation_id}' not pending"))?
+    };
+    let scope_key = invitation
+        .scope_id
+        .ok_or_else(|| "OSL: invitation missing scope_id".to_string())?;
+    let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+    let pe = pm_guard.entry(invitation.from.clone()).or_default();
+    pe.incoming_decrypt_accepted.insert(scope_key, accepted);
+    Ok(())
+}
+
+/// Remove a whitelist entry for `peer` in `scope`. Returns the
+/// wire-format burn marker the caller must send through Discord's
+/// API so the peer's client wipes its decrypt capability.
+///
+/// Behaviour:
+/// - Compute burn marker recipients via `recipients_for_scope`
+///   **before** mutating state (so the burned peer is still in
+///   the recipient list).
+/// - Encrypt as v=2 type=0x01.
+/// - Mutate local state:
+///   - Remove the `WhitelistEntry` from
+///     `peer_map[peer].outgoing_whitelists` that matches `scope`.
+///   - Append a `BurnedScope` to the same peer's `burned_scopes`.
+///   - If `scope.kind == Dm` and `revoke_broadened`: clear the
+///     `broadened` flag on any DM whitelist entry for this peer.
+///     Per §3.4 this revokes their cross-scope grant in shared
+///     GCs/servers without burning those scopes individually.
+///   - Drop the scope's entry from `whitelist_state`.
+/// - Call `cmd_osl_apply_burn` to wipe wrapped_keys.
+///
+/// Returns the wire-format burn marker string.
+pub fn cmd_osl_unwhitelist_scope(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    revoke_broadened: bool,
+) -> Result<String, String> {
+    // 1. Build the burn marker wire BEFORE mutating state.
+    let wire =
+        cmd_osl_send_burn_marker(state, scope_input.clone(), channel_members, self_discord_id)?;
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+
+    // 2. Mutate peer_map for the named peer.
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(peer_discord_id.clone()).or_default();
+        pe.outgoing_whitelists
+            .retain(|w| !whitelist_entry_matches(w, &scope));
+        let burned_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+        let burn = match scope.kind {
+            crate::scope::ScopeKind::Dm => crate::peer_map::BurnedScope::Dm {
+                burned_at: burned_at_iso,
+            },
+            crate::scope::ScopeKind::Gc => crate::peer_map::BurnedScope::Gc {
+                id: scope.id.clone(),
+                burned_at: burned_at_iso,
+            },
+            crate::scope::ScopeKind::ServerChannel => crate::peer_map::BurnedScope::ServerChannel {
+                server_id: scope.server_id.clone().unwrap_or_default(),
+                channel_id: scope.channel_id.clone().unwrap_or_default(),
+                burned_at: burned_at_iso,
+            },
+            crate::scope::ScopeKind::ServerFull => crate::peer_map::BurnedScope::ServerFull {
+                server_id: scope.server_id.clone().unwrap_or_default(),
+                burned_at: burned_at_iso,
+            },
+        };
+        if !pe.burned_scopes.iter().any(|b| same_burn(b, &burn)) {
+            pe.burned_scopes.push(burn);
+        }
+        if revoke_broadened && scope.kind == crate::scope::ScopeKind::Dm {
+            for w in pe.outgoing_whitelists.iter_mut() {
+                if let crate::peer_map::WhitelistEntry::Dm { broadened, .. } = w {
+                    *broadened = false;
+                }
+            }
+        }
+    }
+
+    // 3. Drop the scope from whitelist_state.
+    {
+        let mut ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        ws_guard.remove(&scope.storage_key());
+    }
+
+    // 4. Wipe wrapped_keys.
+    let _ = cmd_osl_apply_burn(state, (&scope).into());
+
+    Ok(wire)
+}
+
+fn whitelist_entry_matches(w: &crate::peer_map::WhitelistEntry, s: &crate::scope::Scope) -> bool {
+    use crate::peer_map::WhitelistEntry as W;
+    use crate::scope::ScopeKind as K;
+    match (w, &s.kind) {
+        (W::Dm { .. }, K::Dm) => true,
+        (W::Gc { id, .. }, K::Gc) => id == &s.id,
+        (
+            W::ServerChannel {
+                server_id,
+                channel_id,
+                ..
+            },
+            K::ServerChannel,
+        ) => Some(server_id) == s.server_id.as_ref() && Some(channel_id) == s.channel_id.as_ref(),
+        (W::ServerFull { server_id, .. }, K::ServerFull) => Some(server_id) == s.server_id.as_ref(),
+        _ => false,
+    }
+}
+
+/// Set a whitelist for `peer_discord_id` in `scope`. Returns the
+/// wire-format invitation the caller must send through Discord's
+/// API so the peer can accept/decline.
+///
+/// Behaviour:
+/// - Mutate peer_map: append/replace `WhitelistEntry` for the
+///   scope. For DM scope, the `broadened` flag carries through.
+/// - Mutate whitelist_state: ensure the scope has a `ScopeState`
+///   entry with `encrypt_toggle = true; auto_enabled = true`
+///   (§2.3 auto-enable). For Dm, no member list needed; for
+///   GC/server-channel/server-full, add the peer to
+///   `whitelisted_users` and set `full_whitelist = false` (the
+///   default for newly-created per-user whitelists; the UI can
+///   promote later).
+/// - Call `cmd_osl_send_whitelist_invitation` to build the wire.
+pub fn cmd_osl_set_whitelist(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    broadened: bool,
+    from_discord_id: String,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .clone()
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let enabled_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+
+    // 1. peer_map.
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(peer_discord_id.clone()).or_default();
+        // De-dupe: remove any prior entry for the same scope
+        // shape before appending the new one.
+        pe.outgoing_whitelists
+            .retain(|w| !whitelist_entry_matches(w, &scope));
+        let new_entry = match scope.kind {
+            crate::scope::ScopeKind::Dm => crate::peer_map::WhitelistEntry::Dm {
+                broadened,
+                enabled_at: Some(enabled_at_iso),
+            },
+            crate::scope::ScopeKind::Gc => crate::peer_map::WhitelistEntry::Gc {
+                id: scope.id.clone(),
+                user_specific: true,
+            },
+            crate::scope::ScopeKind::ServerChannel => {
+                crate::peer_map::WhitelistEntry::ServerChannel {
+                    server_id: scope.server_id.clone().unwrap_or_default(),
+                    channel_id: scope.channel_id.clone().unwrap_or_default(),
+                    user_specific: true,
+                }
+            }
+            crate::scope::ScopeKind::ServerFull => crate::peer_map::WhitelistEntry::ServerFull {
+                server_id: scope.server_id.clone().unwrap_or_default(),
+                user_specific: true,
+            },
+        };
+        pe.outgoing_whitelists.push(new_entry);
+        // Also evict any prior burned-scope entry for the same
+        // scope shape — re-whitelisting after a burn is allowed
+        // and the §3.5 semantics say "fresh keys → new messages
+        // encrypt and decrypt normally."
+        pe.burned_scopes.retain(|b| !burn_matches_scope(b, &scope));
+    }
+
+    // 2. whitelist_state.
+    {
+        let mut ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let ws = ws_guard
+            .entry(scope.storage_key())
+            .or_insert_with(crate::whitelist_state::ScopeState::default);
+        ws.encrypt_toggle = true;
+        ws.auto_enabled = true;
+        if matches!(scope.kind, crate::scope::ScopeKind::Dm) {
+            // No list semantics for DM (the scope id IS the peer).
+        } else if !ws.whitelisted_users.iter().any(|u| u == &peer_discord_id) {
+            ws.whitelisted_users.push(peer_discord_id.clone());
+        }
+    }
+
+    // 3. Build the wire invitation.
+    cmd_osl_send_whitelist_invitation(state, peer_discord_id, scope_input, from_discord_id)
+}
+
+fn burn_matches_scope(b: &crate::peer_map::BurnedScope, s: &crate::scope::Scope) -> bool {
+    use crate::peer_map::BurnedScope as B;
+    use crate::scope::ScopeKind as K;
+    match (b, &s.kind) {
+        (B::Dm { .. }, K::Dm) => true,
+        (B::Gc { id, .. }, K::Gc) => id == &s.id,
+        (
+            B::ServerChannel {
+                server_id,
+                channel_id,
+                ..
+            },
+            K::ServerChannel,
+        ) => Some(server_id) == s.server_id.as_ref() && Some(channel_id) == s.channel_id.as_ref(),
+        (B::ServerFull { server_id, .. }, K::ServerFull) => Some(server_id) == s.server_id.as_ref(),
+        _ => false,
+    }
+}

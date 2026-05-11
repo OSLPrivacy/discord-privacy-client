@@ -35,13 +35,17 @@ mod screenshot;
 
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
-    cmd_load_identity, cmd_osl_burn_message, cmd_osl_decrypt_message_with_id,
-    cmd_osl_encrypt_message, cmd_osl_load_channel_history, cmd_osl_persist_edit, cmd_register,
-    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
-    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
-    GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
-    StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
+    cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_message,
+    cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
+    cmd_osl_encrypt_message_v2, cmd_osl_load_channel_history, cmd_osl_persist_edit,
+    cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
+    cmd_osl_set_whitelist, cmd_osl_unwhitelist_scope, cmd_register, cmd_save_identity, cmd_status,
+    cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
+    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
+    RegisterResponse, StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
+    StoredMessageDto,
 };
+use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -238,6 +242,7 @@ async fn osl_decrypt_message(
     sender_discord_id: String,
     content: String,
     discord_message_id: Option<String>,
+    scope_input: Option<ScopeInput>,
 ) -> Result<String, String> {
     let content_len = content.len();
     let sender_dbg = sender_discord_id.clone();
@@ -246,17 +251,25 @@ async fn osl_decrypt_message(
         sender_discord_id = %sender_discord_id,
         content_len,
         message_id_present = discord_message_id.is_some(),
-        "osl_decrypt_message Phase 5 invoked"
+        scope_present = scope_input.is_some(),
+        "osl_decrypt_message Phase 5/7 invoked"
     );
     let app_handle = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_decrypt_message_with_id(
+        // Phase 7b: cmd_osl_decrypt_message_v2 peeks the wire
+        // version and routes to the v=1 path or the v=2 path
+        // (which dispatches on msg_type). The optional scope is
+        // used by the v=2 should_decrypt_from gate.
+        let config_dir = keystore::osl_config_dir().ok();
+        cmd_osl_decrypt_message_v2(
             state.inner(),
             discord_message_id,
             channel_id,
             sender_discord_id,
             content,
+            scope_input,
+            config_dir,
         )
     })
     .await
@@ -324,6 +337,190 @@ async fn osl_persist_edit(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
         cmd_osl_persist_edit(state.inner(), discord_message_id, new_plaintext)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// ---- Phase 7b: wire v=2 + control message Tauri wrappers ----
+
+/// Layer 10 / Phase 7b: encrypt a v=2 content message under a
+/// whitelist-resolved recipient list. See
+/// [`ipc::commands::cmd_osl_encrypt_message_v2`].
+#[tauri::command]
+async fn osl_encrypt_message_v2(
+    app: tauri::AppHandle,
+    plaintext: String,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_encrypt_message_v2(
+            state.inner(),
+            plaintext,
+            scope_input,
+            channel_members,
+            self_discord_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: build the wire-format burn marker for a
+/// scope. Caller (boot.js) ships the wire string through
+/// Discord's API; the same scope's local state is then mutated
+/// via `osl_apply_burn` to wipe wrapped_keys.
+#[tauri::command]
+async fn osl_send_burn_marker(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_send_burn_marker(state.inner(), scope_input, channel_members, self_discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: build the wire-format whitelist
+/// invitation for a peer + scope. See §7.1.
+#[tauri::command]
+async fn osl_send_whitelist_invitation(
+    app: tauri::AppHandle,
+    to_discord_id: String,
+    scope_input: ScopeInput,
+    from_discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_send_whitelist_invitation(
+            state.inner(),
+            to_discord_id,
+            scope_input,
+            from_discord_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: build the wire-format whitelist response
+/// (accept / decline). See §7.3 / §7.4.
+#[tauri::command]
+async fn osl_send_whitelist_response(
+    app: tauri::AppHandle,
+    to_discord_id: String,
+    scope_input: ScopeInput,
+    accepted: bool,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_send_whitelist_response(state.inner(), to_discord_id, scope_input, accepted)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: apply a local burn for `scope`. Wipes
+/// `wrapped_key` on matching rows in messages.sqlite.
+#[tauri::command]
+async fn osl_apply_burn(app: tauri::AppHandle, scope_input: ScopeInput) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_apply_burn(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: accept a pending whitelist invitation
+/// and grant future decryption of `(from, scope)` messages.
+#[tauri::command]
+async fn osl_accept_invitation(app: tauri::AppHandle, invitation_id: String) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_accept_invitation(state.inner(), invitation_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: decline a pending whitelist invitation.
+#[tauri::command]
+async fn osl_decline_invitation(
+    app: tauri::AppHandle,
+    invitation_id: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_decline_invitation(state.inner(), invitation_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: un-whitelist a peer in a scope. Returns
+/// the wire-format burn marker to ship through Discord's API
+/// so the peer wipes its decrypt capability.
+#[tauri::command]
+async fn osl_unwhitelist_scope(
+    app: tauri::AppHandle,
+    peer_discord_id: String,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    revoke_broadened: bool,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_unwhitelist_scope(
+            state.inner(),
+            peer_discord_id,
+            scope_input,
+            channel_members,
+            self_discord_id,
+            revoke_broadened,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Layer 10 / Phase 7b: set a whitelist for a peer + scope.
+/// Returns the wire-format invitation to ship through Discord's
+/// API so the peer can accept/decline.
+#[tauri::command]
+async fn osl_set_whitelist(
+    app: tauri::AppHandle,
+    peer_discord_id: String,
+    scope_input: ScopeInput,
+    broadened: bool,
+    from_discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_set_whitelist(
+            state.inner(),
+            peer_discord_id,
+            scope_input,
+            broadened,
+            from_discord_id,
+        )
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -453,6 +650,15 @@ fn main() {
             osl_load_channel_history,
             osl_burn_message,
             osl_persist_edit,
+            osl_encrypt_message_v2,
+            osl_send_burn_marker,
+            osl_send_whitelist_invitation,
+            osl_send_whitelist_response,
+            osl_apply_burn,
+            osl_accept_invitation,
+            osl_decline_invitation,
+            osl_unwhitelist_scope,
+            osl_set_whitelist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

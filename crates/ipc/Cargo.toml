@@ -19,6 +19,15 @@ tracing = { workspace = true }
 sha2 = { workspace = true }
 base64 = "0.22"
 
+# CBOR for Phase 7b control-message bodies (BurnMarker /
+# WhitelistInvitation / WhitelistResponse). Chosen for
+# schema-flexibility: control message fields may grow as the
+# trust model evolves (e.g. multi-recipient burn markers) and a
+# self-describing format avoids per-revision wire-format bumps.
+# `ciborium` over `serde_cbor` (unmaintained); pure Rust,
+# no-std-friendly, no_unsafe.
+ciborium = "0.2"
+
 crypto = { path = "../crypto" }
 stego = { path = "../stego" }
 keystore = { path = "../keystore" }

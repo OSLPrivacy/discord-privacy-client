@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission for Phase 7b local burn application.
+[[permission]]
+identifier = "allow-osl-apply-burn"
+description = "Permits the discord.com main webview to invoke `osl_apply_burn` (wipe wrapped_key on matching rows of messages.sqlite for a burned scope). Phase 7b — see §3.2."
+commands.allow = ["osl_apply_burn"]

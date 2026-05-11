@@ -14,6 +14,8 @@
 //! state per group, wrapped-key cache, manifest cache, etc.
 
 use crate::peer_map::PeerMap;
+use crate::pending_invitations::PendingInvitations;
+use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
@@ -142,6 +144,23 @@ pub struct AppState {
     /// `cmd_osl_load_channel_history` returns an empty list. See
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
+
+    /// Per-scope whitelist + encryption-toggle state, mirroring
+    /// `<config_dir>/whitelist_state.json`. Empty by default —
+    /// 7b's send-path queries this every encrypt to decide whether
+    /// + who to wrap K for. Loaded at bootstrap (Phase 7b
+    /// integration). Mutating Tauri commands must write-through
+    /// to disk via `crate::whitelist_state::write_whitelist_state`.
+    pub whitelist_state: Mutex<WhitelistState>,
+
+    /// Receiver-side queue of whitelist invitations awaiting
+    /// accept/decline, mirroring
+    /// `<config_dir>/pending_invitations.json`. Empty by default;
+    /// populated by the recv path when a peer's
+    /// type=0x02 control message is processed. Mutating Tauri
+    /// commands write-through to disk via
+    /// `crate::pending_invitations::write_pending_invitations`.
+    pub pending_invitations: Mutex<PendingInvitations>,
 }
 
 impl AppState {

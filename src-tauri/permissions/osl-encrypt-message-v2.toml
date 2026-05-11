@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission for Phase 7b v=2 content-message encrypt.
+[[permission]]
+identifier = "allow-osl-encrypt-message-v2"
+description = "Permits the discord.com main webview to invoke `osl_encrypt_message_v2` (wire format v=2 content message under whitelist-resolved recipients). Phase 7b — see docs/phase-7-design.md §§4, 2."
+commands.allow = ["osl_encrypt_message_v2"]

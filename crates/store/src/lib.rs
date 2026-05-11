@@ -273,6 +273,35 @@ impl MessageStore {
         Ok(())
     }
 
+    /// Phase 7b: wipe the `wrapped_key` column on every row that
+    /// matches `(scope_type, scope_id)`, marking them burned at
+    /// the same time.
+    ///
+    /// `wrapped_key` is the per-recipient wrapped AES-GCM K from
+    /// the v=2 wire format ([`crate::wire_v2`]). Nulling it
+    /// removes the ability to re-derive K and thus to re-decrypt
+    /// the row's `ciphertext` after the fact — which is what
+    /// gives scope burns "real teeth" per
+    /// `docs/phase-7-design.md` §3.2.
+    ///
+    /// Returns the number of rows touched (useful for the caller
+    /// to log "burned N messages" without a separate count
+    /// query).
+    pub fn wipe_wrapped_keys_in_scope(
+        &self,
+        scope_type: &str,
+        scope_id: &str,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let rows = conn.execute(
+            "UPDATE messages \
+                SET wrapped_key = NULL, burned = 1, burned_at = strftime('%s','now') \
+              WHERE scope_type = ?1 AND scope_id = ?2",
+            params![scope_type, scope_id],
+        )?;
+        Ok(rows)
+    }
+
     /// Materialize a (channel_id, sender_discord_id,
     /// sender_osl_user_id, ct, nonce, decrypted_at, burned)
     /// row tuple into a [`StoredMessage`] using the supplied

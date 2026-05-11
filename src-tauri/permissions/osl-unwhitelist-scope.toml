@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Permission for Phase 7b un-whitelist (burn) operation.
+[[permission]]
+identifier = "allow-osl-unwhitelist-scope"
+description = "Permits the discord.com main webview to invoke `osl_unwhitelist_scope` (remove a whitelist entry for a peer + scope and produce the burn-marker wire to send). Phase 7b — see §3.3."
+commands.allow = ["osl_unwhitelist_scope"]

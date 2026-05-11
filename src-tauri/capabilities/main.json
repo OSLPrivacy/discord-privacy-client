@@ -14,6 +14,15 @@
     "allow-osl-decrypt-message",
     "allow-osl-load-channel-history",
     "allow-osl-burn-message",
-    "allow-osl-persist-edit"
+    "allow-osl-persist-edit",
+    "allow-osl-encrypt-message-v2",
+    "allow-osl-send-burn-marker",
+    "allow-osl-send-whitelist-invitation",
+    "allow-osl-send-whitelist-response",
+    "allow-osl-apply-burn",
+    "allow-osl-accept-invitation",
+    "allow-osl-decline-invitation",
+    "allow-osl-unwhitelist-scope",
+    "allow-osl-set-whitelist"
   ]
 }

@@ -87,12 +87,21 @@ pub struct PeerEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_seen: Option<String>,
 
-    /// Whether this peer's whitelist invitation to *us* has been
-    /// accepted. Drives the recv-path decision: if `false`, even a
-    /// successful AEAD decrypt is treated as "leave cover in
-    /// place." Default `false` — explicit accept required.
+    /// Per-scope record of whether this peer's whitelist
+    /// invitation to *us* has been accepted. Key is the scope
+    /// storage_key (`crate::scope::Scope::storage_key`); value is
+    /// `true` for accept, `false` for explicit decline.
+    /// **Missing key = not yet responded** (the recv-path treats
+    /// that as "leave cover in place" — see §7).
+    ///
+    /// Phase 7a shipped this as a single `bool` matching the
+    /// design doc §5.1 example. Phase 7b promotes it to a map per
+    /// §7.3 ("Henry's client stores:
+    /// `incoming_decrypt_accepted[liam][scope] = true`"); the
+    /// outer indirection is peer_map itself, leaving this inner
+    /// map keyed by scope.
     #[serde(default)]
-    pub incoming_decrypt_accepted: bool,
+    pub incoming_decrypt_accepted: std::collections::HashMap<String, bool>,
 
     /// Our outgoing whitelists for this peer, per scope (§2.1).
     /// Phase 7a stores them; 7b consults them on every send.
@@ -103,6 +112,20 @@ pub struct PeerEntry {
     /// in the send-path scope check.
     #[serde(default)]
     pub burned_scopes: Vec<BurnedScope>,
+
+    /// Phase 7b: per-scope acceptance status FROM this peer
+    /// for our outgoing invitations. Key is scope storage_key;
+    /// value is `true` for accepted, `false` for declined.
+    /// **Missing key = invitation sent but no response yet.**
+    ///
+    /// Mirrors `incoming_decrypt_accepted` but in the opposite
+    /// direction — that map records *our* response to the peer's
+    /// invitations, this one records the *peer's* response to
+    /// ours. The UI (Phase 7c) reads this to show
+    /// "accepted" / "declined" / "pending" pills next to each
+    /// outgoing whitelist entry.
+    #[serde(default)]
+    pub outgoing_whitelist_responses: std::collections::HashMap<String, bool>,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to
@@ -386,7 +409,7 @@ mod tests {
                 "osl_user_id": "liam",
                 "discord_id": "1477008451799482419",
                 "first_seen": "2026-05-09T12:00:00Z",
-                "incoming_decrypt_accepted": true,
+                "incoming_decrypt_accepted": { "dm:1477008451799482419": true },
                 "outgoing_whitelists": [
                   { "scope": "dm", "broadened": true, "enabled_at": "2026-05-09T12:00:00Z" }
                 ],
@@ -398,7 +421,12 @@ mod tests {
         let map = load_peer_map_from_path(&path).expect("modern format should load");
         let entry = map.get("1477008451799482419").unwrap();
         assert_eq!(entry.osl_user_id.as_deref(), Some("liam"));
-        assert!(entry.incoming_decrypt_accepted);
+        assert_eq!(
+            entry
+                .incoming_decrypt_accepted
+                .get("dm:1477008451799482419"),
+            Some(&true)
+        );
         assert_eq!(entry.outgoing_whitelists.len(), 1);
         match &entry.outgoing_whitelists[0] {
             WhitelistEntry::Dm { broadened, .. } => assert!(*broadened),
