@@ -2359,3 +2359,20 @@ pub fn cmd_osl_list_pending_invitations(
     });
     Ok(out)
 }
+
+/// Phase 7c bug-fix #1: return the local user's Discord ID
+/// (== `Identity::user_id`) from `AppState`. The JS injection
+/// layer has no reliable React-fiber source for self-id; this
+/// command surfaces the canonical value the Rust shell already
+/// holds after `bootstrap::run_autostart` loads the identity.
+///
+/// Returns `"OSL: identity not loaded"` (flat string) when the
+/// identity hasn't been loaded yet — the JS caller treats that
+/// as a hard failure (toast + abort), not a fall-through.
+pub fn cmd_osl_get_self_user_id(state: &AppState) -> Result<String, String> {
+    let guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    Ok(identity.user_id.clone())
+}

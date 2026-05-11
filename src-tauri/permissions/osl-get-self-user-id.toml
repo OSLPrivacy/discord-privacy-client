@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7c bug-fix #1: surface the local Discord ID to the
+# injection layer (no reliable React-fiber source for self-id).
+[[permission]]
+identifier = "allow-osl-get-self-user-id"
+description = "Permits the discord.com main webview to invoke `osl_get_self_user_id` (return the loaded identity's `user_id`, which is the local Discord snowflake). Used by send/burn paths that need a sender id without walking the React tree. Phase 7c."
+commands.allow = ["osl_get_self_user_id"]

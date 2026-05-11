@@ -169,6 +169,49 @@
         return undefined;
     }
 
+    // Phase 7c bug-fix #1: cached local Discord ID.
+    //
+    // The injection layer has no reliable React-fiber source for
+    // self-id — fiber walks from message anchors miss it most of
+    // the time. The Rust shell already holds the loaded
+    // identity's `user_id` (== local Discord snowflake) in
+    // `AppState`; `osl_get_self_user_id` surfaces it. Result is
+    // cached for the session — identity changes require a restart
+    // anyway. Concurrent callers share a single in-flight invoke.
+    let oslSelfDiscordIdCache = null;
+    let oslSelfDiscordIdInFlight = null;
+    function oslSelfDiscordId() {
+        if (typeof oslSelfDiscordIdCache === "string") {
+            return Promise.resolve(oslSelfDiscordIdCache);
+        }
+        if (oslSelfDiscordIdInFlight) return oslSelfDiscordIdInFlight;
+        const invoke = getTauriInvoke();
+        if (typeof invoke !== "function") {
+            return Promise.resolve(null);
+        }
+        oslSelfDiscordIdInFlight = invoke("osl_get_self_user_id", {})
+            .then(function (id) {
+                if (typeof id === "string" && /^\d{15,22}$/.test(id)) {
+                    oslSelfDiscordIdCache = id;
+                    return id;
+                }
+                console.error(
+                    "[OSL] osl_get_self_user_id returned non-snowflake: " +
+                        typeof id
+                );
+                return null;
+            })
+            .catch(function (err) {
+                const msg = err && err.message ? err.message : String(err);
+                console.error("[OSL] osl_get_self_user_id failed: " + msg);
+                return null;
+            })
+            .finally(function () {
+                oslSelfDiscordIdInFlight = null;
+            });
+        return oslSelfDiscordIdInFlight;
+    }
+
     /**
      * Thin wrapper around the Tauri command. Resolves to the cover-
      * text string on success, rejects on IPC-level failure. Phase 3:
@@ -448,6 +491,26 @@
                     return onMutated(newBody);
                 },
                 function (err) {
+                    // Phase 7c bug-fix #2: "OSL: recipient lookup:
+                    // channel ... not configured in recipients file"
+                    // means this channel has no v=1 entry in
+                    // channels.json AND already (by virtue of being
+                    // in v1Send) no v=2 whitelist/toggle. There's
+                    // nothing to encrypt — fall through to plaintext
+                    // passthrough rather than aborting the send.
+                    // The v=2 gate above still fails closed for its
+                    // own error paths; only the unconfigured-channel
+                    // case lands here.
+                    const msg = err && err.message ? err.message : String(err);
+                    if (msg.indexOf("OSL: recipient lookup:") === 0) {
+                        if (DEBUG)
+                            console.log(
+                                "[OSL] v=1 path: channel not OSL-configured (" +
+                                    source +
+                                    "); passthrough plaintext"
+                            );
+                        return onPassthrough();
+                    }
                     console.error(
                         "[OSL] __OSL_INTERCEPT__ rejected (" +
                             source +
@@ -505,24 +568,21 @@
                 .filter(function (x) {
                     return typeof x === "string" && x.length > 0;
                 });
-            const selfId =
-                v7cCtx.selfId && typeof v7cCtx.selfId === "string"
-                    ? v7cCtx.selfId
-                    : null;
-            if (!selfId) {
-                console.error(
-                    "[OSL] v=2 send gate (" +
-                        source +
-                        "): no selfId in channel context; ABORT (fail-closed)"
-                );
-                return onAbort(new Error("v2_send_no_self_id"));
-            }
-            return oslEncryptV2(
-                plaintext,
-                v7cScope,
-                memberIds,
-                selfId
-            ).then(
+            return oslSelfDiscordId().then(function (selfId) {
+                if (!selfId) {
+                    console.error(
+                        "[OSL] v=2 send gate (" +
+                            source +
+                            "): osl_get_self_user_id returned null; ABORT (fail-closed)"
+                    );
+                    return onAbort(new Error("v2_send_no_self_id"));
+                }
+                return oslEncryptV2(
+                    plaintext,
+                    v7cScope,
+                    memberIds,
+                    selfId
+                ).then(
                 function (wire) {
                     if (typeof wire !== "string") {
                         console.error(
@@ -568,6 +628,7 @@
                     return onAbort(err);
                 }
             );
+            });
         });
     }
 
@@ -1280,7 +1341,7 @@
         });
         banner.appendChild(btn);
         console.log(
-            "[OSL] profile whitelist button injected user=resolves on click"
+            "[OSL] profile whitelist button injected (peer id resolved at click time)"
         );
     }
 
@@ -1475,9 +1536,10 @@
      * wire) then `oslSendControlMessage` (Discord delivery).
      */
     async function oslSendWhitelistInvitation(user, scopeInput, broadened, ctx) {
-        if (!ctx || !ctx.selfId) {
+        const selfId = await oslSelfDiscordId();
+        if (!selfId) {
             oslToast(
-                "OSL: could not resolve your Discord id (try opening a channel first)"
+                "OSL: could not resolve your Discord id (identity not loaded?)"
             );
             return;
         }
@@ -1485,7 +1547,7 @@
             peerDiscordId: user.id,
             scopeInput: scopeInput,
             broadened: broadened,
-            fromDiscordId: ctx.selfId,
+            fromDiscordId: selfId,
         });
         if (!setResult.ok) {
             oslToast("OSL: whitelist failed: " + setResult.error);
@@ -1762,6 +1824,13 @@
             danger: true,
         });
         if (!ok) return;
+        const selfId = await oslSelfDiscordId();
+        if (!selfId) {
+            oslToast(
+                "OSL: cannot burn — local identity not loaded"
+            );
+            return;
+        }
         // Ship the burn marker. Recipients = members of current
         // channel (for DM/GC, ctx.members already populated; for
         // server channels 7c doesn't yet enumerate the right-panel
@@ -1770,7 +1839,7 @@
         const sendResult = await oslInvoke("osl_send_burn_marker", {
             scopeInput: scopeInput,
             channelMembers: ctx.members,
-            selfDiscordId: ctx.selfId,
+            selfDiscordId: selfId,
         });
         if (sendResult.ok) {
             await oslSendControlMessage(ctx.channelId, sendResult.value);
@@ -1789,8 +1858,80 @@
             oslToast("OSL: burn apply failed: " + applyResult.error);
             return;
         }
+        oslBurnAftermath(ctx.channelId);
         oslToast("Burn applied to " + oslScopeLabel(scopeInput));
         oslRefreshHeaderState();
+    }
+
+    /**
+     * Phase 7c bug-fix #3: post-burn DOM + cache cleanup.
+     *
+     * `cmd_osl_apply_burn` wipes the at-rest wrapped_keys, but
+     * boot.js holds three caches that would otherwise keep
+     * serving the plaintext we already decrypted earlier in the
+     * session:
+     *   - `loadedHistory`  (filled from on-disk store at channel
+     *                       switch — stale post-burn)
+     *   - `recvPlaintext`  (this-session decrypts)
+     *   - `recvDone`       (one-shot dispatch guard)
+     *
+     * For every visible message <li> in `channelId`, we drop the
+     * cache entries and repaint the content div with the cached
+     * cover text (`recvCovers`). The recv observer's next tick
+     * sees DPC0:: text in the div, the caches are empty, it
+     * dispatches a fresh decrypt — which now fails (wrapped key
+     * gone) — and the cover stays in place. Net effect: the
+     * user's view of their own old messages becomes ciphertext
+     * immediately, matching what peers see post-burn.
+     *
+     * Limitations:
+     *   - Only operates on the supplied `channelId`. For
+     *     server_full scopes spanning many channels, only the
+     *     current channel repaints immediately; the others will
+     *     show ciphertext on next channel switch (cache repopulates
+     *     from on-disk store, which now has no wrapped_keys).
+     *   - If a message has no `recvCovers` entry (e.g. it was
+     *     loaded from history before this session and its cover
+     *     was never observed live), we paint a `[burned]` marker
+     *     instead — better than leaving plaintext on screen.
+     */
+    function oslBurnAftermath(channelId) {
+        if (!channelId) return;
+        const items = document.querySelectorAll(
+            'li[id^="chat-messages-' + channelId + '-"]'
+        );
+        let repainted = 0;
+        let placeholders = 0;
+        items.forEach(function (li) {
+            const div = li.querySelector(
+                '[id^="' + RECV_MESSAGE_ID_PREFIX + '"]'
+            );
+            if (!div) return;
+            const messageId = recvMessageIdOf(div);
+            loadedHistory.delete(messageId);
+            recvPlaintext.delete(messageId);
+            recvDone.delete(messageId);
+            const lastCover = recvCovers.get(messageId);
+            const span = document.createElement("span");
+            if (typeof lastCover === "string" && lastCover.length > 0) {
+                span.textContent = lastCover;
+                repainted++;
+            } else {
+                span.textContent = "[burned]";
+                placeholders++;
+            }
+            div.replaceChildren(span);
+        });
+        console.log(
+            "[OSL] burn aftermath: channel=" +
+                channelId +
+                " items=" +
+                items.length +
+                " repainted=" +
+                repainted +
+                " placeholders=" +
+                placeholders
+        );
     }
 
     // ---- Section 5: pending invitation banner ----
@@ -2017,9 +2158,23 @@
                 oslToast(
                     "OSL: a peer burned messages in this scope; affected messages will re-render as ciphertext."
                 );
-                // Force a sweep so the recv observer re-resolves
-                // the burned message into its (now stale) cover
-                // form.
+                // Phase 7c bug-fix #3: same JS-cache + DOM
+                // cleanup the local-burn path runs. Rust already
+                // wiped wrapped_keys in `cmd_osl_apply_burn`; we
+                // need to evict the in-memory caches and repaint
+                // the visible message divs so the user actually
+                // sees the burn effect instead of stale plaintext.
+                try {
+                    const burnCtx = oslCurrentChannelContext();
+                    if (burnCtx && burnCtx.channelId) {
+                        oslBurnAftermath(burnCtx.channelId);
+                    }
+                } catch (e) {
+                    console.log(
+                        "[OSL] recv-side burn aftermath threw: " +
+                            (e && e.message ? e.message : e)
+                    );
+                }
                 oslRefreshHeaderState();
             } else if (result === OSL_RESULT_INVITATION_RECEIVED) {
                 oslRefreshBanners();
