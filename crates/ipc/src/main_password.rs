@@ -146,7 +146,7 @@ pub struct PasswordStatusDto {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VerifyFailureDto {
-    pub ok: bool,                          // always false on this path
+    pub ok: bool, // always false on this path
     pub attempts_used: u32,
     pub lockout_seconds_remaining: i64,
 }
@@ -173,9 +173,7 @@ pub fn validate_password(password: &str) -> Result<(), String> {
     }
     for b in password.as_bytes() {
         if *b < 0x20 || *b > 0x7E {
-            return Err(
-                "OSL: only standard keyboard characters allowed (space–tilde)".to_string(),
-            );
+            return Err("OSL: only standard keyboard characters allowed (space–tilde)".to_string());
         }
     }
     Ok(())
@@ -222,8 +220,7 @@ pub fn marker_exists(dir: &Path) -> bool {
 
 fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
     let path = marker_path(dir);
-    let bytes = std::fs::read(&path)
-        .map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
     let marker: PasswordMarker = serde_json::from_slice(&bytes)
         .map_err(|e| format!("OSL: parse password_marker.json: {e}"))?;
     // 7d-B2: accept both v1 and v2 markers. v1 markers parse fine
@@ -241,8 +238,7 @@ fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
 
 fn write_marker(dir: &Path, marker: &PasswordMarker) -> Result<(), String> {
     if !dir.exists() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
     }
     let path = marker_path(dir);
     let bytes = serde_json::to_vec_pretty(marker)
@@ -253,8 +249,7 @@ fn write_marker(dir: &Path, marker: &PasswordMarker) -> Result<(), String> {
 fn delete_marker(dir: &Path) -> Result<(), String> {
     let path = marker_path(dir);
     if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("OSL: remove {}: {e}", path.display()))?;
+        std::fs::remove_file(&path).map_err(|e| format!("OSL: remove {}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -295,12 +290,11 @@ fn read_lockout(dir: &Path) -> LockoutState {
 
 fn write_lockout(dir: &Path, state: &LockoutState) -> Result<(), String> {
     if !dir.exists() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
     }
     let path = lockout_path(dir);
-    let bytes = serde_json::to_vec_pretty(state)
-        .map_err(|e| format!("OSL: serialize lockout: {e}"))?;
+    let bytes =
+        serde_json::to_vec_pretty(state).map_err(|e| format!("OSL: serialize lockout: {e}"))?;
     std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
 }
 
@@ -430,18 +424,12 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
 /// Return Ok(aes_key) when password matches, Err(reason) otherwise.
 /// Reads the marker, runs argon2, constant-time compare. Does NOT
 /// touch lockout — caller handles that.
-fn verify_with_marker(
-    marker: &PasswordMarker,
-    password: &str,
-) -> Result<[u8; KEY_LEN], String> {
+fn verify_with_marker(marker: &PasswordMarker, password: &str) -> Result<[u8; KEY_LEN], String> {
     let salt = STANDARD
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
     if salt.len() != SALT_LEN {
-        return Err(format!(
-            "OSL: salt wrong len: {} vs {SALT_LEN}",
-            salt.len()
-        ));
+        return Err(format!("OSL: salt wrong len: {} vs {SALT_LEN}", salt.len()));
     }
     let derived = derive(password, &salt, &marker.params)?;
     let stored_hash = STANDARD
@@ -498,11 +486,7 @@ pub fn set_main_password(dir: &Path, password: &str) -> Result<String, String> {
 /// Change existing password. Verifies `current`, re-generates a
 /// fresh phrase (per spec — change rotates the phrase), writes
 /// new marker. Returns the NEW phrase.
-pub fn change_main_password(
-    dir: &Path,
-    current: &str,
-    new: &str,
-) -> Result<String, String> {
+pub fn change_main_password(dir: &Path, current: &str, new: &str) -> Result<String, String> {
     validate_password(new)?;
     let marker = read_marker(dir)?;
     let _key = verify_with_marker(&marker, current)
@@ -698,12 +682,10 @@ pub fn verify_recovery_phrase(
     let phrase_hash_b64 = match marker_phrase_hash(&marker) {
         Some(h) => h,
         None => {
-            return Err(
-                "OSL: this password marker predates phrase recovery — \
+            return Err("OSL: this password marker predates phrase recovery — \
                  remove your password (Settings → Passwords → Remove) \
                  and set it again to enable recovery"
-                    .to_string(),
-            );
+                .to_string());
         }
     };
     let salt = STANDARD
@@ -734,7 +716,8 @@ pub fn verify_recovery_phrase(
     *state_app
         .recovery_token
         .lock()
-        .expect("recovery_token mutex poisoned") = Some((token.clone(), expiry, phrase.to_string()));
+        .expect("recovery_token mutex poisoned") =
+        Some((token.clone(), expiry, phrase.to_string()));
     Ok(token)
 }
 
@@ -761,9 +744,7 @@ pub fn set_main_password_after_recovery(
         return Err("OSL: recovery token mismatch".to_string());
     }
     if now > expiry {
-        return Err(
-            "OSL: recovery token expired — re-enter the recovery phrase".to_string(),
-        );
+        return Err("OSL: recovery token expired — re-enter the recovery phrase".to_string());
     }
     let marker = build_marker(new_password, &phrase)?;
     write_marker(dir, &marker)?;
@@ -825,7 +806,9 @@ fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
 /// pending_invitations loaders + writers to decide whether to
 /// encrypt-on-write or accept an encrypted-on-disk file.
 pub fn get_file_storage_key() -> Option<[u8; 32]> {
-    *file_storage_slot().lock().expect("file_storage_key mutex poisoned")
+    *file_storage_slot()
+        .lock()
+        .expect("file_storage_key mutex poisoned")
 }
 
 pub fn set_file_storage_key(key: Option<[u8; 32]>) {
@@ -834,7 +817,9 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
         .expect("file_storage_key mutex poisoned")
         .is_some();
     let is_some = key.is_some();
-    *file_storage_slot().lock().expect("file_storage_key mutex poisoned") = key;
+    *file_storage_slot()
+        .lock()
+        .expect("file_storage_key mutex poisoned") = key;
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
@@ -911,8 +896,9 @@ pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     if !has_enc_magic(blob) {
         return Ok(blob.to_vec());
     }
-    let key = get_file_storage_key()
-        .ok_or_else(|| "OSL: encrypted at-rest file but no key in slot (password not entered?)".to_string())?;
+    let key = get_file_storage_key().ok_or_else(|| {
+        "OSL: encrypted at-rest file but no key in slot (password not entered?)".to_string()
+    })?;
     decrypt_at_rest(blob, &key)
 }
 
@@ -937,7 +923,12 @@ pub fn has_enc_magic(blob: &[u8]) -> bool {
 /// the spec wants this fail-soft (peer_map missing is normal in a
 /// fresh install).
 pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
-    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json", "burned_scopes.json"] {
+    for name in [
+        "peer_map.json",
+        "whitelist_state.json",
+        "pending_invitations.json",
+        "burned_scopes.json",
+    ] {
         let path = dir.join(name);
         if !path.exists() {
             eprintln!("[OSL][crypto] migrate skip {name}: not present");
@@ -959,8 +950,7 @@ pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
             raw.len()
         );
         let enc = encrypt_at_rest(&raw, key)?;
-        std::fs::write(&path, &enc)
-            .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+        std::fs::write(&path, &enc).map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
         eprintln!(
             "[OSL][crypto] migrated {name} → encrypted ({} bytes on disk)",
             enc.len()
@@ -973,7 +963,11 @@ pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
 /// the supplied (old) key. Called from `remove_main_password`
 /// before clearing the global key.
 pub fn decrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
-    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json"] {
+    for name in [
+        "peer_map.json",
+        "whitelist_state.json",
+        "pending_invitations.json",
+    ] {
         let path = dir.join(name);
         if !path.exists() {
             continue;
@@ -986,8 +980,7 @@ pub fn decrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
             continue;
         }
         let plain = decrypt_at_rest(&raw, key)?;
-        std::fs::write(&path, &plain)
-            .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+        std::fs::write(&path, &plain).map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -1002,21 +995,23 @@ pub fn rotate_state_files(
     old_key: &[u8; 32],
     new_key: &[u8; 32],
 ) -> Result<(), String> {
-    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json"] {
+    for name in [
+        "peer_map.json",
+        "whitelist_state.json",
+        "pending_invitations.json",
+    ] {
         let path = dir.join(name);
         if !path.exists() {
             continue;
         }
-        let raw = std::fs::read(&path)
-            .map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+        let raw = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
         let plain = if has_enc_magic(&raw) {
             decrypt_at_rest(&raw, old_key)?
         } else {
             raw
         };
         let enc = encrypt_at_rest(&plain, new_key)?;
-        std::fs::write(&path, &enc)
-            .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+        std::fs::write(&path, &enc).map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -1055,19 +1050,33 @@ pub fn verify_gate_password_with_marker(
         .decode(&marker.password_hash_b64)
         .map_err(|e| format!("OSL: main hash b64: {e}"))?;
     let stealth_hash = match marker.stealth_password_hash_b64.as_ref() {
-        Some(s) => Some(STANDARD.decode(s).map_err(|e| format!("OSL: stealth hash b64: {e}"))?),
+        Some(s) => Some(
+            STANDARD
+                .decode(s)
+                .map_err(|e| format!("OSL: stealth hash b64: {e}"))?,
+        ),
         None => None,
     };
     let burn_hash = match marker.burn_password_hash_b64.as_ref() {
-        Some(s) => Some(STANDARD.decode(s).map_err(|e| format!("OSL: burn hash b64: {e}"))?),
+        Some(s) => Some(
+            STANDARD
+                .decode(s)
+                .map_err(|e| format!("OSL: burn hash b64: {e}"))?,
+        ),
         None => None,
     };
     let candidate = &derived[..HASH_LEN];
     // Constant-time: run all three comparisons regardless of
     // early match. The bool ORs at the end pick the first match.
     let m_main = ct_eq(candidate, &main_hash);
-    let m_stealth = stealth_hash.as_deref().map(|h| ct_eq(candidate, h)).unwrap_or(false);
-    let m_burn = burn_hash.as_deref().map(|h| ct_eq(candidate, h)).unwrap_or(false);
+    let m_stealth = stealth_hash
+        .as_deref()
+        .map(|h| ct_eq(candidate, h))
+        .unwrap_or(false);
+    let m_burn = burn_hash
+        .as_deref()
+        .map(|h| ct_eq(candidate, h))
+        .unwrap_or(false);
     if m_main {
         let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
         return Ok(GateMatch::Main(file_key));
@@ -1103,7 +1112,9 @@ pub fn set_stealth_password(
             .decode(&marker.salt_b64)
             .map_err(|e| format!("OSL: salt b64: {e}"))?;
         let derived = derive(new_stealth, &salt, &marker.params)?;
-        let burn = STANDARD.decode(burn_b64).map_err(|e| format!("OSL: burn b64: {e}"))?;
+        let burn = STANDARD
+            .decode(burn_b64)
+            .map_err(|e| format!("OSL: burn b64: {e}"))?;
         if ct_eq(&derived[..HASH_LEN], &burn) {
             return Err("OSL: stealth and burn passwords must be different".to_string());
         }
@@ -1126,11 +1137,7 @@ pub fn remove_stealth_password(dir: &Path, current_main: &str) -> Result<(), Str
     write_marker(dir, &marker)
 }
 
-pub fn set_burn_password(
-    dir: &Path,
-    current_main: &str,
-    new_burn: &str,
-) -> Result<(), String> {
+pub fn set_burn_password(dir: &Path, current_main: &str, new_burn: &str) -> Result<(), String> {
     validate_password(new_burn)?;
     let mut marker = read_marker(dir)?;
     let _ = verify_with_marker(&marker, current_main)
@@ -1143,7 +1150,9 @@ pub fn set_burn_password(
             .decode(&marker.salt_b64)
             .map_err(|e| format!("OSL: salt b64: {e}"))?;
         let derived = derive(new_burn, &salt, &marker.params)?;
-        let stealth = STANDARD.decode(stealth_b64).map_err(|e| format!("OSL: stealth b64: {e}"))?;
+        let stealth = STANDARD
+            .decode(stealth_b64)
+            .map_err(|e| format!("OSL: stealth b64: {e}"))?;
         if ct_eq(&derived[..HASH_LEN], &stealth) {
             return Err("OSL: stealth and burn passwords must be different".to_string());
         }
@@ -1188,8 +1197,8 @@ pub fn burn_password_status(dir: &Path) -> bool {
 pub fn stealth_hide_dir(_dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
         use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
         const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
         let wide: Vec<u16> = OsStr::new(_dir)
             .encode_wide()
@@ -1212,8 +1221,8 @@ pub fn stealth_hide_dir(_dir: &Path) -> Result<(), String> {
 pub fn stealth_unhide_dir(_dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
         use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
         const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
         let wide: Vec<u16> = OsStr::new(_dir)
             .encode_wide()
@@ -1257,7 +1266,11 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         }
     }
     let store = dir.join("store");
-    for name in ["messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm"] {
+    for name in [
+        "messages.sqlite",
+        "messages.sqlite-wal",
+        "messages.sqlite-shm",
+    ] {
         let path = store.join(name);
         if path.exists() {
             let _ = std::fs::remove_file(&path);

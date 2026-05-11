@@ -36,8 +36,8 @@ mod screenshot;
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_engage,
-    cmd_osl_burn_message, cmd_osl_burn_password_status, cmd_osl_change_main_password,
-    cmd_osl_burn_scope_data, cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2,
+    cmd_osl_burn_message, cmd_osl_burn_password_status, cmd_osl_burn_scope_data,
+    cmd_osl_change_main_password, cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2,
     cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
     cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
     cmd_osl_list_burned_scopes, cmd_osl_list_pending_invitations, cmd_osl_load_channel_history,
@@ -618,9 +618,7 @@ async fn osl_get_identity_info(app: tauri::AppHandle) -> Result<IdentityInfoDto,
 
 /// Phase 7d-A: settings-menu Whitelist Manager data source.
 #[tauri::command]
-async fn osl_list_all_whitelists(
-    app: tauri::AppHandle,
-) -> Result<Vec<WhitelistRowDto>, String> {
+async fn osl_list_all_whitelists(app: tauri::AppHandle) -> Result<Vec<WhitelistRowDto>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -716,10 +714,7 @@ async fn osl_lockout_status() -> Result<LockoutStatusDto, String> {
 // ===== Phase 7d-B2: stealth password commands. =====
 
 #[tauri::command]
-async fn osl_set_stealth_password(
-    current_main: String,
-    new_stealth: String,
-) -> Result<(), String> {
+async fn osl_set_stealth_password(current_main: String, new_stealth: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         cmd_osl_set_stealth_password(current_main, new_stealth)
     })
@@ -853,9 +848,7 @@ async fn osl_unburn_scope(
 }
 
 #[tauri::command]
-async fn osl_list_burned_scopes(
-    app: tauri::AppHandle,
-) -> Result<Vec<BurnedScopeDto>, String> {
+async fn osl_list_burned_scopes(app: tauri::AppHandle) -> Result<Vec<BurnedScopeDto>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();

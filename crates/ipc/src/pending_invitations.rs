@@ -110,10 +110,7 @@ pub fn load_pending_invitations_from_path(
     let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
         PendingInvitationsError::ParseFailed {
             path: path.to_path_buf(),
-            source: serde_json::Error::io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e,
-            )),
+            source: serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         }
     })?;
     serde_json::from_slice(&plain).map_err(|source| PendingInvitationsError::ParseFailed {

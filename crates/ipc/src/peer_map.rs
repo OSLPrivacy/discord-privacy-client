@@ -302,15 +302,11 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
     // `main_password::set_file_storage_key` to have been called
     // (verify_main_password / gate-main-success). For plain JSON
     // (no marker set, or password removed), pass through.
-    let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
-        PeerMapError::ParseFailed {
+    let plain =
+        crate::main_password::maybe_decrypt(&blob).map_err(|e| PeerMapError::ParseFailed {
             path: path.to_path_buf(),
-            source: serde_json::Error::io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e,
-            )),
-        }
-    })?;
+            source: serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        })?;
     let raw_map: HashMap<String, PeerEntryRepr> =
         serde_json::from_slice(&plain).map_err(|source| PeerMapError::ParseFailed {
             path: path.to_path_buf(),

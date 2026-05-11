@@ -112,10 +112,7 @@ pub fn load_whitelist_state_from_path(path: &Path) -> Result<WhitelistState, Whi
     let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
         WhitelistStateError::ParseFailed {
             path: path.to_path_buf(),
-            source: serde_json::Error::io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e,
-            )),
+            source: serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         }
     })?;
     serde_json::from_slice(&plain).map_err(|source| WhitelistStateError::ParseFailed {

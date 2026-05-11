@@ -64,9 +64,7 @@ pub fn write_burned_scopes(path: &Path, file: &BurnedScopesFile) -> Result<(), S
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt burned_scopes: {e}"))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &out)
-        .map_err(|e| format!("OSL: write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("OSL: rename {}: {e}", path.display()))?;
+    std::fs::write(&tmp, &out).map_err(|e| format!("OSL: write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("OSL: rename {}: {e}", path.display()))?;
     Ok(())
 }

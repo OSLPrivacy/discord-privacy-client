@@ -55,7 +55,10 @@ fn persist_whitelist_state_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::warn!(?e, "OSL: persist whitelist_state: cannot resolve config dir");
+            tracing::warn!(
+                ?e,
+                "OSL: persist whitelist_state: cannot resolve config dir"
+            );
             return;
         }
     };
@@ -2348,10 +2351,7 @@ pub fn cmd_osl_get_scope_encryption_state(
             // Other scopes: either a full whitelist with a
             // member list, or a per-user whitelist with
             // whitelisted_users.
-            _ => {
-                (s.full_whitelist && !s.members.is_empty())
-                    || !s.whitelisted_users.is_empty()
-            }
+            _ => (s.full_whitelist && !s.members.is_empty()) || !s.whitelisted_users.is_empty(),
         },
     };
     Ok(ScopeEncryptionState {
@@ -2717,50 +2717,44 @@ pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowD
 pub use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
 
 pub fn cmd_osl_password_status() -> Result<PasswordStatusDto, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     Ok(crate::main_password::password_status(&dir))
 }
 
 pub fn cmd_osl_set_main_password(password: String) -> Result<String, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::set_main_password(&dir, &password)
 }
 
-pub fn cmd_osl_change_main_password(
-    current: String,
-    new: String,
-) -> Result<String, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+pub fn cmd_osl_change_main_password(current: String, new: String) -> Result<String, String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::change_main_password(&dir, &current, &new)
 }
 
 pub fn cmd_osl_remove_main_password(current: String) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::remove_main_password(&dir, &current)
 }
 
 pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::view_recovery_phrase(&dir, &current)
 }
 
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::verify_main_password(&dir, &password)
 }
 
-pub fn cmd_osl_verify_recovery_phrase(
-    state: &AppState,
-    phrase: String,
-) -> Result<String, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+pub fn cmd_osl_verify_recovery_phrase(state: &AppState, phrase: String) -> Result<String, String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::verify_recovery_phrase(state, &dir, &phrase)
 }
 
@@ -2769,19 +2763,14 @@ pub fn cmd_osl_set_main_password_after_recovery(
     new_password: String,
     token: String,
 ) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    crate::main_password::set_main_password_after_recovery(
-        state,
-        &dir,
-        &new_password,
-        &token,
-    )
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
 }
 
 pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     Ok(crate::main_password::lockout_status(&dir))
 }
 
@@ -2793,20 +2782,20 @@ pub fn cmd_osl_set_stealth_password(
     current_main: String,
     new_stealth: String,
 ) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::set_stealth_password(&dir, &current_main, &new_stealth)
 }
 
 pub fn cmd_osl_remove_stealth_password(current_main: String) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::remove_stealth_password(&dir, &current_main)
 }
 
 pub fn cmd_osl_stealth_password_status() -> Result<PasswordStatusDto, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     Ok(PasswordStatusDto {
         is_set: crate::main_password::stealth_password_status(&dir),
     })
@@ -2816,24 +2805,21 @@ pub fn cmd_osl_stealth_password_status() -> Result<PasswordStatusDto, String> {
 // Phase 7d-B3: burn password operations.
 // =====================================================================
 
-pub fn cmd_osl_set_burn_password(
-    current_main: String,
-    new_burn: String,
-) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+pub fn cmd_osl_set_burn_password(current_main: String, new_burn: String) -> Result<(), String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::set_burn_password(&dir, &current_main, &new_burn)
 }
 
 pub fn cmd_osl_remove_burn_password(current_main: String) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::remove_burn_password(&dir, &current_main)
 }
 
 pub fn cmd_osl_burn_password_status() -> Result<PasswordStatusDto, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     Ok(PasswordStatusDto {
         is_set: crate::main_password::burn_password_status(&dir),
     })
@@ -2860,8 +2846,8 @@ pub fn cmd_osl_verify_gate_password(
     password: String,
 ) -> Result<GateVerifyDto, String> {
     use crate::main_password::GateMatch;
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     // Lockout-window check first (same as verify_main_password).
     let mut lock = crate::main_password::read_lockout_pub(&dir);
     let now = crate::main_password::now_unix_secs_pub();
@@ -2913,7 +2899,8 @@ pub fn cmd_osl_verify_gate_password(
         }
         GateMatch::Wrong => {
             lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
-            let secs = crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
+            let secs =
+                crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
             lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
@@ -2928,8 +2915,8 @@ pub fn cmd_osl_verify_gate_password(
 /// 7d-B2: hide the OSL config dir + record stealth-active for the
 /// session so initialization_script can suppress boot.js injection.
 pub fn cmd_osl_stealth_mode_engage(state: &AppState) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     let _ = crate::main_password::stealth_hide_dir(&dir);
     *state
         .stealth_active
@@ -2997,9 +2984,7 @@ pub fn cmd_osl_burn_scope_data(
     } else {
         0
     };
-    eprintln!(
-        "[OSL][burn] destroyed {rows} rows for channel {channel_id}"
-    );
+    eprintln!("[OSL][burn] destroyed {rows} rows for channel {channel_id}");
     let _ = server_id;
     Ok(BurnScopeDataDto {
         rows_destroyed: rows,
@@ -3071,9 +3056,7 @@ pub struct BurnedScopeDto {
     pub burned_at: i64,
 }
 
-pub fn cmd_osl_list_burned_scopes(
-    state: &AppState,
-) -> Result<Vec<BurnedScopeDto>, String> {
+pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto>, String> {
     let g = state
         .burned_scopes
         .lock()
@@ -3111,8 +3094,8 @@ fn persist_burned_scopes_now(state: &AppState) {
 /// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the
 /// current session doesn't surface previously-decrypted state.
 pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::burn_wipe_all(&dir)?;
     crate::main_password::set_file_storage_key(None);
     // Drop in-memory state. Identity goes to None, every state
@@ -3120,7 +3103,11 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
     // returns, but if anything still queries state in the
     // intervening millisecond we want it empty.
     *state.identity.lock().expect("identity mutex poisoned") = None;
-    state.peer_map.lock().expect("peer_map mutex poisoned").clear();
+    state
+        .peer_map
+        .lock()
+        .expect("peer_map mutex poisoned")
+        .clear();
     state
         .whitelist_state
         .lock()

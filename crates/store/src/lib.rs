@@ -317,10 +317,7 @@ impl MessageStore {
     /// vacuumed state is acceptable for v1.
     ///
     /// Returns the row count for diagnostic logging.
-    pub fn delete_messages_in_channel(
-        &self,
-        channel_id: &str,
-    ) -> Result<usize, StoreError> {
+    pub fn delete_messages_in_channel(&self, channel_id: &str) -> Result<usize, StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let rows = conn.execute(
             "DELETE FROM messages WHERE channel_id = ?1",
