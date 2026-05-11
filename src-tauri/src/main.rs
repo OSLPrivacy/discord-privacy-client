@@ -368,18 +368,41 @@ async fn osl_encrypt_message_v2(
     self_discord_id: String,
 ) -> Result<String, String> {
     let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let scope_for_unburn = scope_input.clone();
+    let scope_for_event = scope_input.clone();
+    let result: Result<String, String> = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_encrypt_message_v2(
+        let wire = cmd_osl_encrypt_message_v2(
             state.inner(),
             plaintext,
             scope_input,
             channel_members,
             self_discord_id,
-        )
+        )?;
+        // 7d-PIVOT-FIX2 Bug F: re-engaging a burned scope via a
+        // fresh encrypted send un-burns it. Returns true iff the
+        // scope was actually in the burned ledger and got removed.
+        let unburned =
+            ipc::commands::cmd_osl_unburn_scope_after_encrypt(state.inner(), scope_for_unburn);
+        Ok((wire, unburned))
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
+    .map(|(wire, unburned)| {
+        if unburned {
+            let payload = serde_json::json!({
+                "scope_kind": scope_for_event.kind,
+                "scope_id": scope_for_event.id,
+                "server_id": scope_for_event.server_id,
+                "channel_id": scope_for_event.channel_id,
+            });
+            if let Err(e) = app.emit("osl:scope_unburned", payload) {
+                tracing::debug!(?e, "OSL: emit scope_unburned event failed");
+            }
+        }
+        wire
+    });
+    result
 }
 
 /// Layer 10 / Phase 7b: build the wire-format burn marker for a
@@ -895,7 +918,7 @@ async fn osl_unburn_scope(
     app: tauri::AppHandle,
     scope_kind: String,
     scope_id: String,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();

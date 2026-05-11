@@ -760,19 +760,62 @@
             return v1Send();
         }
 
-        return oslInvoke("osl_get_scope_encryption_state", {
-            scopeInput: v7cScope,
-        }).then(function (stateRes) {
+        // 7d-PIVOT-FIX2 Bug E: the composer toggle's `aria-checked`
+        // is the authoritative source for "encrypt this send" at
+        // send time. PIVOT-FIX shipped optimistic visual updates
+        // for the composer click, so the toggle reflects the
+        // user's intent immediately — but the Rust-side state
+        // change races against fast click-then-send. By reading
+        // aria-checked synchronously here we always honour what
+        // the user just clicked. Falls back to the existing IPC
+        // path when the toggle isn't mounted yet (first send on
+        // a fresh page before the observer-driven inject has
+        // fired).
+        const composerToggle = document.querySelector(
+            "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+        );
+        const togglePromise =
+            composerToggle && composerToggle.getAttribute("aria-checked") !== null
+                ? Promise.resolve({
+                      ok: true,
+                      value: {
+                          encrypt_toggle:
+                              composerToggle.getAttribute("aria-checked") === "true",
+                          // has_whitelist is unused by the gate
+                          // under PIVOT — encrypt_toggle is the
+                          // only signal — but we set it so the
+                          // shape matches the IPC fallback.
+                          has_whitelist: false,
+                      },
+                      source: "aria-checked",
+                  })
+                : oslInvoke("osl_get_scope_encryption_state", {
+                      scopeInput: v7cScope,
+                  }).then(function (r) {
+                      return Object.assign({}, r, { source: "ipc-fallback" });
+                  });
+
+        return togglePromise.then(function (stateRes) {
             // 7d-PIVOT: encrypt_toggle is now independent of
             // whitelist. Send-time gate is just encrypt_toggle —
             // if no peer whitelist exists, the Rust send path
             // encrypts to self only (you alone decrypt).
-            if (
-                !stateRes ||
-                !stateRes.ok ||
-                !stateRes.value ||
-                !stateRes.value.encrypt_toggle
-            ) {
+            const encryptOn = !!(
+                stateRes &&
+                stateRes.ok &&
+                stateRes.value &&
+                stateRes.value.encrypt_toggle
+            );
+            console.log(
+                "[OSL] send-gate (" +
+                    source +
+                    "): encrypt_toggle = " +
+                    (encryptOn ? "on" : "off") +
+                    " (source: " +
+                    (stateRes.source || "?") +
+                    ")"
+            );
+            if (!encryptOn) {
                 return v1Send();
             }
             const memberIds = (v7cCtx.members || [])
@@ -2601,9 +2644,18 @@
             loadedHistory.delete(messageId);
             recvPlaintext.delete(messageId);
             recvDone.delete(messageId);
+            // 7d-PIVOT-FIX2 Bug G: prefer the DOM-persisted original
+            // ciphertext over the in-memory `recvCovers` map. The
+            // attribute survives across the cache wipes above and lets
+            // us repaint even if this is the first burn observation in
+            // this session. Falls back to recvCovers, then to blank.
+            const origCipher = div.getAttribute("data-osl-orig-cipher");
             const lastCover = recvCovers.get(messageId);
             const span = document.createElement("span");
-            if (typeof lastCover === "string" && lastCover.length > 0) {
+            if (typeof origCipher === "string" && origCipher.length > 0) {
+                span.textContent = origCipher;
+                repainted++;
+            } else if (typeof lastCover === "string" && lastCover.length > 0) {
                 span.textContent = lastCover;
                 repainted++;
             } else {
@@ -3695,6 +3747,28 @@
                     "[OSL] scope_encryption_toggled handler:",
                     err
                 );
+            }
+        });
+
+        // 7d-PIVOT-FIX2 Bug F: post-burn re-engage. Rust un-burns the
+        // scope on a successful fresh encrypt and emits this event so
+        // every webview drops the scope from its in-memory cache. The
+        // receive observer will then resume decrypting incoming DPC0
+        // messages in this scope instead of leaving them as ciphertext.
+        safeListen("osl:scope_unburned", function (e) {
+            try {
+                const p = (e && e.payload) || {};
+                console.log(
+                    "[OSL] event: scope_unburned " +
+                        (p.scope_kind || "?") +
+                        ":" +
+                        (p.scope_id || "?")
+                );
+                if (p.scope_kind && p.scope_id) {
+                    oslBurnedScopesRemove(p.scope_kind, p.scope_id);
+                }
+            } catch (err) {
+                console.error("[OSL] scope_unburned handler:", err);
             }
         });
 
@@ -6224,6 +6298,14 @@
             }
             return;
         }
+        // 7d-PIVOT-FIX2 Bug G: persist the original ciphertext on the
+        // DOM node so `oslBurnAftermath` can restore it after the
+        // in-memory `recvCovers` map is cleared. Set unconditionally:
+        // on a remote edit the cover changes, and the new ciphertext
+        // is what we want to keep on disk after a future burn.
+        try {
+            div.setAttribute("data-osl-orig-cipher", text);
+        } catch (_) {}
         const messageId = recvMessageIdOf(div);
 
         // Phase 6a edit-overlay: if we *just* wrote this message's

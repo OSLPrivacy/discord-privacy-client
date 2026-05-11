@@ -1627,6 +1627,32 @@ pub fn cmd_osl_encrypt_message_v2(
     .map_err(|e| format!("OSL: encrypt_v2: {e}"))
 }
 
+/// 7d-PIVOT-FIX2 Bug F: re-engaging a previously-burned scope by
+/// sending a fresh encrypted message un-burns it. Idempotent — if
+/// the scope isn't currently burned, returns `Ok(false)` and the
+/// caller skips the cross-window event emit. The Tauri wrapper
+/// (`osl_encrypt_message_v2`) calls this after a successful
+/// encrypt and emits `osl:scope_unburned` when this returns true.
+///
+/// Scope-kind mapping matches `cmd_osl_set_whitelist`'s existing
+/// auto-unburn-on-re-whitelist path.
+pub fn cmd_osl_unburn_scope_after_encrypt(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+) -> bool {
+    let scope: crate::scope::Scope = match scope_input.try_into() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let scope_kind_str = match scope.kind {
+        crate::scope::ScopeKind::Dm => "dm",
+        crate::scope::ScopeKind::Gc => "gc_full",
+        crate::scope::ScopeKind::ServerChannel => "server_channel_full",
+        crate::scope::ScopeKind::ServerFull => "server_full",
+    };
+    cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id).unwrap_or(false)
+}
+
 /// Layer 10 / Phase 7b: send a burn marker for `scope` to the
 /// channel members who'd have been able to decrypt content in it
 /// (so they wipe their decryption capability).
@@ -3250,12 +3276,17 @@ pub fn cmd_osl_mark_scope_burned(
     Ok(())
 }
 
+/// Returns `Ok(true)` if a burned-scopes entry was removed,
+/// `Ok(false)` if there was nothing to remove (idempotent no-op).
+/// 7d-PIVOT-FIX2: callers use the boolean to emit the
+/// `osl:scope_unburned` cross-window event so the JS-side
+/// `__oslBurnedScopes` cache stays in sync.
 pub fn cmd_osl_unburn_scope(
     state: &AppState,
     scope_kind: String,
     scope_id: String,
-) -> Result<(), String> {
-    {
+) -> Result<bool, String> {
+    let removed = {
         let mut g = state
             .burned_scopes
             .lock()
@@ -3263,12 +3294,18 @@ pub fn cmd_osl_unburn_scope(
         let before = g.scopes.len();
         g.scopes
             .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
-        if g.scopes.len() < before {
+        let after = g.scopes.len();
+        if after < before {
             g.version = 1;
+            true
+        } else {
+            false
         }
+    };
+    if removed {
+        persist_burned_scopes_now(state);
     }
-    persist_burned_scopes_now(state);
-    Ok(())
+    Ok(removed)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
