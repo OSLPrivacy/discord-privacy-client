@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-A: settings-menu Whitelist Manager data source.
+[[permission]]
+identifier = "allow-osl-list-all-whitelists"
+description = "Permits the discord.com main webview to invoke `osl_list_all_whitelists` (flatten every peer's outgoing_whitelists into a Vec<WhitelistRowDto> for the settings-menu Whitelist Manager 3-tab view). Phase 7d-A."
+commands.allow = ["osl_list_all_whitelists"]

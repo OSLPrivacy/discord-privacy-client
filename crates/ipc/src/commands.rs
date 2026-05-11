@@ -2360,19 +2360,249 @@ pub fn cmd_osl_list_pending_invitations(
     Ok(out)
 }
 
-/// Phase 7c bug-fix #1: return the local user's Discord ID
-/// (== `Identity::user_id`) from `AppState`. The JS injection
-/// layer has no reliable React-fiber source for self-id; this
-/// command surfaces the canonical value the Rust shell already
-/// holds after `bootstrap::run_autostart` loads the identity.
+/// Phase 7c bug-fix #1 (round 3): return the local user's
+/// **Discord snowflake** by reverse-lookup against `peer_map`.
 ///
-/// Returns `"OSL: identity not loaded"` (flat string) when the
-/// identity hasn't been loaded yet — the JS caller treats that
-/// as a hard failure (toast + abort), not a fall-through.
+/// Naming hazard: `Identity::user_id` is the **OSL** user_id
+/// (a logical username like "liam"), NOT a Discord snowflake.
+/// The injection layer needs the Discord snowflake for send
+/// pipelines (`self_discord_id` excludes self from channel-
+/// member walks). The snowflake is configured in
+/// `peer_map.json` keyed by snowflake with
+/// `PeerEntry::osl_user_id` as the value — so we walk the map
+/// and return the key whose entry matches our `Identity`.
+///
+/// Failure modes (all flat-string `Err`):
+///   - `"OSL: identity not loaded"` — bootstrap hasn't run
+///     or identity.json is missing.
+///   - `"OSL: self not registered in peer_map.json (osl_user_id=<name>);
+///     add an entry mapping your Discord snowflake to
+///     {"osl_user_id":"<name>"}"` — identity loaded but no
+///     peer_map row has a matching `osl_user_id`. JS toasts
+///     this so the user can fix peer_map.json without grepping
+///     logs.
 pub fn cmd_osl_get_self_user_id(state: &AppState) -> Result<String, String> {
-    let guard = state.identity.lock().expect("identity mutex poisoned");
-    let identity = guard
-        .as_ref()
-        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    Ok(identity.user_id.clone())
+    let osl_user_id = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        identity.user_id.clone()
+    };
+    let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+    for (discord_id, entry) in pm_guard.iter() {
+        if entry.osl_user_id.as_deref() == Some(osl_user_id.as_str()) {
+            return Ok(discord_id.clone());
+        }
+    }
+    Err(format!(
+        "OSL: self not registered in peer_map.json \
+         (osl_user_id={osl_user_id}); add an entry mapping your Discord \
+         snowflake to {{\"osl_user_id\":\"{osl_user_id}\"}}"
+    ))
+}
+
+// =====================================================================
+// Phase 7d-A: settings-menu data sources
+// =====================================================================
+
+/// 7d-A: payload backing the Identity page of the settings modal.
+/// All fields are display-only — JS renders them in a read-only
+/// monospace block. Missing data points (e.g. snowflake not yet
+/// in peer_map, keyserver.json absent) come back as the literal
+/// string `"Unknown"` rather than an `Err`, so the page always
+/// renders even when bootstrap was partially successful.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IdentityInfoDto {
+    pub osl_user_id: String,
+    pub discord_snowflake: String,
+    pub pubkey: String,
+    pub keyserver_url: String,
+}
+
+/// 7d-A: assemble the Identity page payload from `AppState` plus a
+/// best-effort read of `keyserver.json` for the configured base
+/// URL. The Tauri shell exposes this via `osl_get_identity_info`.
+pub fn cmd_osl_get_identity_info(state: &AppState) -> Result<IdentityInfoDto, String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let (osl_user_id, pubkey_b64) = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        (
+            identity.user_id.clone(),
+            STANDARD.encode(identity.x25519_public.as_bytes()),
+        )
+    };
+    // Snowflake: reverse-lookup peer_map (same shape as
+    // cmd_osl_get_self_user_id). Display-only — "Unknown" on miss.
+    let snowflake = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let mut found = None;
+        for (discord_id, entry) in pm_guard.iter() {
+            if entry.osl_user_id.as_deref() == Some(osl_user_id.as_str()) {
+                found = Some(discord_id.clone());
+                break;
+            }
+        }
+        found.unwrap_or_else(|| "Unknown".to_string())
+    };
+    // Keyserver URL: best-effort read of <config_dir>/keyserver.json.
+    // Mirrors the bootstrap loader shape but tolerant of any error.
+    let keyserver_url = match keystore::osl_config_dir() {
+        Ok(dir) => {
+            let path = dir.join("keyserver.json");
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|v| {
+                    v.get("base_url")
+                        .and_then(|b| b.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| "Unknown".to_string())
+        }
+        Err(_) => "Unknown".to_string(),
+    };
+    Ok(IdentityInfoDto {
+        osl_user_id,
+        discord_snowflake: snowflake,
+        pubkey: pubkey_b64,
+        keyserver_url,
+    })
+}
+
+/// 7d-A: one row in the Whitelist Manager's flat table. The
+/// Tauri shell exposes a `Vec<WhitelistRowDto>` via
+/// `osl_list_all_whitelists`.
+///
+/// Field shapes:
+///   - `scope_kind`: one of "dm", "gc_full", "gc_per_user",
+///     "server_channel_full", "server_channel_per_user",
+///     "server_full". JS uses this to render the human-readable
+///     scope label and to build the right `ScopeInput` when the
+///     user clicks Remove / Burn.
+///   - `scope_id`: the raw scope id (peer snowflake for DM,
+///     channel id for GC, channel id for server_channel,
+///     server id for server_full). NOT the storage key.
+///   - `server_id` / `channel_id`: populated when the kind
+///     carries them; null otherwise.
+///   - `encrypt_toggle`: pulled from `whitelist_state` by
+///     storage_key; false when the scope has no state entry.
+///   - `broadened`: only meaningful for DM scope; always false
+///     for other kinds.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WhitelistRowDto {
+    pub peer_discord_id: String,
+    pub peer_username: String,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub server_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub encrypt_toggle: bool,
+    pub broadened: bool,
+}
+
+/// 7d-A: flatten every peer's outgoing_whitelists into a single
+/// list of DTOs for the settings-menu Whitelist Manager. Order
+/// is stable: peers sorted by Discord snowflake (string), then
+/// scopes in the order they were added (`Vec` preserves insert
+/// order).
+pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowDto>, String> {
+    let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+    let ws_guard = state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned");
+    let mut peers: Vec<(&String, &crate::peer_map::PeerEntry)> = pm_guard.iter().collect();
+    peers.sort_by(|a, b| a.0.cmp(b.0));
+    let mut out: Vec<WhitelistRowDto> = Vec::new();
+    for (discord_id, entry) in peers {
+        let username = entry
+            .osl_user_id
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
+        for w in &entry.outgoing_whitelists {
+            let (scope_kind, scope_id, server_id, channel_id, broadened, storage_key) = match w {
+                crate::peer_map::WhitelistEntry::Dm { broadened, .. } => (
+                    "dm".to_string(),
+                    discord_id.clone(),
+                    None,
+                    Some(discord_id.clone()),
+                    *broadened,
+                    format!("dm:{discord_id}"),
+                ),
+                crate::peer_map::WhitelistEntry::Gc { id, user_specific } => {
+                    let kind = if *user_specific {
+                        "gc_per_user".to_string()
+                    } else {
+                        "gc_full".to_string()
+                    };
+                    (
+                        kind,
+                        id.clone(),
+                        None,
+                        Some(id.clone()),
+                        false,
+                        format!("gc:{id}"),
+                    )
+                }
+                crate::peer_map::WhitelistEntry::ServerChannel {
+                    server_id,
+                    channel_id,
+                    user_specific,
+                } => {
+                    let kind = if *user_specific {
+                        "server_channel_per_user".to_string()
+                    } else {
+                        "server_channel_full".to_string()
+                    };
+                    let combined = format!("{server_id}:{channel_id}");
+                    (
+                        kind,
+                        combined.clone(),
+                        Some(server_id.clone()),
+                        Some(channel_id.clone()),
+                        false,
+                        format!("server_channel:{combined}"),
+                    )
+                }
+                crate::peer_map::WhitelistEntry::ServerFull {
+                    server_id,
+                    user_specific,
+                } => {
+                    let kind = if *user_specific {
+                        "server_full_per_user".to_string()
+                    } else {
+                        "server_full".to_string()
+                    };
+                    (
+                        kind,
+                        server_id.clone(),
+                        Some(server_id.clone()),
+                        None,
+                        false,
+                        format!("server_full:{server_id}"),
+                    )
+                }
+            };
+            let encrypt_toggle = ws_guard
+                .get(&storage_key)
+                .map(|s| s.encrypt_toggle)
+                .unwrap_or(false);
+            out.push(WhitelistRowDto {
+                peer_discord_id: discord_id.clone(),
+                peer_username: username.clone(),
+                scope_kind,
+                scope_id,
+                server_id,
+                channel_id,
+                encrypt_toggle,
+                broadened,
+            });
+        }
+    }
+    Ok(out)
 }

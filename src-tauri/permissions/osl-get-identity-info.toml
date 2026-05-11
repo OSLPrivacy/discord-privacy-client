@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-A: settings-menu Identity page payload.
+[[permission]]
+identifier = "allow-osl-get-identity-info"
+description = "Permits the discord.com main webview to invoke `osl_get_identity_info` (read-only Identity-page DTO: OSL user_id, Discord snowflake, base64 pubkey, keyserver URL). Phase 7d-A settings menu."
+commands.allow = ["osl_get_identity_info"]

@@ -37,14 +37,16 @@ use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_message,
     cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
-    cmd_osl_encrypt_message_v2, cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id,
-    cmd_osl_list_pending_invitations, cmd_osl_load_channel_history, cmd_osl_persist_edit,
-    cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
-    cmd_osl_set_whitelist, cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_register,
-    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
-    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
-    GenerateIdentityResponse, PendingInvitationDto, RegisterResponse, ScopeEncryptionState,
-    StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_scope_encryption_state,
+    cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists, cmd_osl_list_pending_invitations,
+    cmd_osl_load_channel_history, cmd_osl_persist_edit, cmd_osl_send_burn_marker,
+    cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response, cmd_osl_set_whitelist,
+    cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_register, cmd_save_identity,
+    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
+    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
+    IdentityInfoDto, PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
+    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
+    WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -593,6 +595,32 @@ async fn osl_get_self_user_id(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 7d-A: settings-menu Identity page payload.
+#[tauri::command]
+async fn osl_get_identity_info(app: tauri::AppHandle) -> Result<IdentityInfoDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_get_identity_info(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 7d-A: settings-menu Whitelist Manager data source.
+#[tauri::command]
+async fn osl_list_all_whitelists(
+    app: tauri::AppHandle,
+) -> Result<Vec<WhitelistRowDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_list_all_whitelists(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -730,6 +758,8 @@ fn main() {
             osl_toggle_scope_encryption,
             osl_list_pending_invitations,
             osl_get_self_user_id,
+            osl_get_identity_info,
+            osl_list_all_whitelists,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

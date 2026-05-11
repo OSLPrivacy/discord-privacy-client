@@ -125,6 +125,30 @@
     const DEBUG = true;
 
     // ============================================================
+    // Phase 7c round-3 (safe subset): fine-grained debug flags for
+    // high-volume logs that drown the DevTools console during
+    // normal use.
+    //
+    // - OSL_DEBUG_SWEEP: gates the 250ms periodic sweep tick log
+    //   (`[OSL] periodic sweep tick (msgs=N, cached=M,
+    //   dispatched=K)`). Fires every tick whether anything
+    //   happened or not. Turn on when debugging the sweep loop.
+    //
+    // - OSL_DEBUG_RECV: gates per-message `recvHandleDiv ENTRY`
+    //   and the high-volume `reason=no_DPC0_prefix` SKIP log.
+    //   Fires for every message rendered, OSL or not — unusable
+    //   in a busy server channel. Turn on when investigating
+    //   recv-side cover detection.
+    //
+    // Important `[OSL]` logs (control-message handling, decrypt
+    // success/failure, intercept abort/passthrough, whitelist UI
+    // events, recvHandleDiv DISPATCH/APPLY/other SKIP reasons)
+    // stay un-gated so real activity remains visible.
+    // ============================================================
+    const OSL_DEBUG_SWEEP = false;
+    const OSL_DEBUG_RECV = false;
+
+    // ============================================================
     // Captured native timers.
     //
     // Discord's bundle loads AFTER this IIFE (we run as a Tauri
@@ -180,6 +204,8 @@
     // anyway. Concurrent callers share a single in-flight invoke.
     let oslSelfDiscordIdCache = null;
     let oslSelfDiscordIdInFlight = null;
+    let oslSelfDiscordIdLastError = null;
+    let oslSelfDiscordIdToastShown = false;
     function oslSelfDiscordId() {
         if (typeof oslSelfDiscordIdCache === "string") {
             return Promise.resolve(oslSelfDiscordIdCache);
@@ -191,19 +217,45 @@
         }
         oslSelfDiscordIdInFlight = invoke("osl_get_self_user_id", {})
             .then(function (id) {
-                if (typeof id === "string" && /^\d{15,22}$/.test(id)) {
+                // Discord snowflakes are 17–20 digits; the previous
+                // 15–22 range was too loose AND too tight at the
+                // edges. The round-3 Rust impl now returns the
+                // peer_map-resolved snowflake, not identity.user_id.
+                if (typeof id === "string" && /^\d{17,20}$/.test(id)) {
                     oslSelfDiscordIdCache = id;
+                    oslSelfDiscordIdLastError = null;
                     return id;
                 }
-                console.error(
-                    "[OSL] osl_get_self_user_id returned non-snowflake: " +
-                        typeof id
-                );
+                // Log the actual rejected value so we can diagnose
+                // shape mismatches (snowflake-as-empty-string, wrong
+                // field, etc.).
+                oslSelfDiscordIdLastError =
+                    "osl_get_self_user_id returned non-snowflake value " +
+                    JSON.stringify(id);
+                console.error("[OSL] " + oslSelfDiscordIdLastError);
                 return null;
             })
             .catch(function (err) {
-                const msg = err && err.message ? err.message : String(err);
+                const msg =
+                    typeof err === "string"
+                        ? err
+                        : err && err.message
+                            ? err.message
+                            : String(err);
+                oslSelfDiscordIdLastError = msg;
                 console.error("[OSL] osl_get_self_user_id failed: " + msg);
+                // One-shot toast so the user sees the actionable Rust
+                // error (e.g. "add to peer_map.json") without it
+                // re-spamming on every click. Helper-internal so all
+                // callers benefit uniformly.
+                if (!oslSelfDiscordIdToastShown) {
+                    oslSelfDiscordIdToastShown = true;
+                    try {
+                        if (typeof oslToast === "function") {
+                            oslToast(msg, { durationMs: 8000 });
+                        }
+                    } catch (e) {}
+                }
                 return null;
             })
             .finally(function () {
@@ -2193,6 +2245,1111 @@
         return true;
     };
 
+    // ============================================================
+    // Section 8 (Phase 7d-A): Settings menu
+    //
+    // Single stable modal root mounted once on first open, then
+    // shown/hidden via display:none. NO mount/unmount churn, NO
+    // global event listeners that persist after close (the keydown
+    // handler is attached on open and detached on close).
+    //
+    // Lessons applied from the round-3 freeze:
+    //   - Gear injection runs inside requestAnimationFrame, gated
+    //     on a data-attribute check, so the headerObs MutationObserver
+    //     can't re-enter mid-injection and Discord's React
+    //     reconciliation doesn't race with us writing the new node.
+    //   - Backdrop click closes ONLY when e.target === backdrop
+    //     (not when bubbling from a child). All inner buttons
+    //     stopPropagation but do NOT preventDefault — preventDefault
+    //     on bubbling capture-phase listeners was implicated in the
+    //     round-3 freeze.
+    //   - The modal root never moves in the DOM after first mount,
+    //     so MutationObservers watching document.body don't churn.
+    //
+    // Page model: a single `data-osl-settings-modal="1"` root with
+    // a left sidebar of `[data-osl-page=...]` buttons and a right
+    // content area of `[data-osl-page-content=...]` panes (display
+    // toggled). Tab state for the whitelist page lives inside the
+    // page pane and isn't re-fetched on switch.
+    // ============================================================
+
+    const SETTINGS_ROOT_ATTR = "data-osl-settings-modal";
+    const SETTINGS_GEAR_ATTR = "data-osl-settings-btn";
+    const SETTINGS_CSS_ID = "__osl_settings_css";
+    const SETTINGS_CONFIRM_ATTR = "data-osl-settings-confirm";
+
+    function oslSettingsEnsureCss() {
+        if (document.getElementById(SETTINGS_CSS_ID)) return;
+        const style = document.createElement("style");
+        style.id = SETTINGS_CSS_ID;
+        style.textContent =
+            ".osl-settings-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100001;display:flex;align-items:center;justify-content:center;}" +
+            ".osl-settings-modal{background:var(--background-primary,#313338);color:var(--text-normal,#dbdee1);border-radius:8px;width:min(1100px,90vw);height:min(720px,80vh);display:flex;flex-direction:row;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.6);font-family:inherit;}" +
+            ".osl-settings-sidebar{width:220px;background:var(--background-secondary,#2b2d31);padding:16px 8px;display:flex;flex-direction:column;gap:2px;overflow-y:auto;flex-shrink:0;}" +
+            ".osl-settings-sidebar-item{padding:8px 12px;border-radius:4px;cursor:pointer;font-size:14px;color:var(--interactive-normal,#b5bac1);user-select:none;display:flex;align-items:center;justify-content:space-between;}" +
+            ".osl-settings-sidebar-item:hover{background:var(--background-modifier-hover,rgba(78,80,88,0.3));color:var(--interactive-hover,#dbdee1);}" +
+            ".osl-settings-sidebar-item.active{background:var(--background-modifier-selected,rgba(78,80,88,0.6));color:var(--interactive-active,#fff);}" +
+            ".osl-settings-sidebar-item.disabled{cursor:not-allowed;opacity:0.45;}" +
+            ".osl-settings-sidebar-item.disabled:hover{background:transparent;color:var(--interactive-normal,#b5bac1);}" +
+            ".osl-settings-sidebar-divider{height:1px;background:var(--background-modifier-accent,#3f4147);margin:8px 4px;}" +
+            ".osl-settings-content{flex:1 1 auto;padding:24px 32px;overflow-y:auto;}" +
+            ".osl-settings-close{position:absolute;top:16px;right:24px;background:none;border:none;color:var(--interactive-normal,#b5bac1);font-size:24px;cursor:pointer;line-height:1;padding:4px 8px;border-radius:4px;}" +
+            ".osl-settings-close:hover{color:var(--interactive-hover,#dbdee1);background:var(--background-modifier-hover,rgba(78,80,88,0.3));}" +
+            ".osl-settings-h1{margin:0 0 20px 0;font-size:20px;font-weight:600;color:var(--header-primary,#fff);}" +
+            ".osl-settings-h2{margin:24px 0 8px 0;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.02em;color:var(--header-secondary,#b5bac1);}" +
+            ".osl-settings-field{margin:8px 0;}" +
+            ".osl-settings-field-label{font-size:12px;color:var(--header-secondary,#b5bac1);text-transform:uppercase;letter-spacing:0.02em;margin-bottom:4px;}" +
+            ".osl-settings-field-value{font-family:Consolas,Menlo,monospace;font-size:13px;color:var(--text-normal,#dbdee1);background:var(--background-tertiary,#1e1f22);padding:8px 10px;border-radius:4px;word-break:break-all;display:flex;align-items:center;justify-content:space-between;gap:8px;}" +
+            ".osl-settings-copy-btn{flex-shrink:0;padding:4px 10px;font-size:12px;border-radius:3px;background:var(--brand-560,#5865f2);color:#fff;border:none;cursor:pointer;}" +
+            ".osl-settings-copy-btn:hover{background:var(--brand-600,#4752c4);}" +
+            ".osl-settings-tab-row{display:flex;gap:4px;border-bottom:1px solid var(--background-modifier-accent,#3f4147);margin-bottom:16px;}" +
+            ".osl-settings-tab{padding:8px 14px;cursor:pointer;font-size:14px;color:var(--interactive-normal,#b5bac1);border-bottom:2px solid transparent;user-select:none;}" +
+            ".osl-settings-tab:hover{color:var(--interactive-hover,#dbdee1);}" +
+            ".osl-settings-tab.active{color:var(--interactive-active,#fff);border-bottom-color:var(--brand-560,#5865f2);}" +
+            ".osl-settings-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}" +
+            ".osl-settings-hint{font-size:12px;color:var(--text-muted,#949ba4);margin-bottom:12px;}" +
+            ".osl-settings-empty{text-align:center;color:var(--text-muted,#949ba4);padding:48px 16px;font-size:14px;}" +
+            ".osl-settings-table{width:100%;border-collapse:collapse;font-size:13px;}" +
+            ".osl-settings-table th{text-align:left;padding:8px 10px;color:var(--header-secondary,#b5bac1);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.02em;border-bottom:1px solid var(--background-modifier-accent,#3f4147);cursor:pointer;user-select:none;}" +
+            ".osl-settings-table td{padding:10px;border-bottom:1px solid var(--background-modifier-accent,#3f4147);vertical-align:middle;}" +
+            ".osl-settings-table tr:hover td{background:var(--background-modifier-hover,rgba(78,80,88,0.15));}" +
+            ".osl-settings-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}" +
+            ".osl-settings-pill-on{background:rgba(67,181,129,0.2);color:#23a559;}" +
+            ".osl-settings-pill-off{background:rgba(149,165,166,0.2);color:var(--text-muted,#949ba4);}" +
+            ".osl-settings-row-btn{padding:4px 10px;font-size:12px;border-radius:3px;border:none;cursor:pointer;margin-right:4px;}" +
+            ".osl-settings-row-btn-remove{background:var(--background-modifier-accent,#4f545c);color:var(--text-normal,#dbdee1);}" +
+            ".osl-settings-row-btn-remove:hover{background:var(--background-modifier-active,#54575c);}" +
+            ".osl-settings-row-btn-burn{background:#ed4245;color:#fff;}" +
+            ".osl-settings-row-btn-burn:hover{background:#c93437;}" +
+            ".osl-settings-toggle{position:relative;display:inline-block;width:36px;height:20px;cursor:pointer;}" +
+            ".osl-settings-toggle-bg{position:absolute;inset:0;background:var(--background-modifier-accent,#4f545c);border-radius:10px;transition:background 0.15s;}" +
+            ".osl-settings-toggle-bg.on{background:#23a559;}" +
+            ".osl-settings-toggle-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:left 0.15s;}" +
+            ".osl-settings-toggle-bg.on .osl-settings-toggle-knob{left:18px;}" +
+            ".osl-settings-group{margin:12px 0;}" +
+            ".osl-settings-group-header{cursor:pointer;padding:6px 8px;font-weight:600;font-size:13px;color:var(--header-primary,#fff);background:var(--background-secondary-alt,#232428);border-radius:4px;display:flex;align-items:center;gap:6px;user-select:none;}" +
+            ".osl-settings-group-header:hover{background:var(--background-modifier-hover,rgba(78,80,88,0.3));}" +
+            ".osl-settings-group-body{padding:6px 0 6px 16px;}" +
+            ".osl-settings-group-row{padding:6px 8px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid var(--background-modifier-accent,#3f4147);}" +
+            ".osl-settings-group-row:last-child{border-bottom:none;}" +
+            ".osl-settings-link{color:var(--text-link,#00a8fc);}" +
+            ".osl-settings-confirm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100002;display:flex;align-items:center;justify-content:center;}" +
+            ".osl-settings-confirm-box{background:var(--background-floating,#18191c);color:var(--text-normal,#dbdee1);border-radius:8px;max-width:440px;padding:20px;box-shadow:0 8px 24px rgba(0,0,0,0.5);}" +
+            ".osl-settings-confirm-title{margin:0 0 8px 0;font-size:18px;font-weight:600;}" +
+            ".osl-settings-confirm-body{margin:0 0 16px 0;font-size:14px;line-height:1.4;}" +
+            ".osl-settings-confirm-row{display:flex;justify-content:flex-end;gap:8px;}" +
+            ".osl-settings-confirm-btn{padding:6px 14px;border-radius:4px;border:none;cursor:pointer;font-size:14px;}" +
+            ".osl-settings-confirm-btn-cancel{background:transparent;color:inherit;border:1px solid var(--background-modifier-accent,#4f545c);}" +
+            ".osl-settings-confirm-btn-go{background:var(--brand-560,#5865f2);color:#fff;}" +
+            ".osl-settings-confirm-btn-go.danger{background:#ed4245;}";
+        document.head.appendChild(style);
+    }
+
+    /**
+     * 7d-A: nested confirm dialog used by Remove + Burn actions in
+     * the Whitelist Manager. Single stable root per call site:
+     * built fresh each call (cheap — modal usage is sparse), torn
+     * down on resolve. Independent of `oslConfirm` so the nested
+     * Escape-handling semantics (Esc closes confirm only, not the
+     * underlying settings modal) can be enforced here.
+     */
+    function oslSettingsConfirm(opts) {
+        return new Promise(function (resolve) {
+            const backdrop = document.createElement("div");
+            backdrop.className = "osl-settings-confirm-backdrop";
+            backdrop.setAttribute(SETTINGS_CONFIRM_ATTR, "1");
+            const box = document.createElement("div");
+            box.className = "osl-settings-confirm-box";
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = opts.title || "Confirm";
+            const body = document.createElement("p");
+            body.className = "osl-settings-confirm-body";
+            body.textContent = opts.body || "";
+            const row = document.createElement("div");
+            row.className = "osl-settings-confirm-row";
+            const cancel = document.createElement("button");
+            cancel.className =
+                "osl-settings-confirm-btn osl-settings-confirm-btn-cancel";
+            cancel.textContent = opts.cancelText || "Cancel";
+            const go = document.createElement("button");
+            go.className =
+                "osl-settings-confirm-btn osl-settings-confirm-btn-go" +
+                (opts.danger ? " danger" : "");
+            go.textContent = opts.confirmText || "Confirm";
+
+            const close = function (result) {
+                document.removeEventListener("keydown", onKey, true);
+                if (backdrop.parentNode)
+                    backdrop.parentNode.removeChild(backdrop);
+                resolve(result);
+            };
+            const onKey = function (e) {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    close(false);
+                }
+            };
+            cancel.addEventListener("click", function (e) {
+                e.stopPropagation();
+                close(false);
+            });
+            go.addEventListener("click", function (e) {
+                e.stopPropagation();
+                close(true);
+            });
+            backdrop.addEventListener("click", function (e) {
+                // Per spec: confirm-dialog clicks outside the box do
+                // NOTHING (don't close underlying settings, don't
+                // dismiss confirm). User must use Cancel button or
+                // Escape. Just stop the click from bubbling so the
+                // settings backdrop can't see it.
+                if (e.target === backdrop) {
+                    e.stopPropagation();
+                }
+            });
+            document.addEventListener("keydown", onKey, true);
+
+            row.appendChild(cancel);
+            row.appendChild(go);
+            box.appendChild(title);
+            box.appendChild(body);
+            box.appendChild(row);
+            backdrop.appendChild(box);
+            document.body.appendChild(backdrop);
+        });
+    }
+
+    // Singleton modal-root state.
+    let oslSettingsRoot = null;
+    let oslSettingsKeyHandler = null;
+    let oslSettingsCurrentPage = "identity";
+    // Whitelist-page data cache: avoids re-fetch on tab switch.
+    let oslSettingsWlData = null;
+    let oslSettingsWlTab = "flat";
+    let oslSettingsWlSort = { col: "user", dir: "asc" };
+    // Per-user / per-scope collapse state — preserved across re-renders.
+    const oslSettingsCollapse = new Map();
+
+    function oslSettingsEnsureRoot() {
+        if (oslSettingsRoot && document.body.contains(oslSettingsRoot)) {
+            return oslSettingsRoot;
+        }
+        oslSettingsEnsureCss();
+        const backdrop = document.createElement("div");
+        backdrop.className = "osl-settings-backdrop";
+        backdrop.setAttribute(SETTINGS_ROOT_ATTR, "1");
+        backdrop.style.display = "none";
+
+        const modal = document.createElement("div");
+        modal.className = "osl-settings-modal";
+        modal.style.position = "relative";
+
+        const sidebar = document.createElement("div");
+        sidebar.className = "osl-settings-sidebar";
+
+        const liveItems = [
+            { id: "identity", label: "Identity" },
+            { id: "whitelist", label: "Whitelist Manager" },
+            { id: "about", label: "About" },
+        ];
+        const futureItems = [
+            { id: "_passwords", label: "Passwords" },
+            { id: "_keybinds", label: "Keybinds" },
+            { id: "_duress", label: "Duress" },
+            { id: "_danger", label: "Danger Zone" },
+        ];
+        for (const item of liveItems) {
+            const el = document.createElement("div");
+            el.className = "osl-settings-sidebar-item";
+            el.setAttribute("data-osl-page", item.id);
+            el.textContent = item.label;
+            el.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsSwitchPage(item.id);
+            });
+            sidebar.appendChild(el);
+        }
+        const divider = document.createElement("div");
+        divider.className = "osl-settings-sidebar-divider";
+        sidebar.appendChild(divider);
+        for (const item of futureItems) {
+            const el = document.createElement("div");
+            el.className = "osl-settings-sidebar-item disabled";
+            el.title = "Coming soon";
+            const label = document.createElement("span");
+            label.textContent = item.label;
+            const tag = document.createElement("span");
+            tag.textContent = "Soon";
+            tag.style.fontSize = "10px";
+            tag.style.opacity = "0.7";
+            tag.style.padding = "1px 6px";
+            tag.style.borderRadius = "8px";
+            tag.style.background =
+                "var(--background-modifier-accent, #4f545c)";
+            el.appendChild(label);
+            el.appendChild(tag);
+            // No click handler — disabled.
+            sidebar.appendChild(el);
+        }
+
+        const content = document.createElement("div");
+        content.className = "osl-settings-content";
+        content.setAttribute("data-osl-content-root", "1");
+
+        for (const id of ["identity", "whitelist", "about"]) {
+            const pane = document.createElement("div");
+            pane.setAttribute("data-osl-page-content", id);
+            pane.style.display = "none";
+            content.appendChild(pane);
+        }
+
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "osl-settings-close";
+        closeBtn.setAttribute("aria-label", "Close settings");
+        closeBtn.textContent = "×";
+        closeBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            oslSettingsClose();
+        });
+
+        modal.appendChild(sidebar);
+        modal.appendChild(content);
+        modal.appendChild(closeBtn);
+        backdrop.appendChild(modal);
+
+        backdrop.addEventListener("click", function (e) {
+            // Per spec: backdrop closes ONLY when the actual click
+            // target was the backdrop itself. stopPropagation on
+            // inner clicks already prevents bubbling, but a
+            // pointer-event leak (e.g. click on a disabled
+            // sidebar item) could otherwise close the modal.
+            if (e.target === backdrop) {
+                oslSettingsClose();
+            }
+        });
+
+        document.body.appendChild(backdrop);
+        oslSettingsRoot = backdrop;
+        return backdrop;
+    }
+
+    function oslSettingsOpen() {
+        const root = oslSettingsEnsureRoot();
+        root.style.display = "flex";
+        if (!oslSettingsKeyHandler) {
+            oslSettingsKeyHandler = function (e) {
+                if (e.key !== "Escape") return;
+                // Don't close the settings modal while a confirm
+                // dialog is open — the confirm's own keydown
+                // listener (capture phase, attached later) consumes
+                // Escape first via stopPropagation.
+                if (document.querySelector("[" + SETTINGS_CONFIRM_ATTR + "='1']")) {
+                    return;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                oslSettingsClose();
+            };
+            document.addEventListener("keydown", oslSettingsKeyHandler, false);
+        }
+        oslSettingsSwitchPage(oslSettingsCurrentPage || "identity");
+    }
+
+    function oslSettingsClose() {
+        if (!oslSettingsRoot) return;
+        oslSettingsRoot.style.display = "none";
+        if (oslSettingsKeyHandler) {
+            document.removeEventListener(
+                "keydown",
+                oslSettingsKeyHandler,
+                false
+            );
+            oslSettingsKeyHandler = null;
+        }
+        // Drop any stale confirm dialogs that somehow survived.
+        const stale = document.querySelectorAll(
+            "[" + SETTINGS_CONFIRM_ATTR + "='1']"
+        );
+        for (const el of stale) el.remove();
+    }
+
+    function oslSettingsSwitchPage(pageId) {
+        oslSettingsCurrentPage = pageId;
+        if (!oslSettingsRoot) return;
+        // Sidebar active state.
+        const items = oslSettingsRoot.querySelectorAll(
+            ".osl-settings-sidebar-item[data-osl-page]"
+        );
+        for (const it of items) {
+            if (it.getAttribute("data-osl-page") === pageId) {
+                it.classList.add("active");
+            } else {
+                it.classList.remove("active");
+            }
+        }
+        // Content panes.
+        const panes = oslSettingsRoot.querySelectorAll(
+            "[data-osl-page-content]"
+        );
+        for (const p of panes) {
+            p.style.display =
+                p.getAttribute("data-osl-page-content") === pageId
+                    ? "block"
+                    : "none";
+        }
+        if (pageId === "identity") {
+            oslSettingsRenderIdentity();
+        } else if (pageId === "whitelist") {
+            oslSettingsRenderWhitelist();
+        } else if (pageId === "about") {
+            oslSettingsRenderAbout();
+        }
+    }
+
+    // ---- Identity page ----
+
+    async function oslSettingsRenderIdentity() {
+        const pane = oslSettingsRoot.querySelector(
+            "[data-osl-page-content='identity']"
+        );
+        if (!pane) return;
+        pane.innerHTML = "";
+        const h1 = document.createElement("h1");
+        h1.className = "osl-settings-h1";
+        h1.textContent = "Your Identity";
+        pane.appendChild(h1);
+
+        const loading = document.createElement("div");
+        loading.className = "osl-settings-hint";
+        loading.textContent = "Loading…";
+        pane.appendChild(loading);
+
+        const result = await oslInvoke("osl_get_identity_info", {});
+        loading.remove();
+        if (!result.ok) {
+            const err = document.createElement("div");
+            err.className = "osl-settings-empty";
+            err.textContent =
+                "Could not load identity: " + result.error;
+            pane.appendChild(err);
+            return;
+        }
+        const info = result.value;
+
+        const accountH = document.createElement("h2");
+        accountH.className = "osl-settings-h2";
+        accountH.textContent = "OSL Account";
+        pane.appendChild(accountH);
+
+        pane.appendChild(
+            oslSettingsField("OSL User ID", info.osl_user_id, false)
+        );
+        pane.appendChild(
+            oslSettingsField("Discord Snowflake", info.discord_snowflake, false)
+        );
+        pane.appendChild(
+            oslSettingsField("Public Key", info.pubkey, true)
+        );
+
+        const ksH = document.createElement("h2");
+        ksH.className = "osl-settings-h2";
+        ksH.textContent = "Keyserver";
+        pane.appendChild(ksH);
+
+        pane.appendChild(
+            oslSettingsField("Connected to", info.keyserver_url, false)
+        );
+        pane.appendChild(
+            oslSettingsField(
+                "Status",
+                info.keyserver_url === "Unknown"
+                    ? "Not configured"
+                    : "Configured",
+                false
+            )
+        );
+    }
+
+    function oslSettingsField(label, value, copyable) {
+        const wrap = document.createElement("div");
+        wrap.className = "osl-settings-field";
+        const lab = document.createElement("div");
+        lab.className = "osl-settings-field-label";
+        lab.textContent = label;
+        const val = document.createElement("div");
+        val.className = "osl-settings-field-value";
+        const span = document.createElement("span");
+        span.textContent = value;
+        val.appendChild(span);
+        if (copyable) {
+            const btn = document.createElement("button");
+            btn.className = "osl-settings-copy-btn";
+            btn.textContent = "Copy";
+            btn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                try {
+                    if (
+                        navigator.clipboard &&
+                        typeof navigator.clipboard.writeText === "function"
+                    ) {
+                        navigator.clipboard
+                            .writeText(value)
+                            .then(function () {
+                                btn.textContent = "Copied!";
+                                nativeSetTimeout(function () {
+                                    btn.textContent = "Copy";
+                                }, 1200);
+                            })
+                            .catch(function () {
+                                btn.textContent = "Copy failed";
+                            });
+                    } else {
+                        btn.textContent = "Copy unavailable";
+                    }
+                } catch (_) {
+                    btn.textContent = "Copy failed";
+                }
+            });
+            val.appendChild(btn);
+        }
+        wrap.appendChild(lab);
+        wrap.appendChild(val);
+        return wrap;
+    }
+
+    // ---- Whitelist Manager ----
+
+    function oslSettingsScopeLabel(row) {
+        switch (row.scope_kind) {
+            case "dm":
+                return "DM";
+            case "gc_full":
+                return "GC: " + row.scope_id;
+            case "gc_per_user":
+                return "GC: " + row.scope_id + " (per-user)";
+            case "server_channel_full":
+                return "Server: " + row.scope_id;
+            case "server_channel_per_user":
+                return "Server: " + row.scope_id + " (per-user)";
+            case "server_full":
+                return "Server: " + row.scope_id + " (full)";
+            case "server_full_per_user":
+                return "Server: " + row.scope_id + " (full, per-user)";
+            default:
+                return row.scope_kind + ":" + row.scope_id;
+        }
+    }
+
+    function oslSettingsRowToScopeInput(row) {
+        switch (row.scope_kind) {
+            case "dm":
+                return { kind: "dm", id: row.peer_discord_id };
+            case "gc_full":
+            case "gc_per_user":
+                return { kind: "gc", id: row.scope_id, channel_id: row.scope_id };
+            case "server_channel_full":
+            case "server_channel_per_user":
+                return {
+                    kind: "server_channel",
+                    id: row.scope_id,
+                    server_id: row.server_id,
+                    channel_id: row.channel_id,
+                };
+            case "server_full":
+            case "server_full_per_user":
+                return {
+                    kind: "server_full",
+                    id: row.scope_id,
+                    server_id: row.server_id,
+                };
+            default:
+                return null;
+        }
+    }
+
+    async function oslSettingsRenderWhitelist() {
+        const pane = oslSettingsRoot.querySelector(
+            "[data-osl-page-content='whitelist']"
+        );
+        if (!pane) return;
+        pane.innerHTML = "";
+
+        const toolbar = document.createElement("div");
+        toolbar.className = "osl-settings-toolbar";
+        const h1 = document.createElement("h1");
+        h1.className = "osl-settings-h1";
+        h1.textContent = "Whitelist Manager";
+        h1.style.margin = "0";
+        const refresh = document.createElement("button");
+        refresh.className = "osl-settings-row-btn osl-settings-row-btn-remove";
+        refresh.textContent = "Refresh";
+        refresh.addEventListener("click", function (e) {
+            e.stopPropagation();
+            oslSettingsWlData = null;
+            oslSettingsRenderWhitelist();
+        });
+        toolbar.appendChild(h1);
+        toolbar.appendChild(refresh);
+        pane.appendChild(toolbar);
+
+        const hint = document.createElement("div");
+        hint.className = "osl-settings-hint";
+        hint.textContent =
+            "To add a whitelist, click a user's avatar and use the OSL whitelist button on their profile.";
+        pane.appendChild(hint);
+
+        // Tab row.
+        const tabRow = document.createElement("div");
+        tabRow.className = "osl-settings-tab-row";
+        const tabs = [
+            { id: "flat", label: "Flat" },
+            { id: "by_scope", label: "By Scope" },
+            { id: "by_user", label: "By User" },
+        ];
+        for (const t of tabs) {
+            const el = document.createElement("div");
+            el.className =
+                "osl-settings-tab" +
+                (oslSettingsWlTab === t.id ? " active" : "");
+            el.setAttribute("data-osl-wl-tab", t.id);
+            el.textContent = t.label;
+            el.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsWlTab = t.id;
+                oslSettingsRenderWhitelist();
+            });
+            tabRow.appendChild(el);
+        }
+        pane.appendChild(tabRow);
+
+        const body = document.createElement("div");
+        pane.appendChild(body);
+
+        if (!oslSettingsWlData) {
+            const loading = document.createElement("div");
+            loading.className = "osl-settings-hint";
+            loading.textContent = "Loading…";
+            body.appendChild(loading);
+            const result = await oslInvoke(
+                "osl_list_all_whitelists",
+                {}
+            );
+            if (!result.ok) {
+                body.innerHTML = "";
+                const err = document.createElement("div");
+                err.className = "osl-settings-empty";
+                err.textContent =
+                    "Could not load whitelists: " + result.error;
+                body.appendChild(err);
+                return;
+            }
+            oslSettingsWlData = result.value || [];
+            // If the page changed while loading, bail.
+            if (oslSettingsCurrentPage !== "whitelist") return;
+        }
+
+        body.innerHTML = "";
+        if (!oslSettingsWlData.length) {
+            const empty = document.createElement("div");
+            empty.className = "osl-settings-empty";
+            empty.textContent =
+                "No whitelists yet. Add one via a user's profile popup.";
+            body.appendChild(empty);
+            return;
+        }
+
+        if (oslSettingsWlTab === "flat") {
+            body.appendChild(oslSettingsRenderWlFlat(oslSettingsWlData));
+        } else if (oslSettingsWlTab === "by_scope") {
+            body.appendChild(oslSettingsRenderWlByScope(oslSettingsWlData));
+        } else {
+            body.appendChild(oslSettingsRenderWlByUser(oslSettingsWlData));
+        }
+    }
+
+    function oslSettingsRenderWlFlat(rows) {
+        const wrap = document.createElement("div");
+        const table = document.createElement("table");
+        table.className = "osl-settings-table";
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        const cols = [
+            { id: "user", label: "User" },
+            { id: "scope", label: "Scope" },
+            { id: "encrypt", label: "Encrypt" },
+            { id: "actions", label: "Actions" },
+        ];
+        for (const c of cols) {
+            const th = document.createElement("th");
+            th.textContent = c.label;
+            if (c.id !== "actions") {
+                th.style.cursor = "pointer";
+                th.addEventListener("click", function (e) {
+                    e.stopPropagation();
+                    if (oslSettingsWlSort.col === c.id) {
+                        oslSettingsWlSort.dir =
+                            oslSettingsWlSort.dir === "asc" ? "desc" : "asc";
+                    } else {
+                        oslSettingsWlSort.col = c.id;
+                        oslSettingsWlSort.dir = "asc";
+                    }
+                    oslSettingsRenderWhitelist();
+                });
+                if (oslSettingsWlSort.col === c.id) {
+                    th.textContent +=
+                        oslSettingsWlSort.dir === "asc" ? " ▲" : " ▼";
+                }
+            }
+            headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+
+        const sorted = rows.slice().sort(function (a, b) {
+            const col = oslSettingsWlSort.col;
+            let av, bv;
+            if (col === "user") {
+                av = a.peer_username;
+                bv = b.peer_username;
+            } else if (col === "scope") {
+                av = a.scope_kind + ":" + a.scope_id;
+                bv = b.scope_kind + ":" + b.scope_id;
+            } else if (col === "encrypt") {
+                av = a.encrypt_toggle ? 1 : 0;
+                bv = b.encrypt_toggle ? 1 : 0;
+            } else {
+                av = 0;
+                bv = 0;
+            }
+            const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+            return oslSettingsWlSort.dir === "asc" ? cmp : -cmp;
+        });
+
+        const tbody = document.createElement("tbody");
+        for (const row of sorted) {
+            const tr = document.createElement("tr");
+            const userTd = document.createElement("td");
+            userTd.textContent = row.peer_username;
+            const scopeTd = document.createElement("td");
+            scopeTd.textContent = oslSettingsScopeLabel(row);
+            scopeTd.style.fontFamily = "Consolas,Menlo,monospace";
+            scopeTd.style.fontSize = "12px";
+            const encTd = document.createElement("td");
+            encTd.appendChild(oslSettingsToggle(row));
+            const actTd = document.createElement("td");
+            actTd.appendChild(oslSettingsRowButtons(row));
+            tr.appendChild(userTd);
+            tr.appendChild(scopeTd);
+            tr.appendChild(encTd);
+            tr.appendChild(actTd);
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        return wrap;
+    }
+
+    function oslSettingsToggle(row) {
+        const toggle = document.createElement("div");
+        toggle.className = "osl-settings-toggle";
+        const bg = document.createElement("div");
+        bg.className = "osl-settings-toggle-bg" + (row.encrypt_toggle ? " on" : "");
+        const knob = document.createElement("div");
+        knob.className = "osl-settings-toggle-knob";
+        bg.appendChild(knob);
+        toggle.appendChild(bg);
+        toggle.addEventListener("click", async function (e) {
+            e.stopPropagation();
+            const scopeInput = oslSettingsRowToScopeInput(row);
+            if (!scopeInput) return;
+            const result = await oslInvoke("osl_toggle_scope_encryption", {
+                scopeInput: scopeInput,
+            });
+            if (!result.ok) {
+                if (result.error === "encrypt_toggle_refused_no_whitelist") {
+                    oslToast("Whitelist a user first to enable encryption.");
+                } else {
+                    oslToast("Toggle failed: " + result.error);
+                }
+                return;
+            }
+            row.encrypt_toggle = !!result.value;
+            bg.classList.toggle("on", row.encrypt_toggle);
+            // Keep cached data in sync so tab switches reflect.
+            oslRefreshHeaderState();
+        });
+        return toggle;
+    }
+
+    function oslSettingsRowButtons(row) {
+        const wrap = document.createElement("div");
+        const remove = document.createElement("button");
+        remove.className = "osl-settings-row-btn osl-settings-row-btn-remove";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", function (e) {
+            e.stopPropagation();
+            oslSettingsOnRemoveClick(row);
+        });
+        const burn = document.createElement("button");
+        burn.className = "osl-settings-row-btn osl-settings-row-btn-burn";
+        burn.textContent = "Burn";
+        burn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            oslSettingsOnBurnClick(row);
+        });
+        wrap.appendChild(remove);
+        wrap.appendChild(burn);
+        return wrap;
+    }
+
+    async function oslSettingsOnRemoveClick(row) {
+        const ok = await oslSettingsConfirm({
+            title: "Remove whitelist?",
+            body:
+                "Remove whitelist for " +
+                row.peer_username +
+                " in " +
+                oslSettingsScopeLabel(row) +
+                "? This un-whitelists but does NOT burn existing messages.",
+            confirmText: "Remove",
+            cancelText: "Cancel",
+        });
+        if (!ok) return;
+        const scopeInput = oslSettingsRowToScopeInput(row);
+        if (!scopeInput) return;
+        const result = await oslInvoke("osl_unwhitelist_scope", {
+            peerDiscordId: row.peer_discord_id,
+            scopeInput: scopeInput,
+            revokeBroadened: false,
+        });
+        if (!result.ok) {
+            oslToast("Remove failed: " + result.error);
+            return;
+        }
+        oslToast(
+            "Removed whitelist for " +
+                row.peer_username +
+                " in " +
+                oslSettingsScopeLabel(row)
+        );
+        oslSettingsWlData = null;
+        oslSettingsRenderWhitelist();
+    }
+
+    async function oslSettingsOnBurnClick(row) {
+        const ok = await oslSettingsConfirm({
+            title: "Burn this scope?",
+            body:
+                "Burn " +
+                oslSettingsScopeLabel(row) +
+                " for " +
+                row.peer_username +
+                "? Your messages in this scope will become permanent ciphertext for them.",
+            confirmText: "Burn",
+            cancelText: "Cancel",
+            danger: true,
+        });
+        if (!ok) return;
+        const scopeInput = oslSettingsRowToScopeInput(row);
+        if (!scopeInput) return;
+        const selfId = await oslSelfDiscordId();
+        if (!selfId) {
+            oslToast("Cannot burn — local identity not resolved.");
+            return;
+        }
+        const sendResult = await oslInvoke("osl_send_burn_marker", {
+            scopeInput: scopeInput,
+            channelMembers: [row.peer_discord_id],
+            selfDiscordId: selfId,
+        });
+        if (sendResult.ok && row.channel_id) {
+            try {
+                await oslSendControlMessage(row.channel_id, sendResult.value);
+            } catch (_) {}
+        } else if (
+            !sendResult.ok &&
+            sendResult.error !== "no_whitelisted_recipients"
+        ) {
+            console.log(
+                "[OSL] settings burn marker send failed: " + sendResult.error
+            );
+        }
+        const applyResult = await oslInvoke("osl_apply_burn", {
+            scopeInput: scopeInput,
+        });
+        if (!applyResult.ok) {
+            oslToast("Burn apply failed: " + applyResult.error);
+            return;
+        }
+        if (row.channel_id) {
+            try {
+                oslBurnAftermath(row.channel_id);
+            } catch (_) {}
+        }
+        oslToast(
+            "Burned " +
+                oslSettingsScopeLabel(row) +
+                " for " +
+                row.peer_username
+        );
+        oslSettingsWlData = null;
+        oslSettingsRenderWhitelist();
+    }
+
+    function oslSettingsRenderWlByScope(rows) {
+        const wrap = document.createElement("div");
+        const groups = { dm: [], gc: [], server: [] };
+        for (const r of rows) {
+            if (r.scope_kind === "dm") groups.dm.push(r);
+            else if (
+                r.scope_kind === "gc_full" ||
+                r.scope_kind === "gc_per_user"
+            )
+                groups.gc.push(r);
+            else groups.server.push(r);
+        }
+        if (groups.dm.length)
+            wrap.appendChild(
+                oslSettingsScopeGroup("DMs", "scope_dm", groups.dm, function (r) {
+                    return r.peer_username + " — DM";
+                })
+            );
+        if (groups.gc.length)
+            wrap.appendChild(
+                oslSettingsScopeGroup(
+                    "Group Chats",
+                    "scope_gc",
+                    groups.gc,
+                    function (r) {
+                        return (
+                            r.peer_username +
+                            " — " +
+                            oslSettingsScopeLabel(r)
+                        );
+                    }
+                )
+            );
+        if (groups.server.length)
+            wrap.appendChild(
+                oslSettingsScopeGroup(
+                    "Servers",
+                    "scope_server",
+                    groups.server,
+                    function (r) {
+                        return (
+                            r.peer_username +
+                            " — " +
+                            oslSettingsScopeLabel(r)
+                        );
+                    }
+                )
+            );
+        return wrap;
+    }
+
+    function oslSettingsRenderWlByUser(rows) {
+        const wrap = document.createElement("div");
+        // Group by peer_discord_id (snowflake is unique, username may dup).
+        const byUser = new Map();
+        for (const r of rows) {
+            const key = r.peer_discord_id;
+            if (!byUser.has(key)) byUser.set(key, []);
+            byUser.get(key).push(r);
+        }
+        const sortedUsers = Array.from(byUser.entries()).sort(function (a, b) {
+            const av = (a[1][0] && a[1][0].peer_username) || a[0];
+            const bv = (b[1][0] && b[1][0].peer_username) || b[0];
+            return av < bv ? -1 : av > bv ? 1 : 0;
+        });
+        for (const [discordId, userRows] of sortedUsers) {
+            const username = userRows[0].peer_username;
+            const key = "user:" + discordId;
+            wrap.appendChild(
+                oslSettingsScopeGroup(
+                    username,
+                    key,
+                    userRows,
+                    function (r) {
+                        return oslSettingsScopeLabel(r);
+                    }
+                )
+            );
+        }
+        return wrap;
+    }
+
+    function oslSettingsScopeGroup(headerLabel, collapseKey, rows, labelFn) {
+        const group = document.createElement("div");
+        group.className = "osl-settings-group";
+        const header = document.createElement("div");
+        header.className = "osl-settings-group-header";
+        const arrow = document.createElement("span");
+        const isCollapsed = oslSettingsCollapse.get(collapseKey) === true;
+        arrow.textContent = isCollapsed ? "▶" : "▼";
+        const title = document.createElement("span");
+        title.textContent = headerLabel + " (" + rows.length + ")";
+        header.appendChild(arrow);
+        header.appendChild(title);
+        const body = document.createElement("div");
+        body.className = "osl-settings-group-body";
+        body.style.display = isCollapsed ? "none" : "block";
+        header.addEventListener("click", function (e) {
+            e.stopPropagation();
+            const nowCollapsed = body.style.display !== "none";
+            body.style.display = nowCollapsed ? "none" : "block";
+            arrow.textContent = nowCollapsed ? "▶" : "▼";
+            oslSettingsCollapse.set(collapseKey, nowCollapsed);
+        });
+        for (const r of rows) {
+            const row = document.createElement("div");
+            row.className = "osl-settings-group-row";
+            const left = document.createElement("div");
+            left.style.flex = "1 1 auto";
+            left.style.minWidth = "0";
+            left.style.overflow = "hidden";
+            left.style.textOverflow = "ellipsis";
+            left.style.whiteSpace = "nowrap";
+            left.textContent = labelFn(r);
+            const right = document.createElement("div");
+            right.style.display = "flex";
+            right.style.alignItems = "center";
+            right.style.gap = "8px";
+            right.style.flexShrink = "0";
+            const pill = document.createElement("span");
+            pill.className =
+                "osl-settings-pill " +
+                (r.encrypt_toggle
+                    ? "osl-settings-pill-on"
+                    : "osl-settings-pill-off");
+            pill.textContent = r.encrypt_toggle ? "ON" : "OFF";
+            right.appendChild(pill);
+            right.appendChild(oslSettingsToggle(r));
+            right.appendChild(oslSettingsRowButtons(r));
+            row.appendChild(left);
+            row.appendChild(right);
+            body.appendChild(row);
+        }
+        group.appendChild(header);
+        group.appendChild(body);
+        return group;
+    }
+
+    // ---- About page ----
+
+    function oslSettingsRenderAbout() {
+        const pane = oslSettingsRoot.querySelector(
+            "[data-osl-page-content='about']"
+        );
+        if (!pane) return;
+        pane.innerHTML = "";
+        const h1 = document.createElement("h1");
+        h1.className = "osl-settings-h1";
+        h1.textContent = "About OSL";
+        pane.appendChild(h1);
+
+        const ver = document.createElement("div");
+        ver.className = "osl-settings-field";
+        ver.innerHTML =
+            "<div class='osl-settings-field-label'>Version</div>" +
+            "<div class='osl-settings-field-value'><span>0.7.0-alpha (Phase 7d-A)</span></div>";
+        pane.appendChild(ver);
+
+        const desc = document.createElement("p");
+        desc.style.fontSize = "14px";
+        desc.style.lineHeight = "1.5";
+        desc.style.margin = "16px 0";
+        desc.textContent =
+            "OSL Privacy is an end-to-end encrypted Discord client. " +
+            "Messages are encrypted on your device before being sent " +
+            "to Discord's servers. Only whitelisted recipients can " +
+            "read them.";
+        pane.appendChild(desc);
+
+        const linksH = document.createElement("h2");
+        linksH.className = "osl-settings-h2";
+        linksH.textContent = "Links";
+        pane.appendChild(linksH);
+
+        const ul = document.createElement("ul");
+        ul.style.listStyle = "none";
+        ul.style.padding = "0";
+        ul.style.margin = "0";
+        const links = [
+            { label: "Website", value: "oslprivacy.com (when launched)" },
+            { label: "Source code", value: "https://github.com/OSLPrivacy" },
+            { label: "License", value: "AGPL-3.0" },
+        ];
+        for (const l of links) {
+            const li = document.createElement("li");
+            li.style.padding = "6px 0";
+            li.style.fontSize = "13px";
+            const lab = document.createElement("strong");
+            lab.textContent = l.label + ": ";
+            const val = document.createElement("span");
+            val.textContent = l.value;
+            val.className = "osl-settings-link";
+            li.appendChild(lab);
+            li.appendChild(val);
+            ul.appendChild(li);
+        }
+        pane.appendChild(ul);
+    }
+
+    // ---- Gear icon injection ----
+
+    function oslSettingsGearSvg() {
+        return (
+            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<circle cx="12" cy="12" r="3"></circle>' +
+            '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>' +
+            "</svg>"
+        );
+    }
+
+    function oslSettingsGearInject() {
+        // SAFETY (round-3 lesson): idempotency check FIRST, before
+        // any DOM read/write that could trigger a React reconcile
+        // loop. We bail before the rAF if the gear already exists.
+        const panel = document.querySelector('section[class*="panels__"]');
+        if (!panel) return;
+        if (panel.querySelector("[" + SETTINGS_GEAR_ATTR + "='1']")) return;
+        // SAFETY: defer the actual DOM append to the next animation
+        // frame so we don't write into a tree React may still be
+        // reconciling on this tick. The idempotency check above
+        // re-runs inside the rAF in case a different code path
+        // already injected between the two ticks.
+        requestAnimationFrame(function () {
+            const panelNow = document.querySelector(
+                'section[class*="panels__"]'
+            );
+            if (!panelNow) return;
+            if (panelNow.querySelector("[" + SETTINGS_GEAR_ATTR + "='1']"))
+                return;
+            const btn = document.createElement("div");
+            btn.setAttribute("role", "button");
+            btn.setAttribute("tabindex", "0");
+            btn.setAttribute("aria-label", "OSL Settings");
+            btn.setAttribute(SETTINGS_GEAR_ATTR, "1");
+            btn.title = "OSL Settings";
+            btn.style.display = "inline-flex";
+            btn.style.alignItems = "center";
+            btn.style.justifyContent = "center";
+            btn.style.cursor = "pointer";
+            btn.style.width = "32px";
+            btn.style.height = "32px";
+            btn.style.marginLeft = "4px";
+            btn.style.color = "var(--interactive-normal, #b5bac1)";
+            btn.innerHTML = oslSettingsGearSvg();
+            btn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsOpen();
+            });
+            panelNow.appendChild(btn);
+        });
+    }
+
     // ---- Section 7: install ----
 
     /**
@@ -2221,6 +3378,10 @@
 
         // Header observer: re-inject buttons when Discord
         // re-mounts the channel header (every navigation).
+        // 7d-A: also try to inject the settings gear into the
+        // bottom-left panel. The gear injection is idempotent
+        // (data-attr guard) so re-running on every observer tick
+        // is cheap, and the rAF defer keeps us out of React's way.
         const headerObs = new MutationObserver(function () {
             const header = document.querySelector(
                 'section[class*="title_"][class*="container__"]'
@@ -2229,6 +3390,7 @@
                 oslHeaderInjectButtons(header);
                 oslRefreshBanners(); // banner stack is anchored to header
             }
+            oslSettingsGearInject();
         });
         headerObs.observe(document.body, {
             childList: true,
@@ -2243,6 +3405,7 @@
             if (header) oslHeaderInjectButtons(header);
             const surface = oslFindProfileSurface();
             if (surface) oslInjectProfileButton(surface);
+            oslSettingsGearInject();
             oslRefreshBanners();
         }, 500);
 
@@ -4695,12 +5858,14 @@
             div && typeof div.textContent === "string"
                 ? div.textContent.substring(0, 20)
                 : "NO_TEXT";
-        console.log(
-            "[OSL] recvHandleDiv ENTRY id=" +
-                __dbg_id +
-                " text=" +
-                __dbg_text
-        );
+        if (OSL_DEBUG_RECV) {
+            console.log(
+                "[OSL] recvHandleDiv ENTRY id=" +
+                    __dbg_id +
+                    " text=" +
+                    __dbg_text
+            );
+        }
 
         if (!div || div.nodeType !== 1) {
             console.log(
@@ -4720,14 +5885,16 @@
             return;
         }
         if (text.indexOf(RECV_PREFIX) !== 0) {
-            console.log(
-                "[OSL] recvHandleDiv SKIP id=" +
-                    __dbg_id +
-                    " reason=no_DPC0_prefix" +
-                    " (first8=" +
-                    text.substring(0, 8) +
-                    ")"
-            );
+            if (OSL_DEBUG_RECV) {
+                console.log(
+                    "[OSL] recvHandleDiv SKIP id=" +
+                        __dbg_id +
+                        " reason=no_DPC0_prefix" +
+                        " (first8=" +
+                        text.substring(0, 8) +
+                        ")"
+                );
+            }
             return;
         }
         const messageId = recvMessageIdOf(div);
@@ -5323,7 +6490,7 @@
                 recvDispatchDecrypt(div, messageId, text);
                 dispatchedCount++;
             }
-            if (DEBUG) {
+            if (OSL_DEBUG_SWEEP) {
                 console.log(
                     "[OSL] periodic sweep tick (msgs=" +
                         divs.length +
