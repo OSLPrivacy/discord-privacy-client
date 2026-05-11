@@ -37,13 +37,14 @@ use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_message,
     cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
-    cmd_osl_encrypt_message_v2, cmd_osl_load_channel_history, cmd_osl_persist_edit,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_scope_encryption_state,
+    cmd_osl_list_pending_invitations, cmd_osl_load_channel_history, cmd_osl_persist_edit,
     cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
-    cmd_osl_set_whitelist, cmd_osl_unwhitelist_scope, cmd_register, cmd_save_identity, cmd_status,
-    cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
-    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
-    RegisterResponse, StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
-    StoredMessageDto,
+    cmd_osl_set_whitelist, cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_register,
+    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
+    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
+    GenerateIdentityResponse, PendingInvitationDto, RegisterResponse, ScopeEncryptionState,
+    StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -526,6 +527,58 @@ async fn osl_set_whitelist(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+// ---- Phase 7c: UI-supporting Tauri wrappers ----
+
+/// Phase 7c: read `{ encrypt_toggle, has_whitelist }` for a
+/// scope. Boot.js calls this on channel-switch to drive the
+/// header lock icon's state.
+#[tauri::command]
+async fn osl_get_scope_encryption_state(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+) -> Result<ScopeEncryptionState, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_get_scope_encryption_state(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 7c: flip `encrypt_toggle` for a scope. Returns the new
+/// value. Errors with `"encrypt_toggle_refused_no_whitelist"`
+/// when the user tries to enable encryption in a scope with no
+/// whitelisted recipients.
+#[tauri::command]
+async fn osl_toggle_scope_encryption(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+) -> Result<bool, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_toggle_scope_encryption(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 7c: list `pending_invitations` for the banner system.
+/// Returns one DTO per pending entry, oldest first.
+#[tauri::command]
+async fn osl_list_pending_invitations(
+    app: tauri::AppHandle,
+) -> Result<Vec<PendingInvitationDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_list_pending_invitations(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -659,6 +712,9 @@ fn main() {
             osl_decline_invitation,
             osl_unwhitelist_scope,
             osl_set_whitelist,
+            osl_get_scope_encryption_state,
+            osl_toggle_scope_encryption,
+            osl_list_pending_invitations,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7c: header encrypt-toggle write.
+[[permission]]
+identifier = "allow-osl-toggle-scope-encryption"
+description = "Permits the discord.com main webview to invoke `osl_toggle_scope_encryption` (flip a scope's encrypt_toggle). Errors with 'encrypt_toggle_refused_no_whitelist' when the scope has no recipients. Phase 7c."
+commands.allow = ["osl_toggle_scope_encryption"]

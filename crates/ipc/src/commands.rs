@@ -2202,3 +2202,160 @@ fn burn_matches_scope(b: &crate::peer_map::BurnedScope, s: &crate::scope::Scope)
         _ => false,
     }
 }
+
+// ---- Phase 7c: UI-supporting read/write commands ----
+//
+// These thin wrappers expose pieces of whitelist_state +
+// pending_invitations to boot.js so the channel-header encrypt
+// toggle, burn button, and invitation banner can render their
+// initial state without each having to walk the full schema.
+
+/// Per-scope encryption posture for the channel-header lock icon.
+///
+/// - `encrypt_toggle`: the user's current ON/OFF state for
+///   encryption in this scope. Drives the icon's "open lock vs
+///   closed lock" visual.
+/// - `has_whitelist`: whether **any** recipient is whitelisted in
+///   this scope. Drives the icon's grayed-out state — without a
+///   whitelist there's no one to encrypt to, so the toggle is
+///   non-interactive.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ScopeEncryptionState {
+    pub encrypt_toggle: bool,
+    pub has_whitelist: bool,
+}
+
+/// Layer 10 / Phase 7c: read the encryption posture for a scope.
+/// Boot.js calls this every channel-switch + after every
+/// whitelist mutation so the header icon updates promptly.
+pub fn cmd_osl_get_scope_encryption_state(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<ScopeEncryptionState, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let key = scope.storage_key();
+    let ws_guard = state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned");
+    let entry = ws_guard.get(&key);
+    let encrypt_toggle = entry.map(|s| s.encrypt_toggle).unwrap_or(false);
+    let has_whitelist = match entry {
+        None => false,
+        Some(s) => match scope.kind {
+            // DM scope: whitelist existence == ScopeState entry
+            // present (the scope id IS the peer; no member list
+            // is tracked).
+            crate::scope::ScopeKind::Dm => true,
+            // Other scopes: either a full whitelist with a
+            // member list, or a per-user whitelist with
+            // whitelisted_users.
+            _ => {
+                (s.full_whitelist && !s.members.is_empty())
+                    || !s.whitelisted_users.is_empty()
+            }
+        },
+    };
+    Ok(ScopeEncryptionState {
+        encrypt_toggle,
+        has_whitelist,
+    })
+}
+
+/// Layer 10 / Phase 7c: flip `encrypt_toggle` for a scope.
+/// Returns the new value (post-flip) so boot.js doesn't need to
+/// follow up with a read.
+///
+/// Refuses to enable the toggle when `has_whitelist == false` —
+/// per design doc §2.4, the toggle is grayed-out / unavailable
+/// in that state. boot.js gates the click handler on
+/// `has_whitelist`, but we double-check here so a buggy caller
+/// can't end up with encrypt-to-nobody enabled.
+pub fn cmd_osl_toggle_scope_encryption(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<bool, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let key = scope.storage_key();
+    let mut ws_guard = state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned");
+    let entry = ws_guard
+        .entry(key)
+        .or_insert_with(crate::whitelist_state::ScopeState::default);
+    // Compute has_whitelist from the in-place entry so we don't
+    // need to re-call get_scope_encryption_state.
+    let has_whitelist = match scope.kind {
+        crate::scope::ScopeKind::Dm => true,
+        _ => {
+            (entry.full_whitelist && !entry.members.is_empty())
+                || !entry.whitelisted_users.is_empty()
+        }
+    };
+    if !entry.encrypt_toggle && !has_whitelist {
+        // Refusing to turn ON without a whitelist.
+        return Err("encrypt_toggle_refused_no_whitelist".to_string());
+    }
+    entry.encrypt_toggle = !entry.encrypt_toggle;
+    // Mark `auto_enabled = false` since this is a manual
+    // user action — distinguishes the §2.3 auto-enable from a
+    // later user toggle in the UI's tooltip.
+    entry.auto_enabled = false;
+    Ok(entry.encrypt_toggle)
+}
+
+/// JS-facing DTO for one pending invitation. Mirrors
+/// [`crate::pending_invitations::PendingInvitation`] plus the
+/// invitation id (the map key) so boot.js can pass it back to
+/// accept/decline.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingInvitationDto {
+    pub id: String,
+    pub from: String,
+    pub scope: String,
+    pub scope_id: Option<String>,
+    pub received_at: String,
+    pub status: String,
+}
+
+/// Layer 10 / Phase 7c: list every entry in
+/// `pending_invitations` for the banner system. Returns an
+/// empty vec when none — boot.js renders zero banners.
+pub fn cmd_osl_list_pending_invitations(
+    state: &AppState,
+) -> Result<Vec<PendingInvitationDto>, String> {
+    let guard = state
+        .pending_invitations
+        .lock()
+        .expect("pending_invitations mutex poisoned");
+    let mut out: Vec<PendingInvitationDto> = guard
+        .iter()
+        .map(|(id, inv)| PendingInvitationDto {
+            id: id.clone(),
+            from: inv.from.clone(),
+            scope: inv.scope.clone(),
+            scope_id: inv.scope_id.clone(),
+            received_at: inv.received_at.clone(),
+            status: match inv.status {
+                crate::pending_invitations::InvitationStatus::Pending => "pending",
+                crate::pending_invitations::InvitationStatus::Accepted => "accepted",
+                crate::pending_invitations::InvitationStatus::Declined => "declined",
+            }
+            .to_string(),
+        })
+        .collect();
+    // Stable order — oldest first, by received_at. Falls back to
+    // id for ties (received_at strings are unix-second strings;
+    // ties are unlikely but possible).
+    out.sort_by(|a, b| {
+        a.received_at
+            .cmp(&b.received_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(out)
+}

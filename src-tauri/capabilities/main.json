@@ -23,6 +23,9 @@
     "allow-osl-accept-invitation",
     "allow-osl-decline-invitation",
     "allow-osl-unwhitelist-scope",
-    "allow-osl-set-whitelist"
+    "allow-osl-set-whitelist",
+    "allow-osl-get-scope-encryption-state",
+    "allow-osl-toggle-scope-encryption",
+    "allow-osl-list-pending-invitations"
   ]
 }

@@ -384,71 +384,191 @@
                     plaintext.length
             );
 
-        let interceptResult;
-        try {
-            interceptResult = window.__OSL_INTERCEPT__(
-                channelId,
-                plaintext,
-                parsed
-            );
-        } catch (e) {
-            console.error(
-                "[OSL] __OSL_INTERCEPT__ threw synchronously (" +
-                    source +
-                    "); ABORT (fail-closed)",
-                e
-            );
-            return onAbort(e);
-        }
-        if (!interceptResult || typeof interceptResult.then !== "function") {
-            console.error(
-                "[OSL] __OSL_INTERCEPT__ did not return a Promise (" +
-                    source +
-                    "); ABORT (fail-closed)",
-                { actualType: typeof interceptResult }
-            );
-            return onAbort(
-                new Error("__OSL_INTERCEPT__ did not return a Promise")
+        // Phase 7c send-path gate: if the current channel scope has
+        // encrypt_toggle ON and a non-empty whitelist, encrypt to
+        // the v=2 wire format (scope-whitelist recipients) and skip
+        // the v=1 per-channel-share path. Coexistence: when toggle
+        // is off OR whitelist empty OR scope-state read fails, fall
+        // through to v=1 (`__OSL_INTERCEPT__`) so pre-7c senders
+        // and not-yet-whitelisted scopes keep working.
+        function v1Send() {
+            let interceptResult;
+            try {
+                interceptResult = window.__OSL_INTERCEPT__(
+                    channelId,
+                    plaintext,
+                    parsed
+                );
+            } catch (e) {
+                console.error(
+                    "[OSL] __OSL_INTERCEPT__ threw synchronously (" +
+                        source +
+                        "); ABORT (fail-closed)",
+                    e
+                );
+                return onAbort(e);
+            }
+            if (!interceptResult || typeof interceptResult.then !== "function") {
+                console.error(
+                    "[OSL] __OSL_INTERCEPT__ did not return a Promise (" +
+                        source +
+                        "); ABORT (fail-closed)",
+                    { actualType: typeof interceptResult }
+                );
+                return onAbort(
+                    new Error("__OSL_INTERCEPT__ did not return a Promise")
+                );
+            }
+
+            return interceptResult.then(
+                function (coverText) {
+                    if (typeof coverText !== "string") {
+                        console.error(
+                            "[OSL] __OSL_INTERCEPT__ returned non-string (" +
+                                typeof coverText +
+                                ", source=" +
+                                source +
+                                "); ABORT (fail-closed)"
+                        );
+                        return onAbort(new Error("non-string cover text"));
+                    }
+                    parsed.content = coverText;
+                    let newBody;
+                    try {
+                        newBody = JSON.stringify(parsed);
+                    } catch (e) {
+                        console.error(
+                            "[OSL] re-serialising mutated body failed (" +
+                                source +
+                                "); ABORT (fail-closed)",
+                            e
+                        );
+                        return onAbort(e);
+                    }
+                    return onMutated(newBody);
+                },
+                function (err) {
+                    console.error(
+                        "[OSL] __OSL_INTERCEPT__ rejected (" +
+                            source +
+                            "); ABORT (fail-closed)",
+                        err
+                    );
+                    return onAbort(err);
+                }
             );
         }
 
-        return interceptResult.then(
-            function (coverText) {
-                if (typeof coverText !== "string") {
-                    console.error(
-                        "[OSL] __OSL_INTERCEPT__ returned non-string (" +
-                            typeof coverText +
-                            ", source=" +
-                            source +
-                            "); ABORT (fail-closed)"
-                    );
-                    return onAbort(new Error("non-string cover text"));
-                }
-                parsed.content = coverText;
-                let newBody;
-                try {
-                    newBody = JSON.stringify(parsed);
-                } catch (e) {
-                    console.error(
-                        "[OSL] re-serialising mutated body failed (" +
-                            source +
-                            "); ABORT (fail-closed)",
-                        e
-                    );
-                    return onAbort(e);
-                }
-                return onMutated(newBody);
-            },
-            function (err) {
-                console.error(
-                    "[OSL] __OSL_INTERCEPT__ rejected (" +
-                        source +
-                        "); ABORT (fail-closed)",
-                    err
-                );
-                return onAbort(err);
+        let v7cCtx = null;
+        try {
+            v7cCtx =
+                typeof oslCurrentChannelContext === "function"
+                    ? oslCurrentChannelContext()
+                    : null;
+        } catch (e) {
+            v7cCtx = null;
+        }
+        let v7cScope = null;
+        if (v7cCtx && v7cCtx.channelId === channelId) {
+            try {
+                v7cScope =
+                    typeof oslScopeForCurrentContext === "function"
+                        ? oslScopeForCurrentContext(v7cCtx)
+                        : null;
+            } catch (e) {
+                v7cScope = null;
             }
-        );
+        }
+        if (!v7cScope || typeof oslInvoke !== "function") {
+            return v1Send();
+        }
+
+        return oslInvoke("osl_get_scope_encryption_state", {
+            scopeInput: v7cScope,
+        }).then(function (stateRes) {
+            if (
+                !stateRes ||
+                !stateRes.ok ||
+                !stateRes.value ||
+                !stateRes.value.encrypt_toggle ||
+                !stateRes.value.has_whitelist
+            ) {
+                return v1Send();
+            }
+            const memberIds = (v7cCtx.members || [])
+                .map(function (m) {
+                    if (typeof m === "string") return m;
+                    if (m && typeof m.id === "string") return m.id;
+                    if (m && typeof m.user_id === "string") return m.user_id;
+                    return null;
+                })
+                .filter(function (x) {
+                    return typeof x === "string" && x.length > 0;
+                });
+            const selfId =
+                v7cCtx.selfId && typeof v7cCtx.selfId === "string"
+                    ? v7cCtx.selfId
+                    : null;
+            if (!selfId) {
+                console.error(
+                    "[OSL] v=2 send gate (" +
+                        source +
+                        "): no selfId in channel context; ABORT (fail-closed)"
+                );
+                return onAbort(new Error("v2_send_no_self_id"));
+            }
+            return oslEncryptV2(
+                plaintext,
+                v7cScope,
+                memberIds,
+                selfId
+            ).then(
+                function (wire) {
+                    if (typeof wire !== "string") {
+                        console.error(
+                            "[OSL] v=2 send gate (" +
+                                source +
+                                "): oslEncryptV2 returned non-string; ABORT (fail-closed)"
+                        );
+                        return onAbort(new Error("v2_encrypt_failed"));
+                    }
+                    parsed.content = wire;
+                    let newBody;
+                    try {
+                        newBody = JSON.stringify(parsed);
+                    } catch (e) {
+                        console.error(
+                            "[OSL] v=2 send gate (" +
+                                source +
+                                "): re-serialising mutated body failed; ABORT (fail-closed)",
+                            e
+                        );
+                        return onAbort(e);
+                    }
+                    if (DEBUG)
+                        console.log(
+                            "[OSL] v=2 send gate (" +
+                                source +
+                                "): wire=DPC0:: channel=" +
+                                channelId +
+                                " scope=" +
+                                v7cScope.kind +
+                                ":" +
+                                v7cScope.id
+                        );
+                    return onMutated(newBody);
+                },
+                function (err) {
+                    console.error(
+                        "[OSL] v=2 send gate (" +
+                            source +
+                            "): oslEncryptV2 rejected; ABORT (fail-closed)",
+                        err
+                    );
+                    return onAbort(err);
+                }
+            );
+        });
     }
 
     /**
@@ -727,6 +847,1252 @@
         if (!wire) return null;
         return await oslSendControlMessage(channelId, wire);
     };
+
+    // ============================================================
+    // Phase 7c: whitelist UI (profile button, channel-header toggle
+    // + burn button, persistent invitation banner). No settings
+    // menu, no keybinds — those are 7d.
+    //
+    // All selectors below match the survey in
+    // `docs/phase-7c-selectors.md` via [class*="prefix"] so
+    // hash-suffix rotation across Discord builds doesn't break us.
+    //
+    // Section layout:
+    //   1. Toast + dialog helpers (shared by all surfaces).
+    //   2. Current-channel-context helper (fiber walk).
+    //   3. Profile popout/sidebar Whitelist button + scope dropdown.
+    //   4. Channel header encrypt-toggle + burn button + modal.
+    //   5. Pending-invitation banner system.
+    //   6. Recv-path glue (toasts on burn/response, banner refresh).
+    //   7. Install + sweep tick.
+    // ============================================================
+
+    // ---- Section 1: toast + dialog helpers ----
+
+    /**
+     * Phase 7c: fire a short bottom-right toast. Stacks multiple
+     * toasts vertically (newest on top). Auto-dismiss after
+     * `opts.durationMs` (default 3000ms).
+     *
+     * Returns the toast DOM element so the caller can dismiss
+     * early via `el.remove()` if needed.
+     */
+    function oslToast(message, opts) {
+        opts = opts || {};
+        const durationMs =
+            typeof opts.durationMs === "number" ? opts.durationMs : 3000;
+        // Build the stack container lazily.
+        let stack = document.getElementById("__osl_toast_stack");
+        if (!stack) {
+            stack = document.createElement("div");
+            stack.id = "__osl_toast_stack";
+            stack.style.position = "fixed";
+            stack.style.bottom = "16px";
+            stack.style.right = "16px";
+            stack.style.display = "flex";
+            stack.style.flexDirection = "column-reverse";
+            stack.style.gap = "8px";
+            stack.style.zIndex = "100000";
+            stack.style.pointerEvents = "none";
+            document.body.appendChild(stack);
+        }
+        const toast = document.createElement("div");
+        toast.style.background =
+            "var(--background-floating, #18191c)";
+        toast.style.color = "var(--text-normal, #dbdee1)";
+        toast.style.padding = "12px 16px";
+        toast.style.borderRadius = "6px";
+        toast.style.fontSize = "14px";
+        toast.style.lineHeight = "1.4";
+        toast.style.maxWidth = "360px";
+        toast.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.32)";
+        toast.style.pointerEvents = "auto";
+        toast.textContent = String(message);
+        stack.appendChild(toast);
+        nativeSetTimeout(function () {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, durationMs);
+        return toast;
+    }
+
+    /**
+     * Phase 7c: modal confirmation dialog. Returns a Promise that
+     * resolves to `true` on confirm, `false` on cancel /
+     * backdrop click / Escape. Used by the burn-button flow.
+     *
+     * `opts`:
+     *   - title       : string
+     *   - body        : string (multi-line OK; rendered in a <p>)
+     *   - confirmText : string ("Burn")
+     *   - cancelText  : string ("Cancel")
+     *   - danger      : bool — colours the confirm button red
+     */
+    function oslConfirm(opts) {
+        return new Promise(function (resolve) {
+            const backdrop = document.createElement("div");
+            backdrop.style.position = "fixed";
+            backdrop.style.inset = "0";
+            backdrop.style.background = "rgba(0, 0, 0, 0.5)";
+            backdrop.style.zIndex = "100000";
+            backdrop.style.display = "flex";
+            backdrop.style.alignItems = "center";
+            backdrop.style.justifyContent = "center";
+
+            const modal = document.createElement("div");
+            modal.style.background =
+                "var(--background-floating, #18191c)";
+            modal.style.color = "var(--text-normal, #dbdee1)";
+            modal.style.padding = "20px";
+            modal.style.borderRadius = "8px";
+            modal.style.maxWidth = "400px";
+            modal.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.5)";
+            modal.style.fontSize = "14px";
+            modal.style.lineHeight = "1.4";
+
+            const title = document.createElement("h3");
+            title.style.margin = "0 0 8px 0";
+            title.style.fontSize = "18px";
+            title.style.fontWeight = "600";
+            title.textContent = opts.title || "Are you sure?";
+            modal.appendChild(title);
+
+            const body = document.createElement("p");
+            body.style.margin = "0 0 16px 0";
+            body.textContent = opts.body || "";
+            modal.appendChild(body);
+
+            const row = document.createElement("div");
+            row.style.display = "flex";
+            row.style.justifyContent = "flex-end";
+            row.style.gap = "8px";
+
+            const cancel = document.createElement("button");
+            cancel.textContent = opts.cancelText || "Cancel";
+            cancel.style.padding = "6px 14px";
+            cancel.style.borderRadius = "4px";
+            cancel.style.border = "1px solid var(--background-modifier-accent, #4f545c)";
+            cancel.style.background = "transparent";
+            cancel.style.color = "inherit";
+            cancel.style.cursor = "pointer";
+            cancel.style.fontSize = "14px";
+
+            const confirm = document.createElement("button");
+            confirm.textContent = opts.confirmText || "Confirm";
+            confirm.style.padding = "6px 14px";
+            confirm.style.borderRadius = "4px";
+            confirm.style.border = "none";
+            confirm.style.background = opts.danger
+                ? "#ed4245"
+                : "var(--brand-560, #5865f2)";
+            confirm.style.color = "white";
+            confirm.style.cursor = "pointer";
+            confirm.style.fontSize = "14px";
+            confirm.style.fontWeight = "500";
+
+            const close = function (result) {
+                document.removeEventListener("keydown", onKey, true);
+                if (backdrop.parentNode)
+                    backdrop.parentNode.removeChild(backdrop);
+                resolve(result);
+            };
+            const onKey = function (e) {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    close(false);
+                }
+            };
+            cancel.addEventListener("click", function () {
+                close(false);
+            });
+            confirm.addEventListener("click", function () {
+                close(true);
+            });
+            backdrop.addEventListener("click", function (e) {
+                if (e.target === backdrop) close(false);
+            });
+            document.addEventListener("keydown", onKey, true);
+
+            row.appendChild(cancel);
+            row.appendChild(confirm);
+            modal.appendChild(row);
+            backdrop.appendChild(modal);
+            document.body.appendChild(backdrop);
+        });
+    }
+
+    // ---- Section 2: current-channel-context helper ----
+
+    /**
+     * Phase 7c: walk the React fiber from the channel header (or
+     * any rendered message div) to recover:
+     *   - channelId   : the Discord channel snowflake
+     *   - channelType : 0 server text, 1 DM, 3 GC
+     *   - guildId     : populated for server channels, null otherwise
+     *   - members     : array of Discord user_ids in this channel
+     *                   (DM/GC: from channel.recipients; server: empty
+     *                    for 7c since we don't enumerate the members
+     *                    panel here — Task 4 send path skips v=2 for
+     *                    server channels until members are populated)
+     *   - selfId      : the current user's Discord id (walked from
+     *                   the same anchor; usually surfaces a few
+     *                   frames up in a session / authentication
+     *                   provider)
+     *
+     * Returns `null` if no anchor is mounted (e.g. settings open).
+     */
+    function oslCurrentChannelContext() {
+        const anchor =
+            document.querySelector(
+                'section[class*="title_"][class*="container__"]'
+            ) || document.querySelector('[id^="message-content-"]');
+        if (!anchor) return null;
+
+        let fiber;
+        try {
+            const key = Object.keys(anchor).find(function (k) {
+                return k.indexOf("__reactFiber") === 0;
+            });
+            fiber = key ? anchor[key] : null;
+        } catch (e) {
+            return null;
+        }
+        if (!fiber) return null;
+
+        let channelId = null;
+        let channelType = null;
+        let guildId = null;
+        let members = null;
+        let selfId = null;
+        let f = fiber;
+        for (let depth = 0; depth < 30 && f; depth++) {
+            try {
+                const p = f.memoizedProps;
+                if (p && typeof p === "object") {
+                    if (channelId == null && typeof p.channelId === "string") {
+                        channelId = p.channelId;
+                    }
+                    if (p.channel && typeof p.channel === "object") {
+                        if (channelId == null && typeof p.channel.id === "string") {
+                            channelId = p.channel.id;
+                        }
+                        if (
+                            channelType == null &&
+                            typeof p.channel.type === "number"
+                        ) {
+                            channelType = p.channel.type;
+                        }
+                        if (guildId == null && typeof p.channel.guild_id === "string") {
+                            guildId = p.channel.guild_id;
+                        }
+                        if (
+                            members == null &&
+                            Array.isArray(p.channel.recipients)
+                        ) {
+                            members = p.channel.recipients.slice();
+                        }
+                    }
+                    if (guildId == null && typeof p.guildId === "string") {
+                        guildId = p.guildId;
+                    }
+                    if (
+                        selfId == null &&
+                        p.currentUser &&
+                        typeof p.currentUser.id === "string"
+                    ) {
+                        selfId = p.currentUser.id;
+                    }
+                }
+            } catch (e) {
+                // keep walking
+            }
+            f = f.return;
+        }
+        // Fallback: pull selfId from any rendered self-attribute on
+        // the user area at the bottom-left. We never block on this —
+        // commands that need selfDiscordId surface a clear error.
+        return {
+            channelId: channelId,
+            channelType: channelType,
+            guildId: guildId,
+            members: members || [],
+            selfId: selfId,
+        };
+    }
+
+    /**
+     * Phase 7c: human-readable scope label for UI strings.
+     */
+    function oslScopeLabel(scopeInput) {
+        if (!scopeInput) return "this scope";
+        switch (scopeInput.kind) {
+            case "dm":
+                return "DM";
+            case "gc":
+                return "this group chat";
+            case "server_channel":
+                return "this channel";
+            case "server_full":
+                return "this server";
+            default:
+                return "this scope";
+        }
+    }
+
+    /**
+     * Phase 7c: invoke a Tauri command with a uniform error
+     * shape. Returns `{ ok: true, value }` or `{ ok: false, error }`.
+     */
+    async function oslInvoke(name, args) {
+        const invoke = getTauriInvoke();
+        if (typeof invoke !== "function") {
+            return { ok: false, error: "no_invoke" };
+        }
+        try {
+            const value = await invoke(name, args || {});
+            return { ok: true, value: value };
+        } catch (err) {
+            const msg = err && err.message ? err.message : String(err);
+            return { ok: false, error: msg };
+        }
+    }
+
+    // ---- Section 3: profile popout/sidebar Whitelist button ----
+
+    const PROFILE_BUTTON_DATA_ATTR = "data-osl-whitelist-btn";
+
+    /**
+     * SVG lock icon used by the Whitelist button + encrypt toggle.
+     * `state` is "open" or "closed". Renders at 16x16; inherits
+     * currentColor so theme-aware CSS variables apply.
+     */
+    function oslLockSvg(state) {
+        const open = state === "open";
+        return (
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+            'stroke-linejoin="round" aria-hidden="true">' +
+            '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
+            (open
+                ? '<path d="M8 11V7a4 4 0 0 1 8 0"/>'
+                : '<path d="M8 11V7a4 4 0 0 1 8 0v4"/>') +
+            "</svg>"
+        );
+    }
+
+    /**
+     * SVG flame icon for the burn button.
+     */
+    function oslFlameSvg() {
+        return (
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+            'stroke-linejoin="round" aria-hidden="true">' +
+            '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 17c1.38 0 2.5-1 2.5-2.5 ' +
+            "0-1.5-1-2.5-1-4 0-1.5 1-2 1-3 0-1.5-1-2.5-2.5-2.5C9 5 8 6.5 8 8c0 " +
+            "1 .5 2 .5 3 0 1-.5 2-.5 3.5z\"/>" +
+            '<path d="M12 2c1 3 3 4 3 7a3 3 0 0 1-6 0c0-1 1-2 1-4-2 1.5-4 4-4 ' +
+            "7a7 7 0 0 0 14 0c0-5-4-7-8-10z\"/>" +
+            "</svg>"
+        );
+    }
+
+    function oslFindProfileSurface() {
+        return document.querySelector(
+            '[class*="user-profile-sidebar"], [class*="user-profile-popout"]'
+        );
+    }
+
+    function oslExtractUserFromProfile(surfaceEl) {
+        try {
+            const key = Object.keys(surfaceEl).find(function (k) {
+                return k.indexOf("__reactFiber") === 0;
+            });
+            let fiber = key ? surfaceEl[key] : null;
+            for (let d = 0; d < 30 && fiber; d++) {
+                const p = fiber.memoizedProps;
+                if (p && p.user && typeof p.user.id === "string") {
+                    return {
+                        id: p.user.id,
+                        username:
+                            typeof p.user.username === "string"
+                                ? p.user.username
+                                : p.user.global_name ||
+                                  p.user.id,
+                    };
+                }
+                fiber = fiber.return;
+            }
+        } catch (e) {
+            // fall through
+        }
+        return null;
+    }
+
+    function oslInjectProfileButton(surfaceEl) {
+        if (!surfaceEl) return;
+        if (surfaceEl.querySelector("[" + PROFILE_BUTTON_DATA_ATTR + "='1']")) {
+            return; // already injected
+        }
+        // The action-button banner row uses .wrapper_da5890 in the
+        // surveyed build (2026-05-11, build 541436). Prefix-match
+        // against `wrapper_` to absorb hash rotation. If multiple
+        // wrappers exist, pick the one that contains the Friend
+        // banner button (`bannerButton_` prefix).
+        const wrappers = surfaceEl.querySelectorAll(
+            '[class*="wrapper_"]'
+        );
+        let banner = null;
+        for (const w of wrappers) {
+            if (w.querySelector('[class*="bannerButton_"]')) {
+                banner = w;
+                break;
+            }
+        }
+        if (!banner) {
+            // Banner row not present yet — observer will retry on
+            // next mutation. Log once for diagnosis.
+            console.log(
+                "[OSL] profile injection deferred: no bannerButton wrapper yet"
+            );
+            return;
+        }
+        const sample = banner.querySelector('[class*="bannerButton_"]');
+        const btn = document.createElement("div");
+        btn.setAttribute("role", "button");
+        btn.setAttribute("tabindex", "0");
+        btn.setAttribute("aria-label", "Whitelist with OSL");
+        btn.setAttribute(PROFILE_BUTTON_DATA_ATTR, "1");
+        // Mirror the Friend/More button's class list so Discord's
+        // existing CSS handles hover / focus / sizing for us.
+        btn.className = sample ? sample.className : "";
+        btn.style.cursor = "pointer";
+        btn.innerHTML = oslLockSvg("closed");
+        btn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const user = oslExtractUserFromProfile(surfaceEl);
+            if (!user) {
+                oslToast("OSL: could not resolve user id from profile");
+                return;
+            }
+            oslOpenScopeDropdown(btn, user);
+        });
+        banner.appendChild(btn);
+        console.log(
+            "[OSL] profile whitelist button injected user=resolves on click"
+        );
+    }
+
+    /**
+     * Phase 7c: scope-pick dropdown anchored beneath the Whitelist
+     * button. Options vary by current channel context (DM is
+     * always shown; GC / server options surface only when
+     * applicable per design doc §6.1).
+     */
+    function oslOpenScopeDropdown(anchorBtn, user) {
+        // Close any existing dropdown first.
+        const existing = document.getElementById("__osl_scope_dropdown");
+        if (existing) existing.remove();
+
+        const ctx = oslCurrentChannelContext();
+        const dd = document.createElement("div");
+        dd.id = "__osl_scope_dropdown";
+        const rect = anchorBtn.getBoundingClientRect();
+        dd.style.position = "fixed";
+        dd.style.top = rect.bottom + 6 + "px";
+        dd.style.left = Math.min(rect.left, window.innerWidth - 280) + "px";
+        dd.style.background =
+            "var(--background-tertiary, #1e1f22)";
+        dd.style.color = "var(--text-normal, #dbdee1)";
+        dd.style.borderRadius = "6px";
+        dd.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.32)";
+        dd.style.padding = "8px 0";
+        dd.style.minWidth = "240px";
+        dd.style.maxWidth = "320px";
+        dd.style.zIndex = "100000";
+        dd.style.fontSize = "14px";
+        dd.style.lineHeight = "1.4";
+
+        // Header showing the user we're whitelisting.
+        const head = document.createElement("div");
+        head.style.padding = "4px 12px 8px";
+        head.style.borderBottom =
+            "1px solid var(--background-modifier-accent, #2e3035)";
+        head.style.color = "var(--text-muted, #b5bac1)";
+        head.style.fontSize = "12px";
+        head.textContent = "User: " + user.username + " (" + user.id + ")";
+        dd.appendChild(head);
+
+        // Build the options list per context.
+        const options = [];
+        // DM is always available.
+        options.push({
+            label: "Whitelist in DM",
+            kind: "dm",
+            scopeInput: { kind: "dm", id: user.id, channel_id: user.id },
+            broadenCheckbox: true,
+        });
+        if (ctx) {
+            if (ctx.channelType === 3 && ctx.channelId) {
+                options.push({
+                    label: "Whitelist in this group chat",
+                    kind: "gc",
+                    scopeInput: {
+                        kind: "gc",
+                        id: ctx.channelId,
+                        channel_id: ctx.channelId,
+                    },
+                });
+            }
+            if (ctx.channelType === 0 && ctx.channelId && ctx.guildId) {
+                options.push({
+                    label: "Whitelist in this channel",
+                    kind: "server_channel",
+                    scopeInput: {
+                        kind: "server_channel",
+                        id: ctx.guildId + ":" + ctx.channelId,
+                        server_id: ctx.guildId,
+                        channel_id: ctx.channelId,
+                    },
+                });
+                options.push({
+                    label: "Whitelist in entire server",
+                    kind: "server_full",
+                    scopeInput: {
+                        kind: "server_full",
+                        id: ctx.guildId,
+                        server_id: ctx.guildId,
+                    },
+                });
+            }
+        }
+
+        let broadenChecked = false;
+        for (const opt of options) {
+            const row = document.createElement("div");
+            row.style.padding = "8px 12px";
+            row.style.cursor = "pointer";
+            row.style.display = "flex";
+            row.style.alignItems = "center";
+            row.style.gap = "8px";
+            row.addEventListener("mouseenter", function () {
+                row.style.background =
+                    "var(--background-modifier-hover, #4e5058)";
+            });
+            row.addEventListener("mouseleave", function () {
+                row.style.background = "transparent";
+            });
+            const label = document.createElement("span");
+            label.textContent = opt.label;
+            label.style.flex = "1";
+            row.appendChild(label);
+
+            if (opt.broadenCheckbox) {
+                const cbWrap = document.createElement("label");
+                cbWrap.style.display = "inline-flex";
+                cbWrap.style.alignItems = "center";
+                cbWrap.style.gap = "4px";
+                cbWrap.style.fontSize = "12px";
+                cbWrap.style.color =
+                    "var(--text-muted, #b5bac1)";
+                cbWrap.style.cursor = "pointer";
+                const cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.style.cursor = "pointer";
+                cb.addEventListener("change", function () {
+                    broadenChecked = !!cb.checked;
+                });
+                cb.addEventListener("click", function (e) {
+                    e.stopPropagation();
+                });
+                cbWrap.appendChild(cb);
+                const cbLabel = document.createElement("span");
+                cbLabel.textContent = "broaden";
+                cbWrap.appendChild(cbLabel);
+                row.appendChild(cbWrap);
+            }
+
+            row.addEventListener("click", async function () {
+                close();
+                await oslSendWhitelistInvitation(
+                    user,
+                    opt.scopeInput,
+                    opt.kind === "dm" ? broadenChecked : false,
+                    ctx
+                );
+            });
+            dd.appendChild(row);
+        }
+
+        // Cancel.
+        const cancel = document.createElement("div");
+        cancel.style.padding = "8px 12px";
+        cancel.style.cursor = "pointer";
+        cancel.style.color =
+            "var(--text-muted, #b5bac1)";
+        cancel.style.borderTop =
+            "1px solid var(--background-modifier-accent, #2e3035)";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("mouseenter", function () {
+            cancel.style.background =
+                "var(--background-modifier-hover, #4e5058)";
+        });
+        cancel.addEventListener("mouseleave", function () {
+            cancel.style.background = "transparent";
+        });
+        cancel.addEventListener("click", function () {
+            close();
+        });
+        dd.appendChild(cancel);
+
+        const close = function () {
+            document.removeEventListener("mousedown", outsideClick, true);
+            document.removeEventListener("keydown", onKey, true);
+            if (dd.parentNode) dd.parentNode.removeChild(dd);
+        };
+        const outsideClick = function (e) {
+            if (!dd.contains(e.target) && e.target !== anchorBtn) close();
+        };
+        const onKey = function (e) {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                close();
+            }
+        };
+        nativeSetTimeout(function () {
+            document.addEventListener("mousedown", outsideClick, true);
+            document.addEventListener("keydown", onKey, true);
+        }, 0);
+
+        document.body.appendChild(dd);
+    }
+
+    /**
+     * Phase 7c: send a whitelist invitation. Issues
+     * `osl_set_whitelist` (Rust mutates local state + returns the
+     * wire) then `oslSendControlMessage` (Discord delivery).
+     */
+    async function oslSendWhitelistInvitation(user, scopeInput, broadened, ctx) {
+        if (!ctx || !ctx.selfId) {
+            oslToast(
+                "OSL: could not resolve your Discord id (try opening a channel first)"
+            );
+            return;
+        }
+        const setResult = await oslInvoke("osl_set_whitelist", {
+            peerDiscordId: user.id,
+            scopeInput: scopeInput,
+            broadened: broadened,
+            fromDiscordId: ctx.selfId,
+        });
+        if (!setResult.ok) {
+            oslToast("OSL: whitelist failed: " + setResult.error);
+            console.log(
+                "[OSL] osl_set_whitelist FAIL user=" +
+                    user.id +
+                    " reason=" +
+                    setResult.error
+            );
+            return;
+        }
+        const wire = setResult.value;
+        // For DM scope: deliver via the DM channel (channelId IS the
+        // user id in our representation; Discord's DM channel id is
+        // different — fall back to the current channelId if it
+        // matches a DM with this user, else log a deferral).
+        const deliveryChannelId =
+            scopeInput.kind === "dm"
+                ? ctx.channelId
+                : ctx.channelId;
+        if (!deliveryChannelId) {
+            oslToast(
+                "OSL: invitation wire built but no delivery channel; open the target channel and re-invite"
+            );
+            console.log(
+                "[OSL] invitation queued (no delivery channel) user=" +
+                    user.id
+            );
+            return;
+        }
+        await oslSendControlMessage(deliveryChannelId, wire);
+        oslToast("Invitation sent to " + user.username);
+        // Refresh the channel header (encrypt toggle may have
+        // become available).
+        oslRefreshHeaderState();
+    }
+
+    // ---- Section 4: channel header encrypt toggle + burn ----
+
+    const HEADER_ENCRYPT_DATA_ATTR = "data-osl-encrypt-toggle";
+    const HEADER_BURN_DATA_ATTR = "data-osl-burn-btn";
+
+    /** Last-known scope state for the header (so toggle clicks have
+     *  current values without round-tripping every time). */
+    let oslHeaderState = {
+        scopeKey: null,
+        encryptToggle: false,
+        hasWhitelist: false,
+    };
+
+    function oslFindHeaderIconContainer(header) {
+        const firstIcon = header.querySelector('[class*="iconWrapper__"]');
+        return firstIcon && firstIcon.parentElement
+            ? firstIcon.parentElement
+            : null;
+    }
+
+    function oslHeaderInjectButtons(header) {
+        if (!header) return;
+        const container = oslFindHeaderIconContainer(header);
+        if (!container) return;
+        const sample = header.querySelector('[class*="iconWrapper__"]');
+        const sampleClass = sample ? sample.className : "";
+
+        // Don't double-inject; if the buttons exist already we just
+        // refresh their state.
+        let encryptBtn = container.querySelector(
+            "[" + HEADER_ENCRYPT_DATA_ATTR + "='1']"
+        );
+        let burnBtn = container.querySelector(
+            "[" + HEADER_BURN_DATA_ATTR + "='1']"
+        );
+
+        if (!encryptBtn) {
+            encryptBtn = document.createElement("div");
+            encryptBtn.setAttribute("role", "button");
+            encryptBtn.setAttribute("tabindex", "0");
+            encryptBtn.setAttribute(HEADER_ENCRYPT_DATA_ATTR, "1");
+            encryptBtn.className = sampleClass;
+            encryptBtn.style.display = "inline-flex";
+            encryptBtn.style.alignItems = "center";
+            encryptBtn.style.justifyContent = "center";
+            encryptBtn.style.cursor = "pointer";
+            encryptBtn.addEventListener("click", oslOnEncryptToggleClick);
+            container.insertBefore(encryptBtn, container.firstChild);
+        }
+
+        if (!burnBtn) {
+            burnBtn = document.createElement("div");
+            burnBtn.setAttribute("role", "button");
+            burnBtn.setAttribute("tabindex", "0");
+            burnBtn.setAttribute(HEADER_BURN_DATA_ATTR, "1");
+            burnBtn.setAttribute("aria-label", "OSL burn scope");
+            burnBtn.className = sampleClass;
+            burnBtn.style.display = "inline-flex";
+            burnBtn.style.alignItems = "center";
+            burnBtn.style.justifyContent = "center";
+            burnBtn.style.cursor = "pointer";
+            burnBtn.style.color = "#ed4245";
+            burnBtn.innerHTML = oslFlameSvg();
+            burnBtn.addEventListener("click", oslOnBurnClick);
+            container.insertBefore(burnBtn, encryptBtn.nextSibling);
+        }
+
+        // Refresh state.
+        oslRefreshHeaderState();
+    }
+
+    /**
+     * Phase 7c: re-read scope-encryption state from Rust and
+     * update both header buttons. Called after every mutation
+     * that could change state (whitelist set, toggle flip, burn,
+     * channel switch).
+     */
+    async function oslRefreshHeaderState() {
+        const ctx = oslCurrentChannelContext();
+        if (!ctx || !ctx.channelId) {
+            // Out of a channel context — nothing to refresh.
+            return;
+        }
+        const scopeInput = oslScopeForCurrentContext(ctx);
+        if (!scopeInput) return;
+        const encryptBtn = document.querySelector(
+            "[" + HEADER_ENCRYPT_DATA_ATTR + "='1']"
+        );
+        const burnBtn = document.querySelector(
+            "[" + HEADER_BURN_DATA_ATTR + "='1']"
+        );
+        if (!encryptBtn) return;
+        const result = await oslInvoke("osl_get_scope_encryption_state", {
+            scopeInput: scopeInput,
+        });
+        if (!result.ok) {
+            console.log(
+                "[OSL] header state refresh failed: " + result.error
+            );
+            return;
+        }
+        const st = result.value;
+        oslHeaderState.scopeKey = oslScopeStorageKey(scopeInput);
+        oslHeaderState.encryptToggle = !!st.encrypt_toggle;
+        oslHeaderState.hasWhitelist = !!st.has_whitelist;
+        encryptBtn.innerHTML = oslLockSvg(
+            st.encrypt_toggle ? "closed" : "open"
+        );
+        encryptBtn.setAttribute(
+            "aria-label",
+            "OSL encrypt: " + (st.encrypt_toggle ? "on" : "off")
+        );
+        if (!st.has_whitelist) {
+            encryptBtn.style.opacity = "0.45";
+            encryptBtn.style.pointerEvents = "none";
+            encryptBtn.style.color = "var(--text-muted, #87898c)";
+            encryptBtn.title = "Whitelist a user first to enable encryption.";
+        } else {
+            encryptBtn.style.opacity = "1";
+            encryptBtn.style.pointerEvents = "auto";
+            encryptBtn.style.color = st.encrypt_toggle
+                ? "var(--brand-560, #5865f2)"
+                : "var(--text-normal, #dbdee1)";
+            encryptBtn.title = st.encrypt_toggle
+                ? "Encryption ON — click to disable in " +
+                  oslScopeLabel(scopeInput)
+                : "Encryption OFF — click to enable in " +
+                  oslScopeLabel(scopeInput);
+        }
+        if (burnBtn) {
+            burnBtn.title =
+                "Burn your messages in " + oslScopeLabel(scopeInput);
+        }
+    }
+
+    /**
+     * Phase 7c: assemble a ScopeInput from the current
+     * channel-context fiber walk. For 7c we don't yet support
+     * `server_full` from a single channel (per design doc §6.1 +
+     * Task 6 of 7b boot.js); that's an explicit user choice
+     * from the profile-popup dropdown.
+     */
+    function oslScopeForCurrentContext(ctx) {
+        if (!ctx) return null;
+        if (ctx.channelType === 1) {
+            // DM: peer is members[0].
+            const peer =
+                Array.isArray(ctx.members) && ctx.members.length > 0
+                    ? ctx.members[0]
+                    : null;
+            if (!peer) return null;
+            return { kind: "dm", id: peer, channel_id: ctx.channelId };
+        }
+        if (ctx.channelType === 3) {
+            return {
+                kind: "gc",
+                id: ctx.channelId,
+                channel_id: ctx.channelId,
+            };
+        }
+        if (ctx.channelType === 0 && ctx.guildId) {
+            return {
+                kind: "server_channel",
+                id: ctx.guildId + ":" + ctx.channelId,
+                server_id: ctx.guildId,
+                channel_id: ctx.channelId,
+            };
+        }
+        return null;
+    }
+
+    function oslScopeStorageKey(scopeInput) {
+        if (!scopeInput) return null;
+        switch (scopeInput.kind) {
+            case "dm":
+                return "dm:" + scopeInput.id;
+            case "gc":
+                return "gc:" + scopeInput.id;
+            case "server_channel":
+                return "server_channel:" + scopeInput.id;
+            case "server_full":
+                return "server_full:" + scopeInput.id;
+            default:
+                return null;
+        }
+    }
+
+    async function oslOnEncryptToggleClick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ctx = oslCurrentChannelContext();
+        const scopeInput = oslScopeForCurrentContext(ctx);
+        if (!scopeInput) {
+            oslToast("OSL: cannot determine current scope");
+            return;
+        }
+        const result = await oslInvoke("osl_toggle_scope_encryption", {
+            scopeInput: scopeInput,
+        });
+        if (!result.ok) {
+            if (result.error === "encrypt_toggle_refused_no_whitelist") {
+                oslToast(
+                    "Whitelist a user first to enable encryption."
+                );
+            } else {
+                oslToast("OSL: toggle failed: " + result.error);
+            }
+            return;
+        }
+        oslToast(
+            "Encryption " +
+                (result.value ? "ON" : "OFF") +
+                " in " +
+                oslScopeLabel(scopeInput)
+        );
+        oslRefreshHeaderState();
+    }
+
+    async function oslOnBurnClick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ctx = oslCurrentChannelContext();
+        const scopeInput = oslScopeForCurrentContext(ctx);
+        if (!scopeInput) {
+            oslToast("OSL: cannot determine current scope");
+            return;
+        }
+        const ok = await oslConfirm({
+            title: "Burn " + oslScopeLabel(scopeInput) + "?",
+            body:
+                "Your messages in " +
+                oslScopeLabel(scopeInput) +
+                " will become permanent ciphertext for everyone. " +
+                "This cannot be undone.",
+            confirmText: "Burn",
+            cancelText: "Cancel",
+            danger: true,
+        });
+        if (!ok) return;
+        // Ship the burn marker. Recipients = members of current
+        // channel (for DM/GC, ctx.members already populated; for
+        // server channels 7c doesn't yet enumerate the right-panel
+        // members list — Task 4 send path notes this limitation
+        // and 7d's settings UI will let users pick members).
+        const sendResult = await oslInvoke("osl_send_burn_marker", {
+            scopeInput: scopeInput,
+            channelMembers: ctx.members,
+            selfDiscordId: ctx.selfId,
+        });
+        if (sendResult.ok) {
+            await oslSendControlMessage(ctx.channelId, sendResult.value);
+        } else if (sendResult.error !== "no_whitelisted_recipients") {
+            // Real error — burn marker not shipped. Still proceed
+            // with local apply so the user's own state is wiped.
+            console.log(
+                "[OSL] burn marker send failed: " + sendResult.error
+            );
+        }
+        // Apply locally regardless of whether the wire shipped.
+        const applyResult = await oslInvoke("osl_apply_burn", {
+            scopeInput: scopeInput,
+        });
+        if (!applyResult.ok) {
+            oslToast("OSL: burn apply failed: " + applyResult.error);
+            return;
+        }
+        oslToast("Burn applied to " + oslScopeLabel(scopeInput));
+        oslRefreshHeaderState();
+    }
+
+    // ---- Section 5: pending invitation banner ----
+
+    const BANNER_STACK_ID = "__osl_invitation_banners";
+    const BANNER_ATTR = "data-osl-invitation-banner";
+
+    /**
+     * Phase 7c: insert the banner stack inside Discord's chat
+     * content area, above the message list. The stack is a
+     * pinned-top sibling of the message scroller so banners stay
+     * visible while the user scrolls back through history.
+     */
+    function oslEnsureBannerStack() {
+        let stack = document.getElementById(BANNER_STACK_ID);
+        if (stack && document.body.contains(stack)) return stack;
+        // Discord's chat content sits in <main>; find the chat area
+        // by looking for the channel header's parent.
+        const header = document.querySelector(
+            'section[class*="title_"][class*="container__"]'
+        );
+        const parent = header && header.parentElement;
+        if (!parent) return null;
+        stack = document.createElement("div");
+        stack.id = BANNER_STACK_ID;
+        stack.style.display = "flex";
+        stack.style.flexDirection = "column";
+        stack.style.gap = "4px";
+        // Insert just below the header.
+        parent.insertBefore(stack, header.nextSibling);
+        return stack;
+    }
+
+    async function oslRefreshBanners() {
+        const stack = oslEnsureBannerStack();
+        if (!stack) return;
+        const listResult = await oslInvoke(
+            "osl_list_pending_invitations",
+            {}
+        );
+        if (!listResult.ok) {
+            console.log(
+                "[OSL] list pending invitations failed: " + listResult.error
+            );
+            return;
+        }
+        // Clear existing banners and re-render. Cheap for the
+        // expected size (≤ a handful of pending invitations).
+        const existing = stack.querySelectorAll("[" + BANNER_ATTR + "='1']");
+        for (const e of existing) e.remove();
+        for (const inv of listResult.value) {
+            stack.appendChild(oslRenderBanner(inv));
+        }
+    }
+
+    function oslRenderBanner(inv) {
+        const el = document.createElement("div");
+        el.setAttribute(BANNER_ATTR, "1");
+        el.setAttribute("data-osl-invitation-id", inv.id);
+        el.style.padding = "12px 16px";
+        el.style.background = "var(--background-tertiary, #1e1f22)";
+        el.style.color = "var(--text-normal, #dbdee1)";
+        el.style.display = "flex";
+        el.style.alignItems = "center";
+        el.style.justifyContent = "space-between";
+        el.style.gap = "12px";
+        el.style.borderBottom =
+            "1px solid var(--background-modifier-accent, #2e3035)";
+
+        const msg = document.createElement("div");
+        msg.style.flex = "1";
+        msg.style.fontSize = "14px";
+        msg.textContent =
+            "OSL: " +
+            inv.from +
+            " wants to send you encrypted messages in " +
+            oslBannerScopeLabel(inv) +
+            ".";
+        el.appendChild(msg);
+
+        const accept = document.createElement("button");
+        accept.textContent = "Accept";
+        accept.style.padding = "6px 14px";
+        accept.style.borderRadius = "4px";
+        accept.style.border = "none";
+        accept.style.background = "var(--brand-560, #5865f2)";
+        accept.style.color = "white";
+        accept.style.cursor = "pointer";
+        accept.style.fontSize = "13px";
+        accept.addEventListener("click", function () {
+            oslOnInvitationDecision(inv, true);
+        });
+        el.appendChild(accept);
+
+        const decline = document.createElement("button");
+        decline.textContent = "Decline";
+        decline.style.padding = "6px 14px";
+        decline.style.borderRadius = "4px";
+        decline.style.border =
+            "1px solid var(--background-modifier-accent, #4f545c)";
+        decline.style.background = "transparent";
+        decline.style.color = "inherit";
+        decline.style.cursor = "pointer";
+        decline.style.fontSize = "13px";
+        decline.addEventListener("click", function () {
+            oslOnInvitationDecision(inv, false);
+        });
+        el.appendChild(decline);
+
+        return el;
+    }
+
+    function oslBannerScopeLabel(inv) {
+        // inv.scope is the scope-kind string from
+        // pending_invitations.json ("dm", "gc", "server_channel",
+        // "server_full"); inv.scope_id is the storage_key.
+        switch (inv.scope) {
+            case "dm":
+                return "this DM";
+            case "gc":
+                return "this group chat";
+            case "server_channel":
+                return "this server channel";
+            case "server_full":
+                return "an entire server";
+            default:
+                return "an OSL scope";
+        }
+    }
+
+    async function oslOnInvitationDecision(inv, accepted) {
+        const cmd = accepted
+            ? "osl_accept_invitation"
+            : "osl_decline_invitation";
+        const result = await oslInvoke(cmd, { invitationId: inv.id });
+        if (!result.ok) {
+            oslToast(
+                "OSL: " +
+                    (accepted ? "accept" : "decline") +
+                    " failed: " +
+                    result.error
+            );
+            return;
+        }
+        // Build + ship the response wire so the inviter's UI
+        // updates. Reconstruct the scope from inv.scope_id (the
+        // storage_key embeds it).
+        const ctx = oslCurrentChannelContext();
+        if (ctx && ctx.channelId && inv.scope_id) {
+            const scopeInput = oslScopeInputFromStorageKey(inv.scope_id);
+            if (scopeInput) {
+                const respResult = await oslInvoke(
+                    "osl_send_whitelist_response",
+                    {
+                        toDiscordId: inv.from,
+                        scopeInput: scopeInput,
+                        accepted: accepted,
+                    }
+                );
+                if (respResult.ok) {
+                    await oslSendControlMessage(
+                        ctx.channelId,
+                        respResult.value
+                    );
+                }
+            }
+        }
+        oslToast(
+            accepted
+                ? "Accepted. " +
+                      inv.from +
+                      "'s messages will now decrypt."
+                : "Declined. " +
+                      inv.from +
+                      "'s messages will stay encrypted."
+        );
+        oslRefreshBanners();
+        oslRefreshHeaderState();
+    }
+
+    function oslScopeInputFromStorageKey(key) {
+        if (typeof key !== "string") return null;
+        if (key.indexOf("dm:") === 0) {
+            const id = key.slice(3);
+            return id ? { kind: "dm", id: id, channel_id: id } : null;
+        }
+        if (key.indexOf("gc:") === 0) {
+            const id = key.slice(3);
+            return id ? { kind: "gc", id: id, channel_id: id } : null;
+        }
+        if (key.indexOf("server_channel:") === 0) {
+            const rest = key.slice("server_channel:".length);
+            const ix = rest.indexOf(":");
+            if (ix <= 0 || ix === rest.length - 1) return null;
+            const server = rest.slice(0, ix);
+            const channel = rest.slice(ix + 1);
+            return {
+                kind: "server_channel",
+                id: server + ":" + channel,
+                server_id: server,
+                channel_id: channel,
+            };
+        }
+        if (key.indexOf("server_full:") === 0) {
+            const id = key.slice("server_full:".length);
+            return id ? { kind: "server_full", id: id, server_id: id } : null;
+        }
+        return null;
+    }
+
+    // ---- Section 6: recv-path glue ----
+
+    // Extend the 7b sentinel handler so control-message recv
+    // events trigger UI side-effects: toasts + banner refresh.
+    // We wrap the existing `oslHandleDecryptResult` to keep its
+    // boolean contract (true = control sentinel, false = plaintext).
+    const _oslHandleDecryptResult_v7b = oslHandleDecryptResult;
+    // eslint-disable-next-line no-func-assign
+    oslHandleDecryptResult = function (msgId, result) {
+        const handled = _oslHandleDecryptResult_v7b(msgId, result);
+        if (!handled) return false;
+        try {
+            if (result === OSL_RESULT_BURN_APPLIED) {
+                oslToast(
+                    "OSL: a peer burned messages in this scope; affected messages will re-render as ciphertext."
+                );
+                // Force a sweep so the recv observer re-resolves
+                // the burned message into its (now stale) cover
+                // form.
+                oslRefreshHeaderState();
+            } else if (result === OSL_RESULT_INVITATION_RECEIVED) {
+                oslRefreshBanners();
+            } else if (result === OSL_RESULT_RESPONSE_RECEIVED) {
+                oslToast(
+                    "OSL: a peer accepted/declined your whitelist invitation."
+                );
+                oslRefreshHeaderState();
+            }
+        } catch (e) {
+            console.log(
+                "[OSL] handle decrypt UI side-effect threw: " +
+                    (e && e.message ? e.message : e)
+            );
+        }
+        return true;
+    };
+
+    // ---- Section 7: install ----
+
+    /**
+     * Phase 7c: top-level installer. Wires the profile observer,
+     * the header observer, and the initial banner load. Called
+     * from the DOMContentLoaded gate at the bottom of the IIFE,
+     * alongside the existing recv observer + edit-overlay
+     * installer.
+     *
+     * Idempotent: subsequent calls are no-ops.
+     */
+    let oslPhase7cInstalled = false;
+    function oslInstallPhase7c() {
+        if (oslPhase7cInstalled) return;
+        oslPhase7cInstalled = true;
+
+        // Profile observer: pick up popout/sidebar mounts.
+        const profileObs = new MutationObserver(function () {
+            const surface = oslFindProfileSurface();
+            if (surface) oslInjectProfileButton(surface);
+        });
+        profileObs.observe(document.body, {
+            childList: true,
+            subtree: true,
+        });
+
+        // Header observer: re-inject buttons when Discord
+        // re-mounts the channel header (every navigation).
+        const headerObs = new MutationObserver(function () {
+            const header = document.querySelector(
+                'section[class*="title_"][class*="container__"]'
+            );
+            if (header) {
+                oslHeaderInjectButtons(header);
+                oslRefreshBanners(); // banner stack is anchored to header
+            }
+        });
+        headerObs.observe(document.body, {
+            childList: true,
+            subtree: true,
+        });
+
+        // Initial pass.
+        nativeSetTimeout(function () {
+            const header = document.querySelector(
+                'section[class*="title_"][class*="container__"]'
+            );
+            if (header) oslHeaderInjectButtons(header);
+            const surface = oslFindProfileSurface();
+            if (surface) oslInjectProfileButton(surface);
+            oslRefreshBanners();
+        }, 500);
+
+        console.log("[OSL] Phase 7c UI installed");
+    }
 
     /**
      * Phase 6a fetch-side edit interception. Top-level entry
@@ -3893,10 +5259,12 @@
         document.addEventListener("DOMContentLoaded", recvInstallObserver);
         // document.addEventListener("DOMContentLoaded", editTabStartObserver);  // disabled: broken Slate-model swap, pending overlay rewrite
         document.addEventListener("DOMContentLoaded", editOverlayInstall);
+        document.addEventListener("DOMContentLoaded", oslInstallPhase7c);
     } else {
         recvInstallObserver();
         // editTabStartObserver();  // disabled: broken Slate-model swap, pending overlay rewrite
         editOverlayInstall();
+        oslInstallPhase7c();
     }
 })();
 

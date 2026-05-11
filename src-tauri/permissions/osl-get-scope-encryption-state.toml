@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7c: header-icon state read.
+[[permission]]
+identifier = "allow-osl-get-scope-encryption-state"
+description = "Permits the discord.com main webview to invoke `osl_get_scope_encryption_state` (read { encrypt_toggle, has_whitelist } for a scope). Drives the channel-header encrypt-toggle icon's state. Phase 7c."
+commands.allow = ["osl_get_scope_encryption_state"]
