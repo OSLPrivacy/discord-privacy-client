@@ -49,8 +49,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MARKER_FILENAME: &str = "password_marker.json";
 const LOCKOUT_FILENAME: &str = "lockout_state.json";
-const MARKER_VERSION: u32 = 1;
+const MARKER_VERSION: u32 = 2;
 const LOCKOUT_VERSION: u32 = 1;
+const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 
 const PASSWORD_LEN: usize = 6;
 const SALT_LEN: usize = 16;
@@ -108,6 +109,16 @@ pub struct PasswordMarker {
     /// user to remove + reset their password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phrase_hash_b64: Option<String>,
+    /// 7d-B2: argon2id(stealth_password, salt, params)[..32] in
+    /// base64. Same salt + params as the main password (no separate
+    /// salt because stealth has no recovery and doesn't need its
+    /// own key derivation surface). Absent on v=1 markers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stealth_password_hash_b64: Option<String>,
+    /// 7d-B3: argon2id(burn_password, salt, params)[..32] in base64.
+    /// Same salt + params as main. Absent on v=1 markers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burn_password_hash_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -215,9 +226,13 @@ fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
         .map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
     let marker: PasswordMarker = serde_json::from_slice(&bytes)
         .map_err(|e| format!("OSL: parse password_marker.json: {e}"))?;
-    if marker.version != MARKER_VERSION {
+    // 7d-B2: accept both v1 and v2 markers. v1 markers parse fine
+    // because the new stealth/burn/phrase_hash fields are all
+    // `Option<>` with serde default. Reject anything else — future
+    // schema bumps need explicit migration.
+    if marker.version != 1 && marker.version != MARKER_VERSION {
         return Err(format!(
-            "OSL: password_marker.json version mismatch (got {}, want {MARKER_VERSION})",
+            "OSL: password_marker.json version mismatch (got {}, want 1 or {MARKER_VERSION})",
             marker.version
         ));
     }
@@ -242,6 +257,26 @@ fn delete_marker(dir: &Path) -> Result<(), String> {
             .map_err(|e| format!("OSL: remove {}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+pub fn read_lockout_pub(dir: &Path) -> LockoutState {
+    read_lockout(dir)
+}
+
+pub fn write_lockout_pub(dir: &Path, state: &LockoutState) -> Result<(), String> {
+    write_lockout(dir, state)
+}
+
+pub fn read_marker_pub(dir: &Path) -> Result<PasswordMarker, String> {
+    read_marker(dir)
+}
+
+pub fn now_unix_secs_pub() -> i64 {
+    now_unix_secs()
+}
+
+pub fn password_lockout_secs_pub(attempts: u32) -> i64 {
+    password_lockout_secs(attempts)
 }
 
 fn read_lockout(dir: &Path) -> LockoutState {
@@ -387,6 +422,8 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
         phrase_encrypted_b64: STANDARD.encode(&ct),
         phrase_nonce_b64: STANDARD.encode(nonce),
         phrase_hash_b64: Some(phrase_hash_b64),
+        stealth_password_hash_b64: None,
+        burn_password_hash_b64: None,
     })
 }
 
@@ -445,6 +482,16 @@ pub fn set_main_password(dir: &Path, password: &str) -> Result<String, String> {
     write_marker(dir, &marker)?;
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
+    // 7d-B4 (scoped): derive the file_storage_key, encrypt the 3
+    // existing-plain JSONs in place, install the key into the
+    // process-global slot so subsequent writes auto-encrypt.
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(password, &salt, &marker.params)?;
+    let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
+    encrypt_existing_state_files(dir, &file_key)?;
+    set_file_storage_key(Some(file_key));
     Ok(phrase)
 }
 
@@ -460,9 +507,23 @@ pub fn change_main_password(
     let marker = read_marker(dir)?;
     let _key = verify_with_marker(&marker, current)
         .map_err(|_| "OSL: current password incorrect".to_string())?;
+    // 7d-B4: derive old + new file_storage_keys so we can rotate
+    // the at-rest encryption on the 3 JSONs before swapping marker.
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let old_derived = derive(current, &salt, &marker.params)?;
+    let old_file_key = derive_file_storage_key(&old_derived[HASH_LEN..]);
     let new_phrase = generate_phrase()?;
     let new_marker = build_marker(new, &new_phrase)?;
+    let new_derived = derive(new, &salt, &new_marker.params)?;
+    let new_file_key = derive_file_storage_key(&new_derived[HASH_LEN..]);
+    // Rotate the 3 JSONs (old → new key). If any file fails to
+    // rotate we bail BEFORE writing the new marker, leaving disk
+    // in a consistent (old-marker, old-key-encrypted) state.
+    rotate_state_files(dir, &old_file_key, &new_file_key)?;
     write_marker(dir, &new_marker)?;
+    set_file_storage_key(Some(new_file_key));
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(new_phrase)
@@ -472,6 +533,16 @@ pub fn remove_main_password(dir: &Path, current: &str) -> Result<(), String> {
     let marker = read_marker(dir)?;
     verify_with_marker(&marker, current)
         .map_err(|_| "OSL: current password incorrect".to_string())?;
+    // 7d-B4: decrypt the 3 JSONs back to plain on disk before we
+    // drop the key — otherwise subsequent reads (with no key) would
+    // fail to parse the OSL-ENC1 blob.
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(current, &salt, &marker.params)?;
+    let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
+    let _ = decrypt_existing_state_files(dir, &file_key);
+    set_file_storage_key(None);
     delete_marker(dir)?;
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
@@ -523,6 +594,19 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
     let marker = read_marker(dir)?;
     match verify_with_marker(&marker, password) {
         Ok(_) => {
+            // 7d-B4: also derive + install the file_storage_key so
+            // subsequent reads of peer_map/whitelist_state/pending_invitations
+            // auto-decrypt. This is the settings-side "current
+            // password" verify (view-recovery-phrase, change/remove)
+            // — same install pattern as the gate's main-success
+            // path so the global key is in sync regardless of
+            // which surface authenticated the user.
+            let salt = STANDARD
+                .decode(&marker.salt_b64)
+                .map_err(|e| format!("OSL: salt b64: {e}"))?;
+            let derived = derive(password, &salt, &marker.params)?;
+            let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
+            set_file_storage_key(Some(file_key));
             state.password_failed_attempts = 0;
             state.password_locked_until = None;
             let _ = write_lockout(dir, &state);
@@ -701,4 +785,459 @@ pub fn lockout_status(dir: &Path) -> LockoutStatusDto {
 
 fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
     marker.phrase_hash_b64.clone()
+}
+
+// =====================================================================
+// 7d-B4 (scoped to 3 JSON files per user choice): encryption-at-rest
+// for peer_map.json, whitelist_state.json, pending_invitations.json.
+//
+// `identity.json` keeps its existing keystore::Sealer layer and
+// `messages.sqlite` keeps its existing row-level AEAD in `store` —
+// neither file is touched here.
+//
+// File format (8-byte magic | 12-byte nonce | ciphertext | 16-byte
+// AES-GCM tag):
+//
+//   "OSL-ENC1" + nonce + AES-256-GCM(file_storage_key, nonce, plaintext_json)
+//
+// The file_storage_key is derived from the user's main password via
+// argon2id → HMAC-SHA256 expand. A successful main-password verify
+// stashes it in a process-global `OnceLock<Mutex<Option<[u8; 32]>>>`
+// that the file loaders/writers consult transparently — no signature
+// changes to existing readers.
+//
+// Plain JSON (no OSL-ENC1 prefix) is still accepted by loaders so
+// users without a password keep working, and so the migration to
+// encryption-at-rest on first `set_main_password` is a one-shot
+// re-write. `clear_file_storage_key()` is called from
+// `remove_main_password` to revert future writes to plain JSON.
+// =====================================================================
+
+use std::sync::{Mutex, OnceLock};
+
+static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+
+fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
+    FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
+}
+
+/// Public accessor used by peer_map / whitelist_state /
+/// pending_invitations loaders + writers to decide whether to
+/// encrypt-on-write or accept an encrypted-on-disk file.
+pub fn get_file_storage_key() -> Option<[u8; 32]> {
+    *file_storage_slot().lock().expect("file_storage_key mutex poisoned")
+}
+
+pub fn set_file_storage_key(key: Option<[u8; 32]>) {
+    *file_storage_slot().lock().expect("file_storage_key mutex poisoned") = key;
+}
+
+/// HKDF-Expand-SHA256 single-block expansion. Input `prk` is the
+/// pseudo-random key (the 32-byte tail of argon2id output);
+/// `info` is the context string. Output is 32 bytes (single HMAC
+/// block per RFC 5869 §2.3 with L = HashLen).
+fn hkdf_expand_32(prk: &[u8], info: &[u8]) -> [u8; 32] {
+    use hmac::{Mac, SimpleHmac};
+    use sha2::Sha256;
+    type HmacSha256 = SimpleHmac<Sha256>;
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(prk).expect("hmac key");
+    mac.update(info);
+    mac.update(&[0x01u8]); // T(1) counter for single-block expand
+    let out = mac.finalize().into_bytes();
+    let mut k = [0u8; 32];
+    k.copy_from_slice(&out[..32]);
+    k
+}
+
+/// Derive the 32-byte AES key for the at-rest file format from
+/// the argon2id output tail. Distinct info-string from the
+/// phrase-blob key so a future phrase-blob compromise doesn't
+/// surface file plaintext.
+fn derive_file_storage_key(argon_tail: &[u8]) -> [u8; 32] {
+    hkdf_expand_32(argon_tail, b"OSL/file-storage/v2")
+}
+
+/// Encrypt a JSON blob for at-rest storage. Output layout:
+/// magic (8) + nonce (12) + ciphertext + tag (16).
+pub fn encrypt_at_rest(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    let r = random_bytes(NONCE_LEN);
+    nonce_bytes.copy_from_slice(&r);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ct = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| format!("OSL: at-rest encrypt: {e}"))?;
+    let mut out = Vec::with_capacity(ENC_MAGIC.len() + NONCE_LEN + ct.len());
+    out.extend_from_slice(ENC_MAGIC);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+/// Decrypt a file blob. Returns the inner JSON bytes. Caller is
+/// expected to have verified the magic via `has_enc_magic`.
+pub fn decrypt_at_rest(blob: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    if !has_enc_magic(blob) {
+        return Err("OSL: at-rest decrypt: missing OSL-ENC1 magic".to_string());
+    }
+    if blob.len() < ENC_MAGIC.len() + NONCE_LEN + 16 {
+        return Err("OSL: at-rest decrypt: blob too short".to_string());
+    }
+    let nonce_bytes = &blob[ENC_MAGIC.len()..ENC_MAGIC.len() + NONCE_LEN];
+    let ct = &blob[ENC_MAGIC.len() + NONCE_LEN..];
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(nonce, ct)
+        .map_err(|e| format!("OSL: at-rest decrypt: {e}"))
+}
+
+/// Convenience: caller doesn't need to thread the key through —
+/// reads from the process-global slot. Returns plaintext for
+/// either a plain blob (no magic) or an encrypted blob (decrypts).
+/// Used by JSON loaders.
+pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
+    if !has_enc_magic(blob) {
+        return Ok(blob.to_vec());
+    }
+    let key = get_file_storage_key()
+        .ok_or_else(|| "OSL: encrypted at-rest file but no key in slot (password not entered?)".to_string())?;
+    decrypt_at_rest(blob, &key)
+}
+
+/// Convenience: write-side mirror of `maybe_decrypt`. If a key is
+/// in the slot, encrypt; otherwise return plaintext verbatim.
+pub fn maybe_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    match get_file_storage_key() {
+        Some(key) => encrypt_at_rest(plaintext, &key),
+        None => Ok(plaintext.to_vec()),
+    }
+}
+
+pub fn has_enc_magic(blob: &[u8]) -> bool {
+    blob.len() >= ENC_MAGIC.len() && &blob[..ENC_MAGIC.len()] == ENC_MAGIC
+}
+
+/// Best-effort re-write of the 3 unencrypted JSONs as encrypted
+/// blobs using the supplied key. Called from `set_main_password`
+/// after the marker is written. Plain files become encrypted in
+/// place; already-encrypted files are skipped. Per-file failure
+/// is logged + skipped rather than aborting the whole migration —
+/// the spec wants this fail-soft (peer_map missing is normal in a
+/// fresh install).
+pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
+    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json"] {
+        let path = dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let raw = match std::fs::read(&path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if has_enc_magic(&raw) {
+            // Already encrypted (re-run safety).
+            continue;
+        }
+        let enc = encrypt_at_rest(&raw, key)?;
+        std::fs::write(&path, &enc)
+            .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Decrypt the 3 state JSONs back to plain bytes on disk using
+/// the supplied (old) key. Called from `remove_main_password`
+/// before clearing the global key.
+pub fn decrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
+    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json"] {
+        let path = dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let raw = match std::fs::read(&path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !has_enc_magic(&raw) {
+            continue;
+        }
+        let plain = decrypt_at_rest(&raw, key)?;
+        std::fs::write(&path, &plain)
+            .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Rotate the at-rest encryption from `old_key` to `new_key` for
+/// the 3 state JSONs. Called from `change_main_password`. Each
+/// file: read, decrypt with old, re-encrypt with new, write.
+/// Files that are unexpectedly plain are silently re-encrypted
+/// with new (covers the "user upgraded mid-session" case).
+pub fn rotate_state_files(
+    dir: &Path,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<(), String> {
+    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json"] {
+        let path = dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let raw = std::fs::read(&path)
+            .map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+        let plain = if has_enc_magic(&raw) {
+            decrypt_at_rest(&raw, old_key)?
+        } else {
+            raw
+        };
+        let enc = encrypt_at_rest(&plain, new_key)?;
+        std::fs::write(&path, &enc)
+            .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+// =====================================================================
+// 7d-B2 / B3: stealth + burn password operations + 3-way gate verify.
+// =====================================================================
+
+/// Verify a password against the marker's three stored hashes
+/// (main, stealth, burn). Constant-time across all three regardless
+/// of early match. Returns which role matched. The boot gate's
+/// dispatcher uses this; the settings UI continues using
+/// `verify_main_password` (which intentionally rejects stealth/burn
+/// matches — a password manager that only knows the main password
+/// should fail "current password incorrect" if the user types
+/// stealth/burn into a "current password" field).
+pub enum GateMatch {
+    Main([u8; 32]), // also returns derived file_storage_key
+    Stealth,
+    Burn,
+    Wrong,
+}
+
+pub fn verify_gate_password_with_marker(
+    marker: &PasswordMarker,
+    password: &str,
+) -> Result<GateMatch, String> {
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    if salt.len() != SALT_LEN {
+        return Err("OSL: salt wrong len".to_string());
+    }
+    let derived = derive(password, &salt, &marker.params)?;
+    let main_hash = STANDARD
+        .decode(&marker.password_hash_b64)
+        .map_err(|e| format!("OSL: main hash b64: {e}"))?;
+    let stealth_hash = match marker.stealth_password_hash_b64.as_ref() {
+        Some(s) => Some(STANDARD.decode(s).map_err(|e| format!("OSL: stealth hash b64: {e}"))?),
+        None => None,
+    };
+    let burn_hash = match marker.burn_password_hash_b64.as_ref() {
+        Some(s) => Some(STANDARD.decode(s).map_err(|e| format!("OSL: burn hash b64: {e}"))?),
+        None => None,
+    };
+    let candidate = &derived[..HASH_LEN];
+    // Constant-time: run all three comparisons regardless of
+    // early match. The bool ORs at the end pick the first match.
+    let m_main = ct_eq(candidate, &main_hash);
+    let m_stealth = stealth_hash.as_deref().map(|h| ct_eq(candidate, h)).unwrap_or(false);
+    let m_burn = burn_hash.as_deref().map(|h| ct_eq(candidate, h)).unwrap_or(false);
+    if m_main {
+        let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
+        return Ok(GateMatch::Main(file_key));
+    }
+    if m_stealth {
+        return Ok(GateMatch::Stealth);
+    }
+    if m_burn {
+        return Ok(GateMatch::Burn);
+    }
+    Ok(GateMatch::Wrong)
+}
+
+/// Set or rotate the stealth password. Verifies `current_main`
+/// first (any password manager attempting `change_stealth` with
+/// the wrong main is blocked). New stealth must differ from main
+/// AND (if set) burn. Same salt/params as main → no marker schema
+/// change beyond the added field.
+pub fn set_stealth_password(
+    dir: &Path,
+    current_main: &str,
+    new_stealth: &str,
+) -> Result<(), String> {
+    validate_password(new_stealth)?;
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    if current_main == new_stealth {
+        return Err("OSL: stealth password must be different from your main password".to_string());
+    }
+    if let Some(burn_b64) = marker.burn_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_stealth, &salt, &marker.params)?;
+        let burn = STANDARD.decode(burn_b64).map_err(|e| format!("OSL: burn b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &burn) {
+            return Err("OSL: stealth and burn passwords must be different".to_string());
+        }
+    }
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(new_stealth, &salt, &marker.params)?;
+    marker.stealth_password_hash_b64 = Some(STANDARD.encode(&derived[..HASH_LEN]));
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn remove_stealth_password(dir: &Path, current_main: &str) -> Result<(), String> {
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    marker.stealth_password_hash_b64 = None;
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn set_burn_password(
+    dir: &Path,
+    current_main: &str,
+    new_burn: &str,
+) -> Result<(), String> {
+    validate_password(new_burn)?;
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    if current_main == new_burn {
+        return Err("OSL: burn password must be different from your main password".to_string());
+    }
+    if let Some(stealth_b64) = marker.stealth_password_hash_b64.as_ref() {
+        let salt = STANDARD
+            .decode(&marker.salt_b64)
+            .map_err(|e| format!("OSL: salt b64: {e}"))?;
+        let derived = derive(new_burn, &salt, &marker.params)?;
+        let stealth = STANDARD.decode(stealth_b64).map_err(|e| format!("OSL: stealth b64: {e}"))?;
+        if ct_eq(&derived[..HASH_LEN], &stealth) {
+            return Err("OSL: stealth and burn passwords must be different".to_string());
+        }
+    }
+    let salt = STANDARD
+        .decode(&marker.salt_b64)
+        .map_err(|e| format!("OSL: salt b64: {e}"))?;
+    let derived = derive(new_burn, &salt, &marker.params)?;
+    marker.burn_password_hash_b64 = Some(STANDARD.encode(&derived[..HASH_LEN]));
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn remove_burn_password(dir: &Path, current_main: &str) -> Result<(), String> {
+    let mut marker = read_marker(dir)?;
+    let _ = verify_with_marker(&marker, current_main)
+        .map_err(|_| "OSL: current main password incorrect".to_string())?;
+    marker.burn_password_hash_b64 = None;
+    marker.version = MARKER_VERSION;
+    write_marker(dir, &marker)
+}
+
+pub fn stealth_password_status(dir: &Path) -> bool {
+    read_marker(dir)
+        .map(|m| m.stealth_password_hash_b64.is_some())
+        .unwrap_or(false)
+}
+
+pub fn burn_password_status(dir: &Path) -> bool {
+    read_marker(dir)
+        .map(|m| m.burn_password_hash_b64.is_some())
+        .unwrap_or(false)
+}
+
+// =====================================================================
+// 7d-B2: stealth-engage and 7d-B3: burn-engage.
+// =====================================================================
+
+/// Set the FILE_ATTRIBUTE_HIDDEN flag on the OSL config dir
+/// (Windows only — silent no-op on other platforms). Best effort;
+/// errors are returned but the caller treats them as warnings.
+pub fn stealth_hide_dir(_dir: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ffi::OsStr;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        let wide: Vec<u16> = OsStr::new(_dir)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: SetFileAttributesW takes a null-terminated UTF-16
+        // path and a flag DWORD. Both arguments live for the duration
+        // of the call.
+        extern "system" {
+            fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
+        }
+        let res = unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) };
+        if res == 0 {
+            return Err("OSL: SetFileAttributesW failed".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub fn stealth_unhide_dir(_dir: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ffi::OsStr;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+        let wide: Vec<u16> = OsStr::new(_dir)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        extern "system" {
+            fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
+        }
+        let res = unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_NORMAL) };
+        if res == 0 {
+            return Err("OSL: SetFileAttributesW (unhide) failed".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Wipe every OSL state file. Recovery-phrase blob goes with the
+/// marker so this is truly irreversible (matching the spec — burn
+/// is destruction under coercion). The Discord WebView2 cookies
+/// live in a different directory, so the user's Discord login is
+/// preserved across burn — they see vanilla Discord on next launch.
+pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
+    // Unhide first (in case stealth had hidden it) so subsequent
+    // file ops aren't affected by attribute state.
+    let _ = stealth_unhide_dir(dir);
+    let top = [
+        "identity.json",
+        "peer_map.json",
+        "channels.json",
+        "whitelist_state.json",
+        "pending_invitations.json",
+        "password_marker.json",
+        "lockout_state.json",
+    ];
+    for name in top {
+        let path = dir.join(name);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let store = dir.join("store");
+    for name in ["messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm"] {
+        let path = store.join(name);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
 }

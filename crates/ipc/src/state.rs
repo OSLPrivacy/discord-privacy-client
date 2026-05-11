@@ -170,6 +170,15 @@ pub struct AppState {
     /// token; the user re-enters the phrase. Cleared (`take()`)
     /// by the consume path regardless of match.
     pub recovery_token: Mutex<Option<(String, i64, String)>>,
+
+    /// Phase 7d-B2: stealth-mode session flag. Set to true by
+    /// `osl_stealth_mode_engage` after a successful stealth-password
+    /// gate verify. The initialization_script consults this flag
+    /// (via a URL hash, since boot.js can't synchronously call
+    /// Tauri commands) to skip the entire OSL feature install
+    /// — the user sees vanilla Discord for the rest of the
+    /// session. Reset on app restart (in-memory only).
+    pub stealth_active: Mutex<bool>,
 }
 
 impl AppState {

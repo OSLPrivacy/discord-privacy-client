@@ -42,6 +42,10 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 bip39 = { version = "2", default-features = false, features = ["std"] }
 subtle = { workspace = true }
+# 7d-B4 (scoped): HKDF-SHA256 single-block expansion for the
+# at-rest file_storage_key derivation. RustCrypto `hmac` paired
+# with the existing workspace `sha2`.
+hmac = "0.12"
 
 crypto = { path = "../crypto" }
 stego = { path = "../stego" }

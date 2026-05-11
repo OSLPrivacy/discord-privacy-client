@@ -283,8 +283,8 @@ pub enum PeerMapError {
 /// is surfaced as [`PeerMapError::WriteBackFailed`]; the caller
 /// can choose to log and continue with the in-memory map.
 pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+    let blob = match std::fs::read(path) {
+        Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(PeerMapError::NotFound {
                 path: path.to_path_buf(),
@@ -297,8 +297,22 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
             });
         }
     };
+    // 7d-B4 (scoped): transparently decrypt if the on-disk bytes
+    // start with the OSL-ENC1 magic. Requires
+    // `main_password::set_file_storage_key` to have been called
+    // (verify_main_password / gate-main-success). For plain JSON
+    // (no marker set, or password removed), pass through.
+    let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
+        PeerMapError::ParseFailed {
+            path: path.to_path_buf(),
+            source: serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            )),
+        }
+    })?;
     let raw_map: HashMap<String, PeerEntryRepr> =
-        serde_json::from_str(&raw).map_err(|source| PeerMapError::ParseFailed {
+        serde_json::from_slice(&plain).map_err(|source| PeerMapError::ParseFailed {
             path: path.to_path_buf(),
             source,
         })?;
@@ -330,8 +344,12 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
 pub fn write_peer_map(path: &Path, map: &PeerMap) -> Result<(), std::io::Error> {
     let body = serde_json::to_string_pretty(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // 7d-B4 (scoped): if a file_storage_key is installed (main
+    // password active), encrypt before write. Plain JSON otherwise.
+    let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body)?;
+    std::fs::write(&tmp, &out_bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

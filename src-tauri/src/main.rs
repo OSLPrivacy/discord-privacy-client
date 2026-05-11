@@ -35,21 +35,25 @@ mod screenshot;
 
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
-    cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_message,
-    cmd_osl_change_main_password, cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2,
-    cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
-    cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
-    cmd_osl_list_pending_invitations, cmd_osl_load_channel_history, cmd_osl_lockout_status,
-    cmd_osl_password_status, cmd_osl_persist_edit, cmd_osl_remove_main_password,
-    cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
-    cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery, cmd_osl_set_whitelist,
-    cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_osl_verify_main_password,
+    cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_engage,
+    cmd_osl_burn_message, cmd_osl_burn_password_status, cmd_osl_change_main_password,
+    cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_scope_encryption_state,
+    cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists, cmd_osl_list_pending_invitations,
+    cmd_osl_load_channel_history, cmd_osl_lockout_status, cmd_osl_password_status,
+    cmd_osl_persist_edit, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
+    cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation,
+    cmd_osl_send_whitelist_response, cmd_osl_set_burn_password, cmd_osl_set_main_password,
+    cmd_osl_set_main_password_after_recovery, cmd_osl_set_stealth_password, cmd_osl_set_whitelist,
+    cmd_osl_stealth_mode_engage, cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption,
+    cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
     cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register, cmd_save_identity,
     cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
-    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GenerateIdentityResponse,
-    IdentityInfoDto, LockoutStatusDto, PasswordStatusDto, PendingInvitationDto, RegisterResponse,
-    ScopeEncryptionState, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
-    StegoEncodeResponse, StoredMessageDto, WhitelistRowDto,
+    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GateVerifyDto,
+    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
+    PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
+    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
+    WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -707,6 +711,95 @@ async fn osl_lockout_status() -> Result<LockoutStatusDto, String> {
         .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+// ===== Phase 7d-B2: stealth password commands. =====
+
+#[tauri::command]
+async fn osl_set_stealth_password(
+    current_main: String,
+    new_stealth: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        cmd_osl_set_stealth_password(current_main, new_stealth)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_remove_stealth_password(current_main: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_remove_stealth_password(current_main))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_stealth_password_status() -> Result<PasswordStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_stealth_password_status)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// ===== Phase 7d-B3: burn password commands. =====
+
+#[tauri::command]
+async fn osl_set_burn_password(current_main: String, new_burn: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_set_burn_password(current_main, new_burn))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_remove_burn_password(current_main: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cmd_osl_remove_burn_password(current_main))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_burn_password_status() -> Result<PasswordStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_burn_password_status)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// ===== Phase 7d-B2/B3: gate-side single verify + engage commands. =====
+
+#[tauri::command]
+async fn osl_verify_gate_password(
+    app: tauri::AppHandle,
+    password: String,
+) -> Result<GateVerifyDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_verify_gate_password(state.inner(), password)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_stealth_mode_engage(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_stealth_mode_engage(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_burn_engage(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_burn_engage(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -817,7 +910,7 @@ fn main() {
                     .expect("hardcoded discord.com URL parses")
             };
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(initial_url))
-                .title("Discord Privacy Client")
+                .title("OSL Privacy")
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(940.0, 600.0)
                 .resizable(true)
@@ -901,6 +994,15 @@ fn main() {
             osl_verify_recovery_phrase,
             osl_set_main_password_after_recovery,
             osl_lockout_status,
+            osl_set_stealth_password,
+            osl_remove_stealth_password,
+            osl_stealth_password_status,
+            osl_set_burn_password,
+            osl_remove_burn_password,
+            osl_burn_password_status,
+            osl_verify_gate_password,
+            osl_stealth_mode_engage,
+            osl_burn_engage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

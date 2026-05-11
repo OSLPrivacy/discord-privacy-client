@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-B3: engage burn — irreversible state destruction.
+[[permission]]
+identifier = "allow-osl-burn-engage"
+description = "Permits the password_gate origin to invoke `osl_burn_engage` (delete every OSL state file on disk and clear every in-memory AppState mutex). Irreversible — the recovery-phrase blob is part of the wiped state. User retains their Discord login (cookies live in the WebView2 user-data dir, not the OSL dir)."
+commands.allow = ["osl_burn_engage"]

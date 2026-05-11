@@ -1920,6 +1920,7 @@ dependencies = [
  "bip39",
  "ciborium",
  "crypto",
+ "hmac",
  "keystore",
  "serde",
  "serde_json",

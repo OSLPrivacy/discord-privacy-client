@@ -2684,3 +2684,186 @@ pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
         .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     Ok(crate::main_password::lockout_status(&dir))
 }
+
+// =====================================================================
+// Phase 7d-B2: stealth password operations.
+// =====================================================================
+
+pub fn cmd_osl_set_stealth_password(
+    current_main: String,
+    new_stealth: String,
+) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::set_stealth_password(&dir, &current_main, &new_stealth)
+}
+
+pub fn cmd_osl_remove_stealth_password(current_main: String) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::remove_stealth_password(&dir, &current_main)
+}
+
+pub fn cmd_osl_stealth_password_status() -> Result<PasswordStatusDto, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    Ok(PasswordStatusDto {
+        is_set: crate::main_password::stealth_password_status(&dir),
+    })
+}
+
+// =====================================================================
+// Phase 7d-B3: burn password operations.
+// =====================================================================
+
+pub fn cmd_osl_set_burn_password(
+    current_main: String,
+    new_burn: String,
+) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::set_burn_password(&dir, &current_main, &new_burn)
+}
+
+pub fn cmd_osl_remove_burn_password(current_main: String) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::remove_burn_password(&dir, &current_main)
+}
+
+pub fn cmd_osl_burn_password_status() -> Result<PasswordStatusDto, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    Ok(PasswordStatusDto {
+        is_set: crate::main_password::burn_password_status(&dir),
+    })
+}
+
+// =====================================================================
+// Phase 7d-B2/B3: gate-side single-call password verify across the
+// three roles. Returns one of "main" | "stealth" | "burn" | "wrong"
+// + the same lockout fields as `verify_main_password`. All three
+// successful entries reset the shared counter (so an attacker
+// observing repeated entries can't distinguish "main" from
+// "stealth"/"burn" via counter dynamics).
+// =====================================================================
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GateVerifyDto {
+    pub result: String,
+    pub lockout_seconds_remaining: i64,
+    pub attempts_used: u32,
+}
+
+pub fn cmd_osl_verify_gate_password(
+    _state: &AppState,
+    password: String,
+) -> Result<GateVerifyDto, String> {
+    use crate::main_password::GateMatch;
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    // Lockout-window check first (same as verify_main_password).
+    let mut lock = crate::main_password::read_lockout_pub(&dir);
+    let now = crate::main_password::now_unix_secs_pub();
+    if let Some(until) = lock.password_locked_until {
+        if now < until {
+            return Ok(GateVerifyDto {
+                result: "wrong".to_string(),
+                lockout_seconds_remaining: until - now,
+                attempts_used: lock.password_failed_attempts,
+            });
+        }
+    }
+    let marker = crate::main_password::read_marker_pub(&dir)?;
+    let outcome = crate::main_password::verify_gate_password_with_marker(&marker, &password)?;
+    match outcome {
+        GateMatch::Main(file_key) => {
+            crate::main_password::set_file_storage_key(Some(file_key));
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            Ok(GateVerifyDto {
+                result: "main".to_string(),
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            })
+        }
+        GateMatch::Stealth => {
+            // Shared counter reset on any successful entry — see
+            // security rationale in the spec (prevents attacker
+            // distinguishing main from stealth via counter dynamics).
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            Ok(GateVerifyDto {
+                result: "stealth".to_string(),
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            })
+        }
+        GateMatch::Burn => {
+            lock.password_failed_attempts = 0;
+            lock.password_locked_until = None;
+            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            Ok(GateVerifyDto {
+                result: "burn".to_string(),
+                lockout_seconds_remaining: 0,
+                attempts_used: 0,
+            })
+        }
+        GateMatch::Wrong => {
+            lock.password_failed_attempts = lock.password_failed_attempts.saturating_add(1);
+            let secs = crate::main_password::password_lockout_secs_pub(lock.password_failed_attempts);
+            lock.password_locked_until = if secs > 0 { Some(now + secs) } else { None };
+            let _ = crate::main_password::write_lockout_pub(&dir, &lock);
+            Ok(GateVerifyDto {
+                result: "wrong".to_string(),
+                lockout_seconds_remaining: secs,
+                attempts_used: lock.password_failed_attempts,
+            })
+        }
+    }
+}
+
+/// 7d-B2: hide the OSL config dir + record stealth-active for the
+/// session so initialization_script can suppress boot.js injection.
+pub fn cmd_osl_stealth_mode_engage(state: &AppState) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let _ = crate::main_password::stealth_hide_dir(&dir);
+    *state
+        .stealth_active
+        .lock()
+        .expect("stealth_active mutex poisoned") = true;
+    Ok(())
+}
+
+/// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the
+/// current session doesn't surface previously-decrypted state.
+pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::main_password::burn_wipe_all(&dir)?;
+    crate::main_password::set_file_storage_key(None);
+    // Drop in-memory state. Identity goes to None, every state
+    // mutex is cleared. The webview will navigate away after this
+    // returns, but if anything still queries state in the
+    // intervening millisecond we want it empty.
+    *state.identity.lock().expect("identity mutex poisoned") = None;
+    state.peer_map.lock().expect("peer_map mutex poisoned").clear();
+    state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned")
+        .clear();
+    state
+        .pending_invitations
+        .lock()
+        .expect("pending_invitations mutex poisoned")
+        .clear();
+    *state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned") = None;
+    Ok(())
+}

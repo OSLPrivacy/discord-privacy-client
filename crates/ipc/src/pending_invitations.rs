@@ -92,8 +92,8 @@ pub enum PendingInvitationsError {
 pub fn load_pending_invitations_from_path(
     path: &Path,
 ) -> Result<PendingInvitations, PendingInvitationsError> {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+    let blob = match std::fs::read(path) {
+        Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(PendingInvitationsError::NotFound {
                 path: path.to_path_buf(),
@@ -106,7 +106,17 @@ pub fn load_pending_invitations_from_path(
             });
         }
     };
-    serde_json::from_str(&raw).map_err(|source| PendingInvitationsError::ParseFailed {
+    // 7d-B4 (scoped): transparent decrypt for OSL-ENC1 blobs.
+    let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
+        PendingInvitationsError::ParseFailed {
+            path: path.to_path_buf(),
+            source: serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            )),
+        }
+    })?;
+    serde_json::from_slice(&plain).map_err(|source| PendingInvitationsError::ParseFailed {
         path: path.to_path_buf(),
         source,
     })
@@ -119,8 +129,11 @@ pub fn write_pending_invitations(
 ) -> Result<(), std::io::Error> {
     let body = serde_json::to_string_pretty(invs)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // 7d-B4 (scoped): encrypt on write if a file_storage_key is set.
+    let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body)?;
+    std::fs::write(&tmp, &out_bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

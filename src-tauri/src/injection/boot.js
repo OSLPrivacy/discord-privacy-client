@@ -109,6 +109,35 @@
     window.__OSL_BOOT_INSTALLED__ = true;
 
     // ============================================================
+    // Phase 7d-B2 Stealth gate.
+    //
+    // The boot-gate page navigates to `discord.com/app#osl-stealth`
+    // after a successful stealth-password match. Boot.js sees the
+    // hash synchronously here (before fetch/XHR hooks install) and
+    // bails — vanilla Discord runs with zero OSL features for this
+    // session.
+    //
+    // We strip the hash via `history.replaceState` so Discord's
+    // own SPA routing doesn't see it on subsequent route changes
+    // (Discord uses path-based routing, not hash-based, but the
+    // hash would show in the URL bar of in-page links / share
+    // dialogs — keeping it private).
+    // ============================================================
+    try {
+        if (typeof window !== "undefined" && window.location.hash === "#osl-stealth") {
+            try {
+                history.replaceState(
+                    null,
+                    "",
+                    window.location.pathname + window.location.search
+                );
+            } catch (_) {}
+            console.log("[OSL] Stealth session — feature install skipped");
+            return;
+        }
+    } catch (_) {}
+
+    // ============================================================
     // Compile-time DEBUG switch.
     //
     // PHASE 3 VERIFICATION: leave at `true` so console output stays
@@ -3979,18 +4008,292 @@
             pane.appendChild(view);
         }
 
-        // Stealth password — dimmed (7d-B2 placeholder).
-        oslSettingsAppendDimmedSection(
-            pane,
-            "Stealth Password",
-            "Coming soon (Phase 7d-B2)"
-        );
-        // Burn password — dimmed (7d-B3 placeholder).
-        oslSettingsAppendDimmedSection(
-            pane,
-            "Burn Password",
-            "Coming soon (Phase 7d-B3)"
-        );
+        // 7d-B2: stealth password section.
+        await oslSettingsAppendStealthSection(pane, isSet);
+        // 7d-B3: burn password section.
+        await oslSettingsAppendBurnSection(pane, isSet);
+    }
+
+    /**
+     * 7d-B2 Stealth section. Uses a unified pattern with B3 Burn:
+     * resolve status, render heading + status line + action buttons.
+     * When main is not set the section is rendered but disabled
+     * with a hint to set main first (stealth/burn need main to
+     * verify operations).
+     */
+    async function oslSettingsAppendStealthSection(pane, mainSet) {
+        const sh = document.createElement("h2");
+        sh.className = "osl-settings-h2";
+        sh.textContent = "Stealth Password";
+        pane.appendChild(sh);
+        const intro = document.createElement("p");
+        intro.style.margin = "0 0 8px 0";
+        intro.style.fontSize = "13px";
+        intro.style.color = "var(--text-muted, #949ba4)";
+        intro.textContent =
+            "When entered at the boot gate, this password opens Discord " +
+            "without any OSL features. Your encrypted data stays on disk " +
+            "but is hidden during this session.";
+        pane.appendChild(intro);
+        if (!mainSet) {
+            const p = document.createElement("p");
+            p.style.margin = "0 0 12px 0";
+            p.style.fontSize = "13px";
+            p.textContent = "Set a main password first.";
+            pane.appendChild(p);
+            return;
+        }
+        const stRes = await oslInvoke("osl_stealth_password_status", {});
+        const isSet = !!(stRes.ok && stRes.value && stRes.value.is_set);
+        const statusP = document.createElement("p");
+        statusP.style.margin = "0 0 12px 0";
+        statusP.style.fontSize = "13px";
+        statusP.textContent = isSet ? "Set" : "Not set";
+        pane.appendChild(statusP);
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "8px";
+        const setBtn = document.createElement("button");
+        setBtn.className = "osl-settings-row-btn osl-settings-row-btn-remove";
+        setBtn.style.padding = "8px 16px";
+        setBtn.textContent = isSet ? "Change Stealth Password" : "Set Stealth Password";
+        setBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            oslSettingsOnSetStealthPassword(isSet);
+        });
+        row.appendChild(setBtn);
+        if (isSet) {
+            const rm = document.createElement("button");
+            rm.className = "osl-settings-row-btn osl-settings-row-btn-burn";
+            rm.style.padding = "8px 16px";
+            rm.textContent = "Remove Stealth Password";
+            rm.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsOnRemoveStealthPassword();
+            });
+            row.appendChild(rm);
+        }
+        pane.appendChild(row);
+    }
+
+    async function oslSettingsAppendBurnSection(pane, mainSet) {
+        const bh = document.createElement("h2");
+        bh.className = "osl-settings-h2";
+        bh.textContent = "Burn Password";
+        pane.appendChild(bh);
+        const intro = document.createElement("p");
+        intro.style.margin = "0 0 8px 0";
+        intro.style.fontSize = "13px";
+        intro.style.color = "#ed4245";
+        intro.style.fontWeight = "500";
+        intro.textContent =
+            "When entered at the boot gate, this password DESTROYS all your OSL data " +
+            "and opens plain Discord. Cannot be undone. Use only if you need to " +
+            "destroy evidence under coercion.";
+        pane.appendChild(intro);
+        if (!mainSet) {
+            const p = document.createElement("p");
+            p.style.margin = "0 0 12px 0";
+            p.style.fontSize = "13px";
+            p.textContent = "Set a main password first.";
+            pane.appendChild(p);
+            return;
+        }
+        const stRes = await oslInvoke("osl_burn_password_status", {});
+        const isSet = !!(stRes.ok && stRes.value && stRes.value.is_set);
+        const statusP = document.createElement("p");
+        statusP.style.margin = "0 0 12px 0";
+        statusP.style.fontSize = "13px";
+        statusP.textContent = isSet ? "Set" : "Not set";
+        pane.appendChild(statusP);
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "8px";
+        const setBtn = document.createElement("button");
+        setBtn.className = "osl-settings-row-btn osl-settings-row-btn-remove";
+        setBtn.style.padding = "8px 16px";
+        setBtn.textContent = isSet ? "Change Burn Password" : "Set Burn Password";
+        setBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            oslSettingsOnSetBurnPassword(isSet);
+        });
+        row.appendChild(setBtn);
+        if (isSet) {
+            const rm = document.createElement("button");
+            rm.className = "osl-settings-row-btn osl-settings-row-btn-burn";
+            rm.style.padding = "8px 16px";
+            rm.textContent = "Remove Burn Password";
+            rm.addEventListener("click", function (e) {
+                e.stopPropagation();
+                oslSettingsOnRemoveBurnPassword();
+            });
+            row.appendChild(rm);
+        }
+        pane.appendChild(row);
+    }
+
+    /**
+     * Generic three-step wizard for setting/changing a secondary
+     * password (stealth or burn). `kind` is "stealth" or "burn"
+     * for label text. `isChange` enables the existing-secondary
+     * verification step (we don't actually verify the OLD value
+     * — set just overwrites — but the UX prompts for it so the
+     * user sees the same flow as main-password change).
+     */
+    async function oslSettingsOnSetStealthPassword(isChange) {
+        return oslSettingsSetSecondaryPassword({
+            kind: "stealth",
+            label: "Stealth Password",
+            isChange: isChange,
+            setCommand: "osl_set_stealth_password",
+        });
+    }
+
+    async function oslSettingsOnSetBurnPassword(isChange) {
+        return oslSettingsSetSecondaryPassword({
+            kind: "burn",
+            label: "Burn Password",
+            isChange: isChange,
+            setCommand: "osl_set_burn_password",
+            danger: true,
+        });
+    }
+
+    async function oslSettingsSetSecondaryPassword(opts) {
+        const step = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent =
+                (opts.isChange ? "Change " : "Set ") + opts.label;
+            host.appendChild(title);
+            if (opts.danger) {
+                const warn = document.createElement("p");
+                warn.className = "osl-settings-confirm-body";
+                warn.style.color = "#ed4245";
+                warn.textContent =
+                    "Reminder: this password DESTROYS all OSL data when " +
+                    "entered at the boot gate. Choose something memorable " +
+                    "but distinct from your main and stealth passwords.";
+                host.appendChild(warn);
+            }
+            const main = oslPasswordMakeInput("Current main password");
+            const a = oslPasswordMakeInput("New " + opts.kind + " password (6 chars)");
+            const b = oslPasswordMakeInput("Confirm new " + opts.kind + " password");
+            host.appendChild(main.wrap);
+            host.appendChild(a.wrap);
+            host.appendChild(b.wrap);
+            const errHost = document.createElement("div");
+            host.appendChild(errHost);
+            const { go } = oslPasswordRowButtons(
+                host,
+                opts.isChange ? "Change" : "Set",
+                function () {
+                    advance({ current_main: main.input.value, new: a.input.value });
+                },
+                cancel
+            );
+            if (opts.danger) {
+                go.style.background = "#ed4245";
+            }
+            function check() {
+                let err = "";
+                if (
+                    a.input.value.length === 6 &&
+                    !oslPasswordValidAscii(a.input.value)
+                ) {
+                    err = "Only standard keyboard characters allowed.";
+                } else if (
+                    b.input.value.length === 6 &&
+                    a.input.value !== b.input.value
+                ) {
+                    err = "Passwords don't match.";
+                } else if (
+                    a.input.value.length === 6 &&
+                    main.input.value.length === 6 &&
+                    a.input.value === main.input.value
+                ) {
+                    err = opts.label + " must differ from your main password.";
+                }
+                oslPasswordError(errHost, err);
+                oslPasswordEnableBtn(
+                    go,
+                    main.input.value.length === 6 &&
+                        a.input.value.length === 6 &&
+                        b.input.value.length === 6 &&
+                        a.input.value === b.input.value &&
+                        a.input.value !== main.input.value &&
+                        oslPasswordValidAscii(a.input.value)
+                );
+            }
+            main.input.addEventListener("input", check);
+            a.input.addEventListener("input", check);
+            b.input.addEventListener("input", check);
+            nativeSetTimeout(function () {
+                main.input.focus();
+            }, 0);
+        });
+        if (step === OSL_PASSWORD_CANCEL) return;
+        const result = await oslInvoke(opts.setCommand, {
+            currentMain: step.current_main,
+            newStealth: opts.kind === "stealth" ? step.new : undefined,
+            newBurn: opts.kind === "burn" ? step.new : undefined,
+        });
+        if (!result.ok) {
+            oslToast(opts.label + " set failed: " + result.error);
+            return;
+        }
+        oslToast(opts.label + " " + (opts.isChange ? "changed" : "set") + ".");
+        oslSettingsRenderPasswords();
+    }
+
+    async function oslSettingsOnRemoveStealthPassword() {
+        return oslSettingsRemoveSecondaryPassword({
+            label: "Stealth Password",
+            command: "osl_remove_stealth_password",
+        });
+    }
+
+    async function oslSettingsOnRemoveBurnPassword() {
+        return oslSettingsRemoveSecondaryPassword({
+            label: "Burn Password",
+            command: "osl_remove_burn_password",
+        });
+    }
+
+    async function oslSettingsRemoveSecondaryPassword(opts) {
+        const step = await oslPasswordWizard(function (host, advance, cancel) {
+            const title = document.createElement("h3");
+            title.className = "osl-settings-confirm-title";
+            title.textContent = "Remove " + opts.label;
+            host.appendChild(title);
+            const main = oslPasswordMakeInput("Confirm with current main password");
+            host.appendChild(main.wrap);
+            const { go } = oslPasswordRowButtons(
+                host,
+                "Remove",
+                function () {
+                    advance({ current_main: main.input.value });
+                },
+                cancel
+            );
+            go.style.background = "#ed4245";
+            main.input.addEventListener("input", function () {
+                oslPasswordEnableBtn(go, main.input.value.length === 6);
+            });
+            nativeSetTimeout(function () {
+                main.input.focus();
+            }, 0);
+        });
+        if (step === OSL_PASSWORD_CANCEL) return;
+        const result = await oslInvoke(opts.command, {
+            currentMain: step.current_main,
+        });
+        if (!result.ok) {
+            oslToast(opts.label + " remove failed: " + result.error);
+            return;
+        }
+        oslToast(opts.label + " removed.");
+        oslSettingsRenderPasswords();
     }
 
     function oslSettingsAppendDimmedSection(pane, label, tooltip) {
@@ -4132,6 +4435,22 @@
             btn.style.alignItems = "center";
             btn.style.justifyContent = "center";
             btn.style.cursor = "pointer";
+            // 7d-B2 Task 0.A: always paint the icon color even when
+            // we sampled a Discord button. Discord's class on those
+            // buttons sets background-color but not text color
+            // (their inner <svg fill="currentColor"> inherits from
+            // a CSS rule we don't get) — without an explicit color
+            // the gear renders black inside an otherwise-styled
+            // button. Setting the inline color to `--interactive-normal`
+            // with a hover swap to `--interactive-hover` mirrors
+            // Discord's panel-icon look.
+            btn.style.color = "var(--interactive-normal, #b5bac1)";
+            btn.addEventListener("mouseenter", function () {
+                btn.style.color = "var(--interactive-hover, #dbdee1)";
+            });
+            btn.addEventListener("mouseleave", function () {
+                btn.style.color = "var(--interactive-normal, #b5bac1)";
+            });
             // Only paint our own size/margin when we couldn't sample
             // a sibling button (fallback append). Inline mounts let
             // Discord's icon-row flex layout handle spacing.
@@ -4139,7 +4458,6 @@
                 btn.style.width = "32px";
                 btn.style.height = "32px";
                 btn.style.marginLeft = "4px";
-                btn.style.color = "var(--interactive-normal, #b5bac1)";
             }
             btn.innerHTML = oslSettingsGearSvg();
             btn.addEventListener("click", function (e) {

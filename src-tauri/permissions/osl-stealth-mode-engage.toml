@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-B2: engage stealth-mode session.
+[[permission]]
+identifier = "allow-osl-stealth-mode-engage"
+description = "Permits the password_gate origin to invoke `osl_stealth_mode_engage` (set Windows hidden flag on the OSL config dir; mark AppState::stealth_active = true so the boot.js install path can suppress feature injection for this session)."
+commands.allow = ["osl_stealth_mode_engage"]
