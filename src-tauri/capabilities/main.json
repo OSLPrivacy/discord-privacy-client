@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Permissions granted to the discord.com main webview for OSL encryption hooks. Tauri 2 blocks IPC from remote URLs by default; the `remote.urls` glob extends this capability to discord.com, which is otherwise considered untrusted. The permission list is intentionally minimal — only the OSL bridge is exposed; existing Tauri commands like generate_identity, save_identity, etc. remain non-callable from Discord.",
+  "description": "Permissions granted to the discord.com main webview for OSL message hooks. Tauri 2 blocks IPC from remote URLs by default; the `remote.urls` glob extends this capability to discord.com, which is otherwise considered untrusted. Keep this surface limited to Discord-message operations; password, recovery, identity-generation, raw crypto, and filesystem-backed commands must stay off the remote origin.",
   "windows": ["main"],
   "remote": {
     "urls": [
@@ -29,17 +29,6 @@
     "allow-osl-list-pending-invitations",
     "allow-osl-get-self-user-id",
     "allow-osl-get-identity-info",
-    "allow-osl-list-all-whitelists",
-    "allow-osl-password-status",
-    "allow-osl-set-main-password",
-    "allow-osl-change-main-password",
-    "allow-osl-remove-main-password",
-    "allow-osl-view-recovery-phrase",
-    "allow-osl-set-stealth-password",
-    "allow-osl-remove-stealth-password",
-    "allow-osl-stealth-password-status",
-    "allow-osl-set-burn-password",
-    "allow-osl-remove-burn-password",
-    "allow-osl-burn-password-status"
+    "allow-osl-list-all-whitelists"
   ]
 }
