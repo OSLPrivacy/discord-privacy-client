@@ -921,16 +921,54 @@ async fn osl_open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
             "OSL settings: screenshot protection unavailable on settings window"
         );
     }
-    // Emit settings_window_closed when the window is destroyed.
-    // Use `on_window_event` to catch CloseRequested + Destroyed.
+    // 7d-D Task 1: disable the Discord main window while settings
+    // is open so clicks/keys don't reach Discord behind the
+    // settings overlay. Backed by Win32 `EnableWindow(hwnd, FALSE)`
+    // on Windows via tauri-runtime-wry. Pair with the Destroyed
+    // handler below which re-enables the window.
+    if let Some(main) = app.get_webview_window("main") {
+        if let Err(e) = main.set_enabled(false) {
+            tracing::warn!(?e, "OSL settings: set_enabled(false) on main window failed");
+        }
+    }
+    // Emit settings_window_closed when the window is destroyed,
+    // and re-enable the Discord main window.
     let app_for_close = app.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::Destroyed = event {
+            if let Some(main) = app_for_close.get_webview_window("main") {
+                if let Err(e) = main.set_enabled(true) {
+                    tracing::warn!(
+                        ?e,
+                        "OSL settings: set_enabled(true) on main window failed; \
+                         Discord may remain non-interactive — relaunch the app"
+                    );
+                }
+            }
             if let Err(e) = app_for_close.emit("osl:settings_window_closed", ()) {
                 tracing::debug!(?e, "OSL settings: emit close event failed");
             }
         }
     });
+    Ok(())
+}
+
+/// Phase 7d-D: close the settings window if it's open. Called
+/// from the Discord-origin account-burn flow so the settings
+/// window doesn't end up with stale state pointing at files
+/// that `osl_burn_engage` is about to wipe. Idempotent — Ok if
+/// the settings window doesn't exist. Note that closing the
+/// window triggers `WindowEvent::Destroyed` which re-enables
+/// the Discord main window via the handler above, so the burn
+/// flow doesn't need to do that step itself.
+#[tauri::command]
+async fn osl_close_settings_window_if_open(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(settings) = app.get_webview_window("settings") {
+        if let Err(e) = settings.close() {
+            tracing::warn!(?e, "OSL settings: close request failed");
+            return Err(format!("OSL settings: close: {e}"));
+        }
+    }
     Ok(())
 }
 
@@ -1162,6 +1200,7 @@ fn main() {
             osl_unburn_scope,
             osl_list_burned_scopes,
             osl_open_settings_window,
+            osl_close_settings_window_if_open,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

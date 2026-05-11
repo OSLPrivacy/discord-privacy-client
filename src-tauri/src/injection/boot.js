@@ -1702,6 +1702,209 @@
             : null;
     }
 
+    // 7d-D: account burn icon, distinct from the scope-burn button
+    // above. Account burn destroys ALL OSL state via `osl_burn_engage`,
+    // not just one scope. Appears at the RIGHTMOST end of the header
+    // icon row on ALL channel types (DM, GC, server channel). Confirm
+    // flow is a 3-second double-tap (Q2-C decision): first click arms
+    // + shows a tooltip + tints the icon red; second click within
+    // the window executes the burn.
+    const HEADER_ACCOUNT_BURN_DATA_ATTR = "data-osl-account-burn";
+    const ACCOUNT_BURN_TOOLTIP_ID = "__osl_account_burn_tooltip";
+    const ACCOUNT_BURN_ARM_MS = 3000;
+    let oslAccountBurnArmed = false;
+    let oslAccountBurnArmTimer = null;
+    let oslAccountBurnCancelHandler = null;
+
+    /**
+     * 7d-D: bigger flame, sized to match Discord's other header
+     * icons (20x20 displayed, viewBox 24). Kept as currentColor so
+     * we can swap the icon's color when armed without re-rendering.
+     */
+    function oslAccountBurnSvg() {
+        return (
+            '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" ' +
+            'aria-hidden="true">' +
+            '<path d="M12 2.5c.4 1.6 1.6 2.7 2.6 3.6 1.6 1.5 2.9 3 2.9 5.6 ' +
+            "0 1.4-.5 2.6-1.4 3.4.4-.6.6-1.3.6-2.1 0-2-1.6-3.4-3.3-4.3.4 1.4 " +
+            "-.1 2.8-1 3.8-.7.7-1.4 1-1.4 1.8 0 .8.7 1.3 1.5 1.3.6 0 1.1-.2 " +
+            "1.5-.6-.3 1.4-1.5 2.3-3 2.3-1.9 0-3.4-1.4-3.4-3.3 0-1.7 1.2-2.6 " +
+            "2.4-3.6 1.4-1.2 2.5-2.6 2-4.8-.7 1.1-1.9 1.6-3.1 1.6.5-1.8.4-3.7" +
+            '-.4-5.3-.7 1.7-2 3-3.5 4.1A6.6 6.6 0 0 0 4.5 12c0 3.9 3.2 7 7.5 ' +
+            '7s7.5-3.1 7.5-7c0-3.6-1.7-5.6-3.5-7.2-1.4-1.3-2.7-2.5-4-4.3z"/>' +
+            "</svg>"
+        );
+    }
+
+    function oslAccountBurnRemoveTooltip() {
+        const t = document.getElementById(ACCOUNT_BURN_TOOLTIP_ID);
+        if (t && t.parentNode) t.parentNode.removeChild(t);
+    }
+
+    function oslAccountBurnSetVisual(btn, armed) {
+        if (!btn) return;
+        if (armed) {
+            btn.style.color = "var(--status-danger, #ed4245)";
+        } else {
+            btn.style.color = "var(--interactive-normal, #b5bac1)";
+        }
+    }
+
+    function oslAccountBurnCancelArm() {
+        oslAccountBurnArmed = false;
+        if (oslAccountBurnArmTimer) {
+            clearTimeout(oslAccountBurnArmTimer);
+            oslAccountBurnArmTimer = null;
+        }
+        oslAccountBurnRemoveTooltip();
+        if (oslAccountBurnCancelHandler) {
+            document.removeEventListener(
+                "click",
+                oslAccountBurnCancelHandler,
+                true
+            );
+            oslAccountBurnCancelHandler = null;
+        }
+        const btn = document.querySelector(
+            "[" + HEADER_ACCOUNT_BURN_DATA_ATTR + "='1']"
+        );
+        oslAccountBurnSetVisual(btn, false);
+    }
+
+    function oslAccountBurnShowTooltip(anchor) {
+        oslAccountBurnRemoveTooltip();
+        if (!anchor) return;
+        const rect = anchor.getBoundingClientRect();
+        const tt = document.createElement("div");
+        tt.id = ACCOUNT_BURN_TOOLTIP_ID;
+        tt.textContent = "Click again within 3 seconds to burn account";
+        tt.style.position = "fixed";
+        tt.style.top = rect.bottom + 6 + "px";
+        // Slightly left of the icon so the tooltip stays on-screen
+        // when the icon is near the right edge of the channel header.
+        tt.style.left = Math.max(8, rect.left - 200) + "px";
+        tt.style.background = "#18191c";
+        tt.style.color = "#fff";
+        tt.style.padding = "8px 10px";
+        tt.style.borderRadius = "4px";
+        tt.style.fontSize = "12px";
+        tt.style.fontWeight = "500";
+        tt.style.boxShadow = "0 4px 12px rgba(0,0,0,0.4)";
+        tt.style.zIndex = "1000000";
+        tt.style.pointerEvents = "none";
+        tt.style.whiteSpace = "nowrap";
+        document.body.appendChild(tt);
+    }
+
+    async function oslAccountBurnExecute() {
+        // 7d-D Task 5: close the settings window first so it doesn't
+        // end up orphaned reading from now-wiped state files.
+        try {
+            await oslInvoke("osl_close_settings_window_if_open", {});
+        } catch (_) {}
+        const result = await oslInvoke("osl_burn_engage", {});
+        if (!result.ok) {
+            console.error(
+                "[OSL] account burn: osl_burn_engage failed: " + result.error
+            );
+            oslToast("Burn failed: " + result.error);
+            return;
+        }
+        // Same post-burn navigation as the gate-side burn flow:
+        // bounce to plain discord.com so the freshly-wiped on-disk
+        // state has no UI re-attaching to it on this tick.
+        window.location.href = "https://discord.com/app";
+    }
+
+    function oslAccountBurnOnActivate(btn) {
+        if (oslAccountBurnArmed) {
+            // Second tap within the window — execute.
+            oslAccountBurnCancelArm();
+            oslAccountBurnExecute();
+            return;
+        }
+        oslAccountBurnArmed = true;
+        oslAccountBurnSetVisual(btn, true);
+        oslAccountBurnShowTooltip(btn);
+        oslAccountBurnArmTimer = setTimeout(function () {
+            oslAccountBurnCancelArm();
+        }, ACCOUNT_BURN_ARM_MS);
+        // Capture-phase document click: if user clicks anywhere
+        // that isn't the icon, cancel the arm. Idempotent setup.
+        oslAccountBurnCancelHandler = function (e) {
+            const onIcon =
+                e.target &&
+                (e.target === btn ||
+                    (typeof e.target.closest === "function" &&
+                        e.target.closest(
+                            "[" + HEADER_ACCOUNT_BURN_DATA_ATTR + "='1']"
+                        )));
+            if (onIcon) return;
+            oslAccountBurnCancelArm();
+        };
+        document.addEventListener(
+            "click",
+            oslAccountBurnCancelHandler,
+            true
+        );
+    }
+
+    function oslAccountBurnInject(header) {
+        if (!header) return;
+        const container = oslFindHeaderIconContainer(header);
+        if (!container) return;
+        // Idempotent: bail if the account burn already exists.
+        if (
+            container.querySelector(
+                "[" + HEADER_ACCOUNT_BURN_DATA_ATTR + "='1']"
+            )
+        ) {
+            return;
+        }
+        const sample = header.querySelector('[class*="iconWrapper__"]');
+        const sampleClass = sample ? sample.className : "";
+        const btn = document.createElement("div");
+        btn.setAttribute("role", "button");
+        btn.setAttribute("tabindex", "0");
+        btn.setAttribute(HEADER_ACCOUNT_BURN_DATA_ATTR, "1");
+        btn.setAttribute("aria-label", "Account Burn");
+        btn.title = "Account Burn — double-tap to destroy all OSL data";
+        btn.className = sampleClass;
+        btn.style.display = "inline-flex";
+        btn.style.alignItems = "center";
+        btn.style.justifyContent = "center";
+        btn.style.cursor = "pointer";
+        oslAccountBurnSetVisual(btn, false);
+        btn.addEventListener("mouseenter", function () {
+            if (!oslAccountBurnArmed) {
+                btn.style.color = "var(--interactive-hover, #dbdee1)";
+            }
+        });
+        btn.addEventListener("mouseleave", function () {
+            if (!oslAccountBurnArmed) {
+                oslAccountBurnSetVisual(btn, false);
+            }
+        });
+        btn.innerHTML = oslAccountBurnSvg();
+        btn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            oslAccountBurnOnActivate(btn);
+        });
+        btn.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                oslAccountBurnOnActivate(btn);
+            }
+        });
+        // Rightmost position: append as last child of the icon row.
+        // Discord's search box lives in a sibling container after
+        // this one, so appending here keeps the icon inside the icon
+        // group and before the search.
+        container.appendChild(btn);
+    }
+
     function oslHeaderInjectButtons(header) {
         if (!header) return;
         const container = oslFindHeaderIconContainer(header);
@@ -2696,6 +2899,10 @@
             );
             if (header) {
                 oslHeaderInjectButtons(header);
+                // 7d-D: account burn appears on ALL channel headers,
+                // independent of whitelist state. Piggybacks on the
+                // same observer to avoid additional mutation watchers.
+                oslAccountBurnInject(header);
                 oslRefreshBanners(); // banner stack is anchored to header
             }
             oslSettingsGearInject();
@@ -2710,7 +2917,10 @@
             const header = document.querySelector(
                 'section[class*="title_"][class*="container__"]'
             );
-            if (header) oslHeaderInjectButtons(header);
+            if (header) {
+                oslHeaderInjectButtons(header);
+                oslAccountBurnInject(header);
+            }
             const surface = oslFindProfileSurface();
             if (surface) oslInjectProfileButton(surface);
             oslSettingsGearInject();

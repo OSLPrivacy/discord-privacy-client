@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-D: close the settings window if it's currently open.
+# Called from the Discord-origin account-burn flow before invoking
+# `osl_burn_engage` so the settings window doesn't end up showing
+# stale state pointing at files about to be wiped. Idempotent.
+[[permission]]
+identifier = "allow-osl-close-settings-window-if-open"
+description = "Permits the discord.com main webview to invoke `osl_close_settings_window_if_open` (no-op if the settings window isn't open; otherwise calls Window::close on it). Used by the account-burn double-tap flow. Phase 7d-D."
+commands.allow = ["osl_close_settings_window_if_open"]

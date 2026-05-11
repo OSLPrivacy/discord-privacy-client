@@ -36,6 +36,7 @@
     "allow-osl-unburn-scope",
     "allow-osl-list-burned-scopes",
     "allow-osl-open-settings-window",
+    "allow-osl-close-settings-window-if-open",
     "core:event:allow-listen"
   ]
 }

@@ -2936,13 +2936,17 @@ pub struct BurnScopeDataDto {
 }
 
 /// Destroy local message rows for the channel(s) covered by
-/// `scope`. Per spec 7d-FIX1 Task 3a:
+/// `scope`. Per spec 7d-FIX1 Task 3a + 7d-D Task 2:
 ///   - DM and server_channel_full scopes resolve to a single
 ///     channel_id and `DELETE FROM messages WHERE channel_id = ?`.
-///   - GC and server_full are NOT implemented in this phase
-///     (they'd require enumerating multiple channel_ids); we
-///     return a not-implemented error string so the JS caller
-///     can surface it but the rest of the burn flow keeps going.
+///   - gc_full (7d-D): scope_id IS the GC channel_id — same
+///     single-channel DELETE as DM.
+///   - gc_per_user and server_full / server_full_per_user remain
+///     NOT implemented in this phase (they'd require either
+///     per-sender row filtering or enumerating multiple
+///     channel_ids); we return a not-implemented error string
+///     so the JS caller can surface it but the rest of the burn
+///     flow keeps going.
 pub fn cmd_osl_burn_scope_data(
     state: &AppState,
     scope_kind: String,
@@ -2958,14 +2962,19 @@ pub fn cmd_osl_burn_scope_data(
                 scope_id.clone()
             }
         }
-        "gc_full" | "gc_per_user" | "gc" => {
+        // 7d-D Task 2: gc_full's scope_id is the GC channel_id.
+        // Same single-channel destroy path as DM.
+        "gc_full" | "gc" => scope_id.clone(),
+        "gc_per_user" => {
             return Err(format!(
-                "OSL: burn_scope_data: gc burn not yet implemented (scope_id={scope_id})"
+                "OSL: burn_scope_data: gc_per_user burn not yet implemented (scope_id={scope_id}) — \
+                 deferred to a later cleanup pass, see 7d-D spec"
             ));
         }
         "server_full" | "server_full_per_user" => {
             return Err(format!(
-                "OSL: burn_scope_data: server_full burn not yet implemented (scope_id={scope_id})"
+                "OSL: burn_scope_data: server_full burn not yet implemented (scope_id={scope_id}) — \
+                 deferred, see 7d-D spec"
             ));
         }
         other => {
