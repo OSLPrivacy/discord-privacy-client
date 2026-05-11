@@ -37,19 +37,21 @@ use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_engage,
     cmd_osl_burn_message, cmd_osl_burn_password_status, cmd_osl_change_main_password,
-    cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
-    cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_scope_encryption_state,
-    cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists, cmd_osl_list_pending_invitations,
-    cmd_osl_load_channel_history, cmd_osl_lockout_status, cmd_osl_password_status,
+    cmd_osl_burn_scope_data, cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2,
+    cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
+    cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
+    cmd_osl_list_burned_scopes, cmd_osl_list_pending_invitations, cmd_osl_load_channel_history,
+    cmd_osl_lockout_status, cmd_osl_mark_scope_burned, cmd_osl_password_status,
     cmd_osl_persist_edit, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
     cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation,
     cmd_osl_send_whitelist_response, cmd_osl_set_burn_password, cmd_osl_set_main_password,
     cmd_osl_set_main_password_after_recovery, cmd_osl_set_stealth_password, cmd_osl_set_whitelist,
     cmd_osl_stealth_mode_engage, cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption,
-    cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
-    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register, cmd_save_identity,
-    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
-    AeadSealRequest, AeadSealResponse, FetchPubkeysResponse, GateVerifyDto,
+    cmd_osl_unburn_scope, cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password,
+    cmd_osl_verify_main_password, cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase,
+    cmd_register, cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
+    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
+    BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
     GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
     PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
@@ -800,6 +802,69 @@ async fn osl_burn_engage(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+// ===== Phase 7d-FIX1: scope-burn data destruction + burned-scope ledger. =====
+
+#[tauri::command]
+async fn osl_burn_scope_data(
+    app: tauri::AppHandle,
+    scope_kind: String,
+    scope_id: String,
+    server_id: Option<String>,
+) -> Result<BurnScopeDataDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_burn_scope_data(state.inner(), scope_kind, scope_id, server_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_mark_scope_burned(
+    app: tauri::AppHandle,
+    scope_kind: String,
+    scope_id: String,
+    server_id: Option<String>,
+    channel_id: Option<String>,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_mark_scope_burned(state.inner(), scope_kind, scope_id, server_id, channel_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_unburn_scope(
+    app: tauri::AppHandle,
+    scope_kind: String,
+    scope_id: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_unburn_scope(state.inner(), scope_kind, scope_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_list_burned_scopes(
+    app: tauri::AppHandle,
+) -> Result<Vec<BurnedScopeDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_list_burned_scopes(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -1003,6 +1068,10 @@ fn main() {
             osl_verify_gate_password,
             osl_stealth_mode_engage,
             osl_burn_engage,
+            osl_burn_scope_data,
+            osl_mark_scope_burned,
+            osl_unburn_scope,
+            osl_list_burned_scopes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

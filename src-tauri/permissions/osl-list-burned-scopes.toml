@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-FIX1: read the burned-scopes ledger.
+[[permission]]
+identifier = "allow-osl-list-burned-scopes"
+description = "Permits the discord.com main webview to invoke `osl_list_burned_scopes` (returns the in-memory burned-scopes ledger). boot.js calls this once at install to populate `__oslBurnedScopes` so the receive observer can skip burned scopes without re-decrypt round-trips. Phase 7d-FIX1."
+commands.allow = ["osl_list_burned_scopes"]

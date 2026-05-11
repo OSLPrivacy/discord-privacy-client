@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-FIX1: add a scope to the burned-scopes ledger.
+[[permission]]
+identifier = "allow-osl-mark-scope-burned"
+description = "Permits the discord.com main webview to invoke `osl_mark_scope_burned` (append the scope to burned_scopes.json). Idempotent. The boot.js receive observer consults this ledger to skip decrypt dispatch. Phase 7d-FIX1."
+commands.allow = ["osl_mark_scope_burned"]

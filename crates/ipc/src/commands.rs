@@ -17,6 +17,58 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{StoreError, StoredMessage};
 
+// =====================================================================
+// 7d-FIX1: persistence write-through helpers.
+//
+// Pre-FIX1 root cause: mutating commands (set_whitelist,
+// unwhitelist_scope, apply_invitation_decision, toggle_scope_encryption,
+// etc.) updated `AppState` in memory but NEVER wrote back to disk.
+// peer_map.json / whitelist_state.json on disk only ever contained
+// what the user hand-edited (or what bootstrap loaded at startup).
+// This blocked encryption-at-rest from ever firing: with no write
+// path, the `maybe_encrypt` retrofit in the write functions was
+// never exercised.
+//
+// The helpers are best-effort: on disk-write failure we log and
+// continue. The in-memory mutation already happened; surfacing a
+// disk-write error to the caller would be confusing UX
+// ("invitation accepted, but the action failed?") while doing
+// nothing useful for the user.
+// =====================================================================
+
+fn persist_peer_map_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(?e, "OSL: persist peer_map: cannot resolve config dir");
+            return;
+        }
+    };
+    let path = dir.join("peer_map.json");
+    let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+    if let Err(e) = crate::peer_map::write_peer_map(&path, &pm) {
+        tracing::warn!(?e, path = %path.display(), "OSL: persist peer_map.json failed");
+    }
+}
+
+fn persist_whitelist_state_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(?e, "OSL: persist whitelist_state: cannot resolve config dir");
+            return;
+        }
+    };
+    let path = dir.join("whitelist_state.json");
+    let ws = state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned");
+    if let Err(e) = crate::whitelist_state::write_whitelist_state(&path, &ws) {
+        tracing::warn!(?e, path = %path.display(), "OSL: persist whitelist_state.json failed");
+    }
+}
+
 // ---- DTOs ----
 
 #[derive(Debug, Serialize)]
@@ -1797,6 +1849,8 @@ fn apply_burn_recv(
             tracing::warn!(error = %e, "OSL: wipe wrapped_keys failed; burn proceeded in peer_map only");
         }
     }
+    // 7d-FIX1: persist peer_map (the burned-scope entry is new state).
+    persist_peer_map_now(state);
     Ok(())
 }
 
@@ -1838,6 +1892,8 @@ fn enqueue_invitation_recv(
         pe.discord_id
             .get_or_insert_with(|| sender_discord_id.to_string());
     }
+    // 7d-FIX1: persist peer_map (the new pubkey is new state).
+    persist_peer_map_now(state);
     // Write-through to disk if we have a config_dir.
     if let Some(dir) = config_dir {
         let pi_path = dir.join("pending_invitations.json");
@@ -1859,10 +1915,14 @@ fn apply_response_recv(
     sender_discord_id: &str,
     response: &crate::control_messages::WhitelistResponse,
 ) -> Result<(), String> {
-    let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-    let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
-    pe.outgoing_whitelist_responses
-        .insert(response.scope.storage_key(), response.accepted);
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
+        pe.outgoing_whitelist_responses
+            .insert(response.scope.storage_key(), response.accepted);
+    }
+    // 7d-FIX1: persist peer_map.
+    persist_peer_map_now(state);
     Ok(())
 }
 
@@ -1984,9 +2044,22 @@ fn apply_invitation_decision(
     let scope_key = invitation
         .scope_id
         .ok_or_else(|| "OSL: invitation missing scope_id".to_string())?;
-    let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-    let pe = pm_guard.entry(invitation.from.clone()).or_default();
-    pe.incoming_decrypt_accepted.insert(scope_key, accepted);
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(invitation.from.clone()).or_default();
+        pe.incoming_decrypt_accepted.insert(scope_key, accepted);
+    }
+    // 7d-FIX1: persist peer_map. Also persist pending_invitations
+    // since we mutated it above (remove `invitation_id`).
+    persist_peer_map_now(state);
+    if let Ok(dir) = keystore::osl_config_dir() {
+        let path = dir.join("pending_invitations.json");
+        let pi = state
+            .pending_invitations
+            .lock()
+            .expect("pending_invitations mutex poisoned");
+        let _ = crate::pending_invitations::write_pending_invitations(&path, &pi);
+    }
     Ok(())
 }
 
@@ -2074,6 +2147,10 @@ pub fn cmd_osl_unwhitelist_scope(
 
     // 4. Wipe wrapped_keys.
     let _ = cmd_osl_apply_burn(state, (&scope).into());
+
+    // 7d-FIX1: persist peer_map + whitelist_state.
+    persist_peer_map_now(state);
+    persist_whitelist_state_now(state);
 
     Ok(wire)
 }
@@ -2179,6 +2256,25 @@ pub fn cmd_osl_set_whitelist(
             ws.whitelisted_users.push(peer_discord_id.clone());
         }
     }
+
+    // 7d-FIX1: persist BOTH files. Encryption-at-rest is applied
+    // transparently by write_peer_map / write_whitelist_state via
+    // `maybe_encrypt` when a main password is set.
+    persist_peer_map_now(state);
+    persist_whitelist_state_now(state);
+
+    // 7d-FIX1 decision-B: re-whitelisting a scope removes it from
+    // the global burned-scopes ledger so the receive observer
+    // stops skipping its messages. Old burned ciphertext stays
+    // unreadable (wrapped_keys gone), but NEW messages decrypt
+    // normally.
+    let scope_kind_str = match scope.kind {
+        crate::scope::ScopeKind::Dm => "dm",
+        crate::scope::ScopeKind::Gc => "gc_full",
+        crate::scope::ScopeKind::ServerChannel => "server_channel_full",
+        crate::scope::ScopeKind::ServerFull => "server_full",
+    };
+    let _ = cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id.clone());
 
     // 3. Build the wire invitation.
     cmd_osl_send_whitelist_invitation(state, peer_discord_id, scope_input, from_discord_id)
@@ -2306,7 +2402,11 @@ pub fn cmd_osl_toggle_scope_encryption(
     // user action — distinguishes the §2.3 auto-enable from a
     // later user toggle in the UI's tooltip.
     entry.auto_enabled = false;
-    Ok(entry.encrypt_toggle)
+    let new_toggle = entry.encrypt_toggle;
+    drop(ws_guard);
+    // 7d-FIX1: persist the new toggle state.
+    persist_whitelist_state_now(state);
+    Ok(new_toggle)
 }
 
 /// JS-facing DTO for one pending invitation. Mirrors
@@ -2838,6 +2938,176 @@ pub fn cmd_osl_stealth_mode_engage(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+// =====================================================================
+// Phase 7d-FIX1: scope burn data destruction + burned-scope ledger.
+// =====================================================================
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BurnScopeDataDto {
+    pub rows_destroyed: usize,
+    pub channel_id: String,
+}
+
+/// Destroy local message rows for the channel(s) covered by
+/// `scope`. Per spec 7d-FIX1 Task 3a:
+///   - DM and server_channel_full scopes resolve to a single
+///     channel_id and `DELETE FROM messages WHERE channel_id = ?`.
+///   - GC and server_full are NOT implemented in this phase
+///     (they'd require enumerating multiple channel_ids); we
+///     return a not-implemented error string so the JS caller
+///     can surface it but the rest of the burn flow keeps going.
+pub fn cmd_osl_burn_scope_data(
+    state: &AppState,
+    scope_kind: String,
+    scope_id: String,
+    server_id: Option<String>,
+) -> Result<BurnScopeDataDto, String> {
+    let channel_id = match scope_kind.as_str() {
+        "dm" => scope_id.clone(),
+        "server_channel_full" | "server_channel_per_user" | "server_channel" => {
+            if let Some((_, ch)) = scope_id.split_once(':') {
+                ch.to_string()
+            } else {
+                scope_id.clone()
+            }
+        }
+        "gc_full" | "gc_per_user" | "gc" => {
+            return Err(format!(
+                "OSL: burn_scope_data: gc burn not yet implemented (scope_id={scope_id})"
+            ));
+        }
+        "server_full" | "server_full_per_user" => {
+            return Err(format!(
+                "OSL: burn_scope_data: server_full burn not yet implemented (scope_id={scope_id})"
+            ));
+        }
+        other => {
+            return Err(format!("OSL: burn_scope_data: unknown scope_kind={other}"));
+        }
+    };
+    let rows = if let Some(store) = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned")
+        .as_ref()
+    {
+        store
+            .delete_messages_in_channel(&channel_id)
+            .map_err(|e| format!("OSL: delete_messages_in_channel: {e}"))?
+    } else {
+        0
+    };
+    eprintln!(
+        "[OSL][burn] destroyed {rows} rows for channel {channel_id}"
+    );
+    let _ = server_id;
+    Ok(BurnScopeDataDto {
+        rows_destroyed: rows,
+        channel_id,
+    })
+}
+
+pub fn cmd_osl_mark_scope_burned(
+    state: &AppState,
+    scope_kind: String,
+    scope_id: String,
+    server_id: Option<String>,
+    channel_id: Option<String>,
+) -> Result<(), String> {
+    use crate::burned_scopes_file::BurnedScopeEntry;
+    let now = now_unix_secs();
+    let entry = BurnedScopeEntry {
+        scope_kind: scope_kind.clone(),
+        scope_id: scope_id.clone(),
+        server_id,
+        channel_id,
+        burned_at: now as i64,
+    };
+    {
+        let mut g = state
+            .burned_scopes
+            .lock()
+            .expect("burned_scopes mutex poisoned");
+        if !g
+            .scopes
+            .iter()
+            .any(|e| e.scope_kind == scope_kind && e.scope_id == scope_id)
+        {
+            g.scopes.push(entry);
+        }
+        g.version = 1;
+    }
+    persist_burned_scopes_now(state);
+    Ok(())
+}
+
+pub fn cmd_osl_unburn_scope(
+    state: &AppState,
+    scope_kind: String,
+    scope_id: String,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .burned_scopes
+            .lock()
+            .expect("burned_scopes mutex poisoned");
+        let before = g.scopes.len();
+        g.scopes
+            .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
+        if g.scopes.len() < before {
+            g.version = 1;
+        }
+    }
+    persist_burned_scopes_now(state);
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BurnedScopeDto {
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub server_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub burned_at: i64,
+}
+
+pub fn cmd_osl_list_burned_scopes(
+    state: &AppState,
+) -> Result<Vec<BurnedScopeDto>, String> {
+    let g = state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned");
+    Ok(g.scopes
+        .iter()
+        .map(|e| BurnedScopeDto {
+            scope_kind: e.scope_kind.clone(),
+            scope_id: e.scope_id.clone(),
+            server_id: e.server_id.clone(),
+            channel_id: e.channel_id.clone(),
+            burned_at: e.burned_at,
+        })
+        .collect())
+}
+
+fn persist_burned_scopes_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(?e, "OSL: persist burned_scopes: cannot resolve config dir");
+            return;
+        }
+    };
+    let path = dir.join("burned_scopes.json");
+    let g = state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned");
+    if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &g) {
+        tracing::warn!(?e, "OSL: persist burned_scopes.json failed");
+    }
+}
+
 /// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the
 /// current session doesn't surface previously-decrypted state.
 pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
@@ -2865,5 +3135,11 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
         .message_store
         .lock()
         .expect("message_store mutex poisoned") = None;
+    // 7d-FIX1: also clear burned-scopes ledger.
+    *state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned") =
+        crate::burned_scopes_file::BurnedScopesFile::default();
     Ok(())
 }

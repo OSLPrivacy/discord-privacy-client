@@ -302,6 +302,33 @@ impl MessageStore {
         Ok(rows)
     }
 
+    /// 7d-FIX1: full data destruction for a channel. Unlike
+    /// `wipe_wrapped_keys_in_scope` which leaves the encrypted
+    /// `ct` column intact and merely marks rows burned, this
+    /// DELETE removes every row for `channel_id` entirely. The
+    /// receive observer's re-decrypt pass then has no history
+    /// row to materialize — combined with the JS-side
+    /// `__oslBurnedScopes` cache that skips dispatch, the user's
+    /// view of the channel becomes pure ciphertext.
+    ///
+    /// WAL-mode sqlite is fine; the WAL syncs on next checkpoint.
+    /// We don't `VACUUM` — deleted rows hold encrypted plaintext
+    /// (not raw plaintext), so leaving them in deleted-but-not-
+    /// vacuumed state is acceptable for v1.
+    ///
+    /// Returns the row count for diagnostic logging.
+    pub fn delete_messages_in_channel(
+        &self,
+        channel_id: &str,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let rows = conn.execute(
+            "DELETE FROM messages WHERE channel_id = ?1",
+            params![channel_id],
+        )?;
+        Ok(rows)
+    }
+
     /// Materialize a (channel_id, sender_discord_id,
     /// sender_osl_user_id, ct, nonce, decrypted_at, burned)
     /// row tuple into a [`StoredMessage`] using the supplied

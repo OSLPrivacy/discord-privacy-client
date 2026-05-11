@@ -829,7 +829,17 @@ pub fn get_file_storage_key() -> Option<[u8; 32]> {
 }
 
 pub fn set_file_storage_key(key: Option<[u8; 32]>) {
+    let was_some = file_storage_slot()
+        .lock()
+        .expect("file_storage_key mutex poisoned")
+        .is_some();
+    let is_some = key.is_some();
     *file_storage_slot().lock().expect("file_storage_key mutex poisoned") = key;
+    if is_some && !was_some {
+        eprintln!("[OSL][crypto] file_storage_key populated");
+    } else if !is_some && was_some {
+        eprintln!("[OSL][crypto] file_storage_key cleared");
+    }
 }
 
 /// HKDF-Expand-SHA256 single-block expansion. Input `prk` is the
@@ -927,22 +937,34 @@ pub fn has_enc_magic(blob: &[u8]) -> bool {
 /// the spec wants this fail-soft (peer_map missing is normal in a
 /// fresh install).
 pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
-    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json"] {
+    for name in ["peer_map.json", "whitelist_state.json", "pending_invitations.json", "burned_scopes.json"] {
         let path = dir.join(name);
         if !path.exists() {
+            eprintln!("[OSL][crypto] migrate skip {name}: not present");
             continue;
         }
         let raw = match std::fs::read(&path) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("[OSL][crypto] migrate skip {name}: read error: {e}");
+                continue;
+            }
         };
         if has_enc_magic(&raw) {
-            // Already encrypted (re-run safety).
+            eprintln!("[OSL][crypto] migrate skip {name}: already encrypted");
             continue;
         }
+        eprintln!(
+            "[OSL][crypto] migrating {name} to encrypted ({} bytes plain)",
+            raw.len()
+        );
         let enc = encrypt_at_rest(&raw, key)?;
         std::fs::write(&path, &enc)
             .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+        eprintln!(
+            "[OSL][crypto] migrated {name} → encrypted ({} bytes on disk)",
+            enc.len()
+        );
     }
     Ok(())
 }
@@ -1225,6 +1247,8 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         "pending_invitations.json",
         "password_marker.json",
         "lockout_state.json",
+        // 7d-FIX1: also wipe burned-scopes ledger.
+        "burned_scopes.json",
     ];
     for name in top {
         let path = dir.join(name);

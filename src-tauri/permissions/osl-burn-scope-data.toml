@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-FIX1: scope-level data destruction.
+[[permission]]
+identifier = "allow-osl-burn-scope-data"
+description = "Permits the discord.com main webview to invoke `osl_burn_scope_data` (DELETE FROM messages WHERE channel_id = scope.channel_id). DM + server_channel scopes only in this phase. Phase 7d-FIX1."
+commands.allow = ["osl_burn_scope_data"]

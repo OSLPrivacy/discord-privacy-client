@@ -40,6 +40,10 @@
     "allow-osl-stealth-password-status",
     "allow-osl-set-burn-password",
     "allow-osl-remove-burn-password",
-    "allow-osl-burn-password-status"
+    "allow-osl-burn-password-status",
+    "allow-osl-burn-scope-data",
+    "allow-osl-mark-scope-burned",
+    "allow-osl-unburn-scope",
+    "allow-osl-list-burned-scopes"
   ]
 }

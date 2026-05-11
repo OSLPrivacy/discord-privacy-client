@@ -1660,6 +1660,22 @@
             return;
         }
         await oslSendControlMessage(deliveryChannelId, wire);
+        // 7d-FIX1 decision-B: the Rust set_whitelist call above
+        // auto-removed the scope from the burned-scopes ledger; mirror
+        // that to the in-memory JS cache so the recv observer
+        // immediately resumes decrypting (new) messages in this
+        // scope on the next sweep tick. Old ciphertext stays
+        // unreadable (wrapped_keys gone).
+        try {
+            oslBurnedScopesRemove(scopeInput.kind, scopeInput.id);
+            console.log(
+                "[OSL][burn] scope " +
+                    scopeInput.kind +
+                    ":" +
+                    scopeInput.id +
+                    " re-whitelisted, removed from burned list"
+            );
+        } catch (_) {}
         oslToast("Invitation sent to " + user.username);
         // Refresh the channel header (encrypt toggle may have
         // become available).
@@ -1939,8 +1955,55 @@
             oslToast("OSL: burn apply failed: " + applyResult.error);
             return;
         }
+        // 7d-FIX1: actually destroy local data + mark burned. The
+        // existing apply_burn only set wrapped_key = NULL on the
+        // sqlite rows; the receive observer's next 1000ms sweep
+        // would still re-decrypt the wire. Now we (a) DELETE the
+        // rows for this channel, (b) add scope to the burned-scopes
+        // ledger, and (c) update the JS-side __oslBurnedScopes
+        // cache so the recv observer skips dispatch. Each call is
+        // best-effort — partial burn is still better than no burn.
+        let rowsDestroyed = 0;
+        const dataResult = await oslInvoke("osl_burn_scope_data", {
+            scopeKind: scopeInput.kind,
+            scopeId: scopeInput.id,
+            serverId: scopeInput.server_id || null,
+        });
+        if (dataResult.ok && dataResult.value) {
+            rowsDestroyed = dataResult.value.rows_destroyed || 0;
+        } else if (!dataResult.ok) {
+            console.log("[OSL][burn] burn_scope_data failed: " + dataResult.error);
+        }
+        const markResult = await oslInvoke("osl_mark_scope_burned", {
+            scopeKind: scopeInput.kind,
+            scopeId: scopeInput.id,
+            serverId: scopeInput.server_id || null,
+            channelId: scopeInput.channel_id || ctx.channelId || null,
+        });
+        if (!markResult.ok) {
+            console.log("[OSL][burn] mark_scope_burned failed: " + markResult.error);
+        } else {
+            // Sync the in-memory skip cache so the next recv sweep
+            // honours the burn without an extra round-trip.
+            oslBurnedScopesAdd(scopeInput.kind, scopeInput.id);
+        }
         oslBurnAftermath(ctx.channelId);
-        oslToast("Burn applied to " + oslScopeLabel(scopeInput));
+        console.log(
+            "[OSL][burn] scope " +
+                scopeInput.kind +
+                ":" +
+                scopeInput.id +
+                " burned, " +
+                rowsDestroyed +
+                " messages destroyed"
+        );
+        oslToast(
+            "Burn applied to " +
+                oslScopeLabel(scopeInput) +
+                " (" +
+                rowsDestroyed +
+                " messages destroyed)"
+        );
         oslRefreshHeaderState();
     }
 
@@ -2013,6 +2076,135 @@
                 " placeholders=" +
                 placeholders
         );
+    }
+
+    // ---- Section 4e (7d-FIX1): burned-scopes ledger cache ----
+    //
+    // The receive observer's 1000ms sweep otherwise re-decrypts
+    // every DPC0:: message it sees. After a scope burn, the wire
+    // ciphertext is still on screen but the on-disk message rows
+    // are gone (cmd_osl_burn_scope_data) and the user wants the
+    // ciphertext to STAY as ciphertext.
+    //
+    // `__oslBurnedScopes` is a synchronous Map keyed by storage_key
+    // ("dm:<peer>", "gc:<id>", "server_channel:<server>:<channel>",
+    // "server_full:<server>"). Filled at install via
+    // `osl_list_burned_scopes`, mutated synchronously on
+    // local-scope-burn via `oslBurnedScopesAdd`, and on re-whitelist
+    // via `oslBurnedScopesRemove`. The receive observer checks via
+    // `oslBurnedScopesShouldSkip(channelId)` before dispatching.
+    //
+    // Per-channel "we already logged the skip once this session" set
+    // suppresses log spam — the spec asks for one-per-channel logging.
+
+    if (!window.__oslBurnedScopes) {
+        window.__oslBurnedScopes = new Map();
+    }
+    const oslBurnedScopesLoggedChannels = new Set();
+
+    function oslBurnedScopesKey(scopeKind, scopeId) {
+        // Normalize JS-side kind strings ("dm"/"gc"/"server_channel"/
+        // "server_full") to the same storage_key form Rust uses.
+        switch (scopeKind) {
+            case "dm":
+                return "dm:" + scopeId;
+            case "gc":
+            case "gc_full":
+            case "gc_per_user":
+                return "gc:" + scopeId;
+            case "server_channel":
+            case "server_channel_full":
+            case "server_channel_per_user":
+                return "server_channel:" + scopeId;
+            case "server_full":
+            case "server_full_per_user":
+                return "server_full:" + scopeId;
+            default:
+                return scopeKind + ":" + scopeId;
+        }
+    }
+
+    function oslBurnedScopesAdd(scopeKind, scopeId) {
+        window.__oslBurnedScopes.set(
+            oslBurnedScopesKey(scopeKind, scopeId),
+            true
+        );
+    }
+
+    function oslBurnedScopesRemove(scopeKind, scopeId) {
+        window.__oslBurnedScopes.delete(
+            oslBurnedScopesKey(scopeKind, scopeId)
+        );
+        // Allow re-logging if the scope gets burned again later.
+        for (const ch of Array.from(oslBurnedScopesLoggedChannels)) {
+            if (ch.endsWith(":" + scopeId)) {
+                oslBurnedScopesLoggedChannels.delete(ch);
+            }
+        }
+    }
+
+    /**
+     * Decide whether to skip dispatch for a message in `channelId`.
+     * The recv-side only knows channel_id at this point, not the
+     * full scope shape. We check every storage_key in the cache and
+     * return true if any matches — DM scopes have scope_id ==
+     * channel_id, GC scopes the same, server_channel scopes embed
+     * channel_id in the second half. server_full is not yet
+     * burnable per the Rust-side scope handling.
+     */
+    function oslBurnedScopesShouldSkip(channelId) {
+        if (!channelId) return false;
+        if (window.__oslBurnedScopes.size === 0) return false;
+        // Fast paths: dm:<channelId>, gc:<channelId>.
+        if (window.__oslBurnedScopes.has("dm:" + channelId)) return true;
+        if (window.__oslBurnedScopes.has("gc:" + channelId)) return true;
+        // server_channel storage_key is "server_channel:<server>:<channel>".
+        // Walk keys for the suffix.
+        for (const k of window.__oslBurnedScopes.keys()) {
+            if (k.startsWith("server_channel:") && k.endsWith(":" + channelId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function oslBurnedScopesLogOnceForChannel(channelId) {
+        if (oslBurnedScopesLoggedChannels.has(channelId)) return;
+        oslBurnedScopesLoggedChannels.add(channelId);
+        console.log(
+            "[OSL] channel " + channelId + " is burned, skipping decrypt"
+        );
+    }
+
+    /**
+     * Install-time hydration. Best-effort: a failed invoke leaves
+     * the cache empty, which means the recv observer doesn't skip
+     * anything (worst-case decrypt resumes for previously-burned
+     * scopes until next install). A new local burn during the
+     * session re-fills the cache via `oslBurnedScopesAdd`.
+     */
+    async function oslBurnedScopesInit() {
+        const r = await oslInvoke("osl_list_burned_scopes", {});
+        if (!r.ok) {
+            console.log(
+                "[OSL][burn] list_burned_scopes failed at init: " + r.error
+            );
+            return;
+        }
+        const entries = r.value || [];
+        for (const e of entries) {
+            window.__oslBurnedScopes.set(
+                oslBurnedScopesKey(e.scope_kind, e.scope_id),
+                true
+            );
+        }
+        if (entries.length > 0) {
+            console.log(
+                "[OSL][burn] loaded " +
+                    entries.length +
+                    " burned scope(s) from disk"
+            );
+        }
     }
 
     // ---- Section 5: pending invitation banner ----
@@ -4527,6 +4719,13 @@
             oslSettingsGearInject();
             oslRefreshBanners();
         }, 500);
+
+        // 7d-FIX1: hydrate the burned-scopes skip cache once.
+        // The recv observer's next sweep then honours it without
+        // a per-message Tauri round-trip.
+        nativeSetTimeout(function () {
+            oslBurnedScopesInit().catch(function () {});
+        }, 600);
 
         console.log("[OSL] Phase 7c UI installed");
     }
@@ -7161,6 +7360,19 @@
             );
             return;
         }
+        // 7d-FIX1: skip dispatch for burned scopes. The receive
+        // observer would otherwise re-decrypt every DPC0:: message
+        // on the next sweep tick because the wire ciphertext is
+        // still there and the recipient key is still in identity.
+        // The burned-scopes ledger says "this scope is gone";
+        // leave the message as raw DPC0:: text in the UI.
+        try {
+            if (oslBurnedScopesShouldSkip(channelId)) {
+                oslBurnedScopesLogOnceForChannel(channelId);
+                recvDone.add(messageId);
+                return;
+            }
+        } catch (_) {}
         const senderDiscordId = recvExtractAuthorId(div);
         if (!senderDiscordId) {
             // Bounded retry rather than terminal skip. The author

@@ -131,6 +131,21 @@ pub fn run_autostart(state: &AppState) {
 
     load_peer_map(state, &dir);
 
+    // 7d-FIX1: load burned_scopes.json into AppState. Best-effort:
+    // a missing file is normal on a fresh install; a parse error
+    // leaves the ledger empty (no burns are enforced) which is
+    // safe behavior — the worst outcome is the receive observer
+    // re-decrypts what it previously could decrypt. A future
+    // user-initiated burn refills the ledger.
+    let bs_path = dir.join("burned_scopes.json");
+    let bs = ipc::burned_scopes_file::load_burned_scopes(&bs_path);
+    let n = bs.scopes.len();
+    *state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned") = bs;
+    tracing::info!(entries = n, "OSL bootstrap: burned_scopes loaded");
+
     tracing::info!("OSL bootstrap: done");
 }
 

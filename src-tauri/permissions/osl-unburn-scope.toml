@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-FIX1: remove a scope from the burned-scopes ledger.
+[[permission]]
+identifier = "allow-osl-unburn-scope"
+description = "Permits the discord.com main webview to invoke `osl_unburn_scope` (remove a scope from burned_scopes.json). Invoked automatically by `osl_set_whitelist` on re-whitelist (decision B). Phase 7d-FIX1."
+commands.allow = ["osl_unburn_scope"]

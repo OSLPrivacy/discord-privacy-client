@@ -179,6 +179,16 @@ pub struct AppState {
     /// — the user sees vanilla Discord for the rest of the
     /// session. Reset on app restart (in-memory only).
     pub stealth_active: Mutex<bool>,
+
+    /// 7d-FIX1: explicit-burn ledger. Mirrors
+    /// `burned_scopes.json`; the boot.js receive observer pulls
+    /// this list at install via `osl_list_burned_scopes` and skips
+    /// decrypt dispatch for any message whose scope appears here.
+    /// `osl_burn_scope_data` appends; `osl_unburn_scope` removes;
+    /// `cmd_osl_set_whitelist` also evicts on re-whitelist (decision
+    /// B from the spec — re-whitelist removes the burn entry so
+    /// fresh messages decrypt normally).
+    pub burned_scopes: Mutex<crate::burned_scopes_file::BurnedScopesFile>,
 }
 
 impl AppState {
