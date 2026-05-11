@@ -757,7 +757,17 @@
             }
         }
         if (!v7cScope || typeof oslInvoke !== "function") {
-            return v1Send();
+            // 7d-PIVOT-FIX4: no scope detected (or Tauri bridge
+            // missing) means the user couldn't have toggled
+            // encrypt on for this send — passthrough the plain
+            // body. v1Send was the legacy per-channel-share path;
+            // under PIVOT we never want to silently fall into it.
+            console.log(
+                "[OSL] send-gate (" +
+                    source +
+                    "): no scope / no Tauri — passthrough"
+            );
+            return onPassthrough();
         }
 
         // 7d-PIVOT-FIX3 Bug E: the composer toggle's
@@ -819,10 +829,20 @@
                     (encryptOn ? "on" : "off") +
                     " (source: " +
                     (stateRes.source || "?") +
-                    ")"
+                    ") — " +
+                    (encryptOn ? "encrypting" : "skipping encrypt")
             );
             if (!encryptOn) {
-                return v1Send();
+                // 7d-PIVOT-FIX4: toggle OFF means the user wants
+                // the message plain. PIVOT-FIX3 routed this through
+                // v1Send() which calls __OSL_INTERCEPT__, which
+                // invokes the legacy `osl_encrypt_message` (v=1)
+                // per-channel-share path — that still produced a
+                // DPC0:: ciphertext on the wire. PIVOT replaced the
+                // v=1 model with the toggle-gated v=2 model, so the
+                // only correct "encrypt off" behaviour is to
+                // forward the original plaintext untouched.
+                return onPassthrough();
             }
             const memberIds = (v7cCtx.members || [])
                 .map(function (m) {
@@ -988,6 +1008,20 @@
             console.log("[OSL] oslEncryptV2 FAIL reason=no_invoke");
             return null;
         }
+        // 7d-PIVOT-FIX4 diagnostic: log every actual encrypt
+        // invocation. If a "CALLING" line ever appears with a
+        // matching "encrypt_toggle = off" send-gate line, the gate
+        // didn't actually short-circuit — that would be a regression.
+        const scopeKey =
+            scopeInput && scopeInput.kind && scopeInput.id
+                ? scopeInput.kind + ":" + scopeInput.id
+                : "?";
+        console.log(
+            "[OSL] CALLING osl_encrypt_message_v2 for scope=" +
+                scopeKey +
+                ", plaintext_len=" +
+                (plaintext ? plaintext.length : 0)
+        );
         try {
             const wire = await invoke("osl_encrypt_message_v2", {
                 plaintext: plaintext,
@@ -996,6 +1030,9 @@
                 selfDiscordId: selfDiscordId,
             });
             if (typeof wire === "string" && wire.indexOf("DPC0::") === 0) {
+                console.log(
+                    "[OSL] osl_encrypt_message_v2 returned, body now DPC0:: prefix"
+                );
                 return wire;
             }
             console.log(
