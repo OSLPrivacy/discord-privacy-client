@@ -2070,28 +2070,71 @@
         );
     }
 
+    // 7d-PIVOT-FIX: iOS-style toggle visual. Track + sliding knob,
+    // no text inside. Two nested divs we update in place — keeping
+    // the same outer `btn` keeps the click handler bound stable.
     function oslComposerToggleStyle(btn, on) {
+        // Lazily create the inner track + knob on first paint.
+        let track = btn.querySelector("[data-osl-track='1']");
+        let knob = btn.querySelector("[data-osl-knob='1']");
+        if (!track) {
+            track = document.createElement("div");
+            track.setAttribute("data-osl-track", "1");
+            track.style.position = "relative";
+            track.style.width = "36px";
+            track.style.height = "20px";
+            track.style.borderRadius = "10px";
+            track.style.transition = "background 0.15s ease-out";
+            track.style.flexShrink = "0";
+            knob = document.createElement("div");
+            knob.setAttribute("data-osl-knob", "1");
+            knob.style.position = "absolute";
+            knob.style.top = "2px";
+            knob.style.width = "16px";
+            knob.style.height = "16px";
+            knob.style.borderRadius = "50%";
+            knob.style.background = "#ffffff";
+            knob.style.boxShadow = "0 1px 2px rgba(0,0,0,0.30)";
+            knob.style.transition = "left 0.15s ease-out";
+            track.appendChild(knob);
+            // Replace whatever text was previously in `btn` (the
+            // pre-FIX visual was "ENC ON"/"ENC OFF" text) with the
+            // track. Keep btn as inline-flex so the track centers.
+            btn.textContent = "";
+            btn.appendChild(track);
+        }
         if (on) {
-            btn.style.background = "rgba(35,165,89,0.20)";
-            btn.style.color = "#23a559";
-            btn.textContent = "ENC ON";
-            btn.setAttribute("aria-pressed", "true");
-            btn.title = "OSL encryption ON — click to disable for this channel";
-        } else {
-            btn.style.background = "var(--background-modifier-accent, #3f4147)";
-            btn.style.color = "var(--text-muted, #949ba4)";
-            btn.textContent = "ENC OFF";
-            btn.setAttribute("aria-pressed", "false");
+            track.style.background = "#3ba55d"; // Discord green
+            knob.style.left = "18px";
+            btn.setAttribute("aria-checked", "true");
             btn.title =
-                "OSL encryption OFF — click to enable (encrypt-to-self if no whitelist)";
+                "Encryption ON for this channel — click to disable";
+        } else {
+            track.style.background = "var(--background-modifier-accent, #3a3c43)";
+            knob.style.left = "2px";
+            btn.setAttribute("aria-checked", "false");
+            btn.title =
+                "Encryption OFF — click to enable (encrypt-to-self if no whitelist)";
         }
     }
 
-    async function oslComposerToggleRefresh(btn) {
+    // 7d-PIVOT-FIX: track last-seen scope storage_key so we only
+    // fire osl_get_scope_encryption_state on actual scope changes,
+    // not on every header-observer tick (Discord fires hundreds
+    // per second during a send + the IPC round-trip was the cause
+    // of "slow send" symptoms in 7d-PIVOT).
+    let oslComposerToggleLastScopeKey = null;
+    async function oslComposerToggleRefresh(btn, opts) {
         const ctx = oslCurrentChannelContext();
         if (!ctx) return;
         const scope = oslScopeForCurrentContext(ctx);
         if (!scope) return;
+        const key = oslScopeStorageKey(scope);
+        const force = opts && opts.force === true;
+        if (!force && key === oslComposerToggleLastScopeKey) {
+            return;
+        }
+        oslComposerToggleLastScopeKey = key;
         const r = await oslInvoke("osl_get_scope_encryption_state", {
             scopeInput: scope,
         });
@@ -2110,22 +2153,23 @@
             oslToast("Cannot resolve channel scope");
             return;
         }
-        const r = await oslInvoke("osl_get_scope_encryption_state", {
-            scopeInput: scope,
-        });
-        if (!r.ok) {
-            oslToast("Encrypt toggle failed: " + r.error);
-            return;
-        }
-        const currentOn = !!(r.value && r.value.encrypt_toggle);
+        // 7d-PIVOT-FIX: derive desired state from the toggle's
+        // current visual instead of round-tripping to Rust just
+        // to flip it. Visual is the source of truth — set
+        // optimistically + write through to disk.
+        const currentOn = btn.getAttribute("aria-checked") === "true";
+        oslComposerToggleStyle(btn, !currentOn); // optimistic
         const set = await oslInvoke("osl_set_scope_encrypt", {
             scopeInput: scope,
             enabled: !currentOn,
         });
         if (!set.ok) {
+            oslComposerToggleStyle(btn, currentOn); // rollback
             oslToast("Encrypt toggle failed: " + set.error);
             return;
         }
+        // Confirm visual matches the result (no-op if optimistic
+        // matched).
         oslComposerToggleStyle(btn, !!set.value);
         // Refresh the header lock too — coverage display may shift.
         try {
@@ -2145,22 +2189,18 @@
             return;
         }
         const btn = document.createElement("div");
-        btn.setAttribute("role", "button");
+        btn.setAttribute("role", "switch");
         btn.setAttribute("tabindex", "0");
         btn.setAttribute(COMPOSER_TOGGLE_DATA_ATTR, "1");
-        btn.setAttribute("aria-label", "OSL encrypt toggle");
+        btn.setAttribute("aria-label", "Encrypt messages in this channel");
+        btn.setAttribute("aria-checked", "false");
         btn.style.display = "inline-flex";
         btn.style.alignItems = "center";
         btn.style.justifyContent = "center";
-        btn.style.padding = "2px 10px";
-        btn.style.marginRight = "6px";
-        btn.style.borderRadius = "12px";
-        btn.style.fontSize = "11px";
-        btn.style.fontWeight = "700";
-        btn.style.letterSpacing = "0.05em";
+        btn.style.padding = "4px 6px";
+        btn.style.marginRight = "4px";
         btn.style.cursor = "pointer";
         btn.style.userSelect = "none";
-        btn.style.transition = "background 0.12s, color 0.12s";
         oslComposerToggleStyle(btn, false);
         btn.addEventListener("click", function (e) {
             e.preventDefault();
@@ -2180,12 +2220,12 @@
         oslComposerToggleRefresh(btn).catch(function () {});
     }
 
-    function oslComposerToggleRefreshIfMounted() {
+    function oslComposerToggleRefreshIfMounted(opts) {
         const btn = document.querySelector(
             "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
         );
         if (!btn) return;
-        oslComposerToggleRefresh(btn).catch(function () {});
+        oslComposerToggleRefresh(btn, opts).catch(function () {});
     }
 
     function oslHeaderInjectButtons(header) {
@@ -2245,7 +2285,14 @@
      * that could change state (whitelist set, toggle flip, burn,
      * channel switch).
      */
-    async function oslRefreshHeaderState() {
+    // 7d-PIVOT-FIX: throttle. The header MutationObserver fires
+    // hundreds of times per second during a normal send; without
+    // a scope-key cache the Tauri IPC round-trip becomes the
+    // dominant cost and surfaces as multi-second "slow send" UX.
+    // Pass `{ force: true }` from cross-window-event listeners
+    // (Rust side mutated state we couldn't otherwise see).
+    let oslHeaderStateLastScopeKey = null;
+    async function oslRefreshHeaderState(opts) {
         const ctx = oslCurrentChannelContext();
         if (!ctx || !ctx.channelId) {
             // Out of a channel context — nothing to refresh.
@@ -2260,6 +2307,12 @@
             "[" + HEADER_BURN_DATA_ATTR + "='1']"
         );
         if (!encryptBtn) return;
+        const key = oslScopeStorageKey(scopeInput);
+        const force = opts && opts.force === true;
+        if (!force && key === oslHeaderStateLastScopeKey) {
+            return;
+        }
+        oslHeaderStateLastScopeKey = key;
         const result = await oslInvoke("osl_get_scope_encryption_state", {
             scopeInput: scopeInput,
         });
@@ -2470,6 +2523,14 @@
             oslBurnedScopesAdd(scopeInput.kind, scopeInput.id);
         }
         oslBurnAftermath(ctx.channelId);
+        // 7d-PIVOT-FIX: force header state refresh after burn. The
+        // throttled refresh would otherwise skip this re-read
+        // because the scope key hasn't changed; burn doesn't move
+        // us off the channel, so without `force` the lock visual
+        // could lag if whitelist_state was mutated by a side path.
+        try {
+            oslRefreshHeaderState({ force: true });
+        } catch (_) {}
         console.log(
             "[OSL][burn] scope " +
                 scopeInput.kind +
@@ -3627,8 +3688,8 @@
                         " → " +
                         (p.encrypt_toggle ? "ON" : "OFF")
                 );
-                oslRefreshHeaderState();
-                oslComposerToggleRefreshIfMounted();
+                oslRefreshHeaderState({ force: true });
+                oslComposerToggleRefreshIfMounted({ force: true });
             } catch (err) {
                 console.error(
                     "[OSL] scope_encryption_toggled handler:",
@@ -3651,8 +3712,8 @@
                         " → " +
                         (p.enabled ? "ON" : "OFF")
                 );
-                oslRefreshHeaderState();
-                oslComposerToggleRefreshIfMounted();
+                oslRefreshHeaderState({ force: true });
+                oslComposerToggleRefreshIfMounted({ force: true });
             } catch (err) {
                 console.error("[OSL] scope_encrypt_changed handler:", err);
             }
@@ -6308,39 +6369,24 @@
             );
             return;
         }
-        // Extract sender first so the burned-scopes skip below
-        // can let self-messages through. 7d-PIVOT decision:
-        // self-decrypt always works (as long as the wrapped key
-        // still exists in messages.sqlite). The burned-scopes
-        // ledger only skips non-self messages — for our own
-        // outgoing history we attempt decrypt even in a burned
-        // scope; if the key is gone, decrypt fails naturally and
-        // the message stays as raw DPC0:: text.
-        const senderDiscordId = recvExtractAuthorId(div);
-        const cachedSelfId =
-            typeof oslSelfDiscordIdCache === "string"
-                ? oslSelfDiscordIdCache
-                : null;
-        const isFromSelf =
-            !!senderDiscordId &&
-            !!cachedSelfId &&
-            senderDiscordId === cachedSelfId;
-
-        // 7d-FIX1 / 7d-PIVOT: skip dispatch for burned scopes
-        // EXCEPT when the message is from self. The receive
-        // observer would otherwise re-decrypt every DPC0:: message
-        // on the next sweep tick because the wire ciphertext is
-        // still there and the recipient key is still in identity.
-        // The burned-scopes ledger says "this scope is gone";
-        // leave non-self messages as raw DPC0:: text in the UI.
-        // Self-messages still try decrypt — see comment above.
+        // 7d-FIX1: skip dispatch for burned scopes. Applies to
+        // EVERY message regardless of sender — 7d-PIVOT-FIX
+        // reverted the self-bypass introduced in PIVOT Task 5a
+        // because in practice it was leaking plaintext for the
+        // local user's own old messages in burned scopes (the
+        // wrapped_keys hadn't always been wiped fully, and
+        // even when they had, the bypass meant the recv path
+        // still attempted decrypt + sometimes found a stale
+        // cache to fall back on). User decision: burn means
+        // burned for everyone, no special case for self.
         try {
-            if (!isFromSelf && oslBurnedScopesShouldSkip(channelId)) {
+            if (oslBurnedScopesShouldSkip(channelId)) {
                 oslBurnedScopesLogOnceForChannel(channelId);
                 recvDone.add(messageId);
                 return;
             }
         } catch (_) {}
+        const senderDiscordId = recvExtractAuthorId(div);
         if (!senderDiscordId) {
             // Bounded retry rather than terminal skip. The author
             // metadata for own-sent and cozy-grouped messages may
