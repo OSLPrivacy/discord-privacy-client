@@ -760,39 +760,45 @@
             return v1Send();
         }
 
-        // 7d-PIVOT-FIX2 Bug E: the composer toggle's `aria-checked`
-        // is the authoritative source for "encrypt this send" at
-        // send time. PIVOT-FIX shipped optimistic visual updates
-        // for the composer click, so the toggle reflects the
-        // user's intent immediately — but the Rust-side state
-        // change races against fast click-then-send. By reading
-        // aria-checked synchronously here we always honour what
-        // the user just clicked. Falls back to the existing IPC
-        // path when the toggle isn't mounted yet (first send on
-        // a fresh page before the observer-driven inject has
-        // fired).
+        // 7d-PIVOT-FIX3 Bug E: the composer toggle's
+        // `data-osl-encrypt-state` is the authoritative source for
+        // "encrypt this send" at send time. PIVOT-FIX2 tried
+        // aria-checked here, but observed in DevTools that the
+        // attribute returns null on many React reconciliations —
+        // the FIX2 log said "source: aria-checked" while reading
+        // null, so the gate fell through to "encrypt off" even
+        // with the visual showing ON. data-osl-encrypt-state is
+        // stamped by oslComposerToggleStyle on every visual
+        // change and persists across reconciliation.
+        //
+        // Fallback chain: data-osl-encrypt-state → synchronous IPC
+        // → default-off (fail-closed).
         const composerToggle = document.querySelector(
             "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
         );
+        const stateAttr =
+            composerToggle &&
+            composerToggle.getAttribute("data-osl-encrypt-state");
         const togglePromise =
-            composerToggle && composerToggle.getAttribute("aria-checked") !== null
+            stateAttr === "on" || stateAttr === "off"
                 ? Promise.resolve({
                       ok: true,
                       value: {
-                          encrypt_toggle:
-                              composerToggle.getAttribute("aria-checked") === "true",
+                          encrypt_toggle: stateAttr === "on",
                           // has_whitelist is unused by the gate
                           // under PIVOT — encrypt_toggle is the
                           // only signal — but we set it so the
                           // shape matches the IPC fallback.
                           has_whitelist: false,
                       },
-                      source: "aria-checked",
+                      source: "data-osl-encrypt-state",
                   })
                 : oslInvoke("osl_get_scope_encryption_state", {
                       scopeInput: v7cScope,
                   }).then(function (r) {
-                      return Object.assign({}, r, { source: "ipc-fallback" });
+                      return Object.assign({}, r, {
+                          source: r && r.ok ? "ipc-fallback" : "default-off",
+                      });
                   });
 
         return togglePromise.then(function (stateRes) {
@@ -853,6 +859,22 @@
                         return onAbort(new Error("v2_encrypt_failed"));
                     }
                     parsed.content = wire;
+                    // 7d-PIVOT-FIX3 Bug F: inline post-burn re-engage.
+                    // A successful encrypt-send into a burned scope
+                    // un-burns it. PIVOT-FIX2 routed this through the
+                    // `osl:scope_unburned` cross-window event, but
+                    // Discord's CSP can drop those events before they
+                    // reach this origin's listener — leaving the JS
+                    // `__oslBurnedScopes` cache stale and the receive
+                    // observer continuing to skip decrypts for the
+                    // re-engaged scope. Do it locally and persist via
+                    // a fire-and-forget IPC call. The Rust command is
+                    // idempotent so the cross-window path (still wired
+                    // for Settings Window initiated unburns) is safe
+                    // to keep alongside this.
+                    try {
+                        oslInlineUnburnAfterEncrypt(v7cScope);
+                    } catch (_) {}
                     let newBody;
                     try {
                         newBody = JSON.stringify(parsed);
@@ -1167,6 +1189,56 @@
         const wire = await oslEncryptV2(plaintext, scope, members, selfDiscordId);
         if (!wire) return null;
         return await oslSendControlMessage(channelId, wire);
+    };
+
+    /**
+     * 7d-PIVOT-FIX3 diagnostic: dump the composer toggle's attributes
+     * + computed visual style for debug-time inspection from DevTools.
+     * Returns an object so it round-trips through `JSON.stringify`
+     * cleanly. Logs to console so a console-only inspection still
+     * surfaces the data.
+     */
+    window.__oslDiagDumpToggle = function () {
+        const btn = document.querySelector(
+            "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+        );
+        if (!btn) {
+            console.log("[OSL][diag] toggle: not mounted");
+            return { mounted: false };
+        }
+        const track = btn.querySelector("[data-osl-track='1']");
+        const knob = btn.querySelector("[data-osl-knob='1']");
+        const snapshot = {
+            mounted: true,
+            composer_attr: btn.getAttribute(COMPOSER_TOGGLE_DATA_ATTR),
+            encrypt_state: btn.getAttribute("data-osl-encrypt-state"),
+            aria_checked: btn.getAttribute("aria-checked"),
+            track_background: track
+                ? getComputedStyle(track).backgroundColor
+                : null,
+            knob_left: knob ? knob.style.left : null,
+        };
+        console.log("[OSL][diag] toggle:", snapshot);
+        return snapshot;
+    };
+
+    /**
+     * 7d-PIVOT-FIX3 diagnostic: dump the current __oslBurnedScopes
+     * cache as a plain array. Useful for verifying Bug F's inline
+     * unburn fired (cache should NOT contain the scope post-encrypt).
+     */
+    window.__oslDiagDumpBurned = function () {
+        const map = window.__oslBurnedScopes;
+        if (!(map instanceof Map)) {
+            console.log("[OSL][diag] burned: cache not initialised");
+            return [];
+        }
+        const keys = Array.from(map.keys());
+        console.log(
+            "[OSL][diag] burned (" + keys.length + " entries):",
+            keys
+        );
+        return keys;
     };
 
     // ============================================================
@@ -2146,6 +2218,14 @@
             btn.textContent = "";
             btn.appendChild(track);
         }
+        // 7d-PIVOT-FIX3 Bug E: `data-osl-encrypt-state` is the
+        // authoritative source for the send gate. Set it BEFORE the
+        // visual changes so a racing send between the click handler
+        // and the next paint frame still observes the new state.
+        // aria-checked is kept in sync for accessibility, but the
+        // send path no longer trusts it (Discord/React occasionally
+        // reset aria-* on the wrapping switch element).
+        btn.setAttribute("data-osl-encrypt-state", on ? "on" : "off");
         if (on) {
             track.style.background = "#3ba55d"; // Discord green
             knob.style.left = "18px";
@@ -2200,7 +2280,14 @@
         // current visual instead of round-tripping to Rust just
         // to flip it. Visual is the source of truth — set
         // optimistically + write through to disk.
-        const currentOn = btn.getAttribute("aria-checked") === "true";
+        // 7d-PIVOT-FIX3 Bug E: read `data-osl-encrypt-state` for
+        // the same reason the send path does — aria-checked turned
+        // out to be unreliable. Falls back to aria-checked only if
+        // the data attr is missing (pre-FIX3 install path).
+        const stateAttr = btn.getAttribute("data-osl-encrypt-state");
+        const currentOn =
+            stateAttr === "on" ||
+            (stateAttr === null && btn.getAttribute("aria-checked") === "true");
         oslComposerToggleStyle(btn, !currentOn); // optimistic
         const set = await oslInvoke("osl_set_scope_encrypt", {
             scopeInput: scope,
@@ -2237,6 +2324,12 @@
         btn.setAttribute(COMPOSER_TOGGLE_DATA_ATTR, "1");
         btn.setAttribute("aria-label", "Encrypt messages in this channel");
         btn.setAttribute("aria-checked", "false");
+        // 7d-PIVOT-FIX3 Bug E: ensure data-osl-encrypt-state is never
+        // null while the toggle is mounted — even before the first
+        // oslComposerToggleStyle() call below or the async refresh
+        // below resolves. Send-gate readers depend on this attribute
+        // existing.
+        btn.setAttribute("data-osl-encrypt-state", "off");
         btn.style.display = "inline-flex";
         btn.style.alignItems = "center";
         btn.style.justifyContent = "center";
@@ -2656,6 +2749,20 @@
                 span.textContent = origCipher;
                 repainted++;
             } else if (typeof lastCover === "string" && lastCover.length > 0) {
+                // 7d-PIVOT-FIX3 Bug G: data-osl-orig-cipher was the
+                // primary source post-FIX2. Falling through to
+                // recvCovers means the attribute wasn't stamped on
+                // this div — either the message was a self-send
+                // (we never observed it in ciphertext form) or a
+                // change to recvHandleDiv regressed the stamp.
+                // recvCovers is still the right fallback, but log
+                // it so future regressions stand out.
+                console.warn(
+                    "[OSL] burn aftermath: msg=" +
+                        messageId +
+                        " had no data-osl-orig-cipher attribute;" +
+                        " falling back to recvCovers"
+                );
                 span.textContent = lastCover;
                 repainted++;
             } else {
@@ -2740,6 +2847,61 @@
             if (ch.endsWith(":" + scopeId)) {
                 oslBurnedScopesLoggedChannels.delete(ch);
             }
+        }
+    }
+
+    /**
+     * 7d-PIVOT-FIX3 Bug F: drop `scopeInput` from `__oslBurnedScopes`
+     * locally (synchronous, no event round-trip) and persist the
+     * unburn to disk via `osl_unburn_scope`. Called from the send
+     * gate after a successful encrypt, so a re-engaged scope's next
+     * inbound DPC0 message is decrypted instead of being skipped by
+     * `oslBurnedScopesShouldSkip`.
+     *
+     * Idempotent: if the scope wasn't burned, the local Map delete
+     * is a no-op and the Rust command returns Ok(false).
+     */
+    function oslInlineUnburnAfterEncrypt(scopeInput) {
+        if (!scopeInput || !scopeInput.kind || !scopeInput.id) return;
+        const key = oslBurnedScopesKey(scopeInput.kind, scopeInput.id);
+        const wasBurned =
+            window.__oslBurnedScopes && window.__oslBurnedScopes.has(key);
+        if (wasBurned) {
+            oslBurnedScopesRemove(scopeInput.kind, scopeInput.id);
+            console.log(
+                "[OSL] inline unburn: removed " +
+                    key +
+                    " from __oslBurnedScopes (encrypt-send re-engaged)"
+            );
+        }
+        // Always call through to Rust — the JS map can drift (a new
+        // browser session repopulates from disk via osl_list_burned_scopes,
+        // and Rust persistence is the source of truth across launches).
+        // Idempotent on the Rust side too.
+        try {
+            oslInvoke("osl_unburn_scope", {
+                scopeKind: scopeInput.kind,
+                scopeId: scopeInput.id,
+            }).then(
+                function (r) {
+                    if (r && r.ok && r.value === true) {
+                        console.log(
+                            "[OSL] inline unburn: persisted unburn for " + key
+                        );
+                    }
+                },
+                function (err) {
+                    console.warn(
+                        "[OSL] inline unburn IPC failed for " + key + ":",
+                        err
+                    );
+                }
+            );
+        } catch (err) {
+            console.warn(
+                "[OSL] inline unburn IPC threw for " + key + ":",
+                err
+            );
         }
     }
 

@@ -1640,17 +1640,19 @@ pub fn cmd_osl_unburn_scope_after_encrypt(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
 ) -> bool {
-    let scope: crate::scope::Scope = match scope_input.try_into() {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let scope_kind_str = match scope.kind {
+    // 7d-PIVOT-FIX3 Bug F: match the JS-style kind strings used by
+    // `cmd_osl_mark_scope_burned` (the only writer of burned_scopes
+    // entries). PIVOT-FIX2's "gc_full"/"server_channel_full" mapping
+    // never matched anything in the ledger, so this helper silently
+    // no-op'd and `osl:scope_unburned` was never emitted — which is
+    // why FIX2's cross-window unburn never actually fired.
+    let scope_kind_str = match scope_input.kind {
         crate::scope::ScopeKind::Dm => "dm",
-        crate::scope::ScopeKind::Gc => "gc_full",
-        crate::scope::ScopeKind::ServerChannel => "server_channel_full",
+        crate::scope::ScopeKind::Gc => "gc",
+        crate::scope::ScopeKind::ServerChannel => "server_channel",
         crate::scope::ScopeKind::ServerFull => "server_full",
     };
-    cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id).unwrap_or(false)
+    cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope_input.id).unwrap_or(false)
 }
 
 /// Layer 10 / Phase 7b: send a burn marker for `scope` to the
