@@ -138,6 +138,139 @@
     } catch (_) {}
 
     // ============================================================
+    // 7d-FIX2: CSP allowance for Tauri IPC origins.
+    //
+    // Discord ships a strict Content-Security-Policy that omits
+    // Tauri's IPC fetch endpoint (ipc.localhost / tauri.localhost)
+    // from `connect-src`. `window.__TAURI__.event.listen` registers
+    // listeners via that endpoint internally, so without this patch
+    // the very first call rejects with a CSP violation and (in some
+    // Tauri versions) throws synchronously, halting downstream init.
+    //
+    // We try the immediate meta-tag patch here. If Discord's CSP
+    // meta hasn't been written yet, install a one-shot
+    // MutationObserver on `document.head` to patch it the moment
+    // it arrives. If Discord uses HTTP-header CSP instead (no meta
+    // tag), neither path works — log and rely on the defensive
+    // try/catch wrapping inside `oslInstallCrossWindowListeners`.
+    //
+    // Over-allow rather than under-allow: we add both http+https
+    // variants of `ipc.localhost` AND `tauri.localhost` because the
+    // exact scheme/host depends on platform and Tauri version.
+    // ============================================================
+    function oslPatchDiscordCsp() {
+        const ORIGINS =
+            "http://ipc.localhost https://ipc.localhost " +
+            "http://tauri.localhost https://tauri.localhost";
+
+        function patch(meta) {
+            try {
+                let csp = meta.getAttribute("content") || "";
+                if (csp.indexOf("ipc.localhost") !== -1) {
+                    // Already patched (idempotency, e.g. on Discord
+                    // re-render). Nothing to do.
+                    return true;
+                }
+                if (/connect-src\s/i.test(csp)) {
+                    csp = csp.replace(
+                        /connect-src ([^;]+)/i,
+                        "connect-src $1 " + ORIGINS
+                    );
+                } else {
+                    // No connect-src directive present — append one.
+                    // CSP merges by intersection if there's no
+                    // existing connect-src, so the default falls
+                    // back to default-src; we want explicit allow.
+                    csp = csp.replace(/;?\s*$/, "") + "; connect-src 'self' " + ORIGINS;
+                }
+                meta.setAttribute("content", csp);
+                console.log("[OSL] CSP modified (connect-src extended)");
+                return true;
+            } catch (e) {
+                console.warn(
+                    "[OSL] CSP patch failed:",
+                    (e && e.message) || e
+                );
+                return false;
+            }
+        }
+
+        const existing = document.querySelector(
+            'meta[http-equiv="Content-Security-Policy"]'
+        );
+        if (existing) {
+            patch(existing);
+            return;
+        }
+
+        // Meta tag not present yet — Discord may write it after the
+        // boot script's first synchronous tick. Late-patch via a
+        // one-shot MutationObserver on document.head.
+        try {
+            const headObs = new MutationObserver(function (mutations) {
+                for (const m of mutations) {
+                    for (const node of m.addedNodes) {
+                        if (
+                            node &&
+                            node.tagName === "META" &&
+                            (node.getAttribute("http-equiv") || "").toLowerCase() ===
+                                "content-security-policy"
+                        ) {
+                            if (patch(node)) {
+                                headObs.disconnect();
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+            if (document.head) {
+                headObs.observe(document.head, {
+                    childList: true,
+                    subtree: false,
+                });
+            } else {
+                console.warn(
+                    "[OSL] CSP patch: document.head not yet available — relying on defensive wrapping"
+                );
+            }
+            // Self-disconnect after 10s to avoid leaking an observer
+            // when Discord's CSP is HTTP-header-only and no meta tag
+            // ever arrives.
+            setTimeout(function () {
+                try {
+                    headObs.disconnect();
+                } catch (_) {}
+                if (
+                    !document.querySelector(
+                        'meta[http-equiv="Content-Security-Policy"]'
+                    )
+                ) {
+                    console.warn(
+                        "[OSL] CSP meta tag not found after 10s; " +
+                            "cross-window events may fail if Discord's " +
+                            "CSP is HTTP-header-only — defensive wrapping " +
+                            "in oslInstallCrossWindowListeners is the fallback"
+                    );
+                }
+            }, 10000);
+        } catch (e) {
+            console.warn(
+                "[OSL] CSP modification skipped (observer setup threw):",
+                (e && e.message) || e
+            );
+        }
+    }
+    try {
+        oslPatchDiscordCsp();
+    } catch (e) {
+        console.warn(
+            "[OSL] CSP patch entry threw:",
+            (e && e.message) || e
+        );
+    }
+
+    // ============================================================
     // Compile-time DEBUG switch.
     //
     // PHASE 3 VERIFICATION: leave at `true` so console output stays
@@ -2403,11 +2536,12 @@
         }
         if (entries.length > 0) {
             console.log(
-                "[OSL][burn] loaded " +
+                "[OSL][burn] init: loaded " +
                     entries.length +
                     " burned scope(s) from disk"
             );
         }
+        return entries.length;
     }
 
     // ---- Section 5: pending invitation banner ----
@@ -2912,26 +3046,81 @@
             subtree: true,
         });
 
-        // Initial pass.
+        // Initial pass. 7d-FIX2: each injection point is wrapped
+        // independently so one fragile site failing (e.g. a Discord
+        // class rename breaking `oslAccountBurnInject`) doesn't
+        // break the others.
         nativeSetTimeout(function () {
             const header = document.querySelector(
                 'section[class*="title_"][class*="container__"]'
             );
             if (header) {
-                oslHeaderInjectButtons(header);
-                oslAccountBurnInject(header);
+                try {
+                    oslHeaderInjectButtons(header);
+                } catch (e) {
+                    console.warn(
+                        "[OSL] initial-pass oslHeaderInjectButtons threw:",
+                        (e && e.message) || e
+                    );
+                }
+                try {
+                    oslAccountBurnInject(header);
+                } catch (e) {
+                    console.warn(
+                        "[OSL] initial-pass oslAccountBurnInject threw:",
+                        (e && e.message) || e
+                    );
+                }
             }
-            const surface = oslFindProfileSurface();
-            if (surface) oslInjectProfileButton(surface);
-            oslSettingsGearInject();
-            oslRefreshBanners();
+            try {
+                const surface = oslFindProfileSurface();
+                if (surface) oslInjectProfileButton(surface);
+            } catch (e) {
+                console.warn(
+                    "[OSL] initial-pass profile button threw:",
+                    (e && e.message) || e
+                );
+            }
+            try {
+                oslSettingsGearInject();
+            } catch (e) {
+                console.warn(
+                    "[OSL] initial-pass gear inject threw:",
+                    (e && e.message) || e
+                );
+            }
+            try {
+                oslRefreshBanners();
+            } catch (e) {
+                console.warn(
+                    "[OSL] initial-pass banner refresh threw:",
+                    (e && e.message) || e
+                );
+            }
         }, 500);
 
         // 7d-FIX1: hydrate the burned-scopes skip cache once.
         // The recv observer's next sweep then honours it without
         // a per-message Tauri round-trip.
+        // 7d-FIX2: wrapped so an init failure can't propagate up
+        // and break the rest of Phase 7c install. The .catch on
+        // the promise already swallows async rejection; the outer
+        // try/catch additionally guards against a synchronous throw
+        // before the Promise constructs (e.g. CSP-blocked invoke).
         nativeSetTimeout(function () {
-            oslBurnedScopesInit().catch(function () {});
+            try {
+                oslBurnedScopesInit().catch(function (e) {
+                    console.warn(
+                        "[OSL][burn] init rejected:",
+                        (e && e.message) || e
+                    );
+                });
+            } catch (e) {
+                console.warn(
+                    "[OSL][burn] init threw synchronously:",
+                    (e && e.message) || e
+                );
+            }
         }, 600);
 
         // 7d-C: cross-window listeners. The settings window emits
@@ -2940,7 +3129,16 @@
         // them through `window.__TAURI__.event.listen` because
         // `withGlobalTauri = true` is set in tauri.conf.json.
         // The main capability grants `core:event:allow-listen`.
-        oslInstallCrossWindowListeners();
+        // 7d-FIX2: wrap so a synchronous throw from one of the
+        // listen() calls (CSP block) doesn't halt install.
+        try {
+            oslInstallCrossWindowListeners();
+        } catch (e) {
+            console.warn(
+                "[OSL] oslInstallCrossWindowListeners threw unexpectedly:",
+                (e && e.message) || e
+            );
+        }
 
         console.log("[OSL] Phase 7c UI installed");
     }
@@ -2993,129 +3191,143 @@
             );
             return;
         }
+        // 7d-FIX2: each event.listen() may throw synchronously if
+        // Discord's CSP blocks the underlying fetch to Tauri's IPC
+        // origin. The earlier version chained `.catch()` AFTER
+        // `.listen()`, which never executed because the synchronous
+        // throw happens before the Promise is constructed — and the
+        // throw propagated up, halting downstream init in
+        // `oslInstallPhase7c`. Wrap each call individually so one
+        // CSP failure doesn't cascade.
+        //
         // Note: event.listen returns a Promise<UnlistenFn> in Tauri 2.
         // We don't store the unlisten fns — these listeners live for
-        // the lifetime of the Discord page (matching the previous
-        // in-Discord settings modal lifetime semantics).
-        event
-            .listen("osl:whitelist_removed", function (e) {
-                try {
-                    const p = (e && e.payload) || {};
-                    console.log(
-                        "[OSL] event: whitelist_removed " +
-                            (p.scope_kind || "?") +
-                            ":" +
-                            (p.scope_id || "?")
-                    );
-                    // If the user is currently looking at the affected
-                    // channel, refresh the header lock to reflect the
-                    // new (likely "no encryption") state.
-                    oslRefreshHeaderState();
-                } catch (err) {
-                    console.error("[OSL] whitelist_removed handler:", err);
-                }
-            })
-            .catch(function (err) {
-                console.error("[OSL] listen whitelist_removed:", err);
-            });
-
-        event
-            .listen("osl:scope_burned", function (e) {
-                try {
-                    const p = (e && e.payload) || {};
-                    console.log(
-                        "[OSL] event: scope_burned " +
-                            (p.scope_kind || "?") +
-                            ":" +
-                            (p.scope_id || "?")
-                    );
-                    if (p.scope_kind && p.scope_id) {
-                        oslBurnedScopesAdd(p.scope_kind, p.scope_id);
-                    }
-                    // If the settings window prepared a burn marker
-                    // payload, send it via the Discord chat path so
-                    // other clients see it. The settings window can't
-                    // reach the Discord send path directly.
-                    if (p.burn_marker_payload && p.channel_id) {
-                        oslSendControlMessage(
-                            p.channel_id,
-                            p.burn_marker_payload
-                        ).catch(function (e2) {
-                            console.error(
-                                "[OSL] scope_burned send marker:",
-                                e2
+        // the lifetime of the Discord page.
+        let registered = 0;
+        let failed = 0;
+        function safeListen(name, handler) {
+            try {
+                const p = event.listen(name, handler);
+                if (p && typeof p.then === "function") {
+                    p.then(
+                        function () {
+                            // Promise resolved with the unlisten fn —
+                            // success is already counted below.
+                        },
+                        function (err) {
+                            // Async rejection (e.g. CSP that throws
+                            // via the fetch Promise rather than
+                            // synchronously). Log so it surfaces but
+                            // don't double-count — the sync return
+                            // counted it as registered.
+                            console.warn(
+                                "[OSL] cross-window listener async rejection: " +
+                                    name +
+                                    " —",
+                                (err && err.message) || err
                             );
-                        });
-                    }
-                    if (p.channel_id) {
-                        try {
-                            oslBurnAftermath(p.channel_id);
-                        } catch (_) {}
-                    }
-                    oslRefreshHeaderState();
-                } catch (err) {
-                    console.error("[OSL] scope_burned handler:", err);
-                }
-            })
-            .catch(function (err) {
-                console.error("[OSL] listen scope_burned:", err);
-            });
-
-        event
-            .listen("osl:scope_encryption_toggled", function (e) {
-                try {
-                    const p = (e && e.payload) || {};
-                    console.log(
-                        "[OSL] event: scope_encryption_toggled " +
-                            (p.scope_kind || "?") +
-                            ":" +
-                            (p.scope_id || "?") +
-                            " → " +
-                            (p.encrypt_toggle ? "ON" : "OFF")
-                    );
-                    oslRefreshHeaderState();
-                } catch (err) {
-                    console.error(
-                        "[OSL] scope_encryption_toggled handler:",
-                        err
+                        }
                     );
                 }
-            })
-            .catch(function (err) {
-                console.error(
-                    "[OSL] listen scope_encryption_toggled:",
-                    err
+                registered++;
+            } catch (e) {
+                failed++;
+                console.warn(
+                    "[OSL] cross-window listener registration failed: " +
+                        name +
+                        " —",
+                    (e && e.message) || e
                 );
-            });
+            }
+        }
 
-        event
-            .listen("osl:password_state_changed", function () {
-                console.log("[OSL] event: password_state_changed");
-                // No Discord-origin UI to refresh yet. Future hook
-                // point for a "lock icon if password set" indicator.
-            })
-            .catch(function (err) {
-                console.error(
-                    "[OSL] listen password_state_changed:",
-                    err
+        safeListen("osl:whitelist_removed", function (e) {
+            try {
+                const p = (e && e.payload) || {};
+                console.log(
+                    "[OSL] event: whitelist_removed " +
+                        (p.scope_kind || "?") +
+                        ":" +
+                        (p.scope_id || "?")
                 );
-            });
+                oslRefreshHeaderState();
+            } catch (err) {
+                console.error("[OSL] whitelist_removed handler:", err);
+            }
+        });
 
-        event
-            .listen("osl:settings_window_closed", function () {
-                console.log("[OSL] event: settings_window_closed");
-                // Best-effort safety net: refresh in case any of the
-                // above per-mutation events were dropped.
-                try {
-                    oslRefreshHeaderState();
-                } catch (_) {}
-            })
-            .catch(function (err) {
+        safeListen("osl:scope_burned", function (e) {
+            try {
+                const p = (e && e.payload) || {};
+                console.log(
+                    "[OSL] event: scope_burned " +
+                        (p.scope_kind || "?") +
+                        ":" +
+                        (p.scope_id || "?")
+                );
+                if (p.scope_kind && p.scope_id) {
+                    oslBurnedScopesAdd(p.scope_kind, p.scope_id);
+                }
+                if (p.burn_marker_payload && p.channel_id) {
+                    oslSendControlMessage(
+                        p.channel_id,
+                        p.burn_marker_payload
+                    ).catch(function (e2) {
+                        console.error(
+                            "[OSL] scope_burned send marker:",
+                            e2
+                        );
+                    });
+                }
+                if (p.channel_id) {
+                    try {
+                        oslBurnAftermath(p.channel_id);
+                    } catch (_) {}
+                }
+                oslRefreshHeaderState();
+            } catch (err) {
+                console.error("[OSL] scope_burned handler:", err);
+            }
+        });
+
+        safeListen("osl:scope_encryption_toggled", function (e) {
+            try {
+                const p = (e && e.payload) || {};
+                console.log(
+                    "[OSL] event: scope_encryption_toggled " +
+                        (p.scope_kind || "?") +
+                        ":" +
+                        (p.scope_id || "?") +
+                        " → " +
+                        (p.encrypt_toggle ? "ON" : "OFF")
+                );
+                oslRefreshHeaderState();
+            } catch (err) {
                 console.error(
-                    "[OSL] listen settings_window_closed:",
+                    "[OSL] scope_encryption_toggled handler:",
                     err
                 );
-            });
+            }
+        });
+
+        safeListen("osl:password_state_changed", function () {
+            console.log("[OSL] event: password_state_changed");
+        });
+
+        safeListen("osl:settings_window_closed", function () {
+            console.log("[OSL] event: settings_window_closed");
+            try {
+                oslRefreshHeaderState();
+            } catch (_) {}
+        });
+
+        console.log(
+            "[OSL] cross-window listeners: " +
+                registered +
+                " registered, " +
+                failed +
+                " failed"
+        );
     }
 
     /**
