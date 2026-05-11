@@ -407,6 +407,61 @@ high-contrast mode.
 
 ---
 
+## Surface 7 (round 3): Message composer bar
+
+For the Round-3 composer-bar encrypt-toggle button.
+
+**Outer container:**
+
+```js
+'[class*="channelTextArea"]'
+```
+
+**Toolbar / icon row (where the lock button is injected):** the
+first `[class*="buttons"]` descendant inside the composer.
+Fallback: parent-of-parent of the first `[role="textbox"]`.
+
+**Placement:** prepend (`insertBefore(toolbar.firstChild)`) so the
+lock sits LEFT of Discord's gift/GIF/sticker/emoji row.
+
+**State:** mirrors the channel-header lock (`oslHeaderState`
+cache) — `oslRefreshHeaderState` now refreshes both buttons in
+one pass.
+
+---
+
+## Surface 8 (round 3): Server-name bar
+
+For the Round-3 "Whitelist entire server" and "Burn entire server"
+icons.
+
+**Selector candidates** (try in order; first match wins):
+
+```js
+'nav[aria-label] header[class*="container_"]'
+'header[class*="container_"][class*="upperContainer_"]'
+'[class*="sidebar"] header[class*="container"]'
+'header[class*="header_"][class*="title"]'
+```
+
+**Visibility gate:** only inject when
+`oslCurrentChannelContext().guildId` is non-null. In DM view we
+remove any stale buttons (channel switch from server → DM has to
+clean them up; appending into the DM home wouldn't be wrong but
+the buttons are server-scoped so we hide them).
+
+**Whitelist click:** opens an `oslPrompt` for a Discord snowflake
+(no member-list enumeration yet — that's 7d). Scope is
+hard-coded to `{kind: "server_full", id: guildId, server_id: guildId}`.
+
+**Burn click:** standard `oslConfirm` danger modal, then
+`osl_send_burn_marker` + `osl_apply_burn` against `server_full`,
+then `oslBurnAftermath(currentChannelId)`. Other channels in the
+server repaint on next switch (same limitation as channel-scope
+burn).
+
+---
+
 ## Known limitations / open questions
 
 ### Bare ID strings in GC recipient arrays

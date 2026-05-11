@@ -2360,19 +2360,93 @@ pub fn cmd_osl_list_pending_invitations(
     Ok(out)
 }
 
-/// Phase 7c bug-fix #1: return the local user's Discord ID
-/// (== `Identity::user_id`) from `AppState`. The JS injection
-/// layer has no reliable React-fiber source for self-id; this
-/// command surfaces the canonical value the Rust shell already
-/// holds after `bootstrap::run_autostart` loads the identity.
+/// Phase 7c bug-fix #1 (round 3): return the local user's
+/// **Discord snowflake** by reverse-lookup against `peer_map`.
 ///
-/// Returns `"OSL: identity not loaded"` (flat string) when the
-/// identity hasn't been loaded yet — the JS caller treats that
-/// as a hard failure (toast + abort), not a fall-through.
+/// Naming hazard: `Identity::user_id` is the **OSL** user_id
+/// (a logical username like "liam"), NOT a Discord snowflake.
+/// The injection layer needs the Discord snowflake for send
+/// pipelines (`self_discord_id` excludes self from channel-
+/// member walks). The snowflake is configured in
+/// `peer_map.json` keyed by snowflake with
+/// `PeerEntry::osl_user_id` as the value — so we walk the map
+/// and return the key whose entry matches our `Identity`.
+///
+/// Failure modes (all flat-string `Err`):
+///   - `"OSL: identity not loaded"` — bootstrap hasn't run
+///     or identity.json is missing.
+///   - `"OSL: self not registered in peer_map.json (osl_user_id=<name>);
+///     add {"<your discord snowflake>":{"osl_user_id":"<name>"}} entry"`
+///     — identity loaded but no peer_map row has a matching
+///     `osl_user_id`. JS toasts this so the user can fix
+///     peer_map.json without grepping logs.
 pub fn cmd_osl_get_self_user_id(state: &AppState) -> Result<String, String> {
-    let guard = state.identity.lock().expect("identity mutex poisoned");
-    let identity = guard
-        .as_ref()
-        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    Ok(identity.user_id.clone())
+    let osl_user_id = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        identity.user_id.clone()
+    };
+    let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+    for (discord_id, entry) in pm_guard.iter() {
+        if entry.osl_user_id.as_deref() == Some(osl_user_id.as_str()) {
+            return Ok(discord_id.clone());
+        }
+    }
+    Err(format!(
+        "OSL: self not registered in peer_map.json \
+         (osl_user_id={osl_user_id}); add an entry mapping your Discord \
+         snowflake to {{\"osl_user_id\":\"{osl_user_id}\"}}"
+    ))
+}
+
+/// Phase 7c round-3 Scope 3: invoke
+/// [`crate::fresh_start::cmd_osl_fresh_start`] and immediately
+/// reset every in-memory `AppState` mutex so the running Tauri
+/// process matches the freshly-wiped disk state without
+/// requiring a process restart. The webview itself still reloads
+/// in JS (so Discord re-renders) but the Tauri shell keeps
+/// running.
+///
+/// `user_id` falls back to the currently-loaded identity's
+/// `user_id` (the OSL username from `keyserver.json`), so a
+/// fresh-start preserves the user's logical identity name. If
+/// no identity is loaded we error out — caller surfaces that as
+/// "set up OSL first".
+pub fn cmd_osl_fresh_start_full(state: &AppState) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let user_id = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded — cannot fresh-start".to_string())?
+            .user_id
+            .clone()
+    };
+    let new_identity = crate::fresh_start::cmd_osl_fresh_start(&dir, user_id)
+        .map_err(|e| format!("OSL: fresh_start: {e}"))?;
+    // Replace identity in-place.
+    *state.identity.lock().expect("identity mutex poisoned") = Some(new_identity);
+    // Wipe every other piece of in-memory state. The fresh_start
+    // function rewrote the on-disk equivalents to empty;
+    // bootstrap's load_peer_map etc. won't re-run mid-session, so
+    // we mirror that work here.
+    state.peer_map.lock().expect("peer_map mutex poisoned").clear();
+    state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned")
+        .clear();
+    state
+        .pending_invitations
+        .lock()
+        .expect("pending_invitations mutex poisoned")
+        .clear();
+    *state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned") = None;
+    Ok(())
 }

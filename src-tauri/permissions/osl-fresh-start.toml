@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7c round-3 Scope 3: account-burn / fresh-start.
+[[permission]]
+identifier = "allow-osl-fresh-start"
+description = "Permits the discord.com main webview to invoke `osl_fresh_start` (wipe identity, peer_map, whitelist_state, pending_invitations, channels.json, and the message store, then generate a fresh identity reusing the existing OSL user_id). Guarded behind a double-confirm modal in the bottom-left user panel. Phase 7c round-3."
+commands.allow = ["osl_fresh_start"]
