@@ -125,27 +125,6 @@
     const DEBUG = true;
 
     // ============================================================
-    // Phase 7c round-3: fine-grained debug flags for high-volume
-    // logs that drown the console during normal use.
-    //
-    // - OSL_DEBUG_SWEEP: the 250ms periodic sweep tick log
-    //   ("periodic sweep tick (msgs=N, cached=M, dispatched=K)").
-    //   Fires every tick whether anything happened or not. Turn
-    //   on when debugging the sweep loop; off otherwise.
-    //
-    // - OSL_DEBUG_RECV: per-message recv-observer entry + the
-    //   "reason=no_DPC0_prefix" skip log. Fires for every message
-    //   rendered, OSL or not — unusable in a busy server channel.
-    //   Turn on when investigating recv-side cover detection.
-    //
-    // Important `[OSL]` logs (control message handling, decrypt
-    // success/failure, intercept abort/passthrough, whitelist UI
-    // events) stay un-gated so real activity remains visible.
-    // ============================================================
-    const OSL_DEBUG_SWEEP = false;
-    const OSL_DEBUG_RECV = false;
-
-    // ============================================================
     // Captured native timers.
     //
     // Discord's bundle loads AFTER this IIFE (we run as a Tauri
@@ -201,8 +180,6 @@
     // anyway. Concurrent callers share a single in-flight invoke.
     let oslSelfDiscordIdCache = null;
     let oslSelfDiscordIdInFlight = null;
-    let oslSelfDiscordIdLastError = null;
-    let oslSelfDiscordIdToastShown = false;
     function oslSelfDiscordId() {
         if (typeof oslSelfDiscordIdCache === "string") {
             return Promise.resolve(oslSelfDiscordIdCache);
@@ -214,40 +191,19 @@
         }
         oslSelfDiscordIdInFlight = invoke("osl_get_self_user_id", {})
             .then(function (id) {
-                if (typeof id === "string" && /^\d{17,20}$/.test(id)) {
+                if (typeof id === "string" && /^\d{15,22}$/.test(id)) {
                     oslSelfDiscordIdCache = id;
-                    oslSelfDiscordIdLastError = null;
                     return id;
                 }
-                oslSelfDiscordIdLastError =
-                    "osl_get_self_user_id returned non-snowflake value " +
-                    JSON.stringify(id);
                 console.error(
-                    "[OSL] " + oslSelfDiscordIdLastError
+                    "[OSL] osl_get_self_user_id returned non-snowflake: " +
+                        typeof id
                 );
                 return null;
             })
             .catch(function (err) {
-                const msg =
-                    typeof err === "string"
-                        ? err
-                        : err && err.message
-                            ? err.message
-                            : String(err);
-                oslSelfDiscordIdLastError = msg;
+                const msg = err && err.message ? err.message : String(err);
                 console.error("[OSL] osl_get_self_user_id failed: " + msg);
-                // One-shot toast so the user sees the actionable Rust
-                // error (e.g. "add to peer_map.json") without it
-                // re-spamming on every click. Helper-internal so all
-                // callers benefit uniformly.
-                if (!oslSelfDiscordIdToastShown) {
-                    oslSelfDiscordIdToastShown = true;
-                    try {
-                        if (typeof oslToast === "function") {
-                            oslToast(msg, { durationMs: 8000 });
-                        }
-                    } catch (e) {}
-                }
                 return null;
             })
             .finally(function () {
@@ -1126,162 +1082,6 @@
         });
     }
 
-    /**
-     * R3 Scope 2: text-input modal. Resolves to the trimmed input
-     * string on Confirm, null on Cancel/Escape. Optional
-     * `validator(value)` returns null for "valid" or a string for
-     * "invalid (this is the error to show)" — shown inline below
-     * the input; Confirm stays disabled until validation passes.
-     */
-    function oslPrompt(opts) {
-        return new Promise(function (resolve) {
-            const backdrop = document.createElement("div");
-            backdrop.style.position = "fixed";
-            backdrop.style.inset = "0";
-            backdrop.style.background = "rgba(0, 0, 0, 0.5)";
-            backdrop.style.zIndex = "100000";
-            backdrop.style.display = "flex";
-            backdrop.style.alignItems = "center";
-            backdrop.style.justifyContent = "center";
-
-            const modal = document.createElement("div");
-            modal.style.background = "var(--background-floating, #18191c)";
-            modal.style.color = "var(--text-normal, #dbdee1)";
-            modal.style.padding = "20px";
-            modal.style.borderRadius = "8px";
-            modal.style.maxWidth = "440px";
-            modal.style.minWidth = "320px";
-            modal.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.5)";
-            modal.style.fontSize = "14px";
-            modal.style.lineHeight = "1.4";
-
-            const title = document.createElement("h3");
-            title.style.margin = "0 0 8px 0";
-            title.style.fontSize = "18px";
-            title.style.fontWeight = "600";
-            title.textContent = opts.title || "";
-            modal.appendChild(title);
-
-            if (opts.body) {
-                const body = document.createElement("p");
-                body.style.margin = "0 0 12px 0";
-                body.textContent = opts.body;
-                modal.appendChild(body);
-            }
-
-            const input = document.createElement("input");
-            input.type = "text";
-            input.placeholder = opts.placeholder || "";
-            input.style.width = "100%";
-            input.style.boxSizing = "border-box";
-            input.style.padding = "8px 10px";
-            input.style.borderRadius = "4px";
-            input.style.border =
-                "1px solid var(--background-modifier-accent, #4f545c)";
-            input.style.background = "var(--background-secondary, #2f3136)";
-            input.style.color = "inherit";
-            input.style.fontSize = "14px";
-            modal.appendChild(input);
-
-            const err = document.createElement("div");
-            err.style.color = "#ed4245";
-            err.style.fontSize = "12px";
-            err.style.margin = "6px 0 0 0";
-            err.style.minHeight = "16px";
-            modal.appendChild(err);
-
-            const row = document.createElement("div");
-            row.style.display = "flex";
-            row.style.justifyContent = "flex-end";
-            row.style.gap = "8px";
-            row.style.marginTop = "16px";
-
-            const cancel = document.createElement("button");
-            cancel.textContent = opts.cancelText || "Cancel";
-            cancel.style.padding = "6px 14px";
-            cancel.style.borderRadius = "4px";
-            cancel.style.border =
-                "1px solid var(--background-modifier-accent, #4f545c)";
-            cancel.style.background = "transparent";
-            cancel.style.color = "inherit";
-            cancel.style.cursor = "pointer";
-            cancel.style.fontSize = "14px";
-
-            const confirm = document.createElement("button");
-            confirm.textContent = opts.confirmText || "OK";
-            confirm.style.padding = "6px 14px";
-            confirm.style.borderRadius = "4px";
-            confirm.style.border = "none";
-            confirm.style.background = opts.danger
-                ? "#ed4245"
-                : "var(--brand-560, #5865f2)";
-            confirm.style.color = "white";
-            confirm.style.cursor = "pointer";
-            confirm.style.fontSize = "14px";
-            confirm.style.fontWeight = "500";
-
-            const close = function (result) {
-                document.removeEventListener("keydown", onKey, true);
-                if (backdrop.parentNode)
-                    backdrop.parentNode.removeChild(backdrop);
-                resolve(result);
-            };
-            const validate = function () {
-                const v = input.value.trim();
-                if (typeof opts.validator === "function") {
-                    const reason = opts.validator(v);
-                    if (reason) {
-                        err.textContent = reason;
-                        confirm.disabled = true;
-                        confirm.style.opacity = "0.5";
-                        confirm.style.cursor = "not-allowed";
-                        return false;
-                    }
-                }
-                err.textContent = "";
-                confirm.disabled = false;
-                confirm.style.opacity = "1";
-                confirm.style.cursor = "pointer";
-                return true;
-            };
-            const trySubmit = function () {
-                if (!validate()) return;
-                close(input.value.trim());
-            };
-            const onKey = function (e) {
-                if (e.key === "Escape") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    close(null);
-                } else if (e.key === "Enter") {
-                    e.preventDefault();
-                    trySubmit();
-                }
-            };
-            input.addEventListener("input", validate);
-            cancel.addEventListener("click", function () {
-                close(null);
-            });
-            confirm.addEventListener("click", trySubmit);
-            backdrop.addEventListener("click", function (e) {
-                if (e.target === backdrop) close(null);
-            });
-            document.addEventListener("keydown", onKey, true);
-
-            row.appendChild(cancel);
-            row.appendChild(confirm);
-            modal.appendChild(row);
-            backdrop.appendChild(modal);
-            document.body.appendChild(backdrop);
-            // Validate once now so an empty initial value disables
-            // Confirm. Focus the input.
-            validate();
-            nativeSetTimeout(function () {
-                input.focus();
-            }, 0);
-        });
-    }
-
     // ---- Section 2: current-channel-context helper ----
 
     /**
@@ -1918,8 +1718,6 @@
             burnBtn.title =
                 "Burn your messages in " + oslScopeLabel(scopeInput);
         }
-        // R3 Scope 1: keep the composer-bar lock button in sync.
-        oslRefreshComposerState();
     }
 
     /**
@@ -2134,409 +1932,6 @@
                 " placeholders=" +
                 placeholders
         );
-    }
-
-    // ---- Section 4b (R3): message-composer-bar encrypt toggle ----
-    //
-    // Mirrors the channel-header lock icon at the bottom of the
-    // screen where the user is actively typing. Same state, same
-    // click handler, same scope-state source — `oslRefreshHeaderState`
-    // now refreshes BOTH header and composer buttons.
-    //
-    // Selector strategy (prefix-match; survey on Discord build
-    // changes via the survey script):
-    //   1. Composer outer container: `[class*="channelTextArea"]`.
-    //   2. Toolbar/icon row inside it: first `[class*="buttons"]`
-    //      child (the gift/GIF/sticker/emoji row).
-    //   3. Fallback: any element containing `[role="textbox"]` —
-    //      we walk siblings up to find a button row.
-    //
-    // Button placement: LEFT side of the toolbar (insertBefore
-    // firstChild) so it sits before Discord's gift icon. Picking
-    // left over right because it's closer to the user's typing
-    // focus and visually anchors as a "mode" indicator.
-
-    const COMPOSER_ENCRYPT_DATA_ATTR = "data-osl-composer-encrypt";
-
-    function oslComposerFindToolbar() {
-        const composer = document.querySelector(
-            '[class*="channelTextArea"]'
-        );
-        if (!composer) return null;
-        // Prefer the first `buttons_…` row inside the composer.
-        const buttonsRow = composer.querySelector('[class*="buttons"]');
-        if (buttonsRow) return buttonsRow;
-        // Fallback: parent of the textbox role node — the textbox
-        // usually sits next to the icon row.
-        const tb = composer.querySelector('[role="textbox"]');
-        if (tb && tb.parentElement && tb.parentElement.parentElement) {
-            return tb.parentElement.parentElement;
-        }
-        return null;
-    }
-
-    function oslComposerInjectButton() {
-        const toolbar = oslComposerFindToolbar();
-        if (!toolbar) return;
-        let btn = toolbar.querySelector(
-            "[" + COMPOSER_ENCRYPT_DATA_ATTR + "='1']"
-        );
-        if (btn) {
-            // Already injected — just refresh its rendered state.
-            oslRefreshComposerState();
-            return;
-        }
-        // Mirror Discord's button sizing by sampling a sibling
-        // role="button" if present; otherwise fall back to a
-        // 24x24 inline-flex shell.
-        const sample = toolbar.querySelector('[role="button"]');
-        btn = document.createElement("div");
-        btn.setAttribute("role", "button");
-        btn.setAttribute("tabindex", "0");
-        btn.setAttribute(COMPOSER_ENCRYPT_DATA_ATTR, "1");
-        btn.setAttribute("aria-label", "OSL encrypt toggle");
-        if (sample && sample.className) {
-            btn.className = sample.className;
-        }
-        btn.style.display = "inline-flex";
-        btn.style.alignItems = "center";
-        btn.style.justifyContent = "center";
-        btn.style.cursor = "pointer";
-        btn.style.width = "32px";
-        btn.style.height = "32px";
-        btn.style.marginRight = "4px";
-        btn.addEventListener("click", oslOnEncryptToggleClick);
-        toolbar.insertBefore(btn, toolbar.firstChild);
-        oslRefreshComposerState();
-    }
-
-    /**
-     * R3 Scope 1: render composer-bar lock state. Reads the same
-     * `oslHeaderState` cache that `oslRefreshHeaderState` already
-     * populates — single source of truth, no extra IPC round-trip.
-     * Called from `oslRefreshHeaderState` so any state-changing
-     * event keeps both buttons in sync.
-     */
-    function oslRefreshComposerState() {
-        const btn = document.querySelector(
-            "[" + COMPOSER_ENCRYPT_DATA_ATTR + "='1']"
-        );
-        if (!btn) return;
-        const on = !!oslHeaderState.encryptToggle;
-        const hasWl = !!oslHeaderState.hasWhitelist;
-        btn.innerHTML = oslLockSvg(on ? "closed" : "open");
-        if (!hasWl) {
-            btn.style.opacity = "0.45";
-            btn.style.pointerEvents = "none";
-            btn.style.color = "var(--text-muted, #87898c)";
-            btn.title = "Whitelist a user first to enable encryption.";
-        } else {
-            btn.style.opacity = "1";
-            btn.style.pointerEvents = "auto";
-            btn.style.color = on
-                ? "var(--brand-560, #5865f2)"
-                : "var(--text-normal, #dbdee1)";
-            btn.title = on
-                ? "Encryption ON — click to disable"
-                : "Encryption OFF — click to enable";
-        }
-    }
-
-    // ---- Section 4c (R3): server-name-bar whitelist + burn ----
-    //
-    // Two icons sit next to the server name at the top of the
-    // channel list. Both operate on `server_full` scope so users
-    // can whitelist or burn an entire server in one click instead
-    // of per-channel.
-    //
-    // Whitelist flow: prompt for a Discord snowflake → invoke
-    // `osl_set_whitelist` with `kind: server_full` → ship the
-    // invitation via the current channel's REST endpoint. We do
-    // NOT enumerate server members (Discord's member list isn't
-    // a reliable React-fiber surface and would require its own
-    // survey) — the user types the target ID. A 7d settings menu
-    // can replace this with a picker.
-    //
-    // Burn flow: confirm modal scoped to `server_full` → ship
-    // burn marker → apply locally → run burn aftermath on the
-    // currently-viewed channel (other channels in the server
-    // repaint on next switch, same limitation as channel-scope
-    // burn).
-    //
-    // Hidden in DM view: `oslCurrentChannelContext().guildId` is
-    // null → we skip injection AND remove any stale buttons.
-
-    const SERVER_BAR_WL_DATA_ATTR = "data-osl-server-bar-wl";
-    const SERVER_BAR_BURN_DATA_ATTR = "data-osl-server-bar-burn";
-
-    function oslFindServerNameBar() {
-        // Try ordered set of selectors — prefix-match per build
-        // hash rotation. First match wins.
-        const candidates = [
-            'nav[aria-label] header[class*="container_"]',
-            'header[class*="container_"][class*="upperContainer_"]',
-            '[class*="sidebar"] header[class*="container"]',
-            'header[class*="header_"][class*="title"]',
-        ];
-        for (const sel of candidates) {
-            const el = document.querySelector(sel);
-            if (el) return el;
-        }
-        return null;
-    }
-
-    function oslMakeServerBarButton(label, color, svg, dataAttr, onClick) {
-        const btn = document.createElement("div");
-        btn.setAttribute("role", "button");
-        btn.setAttribute("tabindex", "0");
-        btn.setAttribute(dataAttr, "1");
-        btn.setAttribute("aria-label", label);
-        btn.title = label;
-        btn.style.display = "inline-flex";
-        btn.style.alignItems = "center";
-        btn.style.justifyContent = "center";
-        btn.style.cursor = "pointer";
-        btn.style.width = "20px";
-        btn.style.height = "20px";
-        btn.style.marginLeft = "4px";
-        btn.style.color = color;
-        btn.style.flex = "0 0 auto";
-        btn.innerHTML = svg;
-        btn.addEventListener("click", onClick);
-        return btn;
-    }
-
-    function oslServerNameInjectButtons() {
-        const ctx = oslCurrentChannelContext();
-        const inServer = !!(ctx && ctx.guildId);
-
-        // Remove stale buttons whenever we exit a server (DM view).
-        if (!inServer) {
-            const stale = document.querySelectorAll(
-                "[" +
-                    SERVER_BAR_WL_DATA_ATTR +
-                    "='1'],[" +
-                    SERVER_BAR_BURN_DATA_ATTR +
-                    "='1']"
-            );
-            for (const s of stale) s.remove();
-            return;
-        }
-
-        const bar = oslFindServerNameBar();
-        if (!bar) return;
-        let wlBtn = bar.querySelector(
-            "[" + SERVER_BAR_WL_DATA_ATTR + "='1']"
-        );
-        let burnBtn = bar.querySelector(
-            "[" + SERVER_BAR_BURN_DATA_ATTR + "='1']"
-        );
-
-        if (!wlBtn) {
-            wlBtn = oslMakeServerBarButton(
-                "Whitelist entire server",
-                "var(--text-normal, #dbdee1)",
-                oslLockSvg("closed"),
-                SERVER_BAR_WL_DATA_ATTR,
-                oslOnServerBarWhitelistClick
-            );
-            bar.appendChild(wlBtn);
-        }
-        if (!burnBtn) {
-            burnBtn = oslMakeServerBarButton(
-                "Burn entire server",
-                "#ed4245",
-                oslFlameSvg(),
-                SERVER_BAR_BURN_DATA_ATTR,
-                oslOnServerBarBurnClick
-            );
-            bar.appendChild(burnBtn);
-        }
-    }
-
-    async function oslOnServerBarWhitelistClick(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        const ctx = oslCurrentChannelContext();
-        if (!ctx || !ctx.guildId) {
-            oslToast("OSL: not in a server");
-            return;
-        }
-        const targetId = await oslPrompt({
-            title: "Whitelist entire server",
-            body:
-                "Enter the Discord user ID (snowflake) to whitelist " +
-                "for every channel of this server.",
-            placeholder: "e.g. 1477008451799482419",
-            confirmText: "Send invitation",
-            validator: function (v) {
-                if (!v) return "Discord ID required.";
-                if (!/^\d{17,20}$/.test(v)) {
-                    return "Must be a numeric Discord snowflake (17–20 digits).";
-                }
-                return null;
-            },
-        });
-        if (!targetId) return;
-        const scopeInput = {
-            kind: "server_full",
-            id: ctx.guildId,
-            server_id: ctx.guildId,
-        };
-        await oslSendWhitelistInvitation(
-            { id: targetId, username: targetId },
-            scopeInput,
-            false,
-            ctx
-        );
-    }
-
-    async function oslOnServerBarBurnClick(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        const ctx = oslCurrentChannelContext();
-        if (!ctx || !ctx.guildId) {
-            oslToast("OSL: not in a server");
-            return;
-        }
-        const scopeInput = {
-            kind: "server_full",
-            id: ctx.guildId,
-            server_id: ctx.guildId,
-        };
-        const ok = await oslConfirm({
-            title: "Burn entire server?",
-            body:
-                "All your messages in every channel of this server " +
-                "will become permanent ciphertext for everyone. " +
-                "This cannot be undone.",
-            confirmText: "Burn server",
-            cancelText: "Cancel",
-            danger: true,
-        });
-        if (!ok) return;
-        const selfId = await oslSelfDiscordId();
-        if (!selfId) {
-            oslToast("OSL: cannot burn — local identity not loaded");
-            return;
-        }
-        const sendResult = await oslInvoke("osl_send_burn_marker", {
-            scopeInput: scopeInput,
-            channelMembers: ctx.members || [],
-            selfDiscordId: selfId,
-        });
-        if (sendResult.ok) {
-            await oslSendControlMessage(ctx.channelId, sendResult.value);
-        } else if (sendResult.error !== "no_whitelisted_recipients") {
-            console.log(
-                "[OSL] server burn marker send failed: " + sendResult.error
-            );
-        }
-        const applyResult = await oslInvoke("osl_apply_burn", {
-            scopeInput: scopeInput,
-        });
-        if (!applyResult.ok) {
-            oslToast("OSL: burn apply failed: " + applyResult.error);
-            return;
-        }
-        oslBurnAftermath(ctx.channelId);
-        oslToast("Burn applied to entire server");
-        oslRefreshHeaderState();
-    }
-
-    // ---- Section 4d (R3): account burn (fresh-start) in panels__ ----
-    //
-    // Bottom-left user panel — `section[class*="panels__"]` per
-    // docs/phase-7c-selectors.md §5. We append a small red flame
-    // icon after Discord's existing controls (mute, deafen, gear).
-    // The full-section flex layout means appending slots us into
-    // the row.
-    //
-    // Click flow is a strict double-confirm:
-    //   1. `oslConfirm` warns that fresh-start wipes identity +
-    //      all OSL state, irreversibly.
-    //   2. `oslPrompt` requires the user to type "BURN" exactly
-    //      (validator returns an error string until match).
-    // Only after both succeed do we invoke `osl_fresh_start`
-    // (which wipes disk + resets every AppState mutex) and
-    // schedule a `location.reload()` 3s later so the webview
-    // re-renders against the empty state.
-
-    const ACCOUNT_BURN_DATA_ATTR = "data-osl-account-burn";
-
-    function oslAccountBurnInject() {
-        const panel = document.querySelector('section[class*="panels__"]');
-        if (!panel) return;
-        if (panel.querySelector("[" + ACCOUNT_BURN_DATA_ATTR + "='1']")) {
-            return;
-        }
-        const btn = document.createElement("div");
-        btn.setAttribute("role", "button");
-        btn.setAttribute("tabindex", "0");
-        btn.setAttribute(ACCOUNT_BURN_DATA_ATTR, "1");
-        btn.setAttribute("aria-label", "OSL account burn");
-        btn.title =
-            "OSL account burn — wipes identity, whitelists, history. " +
-            "Two-step confirm.";
-        btn.style.display = "inline-flex";
-        btn.style.alignItems = "center";
-        btn.style.justifyContent = "center";
-        btn.style.cursor = "pointer";
-        btn.style.width = "32px";
-        btn.style.height = "32px";
-        btn.style.marginLeft = "4px";
-        btn.style.color = "#ed4245";
-        btn.innerHTML = oslFlameSvg();
-        btn.addEventListener("click", oslOnAccountBurnClick);
-        panel.appendChild(btn);
-    }
-
-    async function oslOnAccountBurnClick(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        const ok1 = await oslConfirm({
-            title: "Account burn",
-            body:
-                "This will wipe ALL encrypted messages everywhere, ALL " +
-                "whitelists, ALL pending invitations, your identity, and " +
-                "reset OSL to a fresh install. This cannot be undone. " +
-                "Continue?",
-            confirmText: "I understand, continue",
-            cancelText: "Cancel",
-            danger: true,
-        });
-        if (!ok1) return;
-        const ok2 = await oslPrompt({
-            title: "Confirm account burn",
-            body: 'Type "BURN" exactly (uppercase) to confirm.',
-            placeholder: "BURN",
-            confirmText: "BURN",
-            cancelText: "Cancel",
-            danger: true,
-            validator: function (v) {
-                if (v !== "BURN") return 'Type "BURN" exactly to confirm.';
-                return null;
-            },
-        });
-        if (ok2 !== "BURN") return;
-        const result = await oslInvoke("osl_fresh_start", {});
-        if (!result.ok) {
-            oslToast(
-                "OSL: fresh-start failed: " + result.error,
-                { durationMs: 10000 }
-            );
-            console.error("[OSL] fresh-start failed: " + result.error);
-            return;
-        }
-        oslToast(
-            "OSL state wiped. Reloading Discord in 3s…",
-            { durationMs: 4000 }
-        );
-        nativeSetTimeout(function () {
-            try {
-                window.location.reload();
-            } catch (_) {}
-        }, 3000);
     }
 
     // ---- Section 5: pending invitation banner ----
@@ -2826,10 +2221,6 @@
 
         // Header observer: re-inject buttons when Discord
         // re-mounts the channel header (every navigation).
-        // R3 Scope 1: also re-inject the composer-bar lock on
-        // every DOM mutation — the composer rebuilds on channel
-        // switch and the toolbar's `buttons_` class hash rotates
-        // per build, so we re-query each pass.
         const headerObs = new MutationObserver(function () {
             const header = document.querySelector(
                 'section[class*="title_"][class*="container__"]'
@@ -2838,9 +2229,6 @@
                 oslHeaderInjectButtons(header);
                 oslRefreshBanners(); // banner stack is anchored to header
             }
-            oslComposerInjectButton();
-            oslServerNameInjectButtons();
-            oslAccountBurnInject();
         });
         headerObs.observe(document.body, {
             childList: true,
@@ -2855,9 +2243,6 @@
             if (header) oslHeaderInjectButtons(header);
             const surface = oslFindProfileSurface();
             if (surface) oslInjectProfileButton(surface);
-            oslComposerInjectButton();
-            oslServerNameInjectButtons();
-            oslAccountBurnInject();
             oslRefreshBanners();
         }, 500);
 
@@ -5310,14 +4695,12 @@
             div && typeof div.textContent === "string"
                 ? div.textContent.substring(0, 20)
                 : "NO_TEXT";
-        if (OSL_DEBUG_RECV) {
-            console.log(
-                "[OSL] recvHandleDiv ENTRY id=" +
-                    __dbg_id +
-                    " text=" +
-                    __dbg_text
-            );
-        }
+        console.log(
+            "[OSL] recvHandleDiv ENTRY id=" +
+                __dbg_id +
+                " text=" +
+                __dbg_text
+        );
 
         if (!div || div.nodeType !== 1) {
             console.log(
@@ -5337,16 +4720,14 @@
             return;
         }
         if (text.indexOf(RECV_PREFIX) !== 0) {
-            if (OSL_DEBUG_RECV) {
-                console.log(
-                    "[OSL] recvHandleDiv SKIP id=" +
-                        __dbg_id +
-                        " reason=no_DPC0_prefix" +
-                        " (first8=" +
-                        text.substring(0, 8) +
-                        ")"
-                );
-            }
+            console.log(
+                "[OSL] recvHandleDiv SKIP id=" +
+                    __dbg_id +
+                    " reason=no_DPC0_prefix" +
+                    " (first8=" +
+                    text.substring(0, 8) +
+                    ")"
+            );
             return;
         }
         const messageId = recvMessageIdOf(div);
@@ -5942,7 +5323,7 @@
                 recvDispatchDecrypt(div, messageId, text);
                 dispatchedCount++;
             }
-            if (OSL_DEBUG_SWEEP) {
+            if (DEBUG) {
                 console.log(
                     "[OSL] periodic sweep tick (msgs=" +
                         divs.length +

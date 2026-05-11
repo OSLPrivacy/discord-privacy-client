@@ -37,9 +37,8 @@ use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
     cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_message,
     cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
-    cmd_osl_encrypt_message_v2, cmd_osl_fresh_start_full, cmd_osl_get_scope_encryption_state,
-    cmd_osl_get_self_user_id, cmd_osl_list_pending_invitations, cmd_osl_load_channel_history,
-    cmd_osl_persist_edit,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id,
+    cmd_osl_list_pending_invitations, cmd_osl_load_channel_history, cmd_osl_persist_edit,
     cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
     cmd_osl_set_whitelist, cmd_osl_toggle_scope_encryption, cmd_osl_unwhitelist_scope, cmd_register,
     cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
@@ -594,22 +593,6 @@ async fn osl_get_self_user_id(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Phase 7c round-3 Scope 3: wipe on-disk state + reset every
-/// in-memory mutex. Caller is the account-burn button in the
-/// bottom-left user panel; JS reloads the webview after a
-/// successful return so Discord re-renders against the empty
-/// AppState.
-#[tauri::command]
-async fn osl_fresh_start(app: tauri::AppHandle) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        cmd_osl_fresh_start_full(state.inner())
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -747,7 +730,6 @@ fn main() {
             osl_toggle_scope_encryption,
             osl_list_pending_invitations,
             osl_get_self_user_id,
-            osl_fresh_start,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
