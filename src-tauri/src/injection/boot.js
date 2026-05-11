@@ -607,6 +607,41 @@
             return onPassthrough();
         }
 
+        // 8c step 3: attachment cover-envelope injection. If
+        // /messages references uploaded files that match our
+        // pending reservations (i.e. step 1+2 were intercepted),
+        // build the v=2 attachment cover and use it as `content`
+        // — replacing whatever the user typed alongside the
+        // attachment (Discord allows arbitrary content alongside
+        // attachments). When no attachments match a reservation,
+        // fall through to the normal text-encrypt path.
+        const attachmentResult = oslMaybeBuildAttachmentCover(parsed);
+        if (attachmentResult && attachmentResult.handled) {
+            if (attachmentResult.error) {
+                console.error(
+                    "[OSL] step3 attachment cover failed (" +
+                        source +
+                        "): " +
+                        attachmentResult.error
+                );
+                return onAbort(new Error(attachmentResult.error));
+            }
+            return attachmentResult.promise.then(
+                function (mutatedBody) {
+                    return onMutated(mutatedBody);
+                },
+                function (err) {
+                    console.error(
+                        "[OSL] step3 attachment cover rejected (" +
+                            source +
+                            "):",
+                        err
+                    );
+                    return onAbort(err);
+                }
+            );
+        }
+
         if (typeof parsed.content !== "string") {
             return onPassthrough();
         }
@@ -1334,99 +1369,161 @@
         };
     }
 
-    // Bookkeeping for the intercept hook. Discord's POST /attachments
-    // response carries an `upload_url` and we need to remember which
-    // file the user picked for each one, so when we observe the
-    // matching PUT we can swap the body. Keys are upload_url strings,
-    // values are `{ originalFile, sealed }` where `sealed` is
-    // populated lazily on first PUT-time observation.
-    window.__oslPendingUploads = new Map();
+    // ============================================================
+    // Phase 8c: 3-step GCS upload-flow state coordination.
+    //
+    // Discord's attachment upload is:
+    //   1. POST /api/v9/channels/{cid}/attachments — request
+    //      `{files: [{filename, file_size, ...}]}`, response
+    //      `{attachments: [{id, upload_filename, upload_url}]}`
+    //      where `upload_url` is a presigned GCS PUT URL with an
+    //      `upload_id=` query token.
+    //   2. PUT to that GCS URL with the raw file bytes.
+    //   3. POST /api/v9/channels/{cid}/messages with
+    //      `{content, attachments: [{id, filename,
+    //      uploaded_filename, original_content_type}]}` that
+    //      references the GCS-uploaded files.
+    //
+    // We intercept all three. Step 1 reserves a slot (a
+    // `PendingUploadEntry`) keyed temporarily by the random
+    // upload-filename we generate; the load listener rekeys to the
+    // GCS `upload_id` once Discord's response lands. Step 2 looks
+    // up by `upload_id` and replaces the binary body with the
+    // sealed-attachment bundle. Step 3 looks up by
+    // `upload_filename` to build the v=2 attachment cover that
+    // replaces `content`. Entries auto-expire 5 minutes after
+    // creation so a forgotten upload doesn't pin memory.
+    //
+    // Reservation cap of 10 matches Discord's per-message attachment
+    // limit — exceeding it aborts.
+    if (!window.__oslPendingUploads) {
+        window.__oslPendingUploads = new Map();
+    }
+    const OSL_PENDING_UPLOADS_CAP = 10;
+    const OSL_PENDING_UPLOAD_TTL_MS = 5 * 60 * 1000;
 
-    /**
-     * Phase 8 send-side hook: scan a fetch invocation and, if it's
-     * a Discord-side attachment upload (POST /attachments → PUT to
-     * CDN → POST /messages), perform the OSL swap. Returns either:
-     *   - `{ handled: true, promise }` — we already dispatched the
-     *     fetch (possibly with mutated args); caller returns this
-     *     promise.
-     *   - `{ handled: false }` — caller falls through to its normal
-     *     Reflect.apply path.
-     *
-     * This is intentionally a thin shell that delegates each branch
-     * to a dedicated function so the integration points are easy to
-     * adjust as Discord's flow changes.
-     */
-    function oslAttachmentUploadHooks(target, thisArg, args, url, method) {
-        // POST /channels/{cid}/attachments — Discord's pre-upload.
-        // For now we just LOG so the user can confirm the URL
-        // pattern matches their build. Full registration of the
-        // (upload_url → file) mapping happens here in the v1.1 hook
-        // — until then, oslDebugUploadAttachment below is the
-        // manual upload path.
-        if (method === "POST" && /\/channels\/\d+\/attachments(?:\?|$|\/)/.test(url)) {
-            console.log(
-                "[OSL] attachment pre-upload POST detected url=" +
-                    url +
-                    " — observe in DevTools to capture the upload_url / filename"
-            );
+    function oslPendingUploadsPurgeStale() {
+        const now = Date.now();
+        for (const [k, v] of window.__oslPendingUploads.entries()) {
+            if (now - v.createdAt > OSL_PENDING_UPLOAD_TTL_MS) {
+                window.__oslPendingUploads.delete(k);
+            }
         }
-        return { handled: false };
+    }
+    function oslPendingUploadsRoom() {
+        oslPendingUploadsPurgeStale();
+        return (
+            OSL_PENDING_UPLOADS_CAP - window.__oslPendingUploads.size
+        );
+    }
+    function oslPendingUploadsByFilename(uploadFilename) {
+        for (const v of window.__oslPendingUploads.values()) {
+            if (v.uploadFilename === uploadFilename) return v;
+        }
+        return null;
     }
 
     /**
-     * Phase 8b: encrypt every files[N] entry in a Discord
-     * /messages-POST FormData and replace `payload_json.content`
-     * with the v=2 attachment-envelope cover. Called from the XHR
-     * send proxy when the body is a FormData. Returns nothing —
-     * dispatches Reflect.apply on success, fires synthetic error
-     * events on the XHR on validation failure / encryption failure
-     * so Discord's UI shows the message as failed rather than
-     * silently disappearing.
+     * 8c: streaming-AEAD bucket table. JS-side mirror of
+     * `crypto::attachment::ATTACHMENT_BUCKETS`. Used at step 1 to
+     * declare a generous GCS reservation size before we've actually
+     * encrypted — GCS allows under-fill so over-declaring is safe.
      *
-     * Encryption is all-or-nothing: any one file out-of-range or
-     * unsupported-extension aborts the whole send. Toggle OFF for
-     * mixed-content sends.
+     * Bundle overhead on top of the padded bucket: per-chunk 16-byte
+     * AEAD tags (~64KB worst case at 25MB / 16KB chunks), the
+     * stream header, the decoy PNG (~3KB for solid-color), and the
+     * magic + filename header (~50 bytes). 128KB headroom covers
+     * everything with margin.
      */
-    async function oslInterceptMultipartXhr(origSend, xhr, args, channelId, formData) {
-        function abort(reason) {
-            console.warn(
-                "[OSL] multipart abort: " +
-                    reason +
-                    " (channel=" +
-                    channelId +
-                    ")"
-            );
-            setTimeout(function () {
-                try {
-                    xhr.dispatchEvent(new ProgressEvent("error"));
-                    xhr.dispatchEvent(new ProgressEvent("loadend"));
-                } catch (_) {}
-            }, 0);
+    const OSL_ATT_BUCKETS = [
+        256 * 1024,
+        1024 * 1024,
+        5 * 1024 * 1024,
+        10 * 1024 * 1024,
+        25 * 1024 * 1024,
+    ];
+    function oslBucketFor(plaintextSize) {
+        for (const b of OSL_ATT_BUCKETS) {
+            if (plaintextSize <= b) return b;
         }
+        return OSL_ATT_BUCKETS[OSL_ATT_BUCKETS.length - 1];
+    }
+    function oslReservedSizeFor(plaintextSize) {
+        return oslBucketFor(plaintextSize) + 128 * 1024;
+    }
 
-        // Collect every files[N] entry up-front so we can pre-
-        // validate sizes / extensions before starting any encrypt.
-        const fileEntries = [];
-        for (let i = 0; i < 10; i++) {
-            const k = "files[" + i + "]";
-            const v = formData.get(k);
-            if (!v) continue;
-            if (
-                typeof Blob === "undefined" ||
-                !(v instanceof Blob)
-            )
-                continue;
-            fileEntries.push({ index: i, key: k, file: v });
+    /**
+     * Phase 8b (DEPRECATED in 8c): the legacy single-step multipart
+     * upload path. Discord's real attachment flow is the 3-step
+     * GCS upload (POST /attachments → PUT to GCS → POST /messages),
+     * so this branch never fires in production — but kept as a
+     * passthrough so a future Discord build that swaps back to
+     * multipart doesn't silently break. Logged once per call so
+     * regressions show up in DevTools.
+     */
+    async function oslInterceptMultipartXhr(origSend, xhr, args, channelId, _formData) {
+        console.log(
+            "[OSL] FormData on /messages (XHR): unexpected in 8c flow, passthrough channel=" +
+                channelId
+        );
+        return Reflect.apply(origSend, xhr, args);
+    }
+
+    // ============================================================
+    // Phase 8c: 3-step GCS upload interception helpers.
+    // ============================================================
+
+    /**
+     * URL patterns for the three Discord attachment-upload steps.
+     * `ATTACHMENTS_RE` matches step 1; `GCS_UPLOAD_RE` matches the
+     * GCS-hosted PUT URL Discord's pre-upload response hands out.
+     */
+    const ATTACHMENTS_RE =
+        /\/api\/v\d+\/channels\/(\d+)\/attachments(?:\?|$)/;
+    const GCS_UPLOAD_RE =
+        /^https:\/\/discord-attachments-uploads-prd\.storage\.googleapis\.com\/.+\?.*upload_id=([^&]+)/;
+
+    const ATT_SUPPORTED_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)$/i;
+
+    function oslAbortXhr(xhr, reason, channelId) {
+        console.warn(
+            "[OSL] att abort: " +
+                reason +
+                (channelId ? " (channel=" + channelId + ")" : "")
+        );
+        setTimeout(function () {
+            try {
+                xhr.dispatchEvent(new ProgressEvent("error"));
+                xhr.dispatchEvent(new ProgressEvent("loadend"));
+            } catch (_) {}
+        }, 0);
+    }
+
+    /**
+     * 8c step 1: pre-process the POST /channels/{cid}/attachments
+     * request when encrypt is ON for the channel's scope. Modifies
+     * each `files[N]` entry's `filename` + `file_size` to claim the
+     * encrypted bundle's shape (bucket-rounded + 128KB AEAD
+     * headroom), reserves a slot in `__oslPendingUploads`, and
+     * installs a one-shot `load` listener that rekeys each
+     * reservation from its tempId to the GCS-supplied upload_id
+     * once Discord's response lands.
+     */
+    async function oslInterceptStep1Attachments(origSend, xhr, args, channelId, bodyString) {
+        let body;
+        try {
+            body = JSON.parse(bodyString);
+        } catch (e) {
+            console.log("[OSL] step1: body not JSON, passthrough");
+            return Reflect.apply(origSend, xhr, args);
         }
-
-        if (fileEntries.length === 0) {
-            // FormData with no files[] keys — probably text-only;
-            // pass through unchanged.
+        if (!body || !Array.isArray(body.files) || body.files.length === 0) {
             return Reflect.apply(origSend, xhr, args);
         }
 
-        // Read the toggle authoritatively (PIVOT-FIX3 Bug E
-        // contract: data-osl-encrypt-state is the source of truth).
+        // Encrypt-toggle gate. Off → no reservation, no body
+        // mutation, no load listener; the subsequent steps
+        // naturally cascade to plain upload.
         const composerToggle = document.querySelector(
             "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
         );
@@ -1434,240 +1531,409 @@
             composerToggle &&
             composerToggle.getAttribute("data-osl-encrypt-state");
         const isOn = stateAttr === "on";
+        console.log(
+            "[OSL] step1 attachments: channel=" +
+                channelId +
+                " files=" +
+                body.files.length +
+                " encrypt_toggle=" +
+                (isOn ? "on" : "off")
+        );
         if (!isOn) {
-            console.log(
-                "[OSL] multipart: encrypt_toggle=off, passing through " +
-                    fileEntries.length +
-                    " file(s)"
-            );
             return Reflect.apply(origSend, xhr, args);
         }
 
-        // Resolve scope. If we can't, passthrough — same fail-open
-        // posture the text path uses for unknown scopes.
+        // Resolve scope. Passthrough if unresolvable — text path's
+        // posture for unknown scopes.
         let ctx = null;
         try {
             ctx = oslCurrentChannelContext();
         } catch (_) {}
         if (!ctx || ctx.channelId !== channelId) {
-            console.log(
-                "[OSL] multipart: scope unresolvable, passing through"
-            );
+            console.log("[OSL] step1: scope unresolvable, passthrough");
             return Reflect.apply(origSend, xhr, args);
         }
         const scope = oslScopeForCurrentContext(ctx);
         if (!scope) {
+            console.log("[OSL] step1: scope unresolvable, passthrough");
+            return Reflect.apply(origSend, xhr, args);
+        }
+        if (oslBurnedScopesShouldSkip(scope.channel_id || scope.id)) {
+            oslToast(
+                "Cannot send attachment to burned scope. Re-engage encryption first by sending a text message."
+            );
+            return oslAbortXhr(xhr, "burned scope", channelId);
+        }
+
+        // Pre-validate every file. Reject the whole batch on any
+        // failure (strict all-or-nothing).
+        if (oslPendingUploadsRoom() < body.files.length) {
+            oslToast(
+                "Too many pending encrypted uploads; wait for the previous ones to finish."
+            );
+            return oslAbortXhr(xhr, "pending-uploads cap exceeded", channelId);
+        }
+        for (const f of body.files) {
+            if (typeof f.filename !== "string" || typeof f.file_size !== "number") {
+                return oslAbortXhr(xhr, "step1: malformed file entry", channelId);
+            }
+            if (!ATT_SUPPORTED_RE.test(f.filename)) {
+                oslToast(
+                    "Unsupported file type for encryption: " +
+                        f.filename +
+                        ". Disable encrypt to send this file."
+                );
+                return oslAbortXhr(xhr, "unsupported ext: " + f.filename, channelId);
+            }
+            if (f.file_size > 24 * 1024 * 1024) {
+                oslToast("File too large for encrypted upload (max 24 MB)");
+                return oslAbortXhr(
+                    xhr,
+                    "oversize: " + f.filename + " " + f.file_size + "B",
+                    channelId
+                );
+            }
+        }
+
+        // Mint a reservation per file and mutate the request body
+        // to claim the random_filename + bucket-rounded size.
+        // tempId is replaced with the real GCS upload_id once the
+        // response load listener fires.
+        const indexToTempId = {};
+        body.files.forEach(function (f, i) {
+            const reservedSize = oslReservedSizeFor(f.file_size);
+            const randomFilename = (function () {
+                const a = new Uint8Array(4);
+                crypto.getRandomValues(a);
+                let s = "";
+                for (const x of a)
+                    s += x.toString(16).padStart(2, "0");
+                return s + ".png";
+            })();
+            const tempId =
+                "tmp:" +
+                Date.now().toString(36) +
+                ":" +
+                Math.random().toString(36).slice(2, 10) +
+                ":" +
+                i;
+            const reservation = {
+                tempId: tempId,
+                channelId: channelId,
+                scope: scope,
+                channelMembers: (ctx.members || [])
+                    .map(function (m) {
+                        return typeof m === "string"
+                            ? m
+                            : (m && (m.id || m.user_id)) || null;
+                    })
+                    .filter(Boolean),
+                originalFilename: f.filename,
+                originalContentType: f.content_type || null,
+                originalSize: f.file_size,
+                reservedSize: reservedSize,
+                randomFilename: randomFilename,
+                uploadFilename: null, // set by load listener
+                uploadId: null, // set by load listener
+                fileIndex: i,
+                status: "pending_bytes",
+                createdAt: Date.now(),
+            };
+            window.__oslPendingUploads.set(tempId, reservation);
+            indexToTempId[i] = tempId;
+            f.filename = randomFilename;
+            f.file_size = reservedSize;
             console.log(
-                "[OSL] multipart: scope unresolvable, passing through"
+                "[OSL] step1 reserved: original=" +
+                    reservation.originalFilename +
+                    " random=" +
+                    randomFilename +
+                    " reserved_size=" +
+                    reservedSize
+            );
+        });
+
+        // Install a one-shot load listener to rekey reservations
+        // from tempId to upload_id once Discord answers.
+        function onAttachmentsResponse() {
+            try {
+                if (xhr.readyState !== 4) return;
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    // Discord rejected the pre-upload request —
+                    // clean up our reservations so they don't leak.
+                    for (const tempId of Object.values(indexToTempId)) {
+                        window.__oslPendingUploads.delete(tempId);
+                    }
+                    return;
+                }
+                const resp = JSON.parse(xhr.responseText);
+                const respAtts = Array.isArray(resp && resp.attachments)
+                    ? resp.attachments
+                    : [];
+                respAtts.forEach(function (att, i) {
+                    const tempId = indexToTempId[i];
+                    if (!tempId) return;
+                    const reservation = window.__oslPendingUploads.get(tempId);
+                    if (!reservation) return;
+                    const m = (att.upload_url || "").match(
+                        /[?&]upload_id=([^&]+)/
+                    );
+                    const uploadId = m ? m[1] : null;
+                    reservation.uploadFilename = att.upload_filename || null;
+                    reservation.uploadId = uploadId;
+                    if (uploadId) {
+                        window.__oslPendingUploads.delete(tempId);
+                        window.__oslPendingUploads.set(uploadId, reservation);
+                        console.log(
+                            "[OSL] step1 mapped upload_id=" +
+                                uploadId.substring(0, 20) +
+                                "... for random=" +
+                                reservation.randomFilename
+                        );
+                    } else {
+                        console.warn(
+                            "[OSL] step1: response missing upload_id for " +
+                                reservation.randomFilename
+                        );
+                    }
+                });
+            } catch (e) {
+                console.error("[OSL] step1 load listener threw:", e);
+            }
+        }
+        try {
+            xhr.addEventListener("load", onAttachmentsResponse);
+        } catch (e) {
+            console.error("[OSL] step1: failed to attach load listener:", e);
+        }
+
+        // Re-serialize the mutated body and dispatch.
+        let newBody;
+        try {
+            newBody = JSON.stringify(body);
+        } catch (e) {
+            // Clean up the reservations on failure.
+            for (const tempId of Object.values(indexToTempId)) {
+                window.__oslPendingUploads.delete(tempId);
+            }
+            return oslAbortXhr(xhr, "step1: body re-serialize failed", channelId);
+        }
+        return Reflect.apply(origSend, xhr, [newBody]);
+    }
+
+    /**
+     * 8c step 2: replace the PUT body bytes (the raw file) with
+     * our sealed-attachment bundle before the GCS upload runs.
+     * Called from the XHR send proxy when the URL matches
+     * `GCS_UPLOAD_RE`. If no reservation is registered for the
+     * upload_id, this is a non-OSL upload (encrypt was off when
+     * step 1 ran) — passthrough.
+     */
+    async function oslInterceptStep2GcsPut(origSend, xhr, args, uploadId) {
+        const reservation = window.__oslPendingUploads.get(uploadId);
+        if (!reservation || reservation.status !== "pending_bytes") {
+            console.log(
+                "[OSL] step2 passthrough: upload_id=" +
+                    uploadId.substring(0, 20) +
+                    "... " +
+                    (reservation
+                        ? "status=" + reservation.status
+                        : "no reservation")
             );
             return Reflect.apply(origSend, xhr, args);
         }
 
-        // Burned-scope block: don't send anything until the user
-        // re-engages via a text message.
-        try {
-            if (
-                oslBurnedScopesShouldSkip(scope.channel_id || scope.id)
-            ) {
-                oslToast(
-                    "Cannot send attachment to burned scope. Re-engage encryption first by sending a text message."
-                );
-                return abort("burned scope");
-            }
-        } catch (_) {}
-
-        console.log(
-            "[OSL] multipart upload detected: channel=" +
-                channelId +
-                " scope=" +
-                oslScopeStorageKey(scope) +
-                " files=" +
-                fileEntries.length +
-                " encrypt_toggle=on"
-        );
-
-        // Strict pre-validation. Sizes + extensions must all pass
-        // before we touch the IPC — otherwise we'd half-encrypt a
-        // batch and then abort.
-        const SUPPORTED_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)$/i;
-        const MAX_BYTES = 24 * 1024 * 1024;
-        for (const entry of fileEntries) {
-            if (entry.file.size > MAX_BYTES) {
-                oslToast("File too large for encrypted upload (max 24 MB)");
-                return abort(
-                    "oversize file: " +
-                        entry.file.name +
-                        " " +
-                        entry.file.size +
-                        "B"
-                );
-            }
-            if (!SUPPORTED_RE.test(entry.file.name)) {
-                oslToast(
-                    "Unsupported file type for encryption: " +
-                        entry.file.name +
-                        ". Disable encrypt to send this file."
-                );
-                return abort("unsupported extension: " + entry.file.name);
-            }
-        }
-
-        // Resolve self id + channel members for the envelope's
-        // recipient walk.
-        const selfId = await oslSelfDiscordId();
-        if (!selfId) {
-            return abort("no self_discord_id");
-        }
-        const members = (ctx.members || [])
-            .map(function (m) {
-                return typeof m === "string"
-                    ? m
-                    : (m && (m.id || m.user_id)) || null;
-            })
-            .filter(Boolean);
-
-        // Seal each file in parallel. With Tauri 2's IPC bridge,
-        // multiple in-flight invokes are independently dispatched on
-        // the runtime's tokio thread pool, so this is meaningfully
-        // faster than sequential awaits for 2+ attachments.
-        let sealedList;
-        try {
-            sealedList = await Promise.all(
-                fileEntries.map(async function (entry) {
-                    const buf = await entry.file.arrayBuffer();
-                    const bytes = new Uint8Array(buf);
-                    let binary = "";
-                    const CHUNK = 32 * 1024;
-                    for (let i = 0; i < bytes.length; i += CHUNK) {
-                        const slice = bytes.subarray(
-                            i,
-                            Math.min(i + CHUNK, bytes.length)
-                        );
-                        binary += String.fromCharCode.apply(null, slice);
-                    }
-                    const b64 = btoa(binary);
-                    const sealRes = await oslInvoke("osl_seal_attachment", {
-                        originalBytesB64: b64,
-                        originalFilename: entry.file.name,
-                    });
-                    if (!sealRes.ok) {
-                        throw new Error(
-                            "seal failed for " +
-                                entry.file.name +
-                                ": " +
-                                sealRes.error
-                        );
-                    }
-                    return { entry: entry, sealed: sealRes.value };
-                })
+        const body = args[0];
+        if (
+            !body ||
+            (typeof Blob !== "undefined" && !(body instanceof Blob) &&
+                !(body instanceof ArrayBuffer) &&
+                !ArrayBuffer.isView(body))
+        ) {
+            console.warn(
+                "[OSL] step2: unexpected body type, passthrough; type=" +
+                    (body && body.constructor && body.constructor.name)
             );
-        } catch (err) {
-            oslToast("Encryption failed, attachment not sent");
-            return abort("seal failure: " + (err && err.message ? err.message : err));
+            return Reflect.apply(origSend, xhr, args);
         }
 
-        // Build the v=2 attachment envelope cover. Carries the
-        // per-attachment AEAD keys to every whitelisted recipient
-        // in one wire message.
-        const envRes = await oslInvoke("osl_encrypt_attachment_envelope", {
-            scopeInput: scope,
-            channelMembers: members,
-            selfDiscordId: selfId,
-            attachments: sealedList.map(function (s) {
-                return {
-                    attKeyB64: s.sealed.attKeyB64,
-                    originalFilename: s.entry.file.name,
-                    randomFilename: s.sealed.randomFilename,
-                    mimeType: s.sealed.mimeType,
-                };
-            }),
-        });
-        if (!envRes.ok) {
-            oslToast("Encryption failed, attachment not sent");
-            return abort("envelope build failed: " + envRes.error);
-        }
-
-        // Compose replacement FormData. Copy every non-files[]
-        // entry as-is, swap each files[N] entry to the encrypted
-        // blob under its new random_filename, and rewrite
-        // payload_json.content + per-attachment filename/size.
-        const newFd = new FormData();
-        let payloadModified = null;
+        // Read the original file bytes.
+        let originalBytes;
         try {
-            const originalPayloadStr = formData.get("payload_json");
-            if (typeof originalPayloadStr === "string") {
-                payloadModified = JSON.parse(originalPayloadStr);
+            if (body instanceof Blob) {
+                originalBytes = new Uint8Array(await body.arrayBuffer());
+            } else if (body instanceof ArrayBuffer) {
+                originalBytes = new Uint8Array(body);
+            } else {
+                originalBytes = new Uint8Array(body.buffer);
             }
         } catch (e) {
-            return abort("payload_json parse failed: " + e);
+            window.__oslPendingUploads.delete(uploadId);
+            return oslAbortXhr(xhr, "step2: arrayBuffer() failed: " + e);
         }
-        if (!payloadModified) payloadModified = {};
-        payloadModified.content = envRes.value; // DPC0:: cover
-        if (!Array.isArray(payloadModified.attachments)) {
-            payloadModified.attachments = [];
-        }
-        const sealedByIndex = {};
-        sealedList.forEach(function (s) {
-            sealedByIndex[s.entry.index] = s;
-        });
-        // Discord's payload_json.attachments may use ids OR positional
-        // entries; we mutate by index because that's what we know.
-        payloadModified.attachments = payloadModified.attachments.map(
-            function (att, idx) {
-                const sealed = sealedByIndex[idx];
-                if (!sealed) return att;
-                const decoded = atob(sealed.sealed.fileBlobB64);
-                return Object.assign({}, att, {
-                    filename: sealed.sealed.randomFilename,
-                    size: decoded.length,
-                });
-            }
-        );
 
-        for (const [k, v] of formData.entries()) {
-            if (k === "payload_json") continue;
-            if (k.startsWith("files[")) continue;
-            newFd.append(k, v);
+        // Base64-encode for IPC (chunked to avoid call-stack limit
+        // on multi-MB strings).
+        let binary = "";
+        const CHUNK = 32 * 1024;
+        for (let i = 0; i < originalBytes.length; i += CHUNK) {
+            const slice = originalBytes.subarray(
+                i,
+                Math.min(i + CHUNK, originalBytes.length)
+            );
+            binary += String.fromCharCode.apply(null, slice);
         }
-        newFd.append("payload_json", JSON.stringify(payloadModified));
+        const b64 = btoa(binary);
 
-        sealedList.forEach(function (s) {
-            const decoded = atob(s.sealed.fileBlobB64);
-            const bytes = new Uint8Array(decoded.length);
-            for (let i = 0; i < decoded.length; i++) {
-                bytes[i] = decoded.charCodeAt(i);
-            }
-            const encryptedFile = new File(
-                [bytes],
-                s.sealed.randomFilename,
-                { type: "image/png" }
-            );
-            newFd.append(
-                "files[" + s.entry.index + "]",
-                encryptedFile,
-                s.sealed.randomFilename
-            );
-            console.log(
-                "[OSL] multipart encrypted: file=" +
-                    s.sealed.randomFilename +
-                    " original=" +
-                    s.entry.file.name +
-                    " encrypted_size=" +
-                    bytes.length
-            );
+        const sealRes = await oslInvoke("osl_seal_attachment", {
+            originalBytesB64: b64,
+            originalFilename: reservation.originalFilename,
         });
+        if (!sealRes.ok) {
+            window.__oslPendingUploads.delete(uploadId);
+            oslToast("Encryption failed, attachment not sent");
+            return oslAbortXhr(
+                xhr,
+                "step2: seal failed: " + sealRes.error
+            );
+        }
+        const sealed = sealRes.value;
+        const sealedBinary = atob(sealed.fileBlobB64);
+        const sealedBytes = new Uint8Array(sealedBinary.length);
+        for (let i = 0; i < sealedBinary.length; i++) {
+            sealedBytes[i] = sealedBinary.charCodeAt(i);
+        }
+        if (sealedBytes.length > reservation.reservedSize) {
+            window.__oslPendingUploads.delete(uploadId);
+            oslToast("Encryption failed, attachment not sent");
+            return oslAbortXhr(
+                xhr,
+                "step2: encrypted size " +
+                    sealedBytes.length +
+                    " exceeds reservation " +
+                    reservation.reservedSize
+            );
+        }
+
+        // Stash the seal output on the reservation for step 3.
+        reservation.attKeyB64 = sealed.attKeyB64;
+        reservation.mimeType = sealed.mimeType;
+        reservation.encryptedSize = sealedBytes.length;
+        reservation.status = "pending_cover";
 
         console.log(
-            "[OSL] multipart cover len=" +
-                envRes.value.length +
-                " scope=" +
-                oslScopeStorageKey(scope)
+            "[OSL] step2 GCS PUT: upload_id=" +
+                uploadId.substring(0, 20) +
+                "... original_size=" +
+                originalBytes.length +
+                " encrypted_size=" +
+                sealedBytes.length
         );
 
-        // Re-dispatch send with the mutated FormData. The XHR
-        // doesn't know the args were swapped — Discord's load/error
-        // handlers see the response normally.
-        return Reflect.apply(origSend, xhr, [newFd]);
+        // Replace the PUT body with our sealed bundle. GCS uses
+        // octet-stream; preserve that content-type (Discord's XHR
+        // already set it before send).
+        const newBody = new Blob([sealedBytes], { type: "image/png" });
+        return Reflect.apply(origSend, xhr, [newBody]);
+    }
+
+    /**
+     * 8c step 3: build the v=2 attachment-envelope cover for a
+     * /messages POST body. Inspects `parsed.attachments[]` for any
+     * `uploaded_filename` matching a pending reservation; if any
+     * match, returns `{ handled: true, promise }` where the promise
+     * resolves to the mutated JSON body string. If no entries
+     * match, returns null so the caller falls through to normal
+     * text-encrypt.
+     *
+     * On match, rewrites:
+     *   - `parsed.content` ← v=2 cover (DPC0::…)
+     *   - per matched entry: `attachments[i].filename` ←
+     *     `random_filename`
+     * and removes the now-consumed reservations from
+     * `__oslPendingUploads` after the IPC resolves successfully.
+     */
+    function oslMaybeBuildAttachmentCover(parsed) {
+        if (!parsed || !Array.isArray(parsed.attachments)) return null;
+        if (parsed.attachments.length === 0) return null;
+
+        const matched = [];
+        parsed.attachments.forEach(function (att, i) {
+            const ufn = att && (att.uploaded_filename || att.uploadedFilename);
+            if (!ufn) return;
+            const reservation = oslPendingUploadsByFilename(ufn);
+            if (!reservation) return;
+            if (reservation.status !== "pending_cover") return;
+            matched.push({ index: i, reservation: reservation });
+        });
+        if (matched.length === 0) return null;
+
+        // Resolve the cover via IPC. The scope, channel members,
+        // and self id all live on the first matched reservation
+        // (step 1 captured them).
+        const first = matched[0].reservation;
+        const promise = oslSelfDiscordId().then(function (selfId) {
+            if (!selfId) {
+                throw new Error("step3: no self_discord_id");
+            }
+            return oslInvoke("osl_encrypt_attachment_envelope", {
+                scopeInput: first.scope,
+                channelMembers: first.channelMembers,
+                selfDiscordId: selfId,
+                attachments: matched.map(function (m) {
+                    return {
+                        attKeyB64: m.reservation.attKeyB64,
+                        originalFilename: m.reservation.originalFilename,
+                        randomFilename: m.reservation.randomFilename,
+                        mimeType: m.reservation.mimeType,
+                    };
+                }),
+            });
+        }).then(function (envRes) {
+            if (!envRes.ok) {
+                throw new Error(
+                    "envelope build failed: " + envRes.error
+                );
+            }
+            // Mutate the parsed body.
+            parsed.content = envRes.value;
+            matched.forEach(function (m) {
+                const att = parsed.attachments[m.index];
+                if (att) {
+                    att.filename = m.reservation.randomFilename;
+                }
+            });
+            // Consume the reservations.
+            for (const m of matched) {
+                for (const [k, v] of window.__oslPendingUploads.entries()) {
+                    if (v === m.reservation) {
+                        window.__oslPendingUploads.delete(k);
+                        break;
+                    }
+                }
+            }
+            const randomNames = matched
+                .map(function (m) {
+                    return m.reservation.randomFilename;
+                })
+                .join(",");
+            console.log(
+                "[OSL] step3 cover: random_filenames=[" +
+                    randomNames +
+                    "] cover_len=" +
+                    envRes.value.length +
+                    " encrypted_count=" +
+                    matched.length
+            );
+            return JSON.stringify(parsed);
+        });
+        console.log(
+            "[OSL] step3 /messages: attachments=" +
+                parsed.attachments.length +
+                " encrypted_count=" +
+                matched.length
+        );
+        return { handled: true, promise: promise };
     }
 
     /**
@@ -5414,13 +5680,22 @@
                     );
                 }
 
-                // Phase 8: observe Discord's attachment pre-upload
-                // request so the user can capture URL patterns in
-                // DevTools while the production upload hook is
-                // being calibrated for their Discord build.
-                try {
-                    oslAttachmentUploadHooks(target, thisArg, args, url, method);
-                } catch (_) {}
+                // 8c: production attachment interception is wired on
+                // the XHR side (Discord uses XHR for all three steps
+                // of the GCS upload flow), so this fetch path only
+                // logs the case Discord migrates a step to fetch in
+                // a future build. We do not currently intercept GCS
+                // PUTs via fetch — if a future Discord build needs
+                // it, mirror oslInterceptStep2GcsPut here.
+                if (
+                    method === "PUT" &&
+                    GCS_UPLOAD_RE.test(url) &&
+                    window.__oslPendingUploads.size > 0
+                ) {
+                    console.warn(
+                        "[OSL] GCS PUT via fetch detected; pending uploads exist but fetch-side interception is not wired. Add it if this fires."
+                    );
+                }
 
                 const sendMatch = SEND_RE.exec(url);
                 if (!sendMatch || method !== "POST") {
@@ -5615,6 +5890,63 @@
                         editMatch[1],
                         editMatch[2]
                     );
+                }
+
+                // 8c step 2: PUT to GCS upload URL. Different
+                // origin from the discord.com API. Async — read the
+                // file bytes, seal, replace body.
+                const gcsMatch = GCS_UPLOAD_RE.exec(meta.url);
+                if (gcsMatch && meta.method === "PUT") {
+                    const uploadId = gcsMatch[1];
+                    oslInterceptStep2GcsPut(target, thisArg, args, uploadId).catch(
+                        function (err) {
+                            console.error(
+                                "[OSL] step2 GCS PUT intercept threw:",
+                                err
+                            );
+                            oslAbortXhr(
+                                thisArg,
+                                "step2 threw: " +
+                                    (err && err.message ? err.message : err)
+                            );
+                        }
+                    );
+                    return undefined;
+                }
+
+                // 8c step 1: POST /channels/{cid}/attachments
+                // (pre-upload). Same-origin XHR, JSON body.
+                const attMatch = ATTACHMENTS_RE.exec(meta.url);
+                if (attMatch && meta.method === "POST") {
+                    if (typeof body === "string") {
+                        oslInterceptStep1Attachments(
+                            target,
+                            thisArg,
+                            args,
+                            attMatch[1],
+                            body
+                        ).catch(function (err) {
+                            console.error(
+                                "[OSL] step1 attachments intercept threw:",
+                                err
+                            );
+                            oslAbortXhr(
+                                thisArg,
+                                "step1 threw: " +
+                                    (err && err.message ? err.message : err),
+                                attMatch[1]
+                            );
+                        });
+                        return undefined;
+                    }
+                    // Body isn't a string — Discord might one day
+                    // ship FormData here; passthrough so the user
+                    // sees plain attachments rather than a silent
+                    // break.
+                    console.log(
+                        "[OSL] step1: non-string body, passthrough"
+                    );
+                    return Reflect.apply(target, thisArg, args);
                 }
 
                 const sendMatch = SEND_RE.exec(meta.url);
