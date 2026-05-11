@@ -25,7 +25,8 @@ use ipc::attachment_wire::{
     cmd_osl_open_attachment, cmd_osl_seal_attachment, decoy_png, OSL_ATT_MAGIC,
 };
 use ipc::commands::{
-    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_attachment_envelope, OSL_RESULT_ATTACHMENT_PREFIX,
+    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_attachment_envelope, AttachmentEnvelopeInput,
+    OSL_RESULT_ATTACHMENT_PREFIX,
 };
 use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
@@ -168,10 +169,12 @@ fn envelope_round_trip_yields_sentinel_for_boot_js() {
         si(&scope),
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
-        att_key_b64.clone(),
-        "secret-photo.jpg".to_string(),
-        "abcd1234.png".to_string(),
-        "image/jpeg".to_string(),
+        vec![AttachmentEnvelopeInput {
+            att_key_b64: att_key_b64.clone(),
+            original_filename: "secret-photo.jpg".to_string(),
+            random_filename: "abcd1234.png".to_string(),
+            mime_type: "image/jpeg".to_string(),
+        }],
     )
     .expect("encrypt envelope");
     assert!(
@@ -218,13 +221,119 @@ fn envelope_round_trip_yields_sentinel_for_boot_js() {
     );
     let json_part = recovered.trim_start_matches(OSL_RESULT_ATTACHMENT_PREFIX);
     let v: serde_json::Value = serde_json::from_str(json_part).expect("sentinel payload is JSON");
-    assert_eq!(v["originalFilename"], "secret-photo.jpg");
-    assert_eq!(v["randomFilename"], "abcd1234.png");
-    assert_eq!(v["mimeType"], "image/jpeg");
+    let attachments = v["attachments"].as_array().expect("attachments[] present");
+    assert_eq!(attachments.len(), 1);
+    let entry = &attachments[0];
+    assert_eq!(entry["originalFilename"], "secret-photo.jpg");
+    assert_eq!(entry["randomFilename"], "abcd1234.png");
+    assert_eq!(entry["mimeType"], "image/jpeg");
     let recovered_key = STANDARD
-        .decode(v["attKey"].as_str().expect("attKey is string"))
+        .decode(entry["attKey"].as_str().expect("attKey is string"))
         .expect("attKey is base64");
     assert_eq!(recovered_key, att_key_bytes.to_vec());
+}
+
+#[test]
+fn envelope_round_trip_multi_attachment() {
+    // Phase 8b: 3-attachment cover. Verifies the list ordering is
+    // preserved and each entry's attKey survives the CBOR round trip.
+    let liam_state = fresh_state_for_liam();
+    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
+    install_dm_whitelist(&liam_state, HENRY_DID);
+
+    let scope = Scope::dm(HENRY_DID);
+    let inputs = vec![
+        AttachmentEnvelopeInput {
+            att_key_b64: STANDARD.encode([0x01u8; 32]),
+            original_filename: "first.png".to_string(),
+            random_filename: "aaaaaaaa.png".to_string(),
+            mime_type: "image/png".to_string(),
+        },
+        AttachmentEnvelopeInput {
+            att_key_b64: STANDARD.encode([0x02u8; 32]),
+            original_filename: "second.jpg".to_string(),
+            random_filename: "bbbbbbbb.png".to_string(),
+            mime_type: "image/jpeg".to_string(),
+        },
+        AttachmentEnvelopeInput {
+            att_key_b64: STANDARD.encode([0x03u8; 32]),
+            original_filename: "third.mp4".to_string(),
+            random_filename: "cccccccc.png".to_string(),
+            mime_type: "video/mp4".to_string(),
+        },
+    ];
+    let wire = cmd_osl_encrypt_attachment_envelope(
+        &liam_state,
+        si(&scope),
+        vec![HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+        inputs,
+    )
+    .expect("encrypt multi envelope");
+
+    let henry_state = AppState::new();
+    {
+        let mut id = keystore::generate_identity("henry".to_string());
+        id.x25519_secret = henry_sk;
+        id.x25519_public = henry_pk;
+        *henry_state.identity.lock().unwrap() = Some(id);
+    }
+    let liam_pub = liam_state
+        .identity
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .x25519_public;
+    install_peer_pubkey(&henry_state, LIAM_DID, liam_pub);
+
+    let recovered = cmd_osl_decrypt_message_v2(
+        &henry_state,
+        None,
+        "1234567890".to_string(),
+        LIAM_DID.to_string(),
+        wire,
+        None,
+        None,
+    )
+    .expect("decrypt multi envelope");
+    let json_part = recovered.trim_start_matches(OSL_RESULT_ATTACHMENT_PREFIX);
+    let v: serde_json::Value = serde_json::from_str(json_part).unwrap();
+    let arr = v["attachments"].as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0]["originalFilename"], "first.png");
+    assert_eq!(arr[1]["originalFilename"], "second.jpg");
+    assert_eq!(arr[2]["originalFilename"], "third.mp4");
+    assert_eq!(arr[0]["randomFilename"], "aaaaaaaa.png");
+    assert_eq!(arr[1]["randomFilename"], "bbbbbbbb.png");
+    assert_eq!(arr[2]["randomFilename"], "cccccccc.png");
+    assert_eq!(arr[2]["mimeType"], "video/mp4");
+    // Per-entry att_key must round-trip distinctly.
+    let k0 = STANDARD.decode(arr[0]["attKey"].as_str().unwrap()).unwrap();
+    let k2 = STANDARD.decode(arr[2]["attKey"].as_str().unwrap()).unwrap();
+    assert_eq!(k0, vec![0x01u8; 32]);
+    assert_eq!(k2, vec![0x03u8; 32]);
+}
+
+#[test]
+fn empty_envelope_input_rejected() {
+    let state = fresh_state_for_liam();
+    let scope = Scope::dm(HENRY_DID);
+    install_peer_pubkey(&state, HENRY_DID, x25519::generate_keypair().1);
+    install_dm_whitelist(&state, HENRY_DID);
+    let err = cmd_osl_encrypt_attachment_envelope(
+        &state,
+        si(&scope),
+        vec![HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+        vec![],
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("no entries") || err.contains("empty"),
+        "expected empty-list error, got: {err}"
+    );
 }
 
 #[test]

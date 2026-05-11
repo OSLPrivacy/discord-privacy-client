@@ -464,10 +464,7 @@ async fn osl_encrypt_attachment_envelope(
     scope_input: ScopeInput,
     channel_members: Vec<String>,
     self_discord_id: String,
-    att_key_b64: String,
-    original_filename: String,
-    random_filename: String,
-    mime_type: String,
+    attachments: Vec<ipc::commands::AttachmentEnvelopeInput>,
 ) -> Result<String, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -477,10 +474,7 @@ async fn osl_encrypt_attachment_envelope(
             scope_input,
             channel_members,
             self_discord_id,
-            att_key_b64,
-            original_filename,
-            random_filename,
-            mime_type,
+            attachments,
         )
     })
     .await

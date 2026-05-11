@@ -1655,43 +1655,65 @@ pub fn cmd_osl_unburn_scope_after_encrypt(
     cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope_input.id).unwrap_or(false)
 }
 
-/// Phase 8: encrypt an [`AttachmentEnvelope`] as a v=2
-/// `MSG_TYPE_ATTACHMENT` message, distributing the per-attachment
-/// AEAD key to every scope-whitelisted recipient. The cover string
-/// returned is the message-text payload boot.js drops into the
-/// `/messages` POST body (replacing the user's typed plaintext
-/// when an encrypted attachment is being sent).
+/// Phase 8b: structured per-attachment input for
+/// [`cmd_osl_encrypt_attachment_envelope`]. JS builds one of these
+/// per file picked, then passes the whole list so the cover
+/// references every attachment in the Discord message.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentEnvelopeInput {
+    pub att_key_b64: String,
+    pub original_filename: String,
+    pub random_filename: String,
+    pub mime_type: String,
+}
+
+/// Phase 8 / 8b: encrypt an [`AttachmentEnvelope`] (list of per-
+/// attachment entries) as a v=2 `MSG_TYPE_ATTACHMENT` message,
+/// distributing every per-attachment AEAD key to every scope-
+/// whitelisted recipient. The cover string returned is the
+/// message-text payload boot.js drops into the `/messages` POST
+/// body (replacing the user's typed plaintext on attachment sends).
+/// Discord allows up to 10 attachments per message; the cover
+/// covers all of them in a single CBOR list.
 pub fn cmd_osl_encrypt_attachment_envelope(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
     channel_members: Vec<String>,
     self_discord_id: String,
-    att_key_b64: String,
-    original_filename: String,
-    random_filename: String,
-    mime_type: String,
+    attachments: Vec<AttachmentEnvelopeInput>,
 ) -> Result<String, String> {
+    if attachments.is_empty() {
+        return Err("OSL: attachment envelope has no entries".to_string());
+    }
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
 
-    let key_bytes = STANDARD
-        .decode(&att_key_b64)
-        .map_err(|e| format!("OSL: att_key b64 decode: {e}"))?;
-    if key_bytes.len() != 32 {
-        return Err(format!(
-            "OSL: att_key must be 32 bytes, got {}",
-            key_bytes.len()
-        ));
+    let mut entries: Vec<crate::control_messages::AttachmentEnvelopeEntry> =
+        Vec::with_capacity(attachments.len());
+    for input in attachments {
+        let key_bytes = STANDARD
+            .decode(&input.att_key_b64)
+            .map_err(|e| format!("OSL: att_key b64 decode: {e}"))?;
+        if key_bytes.len() != 32 {
+            return Err(format!(
+                "OSL: att_key must be 32 bytes, got {}",
+                key_bytes.len()
+            ));
+        }
+        let mut att_key = [0u8; 32];
+        att_key.copy_from_slice(&key_bytes);
+        entries.push(crate::control_messages::AttachmentEnvelopeEntry {
+            att_key,
+            original_filename: input.original_filename,
+            random_filename: input.random_filename,
+            mime_type: input.mime_type,
+        });
     }
-    let mut att_key = [0u8; 32];
-    att_key.copy_from_slice(&key_bytes);
 
     let env = crate::control_messages::AttachmentEnvelope {
-        att_key,
-        original_filename,
-        random_filename,
-        mime_type,
+        attachments: entries,
     };
     let env_bytes = crate::control_messages::serialize_attachment_envelope(&env)
         .map_err(|e| format!("OSL: serialize attachment envelope: {e}"))?;
@@ -2030,16 +2052,24 @@ pub fn cmd_osl_decrypt_message_v2(
             let env =
                 crate::control_messages::deserialize_attachment_envelope(&recovered.plaintext)
                     .map_err(|e| format!("OSL: deserialize attachment envelope: {e}"))?;
-            // Serialize for JS as JSON. JS dispatches on the
-            // sentinel prefix and feeds the JSON into
-            // `osl_open_attachment` along with the CDN-fetched
-            // file bytes.
-            let json = serde_json::json!({
-                "attKey": STANDARD.encode(env.att_key),
-                "originalFilename": env.original_filename,
-                "randomFilename": env.random_filename,
-                "mimeType": env.mime_type,
-            });
+            // 8b: serialize the full attachments list for JS — JS
+            // dispatches on the sentinel prefix and iterates the
+            // `attachments` array, feeding each entry into
+            // `osl_open_attachment` along with the matching CDN-
+            // fetched file bytes.
+            let attachments_json: Vec<serde_json::Value> = env
+                .attachments
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "attKey": STANDARD.encode(e.att_key),
+                        "originalFilename": e.original_filename,
+                        "randomFilename": e.random_filename,
+                        "mimeType": e.mime_type,
+                    })
+                })
+                .collect();
+            let json = serde_json::json!({ "attachments": attachments_json });
             Ok(format!("{}{}", OSL_RESULT_ATTACHMENT_PREFIX, json))
         }
         other => Err(format!(

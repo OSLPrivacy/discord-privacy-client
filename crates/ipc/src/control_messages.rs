@@ -99,19 +99,32 @@ pub struct WhitelistResponse {
     pub responded_at: i64,
 }
 
-/// Phase 8 type=0x04: "I'm sending you an attachment in this scope."
-/// The message-text plaintext for an attachment send is a CBOR-encoded
-/// instance of this struct — it carries everything the recipient
-/// needs to fetch + decrypt the CDN-hosted blob. The plaintext-side
-/// `random_filename` is whatever name we uploaded to Discord with
-/// (so the recv side can match it against `attachments[N].filename`
-/// when multiple attachments are present in the same message).
+/// Phase 8b: a single attachment's metadata inside an
+/// [`AttachmentEnvelope`]. The recv side matches `random_filename`
+/// against each Discord-reported `attachments[N].filename` to figure
+/// out which CDN file to fetch + decrypt with this entry's `att_key`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttachmentEnvelope {
+pub struct AttachmentEnvelopeEntry {
     pub att_key: [u8; 32],
     pub original_filename: String,
     pub random_filename: String,
     pub mime_type: String,
+}
+
+/// Phase 8 type=0x04: "I'm sending you N attachments in this scope."
+/// The message-text plaintext for an attachment send is a CBOR-encoded
+/// instance of this struct. Each entry carries everything the
+/// recipient needs to fetch + decrypt one CDN-hosted blob. Discord
+/// allows up to 10 attachments per message; 8b folds them into a
+/// single envelope so the cover stays in `payload_json.content`.
+///
+/// 8b note: this superseded an 8.0 single-attachment shape (struct
+/// with att_key/original_filename/random_filename/mime_type fields).
+/// Phase 8 had not yet shipped to recipients in production, so 8b
+/// breaks compat without a version bump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentEnvelope {
+    pub attachments: Vec<AttachmentEnvelopeEntry>,
 }
 
 // ---- CBOR wire reps ----
@@ -144,11 +157,16 @@ struct WhitelistResponseWire {
 }
 
 #[derive(Serialize, Deserialize)]
-struct AttachmentEnvelopeWire {
+struct AttachmentEnvelopeEntryWire {
     att_key: [u8; 32],
     original_filename: String,
     random_filename: String,
     mime_type: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttachmentEnvelopeWire {
+    attachments: Vec<AttachmentEnvelopeEntryWire>,
 }
 
 // ---- Serialize ----
@@ -216,20 +234,32 @@ pub fn deserialize_whitelist_response(bytes: &[u8]) -> Result<WhitelistResponse,
 
 pub fn serialize_attachment_envelope(m: &AttachmentEnvelope) -> Result<Vec<u8>, ControlError> {
     cbor_encode(&AttachmentEnvelopeWire {
-        att_key: m.att_key,
-        original_filename: m.original_filename.clone(),
-        random_filename: m.random_filename.clone(),
-        mime_type: m.mime_type.clone(),
+        attachments: m
+            .attachments
+            .iter()
+            .map(|e| AttachmentEnvelopeEntryWire {
+                att_key: e.att_key,
+                original_filename: e.original_filename.clone(),
+                random_filename: e.random_filename.clone(),
+                mime_type: e.mime_type.clone(),
+            })
+            .collect(),
     })
 }
 
 pub fn deserialize_attachment_envelope(bytes: &[u8]) -> Result<AttachmentEnvelope, ControlError> {
     let wire: AttachmentEnvelopeWire = cbor_decode(bytes)?;
     Ok(AttachmentEnvelope {
-        att_key: wire.att_key,
-        original_filename: wire.original_filename,
-        random_filename: wire.random_filename,
-        mime_type: wire.mime_type,
+        attachments: wire
+            .attachments
+            .into_iter()
+            .map(|w| AttachmentEnvelopeEntry {
+                att_key: w.att_key,
+                original_filename: w.original_filename,
+                random_filename: w.random_filename,
+                mime_type: w.mime_type,
+            })
+            .collect(),
     })
 }
 

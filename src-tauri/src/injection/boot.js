@@ -1297,15 +1297,20 @@
         }
         const sealed = sealRes.value;
         // Build the v=2 envelope wire that carries the AEAD key
-        // to whitelisted recipients.
+        // to whitelisted recipients. 8b: always sends an array
+        // (length 1 for the single-attachment debug-upload path).
         const envRes = await oslInvoke("osl_encrypt_attachment_envelope", {
             scopeInput: scopeInput,
             channelMembers: channelMembers,
             selfDiscordId: selfDiscordId,
-            attKeyB64: sealed.attKeyB64,
-            originalFilename: file.name,
-            randomFilename: sealed.randomFilename,
-            mimeType: sealed.mimeType,
+            attachments: [
+                {
+                    attKeyB64: sealed.attKeyB64,
+                    originalFilename: file.name,
+                    randomFilename: sealed.randomFilename,
+                    mimeType: sealed.mimeType,
+                },
+            ],
         });
         if (!envRes.ok) {
             throw new Error(
@@ -1366,6 +1371,303 @@
             );
         }
         return { handled: false };
+    }
+
+    /**
+     * Phase 8b: encrypt every files[N] entry in a Discord
+     * /messages-POST FormData and replace `payload_json.content`
+     * with the v=2 attachment-envelope cover. Called from the XHR
+     * send proxy when the body is a FormData. Returns nothing —
+     * dispatches Reflect.apply on success, fires synthetic error
+     * events on the XHR on validation failure / encryption failure
+     * so Discord's UI shows the message as failed rather than
+     * silently disappearing.
+     *
+     * Encryption is all-or-nothing: any one file out-of-range or
+     * unsupported-extension aborts the whole send. Toggle OFF for
+     * mixed-content sends.
+     */
+    async function oslInterceptMultipartXhr(origSend, xhr, args, channelId, formData) {
+        function abort(reason) {
+            console.warn(
+                "[OSL] multipart abort: " +
+                    reason +
+                    " (channel=" +
+                    channelId +
+                    ")"
+            );
+            setTimeout(function () {
+                try {
+                    xhr.dispatchEvent(new ProgressEvent("error"));
+                    xhr.dispatchEvent(new ProgressEvent("loadend"));
+                } catch (_) {}
+            }, 0);
+        }
+
+        // Collect every files[N] entry up-front so we can pre-
+        // validate sizes / extensions before starting any encrypt.
+        const fileEntries = [];
+        for (let i = 0; i < 10; i++) {
+            const k = "files[" + i + "]";
+            const v = formData.get(k);
+            if (!v) continue;
+            if (
+                typeof Blob === "undefined" ||
+                !(v instanceof Blob)
+            )
+                continue;
+            fileEntries.push({ index: i, key: k, file: v });
+        }
+
+        if (fileEntries.length === 0) {
+            // FormData with no files[] keys — probably text-only;
+            // pass through unchanged.
+            return Reflect.apply(origSend, xhr, args);
+        }
+
+        // Read the toggle authoritatively (PIVOT-FIX3 Bug E
+        // contract: data-osl-encrypt-state is the source of truth).
+        const composerToggle = document.querySelector(
+            "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+        );
+        const stateAttr =
+            composerToggle &&
+            composerToggle.getAttribute("data-osl-encrypt-state");
+        const isOn = stateAttr === "on";
+        if (!isOn) {
+            console.log(
+                "[OSL] multipart: encrypt_toggle=off, passing through " +
+                    fileEntries.length +
+                    " file(s)"
+            );
+            return Reflect.apply(origSend, xhr, args);
+        }
+
+        // Resolve scope. If we can't, passthrough — same fail-open
+        // posture the text path uses for unknown scopes.
+        let ctx = null;
+        try {
+            ctx = oslCurrentChannelContext();
+        } catch (_) {}
+        if (!ctx || ctx.channelId !== channelId) {
+            console.log(
+                "[OSL] multipart: scope unresolvable, passing through"
+            );
+            return Reflect.apply(origSend, xhr, args);
+        }
+        const scope = oslScopeForCurrentContext(ctx);
+        if (!scope) {
+            console.log(
+                "[OSL] multipart: scope unresolvable, passing through"
+            );
+            return Reflect.apply(origSend, xhr, args);
+        }
+
+        // Burned-scope block: don't send anything until the user
+        // re-engages via a text message.
+        try {
+            if (
+                oslBurnedScopesShouldSkip(scope.channel_id || scope.id)
+            ) {
+                oslToast(
+                    "Cannot send attachment to burned scope. Re-engage encryption first by sending a text message."
+                );
+                return abort("burned scope");
+            }
+        } catch (_) {}
+
+        console.log(
+            "[OSL] multipart upload detected: channel=" +
+                channelId +
+                " scope=" +
+                oslScopeStorageKey(scope) +
+                " files=" +
+                fileEntries.length +
+                " encrypt_toggle=on"
+        );
+
+        // Strict pre-validation. Sizes + extensions must all pass
+        // before we touch the IPC — otherwise we'd half-encrypt a
+        // batch and then abort.
+        const SUPPORTED_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)$/i;
+        const MAX_BYTES = 24 * 1024 * 1024;
+        for (const entry of fileEntries) {
+            if (entry.file.size > MAX_BYTES) {
+                oslToast("File too large for encrypted upload (max 24 MB)");
+                return abort(
+                    "oversize file: " +
+                        entry.file.name +
+                        " " +
+                        entry.file.size +
+                        "B"
+                );
+            }
+            if (!SUPPORTED_RE.test(entry.file.name)) {
+                oslToast(
+                    "Unsupported file type for encryption: " +
+                        entry.file.name +
+                        ". Disable encrypt to send this file."
+                );
+                return abort("unsupported extension: " + entry.file.name);
+            }
+        }
+
+        // Resolve self id + channel members for the envelope's
+        // recipient walk.
+        const selfId = await oslSelfDiscordId();
+        if (!selfId) {
+            return abort("no self_discord_id");
+        }
+        const members = (ctx.members || [])
+            .map(function (m) {
+                return typeof m === "string"
+                    ? m
+                    : (m && (m.id || m.user_id)) || null;
+            })
+            .filter(Boolean);
+
+        // Seal each file in parallel. With Tauri 2's IPC bridge,
+        // multiple in-flight invokes are independently dispatched on
+        // the runtime's tokio thread pool, so this is meaningfully
+        // faster than sequential awaits for 2+ attachments.
+        let sealedList;
+        try {
+            sealedList = await Promise.all(
+                fileEntries.map(async function (entry) {
+                    const buf = await entry.file.arrayBuffer();
+                    const bytes = new Uint8Array(buf);
+                    let binary = "";
+                    const CHUNK = 32 * 1024;
+                    for (let i = 0; i < bytes.length; i += CHUNK) {
+                        const slice = bytes.subarray(
+                            i,
+                            Math.min(i + CHUNK, bytes.length)
+                        );
+                        binary += String.fromCharCode.apply(null, slice);
+                    }
+                    const b64 = btoa(binary);
+                    const sealRes = await oslInvoke("osl_seal_attachment", {
+                        originalBytesB64: b64,
+                        originalFilename: entry.file.name,
+                    });
+                    if (!sealRes.ok) {
+                        throw new Error(
+                            "seal failed for " +
+                                entry.file.name +
+                                ": " +
+                                sealRes.error
+                        );
+                    }
+                    return { entry: entry, sealed: sealRes.value };
+                })
+            );
+        } catch (err) {
+            oslToast("Encryption failed, attachment not sent");
+            return abort("seal failure: " + (err && err.message ? err.message : err));
+        }
+
+        // Build the v=2 attachment envelope cover. Carries the
+        // per-attachment AEAD keys to every whitelisted recipient
+        // in one wire message.
+        const envRes = await oslInvoke("osl_encrypt_attachment_envelope", {
+            scopeInput: scope,
+            channelMembers: members,
+            selfDiscordId: selfId,
+            attachments: sealedList.map(function (s) {
+                return {
+                    attKeyB64: s.sealed.attKeyB64,
+                    originalFilename: s.entry.file.name,
+                    randomFilename: s.sealed.randomFilename,
+                    mimeType: s.sealed.mimeType,
+                };
+            }),
+        });
+        if (!envRes.ok) {
+            oslToast("Encryption failed, attachment not sent");
+            return abort("envelope build failed: " + envRes.error);
+        }
+
+        // Compose replacement FormData. Copy every non-files[]
+        // entry as-is, swap each files[N] entry to the encrypted
+        // blob under its new random_filename, and rewrite
+        // payload_json.content + per-attachment filename/size.
+        const newFd = new FormData();
+        let payloadModified = null;
+        try {
+            const originalPayloadStr = formData.get("payload_json");
+            if (typeof originalPayloadStr === "string") {
+                payloadModified = JSON.parse(originalPayloadStr);
+            }
+        } catch (e) {
+            return abort("payload_json parse failed: " + e);
+        }
+        if (!payloadModified) payloadModified = {};
+        payloadModified.content = envRes.value; // DPC0:: cover
+        if (!Array.isArray(payloadModified.attachments)) {
+            payloadModified.attachments = [];
+        }
+        const sealedByIndex = {};
+        sealedList.forEach(function (s) {
+            sealedByIndex[s.entry.index] = s;
+        });
+        // Discord's payload_json.attachments may use ids OR positional
+        // entries; we mutate by index because that's what we know.
+        payloadModified.attachments = payloadModified.attachments.map(
+            function (att, idx) {
+                const sealed = sealedByIndex[idx];
+                if (!sealed) return att;
+                const decoded = atob(sealed.sealed.fileBlobB64);
+                return Object.assign({}, att, {
+                    filename: sealed.sealed.randomFilename,
+                    size: decoded.length,
+                });
+            }
+        );
+
+        for (const [k, v] of formData.entries()) {
+            if (k === "payload_json") continue;
+            if (k.startsWith("files[")) continue;
+            newFd.append(k, v);
+        }
+        newFd.append("payload_json", JSON.stringify(payloadModified));
+
+        sealedList.forEach(function (s) {
+            const decoded = atob(s.sealed.fileBlobB64);
+            const bytes = new Uint8Array(decoded.length);
+            for (let i = 0; i < decoded.length; i++) {
+                bytes[i] = decoded.charCodeAt(i);
+            }
+            const encryptedFile = new File(
+                [bytes],
+                s.sealed.randomFilename,
+                { type: "image/png" }
+            );
+            newFd.append(
+                "files[" + s.entry.index + "]",
+                encryptedFile,
+                s.sealed.randomFilename
+            );
+            console.log(
+                "[OSL] multipart encrypted: file=" +
+                    s.sealed.randomFilename +
+                    " original=" +
+                    s.entry.file.name +
+                    " encrypted_size=" +
+                    bytes.length
+            );
+        });
+
+        console.log(
+            "[OSL] multipart cover len=" +
+                envRes.value.length +
+                " scope=" +
+                oslScopeStorageKey(scope)
+        );
+
+        // Re-dispatch send with the mutated FormData. The XHR
+        // doesn't know the args were swapped — Discord's load/error
+        // handlers see the response normally.
+        return Reflect.apply(origSend, xhr, [newFd]);
     }
 
     /**
@@ -3204,15 +3506,9 @@
      * are short-circuited.
      */
     async function oslHandleAttachmentEnvelope(msgId, env) {
-        if (!msgId || !env) return;
-        if (
-            !env.attKey ||
-            !env.randomFilename ||
-            !env.originalFilename ||
-            !env.mimeType
-        ) {
+        if (!msgId || !env || !Array.isArray(env.attachments)) {
             console.warn(
-                "[OSL] attachment envelope missing fields msg=" + msgId,
+                "[OSL] attachment envelope missing attachments[] msg=" + msgId,
                 env
             );
             return;
@@ -3235,23 +3531,6 @@
             }
         } catch (_) {}
 
-        if (window.__oslAttachmentDecrypted.has(msgId)) {
-            // Already decoded earlier in this session — re-apply
-            // the cached blob URLs in case the DOM re-rendered.
-            const entry = window.__oslAttachmentDecrypted.get(msgId);
-            const li = oslFindMessageListItem(msgId);
-            if (li && entry && entry.blobUrls && entry.blobUrls.length > 0) {
-                const targets = oslFindAttachmentTargets(
-                    li,
-                    env.randomFilename
-                );
-                targets.forEach(function (t) {
-                    oslSwapAttachmentElement(t, entry.blobUrls[0], entry.mime);
-                });
-            }
-            return;
-        }
-
         const li = oslFindMessageListItem(msgId);
         if (!li) {
             console.log(
@@ -3261,80 +3540,128 @@
             );
             return;
         }
-        const targets = oslFindAttachmentTargets(li, env.randomFilename);
-        if (targets.length === 0) {
+
+        // Cache hit: replay the swap on the current DOM. The cache
+        // stores one (blobUrl, mime) tuple per random_filename so
+        // repeated renders skip both the network fetch and the
+        // decrypt.
+        let cacheEntry = window.__oslAttachmentDecrypted.get(msgId);
+        if (cacheEntry && cacheEntry.byRandomName) {
+            env.attachments.forEach(function (att) {
+                const cached = cacheEntry.byRandomName[att.randomFilename];
+                if (!cached) return;
+                const targets = oslFindAttachmentTargets(
+                    li,
+                    att.randomFilename
+                );
+                targets.forEach(function (t) {
+                    oslSwapAttachmentElement(t, cached.blobUrl, cached.mime);
+                });
+            });
+            return;
+        }
+
+        cacheEntry = { byRandomName: {}, blobUrls: [] };
+        // Decrypt + swap each attachment independently. One fails
+        // → log + continue with the rest (so a partial Discord
+        // outage doesn't block all attachments in the same message).
+        for (const att of env.attachments) {
+            if (
+                !att.attKey ||
+                !att.randomFilename ||
+                !att.originalFilename ||
+                !att.mimeType
+            ) {
+                console.warn(
+                    "[OSL] attachment entry missing fields msg=" + msgId,
+                    att
+                );
+                continue;
+            }
+            const targets = oslFindAttachmentTargets(li, att.randomFilename);
+            if (targets.length === 0) {
+                console.log(
+                    "[OSL] attachment decrypt skipped: msg=" +
+                        msgId +
+                        " random=" +
+                        att.randomFilename +
+                        " reason=no_matching_cdn_element"
+                );
+                continue;
+            }
+            const url = targets[0].url;
             console.log(
-                "[OSL] attachment decrypt skipped: msg=" +
+                "[OSL] attachment detected: msg=" +
                     msgId +
-                    " reason=no_matching_cdn_element"
+                    " original=" +
+                    att.originalFilename +
+                    " random=" +
+                    att.randomFilename +
+                    " mime=" +
+                    att.mimeType +
+                    " url=" +
+                    url.substring(0, 80)
             );
-            return;
-        }
-
-        const url = targets[0].url;
-        console.log(
-            "[OSL] attachment detected: msg=" +
-                msgId +
-                " original=" +
-                env.originalFilename +
-                " random=" +
-                env.randomFilename +
-                " mime=" +
-                env.mimeType +
-                " url=" +
-                url.substring(0, 80)
-        );
-
-        let fileB64;
-        try {
-            fileB64 = await oslFetchAttachmentBase64(url);
-        } catch (err) {
-            console.error(
-                "[OSL] attachment fetch failed msg=" + msgId + ":",
-                err
-            );
-            return;
-        }
-        const decRes = await oslInvoke("osl_open_attachment", {
-            attKeyB64: env.attKey,
-            fileBytesB64: fileB64,
-        });
-        if (!decRes.ok) {
-            console.error(
-                "[OSL] attachment decrypt failed msg=" +
+            let fileB64;
+            try {
+                fileB64 = await oslFetchAttachmentBase64(url);
+            } catch (err) {
+                console.error(
+                    "[OSL] attachment fetch failed msg=" +
+                        msgId +
+                        " random=" +
+                        att.randomFilename +
+                        ":",
+                    err
+                );
+                continue;
+            }
+            const decRes = await oslInvoke("osl_open_attachment", {
+                attKeyB64: att.attKey,
+                fileBytesB64: fileB64,
+            });
+            if (!decRes.ok) {
+                console.error(
+                    "[OSL] attachment decrypt failed msg=" +
+                        msgId +
+                        " random=" +
+                        att.randomFilename +
+                        " error=" +
+                        decRes.error
+                );
+                continue;
+            }
+            const plain = decRes.value;
+            const binary = atob(plain.plaintextB64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], { type: plain.mimeType });
+            const blobUrl = URL.createObjectURL(blob);
+            cacheEntry.byRandomName[att.randomFilename] = {
+                blobUrl: blobUrl,
+                mime: plain.mimeType,
+            };
+            cacheEntry.blobUrls.push(blobUrl);
+            targets.forEach(function (t) {
+                oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
+            });
+            console.log(
+                "[OSL] attachment decrypted: msg=" +
                     msgId +
-                    " error=" +
-                    decRes.error
+                    " original=" +
+                    plain.originalFilename +
+                    " mime=" +
+                    plain.mimeType +
+                    " size=" +
+                    bytes.length
             );
-            return;
         }
-        const plain = decRes.value;
-        // Build a blob from the base64 plaintext.
-        const binary = atob(plain.plaintextB64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
+        if (cacheEntry.blobUrls.length > 0) {
+            window.__oslAttachmentDecrypted.set(msgId, cacheEntry);
+            oslAttachmentCacheEvictIfFull();
         }
-        const blob = new Blob([bytes], { type: plain.mimeType });
-        const blobUrl = URL.createObjectURL(blob);
-        window.__oslAttachmentDecrypted.set(msgId, {
-            blobUrls: [blobUrl],
-            mime: plain.mimeType,
-        });
-        oslAttachmentCacheEvictIfFull();
-        targets.forEach(function (t) {
-            oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
-        });
-        console.log(
-            "[OSL] attachment decrypted: msg=" +
-                msgId +
-                " original=" +
-                plain.originalFilename +
-                " mime=" +
-                plain.mimeType +
-                " size=" +
-                bytes.length
-        );
     }
 
     // ---- Section 4e (7d-FIX1): burned-scopes ledger cache ----
@@ -5296,15 +5623,53 @@
                 }
                 const channelId = sendMatch[1];
 
+                // Phase 8b: FormData bodies carry multipart
+                // attachment uploads (Discord's single-step
+                // /messages POST). Dispatch async — XHR.send has
+                // no synchronous return contract beyond "queues
+                // the send" so deferring the actual Reflect.apply
+                // until encryption completes is observably the
+                // same to Discord's load/error handlers.
+                if (
+                    typeof FormData !== "undefined" &&
+                    body instanceof FormData
+                ) {
+                    oslInterceptMultipartXhr(
+                        target,
+                        thisArg,
+                        args,
+                        channelId,
+                        body
+                    ).catch(function (err) {
+                        console.error(
+                            "[OSL] multipart XHR intercept threw:",
+                            err
+                        );
+                        try {
+                            setTimeout(function () {
+                                try {
+                                    thisArg.dispatchEvent(
+                                        new ProgressEvent("error")
+                                    );
+                                    thisArg.dispatchEvent(
+                                        new ProgressEvent("loadend")
+                                    );
+                                } catch (_) {}
+                            }, 0);
+                        } catch (_) {}
+                    });
+                    return undefined;
+                }
+
                 if (typeof body !== "string") {
                     if (DEBUG && body !== undefined && body !== null) {
                         const bodyKind =
                             (body.constructor && body.constructor.name) ||
                             typeof body;
                         console.log(
-                            "[OSL] outgoing /messages (XHR): non-string body (" +
+                            "[OSL] outgoing /messages (XHR): non-string non-FormData body (" +
                                 bodyKind +
-                                "); passthrough (Phase 4 will handle multipart)"
+                                "); passthrough"
                         );
                     }
                     return Reflect.apply(target, thisArg, args);
