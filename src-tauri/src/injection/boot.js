@@ -3140,7 +3140,162 @@
             );
         }
 
+        // 7d-FIX3b: snowflake bootstrap. Bootstrap-side
+        // verify_peer_map_self_entry handles the common relaunch
+        // case (identity has snowflake → repair peer_map). The
+        // first-launch case (no snowflake yet) needs boot.js to
+        // pull it from Discord runtime + register. Deferred so
+        // Discord's React tree is well-populated (the gear +
+        // account-burn injections at 500ms already exercise the
+        // same surfaces).
+        nativeSetTimeout(function () {
+            try {
+                oslEnsureSelfSnowflakeRegistered();
+            } catch (e) {
+                console.warn(
+                    "[OSL] oslEnsureSelfSnowflakeRegistered threw:",
+                    (e && e.message) || e
+                );
+            }
+        }, 1500);
+
         console.log("[OSL] Phase 7c UI installed");
+    }
+
+    /**
+     * 7d-FIX3b: extract the local user's Discord snowflake from the
+     * page-runtime React tree. Returns null if no strategy succeeds.
+     *
+     * Strategy A: walk the React fiber on the user-area avatar
+     * inside `panels__` (Discord's bottom-left user surface).
+     * Strategy B: walk the fiber on the channel-header anchor,
+     * which sometimes carries the local user prop further up the
+     * parent chain.
+     *
+     * Both filter on the 17-20 digit numeric format so a stray
+     * channel_id / guild_id can't pose as a user id.
+     */
+    function oslExtractDiscordSnowflakeFromRuntime() {
+        function isSnowflake(v) {
+            return typeof v === "string" && /^\d{17,20}$/.test(v);
+        }
+
+        function fiberFor(el) {
+            if (!el) return null;
+            try {
+                const key = Object.keys(el).find(function (k) {
+                    return k.indexOf("__reactFiber") === 0;
+                });
+                return key ? el[key] : null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function walk(fiber, maxDepth) {
+            let f = fiber;
+            const limit = maxDepth || 40;
+            for (let d = 0; d < limit && f; d++) {
+                try {
+                    const p = f.memoizedProps;
+                    if (p && typeof p === "object") {
+                        if (p.user && typeof p.user === "object") {
+                            if (isSnowflake(p.user.id)) return p.user.id;
+                        }
+                        if (p.currentUser && typeof p.currentUser === "object") {
+                            if (isSnowflake(p.currentUser.id))
+                                return p.currentUser.id;
+                        }
+                        if (isSnowflake(p.userId)) return p.userId;
+                    }
+                    const s = f.memoizedState;
+                    if (s && typeof s === "object") {
+                        if (s.user && typeof s.user === "object") {
+                            if (isSnowflake(s.user.id)) return s.user.id;
+                        }
+                    }
+                } catch (_) {}
+                f = f.return;
+            }
+            return null;
+        }
+
+        // Strategy A: panels__ avatar / user area.
+        const panel = document.querySelector('section[class*="panels__"]');
+        if (panel) {
+            const avatarCandidates = panel.querySelectorAll(
+                'img[src*="/avatars/"], img[src*="/users/"], ' +
+                    '[class*="avatar"], [class*="usernameContainer"], button'
+            );
+            for (let i = 0; i < avatarCandidates.length; i++) {
+                const fiber = fiberFor(avatarCandidates[i]);
+                if (!fiber) continue;
+                const id = walk(fiber, 30);
+                if (id) return id;
+            }
+            const id = walk(fiberFor(panel), 30);
+            if (id) return id;
+        }
+
+        // Strategy B: channel-header anchor.
+        const header = document.querySelector(
+            'section[class*="title_"][class*="container__"]'
+        );
+        if (header) {
+            const id = walk(fiberFor(header), 40);
+            if (id) return id;
+        }
+
+        return null;
+    }
+
+    /**
+     * 7d-FIX3b: probe Tauri-side identity for a registered snowflake;
+     * if missing, extract from Discord runtime + register via
+     * `osl_register_self_snowflake`. Idempotent server-side. Run
+     * once per boot. The Rust side validates 17-20 digits and
+     * refuses retag to a different snowflake.
+     */
+    let oslSnowflakeBootstrapDone = false;
+    function oslEnsureSelfSnowflakeRegistered() {
+        if (oslSnowflakeBootstrapDone) return;
+        oslSnowflakeBootstrapDone = true;
+        oslInvoke("osl_get_self_user_id", {}).then(function (r) {
+            if (r.ok && typeof r.value === "string" && /^\d{17,20}$/.test(r.value)) {
+                // Already registered — bootstrap already repaired
+                // peer_map. Nothing more to do.
+                return;
+            }
+            const sf = oslExtractDiscordSnowflakeFromRuntime();
+            if (!sf) {
+                console.warn(
+                    "[OSL] could not extract discord snowflake from runtime; " +
+                        "some features will be unavailable until next launch"
+                );
+                return;
+            }
+            console.log(
+                "[OSL] self snowflake extracted from runtime: " + sf
+            );
+            oslInvoke("osl_register_self_snowflake", { snowflake: sf }).then(
+                function (reg) {
+                    if (reg.ok) {
+                        console.log(
+                            "[OSL] self snowflake registered from Discord runtime"
+                        );
+                        // Reset the cached miss so subsequent
+                        // oslSelfDiscordId() calls re-fetch.
+                        oslSelfDiscordIdCache = null;
+                        oslSelfDiscordIdLastError = null;
+                    } else {
+                        console.warn(
+                            "[OSL] self snowflake registration failed:",
+                            reg.error
+                        );
+                    }
+                }
+            );
+        });
     }
 
     /**

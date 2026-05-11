@@ -1,0 +1,14 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-FIX3b: write a Discord snowflake onto the loaded identity
+# and repair the peer_map self-entry to match. Called from boot.js
+# after `oslExtractDiscordSnowflakeFromRuntime` resolves the local
+# user's snowflake (via React fiber walk on the panels__ avatar or
+# the channel-header fallback). Idempotent — if the identity
+# already has the same snowflake, just runs the verify step.
+# Validates 17-20 digit numeric format. Persists identity.json
+# via the active sealer.
+[[permission]]
+identifier = "allow-osl-register-self-snowflake"
+description = "Permits the discord.com main webview to invoke `osl_register_self_snowflake` (persists Discord snowflake on identity + repairs peer_map self-entry). 17-20 digit numeric validation enforced server-side. Phase 7d-FIX3b."
+commands.allow = ["osl_register_self_snowflake"]

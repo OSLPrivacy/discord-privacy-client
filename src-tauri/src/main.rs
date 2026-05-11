@@ -42,17 +42,17 @@ use ipc::commands::{
     cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
     cmd_osl_list_burned_scopes, cmd_osl_list_pending_invitations, cmd_osl_load_channel_history,
     cmd_osl_lockout_status, cmd_osl_mark_scope_burned, cmd_osl_password_status,
-    cmd_osl_persist_edit, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
-    cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation,
-    cmd_osl_send_whitelist_response, cmd_osl_set_burn_password, cmd_osl_set_main_password,
-    cmd_osl_set_main_password_after_recovery, cmd_osl_set_stealth_password, cmd_osl_set_whitelist,
-    cmd_osl_stealth_mode_engage, cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption,
-    cmd_osl_unburn_scope, cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password,
-    cmd_osl_verify_main_password, cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase,
-    cmd_register, cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
-    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
-    BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
-    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
+    cmd_osl_persist_edit, cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password,
+    cmd_osl_remove_main_password, cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker,
+    cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response, cmd_osl_set_burn_password,
+    cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
+    cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
+    cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
+    cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
+    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register, cmd_save_identity,
+    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
+    AeadSealRequest, AeadSealResponse, BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse,
+    GateVerifyDto, GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
     PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
     WhitelistRowDto,
@@ -604,6 +604,30 @@ async fn osl_get_self_user_id(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 7d-FIX3b: persist a Discord snowflake on the loaded
+/// identity and repair the peer_map self-entry to match. Called
+/// from boot.js after the React-fiber walk resolves the local
+/// user's snowflake on first launch.
+#[tauri::command]
+async fn osl_register_self_snowflake(
+    app: tauri::AppHandle,
+    snowflake: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    let result: Result<(), String> = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_register_self_snowflake(state.inner(), snowflake)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?;
+    if result.is_ok() {
+        if let Err(e) = app.emit("osl:self_registered", ()) {
+            tracing::debug!(?e, "OSL: emit self_registered event failed");
+        }
+    }
+    result
+}
+
 /// Phase 7d-A: settings-menu Identity page payload.
 #[tauri::command]
 async fn osl_get_identity_info(app: tauri::AppHandle) -> Result<IdentityInfoDto, String> {
@@ -1101,6 +1125,45 @@ fn main() {
                     .parse()
                     .expect("hardcoded discord.com URL parses")
             };
+            // 7d-FIX3b: optional CSP strip for Discord origins.
+            // Tauri 2.11's `on_web_resource_request` closure type:
+            //   F: Fn(http::Request<Vec<u8>>,
+            //         &mut http::Response<Cow<'static, [u8]>>)
+            //      + Send + Sync + 'static
+            // We don't touch the body — just remove the CSP header
+            // for Discord-origin responses so the WebView treats the
+            // page as unrestricted. This is what unblocks
+            // `window.__TAURI__.event.listen` (and its underlying
+            // fetch to ipc.localhost) for cross-window events.
+            //
+            // FIX3a's rewrite path mutated the CSP string in place;
+            // some Discord responses ended up with a malformed CSP
+            // that WebView2 then rejected, producing a white screen.
+            // Removing the header entirely sidesteps that whole
+            // class of bug — there's no string parse / serialize
+            // round-trip to get wrong.
+            //
+            // Threat-model note: Discord's CSP exists to protect
+            // against XSS from third-party CDN content and click-
+            // jacking on the web app. Neither applies inside a
+            // Tauri WebView where we control all JS injection via
+            // `initialization_script` and the only trusted UI lives
+            // on the separate `osl-gate://` origin under its own
+            // capability. Tauri's capability layer remains the
+            // actual security boundary.
+            //
+            // Env var `OSL_DISABLE_CSP_STRIP=1` (or `=true`) skips
+            // the strip entirely — emergency escape hatch if the
+            // strip is implicated in a future regression.
+            let csp_strip_disabled = std::env::var("OSL_DISABLE_CSP_STRIP")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if csp_strip_disabled {
+                tracing::warn!(
+                    "[OSL][csp] stripping disabled via OSL_DISABLE_CSP_STRIP; \
+                     cross-window events may fail"
+                );
+            }
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(initial_url))
                 .title("OSL Privacy")
                 .inner_size(1280.0, 800.0)
@@ -1116,6 +1179,39 @@ fn main() {
                 )
                 // Layer 10 injection. Runs before discord.com's bundle.
                 .initialization_script(injection::BOOT_SCRIPT)
+                // 7d-FIX3b: strip CSP from discord-origin responses
+                // so the WebView lets Tauri's IPC fetch endpoint
+                // through. Body untouched; only the CSP header is
+                // removed. Non-Discord responses pass through
+                // unchanged.
+                .on_web_resource_request(move |request, response| {
+                    if csp_strip_disabled {
+                        return;
+                    }
+                    let host = request.uri().host().unwrap_or("");
+                    let is_discord_origin = host == "discord.com"
+                        || host == "www.discord.com"
+                        || host == "ptb.discord.com"
+                        || host == "canary.discord.com"
+                        || host == "cdn.discordapp.com"
+                        || host.ends_with(".discord.com")
+                        || host.ends_with(".discordapp.com");
+                    if !is_discord_origin {
+                        return;
+                    }
+                    let headers = response.headers_mut();
+                    let removed = headers.remove("content-security-policy").is_some();
+                    let removed_ro = headers
+                        .remove("content-security-policy-report-only")
+                        .is_some();
+                    if removed || removed_ro {
+                        tracing::debug!(
+                            host = %host,
+                            path = %request.uri().path(),
+                            "[OSL][csp] stripped CSP from discord response"
+                        );
+                    }
+                })
                 .build()?;
 
             // Apply screenshot resistance immediately. This runs
@@ -1175,6 +1271,7 @@ fn main() {
             osl_toggle_scope_encryption,
             osl_list_pending_invitations,
             osl_get_self_user_id,
+            osl_register_self_snowflake,
             osl_get_identity_info,
             osl_list_all_whitelists,
             osl_password_status,

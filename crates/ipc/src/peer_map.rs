@@ -126,6 +126,16 @@ pub struct PeerEntry {
     /// outgoing whitelist entry.
     #[serde(default)]
     pub outgoing_whitelist_responses: std::collections::HashMap<String, bool>,
+
+    /// 7d-FIX3b: marker for the local user's own peer_map entry.
+    /// Populated by `osl_register_self_snowflake` or by bootstrap
+    /// repair (see `verify_peer_map_self_entry`). Lets the
+    /// settings-window Identity page identify the self row and
+    /// the burn-flow self-id lookup skip mismatched entries.
+    /// Default `None` for backward compatibility with pre-FIX3b
+    /// peer_map.json files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_self: Option<bool>,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to

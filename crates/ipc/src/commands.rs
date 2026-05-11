@@ -36,6 +36,177 @@ use store::{StoreError, StoredMessage};
 // nothing useful for the user.
 // =====================================================================
 
+/// 7d-FIX3b: ensure peer_map has a well-formed self-entry keyed
+/// by the user's Discord snowflake, matching the loaded identity's
+/// `user_id` and X25519 public key with `is_self = true`.
+///
+/// Called from bootstrap.rs after `load_peer_map`, and from
+/// `cmd_osl_register_self_snowflake` after identity gets a new
+/// snowflake. Idempotent — a no-op if the entry already matches.
+///
+/// Memory-only; the caller persists peer_map.json via the
+/// `verify_and_persist_peer_map_self_entry` wrapper for production
+/// paths. Splitting keeps tests hermetic (no
+/// `keystore::osl_config_dir()` writes).
+pub fn verify_peer_map_self_entry(state: &AppState) -> Result<(String, bool), String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let (osl_user_id, pubkey_b64, snowflake) = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let id = guard
+            .as_ref()
+            .ok_or_else(|| "identity_not_loaded".to_string())?;
+        let snow = id
+            .discord_snowflake
+            .clone()
+            .ok_or_else(|| "no_discord_snowflake".to_string())?;
+        let pub_b64 = STANDARD.encode(id.x25519_public.as_bytes());
+        (id.user_id.clone(), pub_b64, snow)
+    };
+
+    let needs_repair = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        match pm.get(&snowflake) {
+            None => true,
+            Some(entry) => {
+                let user_id_ok = entry.osl_user_id.as_deref() == Some(osl_user_id.as_str());
+                let pubkey_ok = entry.pubkey.as_deref() == Some(pubkey_b64.as_str());
+                let is_self_ok = entry.is_self.unwrap_or(false);
+                !(user_id_ok && pubkey_ok && is_self_ok)
+            }
+        }
+    };
+
+    if !needs_repair {
+        return Ok((snowflake, false));
+    }
+
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm.entry(snowflake.clone()).or_default();
+        entry.osl_user_id = Some(osl_user_id);
+        entry.pubkey = Some(pubkey_b64);
+        entry.discord_id = Some(snowflake.clone());
+        entry.is_self = Some(true);
+        // Leave outgoing_whitelists / incoming_decrypt_accepted /
+        // burned_scopes alone — self-entry doesn't whitelist itself,
+        // but if a prior bug populated those fields we don't want
+        // to clobber unrelated state during repair.
+    }
+    Ok((snowflake, true))
+}
+
+/// 7d-FIX3b: production wrapper around `verify_peer_map_self_entry`
+/// that persists peer_map.json if a repair happened. Tests use the
+/// bare verify and inspect AppState directly.
+pub fn verify_and_persist_peer_map_self_entry(state: &AppState) -> Result<(String, bool), String> {
+    let result = verify_peer_map_self_entry(state)?;
+    if result.1 {
+        persist_peer_map_now(state);
+    }
+    Ok(result)
+}
+
+/// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
+/// repair the peer_map self-entry to match. Called from boot.js
+/// the first time the runtime exposes the local user's snowflake.
+///
+/// Validates 17-20 digit format. Rejects mismatch against an
+/// existing recorded snowflake (account-change refusal). Idempotent
+/// for matching re-registrations (just runs verify).
+pub fn cmd_osl_register_self_snowflake(state: &AppState, snowflake: String) -> Result<(), String> {
+    if !snowflake.chars().all(|c| c.is_ascii_digit()) || !(17..=20).contains(&snowflake.len()) {
+        return Err(format!(
+            "OSL: register_self_snowflake: invalid format \
+             (expected 17-20 digit numeric, got {} chars)",
+            snowflake.len()
+        ));
+    }
+
+    enum Step {
+        Save(keystore::Identity),
+        AlreadySet,
+    }
+    let step = {
+        let mut guard = state.identity.lock().expect("identity mutex poisoned");
+        let id = guard
+            .as_mut()
+            .ok_or_else(|| "OSL: register_self_snowflake: identity not loaded".to_string())?;
+        if let Some(existing) = &id.discord_snowflake {
+            if existing != &snowflake {
+                return Err(format!(
+                    "OSL: register_self_snowflake: snowflake mismatch \
+                     (identity already bound to {}, refusing to retag to {}) — \
+                     this could indicate a Discord account change or a \
+                     state-corruption bug. Burn account + re-register if intentional.",
+                    existing, snowflake
+                ));
+            }
+            Step::AlreadySet
+        } else {
+            id.discord_snowflake = Some(snowflake.clone());
+            let mut snapshot = keystore::Identity::from_bytes(
+                id.user_id.clone(),
+                *id.x25519_secret.as_bytes(),
+                *id.x25519_public.as_bytes(),
+                *id.ed25519_secret.as_bytes(),
+                *id.ed25519_public.as_bytes(),
+                *id.mlkem_secret_bytes(),
+                id.mlkem_public_bytes,
+            );
+            snapshot.discord_snowflake = Some(snowflake.clone());
+            Step::Save(snapshot)
+        }
+    };
+
+    let to_save = match step {
+        Step::AlreadySet => return run_verify(state),
+        Step::Save(snapshot) => snapshot,
+    };
+
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: register_self_snowflake: config dir: {e}"))?;
+    let path = dir.join("identity.json");
+    let sealer = keystore::select_best_sealer();
+    if let Err(e) = keystore::save_identity(&path, &to_save, sealer.as_ref()) {
+        // Roll back the in-memory change so callers can retry
+        // without lying about the durable state.
+        let mut guard = state.identity.lock().expect("identity mutex poisoned");
+        if let Some(id) = guard.as_mut() {
+            id.discord_snowflake = None;
+        }
+        return Err(format!(
+            "OSL: register_self_snowflake: save_identity failed: {e}"
+        ));
+    }
+    eprintln!("[OSL][bootstrap] self snowflake registered: {snowflake}");
+    run_verify(state)
+}
+
+fn run_verify(state: &AppState) -> Result<(), String> {
+    match verify_and_persist_peer_map_self_entry(state) {
+        Ok((snowflake, repaired)) => {
+            if repaired {
+                eprintln!("[OSL][bootstrap] self-entry repaired for snowflake={snowflake}");
+            } else {
+                eprintln!("[OSL][bootstrap] self-entry verified");
+            }
+            Ok(())
+        }
+        Err(reason) if reason == "no_discord_snowflake" => {
+            eprintln!(
+                "[OSL][bootstrap] no discord snowflake on identity; \
+                 deferring to boot.js"
+            );
+            Ok(())
+        }
+        Err(reason) if reason == "identity_not_loaded" => {
+            Err("OSL: register_self_snowflake: identity not loaded".into())
+        }
+        Err(other) => Err(other),
+    }
+}
+
 fn persist_peer_map_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
