@@ -1,0 +1,13 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-C: open the trusted local settings window. The command
+# is idempotent (focuses an existing settings window if present)
+# and creates a new WebviewWindow at osl-gate://localhost/settings
+# otherwise. The settings window inherits the broader command
+# surface (passwords, recovery, identity, whitelist mutation) under
+# `settings-window-capability`; this command is the only entry
+# point Discord-origin JS has to that window.
+[[permission]]
+identifier = "allow-osl-open-settings-window"
+description = "Permits the discord.com main webview to invoke `osl_open_settings_window` (idempotent: creates the OSL Settings window or focuses an existing one). The settings UI runs on the local osl-gate:// origin under settings-window-capability. Phase 7d-C."
+commands.allow = ["osl_open_settings_window"]

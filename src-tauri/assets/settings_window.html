@@ -1,0 +1,1590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OSL Settings</title>
+<style>
+:root {
+  --osl-bg-primary: #313338;
+  --osl-bg-secondary: #2b2d31;
+  --osl-bg-tertiary: #1e1f22;
+  --osl-bg-floating: #18191c;
+  --osl-bg-accent: #3f4147;
+  --osl-bg-hover: rgba(78,80,88,0.30);
+  --osl-bg-selected: rgba(78,80,88,0.60);
+  --osl-text-normal: #dbdee1;
+  --osl-text-muted: #949ba4;
+  --osl-text-link: #00a8fc;
+  --osl-header-primary: #fff;
+  --osl-header-secondary: #b5bac1;
+  --osl-interactive-normal: #b5bac1;
+  --osl-interactive-hover: #dbdee1;
+  --osl-interactive-active: #fff;
+  --osl-brand: #5865f2;
+  --osl-brand-dark: #4752c4;
+  --osl-danger: #ed4245;
+  --osl-danger-dark: #c93437;
+  --osl-positive: #23a559;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+body {
+  background: var(--osl-bg-primary);
+  color: var(--osl-text-normal);
+  font-family: "gg sans", "Noto Sans", -apple-system, BlinkMacSystemFont,
+               "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  user-select: none;
+}
+
+.osl-layout {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  width: 100vw;
+}
+
+.osl-sidebar {
+  width: 220px;
+  background: var(--osl-bg-secondary);
+  padding: 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.osl-sidebar-brand {
+  padding: 4px 12px 12px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--osl-header-primary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.osl-sidebar-item {
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--osl-interactive-normal);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.osl-sidebar-item:hover { background: var(--osl-bg-hover); color: var(--osl-interactive-hover); }
+.osl-sidebar-item.active { background: var(--osl-bg-selected); color: var(--osl-interactive-active); }
+.osl-sidebar-item.disabled { cursor: not-allowed; opacity: 0.45; }
+.osl-sidebar-item.disabled:hover { background: transparent; color: var(--osl-interactive-normal); }
+.osl-sidebar-divider {
+  height: 1px;
+  background: var(--osl-bg-accent);
+  margin: 8px 4px;
+}
+.osl-sidebar-tag {
+  font-size: 10px;
+  opacity: 0.7;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--osl-bg-accent);
+}
+
+.osl-content {
+  flex: 1 1 auto;
+  padding: 24px 32px;
+  overflow-y: auto;
+}
+
+.osl-h1 { margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: var(--osl-header-primary); }
+.osl-h2 {
+  margin: 24px 0 8px 0; font-size: 14px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.02em; color: var(--osl-header-secondary);
+}
+.osl-h2.dim { opacity: 0.45; display: flex; align-items: center; gap: 8px; }
+
+.osl-field { margin: 8px 0; }
+.osl-field-label {
+  font-size: 12px; color: var(--osl-header-secondary);
+  text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 4px;
+}
+.osl-field-value {
+  font-family: Consolas, Menlo, monospace;
+  font-size: 13px;
+  color: var(--osl-text-normal);
+  background: var(--osl-bg-tertiary);
+  padding: 8px 10px;
+  border-radius: 4px;
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.osl-copy-btn {
+  flex-shrink: 0; padding: 4px 10px; font-size: 12px; border-radius: 3px;
+  background: var(--osl-brand); color: #fff; border: none; cursor: pointer;
+}
+.osl-copy-btn:hover { background: var(--osl-brand-dark); }
+
+.osl-tab-row {
+  display: flex; gap: 4px;
+  border-bottom: 1px solid var(--osl-bg-accent);
+  margin-bottom: 16px;
+}
+.osl-tab {
+  padding: 8px 14px; cursor: pointer; font-size: 14px;
+  color: var(--osl-interactive-normal);
+  border-bottom: 2px solid transparent;
+  user-select: none;
+}
+.osl-tab:hover { color: var(--osl-interactive-hover); }
+.osl-tab.active { color: var(--osl-interactive-active); border-bottom-color: var(--osl-brand); }
+
+.osl-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.osl-hint { font-size: 12px; color: var(--osl-text-muted); margin-bottom: 12px; }
+.osl-empty { text-align: center; color: var(--osl-text-muted); padding: 48px 16px; font-size: 14px; }
+
+.osl-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.osl-table th {
+  text-align: left; padding: 8px 10px; color: var(--osl-header-secondary);
+  font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--osl-bg-accent); cursor: pointer; user-select: none;
+}
+.osl-table td { padding: 10px; border-bottom: 1px solid var(--osl-bg-accent); vertical-align: middle; }
+.osl-table tr:hover td { background: var(--osl-bg-hover); }
+
+.osl-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.osl-pill-on { background: rgba(67,181,129,0.20); color: var(--osl-positive); }
+.osl-pill-off { background: rgba(149,165,166,0.20); color: var(--osl-text-muted); }
+
+.osl-row-btn { padding: 4px 10px; font-size: 12px; border-radius: 3px; border: none; cursor: pointer; margin-right: 4px; }
+.osl-row-btn-remove { background: var(--osl-bg-accent); color: var(--osl-text-normal); }
+.osl-row-btn-remove:hover { background: #54575c; }
+.osl-row-btn-burn { background: var(--osl-danger); color: #fff; }
+.osl-row-btn-burn:hover { background: var(--osl-danger-dark); }
+
+.osl-toggle { position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer; vertical-align: middle; }
+.osl-toggle-bg {
+  position: absolute; inset: 0; background: var(--osl-bg-accent);
+  border-radius: 10px; transition: background 0.15s;
+}
+.osl-toggle-bg.on { background: var(--osl-positive); }
+.osl-toggle-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  background: #fff; border-radius: 50%; transition: left 0.15s;
+}
+.osl-toggle-bg.on .osl-toggle-knob { left: 18px; }
+
+.osl-group { margin: 12px 0; }
+.osl-group-header {
+  cursor: pointer; padding: 6px 8px; font-weight: 600; font-size: 13px;
+  color: var(--osl-header-primary); background: #232428;
+  border-radius: 4px; display: flex; align-items: center; gap: 6px; user-select: none;
+}
+.osl-group-header:hover { background: var(--osl-bg-hover); }
+.osl-group-body { padding: 6px 0 6px 16px; }
+.osl-group-row {
+  padding: 6px 8px; font-size: 13px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border-bottom: 1px solid var(--osl-bg-accent);
+}
+.osl-group-row:last-child { border-bottom: none; }
+
+.osl-link { color: var(--osl-text-link); }
+
+/* Confirm + wizard modal dialogs */
+.osl-modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.50);
+  z-index: 100002; display: flex; align-items: center; justify-content: center;
+}
+.osl-modal-box {
+  background: var(--osl-bg-floating); color: var(--osl-text-normal);
+  border-radius: 8px; max-width: 480px; min-width: 360px;
+  padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.osl-modal-title { margin: 0 0 8px 0; font-size: 18px; font-weight: 600; color: var(--osl-header-primary); }
+.osl-modal-body { margin: 0 0 16px 0; font-size: 14px; line-height: 1.4; }
+.osl-modal-row { display: flex; justify-content: flex-end; gap: 8px; }
+.osl-modal-btn { padding: 6px 14px; border-radius: 4px; border: none; cursor: pointer; font-size: 14px; }
+.osl-modal-btn-cancel { background: transparent; color: inherit; border: 1px solid var(--osl-bg-accent); }
+.osl-modal-btn-go { background: var(--osl-brand); color: #fff; }
+.osl-modal-btn-go.danger { background: var(--osl-danger); }
+.osl-modal-btn-go:disabled, .osl-modal-btn-go.disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Password wizard input */
+.osl-pw-input {
+  font-family: Consolas, Menlo, monospace;
+  font-size: 16px;
+  letter-spacing: 0.3em;
+  padding: 8px 10px;
+  width: 100%;
+  background: var(--osl-bg-tertiary);
+  border: 1px solid var(--osl-bg-accent);
+  color: var(--osl-text-normal);
+  outline: none;
+  border-radius: 4px;
+}
+.osl-pw-input:focus { border-color: var(--osl-brand); }
+.osl-pw-counter { font-size: 11px; color: var(--osl-text-muted); text-align: right; margin-top: 2px; }
+.osl-pw-err { color: var(--osl-danger); font-size: 12px; margin: 8px 0 0 0; }
+
+.osl-phrase-grid {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;
+  font-family: Consolas, Menlo, monospace; font-size: 13px;
+  background: var(--osl-bg-tertiary);
+  padding: 12px; border-radius: 4px; user-select: text;
+}
+.osl-phrase-grid > div { user-select: text; }
+
+.osl-toast {
+  position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+  background: var(--osl-bg-floating); color: var(--osl-text-normal);
+  border: 1px solid var(--osl-bg-accent);
+  padding: 10px 16px; border-radius: 6px; font-size: 13px;
+  z-index: 100003; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  max-width: 480px;
+  opacity: 0; transition: opacity 0.15s;
+}
+.osl-toast.shown { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="osl-layout">
+  <div class="osl-sidebar" id="osl-sidebar">
+    <div class="osl-sidebar-brand">OSL Settings</div>
+  </div>
+  <div class="osl-content" id="osl-content"></div>
+</div>
+<div id="osl-toast-host"></div>
+<script>
+"use strict";
+
+// ============================================================
+// Tauri invoke wrapper + cross-window event helpers.
+// ============================================================
+function getInvoke() {
+  if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === "function") {
+    return window.__TAURI_INTERNALS__.invoke;
+  }
+  if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === "function") {
+    return window.__TAURI__.core.invoke;
+  }
+  return null;
+}
+
+async function oslInvoke(name, args) {
+  const invoke = getInvoke();
+  if (typeof invoke !== "function") return { ok: false, error: "no_invoke" };
+  try {
+    const value = await invoke(name, args || {});
+    return { ok: true, value: value };
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+}
+
+// Phase 7d-C Task 5: emit cross-window events. With
+// `withGlobalTauri = true` (tauri.conf.json), `window.__TAURI__.event`
+// is available and provides the documented `emit` helper. The
+// settings-window capability grants `core:event:allow-emit` so
+// any "osl:*" event can be emitted.
+async function oslEmit(eventName, payload) {
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.emit === "function") {
+      await window.__TAURI__.event.emit(eventName, payload === undefined ? null : payload);
+      return;
+    }
+    // Fallback: low-level invoke shape.
+    const invoke = getInvoke();
+    if (typeof invoke !== "function") return;
+    await invoke("plugin:event|emit", {
+      event: eventName,
+      payload: payload === undefined ? null : payload,
+    });
+  } catch (e) {
+    console.warn("[OSL settings] emit failed:", eventName, e);
+  }
+}
+
+// ============================================================
+// Toast.
+// ============================================================
+let _toastTimer = null;
+function oslToast(message) {
+  const host = document.getElementById("osl-toast-host");
+  host.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "osl-toast";
+  el.textContent = message;
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("shown"));
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => {
+    el.classList.remove("shown");
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 200);
+  }, 2400);
+}
+
+// ============================================================
+// Reusable confirm dialog. Returns a Promise<boolean>.
+// ============================================================
+function oslConfirm(opts) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "osl-modal-backdrop";
+    const box = document.createElement("div");
+    box.className = "osl-modal-box";
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = opts.title || "Confirm";
+    const body = document.createElement("p");
+    body.className = "osl-modal-body";
+    body.textContent = opts.body || "";
+    const row = document.createElement("div");
+    row.className = "osl-modal-row";
+    const cancel = document.createElement("button");
+    cancel.className = "osl-modal-btn osl-modal-btn-cancel";
+    cancel.textContent = opts.cancelText || "Cancel";
+    const go = document.createElement("button");
+    go.className = "osl-modal-btn osl-modal-btn-go" + (opts.danger ? " danger" : "");
+    go.textContent = opts.confirmText || "Confirm";
+    const close = (result) => {
+      document.removeEventListener("keydown", onKey, true);
+      if (backdrop.parentNode) backdrop.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(false); }
+    };
+    cancel.addEventListener("click", (e) => { e.stopPropagation(); close(false); });
+    go.addEventListener("click", (e) => { e.stopPropagation(); close(true); });
+    backdrop.addEventListener("click", (e) => {
+      // Per 7d-A spec: outside-click does NOTHING.
+      if (e.target === backdrop) e.stopPropagation();
+    });
+    document.addEventListener("keydown", onKey, true);
+    row.appendChild(cancel); row.appendChild(go);
+    box.appendChild(title); box.appendChild(body); box.appendChild(row);
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+  });
+}
+
+// ============================================================
+// Password wizard. Mirrors boot.js (7d-B1) semantics. Builder
+// receives (host, advance, cancel). Backdrop click does nothing
+// (form-bearing — accidental dismissal loses data). Escape
+// cancels.
+// ============================================================
+const OSL_PASSWORD_CANCEL = Symbol("osl_password_cancel");
+
+function oslPasswordWizard(builder) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "osl-modal-backdrop";
+    const box = document.createElement("div");
+    box.className = "osl-modal-box";
+    const host = document.createElement("div");
+    box.appendChild(host);
+    backdrop.appendChild(box);
+    const close = (result) => {
+      document.removeEventListener("keydown", onKey, true);
+      if (backdrop.parentNode) backdrop.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(OSL_PASSWORD_CANCEL); }
+    };
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) e.stopPropagation();
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(backdrop);
+    const advance = (value) => close(value);
+    const cancel = () => close(OSL_PASSWORD_CANCEL);
+    try { builder(host, advance, cancel); }
+    catch (e) { console.error("[OSL] wizard threw", e); close(OSL_PASSWORD_CANCEL); }
+  });
+}
+
+function pwValidAscii(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c > 0x7e) return false;
+  }
+  return true;
+}
+
+function pwMakeInput(placeholder) {
+  const wrap = document.createElement("div");
+  wrap.style.marginBottom = "12px";
+  const label = document.createElement("div");
+  label.className = "osl-field-label";
+  label.textContent = placeholder;
+  const input = document.createElement("input");
+  input.type = "password";
+  input.maxLength = 6;
+  input.autocomplete = "off";
+  input.autocapitalize = "off";
+  input.spellcheck = false;
+  input.className = "osl-pw-input";
+  const counter = document.createElement("div");
+  counter.className = "osl-pw-counter";
+  counter.textContent = "0/6";
+  input.addEventListener("input", () => { counter.textContent = String(input.value.length) + "/6"; });
+  wrap.appendChild(label);
+  wrap.appendChild(input);
+  wrap.appendChild(counter);
+  return { wrap, input, counter };
+}
+
+function pwRowButtons(host, primary, onPrimary, onCancel) {
+  const row = document.createElement("div");
+  row.className = "osl-modal-row";
+  const cancel = document.createElement("button");
+  cancel.className = "osl-modal-btn osl-modal-btn-cancel";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", (e) => { e.stopPropagation(); onCancel(); });
+  const go = document.createElement("button");
+  go.className = "osl-modal-btn osl-modal-btn-go";
+  go.textContent = primary;
+  go.disabled = true;
+  go.style.opacity = "0.5";
+  go.style.cursor = "not-allowed";
+  go.addEventListener("click", (e) => { e.stopPropagation(); if (go.disabled) return; onPrimary(); });
+  row.appendChild(cancel);
+  row.appendChild(go);
+  host.appendChild(row);
+  return { go, cancel };
+}
+
+function pwEnableBtn(btn, enabled) {
+  btn.disabled = !enabled;
+  btn.style.opacity = enabled ? "1" : "0.5";
+  btn.style.cursor = enabled ? "pointer" : "not-allowed";
+}
+
+function pwError(host, text) {
+  let err = host.querySelector(".osl-pw-err");
+  if (!err) {
+    err = document.createElement("div");
+    err.className = "osl-pw-err";
+    host.appendChild(err);
+  }
+  err.textContent = text || "";
+}
+
+function pwPhraseGrid(phrase) {
+  const grid = document.createElement("div");
+  grid.className = "osl-phrase-grid";
+  phrase.split(/\s+/).forEach((w, i) => {
+    const cell = document.createElement("div");
+    cell.textContent = (i + 1) + ". " + w;
+    grid.appendChild(cell);
+  });
+  return grid;
+}
+
+function pwCopyButton(text) {
+  const copy = document.createElement("button");
+  copy.className = "osl-copy-btn";
+  copy.style.marginTop = "10px";
+  copy.textContent = "Copy phrase";
+  copy.addEventListener("click", (e) => {
+    e.stopPropagation();
+    try {
+      navigator.clipboard.writeText(text).then(
+        () => { copy.textContent = "Copied!"; setTimeout(() => { copy.textContent = "Copy phrase"; }, 1500); },
+        () => { copy.textContent = "Copy failed"; }
+      );
+    } catch (_) { copy.textContent = "Copy failed"; }
+  });
+  return copy;
+}
+
+// ============================================================
+// State.
+// ============================================================
+let currentPage = "identity";
+let wlData = null;
+let wlTab = "flat";
+let wlSort = { col: "user", dir: "asc" };
+const wlCollapse = new Map();
+
+// ============================================================
+// Layout: sidebar + content panes.
+// ============================================================
+const LIVE_ITEMS = [
+  { id: "identity", label: "Identity" },
+  { id: "whitelist", label: "Whitelist Manager" },
+  { id: "passwords", label: "Passwords" },
+  { id: "about", label: "About" },
+];
+const FUTURE_ITEMS = [
+  { id: "_keybinds", label: "Keybinds" },
+  { id: "_duress", label: "Duress" },
+  { id: "_danger", label: "Danger Zone" },
+];
+
+function buildSidebar() {
+  const sb = document.getElementById("osl-sidebar");
+  for (const item of LIVE_ITEMS) {
+    const el = document.createElement("div");
+    el.className = "osl-sidebar-item";
+    el.setAttribute("data-osl-page", item.id);
+    el.textContent = item.label;
+    el.addEventListener("click", (e) => { e.stopPropagation(); switchPage(item.id); });
+    sb.appendChild(el);
+  }
+  const divider = document.createElement("div");
+  divider.className = "osl-sidebar-divider";
+  sb.appendChild(divider);
+  for (const item of FUTURE_ITEMS) {
+    const el = document.createElement("div");
+    el.className = "osl-sidebar-item disabled";
+    el.title = "Coming soon";
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    const tag = document.createElement("span");
+    tag.className = "osl-sidebar-tag";
+    tag.textContent = "Soon";
+    el.appendChild(label);
+    el.appendChild(tag);
+    sb.appendChild(el);
+  }
+}
+
+function switchPage(pageId) {
+  currentPage = pageId;
+  const items = document.querySelectorAll(".osl-sidebar-item[data-osl-page]");
+  for (const it of items) {
+    if (it.getAttribute("data-osl-page") === pageId) it.classList.add("active");
+    else it.classList.remove("active");
+  }
+  if (pageId === "identity") renderIdentity();
+  else if (pageId === "whitelist") renderWhitelist();
+  else if (pageId === "passwords") renderPasswords();
+  else if (pageId === "about") renderAbout();
+}
+
+function getPane() { return document.getElementById("osl-content"); }
+
+// ============================================================
+// Identity page.
+// ============================================================
+function identityField(label, value, copyable) {
+  const wrap = document.createElement("div");
+  wrap.className = "osl-field";
+  const lab = document.createElement("div");
+  lab.className = "osl-field-label";
+  lab.textContent = label;
+  const val = document.createElement("div");
+  val.className = "osl-field-value";
+  const span = document.createElement("span");
+  span.textContent = value;
+  span.style.userSelect = "text";
+  val.appendChild(span);
+  if (copyable) {
+    const btn = document.createElement("button");
+    btn.className = "osl-copy-btn";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          navigator.clipboard.writeText(value).then(
+            () => { btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = "Copy"; }, 1200); },
+            () => { btn.textContent = "Copy failed"; }
+          );
+        } else {
+          btn.textContent = "Copy unavailable";
+        }
+      } catch (_) { btn.textContent = "Copy failed"; }
+    });
+    val.appendChild(btn);
+  }
+  wrap.appendChild(lab);
+  wrap.appendChild(val);
+  return wrap;
+}
+
+async function renderIdentity() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const h1 = document.createElement("h1");
+  h1.className = "osl-h1";
+  h1.textContent = "Your Identity";
+  pane.appendChild(h1);
+  const loading = document.createElement("div");
+  loading.className = "osl-hint";
+  loading.textContent = "Loading…";
+  pane.appendChild(loading);
+  const result = await oslInvoke("osl_get_identity_info", {});
+  if (currentPage !== "identity") return;
+  loading.remove();
+  if (!result.ok) {
+    const err = document.createElement("div");
+    err.className = "osl-empty";
+    err.textContent = "Could not load identity: " + result.error;
+    pane.appendChild(err);
+    return;
+  }
+  const info = result.value;
+  const accountH = document.createElement("h2");
+  accountH.className = "osl-h2";
+  accountH.textContent = "OSL Account";
+  pane.appendChild(accountH);
+  pane.appendChild(identityField("OSL User ID", info.osl_user_id, false));
+  pane.appendChild(identityField("Discord Snowflake", info.discord_snowflake, false));
+  pane.appendChild(identityField("Public Key", info.pubkey, true));
+  const ksH = document.createElement("h2");
+  ksH.className = "osl-h2";
+  ksH.textContent = "Keyserver";
+  pane.appendChild(ksH);
+  pane.appendChild(identityField("Connected to", info.keyserver_url, false));
+  pane.appendChild(identityField(
+    "Status",
+    info.keyserver_url === "Unknown" ? "Not configured" : "Configured",
+    false
+  ));
+}
+
+// ============================================================
+// Whitelist Manager.
+// ============================================================
+function wlScopeLabel(row) {
+  switch (row.scope_kind) {
+    case "dm": return "DM";
+    case "gc_full": return "GC: " + row.scope_id;
+    case "gc_per_user": return "GC: " + row.scope_id + " (per-user)";
+    case "server_channel_full": return "Server: " + row.scope_id;
+    case "server_channel_per_user": return "Server: " + row.scope_id + " (per-user)";
+    case "server_full": return "Server: " + row.scope_id + " (full)";
+    case "server_full_per_user": return "Server: " + row.scope_id + " (full, per-user)";
+    default: return row.scope_kind + ":" + row.scope_id;
+  }
+}
+
+function wlRowToScopeInput(row) {
+  switch (row.scope_kind) {
+    case "dm": return { kind: "dm", id: row.peer_discord_id };
+    case "gc_full":
+    case "gc_per_user": return { kind: "gc", id: row.scope_id, channel_id: row.scope_id };
+    case "server_channel_full":
+    case "server_channel_per_user":
+      return { kind: "server_channel", id: row.scope_id, server_id: row.server_id, channel_id: row.channel_id };
+    case "server_full":
+    case "server_full_per_user":
+      return { kind: "server_full", id: row.scope_id, server_id: row.server_id };
+    default: return null;
+  }
+}
+
+async function renderWhitelist() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const toolbar = document.createElement("div");
+  toolbar.className = "osl-toolbar";
+  const h1 = document.createElement("h1");
+  h1.className = "osl-h1";
+  h1.textContent = "Whitelist Manager";
+  h1.style.margin = "0";
+  const refresh = document.createElement("button");
+  refresh.className = "osl-row-btn osl-row-btn-remove";
+  refresh.textContent = "Refresh";
+  refresh.addEventListener("click", (e) => {
+    e.stopPropagation();
+    wlData = null;
+    renderWhitelist();
+  });
+  toolbar.appendChild(h1);
+  toolbar.appendChild(refresh);
+  pane.appendChild(toolbar);
+  const hint = document.createElement("div");
+  hint.className = "osl-hint";
+  hint.textContent =
+    "To add a whitelist, click a user's avatar in Discord and use the OSL whitelist button on their profile.";
+  pane.appendChild(hint);
+
+  const tabRow = document.createElement("div");
+  tabRow.className = "osl-tab-row";
+  const tabs = [
+    { id: "flat", label: "Flat" },
+    { id: "by_scope", label: "By Scope" },
+    { id: "by_user", label: "By User" },
+  ];
+  for (const t of tabs) {
+    const el = document.createElement("div");
+    el.className = "osl-tab" + (wlTab === t.id ? " active" : "");
+    el.textContent = t.label;
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      wlTab = t.id;
+      renderWhitelist();
+    });
+    tabRow.appendChild(el);
+  }
+  pane.appendChild(tabRow);
+
+  const body = document.createElement("div");
+  pane.appendChild(body);
+
+  if (!wlData) {
+    const loading = document.createElement("div");
+    loading.className = "osl-hint";
+    loading.textContent = "Loading…";
+    body.appendChild(loading);
+    const result = await oslInvoke("osl_list_all_whitelists", {});
+    if (!result.ok) {
+      body.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "osl-empty";
+      err.textContent = "Could not load whitelists: " + result.error;
+      body.appendChild(err);
+      return;
+    }
+    wlData = result.value || [];
+    if (currentPage !== "whitelist") return;
+  }
+  body.innerHTML = "";
+  if (!wlData.length) {
+    const empty = document.createElement("div");
+    empty.className = "osl-empty";
+    empty.textContent = "No whitelists yet. Add one via a user's profile popup in Discord.";
+    body.appendChild(empty);
+    return;
+  }
+  if (wlTab === "flat") body.appendChild(renderWlFlat(wlData));
+  else if (wlTab === "by_scope") body.appendChild(renderWlByScope(wlData));
+  else body.appendChild(renderWlByUser(wlData));
+}
+
+function wlToggle(row) {
+  const toggle = document.createElement("div");
+  toggle.className = "osl-toggle";
+  const bg = document.createElement("div");
+  bg.className = "osl-toggle-bg" + (row.encrypt_toggle ? " on" : "");
+  const knob = document.createElement("div");
+  knob.className = "osl-toggle-knob";
+  bg.appendChild(knob);
+  toggle.appendChild(bg);
+  toggle.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const scopeInput = wlRowToScopeInput(row);
+    if (!scopeInput) return;
+    const result = await oslInvoke("osl_toggle_scope_encryption", { scopeInput });
+    if (!result.ok) {
+      if (result.error === "encrypt_toggle_refused_no_whitelist") {
+        oslToast("Whitelist a user first to enable encryption.");
+      } else {
+        oslToast("Toggle failed: " + result.error);
+      }
+      return;
+    }
+    row.encrypt_toggle = !!result.value;
+    bg.classList.toggle("on", row.encrypt_toggle);
+    // Notify Discord origin of the change.
+    oslEmit("osl:scope_encryption_toggled", {
+      scope_kind: row.scope_kind,
+      scope_id: row.scope_id,
+      server_id: row.server_id,
+      channel_id: row.channel_id,
+      encrypt_toggle: row.encrypt_toggle,
+    });
+  });
+  return toggle;
+}
+
+function wlRowButtons(row) {
+  const wrap = document.createElement("div");
+  const remove = document.createElement("button");
+  remove.className = "osl-row-btn osl-row-btn-remove";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", (e) => { e.stopPropagation(); onRemoveWhitelist(row); });
+  const burn = document.createElement("button");
+  burn.className = "osl-row-btn osl-row-btn-burn";
+  burn.textContent = "Burn";
+  burn.addEventListener("click", (e) => { e.stopPropagation(); onBurnScope(row); });
+  wrap.appendChild(remove);
+  wrap.appendChild(burn);
+  return wrap;
+}
+
+async function onRemoveWhitelist(row) {
+  const ok = await oslConfirm({
+    title: "Remove whitelist?",
+    body: "Remove whitelist for " + row.peer_username + " in " + wlScopeLabel(row) +
+      "? This un-whitelists but does NOT burn existing messages.",
+    confirmText: "Remove",
+    cancelText: "Cancel",
+  });
+  if (!ok) return;
+  const scopeInput = wlRowToScopeInput(row);
+  if (!scopeInput) return;
+  const result = await oslInvoke("osl_unwhitelist_scope", {
+    peerDiscordId: row.peer_discord_id,
+    scopeInput,
+    revokeBroadened: false,
+  });
+  if (!result.ok) { oslToast("Remove failed: " + result.error); return; }
+  oslToast("Removed whitelist for " + row.peer_username + " in " + wlScopeLabel(row));
+  // Cross-window event so boot.js can refresh in-memory state.
+  oslEmit("osl:whitelist_removed", {
+    scope_kind: row.scope_kind,
+    scope_id: row.scope_id,
+    server_id: row.server_id,
+    channel_id: row.channel_id,
+    peer_discord_id: row.peer_discord_id,
+  });
+  wlData = null;
+  renderWhitelist();
+}
+
+async function onBurnScope(row) {
+  const ok = await oslConfirm({
+    title: "Burn this scope?",
+    body: "Burn " + wlScopeLabel(row) + " for " + row.peer_username +
+      "? Your messages in this scope will become permanent ciphertext for them.",
+    confirmText: "Burn",
+    cancelText: "Cancel",
+    danger: true,
+  });
+  if (!ok) return;
+  const scopeInput = wlRowToScopeInput(row);
+  if (!scopeInput) return;
+  const selfIdRes = await oslInvoke("osl_get_self_user_id", {});
+  const selfId = selfIdRes.ok ? selfIdRes.value : null;
+  if (!selfId) { oslToast("Cannot burn — local identity not resolved."); return; }
+  const sendResult = await oslInvoke("osl_send_burn_marker", {
+    scopeInput,
+    channelMembers: [row.peer_discord_id],
+    selfDiscordId: selfId,
+  });
+  if (!sendResult.ok && sendResult.error !== "no_whitelisted_recipients") {
+    console.log("[OSL] settings burn marker send failed: " + sendResult.error);
+  }
+  const applyResult = await oslInvoke("osl_apply_burn", { scopeInput });
+  if (!applyResult.ok) { oslToast("Burn apply failed: " + applyResult.error); return; }
+  // Burn data destruction (7d-FIX1).
+  await oslInvoke("osl_burn_scope_data", { scopeInput });
+  await oslInvoke("osl_mark_scope_burned", { scopeInput });
+  oslToast("Burned " + wlScopeLabel(row) + " for " + row.peer_username);
+  // Cross-window event so Discord-origin updates __oslBurnedScopes and
+  // repaints the affected channel, and ships the marker via the
+  // Discord chat send path if a channel context exists.
+  oslEmit("osl:scope_burned", {
+    scope_kind: row.scope_kind,
+    scope_id: row.scope_id,
+    server_id: row.server_id,
+    channel_id: row.channel_id,
+    burn_marker_payload: sendResult.ok ? sendResult.value : null,
+  });
+  wlData = null;
+  renderWhitelist();
+}
+
+function renderWlFlat(rows) {
+  const wrap = document.createElement("div");
+  const table = document.createElement("table");
+  table.className = "osl-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const cols = [
+    { id: "user", label: "User" },
+    { id: "scope", label: "Scope" },
+    { id: "encrypt", label: "Encrypt" },
+    { id: "actions", label: "Actions" },
+  ];
+  for (const c of cols) {
+    const th = document.createElement("th");
+    th.textContent = c.label;
+    if (c.id !== "actions") {
+      th.style.cursor = "pointer";
+      th.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (wlSort.col === c.id) wlSort.dir = wlSort.dir === "asc" ? "desc" : "asc";
+        else { wlSort.col = c.id; wlSort.dir = "asc"; }
+        renderWhitelist();
+      });
+      if (wlSort.col === c.id) th.textContent += wlSort.dir === "asc" ? " ▲" : " ▼";
+    }
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const sorted = rows.slice().sort((a, b) => {
+    const col = wlSort.col;
+    let av, bv;
+    if (col === "user") { av = a.peer_username; bv = b.peer_username; }
+    else if (col === "scope") { av = a.scope_kind + ":" + a.scope_id; bv = b.scope_kind + ":" + b.scope_id; }
+    else if (col === "encrypt") { av = a.encrypt_toggle ? 1 : 0; bv = b.encrypt_toggle ? 1 : 0; }
+    else { av = 0; bv = 0; }
+    const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+    return wlSort.dir === "asc" ? cmp : -cmp;
+  });
+  const tbody = document.createElement("tbody");
+  for (const row of sorted) {
+    const tr = document.createElement("tr");
+    const userTd = document.createElement("td");
+    userTd.textContent = row.peer_username;
+    const scopeTd = document.createElement("td");
+    scopeTd.textContent = wlScopeLabel(row);
+    scopeTd.style.fontFamily = "Consolas,Menlo,monospace";
+    scopeTd.style.fontSize = "12px";
+    const encTd = document.createElement("td");
+    encTd.appendChild(wlToggle(row));
+    const actTd = document.createElement("td");
+    actTd.appendChild(wlRowButtons(row));
+    tr.appendChild(userTd);
+    tr.appendChild(scopeTd);
+    tr.appendChild(encTd);
+    tr.appendChild(actTd);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+function renderWlByScope(rows) {
+  const wrap = document.createElement("div");
+  const groups = { dm: [], gc: [], server: [] };
+  for (const r of rows) {
+    if (r.scope_kind === "dm") groups.dm.push(r);
+    else if (r.scope_kind === "gc_full" || r.scope_kind === "gc_per_user") groups.gc.push(r);
+    else groups.server.push(r);
+  }
+  if (groups.dm.length) wrap.appendChild(scopeGroup("DMs", "scope_dm", groups.dm, (r) => r.peer_username + " — DM"));
+  if (groups.gc.length) wrap.appendChild(scopeGroup("Group Chats", "scope_gc", groups.gc, (r) => r.peer_username + " — " + wlScopeLabel(r)));
+  if (groups.server.length) wrap.appendChild(scopeGroup("Servers", "scope_server", groups.server, (r) => r.peer_username + " — " + wlScopeLabel(r)));
+  return wrap;
+}
+
+function renderWlByUser(rows) {
+  const wrap = document.createElement("div");
+  const byUser = new Map();
+  for (const r of rows) {
+    if (!byUser.has(r.peer_discord_id)) byUser.set(r.peer_discord_id, []);
+    byUser.get(r.peer_discord_id).push(r);
+  }
+  const sortedUsers = Array.from(byUser.entries()).sort((a, b) => {
+    const av = (a[1][0] && a[1][0].peer_username) || a[0];
+    const bv = (b[1][0] && b[1][0].peer_username) || b[0];
+    return av < bv ? -1 : av > bv ? 1 : 0;
+  });
+  for (const [discordId, userRows] of sortedUsers) {
+    const username = userRows[0].peer_username;
+    wrap.appendChild(scopeGroup(username, "user:" + discordId, userRows, (r) => wlScopeLabel(r)));
+  }
+  return wrap;
+}
+
+function scopeGroup(headerLabel, collapseKey, rows, labelFn) {
+  const group = document.createElement("div");
+  group.className = "osl-group";
+  const header = document.createElement("div");
+  header.className = "osl-group-header";
+  const arrow = document.createElement("span");
+  const isCollapsed = wlCollapse.get(collapseKey) === true;
+  arrow.textContent = isCollapsed ? "▶" : "▼";
+  const title = document.createElement("span");
+  title.textContent = headerLabel + " (" + rows.length + ")";
+  header.appendChild(arrow);
+  header.appendChild(title);
+  const body = document.createElement("div");
+  body.className = "osl-group-body";
+  body.style.display = isCollapsed ? "none" : "block";
+  header.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nowCollapsed = body.style.display !== "none";
+    body.style.display = nowCollapsed ? "none" : "block";
+    arrow.textContent = nowCollapsed ? "▶" : "▼";
+    wlCollapse.set(collapseKey, nowCollapsed);
+  });
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "osl-group-row";
+    const left = document.createElement("div");
+    left.style.flex = "1 1 auto";
+    left.style.minWidth = "0";
+    left.style.overflow = "hidden";
+    left.style.textOverflow = "ellipsis";
+    left.style.whiteSpace = "nowrap";
+    left.textContent = labelFn(r);
+    const right = document.createElement("div");
+    right.style.display = "flex";
+    right.style.alignItems = "center";
+    right.style.gap = "8px";
+    right.style.flexShrink = "0";
+    const pill = document.createElement("span");
+    pill.className = "osl-pill " + (r.encrypt_toggle ? "osl-pill-on" : "osl-pill-off");
+    pill.textContent = r.encrypt_toggle ? "ON" : "OFF";
+    right.appendChild(pill);
+    right.appendChild(wlToggle(r));
+    right.appendChild(wlRowButtons(r));
+    row.appendChild(left);
+    row.appendChild(right);
+    body.appendChild(row);
+  }
+  group.appendChild(header);
+  group.appendChild(body);
+  return group;
+}
+
+// ============================================================
+// About page.
+// ============================================================
+function renderAbout() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const h1 = document.createElement("h1");
+  h1.className = "osl-h1";
+  h1.textContent = "About OSL";
+  pane.appendChild(h1);
+  const ver = document.createElement("div");
+  ver.className = "osl-field";
+  const vlab = document.createElement("div");
+  vlab.className = "osl-field-label";
+  vlab.textContent = "Version";
+  const vval = document.createElement("div");
+  vval.className = "osl-field-value";
+  const vspan = document.createElement("span");
+  vspan.textContent = "0.7.0-alpha (Phase 7d-C)";
+  vval.appendChild(vspan);
+  ver.appendChild(vlab);
+  ver.appendChild(vval);
+  pane.appendChild(ver);
+  const desc = document.createElement("p");
+  desc.style.fontSize = "14px";
+  desc.style.lineHeight = "1.5";
+  desc.style.margin = "16px 0";
+  desc.textContent =
+    "OSL Privacy is an end-to-end encrypted Discord client. " +
+    "Messages are encrypted on your device before being sent " +
+    "to Discord's servers. Only whitelisted recipients can read them.";
+  pane.appendChild(desc);
+  const linksH = document.createElement("h2");
+  linksH.className = "osl-h2";
+  linksH.textContent = "Links";
+  pane.appendChild(linksH);
+  const ul = document.createElement("ul");
+  ul.style.listStyle = "none";
+  ul.style.padding = "0";
+  ul.style.margin = "0";
+  const links = [
+    { label: "Website", value: "oslprivacy.com (when launched)" },
+    { label: "Source code", value: "https://github.com/OSLPrivacy" },
+    { label: "License", value: "AGPL-3.0" },
+  ];
+  for (const l of links) {
+    const li = document.createElement("li");
+    li.style.padding = "6px 0";
+    li.style.fontSize = "13px";
+    const lab = document.createElement("strong");
+    lab.textContent = l.label + ": ";
+    const val = document.createElement("span");
+    val.textContent = l.value;
+    val.className = "osl-link";
+    val.style.userSelect = "text";
+    li.appendChild(lab);
+    li.appendChild(val);
+    ul.appendChild(li);
+  }
+  pane.appendChild(ul);
+}
+
+// ============================================================
+// Passwords page.
+// ============================================================
+async function renderPasswords() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const h1 = document.createElement("h1");
+  h1.className = "osl-h1";
+  h1.textContent = "Passwords";
+  pane.appendChild(h1);
+  const loading = document.createElement("div");
+  loading.className = "osl-hint";
+  loading.textContent = "Loading…";
+  pane.appendChild(loading);
+  const status = await oslInvoke("osl_password_status", {});
+  if (currentPage !== "passwords") return;
+  loading.remove();
+  if (!status.ok) {
+    const err = document.createElement("div");
+    err.className = "osl-empty";
+    err.textContent = "Could not load password status: " + status.error;
+    pane.appendChild(err);
+    return;
+  }
+  const isSet = !!status.value.is_set;
+
+  // ---- Main Password section ----
+  const mh = document.createElement("h2");
+  mh.className = "osl-h2";
+  mh.textContent = "Main Password";
+  pane.appendChild(mh);
+  const statusP = document.createElement("p");
+  statusP.style.margin = "0 0 12px 0";
+  statusP.style.fontSize = "13px";
+  statusP.textContent = isSet
+    ? "Password is set. Required at boot."
+    : "No password set. OSL boots without a password gate.";
+  pane.appendChild(statusP);
+  const btnRow = document.createElement("div");
+  btnRow.style.display = "flex";
+  btnRow.style.gap = "8px";
+  const setBtn = document.createElement("button");
+  setBtn.className = "osl-row-btn osl-row-btn-remove";
+  setBtn.style.padding = "8px 16px";
+  setBtn.textContent = isSet ? "Change Password" : "Set Password";
+  setBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (isSet) onChangePassword();
+    else onSetPassword();
+  });
+  btnRow.appendChild(setBtn);
+  if (isSet) {
+    const rm = document.createElement("button");
+    rm.className = "osl-row-btn osl-row-btn-burn";
+    rm.style.padding = "8px 16px";
+    rm.textContent = "Remove Password";
+    rm.addEventListener("click", (e) => { e.stopPropagation(); onRemovePassword(); });
+    btnRow.appendChild(rm);
+  }
+  pane.appendChild(btnRow);
+
+  // ---- Recovery Phrase section ----
+  const rh = document.createElement("h2");
+  rh.className = "osl-h2";
+  rh.textContent = "Recovery Phrase";
+  pane.appendChild(rh);
+  const rp = document.createElement("p");
+  rp.style.margin = "0 0 12px 0";
+  rp.style.fontSize = "13px";
+  rp.textContent = isSet
+    ? "A recovery phrase was created when you set your password. Keep it somewhere safe."
+    : "Set a main password first.";
+  pane.appendChild(rp);
+  if (isSet) {
+    const view = document.createElement("button");
+    view.className = "osl-row-btn osl-row-btn-remove";
+    view.style.padding = "8px 16px";
+    view.textContent = "View Recovery Phrase";
+    view.addEventListener("click", (e) => { e.stopPropagation(); onViewPhrase(); });
+    pane.appendChild(view);
+  }
+
+  // ---- Stealth + Burn sections ----
+  await appendStealthSection(pane, isSet);
+  await appendBurnSection(pane, isSet);
+}
+
+async function onSetPassword() {
+  const step1 = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "Set Main Password";
+    host.appendChild(title);
+    const body = document.createElement("p");
+    body.className = "osl-modal-body";
+    body.textContent = "Choose a 6-character password. You'll need this every time OSL starts.";
+    host.appendChild(body);
+    const a = pwMakeInput("New password (6 characters)");
+    const b = pwMakeInput("Confirm password");
+    host.appendChild(a.wrap);
+    host.appendChild(b.wrap);
+    const errHost = document.createElement("div");
+    host.appendChild(errHost);
+    const { go } = pwRowButtons(host, "Continue", () => advance({ value: a.input.value }), cancel);
+    function check() {
+      let err = "";
+      const v = a.input.value, c = b.input.value;
+      if (v.length === 6 && !pwValidAscii(v)) err = "Only standard keyboard characters allowed.";
+      else if (c.length === 6 && v !== c) err = "Passwords don't match.";
+      pwError(errHost, err);
+      pwEnableBtn(go, v.length === 6 && c.length === 6 && v === c && pwValidAscii(v));
+    }
+    a.input.addEventListener("input", check);
+    b.input.addEventListener("input", check);
+    setTimeout(() => a.input.focus(), 0);
+  });
+  if (step1 === OSL_PASSWORD_CANCEL) return;
+  const setResult = await oslInvoke("osl_set_main_password", { password: step1.value });
+  if (!setResult.ok) { oslToast("Set password failed: " + setResult.error); return; }
+  const phrase = setResult.value;
+  const step2 = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "Your Recovery Phrase";
+    host.appendChild(title);
+    const body = document.createElement("p");
+    body.className = "osl-modal-body";
+    body.textContent = "Write these 12 words down somewhere safe. If you forget your password, this phrase is the only way back in. Anyone with this phrase can reset your password.";
+    host.appendChild(body);
+    host.appendChild(pwPhraseGrid(phrase));
+    const copyRow = document.createElement("div");
+    copyRow.style.marginTop = "8px";
+    copyRow.appendChild(pwCopyButton(phrase));
+    host.appendChild(copyRow);
+    const ackWrap = document.createElement("label");
+    ackWrap.style.display = "flex";
+    ackWrap.style.alignItems = "center";
+    ackWrap.style.gap = "8px";
+    ackWrap.style.margin = "16px 0 0 0";
+    ackWrap.style.fontSize = "13px";
+    ackWrap.style.cursor = "pointer";
+    const ack = document.createElement("input");
+    ack.type = "checkbox";
+    const ackLabel = document.createElement("span");
+    ackLabel.textContent = "I have written this down";
+    ackWrap.appendChild(ack);
+    ackWrap.appendChild(ackLabel);
+    host.appendChild(ackWrap);
+    const { go } = pwRowButtons(host, "Confirm", () => advance(true), cancel);
+    ack.addEventListener("change", () => pwEnableBtn(go, ack.checked));
+  });
+  if (step2 === OSL_PASSWORD_CANCEL) {
+    oslToast("Password set. Recovery phrase NOT acknowledged — view it via Passwords → View Recovery Phrase.");
+  } else {
+    oslToast("Main password set. Required on next launch.");
+  }
+  oslEmit("osl:password_state_changed", null);
+  renderPasswords();
+}
+
+async function onChangePassword() {
+  const step1 = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "Change Main Password";
+    host.appendChild(title);
+    const cur = pwMakeInput("Current password");
+    const a = pwMakeInput("New password (6 characters)");
+    const b = pwMakeInput("Confirm new password");
+    host.appendChild(cur.wrap);
+    host.appendChild(a.wrap);
+    host.appendChild(b.wrap);
+    const errHost = document.createElement("div");
+    host.appendChild(errHost);
+    const { go } = pwRowButtons(host, "Continue", () => advance({ current: cur.input.value, new: a.input.value }), cancel);
+    function check() {
+      let err = "";
+      if (a.input.value.length === 6 && !pwValidAscii(a.input.value)) err = "Only standard keyboard characters allowed.";
+      else if (b.input.value.length === 6 && a.input.value !== b.input.value) err = "New passwords don't match.";
+      pwError(errHost, err);
+      pwEnableBtn(go,
+        cur.input.value.length === 6 && a.input.value.length === 6 && b.input.value.length === 6 &&
+        a.input.value === b.input.value && pwValidAscii(a.input.value));
+    }
+    cur.input.addEventListener("input", check);
+    a.input.addEventListener("input", check);
+    b.input.addEventListener("input", check);
+    setTimeout(() => cur.input.focus(), 0);
+  });
+  if (step1 === OSL_PASSWORD_CANCEL) return;
+  const result = await oslInvoke("osl_change_main_password", { current: step1.current, new: step1.new });
+  if (!result.ok) { oslToast("Change failed: " + result.error); return; }
+  const phrase = result.value;
+  await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "New Recovery Phrase";
+    host.appendChild(title);
+    const body = document.createElement("p");
+    body.className = "osl-modal-body";
+    body.textContent = "Changing the password rotates your recovery phrase. Write down the new phrase — the old one no longer works.";
+    host.appendChild(body);
+    host.appendChild(pwPhraseGrid(phrase));
+    const ackWrap = document.createElement("label");
+    ackWrap.style.display = "flex";
+    ackWrap.style.alignItems = "center";
+    ackWrap.style.gap = "8px";
+    ackWrap.style.margin = "16px 0 0 0";
+    ackWrap.style.fontSize = "13px";
+    ackWrap.style.cursor = "pointer";
+    const ack = document.createElement("input");
+    ack.type = "checkbox";
+    const ackLabel = document.createElement("span");
+    ackLabel.textContent = "I have written this down";
+    ackWrap.appendChild(ack);
+    ackWrap.appendChild(ackLabel);
+    host.appendChild(ackWrap);
+    const { go } = pwRowButtons(host, "Confirm", () => advance(true), cancel);
+    ack.addEventListener("change", () => pwEnableBtn(go, ack.checked));
+  });
+  oslToast("Password changed.");
+  oslEmit("osl:password_state_changed", null);
+  renderPasswords();
+}
+
+async function onRemovePassword() {
+  const step = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "Remove Main Password";
+    host.appendChild(title);
+    const body = document.createElement("p");
+    body.className = "osl-modal-body";
+    body.textContent =
+      "Without a password, OSL boots directly into Discord without a gate. " +
+      "Your encrypted state files on disk will be decrypted (encryption-at-rest is keyed by your password).";
+    host.appendChild(body);
+    const cur = pwMakeInput("Confirm with current password");
+    host.appendChild(cur.wrap);
+    const { go } = pwRowButtons(host, "Remove password", () => advance({ current: cur.input.value }), cancel);
+    go.style.background = "var(--osl-danger)";
+    cur.input.addEventListener("input", () => pwEnableBtn(go, cur.input.value.length === 6));
+    setTimeout(() => cur.input.focus(), 0);
+  });
+  if (step === OSL_PASSWORD_CANCEL) return;
+  const result = await oslInvoke("osl_remove_main_password", { current: step.current });
+  if (!result.ok) { oslToast("Remove failed: " + result.error); return; }
+  oslToast("Main password removed. Discord loads directly on next launch.");
+  oslEmit("osl:password_state_changed", null);
+  renderPasswords();
+}
+
+async function onViewPhrase() {
+  const step1 = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "View Recovery Phrase";
+    host.appendChild(title);
+    const body = document.createElement("p");
+    body.className = "osl-modal-body";
+    body.textContent =
+      "This is your recovery phrase. Anyone with it can reset your password. View it in private and never share it.";
+    host.appendChild(body);
+    const cur = pwMakeInput("Enter current password to view phrase");
+    host.appendChild(cur.wrap);
+    const { go } = pwRowButtons(host, "Show phrase", () => advance({ current: cur.input.value }), cancel);
+    cur.input.addEventListener("input", () => pwEnableBtn(go, cur.input.value.length === 6));
+    setTimeout(() => cur.input.focus(), 0);
+  });
+  if (step1 === OSL_PASSWORD_CANCEL) return;
+  const result = await oslInvoke("osl_view_recovery_phrase", { current: step1.current });
+  if (!result.ok) { oslToast("View phrase failed: " + result.error); return; }
+  const phrase = result.value;
+  await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "Your Recovery Phrase";
+    host.appendChild(title);
+    host.appendChild(pwPhraseGrid(phrase));
+    host.appendChild(pwCopyButton(phrase));
+    const row = document.createElement("div");
+    row.className = "osl-modal-row";
+    row.style.marginTop = "16px";
+    const close = document.createElement("button");
+    close.className = "osl-modal-btn osl-modal-btn-go";
+    close.textContent = "Close";
+    close.addEventListener("click", (e) => { e.stopPropagation(); advance(true); });
+    row.appendChild(close);
+    host.appendChild(row);
+  });
+}
+
+async function appendStealthSection(pane, mainSet) {
+  const sh = document.createElement("h2");
+  sh.className = "osl-h2";
+  sh.textContent = "Stealth Password";
+  pane.appendChild(sh);
+  const intro = document.createElement("p");
+  intro.style.margin = "0 0 8px 0";
+  intro.style.fontSize = "13px";
+  intro.style.color = "var(--osl-text-muted)";
+  intro.textContent =
+    "When entered at the boot gate, this password opens Discord without any OSL features. " +
+    "Your encrypted data stays on disk but is hidden during this session.";
+  pane.appendChild(intro);
+  if (!mainSet) {
+    const p = document.createElement("p");
+    p.style.margin = "0 0 12px 0";
+    p.style.fontSize = "13px";
+    p.textContent = "Set a main password first.";
+    pane.appendChild(p);
+    return;
+  }
+  const stRes = await oslInvoke("osl_stealth_password_status", {});
+  const isSet = !!(stRes.ok && stRes.value && stRes.value.is_set);
+  const statusP = document.createElement("p");
+  statusP.style.margin = "0 0 12px 0";
+  statusP.style.fontSize = "13px";
+  statusP.textContent = isSet ? "Set" : "Not set";
+  pane.appendChild(statusP);
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "8px";
+  const setBtn = document.createElement("button");
+  setBtn.className = "osl-row-btn osl-row-btn-remove";
+  setBtn.style.padding = "8px 16px";
+  setBtn.textContent = isSet ? "Change Stealth Password" : "Set Stealth Password";
+  setBtn.addEventListener("click", (e) => { e.stopPropagation(); onSetStealthPassword(isSet); });
+  row.appendChild(setBtn);
+  if (isSet) {
+    const rm = document.createElement("button");
+    rm.className = "osl-row-btn osl-row-btn-burn";
+    rm.style.padding = "8px 16px";
+    rm.textContent = "Remove Stealth Password";
+    rm.addEventListener("click", (e) => { e.stopPropagation(); onRemoveStealthPassword(); });
+    row.appendChild(rm);
+  }
+  pane.appendChild(row);
+}
+
+async function appendBurnSection(pane, mainSet) {
+  const bh = document.createElement("h2");
+  bh.className = "osl-h2";
+  bh.textContent = "Burn Password";
+  pane.appendChild(bh);
+  const intro = document.createElement("p");
+  intro.style.margin = "0 0 8px 0";
+  intro.style.fontSize = "13px";
+  intro.style.color = "var(--osl-danger)";
+  intro.style.fontWeight = "500";
+  intro.textContent =
+    "When entered at the boot gate, this password DESTROYS all your OSL data and opens plain Discord. " +
+    "Cannot be undone. Use only if you need to destroy evidence under coercion.";
+  pane.appendChild(intro);
+  if (!mainSet) {
+    const p = document.createElement("p");
+    p.style.margin = "0 0 12px 0";
+    p.style.fontSize = "13px";
+    p.textContent = "Set a main password first.";
+    pane.appendChild(p);
+    return;
+  }
+  const stRes = await oslInvoke("osl_burn_password_status", {});
+  const isSet = !!(stRes.ok && stRes.value && stRes.value.is_set);
+  const statusP = document.createElement("p");
+  statusP.style.margin = "0 0 12px 0";
+  statusP.style.fontSize = "13px";
+  statusP.textContent = isSet ? "Set" : "Not set";
+  pane.appendChild(statusP);
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "8px";
+  const setBtn = document.createElement("button");
+  setBtn.className = "osl-row-btn osl-row-btn-remove";
+  setBtn.style.padding = "8px 16px";
+  setBtn.textContent = isSet ? "Change Burn Password" : "Set Burn Password";
+  setBtn.addEventListener("click", (e) => { e.stopPropagation(); onSetBurnPassword(isSet); });
+  row.appendChild(setBtn);
+  if (isSet) {
+    const rm = document.createElement("button");
+    rm.className = "osl-row-btn osl-row-btn-burn";
+    rm.style.padding = "8px 16px";
+    rm.textContent = "Remove Burn Password";
+    rm.addEventListener("click", (e) => { e.stopPropagation(); onRemoveBurnPassword(); });
+    row.appendChild(rm);
+  }
+  pane.appendChild(row);
+}
+
+async function onSetStealthPassword(isChange) {
+  return setSecondaryPassword({
+    kind: "stealth", label: "Stealth Password",
+    isChange, setCommand: "osl_set_stealth_password",
+  });
+}
+async function onSetBurnPassword(isChange) {
+  return setSecondaryPassword({
+    kind: "burn", label: "Burn Password",
+    isChange, setCommand: "osl_set_burn_password", danger: true,
+  });
+}
+
+async function setSecondaryPassword(opts) {
+  const step = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = (opts.isChange ? "Change " : "Set ") + opts.label;
+    host.appendChild(title);
+    if (opts.danger) {
+      const warn = document.createElement("p");
+      warn.className = "osl-modal-body";
+      warn.style.color = "var(--osl-danger)";
+      warn.textContent =
+        "Reminder: this password DESTROYS all OSL data when entered at the boot gate. " +
+        "Choose something memorable but distinct from your main and stealth passwords.";
+      host.appendChild(warn);
+    }
+    const main = pwMakeInput("Current main password");
+    const a = pwMakeInput("New " + opts.kind + " password (6 chars)");
+    const b = pwMakeInput("Confirm new " + opts.kind + " password");
+    host.appendChild(main.wrap);
+    host.appendChild(a.wrap);
+    host.appendChild(b.wrap);
+    const errHost = document.createElement("div");
+    host.appendChild(errHost);
+    const { go } = pwRowButtons(host, opts.isChange ? "Change" : "Set",
+      () => advance({ current_main: main.input.value, new: a.input.value }), cancel);
+    if (opts.danger) go.style.background = "var(--osl-danger)";
+    function check() {
+      let err = "";
+      if (a.input.value.length === 6 && !pwValidAscii(a.input.value)) err = "Only standard keyboard characters allowed.";
+      else if (b.input.value.length === 6 && a.input.value !== b.input.value) err = "Passwords don't match.";
+      else if (a.input.value.length === 6 && main.input.value.length === 6 && a.input.value === main.input.value)
+        err = opts.label + " must differ from your main password.";
+      pwError(errHost, err);
+      pwEnableBtn(go,
+        main.input.value.length === 6 && a.input.value.length === 6 && b.input.value.length === 6 &&
+        a.input.value === b.input.value && a.input.value !== main.input.value && pwValidAscii(a.input.value));
+    }
+    main.input.addEventListener("input", check);
+    a.input.addEventListener("input", check);
+    b.input.addEventListener("input", check);
+    setTimeout(() => main.input.focus(), 0);
+  });
+  if (step === OSL_PASSWORD_CANCEL) return;
+  const args = { currentMain: step.current_main };
+  if (opts.kind === "stealth") args.newStealth = step.new;
+  else args.newBurn = step.new;
+  const result = await oslInvoke(opts.setCommand, args);
+  if (!result.ok) { oslToast(opts.label + " set failed: " + result.error); return; }
+  oslToast(opts.label + " " + (opts.isChange ? "changed" : "set") + ".");
+  oslEmit("osl:password_state_changed", null);
+  renderPasswords();
+}
+
+async function onRemoveStealthPassword() {
+  return removeSecondaryPassword({ label: "Stealth Password", command: "osl_remove_stealth_password" });
+}
+async function onRemoveBurnPassword() {
+  return removeSecondaryPassword({ label: "Burn Password", command: "osl_remove_burn_password" });
+}
+
+async function removeSecondaryPassword(opts) {
+  const step = await oslPasswordWizard((host, advance, cancel) => {
+    const title = document.createElement("h3");
+    title.className = "osl-modal-title";
+    title.textContent = "Remove " + opts.label;
+    host.appendChild(title);
+    const main = pwMakeInput("Confirm with current main password");
+    host.appendChild(main.wrap);
+    const { go } = pwRowButtons(host, "Remove", () => advance({ current_main: main.input.value }), cancel);
+    go.style.background = "var(--osl-danger)";
+    main.input.addEventListener("input", () => pwEnableBtn(go, main.input.value.length === 6));
+    setTimeout(() => main.input.focus(), 0);
+  });
+  if (step === OSL_PASSWORD_CANCEL) return;
+  const result = await oslInvoke(opts.command, { currentMain: step.current_main });
+  if (!result.ok) { oslToast(opts.label + " remove failed: " + result.error); return; }
+  oslToast(opts.label + " removed.");
+  oslEmit("osl:password_state_changed", null);
+  renderPasswords();
+}
+
+// ============================================================
+// Boot.
+// ============================================================
+buildSidebar();
+switchPage("identity");
+</script>
+</body>
+</html>

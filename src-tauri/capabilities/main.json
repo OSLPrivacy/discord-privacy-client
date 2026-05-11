@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Permissions granted to the discord.com main webview for OSL encryption hooks. Tauri 2 blocks IPC from remote URLs by default; the `remote.urls` glob extends this capability to discord.com, which is otherwise considered untrusted. The permission list is intentionally minimal — only the OSL bridge is exposed; existing Tauri commands like generate_identity, save_identity, etc. remain non-callable from Discord.",
+  "description": "Permissions granted to the discord.com main webview for OSL contextual hooks (encrypt/decrypt, channel-header toggle/burn, profile-popup whitelist, invitation banners). Tauri 2 blocks IPC from remote URLs by default; the `remote.urls` glob extends this capability to discord.com. Phase 7d-C: password management, recovery phrase, stealth/burn password operations are NOT reachable from this origin — they live on the trusted local settings window (osl-gate://localhost/settings) under `settings-window.json`. Whitelist/scope/burn commands stay here because the channel-header burn button and profile-popup whitelist button are contextual to Discord UI.",
   "windows": ["main"],
   "remote": {
     "urls": [
@@ -31,19 +31,11 @@
     "allow-osl-get-identity-info",
     "allow-osl-list-all-whitelists",
     "allow-osl-password-status",
-    "allow-osl-set-main-password",
-    "allow-osl-change-main-password",
-    "allow-osl-remove-main-password",
-    "allow-osl-view-recovery-phrase",
-    "allow-osl-set-stealth-password",
-    "allow-osl-remove-stealth-password",
-    "allow-osl-stealth-password-status",
-    "allow-osl-set-burn-password",
-    "allow-osl-remove-burn-password",
-    "allow-osl-burn-password-status",
     "allow-osl-burn-scope-data",
     "allow-osl-mark-scope-burned",
     "allow-osl-unburn-scope",
-    "allow-osl-list-burned-scopes"
+    "allow-osl-list-burned-scopes",
+    "allow-osl-open-settings-window",
+    "core:event:allow-listen"
   ]
 }

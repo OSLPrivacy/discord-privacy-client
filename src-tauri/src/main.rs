@@ -60,7 +60,7 @@ use ipc::commands::{
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[tauri::command]
 async fn generate_identity(
@@ -858,6 +858,82 @@ async fn osl_list_burned_scopes(app: tauri::AppHandle) -> Result<Vec<BurnedScope
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 7d-C: open the trusted local settings window.
+///
+/// Idempotent — if a window labelled `settings` already exists,
+/// brings it to front (un-minimizes if needed, sets focus, raises
+/// always-on-top) and returns Ok. Otherwise, constructs a fresh
+/// `WebviewWindow` at `osl-gate://localhost/settings`. The
+/// `osl-gate` URI scheme handler (above) inspects the URL path
+/// and serves `settings_window.html` for `/settings`.
+///
+/// Modal-style behavior (Task 8d): Tauri 2 supports parent/owner
+/// windows on Windows via `WebviewWindowBuilder::parent`, but
+/// `is_modal` is not exposed in the stable API. We approximate
+/// modality by setting `always_on_top(true)` on the settings
+/// window so Discord can't visually cover it, and emit a
+/// `settings_window_closed` event on close so the Discord-origin
+/// boot.js can re-sync state.
+#[tauri::command]
+async fn osl_open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    // If the window already exists, focus + raise + bail.
+    if let Some(existing) = app.get_webview_window("settings") {
+        if let Err(e) = existing.unminimize() {
+            tracing::debug!(?e, "OSL settings: unminimize on existing window");
+        }
+        if let Err(e) = existing.show() {
+            tracing::debug!(?e, "OSL settings: show on existing window");
+        }
+        if let Err(e) = existing.set_focus() {
+            tracing::debug!(?e, "OSL settings: set_focus on existing window");
+        }
+        return Ok(());
+    }
+    let url: tauri::Url = "osl-gate://localhost/settings"
+        .parse()
+        .map_err(|e| format!("OSL settings: URL parse: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::External(url))
+        .title("OSL Settings")
+        .inner_size(900.0, 650.0)
+        .min_inner_size(700.0, 500.0)
+        .resizable(true)
+        .decorations(true)
+        .center()
+        .always_on_top(true);
+    // Best-effort: declare the Discord window as the parent so
+    // Windows treats settings as an owned-secondary. If lookup
+    // fails (transient race during app startup), proceed without
+    // — the always_on_top fallback still gives modal-ish UX.
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder.parent(&main).map_err(|e| {
+            tracing::debug!(?e, "OSL settings: parent(main) failed; continuing without");
+            format!("OSL settings: parent: {e}")
+        })?;
+    }
+    let window = builder
+        .build()
+        .map_err(|e| format!("OSL settings: build: {e}"))?;
+    // Apply the same screenshot protection as the main window so
+    // recovery phrases / passwords aren't capturable.
+    if let Err(e) = screenshot::apply_to_window(&window, ScreenshotProtection::On) {
+        tracing::debug!(
+            ?e,
+            "OSL settings: screenshot protection unavailable on settings window"
+        );
+    }
+    // Emit settings_window_closed when the window is destroyed.
+    // Use `on_window_event` to catch CloseRequested + Destroyed.
+    let app_for_close = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            if let Err(e) = app_for_close.emit("osl:settings_window_closed", ()) {
+                tracing::debug!(?e, "OSL settings: emit close event failed");
+            }
+        }
+    });
+    Ok(())
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -880,22 +956,42 @@ async fn osl_burn_message(app: tauri::AppHandle, discord_message_id: String) -> 
 /// to discord.com when the user authenticates successfully.
 const PASSWORD_GATE_HTML: &str = include_str!("../assets/password_gate.html");
 
+/// Phase 7d-C: bundled trusted-local Settings page. Served at
+/// `osl-gate://localhost/settings`. Hosts Identity / Whitelist
+/// Manager / Passwords / About in a separate Tauri window so
+/// sensitive operations (password mgmt, recovery phrase view,
+/// identity display) do not run on the Discord remote origin.
+const SETTINGS_WINDOW_HTML: &str = include_str!("../assets/settings_window.html");
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
-        // Phase 7d-B1: serve the bundled password-gate HTML at
-        // osl-gate://localhost. WebView2 routes the request here
-        // synchronously; we return the embedded bytes with a
-        // text/html content-type and the page renders. IPC works
-        // from this origin because Tauri 2 injects __TAURI_INTERNALS__
-        // on every webview load regardless of URL scheme, and the
-        // `password-gate-capability` (see capabilities/) grants the
-        // minimal command surface (verify + recovery + lockout).
-        .register_uri_scheme_protocol("osl-gate", |_app, _request| {
+        // Phase 7d-B1 / 7d-C: serve bundled local HTML pages on the
+        // `osl-gate://` custom URI scheme. WebView2 routes requests
+        // here synchronously; we inspect the path and return either
+        // the boot-gate page or the trusted-local Settings page.
+        // IPC works from this origin because Tauri 2 injects
+        // __TAURI_INTERNALS__ on every webview load regardless of
+        // URL scheme. Capabilities are window-scoped, so the gate
+        // window ("main", before navigation) uses
+        // `password-gate-capability` while the settings window
+        // ("settings", spawned by `osl_open_settings_window`) uses
+        // `settings-window-capability`.
+        //
+        // Path routing:
+        //   /settings, /settings/ → settings_window.html
+        //   anything else         → password_gate.html
+        .register_uri_scheme_protocol("osl-gate", |_app, request| {
+            let path = request.uri().path();
+            let body: &[u8] = if path == "/settings" || path == "/settings/" {
+                SETTINGS_WINDOW_HTML.as_bytes()
+            } else {
+                PASSWORD_GATE_HTML.as_bytes()
+            };
             tauri::http::Response::builder()
                 .header("Content-Type", "text/html; charset=utf-8")
                 .header("Cache-Control", "no-store")
-                .body(PASSWORD_GATE_HTML.as_bytes().to_vec())
+                .body(body.to_vec())
                 .unwrap_or_else(|_| {
                     tauri::http::Response::new(b"<h1>OSL gate render failed</h1>".to_vec())
                 })
@@ -1065,6 +1161,7 @@ fn main() {
             osl_mark_scope_burned,
             osl_unburn_scope,
             osl_list_burned_scopes,
+            osl_open_settings_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
