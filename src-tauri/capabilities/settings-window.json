@@ -9,6 +9,7 @@
     "allow-osl-list-all-whitelists",
     "allow-osl-unwhitelist-scope",
     "allow-osl-toggle-scope-encryption",
+    "allow-osl-set-scope-encrypt",
     "allow-osl-send-burn-marker",
     "allow-osl-apply-burn",
     "allow-osl-burn-scope-data",

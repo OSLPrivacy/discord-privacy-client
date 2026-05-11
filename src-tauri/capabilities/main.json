@@ -26,6 +26,7 @@
     "allow-osl-set-whitelist",
     "allow-osl-get-scope-encryption-state",
     "allow-osl-toggle-scope-encryption",
+    "allow-osl-set-scope-encrypt",
     "allow-osl-list-pending-invitations",
     "allow-osl-get-self-user-id",
     "allow-osl-get-identity-info",

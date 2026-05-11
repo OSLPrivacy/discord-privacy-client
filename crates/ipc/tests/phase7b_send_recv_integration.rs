@@ -138,25 +138,33 @@ fn test_osl_encrypt_message_v2_command() {
     assert_eq!(recovered.plaintext, b"hello phase 7b".to_vec());
 }
 
-// ---- 2. encrypt_message_v2 with empty whitelist ----
+// ---- 2. encrypt_message_v2 with empty whitelist (encrypt-to-self) ----
 
+// 7d-PIVOT: under the new semantics, encrypt_toggle is independent
+// of whitelist. Encrypting with no peer whitelist is now valid —
+// the message encrypts to self only (you alone will be able to
+// decrypt). The previous `no_whitelisted_recipients` error has
+// been removed.
 #[test]
-fn test_osl_encrypt_no_recipients_returns_error() {
+fn test_osl_encrypt_no_whitelist_encrypts_to_self() {
     let (state, _) = fresh_state_for_liam();
     // Henry is in the channel but not whitelisted.
     let (_henry_sk, henry_pk) = x25519::generate_keypair();
     install_peer_pubkey(&state, HENRY_DID, henry_pk);
 
     let scope = Scope::dm(HENRY_DID);
-    let err = cmd_osl_encrypt_message_v2(
+    let wire = cmd_osl_encrypt_message_v2(
         &state,
-        "won't ship".to_string(),
+        "encrypted-to-self only".to_string(),
         si(&scope),
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
     )
-    .expect_err("empty whitelist must error");
-    assert_eq!(err, "no_whitelisted_recipients");
+    .expect("encrypt-to-self must succeed under 7d-PIVOT");
+    assert!(
+        wire.starts_with("DPC0::"),
+        "expected DPC0 wire prefix, got: {wire}"
+    );
 }
 
 // ---- 3. burn marker applies ----

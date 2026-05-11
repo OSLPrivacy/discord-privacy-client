@@ -222,7 +222,7 @@ fn persist_peer_map_now(state: &AppState) {
     }
 }
 
-fn persist_whitelist_state_now(state: &AppState) {
+pub fn persist_whitelist_state_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -1610,13 +1610,13 @@ pub fn cmd_osl_encrypt_message_v2(
         )
     };
 
-    // recipients always includes self_pk (len >= 1). A list of
-    // exactly self means no peer matched — surface the named
-    // error so boot.js can render it as "your whitelist is empty
-    // for this scope" (UI in 7c).
-    if recipients.len() <= 1 {
-        return Err("no_whitelisted_recipients".to_string());
-    }
+    // 7d-PIVOT: encrypt_toggle is no longer coupled to having a
+    // peer whitelist. `recipients_for_scope` always returns at
+    // least self_pk (len >= 1); encrypt-to-self is a valid send
+    // result (you alone will be able to decrypt). The caller
+    // (boot.js v=2 send gate) decides whether to call this based
+    // on the per-scope encrypt_toggle, independent of whitelist
+    // size.
 
     crate::wire_v2::encrypt_v2(
         plaintext.as_bytes(),
@@ -2310,13 +2310,34 @@ pub fn cmd_osl_unwhitelist_scope(
         }
     }
 
-    // 3. Drop the scope from whitelist_state.
+    // 3. Remove the named peer from the scope's whitelist
+    //    entry, but KEEP `encrypt_toggle` intact (7d-PIVOT
+    //    decision Q3:B — scope burn destroys data + removes
+    //    whitelist for this peer, but the user's per-scope
+    //    encrypt preference survives). The scope entry stays
+    //    in whitelist_state as long as encrypt_toggle is set
+    //    or any other peers remain whitelisted; otherwise we
+    //    drop the empty entry to keep the file compact.
     {
         let mut ws_guard = state
             .whitelist_state
             .lock()
             .expect("whitelist_state mutex poisoned");
-        ws_guard.remove(&scope.storage_key());
+        let key = scope.storage_key();
+        let drop_entry = if let Some(entry) = ws_guard.get_mut(&key) {
+            entry.members.retain(|m| m != &peer_discord_id);
+            entry.whitelisted_users.retain(|u| u != &peer_discord_id);
+            // Drop only if there's nothing left worth persisting.
+            !entry.encrypt_toggle
+                && entry.members.is_empty()
+                && entry.whitelisted_users.is_empty()
+                && !entry.full_whitelist
+        } else {
+            false
+        };
+        if drop_entry {
+            ws_guard.remove(&key);
+        }
     }
 
     // 4. Wipe wrapped_keys.
@@ -2555,19 +2576,12 @@ pub fn cmd_osl_toggle_scope_encryption(
     let entry = ws_guard
         .entry(key)
         .or_insert_with(crate::whitelist_state::ScopeState::default);
-    // Compute has_whitelist from the in-place entry so we don't
-    // need to re-call get_scope_encryption_state.
-    let has_whitelist = match scope.kind {
-        crate::scope::ScopeKind::Dm => true,
-        _ => {
-            (entry.full_whitelist && !entry.members.is_empty())
-                || !entry.whitelisted_users.is_empty()
-        }
-    };
-    if !entry.encrypt_toggle && !has_whitelist {
-        // Refusing to turn ON without a whitelist.
-        return Err("encrypt_toggle_refused_no_whitelist".to_string());
-    }
+    // 7d-PIVOT: encrypt_toggle is now independent of whitelist
+    // existence. Toggling ON with no whitelist is the
+    // "encrypt-to-self-only" mode — your messages encrypt and
+    // only you can decrypt them. The previous
+    // `encrypt_toggle_refused_no_whitelist` early-error has been
+    // removed.
     entry.encrypt_toggle = !entry.encrypt_toggle;
     // Mark `auto_enabled = false` since this is a manual
     // user action — distinguishes the §2.3 auto-enable from a
@@ -2578,6 +2592,36 @@ pub fn cmd_osl_toggle_scope_encryption(
     // 7d-FIX1: persist the new toggle state.
     persist_whitelist_state_now(state);
     Ok(new_toggle)
+}
+
+/// 7d-PIVOT: explicit set (not toggle) of a scope's encrypt state.
+/// Used by the composer toggle UI which knows the desired end state
+/// rather than just "flip whatever it was." Idempotent — no-op when
+/// the requested state already matches. Persists on change.
+pub fn cmd_osl_set_scope_encrypt(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    enabled: bool,
+) -> Result<bool, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let key = scope.storage_key();
+    let mut ws_guard = state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned");
+    let entry = ws_guard
+        .entry(key)
+        .or_insert_with(crate::whitelist_state::ScopeState::default);
+    if entry.encrypt_toggle == enabled {
+        return Ok(enabled);
+    }
+    entry.encrypt_toggle = enabled;
+    entry.auto_enabled = false;
+    drop(ws_guard);
+    persist_whitelist_state_now(state);
+    Ok(enabled)
 }
 
 /// JS-facing DTO for one pending invitation. Mirrors

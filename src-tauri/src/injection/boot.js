@@ -763,12 +763,15 @@
         return oslInvoke("osl_get_scope_encryption_state", {
             scopeInput: v7cScope,
         }).then(function (stateRes) {
+            // 7d-PIVOT: encrypt_toggle is now independent of
+            // whitelist. Send-time gate is just encrypt_toggle —
+            // if no peer whitelist exists, the Rust send path
+            // encrypts to self only (you alone decrypt).
             if (
                 !stateRes ||
                 !stateRes.ok ||
                 !stateRes.value ||
-                !stateRes.value.encrypt_toggle ||
-                !stateRes.value.has_whitelist
+                !stateRes.value.encrypt_toggle
             ) {
                 return v1Send();
             }
@@ -2038,6 +2041,153 @@
         container.appendChild(btn);
     }
 
+    // ---- 7d-PIVOT: composer encrypt toggle ----
+    //
+    // Pill button injected into Discord's composer toolbar. The pill
+    // is the new control surface for the per-scope `encrypt_toggle`
+    // (decoupled from whitelist in PIVOT — turning ON without a
+    // whitelist means "encrypt-to-self-only"). The previous
+    // channel-header lock stays put as a separate, view-only
+    // indicator of whitelist coverage.
+    //
+    // Injection strategy: fallback inline-composer position (Task
+    // 2c). The floating-strip-above-composer position (Task 2b)
+    // turned out to fight Discord's typing-indicator container on
+    // some channel layouts (different React tree depending on
+    // server vs DM); inline-toolbar is consistent across all
+    // channel kinds.
+    const COMPOSER_TOGGLE_DATA_ATTR = "data-osl-composer-encrypt";
+
+    function oslFindComposerToolbar() {
+        // The composer form has a buttons__ row holding GIF / gift /
+        // sticker / emoji icons. We prepend our pill there.
+        // Selector targets a stable suffix pattern Discord ships.
+        return (
+            document.querySelector(
+                'form[class*="form_"] [class*="buttons__"]'
+            ) ||
+            document.querySelector('[class*="channelTextArea_"] [class*="buttons__"]')
+        );
+    }
+
+    function oslComposerToggleStyle(btn, on) {
+        if (on) {
+            btn.style.background = "rgba(35,165,89,0.20)";
+            btn.style.color = "#23a559";
+            btn.textContent = "ENC ON";
+            btn.setAttribute("aria-pressed", "true");
+            btn.title = "OSL encryption ON — click to disable for this channel";
+        } else {
+            btn.style.background = "var(--background-modifier-accent, #3f4147)";
+            btn.style.color = "var(--text-muted, #949ba4)";
+            btn.textContent = "ENC OFF";
+            btn.setAttribute("aria-pressed", "false");
+            btn.title =
+                "OSL encryption OFF — click to enable (encrypt-to-self if no whitelist)";
+        }
+    }
+
+    async function oslComposerToggleRefresh(btn) {
+        const ctx = oslCurrentChannelContext();
+        if (!ctx) return;
+        const scope = oslScopeForCurrentContext(ctx);
+        if (!scope) return;
+        const r = await oslInvoke("osl_get_scope_encryption_state", {
+            scopeInput: scope,
+        });
+        if (!r.ok) return;
+        oslComposerToggleStyle(btn, !!(r.value && r.value.encrypt_toggle));
+    }
+
+    async function oslComposerToggleOnClick(btn) {
+        const ctx = oslCurrentChannelContext();
+        if (!ctx) {
+            oslToast("Cannot resolve channel scope");
+            return;
+        }
+        const scope = oslScopeForCurrentContext(ctx);
+        if (!scope) {
+            oslToast("Cannot resolve channel scope");
+            return;
+        }
+        const r = await oslInvoke("osl_get_scope_encryption_state", {
+            scopeInput: scope,
+        });
+        if (!r.ok) {
+            oslToast("Encrypt toggle failed: " + r.error);
+            return;
+        }
+        const currentOn = !!(r.value && r.value.encrypt_toggle);
+        const set = await oslInvoke("osl_set_scope_encrypt", {
+            scopeInput: scope,
+            enabled: !currentOn,
+        });
+        if (!set.ok) {
+            oslToast("Encrypt toggle failed: " + set.error);
+            return;
+        }
+        oslComposerToggleStyle(btn, !!set.value);
+        // Refresh the header lock too — coverage display may shift.
+        try {
+            oslRefreshHeaderState();
+        } catch (_) {}
+    }
+
+    function oslComposerToggleInject() {
+        const toolbar = oslFindComposerToolbar();
+        if (!toolbar) return;
+        // Idempotency.
+        if (
+            toolbar.querySelector(
+                "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+            )
+        ) {
+            return;
+        }
+        const btn = document.createElement("div");
+        btn.setAttribute("role", "button");
+        btn.setAttribute("tabindex", "0");
+        btn.setAttribute(COMPOSER_TOGGLE_DATA_ATTR, "1");
+        btn.setAttribute("aria-label", "OSL encrypt toggle");
+        btn.style.display = "inline-flex";
+        btn.style.alignItems = "center";
+        btn.style.justifyContent = "center";
+        btn.style.padding = "2px 10px";
+        btn.style.marginRight = "6px";
+        btn.style.borderRadius = "12px";
+        btn.style.fontSize = "11px";
+        btn.style.fontWeight = "700";
+        btn.style.letterSpacing = "0.05em";
+        btn.style.cursor = "pointer";
+        btn.style.userSelect = "none";
+        btn.style.transition = "background 0.12s, color 0.12s";
+        oslComposerToggleStyle(btn, false);
+        btn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            oslComposerToggleOnClick(btn);
+        });
+        btn.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                oslComposerToggleOnClick(btn);
+            }
+        });
+        // Prepend so we're left of GIF/gift/sticker icons.
+        toolbar.insertBefore(btn, toolbar.firstChild);
+        // Reflect actual scope state (async).
+        oslComposerToggleRefresh(btn).catch(function () {});
+    }
+
+    function oslComposerToggleRefreshIfMounted() {
+        const btn = document.querySelector(
+            "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+        );
+        if (!btn) return;
+        oslComposerToggleRefresh(btn).catch(function () {});
+    }
+
     function oslHeaderInjectButtons(header) {
         if (!header) return;
         const container = oslFindHeaderIconContainer(header);
@@ -2123,30 +2273,33 @@
         oslHeaderState.scopeKey = oslScopeStorageKey(scopeInput);
         oslHeaderState.encryptToggle = !!st.encrypt_toggle;
         oslHeaderState.hasWhitelist = !!st.has_whitelist;
-        encryptBtn.innerHTML = oslLockSvg(
-            st.encrypt_toggle ? "closed" : "open"
-        );
+        // 7d-PIVOT: header lock now indicates WHITELIST coverage,
+        // not encrypt_toggle. The composer pill is the new
+        // encrypt-toggle control surface; this icon shows whether
+        // any peer in this scope is whitelisted to decrypt your
+        // messages. Two-state for this phase — gray (no peers
+        // whitelisted) vs green (≥ 1 peer whitelisted). The full
+        // tri-state (gray / yellow / green) tied to participant
+        // overlap is a follow-up.
+        encryptBtn.innerHTML = oslLockSvg(st.has_whitelist ? "closed" : "open");
         encryptBtn.setAttribute(
             "aria-label",
-            "OSL encrypt: " + (st.encrypt_toggle ? "on" : "off")
+            "OSL whitelist: " +
+                (st.has_whitelist ? "active" : "none")
         );
-        if (!st.has_whitelist) {
-            encryptBtn.style.opacity = "0.45";
-            encryptBtn.style.pointerEvents = "none";
-            encryptBtn.style.color = "var(--text-muted, #87898c)";
-            encryptBtn.title = "Whitelist a user first to enable encryption.";
-        } else {
-            encryptBtn.style.opacity = "1";
-            encryptBtn.style.pointerEvents = "auto";
-            encryptBtn.style.color = st.encrypt_toggle
-                ? "var(--brand-560, #5865f2)"
-                : "var(--text-normal, #dbdee1)";
-            encryptBtn.title = st.encrypt_toggle
-                ? "Encryption ON — click to disable in " +
-                  oslScopeLabel(scopeInput)
-                : "Encryption OFF — click to enable in " +
-                  oslScopeLabel(scopeInput);
-        }
+        encryptBtn.style.opacity = "1";
+        encryptBtn.style.pointerEvents = "auto";
+        encryptBtn.style.color = st.has_whitelist
+            ? "var(--status-positive, #23a559)"
+            : "var(--text-muted, #87898c)";
+        encryptBtn.title = st.has_whitelist
+            ? "Whitelist active in " +
+              oslScopeLabel(scopeInput) +
+              " — click for whitelist details"
+            : "No whitelist in " +
+              oslScopeLabel(scopeInput) +
+              " — encrypted messages here go to self only. " +
+              "Add a peer via their profile popup.";
         if (burnBtn) {
             burnBtn.title =
                 "Burn your messages in " + oslScopeLabel(scopeInput);
@@ -2205,6 +2358,14 @@
         }
     }
 
+    // 7d-PIVOT: header-lock click is now a passive informational
+    // surface. The composer pill is the encrypt control; the header
+    // icon indicates whitelist coverage. Click opens a hint toast
+    // pointing at the whitelist management surface (settings window
+    // or profile popup). Full tri-state + bulk-toggle behavior
+    // (whitelist all participants on click) is a follow-up phase —
+    // it needs participant enumeration from Discord's React fiber
+    // which deserves a focused implementation.
     async function oslOnEncryptToggleClick(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -2214,26 +2375,11 @@
             oslToast("OSL: cannot determine current scope");
             return;
         }
-        const result = await oslInvoke("osl_toggle_scope_encryption", {
-            scopeInput: scopeInput,
-        });
-        if (!result.ok) {
-            if (result.error === "encrypt_toggle_refused_no_whitelist") {
-                oslToast(
-                    "Whitelist a user first to enable encryption."
-                );
-            } else {
-                oslToast("OSL: toggle failed: " + result.error);
-            }
-            return;
-        }
         oslToast(
-            "Encryption " +
-                (result.value ? "ON" : "OFF") +
-                " in " +
-                oslScopeLabel(scopeInput)
+            "Whitelist management: open Settings → Whitelist Manager, " +
+                "or click a user's avatar + their OSL whitelist button. " +
+                "Use the composer pill to toggle encryption."
         );
-        oslRefreshHeaderState();
     }
 
     async function oslOnBurnClick(e) {
@@ -2372,8 +2518,11 @@
      *     from on-disk store, which now has no wrapped_keys).
      *   - If a message has no `recvCovers` entry (e.g. it was
      *     loaded from history before this session and its cover
-     *     was never observed live), we paint a `[burned]` marker
-     *     instead — better than leaving plaintext on screen.
+     *     was never observed live), we clear the visible content
+     *     (empty span). 7d-PIVOT removed the `[burned]` placeholder
+     *     — failed-decrypt messages stay as raw ciphertext when
+     *     we have it, and as empty bubbles when we don't, but
+     *     never as the "[burned]" string.
      */
     function oslBurnAftermath(channelId) {
         if (!channelId) return;
@@ -2381,7 +2530,7 @@
             'li[id^="chat-messages-' + channelId + '-"]'
         );
         let repainted = 0;
-        let placeholders = 0;
+        let blanked = 0;
         items.forEach(function (li) {
             const div = li.querySelector(
                 '[id^="' + RECV_MESSAGE_ID_PREFIX + '"]'
@@ -2397,8 +2546,10 @@
                 span.textContent = lastCover;
                 repainted++;
             } else {
-                span.textContent = "[burned]";
-                placeholders++;
+                // 7d-PIVOT: no "[burned]" placeholder. Blank the
+                // content rather than leak plaintext.
+                span.textContent = "";
+                blanked++;
             }
             div.replaceChildren(span);
         });
@@ -2409,8 +2560,8 @@
                 items.length +
                 " repainted=" +
                 repainted +
-                " placeholders=" +
-                placeholders
+                " blanked=" +
+                blanked
         );
     }
 
@@ -3040,6 +3191,18 @@
                 oslRefreshBanners(); // banner stack is anchored to header
             }
             oslSettingsGearInject();
+            // 7d-PIVOT: composer toggle. Same observer fires on
+            // channel switches (the composer remounts) so this
+            // catches new-channel mounts naturally. Idempotent.
+            try {
+                oslComposerToggleInject();
+                oslComposerToggleRefreshIfMounted();
+            } catch (e) {
+                console.warn(
+                    "[OSL] composer toggle inject threw:",
+                    (e && e.message) || e
+                );
+            }
         });
         headerObs.observe(document.body, {
             childList: true,
@@ -3086,6 +3249,14 @@
             } catch (e) {
                 console.warn(
                     "[OSL] initial-pass gear inject threw:",
+                    (e && e.message) || e
+                );
+            }
+            try {
+                oslComposerToggleInject();
+            } catch (e) {
+                console.warn(
+                    "[OSL] initial-pass composer toggle inject threw:",
                     (e && e.message) || e
                 );
             }
@@ -3457,11 +3628,33 @@
                         (p.encrypt_toggle ? "ON" : "OFF")
                 );
                 oslRefreshHeaderState();
+                oslComposerToggleRefreshIfMounted();
             } catch (err) {
                 console.error(
                     "[OSL] scope_encryption_toggled handler:",
                     err
                 );
+            }
+        });
+
+        // 7d-PIVOT: same event from the new osl_set_scope_encrypt
+        // path (composer toggle / settings window). Triggers the
+        // same refresh.
+        safeListen("osl:scope_encrypt_changed", function (e) {
+            try {
+                const p = (e && e.payload) || {};
+                console.log(
+                    "[OSL] event: scope_encrypt_changed " +
+                        (p.scope_kind || "?") +
+                        ":" +
+                        (p.scope_id || "?") +
+                        " → " +
+                        (p.enabled ? "ON" : "OFF")
+                );
+                oslRefreshHeaderState();
+                oslComposerToggleRefreshIfMounted();
+            } catch (err) {
+                console.error("[OSL] scope_encrypt_changed handler:", err);
             }
         });
 
@@ -6115,20 +6308,39 @@
             );
             return;
         }
-        // 7d-FIX1: skip dispatch for burned scopes. The receive
+        // Extract sender first so the burned-scopes skip below
+        // can let self-messages through. 7d-PIVOT decision:
+        // self-decrypt always works (as long as the wrapped key
+        // still exists in messages.sqlite). The burned-scopes
+        // ledger only skips non-self messages — for our own
+        // outgoing history we attempt decrypt even in a burned
+        // scope; if the key is gone, decrypt fails naturally and
+        // the message stays as raw DPC0:: text.
+        const senderDiscordId = recvExtractAuthorId(div);
+        const cachedSelfId =
+            typeof oslSelfDiscordIdCache === "string"
+                ? oslSelfDiscordIdCache
+                : null;
+        const isFromSelf =
+            !!senderDiscordId &&
+            !!cachedSelfId &&
+            senderDiscordId === cachedSelfId;
+
+        // 7d-FIX1 / 7d-PIVOT: skip dispatch for burned scopes
+        // EXCEPT when the message is from self. The receive
         // observer would otherwise re-decrypt every DPC0:: message
         // on the next sweep tick because the wire ciphertext is
         // still there and the recipient key is still in identity.
         // The burned-scopes ledger says "this scope is gone";
-        // leave the message as raw DPC0:: text in the UI.
+        // leave non-self messages as raw DPC0:: text in the UI.
+        // Self-messages still try decrypt — see comment above.
         try {
-            if (oslBurnedScopesShouldSkip(channelId)) {
+            if (!isFromSelf && oslBurnedScopesShouldSkip(channelId)) {
                 oslBurnedScopesLogOnceForChannel(channelId);
                 recvDone.add(messageId);
                 return;
             }
         } catch (_) {}
-        const senderDiscordId = recvExtractAuthorId(div);
         if (!senderDiscordId) {
             // Bounded retry rather than terminal skip. The author
             // metadata for own-sent and cozy-grouped messages may

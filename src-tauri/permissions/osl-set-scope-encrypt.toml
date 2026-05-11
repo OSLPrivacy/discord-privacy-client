@@ -1,0 +1,11 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 7d-PIVOT: explicit set of a scope's encrypt_toggle. Backs
+# the composer-bar encrypt toggle UI which knows the desired end
+# state (rather than just flipping whatever it was). Emits an
+# `osl:scope_encrypt_changed` event after a state change so the
+# settings window can re-render in real time.
+[[permission]]
+identifier = "allow-osl-set-scope-encrypt"
+description = "Permits the discord.com main webview to invoke `osl_set_scope_encrypt` (sets a scope's encrypt_toggle to the given boolean; idempotent; persists whitelist_state.json; emits scope_encrypt_changed). Phase 7d-PIVOT."
+commands.allow = ["osl_set_scope_encrypt"]

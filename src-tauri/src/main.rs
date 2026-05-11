@@ -575,6 +575,40 @@ async fn osl_toggle_scope_encryption(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 7d-PIVOT: explicit set (not toggle) of a scope's
+/// encrypt state. Composer-bar toggle UI calls this with the
+/// desired state on click. Emits an `osl:scope_encrypt_changed`
+/// event so the settings window's Whitelist Manager can re-render
+/// in real time.
+#[tauri::command]
+async fn osl_set_scope_encrypt(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    enabled: bool,
+) -> Result<bool, String> {
+    let app_handle = app.clone();
+    let scope_for_event = scope_input.clone();
+    let result: Result<bool, String> = tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_scope_encrypt(state.inner(), scope_input, enabled)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?;
+    if let Ok(new_state) = result {
+        let payload = serde_json::json!({
+            "scope_kind": scope_for_event.kind,
+            "scope_id": scope_for_event.id,
+            "server_id": scope_for_event.server_id,
+            "channel_id": scope_for_event.channel_id,
+            "enabled": new_state,
+        });
+        if let Err(e) = app.emit("osl:scope_encrypt_changed", payload) {
+            tracing::debug!(?e, "OSL: emit scope_encrypt_changed event failed");
+        }
+    }
+    result
+}
+
 /// Phase 7c: list `pending_invitations` for the banner system.
 /// Returns one DTO per pending entry, oldest first.
 #[tauri::command]
@@ -1269,6 +1303,7 @@ fn main() {
             osl_set_whitelist,
             osl_get_scope_encryption_state,
             osl_toggle_scope_encryption,
+            osl_set_scope_encrypt,
             osl_list_pending_invitations,
             osl_get_self_user_id,
             osl_register_self_snowflake,

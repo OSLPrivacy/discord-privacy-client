@@ -36,6 +36,7 @@ fn peer_entry_with_pubkey(discord_id: &str) -> (PeerEntry, x25519::PublicKey) {
         outgoing_whitelists: vec![],
         burned_scopes: vec![],
         outgoing_whitelist_responses: Default::default(),
+        is_self: None,
     };
     (entry, pk)
 }

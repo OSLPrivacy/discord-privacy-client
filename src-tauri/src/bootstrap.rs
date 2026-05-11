@@ -55,6 +55,7 @@
 //!   which the JS hook handles silently).
 
 use ipc::peer_map::{load_peer_map_from_path, PeerMapError};
+use ipc::whitelist_state::{load_whitelist_state_from_path, WhitelistStateError};
 use ipc::AppState;
 use keystore::{
     generate_identity, load_identity, save_identity, select_best_sealer, KeyServerClient,
@@ -130,6 +131,19 @@ pub fn run_autostart(state: &AppState) {
     }
 
     load_peer_map(state, &dir);
+
+    // 7d-PIVOT: load whitelist_state.json from disk, then run
+    // migration. Pre-PIVOT, encrypt_toggle was coupled to whitelist
+    // presence and only existed in memory between mutations + the
+    // FIX1 persist side; pre-FIX1 installs may not have a
+    // whitelist_state.json at all. PIVOT decouples encrypt_toggle
+    // from whitelist and reads it from disk, so we need both the
+    // load and a migration step that turns ON encrypt_toggle for
+    // scopes that had any whitelisted_users / members entries (the
+    // old behaviour was implicit encrypt-when-whitelisted, and
+    // users with existing whitelists almost certainly want that
+    // behaviour preserved across the upgrade).
+    load_and_migrate_whitelist_state(state, &dir);
 
     // 7d-FIX3b: verify peer_map has a self-entry that matches the
     // loaded identity. If the identity has a snowflake but
@@ -277,6 +291,73 @@ fn load_peer_map(state: &AppState, dir: &std::path::Path) {
                  decryption disabled until the file is fixed"
             );
         }
+    }
+}
+
+/// 7d-PIVOT: read `<dir>/whitelist_state.json` into
+/// `AppState::whitelist_state`, then apply the PIVOT migration:
+/// any scope that has at least one peer entry (members or
+/// whitelisted_users) and an `encrypt_toggle == false` gets bumped
+/// to `encrypt_toggle = true`. This preserves the pre-PIVOT
+/// "implicit encrypt-when-whitelisted" behaviour for existing
+/// users on first launch after the upgrade.
+///
+/// All failures are non-fatal — missing file is the normal
+/// fresh-install case, parse errors leave the map empty (every
+/// scope falls back to encrypt_toggle = false). Migration only
+/// fires for scopes already in the loaded state; brand-new scopes
+/// start with encrypt_toggle = false.
+fn load_and_migrate_whitelist_state(state: &AppState, dir: &std::path::Path) {
+    let path = dir.join("whitelist_state.json");
+    let mut map = match load_whitelist_state_from_path(&path) {
+        Ok(m) => m,
+        Err(WhitelistStateError::NotFound { .. }) => {
+            tracing::info!(
+                path = %path.display(),
+                "OSL bootstrap: whitelist_state.json not found (fresh install)"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "OSL bootstrap: whitelist_state.json could not be loaded; \
+                 encrypt_toggle defaults to false for every scope until fixed"
+            );
+            return;
+        }
+    };
+
+    let mut migrated = 0usize;
+    for (scope_key, scope_state) in map.iter_mut() {
+        let had_whitelist =
+            !scope_state.members.is_empty() || !scope_state.whitelisted_users.is_empty();
+        if had_whitelist && !scope_state.encrypt_toggle {
+            scope_state.encrypt_toggle = true;
+            eprintln!(
+                "[OSL] migrated scope {scope_key}: encrypt_toggle = true (had existing whitelist)"
+            );
+            migrated += 1;
+        }
+    }
+
+    let total = map.len();
+    *state
+        .whitelist_state
+        .lock()
+        .expect("whitelist_state mutex poisoned") = map;
+    tracing::info!(
+        path = %path.display(),
+        entries = total,
+        migrated = migrated,
+        "OSL bootstrap: whitelist_state loaded"
+    );
+
+    if migrated > 0 {
+        // Persist the migration result so the user only sees the
+        // per-scope log lines once, even across restarts.
+        ipc::commands::persist_whitelist_state_now(state);
     }
 }
 
