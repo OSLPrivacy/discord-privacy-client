@@ -31,7 +31,15 @@ use rusqlite::{params, Connection};
 /// Current schema version. Bumped on every backward-incompatible
 /// change; migrations between versions are dispatched in
 /// [`migrate`].
-pub(crate) const SCHEMA_VERSION: u32 = 1;
+///
+/// History:
+///   v1 — initial schema (Phase 5b1). messages(id, channel,
+///        sender_*, ciphertext, nonce, decrypted_at, burned).
+///   v2 — Phase 7a. Adds burned_at, wrapped_key, scope_type,
+///        scope_id columns (all NULL on existing rows). Driven
+///        by the per-message ephemeral-key + scoped burn model
+///        in `docs/phase-7-design.md` §§ 3, 5.4.
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -44,7 +52,9 @@ pub(crate) const CANARY_AAD: &[u8] = b"osl-message-store/canary";
 
 /// SQL for creating the v1 schema. All `CREATE`s are
 /// `IF NOT EXISTS` so re-running on an already-initialised store
-/// is a no-op.
+/// is a no-op. v=2 columns are added as a separate ALTER pass in
+/// [`apply_v2_columns`] so they layer on top of an existing v=1 DB
+/// without rewriting it.
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS _meta (
     key TEXT PRIMARY KEY,
@@ -66,6 +76,35 @@ CREATE INDEX IF NOT EXISTS idx_messages_channel
     ON messages(channel_id, decrypted_at DESC);
 "#;
 
+/// Phase 7a column additions (schema v=2). Each is appended via a
+/// separate `ALTER TABLE ADD COLUMN` so the migration is purely
+/// additive — existing rows pick up NULL/default values and the
+/// v=1 read path continues to work against the same table.
+///
+/// SQLite's `ALTER TABLE ADD COLUMN` is idempotent only via a
+/// "does this column already exist?" precheck, which we do in
+/// [`apply_v2_columns`] using `PRAGMA table_info`.
+///
+/// - `burned_at` (INTEGER, nullable) — unix-seconds timestamp at
+///   which `mark_burned` was called. Lets the UI distinguish
+///   "burned 5 minutes ago" from "burned last week" and supports
+///   future audit/recovery views.
+/// - `wrapped_key` (BLOB, nullable) — the per-recipient wrapped
+///   `K` from the v=2 wire format (see `wire_v2`). Stored so a
+///   re-decrypt of the row's `ciphertext` is possible after
+///   identity-rotation events that would otherwise lose K.
+/// - `scope_type` (TEXT, nullable) — one of 'dm', 'gc',
+///   'server_channel', 'server_full'. Lets scope-burn queries
+///   pick out the affected rows in a single WHERE clause.
+/// - `scope_id` (TEXT, nullable) — channel/GC/server id matching
+///   `scope_type`. Same query-filter rationale.
+const V2_COLUMNS: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN burned_at INTEGER",
+    "ALTER TABLE messages ADD COLUMN wrapped_key BLOB",
+    "ALTER TABLE messages ADD COLUMN scope_type TEXT",
+    "ALTER TABLE messages ADD COLUMN scope_id TEXT",
+];
+
 /// Apply the schema and resolve the on-disk version.
 ///
 /// On a fresh DB: runs the v1 schema, writes
@@ -76,6 +115,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_channel
 /// here when the schema changes.
 pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch(SCHEMA_V1)?;
+    // Apply v=2 columns unconditionally; idempotent under
+    // `apply_v2_columns`'s pre-check. A fresh-init run lands on
+    // v=2 directly because we stamp `schema_version = SCHEMA_VERSION`
+    // below.
+    apply_v2_columns(conn)?;
     let on_disk: Option<u32> = read_meta_u32(conn, "schema_version")?;
     match on_disk {
         None => {
@@ -86,9 +130,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
             // Already current.
         }
         Some(v) if v < SCHEMA_VERSION => {
-            // Future: dispatch per-step migrations here.
-            // v1 is the initial version, so no older→newer steps
-            // exist yet; we just stamp the version.
+            // v1 → v2 columns were applied above. Stamp the new
+            // version. (For v=3+, dispatch per-step migrations
+            // here.)
             write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
         }
         Some(v) => {
@@ -99,6 +143,50 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
         }
     }
     Ok(())
+}
+
+/// Apply v=2 column additions to the `messages` table. Each
+/// column is wrapped in a `PRAGMA table_info` pre-check so re-runs
+/// are idempotent — SQLite's `ALTER TABLE ADD COLUMN` errors if
+/// the column already exists, unlike `CREATE IF NOT EXISTS`.
+fn apply_v2_columns(conn: &Connection) -> Result<(), StoreError> {
+    let existing = existing_columns(conn, "messages")?;
+    for sql in V2_COLUMNS {
+        // Parse "ALTER TABLE messages ADD COLUMN <name> <type>"
+        // to recover the column name. Stable string layout above
+        // makes this safe.
+        let after = sql
+            .strip_prefix("ALTER TABLE messages ADD COLUMN ")
+            .ok_or_else(|| {
+                StoreError::Schema(format!("internal: unexpected V2 column SQL shape: {sql}"))
+            })?;
+        let name = after.split_whitespace().next().ok_or_else(|| {
+            StoreError::Schema(format!("internal: cannot parse column name from {sql}"))
+        })?;
+        if existing.iter().any(|c| c == name) {
+            continue;
+        }
+        conn.execute(sql, [])?;
+    }
+    Ok(())
+}
+
+/// Return the set of column names on a given table via
+/// `PRAGMA table_info`. SQLite returns an empty result for a
+/// missing table; we surface that as an empty Vec.
+fn existing_columns(conn: &Connection, table: &str) -> Result<Vec<String>, StoreError> {
+    // `pragma_query` would be cleaner but rusqlite 0.32 doesn't
+    // accept dynamic table names through that API without
+    // table-name escaping. Direct prepare is fine because `table`
+    // is a hard-coded internal constant.
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 /// Read a `u32` little-endian value from `_meta` by key.

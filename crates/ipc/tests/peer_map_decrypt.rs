@@ -34,7 +34,7 @@ fn install_peer_map(state: &AppState, entries: &[(&str, &str)]) {
     let mut guard = state.peer_map.lock().unwrap();
     guard.clear();
     for (k, v) in entries {
-        guard.insert((*k).to_string(), (*v).to_string());
+        guard.insert((*k).to_string(), ipc::peer_map::legacy_entry(*v));
     }
 }
 

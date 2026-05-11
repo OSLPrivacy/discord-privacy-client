@@ -12,6 +12,13 @@ rust-version.workspace = true
 # CHANGELOG.md.
 chacha20poly1305 = "0.10"
 
+# AES-256-GCM (12-byte nonce, 16-byte tag) for Phase 7 wire format
+# v=2. Selected for the per-message ephemeral-key + per-recipient key-
+# wrap construction described in docs/phase-7-design.md §4.2. Uses the
+# same `aead`-trait surface as `chacha20poly1305`, so the calling
+# conventions match. Pure Rust, audited.
+aes-gcm = "0.10"
+
 # X25519: dryoc 0.7 doesn't expose crypto_scalarmult either. Using
 # RustCrypto x25519-dalek instead — same algorithm (RFC 7748), pure
 # Rust. See x25519.rs and CHANGELOG.md. The `static_secrets` feature

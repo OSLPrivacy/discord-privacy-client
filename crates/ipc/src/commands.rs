@@ -921,8 +921,11 @@ pub fn cmd_osl_decrypt_message_with_id(
     // UnknownSender so the hook can dedupe its log.
     let osl_user_id = {
         let map_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        match map_guard.get(&sender_discord_id) {
-            Some(v) => v.clone(),
+        match map_guard
+            .get(&sender_discord_id)
+            .and_then(|e| e.osl_user_id.clone())
+        {
+            Some(v) => v,
             None => {
                 return Err(format!(
                     "OSL: {}",

@@ -68,8 +68,14 @@ fn warm_cache(state: &AppState, a: &Identity, b: &Identity) {
 /// Install the liam/henry peer_map both peers would have on disk.
 fn install_peer_map(state: &AppState) {
     let mut pm = state.peer_map.lock().unwrap();
-    pm.insert("1477008451799482419".to_string(), "liam".to_string());
-    pm.insert("1502770642930634812".to_string(), "henry".to_string());
+    pm.insert(
+        "1477008451799482419".to_string(),
+        ipc::peer_map::legacy_entry("liam"),
+    );
+    pm.insert(
+        "1502770642930634812".to_string(),
+        ipc::peer_map::legacy_entry("henry"),
+    );
 }
 
 /// Build a fresh `AppState` with `loaded` as the loaded identity,

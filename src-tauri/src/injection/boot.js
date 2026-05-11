@@ -903,6 +903,9 @@
     const haveXhr = typeof XMLHttpRequest !== "undefined";
     const origOpen = haveXhr ? XMLHttpRequest.prototype.open : null;
     const origSend = haveXhr ? XMLHttpRequest.prototype.send : null;
+    const origSetRequestHeader = haveXhr
+        ? XMLHttpRequest.prototype.setRequestHeader
+        : null;
     const origFnToString = Function.prototype.toString;
 
     // Symbol-keyed metadata stash (Symbol over string property to
@@ -946,6 +949,42 @@
             apply: function (target, thisArg, args) {
                 const input = args[0];
                 const init = args[1];
+
+                // Phase 6a edit-overlay: passively capture Authorization
+                // header from any outgoing Discord API request so we can
+                // authenticate our own PATCHes from the edit overlay.
+                try {
+                    const sniffInit = args[1];
+                    if (sniffInit && sniffInit.headers) {
+                        const h = sniffInit.headers;
+                        let auth = null;
+                        if (typeof h.get === "function") {
+                            auth =
+                                h.get("Authorization") ||
+                                h.get("authorization");
+                        } else if (typeof h === "object") {
+                            auth = h.Authorization || h.authorization;
+                        }
+                        if (typeof auth === "string" && auth.length > 0) {
+                            editOverlayAuthToken = auth;
+                        }
+                    }
+                    // Also try Request input
+                    if (
+                        typeof Request !== "undefined" &&
+                        args[0] instanceof Request &&
+                        args[0].headers
+                    ) {
+                        const auth =
+                            args[0].headers.get("Authorization") ||
+                            args[0].headers.get("authorization");
+                        if (typeof auth === "string" && auth.length > 0) {
+                            editOverlayAuthToken = auth;
+                        }
+                    }
+                } catch (e) {
+                    // Token sniff is best-effort; never fail the request.
+                }
 
                 const resolved = resolveFetchRequest(input, init);
                 if (resolved === null) {
@@ -1100,6 +1139,38 @@
                         "[OSL] failed to stash XHR meta on open(); passthrough",
                         e
                     );
+                }
+                return Reflect.apply(target, thisArg, args);
+            },
+        };
+    }
+
+    /**
+     * Phase 6a edit-overlay: passively capture the Authorization
+     * header off every outgoing XHR. Discord's API client mostly
+     * uses XHR (not fetch) for /messages traffic, so without this
+     * hook the overlay would have no token to authenticate its
+     * own PATCH with on a long-lived session.
+     */
+    function makeSetRequestHeaderHandler() {
+        return {
+            get: makeToStringGetTrap(
+                "function setRequestHeader() { [native code] }"
+            ),
+
+            apply: function (target, thisArg, args) {
+                try {
+                    if (
+                        typeof args[0] === "string" &&
+                        args[0].toLowerCase() === "authorization" &&
+                        typeof args[1] === "string" &&
+                        args[1].length > 0
+                    ) {
+                        editOverlayAuthToken = args[1];
+                    }
+                } catch (e) {
+                    // Token sniff is best-effort; never fail the
+                    // request.
                 }
                 return Reflect.apply(target, thisArg, args);
             },
@@ -1406,12 +1477,18 @@
     let xhrInstalled = false;
     let openProxy = null;
     let sendProxy = null;
+    let setRequestHeaderProxy = null;
     if (!window.__OSL_XHR_HOOK_INSTALLED__ && haveXhr) {
         window.__OSL_XHR_HOOK_INSTALLED__ = true;
         openProxy = new Proxy(origOpen, makeOpenHandler());
         sendProxy = new Proxy(origSend, makeSendHandler());
+        setRequestHeaderProxy = new Proxy(
+            origSetRequestHeader,
+            makeSetRequestHeaderHandler()
+        );
         XMLHttpRequest.prototype.open = openProxy;
         XMLHttpRequest.prototype.send = sendProxy;
+        XMLHttpRequest.prototype.setRequestHeader = setRequestHeaderProxy;
         xhrInstalled = true;
     }
 
@@ -1444,6 +1521,10 @@
         if (xhrInstalled) {
             SPOOFED.set(openProxy, "function open() { [native code] }");
             SPOOFED.set(sendProxy, "function send() { [native code] }");
+            SPOOFED.set(
+                setRequestHeaderProxy,
+                "function setRequestHeader() { [native code] }"
+            );
         }
 
         Function.prototype.toString = new Proxy(origFnToString, {
@@ -1635,6 +1716,39 @@
     let editTabObserver = null;
     const EDIT_TAB_PLACEHOLDER =
         "[message from before persistence â€” cannot edit]";
+
+    // Phase 6a edit-overlay state.
+    //
+    // The overlay replaces Discord's native edit textbox for DPC0
+    // messages. Discord's Slate editor never sees ciphertext for these
+    // messages because we kill the pencil-click before React's edit
+    // action dispatches.
+    //
+    // editOverlayActive: messageId -> { overlayEl, errorEl, hiddenSpan }
+    // editOverlayTemplate: cached deep-clone of `.channelTextArea__5126c`
+    //   from the main composer, with Slate/React attributes stripped.
+    //   Lazily initialized on first overlay mount.
+    // editOverlayAuthToken: most recent Authorization header observed
+    //   on any outgoing Discord API request. Used to authenticate our
+    //   PATCH calls. Refreshed on every observed request so it tracks
+    //   token rotation.
+    const editOverlayActive = new Map();
+    let editOverlayTemplate = null;
+    let editOverlayAuthToken = null;
+    // editOverlayLocallyApplied: message_ids whose plaintext was just
+    // written to the DOM directly by editOverlaySave on PATCH 200.
+    // Discord's MESSAGE_UPDATE will re-render the message using its
+    // cached display content (never showing the new ciphertext to
+    // our recv observer), so the recv path can't decrypt-and-apply
+    // the edit on its own. We pre-empt by writing the plaintext
+    // ourselves and gate recvHandleDiv on this Set so a racing
+    // MESSAGE_UPDATE-triggered observer pass doesn't overwrite our
+    // local apply with a stale recv decrypt. Entries auto-expire
+    // after 5s — long enough to outlast any same-tick race, short
+    // enough that a *legitimate* later edit of the same id (remote
+    // peer edits the same message minutes later) re-decrypts
+    // normally.
+    const editOverlayLocallyApplied = new Set();
     // Periodic sweep cadence. 1s feels right: long enough that
     // it's not a CPU sink, short enough that a user who scrolls
     // back to a channel sees plaintext within a beat. Critical
@@ -2053,6 +2167,701 @@
     }
 
     /**
+     * Phase 6a edit-overlay: lazily build (and cache) a Discord-styled
+     * template by deep-cloning the main channel composer. The composer
+     * lives at `.channelTextArea__5126c` (with hashed suffix that may
+     * differ across Discord builds; we use a class-prefix selector).
+     *
+     * The clone is sanitized:
+     *  - all `id` attributes removed (avoid DOM duplicates)
+     *  - all `data-slate-*` attributes removed (defang Slate)
+     *  - all `data-list-item-id`, `data-can-focus` removed
+     *  - inner contenteditable emptied
+     *
+     * Returns null if no composer is mounted yet (rare — only happens
+     * if user triggers edit before the channel has loaded).
+     */
+    function editOverlayBuildTemplate() {
+        if (editOverlayTemplate) return editOverlayTemplate;
+        const composer = document.querySelector(
+            '[class*="channelTextArea__"]'
+        );
+        if (!composer) return null;
+        const clone = composer.cloneNode(true);
+        // Strip identifiers, refs, Slate markers
+        const all = clone.querySelectorAll("*");
+        for (const el of all) {
+            el.removeAttribute("id");
+            el.removeAttribute("data-list-item-id");
+            el.removeAttribute("data-can-focus");
+            for (const attr of Array.from(el.attributes)) {
+                if (attr.name.startsWith("data-slate")) {
+                    el.removeAttribute(attr.name);
+                }
+            }
+        }
+        clone.removeAttribute("id");
+        // Find the contenteditable and empty it
+        const editable = clone.querySelector('[contenteditable="true"]');
+        if (editable) {
+            editable.innerHTML = "";
+            // Mark our overlay's editable so we can find it again
+            editable.setAttribute("data-osl-overlay-editable", "true");
+        }
+
+        // Visual cleanup: strip composer chrome that doesn't belong
+        // in an edit context — placeholder text, attachment +
+        // toolbar buttons, send-button row. Done after the editable
+        // is marked so the "exclude editable + descendants" guard
+        // below can find it.
+        let stripped = 0;
+        const stripSelectors = [
+            // Placeholders
+            '[class*="placeholder"]',
+            "[data-slate-placeholder]",
+            // Attachment / upload UI
+            '[class*="attachWrapper"]',
+            '[class*="buttons"]',
+            '[aria-label="Upload a File"]',
+            '[aria-label*="attach" i]',
+            // Bottom toolbar / send button row
+            '[class*="buttonContainer"]',
+            '[class*="attachedBars"]',
+        ];
+        const safeRemove = function (el) {
+            if (!el || !el.parentNode) return false;
+            // Never remove the editable itself or anything inside
+            // it (mention spans, emoji elements, etc. — though we
+            // emptied it above, defence in depth).
+            if (editable && (el === editable || editable.contains(el))) {
+                return false;
+            }
+            el.parentNode.removeChild(el);
+            return true;
+        };
+        for (const sel of stripSelectors) {
+            const matches = clone.querySelectorAll(sel);
+            for (const el of matches) {
+                if (safeRemove(el)) stripped++;
+            }
+        }
+        // Drop any element whose textContent starts with
+        // "Message " (Discord's "Message #channel" placeholder
+        // sometimes lives outside the [class*="placeholder"]
+        // selector). The editable is excluded by safeRemove above.
+        const allRemaining = clone.querySelectorAll("*");
+        for (const el of allRemaining) {
+            const t = el.textContent || "";
+            if (t.indexOf("Message ") === 0 && el !== editable) {
+                if (safeRemove(el)) stripped++;
+            }
+        }
+        // Drop stray role="button" elements that survived the
+        // selector pass and live outside the editable (the
+        // editable shouldn't carry one, but we guard anyway).
+        const buttons = clone.querySelectorAll('[role="button"]');
+        for (const btn of buttons) {
+            if (safeRemove(btn)) stripped++;
+        }
+
+        // Mark the whole template
+        clone.setAttribute("data-osl-overlay", "true");
+        editOverlayTemplate = clone;
+        console.log(
+            "[OSL] editOverlay template built, stripped " +
+                stripped +
+                " elements"
+        );
+        return editOverlayTemplate;
+    }
+
+    /**
+     * Phase 6a edit-overlay: insert overlay over a message and
+     * pre-fill plaintext.
+     */
+    function editOverlayMount(messageId, plaintext, channelId, li) {
+        if (editOverlayActive.has(messageId)) {
+            console.log(
+                "[OSL] editOverlay mount SKIP msg=" +
+                    messageId +
+                    " reason=already_active"
+            );
+            return;
+        }
+        const template = editOverlayBuildTemplate();
+        if (!template) {
+            console.log(
+                "[OSL] editOverlay mount FAIL msg=" +
+                    messageId +
+                    " reason=no_composer_template"
+            );
+            return;
+        }
+        const overlay = template.cloneNode(true);
+        overlay.setAttribute("data-osl-overlay-msg", messageId);
+        const editable = overlay.querySelector(
+            '[data-osl-overlay-editable="true"]'
+        );
+        if (!editable) {
+            console.log(
+                "[OSL] editOverlay mount FAIL msg=" +
+                    messageId +
+                    " reason=no_editable_in_template"
+            );
+            return;
+        }
+        editable.textContent = plaintext;
+
+        // Size the cloned containers to fit content rather than
+        // the main composer's baked-in dimensions. The composer
+        // is laid out for a multi-line bottom-of-channel input;
+        // an inline edit overlay should hug its content.
+        try {
+            // Discord's stylesheet wins on specificity, so every
+            // override below is forced via setProperty("...",
+            // "important"). Targets:
+            //
+            //   1. The outermost overlay container (the cloned
+            //      [class*="channelTextArea__"]) — kill the
+            //      composer's outer padding/margin and let it size
+            //      to content.
+            //   2. Every wrapper layer between outer + editable —
+            //      same deal. Adds `[class*="markup"]` and
+            //      `[class*="form__"]` matches because Discord
+            //      sometimes places a fixed-aspect inner sizer at
+            //      one of those classes.
+            //   3. The editable itself — bring padding /
+            //      min-height / line-height / font-size in line
+            //      with Discord's native edit textbox.
+            overlay.style.setProperty("min-height", "unset", "important");
+            overlay.style.setProperty("height", "auto", "important");
+            overlay.style.setProperty("margin", "0", "important");
+            overlay.style.setProperty("padding", "0", "important");
+
+            const innerWrappers = overlay.querySelectorAll(
+                '[class*="scrollableContainer"], ' +
+                    '[class*="inner__"], ' +
+                    '[class*="textArea__"], ' +
+                    '[class*="markup"], ' +
+                    '[class*="form__"]'
+            );
+            for (const wrapper of innerWrappers) {
+                wrapper.style.setProperty(
+                    "min-height",
+                    "unset",
+                    "important"
+                );
+                wrapper.style.setProperty("height", "auto", "important");
+                wrapper.style.setProperty("padding", "0", "important");
+                wrapper.style.setProperty("margin", "0", "important");
+            }
+
+            editable.style.setProperty(
+                "min-height",
+                "20px",
+                "important"
+            );
+            editable.style.setProperty(
+                "padding",
+                "6px 10px",
+                "important"
+            );
+            editable.style.setProperty(
+                "line-height",
+                "1.375",
+                "important"
+            );
+            editable.style.setProperty(
+                "font-size",
+                "0.95rem",
+                "important"
+            );
+        } catch (e) {
+            console.error(
+                "[OSL] editOverlay size-strip threw msg=" + messageId,
+                e
+            );
+        }
+
+        // Build the (initially empty) error line. Stays inside
+        // the overlay container so it visually attaches to the
+        // textbox when an error fires; the hint moves OUT (see
+        // below) since it's persistently visible.
+        const errorEl = document.createElement("div");
+        errorEl.setAttribute("data-osl-overlay-error", "true");
+        errorEl.style.fontSize = "12px";
+        errorEl.style.color = "#fa777c";
+        errorEl.style.padding = "4px 0 0 0";
+        errorEl.style.display = "none";
+        overlay.appendChild(errorEl);
+
+        // Build the hint line as a SIBLING that follows the
+        // overlay container, not a child. Inside the cloned
+        // channelTextArea the hint sat flush against the bottom
+        // edge with no breathing room; reparenting puts proper
+        // spacing under the textbox.
+        const hint = document.createElement("div");
+        hint.setAttribute("data-osl-overlay-hint", "true");
+        hint.style.marginTop = "4px";
+        hint.style.padding = "0";
+        hint.style.fontSize = "12px";
+        hint.style.color = "var(--text-muted, #b5bac1)";
+        hint.style.lineHeight = "1.4";
+        hint.textContent = "escape to cancel · enter to save";
+
+        // Hide the rendered message-content span
+        const span = li.querySelector(
+            '[id^="message-content-' + messageId + '"]'
+        );
+        const hiddenSpan = span || null;
+        if (hiddenSpan) {
+            hiddenSpan.dataset.oslOverlayHidden = "true";
+            hiddenSpan.style.display = "none";
+        }
+
+        // Insert overlay + hint as siblings of the span. Order:
+        // <hidden span> <overlay> <hint>. The hint sits
+        // immediately after the overlay.
+        if (hiddenSpan && hiddenSpan.parentNode) {
+            hiddenSpan.parentNode.insertBefore(
+                overlay,
+                hiddenSpan.nextSibling
+            );
+            overlay.parentNode.insertBefore(hint, overlay.nextSibling);
+        } else {
+            // Fallback: append to the li's contents container
+            li.appendChild(overlay);
+            li.appendChild(hint);
+        }
+
+        // Wire keys
+        editable.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                editOverlayUnmount(messageId);
+                console.log(
+                    "[OSL] editOverlay cancel msg=" + messageId
+                );
+            } else if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                e.stopPropagation();
+                editOverlaySave(messageId, channelId, editable);
+            }
+        });
+
+        editOverlayActive.set(messageId, {
+            overlayEl: overlay,
+            hintEl: hint,
+            errorEl: errorEl,
+            hiddenSpan: hiddenSpan,
+        });
+
+        // Focus + place caret at end
+        try {
+            editable.focus();
+            const range = document.createRange();
+            range.selectNodeContents(editable);
+            range.collapse(false);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        } catch (e) {
+            console.error(
+                "[OSL] editOverlay focus threw msg=" + messageId,
+                e
+            );
+        }
+
+        console.log(
+            "[OSL] editOverlay mount msg=" +
+                messageId +
+                " plaintext_len=" +
+                plaintext.length
+        );
+    }
+
+    /**
+     * Phase 6a edit-overlay: tear down overlay, restore message-content
+     * span visibility.
+     */
+    function editOverlayUnmount(messageId) {
+        const state = editOverlayActive.get(messageId);
+        if (!state) return;
+        try {
+            if (state.overlayEl && state.overlayEl.parentNode) {
+                state.overlayEl.parentNode.removeChild(state.overlayEl);
+            }
+            // hintEl is a sibling of overlayEl post-Fix 2; remove
+            // it independently.
+            if (state.hintEl && state.hintEl.parentNode) {
+                state.hintEl.parentNode.removeChild(state.hintEl);
+            }
+            if (state.hiddenSpan) {
+                state.hiddenSpan.style.display = "";
+                delete state.hiddenSpan.dataset.oslOverlayHidden;
+            }
+        } catch (e) {
+            console.error(
+                "[OSL] editOverlay unmount threw msg=" + messageId,
+                e
+            );
+        }
+        editOverlayActive.delete(messageId);
+    }
+
+    /**
+     * Phase 6a edit-overlay: show inline error text without
+     * unmounting, so the user can retry.
+     */
+    function editOverlayShowError(messageId, message) {
+        const state = editOverlayActive.get(messageId);
+        if (!state || !state.errorEl) return;
+        state.errorEl.textContent = message;
+        state.errorEl.style.display = "";
+    }
+
+    function editOverlayClearError(messageId) {
+        const state = editOverlayActive.get(messageId);
+        if (!state || !state.errorEl) return;
+        state.errorEl.textContent = "";
+        state.errorEl.style.display = "none";
+    }
+
+    /**
+     * Phase 6a edit-overlay: PATCH new plaintext to Discord. Goes
+     * through the existing fetch interceptor (interceptEditBody),
+     * which sees `content: <plaintext>`, encrypts, ships, and on 200
+     * fires runPersistEdit. We just initiate the request.
+     */
+    function editOverlaySave(messageId, channelId, editable) {
+        if (!editOverlayAuthToken) {
+            editOverlayShowError(
+                messageId,
+                "Auth token not yet captured — try again in a few seconds"
+            );
+            console.log(
+                "[OSL] editOverlay save FAIL msg=" +
+                    messageId +
+                    " reason=no_auth_token"
+            );
+            return;
+        }
+        const newPlaintext = editable.textContent || "";
+        editOverlayClearError(messageId);
+
+        const url =
+            "/api/v9/channels/" + channelId + "/messages/" + messageId;
+        const body = JSON.stringify({ content: newPlaintext });
+
+        fetch(url, {
+            method: "PATCH",
+            headers: {
+                "Authorization": editOverlayAuthToken,
+                "Content-Type": "application/json",
+            },
+            body: body,
+        })
+            .then(function (resp) {
+                if (resp && resp.ok) {
+                    // Invalidate the receive-side decrypt caches
+                    // for this message_id so the next observer
+                    // pass re-decrypts the bounced-back NEW
+                    // ciphertext rather than re-applying the
+                    // OLD plaintext from cache. recvCovers /
+                    // recvDone are cleaned up by the existing
+                    // recvHandleDiv stale-cover detector once it
+                    // sees the new cover; clearing recvPlaintext
+                    // + loadedHistory removes the only paths
+                    // that would short-circuit before that
+                    // detector runs.
+                    let invalidated = false;
+                    if (
+                        recvPlaintext &&
+                        typeof recvPlaintext.delete === "function"
+                    ) {
+                        recvPlaintext.delete(messageId);
+                        invalidated = true;
+                    }
+                    if (
+                        loadedHistory &&
+                        typeof loadedHistory.delete === "function"
+                    ) {
+                        loadedHistory.delete(messageId);
+                        invalidated = true;
+                    }
+                    if (invalidated) {
+                        console.log(
+                            "[OSL] editOverlay invalidated decrypt cache msg=" +
+                                messageId
+                        );
+                    }
+                    console.log(
+                        "[OSL] editOverlay save OK msg=" +
+                            messageId +
+                            " plaintext_len=" +
+                            newPlaintext.length
+                    );
+
+                    // Apply the new plaintext directly to the DOM.
+                    // Discord's MESSAGE_UPDATE will re-render with
+                    // its cached display content and never expose
+                    // the new ciphertext to our recv observer, so
+                    // we can't rely on the normal decrypt-and-
+                    // apply path for *local* edits — we write the
+                    // plaintext ourselves. The Set entry below
+                    // tells recvHandleDiv to skip this id during
+                    // the 5s window where a racing MESSAGE_UPDATE-
+                    // triggered observer pass might otherwise
+                    // overwrite our local apply.
+                    const contentEl = document.getElementById(
+                        "message-content-" + messageId
+                    );
+                    if (contentEl) {
+                        // Discord wraps the message body text in
+                        // nested spans alongside an "(edited)"
+                        // marker span and (sometimes) a timestamp
+                        // span. A naive `textContent =` overwrite
+                        // nukes those siblings, so on the second
+                        // local edit the (edited) badge would
+                        // disappear.
+                        //
+                        // Strategy: walk childNodes; replace the
+                        // first non-marker text-bearing node and
+                        // leave everything else alone. Fallback:
+                        // if no clean target is found but a marker
+                        // exists, drop everything *before* the
+                        // marker and prepend a fresh text node.
+                        // Last-resort fallback: the original
+                        // textContent overwrite.
+                        let strategy = "fallback_textcontent";
+                        let replaced = false;
+                        const children = Array.from(contentEl.childNodes);
+                        for (const node of children) {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                if (
+                                    node.data &&
+                                    node.data.trim().length > 0
+                                ) {
+                                    node.data = newPlaintext;
+                                    replaced = true;
+                                    strategy = "preserved_marker";
+                                    break;
+                                }
+                            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                const cls = node.className || "";
+                                const isItselfMarker =
+                                    /edited|timestamp/i.test(cls);
+                                const hasEditedMarker =
+                                    typeof node.querySelector ===
+                                        "function" &&
+                                    (node.querySelector(
+                                        '[class*="edited"]'
+                                    ) ||
+                                        node.querySelector(
+                                            '[class*="timestamp"]'
+                                        ));
+                                if (!isItselfMarker && !hasEditedMarker) {
+                                    node.textContent = newPlaintext;
+                                    replaced = true;
+                                    strategy = "preserved_marker";
+                                    break;
+                                }
+                            }
+                        }
+                        if (!replaced) {
+                            const editedMarker = contentEl.querySelector(
+                                '[class*="edited"]'
+                            );
+                            if (editedMarker) {
+                                while (
+                                    contentEl.firstChild &&
+                                    contentEl.firstChild !== editedMarker
+                                ) {
+                                    contentEl.removeChild(
+                                        contentEl.firstChild
+                                    );
+                                }
+                                contentEl.insertBefore(
+                                    document.createTextNode(newPlaintext),
+                                    editedMarker
+                                );
+                                replaced = true;
+                                strategy = "preserved_marker";
+                            } else {
+                                contentEl.textContent = newPlaintext;
+                                replaced = true;
+                                strategy = "fallback_textcontent";
+                            }
+                        }
+                        console.log(
+                            "[OSL] editOverlay applied plaintext directly to DOM msg=" +
+                                messageId +
+                                " len=" +
+                                newPlaintext.length +
+                                " strategy=" +
+                                strategy
+                        );
+                    }
+                    editOverlayLocallyApplied.add(messageId);
+                    setTimeout(function () {
+                        editOverlayLocallyApplied.delete(messageId);
+                    }, 5000);
+
+                    editOverlayUnmount(messageId);
+                } else {
+                    const status = resp ? resp.status : "?";
+                    editOverlayShowError(
+                        messageId,
+                        "Save failed (HTTP " + status + ")"
+                    );
+                    console.log(
+                        "[OSL] editOverlay save FAIL msg=" +
+                            messageId +
+                            " status=" +
+                            status
+                    );
+                }
+            })
+            .catch(function (err) {
+                editOverlayShowError(
+                    messageId,
+                    "Save failed (network): " +
+                        (err && err.message ? err.message : String(err))
+                );
+                console.error(
+                    "[OSL] editOverlay save threw msg=" + messageId,
+                    err
+                );
+            });
+    }
+
+    /**
+     * Phase 6a edit-overlay: capture-phase click handler that
+     * intercepts pencil-icon clicks on DPC0 messages.
+     */
+    function editOverlayHandleClick(e) {
+        const target = e.target;
+        if (!target || typeof target.closest !== "function") return;
+        const btn = target.closest(
+            '[role="button"][aria-label="Edit"]'
+        );
+        if (!btn) return;
+        const li = btn.closest("li[id^='chat-messages-']");
+        if (!li) return;
+        const m = /chat-messages-\d{15,22}-(\d{15,22})/.exec(li.id);
+        if (!m) return;
+        const messageId = m[1];
+
+        // Resolve plaintext. Three sources, in order:
+        //   1. loadedHistory  — fastest, populated on channel switch
+        //   2. recvPlaintext  — populated by this session's decrypts
+        //   3. live DOM       — self-healing fallback for the
+        //      re-edit case: editOverlaySave invalidates both
+        //      caches on save, but the new plaintext is sitting
+        //      in the message-content textContent because we
+        //      wrote it there directly. Read it back rather than
+        //      give up and hand the user Discord's native edit
+        //      (which would show DPC0:: ciphertext).
+        const fromHistory = loadedHistory.get(messageId);
+        const fromSession = recvPlaintext.get(messageId);
+        let plaintext =
+            typeof fromHistory === "string"
+                ? fromHistory
+                : typeof fromSession === "string"
+                ? fromSession
+                : null;
+        if (typeof plaintext !== "string") {
+            const contentEl = document.getElementById(
+                "message-content-" + messageId
+            );
+            if (contentEl) {
+                // Clone-and-strip: deep-clone the contentEl, drop
+                // any (edited) / timestamp marker descendants,
+                // then read textContent off the clone. More robust
+                // than a regex against the raw textContent because
+                // Discord's marker markup varies (different
+                // surrounding whitespace, occasional sibling
+                // wrappers); the clone approach trusts the DOM
+                // tree shape rather than the stringified output.
+                let liveText = "";
+                try {
+                    const clone = contentEl.cloneNode(true);
+                    const markers = clone.querySelectorAll(
+                        '[class*="edited"], [class*="timestamp"]'
+                    );
+                    for (const m of markers) {
+                        if (m.parentNode) m.parentNode.removeChild(m);
+                    }
+                    liveText = (clone.textContent || "").trim();
+                } catch (e) {
+                    console.error(
+                        "[OSL] editOverlay live-DOM clone-strip threw msg=" +
+                            messageId,
+                        e
+                    );
+                }
+                if (liveText && liveText.indexOf("DPC0::") !== 0) {
+                    console.log(
+                        "[OSL] editOverlay resolved plaintext from live DOM msg=" +
+                            messageId +
+                            " len=" +
+                            liveText.length
+                    );
+                    plaintext = liveText;
+                }
+            }
+        }
+        if (typeof plaintext !== "string") {
+            // Don't have plaintext; let Discord open its native edit.
+            // (Will show ciphertext to the user — annoying but safe.)
+            console.log(
+                "[OSL] editOverlay PASS msg=" +
+                    messageId +
+                    " reason=no_plaintext (Discord native edit will open)"
+            );
+            return;
+        }
+
+        const channelId = recvExtractChannelId();
+        if (!channelId) {
+            console.log(
+                "[OSL] editOverlay PASS msg=" +
+                    messageId +
+                    " reason=no_channel_id"
+            );
+            return;
+        }
+
+        // Kill Discord's edit-mode trigger
+        e.stopPropagation();
+        e.preventDefault();
+        console.log(
+            "[OSL] editOverlay intercept msg=" +
+                messageId +
+                " channel=" +
+                channelId
+        );
+        editOverlayMount(messageId, plaintext, channelId, li);
+    }
+
+    /**
+     * Phase 6a edit-overlay: install the capture-phase click
+     * listener. Idempotent.
+     */
+    let editOverlayInstalled = false;
+    function editOverlayInstall() {
+        if (editOverlayInstalled) return;
+        document.addEventListener(
+            "click",
+            editOverlayHandleClick,
+            true /* capture */
+        );
+        editOverlayInstalled = true;
+        console.log("[OSL] editOverlay click handler installed");
+    }
+
+    /**
      * If `el` carries a DPC0:: cover string, request decryption
      * and replace textContent on success. No-op when:
      *   - element already settled (success or permanent failure)
@@ -2140,6 +2949,24 @@
             return;
         }
         const messageId = recvMessageIdOf(div);
+
+        // Phase 6a edit-overlay: if we *just* wrote this message's
+        // new plaintext directly to the DOM after a successful
+        // edit PATCH, skip the recv path entirely. A racing
+        // MESSAGE_UPDATE-triggered observer pass would otherwise
+        // re-enter recvHandleDiv with stale ciphertext snapshot
+        // (or worse, hit the cache invalidation path and trigger
+        // a redundant decrypt that resolves to the OLD plaintext
+        // because the recv ciphertext snapshot can lag behind
+        // Discord's display state).
+        if (editOverlayLocallyApplied.has(messageId)) {
+            console.log(
+                "[OSL] recvHandleDiv SKIP id=" +
+                    __dbg_id +
+                    " reason=locally_applied_edit"
+            );
+            return;
+        }
 
         // Phase 6a: remote-edit detection. If we've previously
         // applied plaintext to this messageId and recorded the
@@ -2804,9 +3631,11 @@
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", recvInstallObserver);
         // document.addEventListener("DOMContentLoaded", editTabStartObserver);  // disabled: broken Slate-model swap, pending overlay rewrite
+        document.addEventListener("DOMContentLoaded", editOverlayInstall);
     } else {
         recvInstallObserver();
         // editTabStartObserver();  // disabled: broken Slate-model swap, pending overlay rewrite
+        editOverlayInstall();
     }
 })();
 
