@@ -22,11 +22,11 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::x25519;
 use ipc::attachment_wire::{
-    cmd_osl_open_attachment, cmd_osl_seal_attachment, decoy_png, OSL_ATT_MAGIC,
+    cmd_osl_open_attachment, cmd_osl_seal_attachment, decoy_png, OSL_ATT_MAGIC, OSL_ATT_MAGIC_V2,
 };
 use ipc::commands::{
-    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_attachment_envelope, AttachmentEnvelopeInput,
-    OSL_RESULT_ATTACHMENT_PREFIX,
+    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_attachment_envelope, cmd_osl_open_attachment_v2,
+    cmd_osl_seal_attachment_with_cover_v2, AttachmentEnvelopeInput, OSL_RESULT_ATTACHMENT_PREFIX,
 };
 use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
@@ -344,5 +344,187 @@ fn unsupported_extension_rejected_at_seal_time() {
     assert!(
         err.contains("unsupported"),
         "expected unsupported-extension error, got: {err}"
+    );
+}
+
+// ---- Phase 8d: V2 wire-format round-trip tests ----
+
+fn fresh_henry_state_with_liam_pubkey(
+    liam_state: &AppState,
+    henry_sk: &x25519::SecretKey,
+    henry_pk: x25519::PublicKey,
+) -> AppState {
+    let henry_state = AppState::new();
+    {
+        let mut id = keystore::generate_identity("henry".to_string());
+        id.x25519_secret = henry_sk.clone();
+        id.x25519_public = henry_pk;
+        *henry_state.identity.lock().unwrap() = Some(id);
+    }
+    let liam_pub = liam_state
+        .identity
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .x25519_public;
+    install_peer_pubkey(&henry_state, LIAM_DID, liam_pub);
+    henry_state
+}
+
+/// Mark `sender_did` as accepted-in-scope from Henry's perspective —
+/// the equivalent of Henry having clicked "accept invitation" for
+/// the named scope. Lets the cover decrypt's `should_decrypt_from`
+/// gate pass.
+fn mark_sender_accepted_in_scope(state: &AppState, sender_did: &str, scope: &Scope) {
+    let mut pm = state.peer_map.lock().unwrap();
+    let pe = pm.entry(sender_did.to_string()).or_default();
+    pe.incoming_decrypt_accepted
+        .insert(scope.storage_key(), true);
+}
+
+#[test]
+fn v2_seal_carries_v2_magic_and_round_trips() {
+    let liam_state = fresh_state_for_liam();
+    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
+    install_dm_whitelist(&liam_state, HENRY_DID);
+
+    let scope = Scope::dm(HENRY_DID);
+    let original = vec![0xAAu8; 8 * 1024];
+    let sealed = cmd_osl_seal_attachment_with_cover_v2(
+        &liam_state,
+        si(&scope),
+        vec![HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+        STANDARD.encode(&original),
+        "selfie.jpg".to_string(),
+        "deadbeef.png".to_string(),
+    )
+    .expect("seal v2");
+    assert_eq!(sealed.mime_type, "image/jpeg");
+    assert_eq!(sealed.random_filename, "deadbeef.png");
+    let bytes = STANDARD.decode(&sealed.sealed_b64).unwrap();
+    assert_eq!(
+        &bytes[..8],
+        &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']
+    );
+    // V2 magic must be present; V1 magic must NOT.
+    assert!(
+        bytes
+            .windows(OSL_ATT_MAGIC_V2.len())
+            .any(|w| w == OSL_ATT_MAGIC_V2),
+        "V2 magic missing in sealed bundle"
+    );
+    assert!(
+        !bytes
+            .windows(OSL_ATT_MAGIC.len())
+            .any(|w| w == OSL_ATT_MAGIC),
+        "V1 magic should not appear in a V2-only bundle"
+    );
+
+    // Henry, as a whitelisted recipient who has accepted Liam in
+    // this scope, can fully open the V2 bundle without any
+    // out-of-band cover.
+    let henry_state = fresh_henry_state_with_liam_pubkey(&liam_state, &henry_sk, henry_pk);
+    mark_sender_accepted_in_scope(&henry_state, LIAM_DID, &scope);
+    let opened = cmd_osl_open_attachment_v2(
+        &henry_state,
+        LIAM_DID.to_string(),
+        Some(si(&scope)),
+        sealed.sealed_b64.clone(),
+        None,
+    )
+    .expect("open v2");
+    assert_eq!(opened.original_filename, "selfie.jpg");
+    assert_eq!(opened.mime_type, "image/jpeg");
+    let recovered = STANDARD.decode(&opened.plaintext_b64).unwrap();
+    assert_eq!(recovered, original);
+}
+
+#[test]
+fn v2_open_without_legacy_key_fails_on_v1_bundle() {
+    // Seal via the V1 path and confirm open_v2 rejects without
+    // a legacy key.
+    let liam_state = fresh_state_for_liam();
+    let original = vec![1u8; 1024];
+    let sealed = cmd_osl_seal_attachment(&liam_state, original.clone(), "thumb.png".to_string())
+        .expect("seal v1");
+    let v1_bytes_b64 = sealed.file_blob_b64.clone();
+
+    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    let henry_state = fresh_henry_state_with_liam_pubkey(&liam_state, &henry_sk, henry_pk);
+    let err = cmd_osl_open_attachment_v2(
+        &henry_state,
+        LIAM_DID.to_string(),
+        None,
+        v1_bytes_b64.clone(),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("V1 file with no legacy att_key supplied"),
+        "expected legacy-key-required error, got: {err}"
+    );
+
+    // With the legacy key, V1 fallback decrypts.
+    let opened = cmd_osl_open_attachment_v2(
+        &henry_state,
+        LIAM_DID.to_string(),
+        None,
+        v1_bytes_b64,
+        Some(sealed.att_key_b64.clone()),
+    )
+    .expect("open v1 via v2 with legacy key");
+    let recovered = STANDARD.decode(&opened.plaintext_b64).unwrap();
+    assert_eq!(recovered, original);
+}
+
+#[test]
+fn v2_open_with_wrong_recipient_fails() {
+    let liam_state = fresh_state_for_liam();
+    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
+    install_dm_whitelist(&liam_state, HENRY_DID);
+
+    let scope = Scope::dm(HENRY_DID);
+    let original = vec![7u8; 512];
+    let sealed = cmd_osl_seal_attachment_with_cover_v2(
+        &liam_state,
+        si(&scope),
+        vec![HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+        STANDARD.encode(&original),
+        "doc.png".to_string(),
+        "feedbabe.png".to_string(),
+    )
+    .expect("seal v2");
+
+    // A wholly unrelated identity (no whitelist relationship) opens
+    // the same bundle. The v=2 cover header has no entry for their
+    // pubkey hash, so the cover decrypt fails at the wire layer.
+    let stranger_state = AppState::new();
+    *stranger_state.identity.lock().unwrap() =
+        Some(keystore::generate_identity("stranger".to_string()));
+    let liam_pub = liam_state
+        .identity
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .x25519_public;
+    install_peer_pubkey(&stranger_state, LIAM_DID, liam_pub);
+
+    let err = cmd_osl_open_attachment_v2(
+        &stranger_state,
+        LIAM_DID.to_string(),
+        None,
+        sealed.sealed_b64,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        !err.is_empty(),
+        "expected wire/v=2 decrypt error for non-recipient, got empty"
     );
 }

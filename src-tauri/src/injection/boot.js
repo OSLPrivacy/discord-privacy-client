@@ -1919,20 +1919,36 @@
         }
         const b64 = btoa(binary);
 
-        const sealRes = await oslInvoke("osl_seal_attachment", {
+        // Phase 8d: use the combined seal command that embeds the
+        // cover envelope INSIDE the file. JS never sees the per-
+        // attachment AEAD key — it lives only inside the embedded
+        // cover, encrypted to the scope's recipients. Step 3 just
+        // needs to set message content to "" and rewrite the
+        // filename; no separate cover-on-the-wire.
+        const selfId = await oslSelfDiscordId();
+        if (!selfId) {
+            window.__oslPendingUploads.delete(uploadId);
+            oslToast("Encryption failed, attachment not sent");
+            return oslAbortXhr(xhr, "step2: no self_discord_id");
+        }
+        const sealRes = await oslInvoke("osl_seal_attachment_with_cover_v2", {
+            scopeInput: reservation.scope,
+            channelMembers: reservation.channelMembers,
+            selfDiscordId: selfId,
             originalBytesB64: b64,
             originalFilename: reservation.originalFilename,
+            randomFilename: reservation.randomFilename,
         });
         if (!sealRes.ok) {
             window.__oslPendingUploads.delete(uploadId);
             oslToast("Encryption failed, attachment not sent");
             return oslAbortXhr(
                 xhr,
-                "step2: seal failed: " + sealRes.error
+                "step2: seal_with_cover_v2 failed: " + sealRes.error
             );
         }
         const sealed = sealRes.value;
-        const sealedBinary = atob(sealed.fileBlobB64);
+        const sealedBinary = atob(sealed.sealedB64);
         const sealedBytes = new Uint8Array(sealedBinary.length);
         for (let i = 0; i < sealedBinary.length; i++) {
             sealedBytes[i] = sealedBinary.charCodeAt(i);
@@ -1949,8 +1965,9 @@
             );
         }
 
-        // Stash the seal output on the reservation for step 3.
-        reservation.attKeyB64 = sealed.attKeyB64;
+        // Phase 8d: nothing for step 3 to look up via attKey — the
+        // cover lives in the file. Flip status so step 3 can find
+        // the reservation by uploaded_filename and set content="".
         reservation.mimeType = sealed.mimeType;
         reservation.encryptedSize = sealedBytes.length;
         reservation.status = "pending_cover";
@@ -1982,12 +1999,11 @@
      * match, returns null so the caller falls through to normal
      * text-encrypt.
      *
-     * On match, rewrites:
-     *   - `parsed.content` ← v=2 cover (DPC0::…)
-     *   - per matched entry: `attachments[i].filename` ←
-     *     `random_filename`
-     * and removes the now-consumed reservations from
-     * `__oslPendingUploads` after the IPC resolves successfully.
+     * Phase 8d: the cover envelope now lives INSIDE each attachment
+     * file (embedded by step 2 via osl_seal_attachment_with_cover_v2)
+     * — so step 3 just blanks `parsed.content` and rewrites
+     * `attachments[i].filename`. No envelope IPC. Non-OSL viewers
+     * see only the decoy PNG and zero text.
      */
     function oslMaybeBuildAttachmentCover(parsed) {
         if (!parsed || !Array.isArray(parsed.attachments)) return null;
@@ -2004,76 +2020,43 @@
         });
         if (matched.length === 0) return null;
 
-        // Resolve the cover via IPC. The scope, channel members,
-        // and self id all live on the first matched reservation
-        // (step 1 captured them).
-        const first = matched[0].reservation;
-        const promise = oslSelfDiscordId().then(function (selfId) {
-            if (!selfId) {
-                throw new Error("step3: no self_discord_id");
+        // 8d: synchronous body mutation — no IPC for cover build.
+        parsed.content = "";
+        matched.forEach(function (m) {
+            const att = parsed.attachments[m.index];
+            if (att) {
+                att.filename = m.reservation.randomFilename;
             }
-            return oslInvoke("osl_encrypt_attachment_envelope", {
-                scopeInput: first.scope,
-                channelMembers: first.channelMembers,
-                selfDiscordId: selfId,
-                attachments: matched.map(function (m) {
-                    return {
-                        attKeyB64: m.reservation.attKeyB64,
-                        originalFilename: m.reservation.originalFilename,
-                        randomFilename: m.reservation.randomFilename,
-                        mimeType: m.reservation.mimeType,
-                    };
-                }),
-            });
-        }).then(function (envRes) {
-            if (!envRes.ok) {
-                throw new Error(
-                    "envelope build failed: " + envRes.error
-                );
-            }
-            // Mutate the parsed body.
-            parsed.content = envRes.value;
-            matched.forEach(function (m) {
-                const att = parsed.attachments[m.index];
-                if (att) {
-                    att.filename = m.reservation.randomFilename;
-                }
-            });
-            // Consume the reservations.
-            for (const m of matched) {
-                for (const [k, v] of window.__oslPendingUploads.entries()) {
-                    if (v === m.reservation) {
-                        window.__oslPendingUploads.delete(k);
-                        break;
-                    }
-                }
-            }
-            const randomNames = matched
-                .map(function (m) {
-                    return m.reservation.randomFilename;
-                })
-                .join(",");
-            console.log(
-                "[OSL] " +
-                    oslLogTime() +
-                    " step3 cover: random_filenames=[" +
-                    randomNames +
-                    "] cover_len=" +
-                    envRes.value.length +
-                    " encrypted_count=" +
-                    matched.length
-            );
-            return JSON.stringify(parsed);
         });
+        // Consume the reservations.
+        for (const m of matched) {
+            for (const [k, v] of window.__oslPendingUploads.entries()) {
+                if (v === m.reservation) {
+                    window.__oslPendingUploads.delete(k);
+                    break;
+                }
+            }
+        }
+        const randomNames = matched
+            .map(function (m) {
+                return m.reservation.randomFilename;
+            })
+            .join(",");
         console.log(
             "[OSL] " +
                 oslLogTime() +
                 " step3 /messages: attachments=" +
                 parsed.attachments.length +
                 " encrypted_count=" +
-                matched.length
+                matched.length +
+                " random_filenames=[" +
+                randomNames +
+                "] cover=embedded-in-file"
         );
-        return { handled: true, promise: promise };
+        return {
+            handled: true,
+            promise: Promise.resolve(JSON.stringify(parsed)),
+        };
     }
 
     /**
@@ -2199,6 +2182,60 @@
             keys
         );
         return keys;
+    };
+
+    /**
+     * Phase 8d diagnostic: everything we know about a message's
+     * attachments. Cache hit, blob URLs, mime types, plus the rendered
+     * DOM elements pointing at the Discord CDN. Useful from DevTools
+     * when an attachment renders as the decoy instead of the original.
+     */
+    window.__oslDiagInspectAttachment = function (msgId) {
+        if (!msgId) {
+            console.log(
+                "[OSL][diag] usage: __oslDiagInspectAttachment(msgId)"
+            );
+            return null;
+        }
+        const cacheEntry =
+            window.__oslAttachmentDecrypted &&
+            window.__oslAttachmentDecrypted.get(msgId);
+        const li = document.querySelector(
+            'li[id$="-' + msgId + '"]'
+        );
+        const cdnEls = li
+            ? Array.from(
+                  li.querySelectorAll(
+                      "img[src*='discord'], video[src*='discord'], a[href*='discord']"
+                  )
+              ).map(function (el) {
+                  const url =
+                      el.tagName === "A"
+                          ? el.getAttribute("href")
+                          : el.getAttribute("src");
+                  return {
+                      tag: el.tagName.toLowerCase(),
+                      url:
+                          typeof url === "string"
+                              ? url.substring(0, 120)
+                              : null,
+                  };
+              })
+            : [];
+        const snapshot = {
+            msgId: msgId,
+            li_present: !!li,
+            cache_hit: !!cacheEntry,
+            cached_random_names: cacheEntry
+                ? Object.keys(cacheEntry.byRandomName || {})
+                : [],
+            cache_size: window.__oslAttachmentDecrypted
+                ? window.__oslAttachmentDecrypted.size
+                : 0,
+            cdn_elements: cdnEls,
+        };
+        console.log("[OSL][diag] attachment:", snapshot);
+        return snapshot;
     };
 
     // ============================================================
@@ -4066,6 +4103,152 @@
         }
         if (cacheEntry.blobUrls.length > 0) {
             window.__oslAttachmentDecrypted.set(msgId, cacheEntry);
+            oslAttachmentCacheEvictIfFull();
+        }
+    }
+
+    /**
+     * 8d V2 receive scan. Fires on every `li[id^="chat-messages-"]`
+     * the observer sees. For each CDN-hosted image/video/anchor
+     * inside the li, attempts `osl_open_attachment_v2`. The Rust
+     * side scans for the OSL-ATT2 (or OSL-ATT1 with legacy key)
+     * magic — if absent, returns MagicNotFound and we leave the
+     * element alone. So this scan is cheap on non-OSL attachments.
+     *
+     * Idempotent via `__oslAttachmentDecrypted` cache (re-applies
+     * cached blob URLs without re-fetching / re-decrypting).
+     */
+    async function oslScanLiAttachmentsV2(li) {
+        if (!li || !li.id) return;
+        const m = /chat-messages-(?:\d{15,22})-(\d{15,22})/.exec(li.id);
+        if (!m) return;
+        const msgId = m[1];
+
+        // Burned scope: leave decoy + skip.
+        let scope = null;
+        try {
+            const ctx = oslCurrentChannelContext();
+            scope = ctx && oslScopeForCurrentContext(ctx);
+            if (
+                scope &&
+                oslBurnedScopesShouldSkip(scope.channel_id || scope.id)
+            ) {
+                return;
+            }
+        } catch (_) {}
+
+        // Cache hit: replay swap.
+        const cacheEntry = window.__oslAttachmentDecrypted.get(msgId);
+        if (cacheEntry && cacheEntry.byRandomName) {
+            for (const randomName of Object.keys(cacheEntry.byRandomName)) {
+                const cached = cacheEntry.byRandomName[randomName];
+                const targets = oslFindAttachmentTargets(li, randomName);
+                targets.forEach(function (t) {
+                    oslSwapAttachmentElement(t, cached.blobUrl, cached.mime);
+                });
+            }
+            return;
+        }
+
+        // Discover CDN media elements. The V2 scan doesn't know
+        // random_filename in advance, so collect every plausible
+        // candidate keyed by its URL's last path segment.
+        const candidates = [];
+        const els = li.querySelectorAll(
+            "img[src*='discord'], video[src*='discord'], a[href*='discord']"
+        );
+        els.forEach(function (el) {
+            const url =
+                el.tagName === "A"
+                    ? el.getAttribute("href")
+                    : el.getAttribute("src");
+            if (typeof url !== "string") return;
+            const path = url.split("?")[0];
+            const last = path.split("/").pop() || "";
+            // Phase 8 / 8c / 8d uploads always carry a `.png`
+            // upload-filename (random 8-hex). Anchor on that
+            // suffix to filter out unrelated discord.com
+            // referenced URLs like profile images.
+            if (!/^[0-9a-f]{8}\.png$/i.test(last)) return;
+            candidates.push({ el: el, url: url, name: last });
+        });
+        if (candidates.length === 0) return;
+
+        // Sender id is required for the cover decrypt (v=2 wrap is
+        // bound to sender's pubkey on the recv side). Pull from
+        // li's data-author-id, walking up if needed.
+        let senderId = null;
+        try {
+            senderId = recvExtractAuthorId(li);
+        } catch (_) {}
+        if (!senderId) return;
+
+        const newCache = { byRandomName: {}, blobUrls: [] };
+        for (const cand of candidates) {
+            try {
+                const fileB64 = await oslFetchAttachmentBase64(cand.url);
+                const decRes = await oslInvoke("osl_open_attachment_v2", {
+                    senderDiscordId: senderId,
+                    scopeInput: scope || null,
+                    fileBytesB64: fileB64,
+                    legacyAttKeyB64: null,
+                });
+                if (!decRes.ok) {
+                    // Most common: MagicNotFound for non-OSL files.
+                    // Logged at low volume to avoid spam on
+                    // unencrypted channels.
+                    if (decRes.error && decRes.error.indexOf("MagicNotFound") < 0) {
+                        console.log(
+                            "[OSL] attachment decrypt skip: msg=" +
+                                msgId +
+                                " random=" +
+                                cand.name +
+                                " reason=" +
+                                decRes.error
+                        );
+                    }
+                    continue;
+                }
+                const plain = decRes.value;
+                const binary = atob(plain.plaintextB64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+                const blob = new Blob([bytes], { type: plain.mimeType });
+                const blobUrl = URL.createObjectURL(blob);
+                newCache.byRandomName[cand.name] = {
+                    blobUrl: blobUrl,
+                    mime: plain.mimeType,
+                };
+                newCache.blobUrls.push(blobUrl);
+                const targets = oslFindAttachmentTargets(li, cand.name);
+                targets.forEach(function (t) {
+                    oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
+                });
+                console.log(
+                    "[OSL] attachment decrypt: msg=" +
+                        msgId +
+                        " original=" +
+                        plain.originalFilename +
+                        " mime=" +
+                        plain.mimeType +
+                        " size=" +
+                        bytes.length
+                );
+            } catch (err) {
+                console.warn(
+                    "[OSL] attachment scan threw msg=" +
+                        msgId +
+                        " random=" +
+                        cand.name +
+                        ":",
+                    err
+                );
+            }
+        }
+        if (newCache.blobUrls.length > 0) {
+            window.__oslAttachmentDecrypted.set(msgId, newCache);
             oslAttachmentCacheEvictIfFull();
         }
     }
@@ -6785,8 +6968,16 @@
      *     can lose downstream layout assumptions.
      */
     function recvApplyPlaintext(div, plaintext) {
+        // 8d safety: if a sentinel prefix ever reaches this function
+        // (legacy or upstream-dispatch bug), strip it to empty so it
+        // never renders as visible text.
+        const safeText =
+            typeof plaintext === "string" &&
+            plaintext.indexOf(OSL_RESULT_ATTACHMENT_PREFIX) === 0
+                ? ""
+                : plaintext;
         const span = document.createElement("span");
-        span.textContent = plaintext;
+        span.textContent = safeText;
         div.replaceChildren(span);
     }
 
@@ -8332,6 +8523,27 @@
                     recvHandleDiv(div);
                 }
             }
+            // 8d V2 attachment scan: for every chat-messages li the
+            // observer sees, try to open attachments. The Rust side
+            // returns MagicNotFound on non-OSL files, so this is
+            // cheap on unencrypted channels. Fire-and-forget — DOM
+            // swap completes async after the fetch + decrypt.
+            try {
+                if (
+                    root.matches &&
+                    root.matches('li[id^="chat-messages-"]')
+                ) {
+                    oslScanLiAttachmentsV2(root).catch(function () {});
+                }
+                if (root.querySelectorAll) {
+                    const lis = root.querySelectorAll(
+                        'li[id^="chat-messages-"]'
+                    );
+                    for (const li of lis) {
+                        oslScanLiAttachmentsV2(li).catch(function () {});
+                    }
+                }
+            } catch (_) {}
         }
         // Path 3: walk up to find an ancestor messageContent
         // div. recvFindMessageDiv handles both Element and Text

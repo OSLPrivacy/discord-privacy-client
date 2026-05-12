@@ -18,6 +18,8 @@
     "allow-osl-encrypt-message-v2",
     "allow-osl-seal-attachment",
     "allow-osl-open-attachment",
+    "allow-osl-seal-attachment-with-cover-v2",
+    "allow-osl-open-attachment-v2",
     "allow-osl-encrypt-attachment-envelope",
     "allow-osl-send-burn-marker",
     "allow-osl-send-whitelist-invitation",

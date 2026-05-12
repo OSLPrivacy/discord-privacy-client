@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 8d: full attachment open including embedded-cover decrypt.
+# Falls back to legacy_att_key_b64 for V1 files.
+[[permission]]
+identifier = "allow-osl-open-attachment-v2"
+description = "Permits the discord.com main webview to invoke `osl_open_attachment_v2` — extracts the embedded cover from a V2 attachment, decrypts it via the existing v=2 path to recover the per-attachment AEAD key, and decrypts the file payload. Backwards-compatible with V1 files when the caller supplies legacy_att_key_b64."
+commands.allow = ["osl_open_attachment_v2"]

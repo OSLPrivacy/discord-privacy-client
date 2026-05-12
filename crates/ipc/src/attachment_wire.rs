@@ -41,6 +41,20 @@ use std::sync::OnceLock;
 /// changing it breaks compatibility with already-sent files.
 pub const OSL_ATT_MAGIC: &[u8; 16] = b"OSL-ATT1\0\0\0\0\0\0\0\0";
 
+/// Phase 8d: V2 magic. Distinguishes the new wire that embeds the
+/// cover envelope inside the file (so message content can stay
+/// empty and non-OSL viewers see no DPC0:: gibberish in the
+/// channel). V1 magic is still recognised on the open path for
+/// any legacy files in flight from Phase 8 / 8c.
+pub const OSL_ATT_MAGIC_V2: &[u8; 16] = b"OSL-ATT2\0\0\0\0\0\0\0\0";
+
+/// Max length of the embedded cover envelope. The cover is a v=2
+/// wire — for a DM (1 recipient + self), the per-recipient header
+/// is ~50 bytes; the CBOR-encoded `AttachmentEnvelope` is ~150 bytes
+/// per attachment. 64 KB is enough for ~10 attachments × 10 recipients
+/// with room to spare and bounds the open-path scan cost.
+pub const MAX_COVER_BYTES: u32 = 64 * 1024;
+
 /// Maximum original-filename length we'll seal or unseal. Keeps
 /// the wire format bounded and the decode path inexpensive — Discord
 /// itself caps filenames at ~128 chars in the UI, so 1024 is
@@ -78,8 +92,14 @@ pub enum AttachmentWireError {
     FilenameTooLong(usize, usize),
     #[error("unsupported file extension")]
     UnsupportedExtension,
-    #[error("OSL-ATT1 magic not found in file")]
+    #[error("OSL-ATT1 / OSL-ATT2 magic not found in file")]
     MagicNotFound,
+    #[error("truncated payload: missing cover-length header")]
+    TruncatedCoverHeader,
+    #[error("cover-length {0} exceeds max {1}")]
+    CoverTooLarge(u32, u32),
+    #[error("truncated payload: cover bytes {0} exceeds remaining {1}")]
+    TruncatedCover(u32, usize),
     #[error("truncated payload: missing filename header")]
     TruncatedFilenameHeader,
     #[error("truncated payload: filename length {0} exceeds remaining {1} bytes")]
@@ -229,6 +249,172 @@ pub fn open_attachment(
     let plaintext = att::decrypt_attachment(key, inner_wire)
         .map_err(|e| AttachmentWireError::InnerCrypto(format!("{e:?}")))?;
     Ok((plaintext, filename))
+}
+
+/// Phase 8d: V2 seal — embeds the (already-built) cover envelope
+/// bytes inside the file so the Discord message can ship with empty
+/// content. Caller supplies the AEAD key for the file payload (the
+/// same key whose value lives inside `cover_bytes`, encrypted to the
+/// scope's recipients) and the cover bytes themselves. This
+/// separation keeps `attachment_wire` ignorant of v=2 / wire_v2 —
+/// the cover is opaque to it.
+///
+/// Layout (everything past the decoy PNG is what gets uploaded):
+///
+/// ```text
+/// [N bytes:        decoy PNG]
+/// [16 bytes:       OSL_ATT_MAGIC_V2]
+/// [ 4 bytes BE:    cover_len C (<= MAX_COVER_BYTES)]
+/// [ C bytes:       opaque cover (v=2 wire encoding the AttachmentEnvelope)]
+/// [ 2 bytes BE:    filename length L (<= MAX_FILENAME_LEN)]
+/// [ L bytes:       UTF-8 filename]
+/// [variable:       crypto::attachment streaming-AEAD wire of file payload]
+/// ```
+pub fn seal_attachment_v2(
+    file_key: aead::Key,
+    plaintext: &[u8],
+    original_filename: &str,
+    cover_bytes: &[u8],
+) -> Result<Vec<u8>, AttachmentWireError> {
+    if plaintext.len() > MAX_ATTACHMENT_BYTES {
+        return Err(AttachmentWireError::TooLarge(
+            plaintext.len(),
+            MAX_ATTACHMENT_BYTES,
+        ));
+    }
+    let fn_bytes = original_filename.as_bytes();
+    if fn_bytes.len() > MAX_FILENAME_LEN {
+        return Err(AttachmentWireError::FilenameTooLong(
+            fn_bytes.len(),
+            MAX_FILENAME_LEN,
+        ));
+    }
+    if mime_for_filename(original_filename).is_none() {
+        return Err(AttachmentWireError::UnsupportedExtension);
+    }
+    if cover_bytes.len() > MAX_COVER_BYTES as usize {
+        return Err(AttachmentWireError::CoverTooLarge(
+            cover_bytes.len() as u32,
+            MAX_COVER_BYTES,
+        ));
+    }
+
+    let content_id = random::random_bytes(16);
+    let inner_wire = att::encrypt_attachment(file_key, plaintext, content_id, 0)
+        .map_err(|e| AttachmentWireError::InnerCrypto(format!("{e:?}")))?;
+
+    let decoy = decoy_png_bytes();
+    let mut out = Vec::with_capacity(
+        decoy.len()
+            + OSL_ATT_MAGIC_V2.len()
+            + 4
+            + cover_bytes.len()
+            + 2
+            + fn_bytes.len()
+            + inner_wire.len(),
+    );
+    out.extend_from_slice(decoy);
+    out.extend_from_slice(OSL_ATT_MAGIC_V2);
+    out.extend_from_slice(&(cover_bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(cover_bytes);
+    out.extend_from_slice(&(fn_bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(fn_bytes);
+    out.extend_from_slice(&inner_wire);
+    Ok(out)
+}
+
+/// Phase 8d V2 open: split a file blob into its `(cover_bytes,
+/// filename, file_payload_bytes)` triple WITHOUT performing any
+/// decryption. The caller decrypts the cover via the existing
+/// wire_v2 path (which knows about identity keys + scope rules)
+/// and the payload via `crypto::attachment::decrypt_attachment`.
+///
+/// Falls back to the V1 magic on miss. For V1, returns
+/// `(empty cover_bytes, filename, payload_bytes)` — the V1 caller
+/// uses an out-of-band cover (the DPC0:: message text).
+pub fn open_attachment_v2_split(
+    file_bytes: &[u8],
+) -> Result<(Vec<u8>, String, Vec<u8>), AttachmentWireError> {
+    // Prefer V2 magic; fall back to V1 for legacy files.
+    let v2_off = file_bytes
+        .windows(OSL_ATT_MAGIC_V2.len())
+        .position(|w| w == OSL_ATT_MAGIC_V2);
+    if let Some(off) = v2_off {
+        let mut p = off + OSL_ATT_MAGIC_V2.len();
+        if p + 4 > file_bytes.len() {
+            return Err(AttachmentWireError::TruncatedCoverHeader);
+        }
+        let cover_len = u32::from_be_bytes([
+            file_bytes[p],
+            file_bytes[p + 1],
+            file_bytes[p + 2],
+            file_bytes[p + 3],
+        ]);
+        p += 4;
+        if cover_len > MAX_COVER_BYTES {
+            return Err(AttachmentWireError::CoverTooLarge(
+                cover_len,
+                MAX_COVER_BYTES,
+            ));
+        }
+        if p + cover_len as usize > file_bytes.len() {
+            return Err(AttachmentWireError::TruncatedCover(
+                cover_len,
+                file_bytes.len() - p,
+            ));
+        }
+        let cover = file_bytes[p..p + cover_len as usize].to_vec();
+        p += cover_len as usize;
+        if p + 2 > file_bytes.len() {
+            return Err(AttachmentWireError::TruncatedFilenameHeader);
+        }
+        let fn_len = u16::from_be_bytes([file_bytes[p], file_bytes[p + 1]]) as usize;
+        p += 2;
+        if fn_len > MAX_FILENAME_LEN {
+            return Err(AttachmentWireError::FilenameTooLong(
+                fn_len,
+                MAX_FILENAME_LEN,
+            ));
+        }
+        if p + fn_len > file_bytes.len() {
+            return Err(AttachmentWireError::TruncatedFilename(
+                fn_len,
+                file_bytes.len() - p,
+            ));
+        }
+        let filename = std::str::from_utf8(&file_bytes[p..p + fn_len])
+            .map_err(|_| AttachmentWireError::FilenameNotUtf8)?
+            .to_string();
+        p += fn_len;
+        let payload = file_bytes[p..].to_vec();
+        return Ok((cover, filename, payload));
+    }
+    // V1 fallback. Cover is empty — the caller has it from message text.
+    let v1_off = find_payload_offset(file_bytes).ok_or(AttachmentWireError::MagicNotFound)?;
+    let mut p = v1_off + OSL_ATT_MAGIC.len();
+    if p + 2 > file_bytes.len() {
+        return Err(AttachmentWireError::TruncatedFilenameHeader);
+    }
+    let fn_len = u16::from_be_bytes([file_bytes[p], file_bytes[p + 1]]) as usize;
+    p += 2;
+    if fn_len > MAX_FILENAME_LEN {
+        return Err(AttachmentWireError::FilenameTooLong(
+            fn_len,
+            MAX_FILENAME_LEN,
+        ));
+    }
+    if p + fn_len > file_bytes.len() {
+        return Err(AttachmentWireError::TruncatedFilename(
+            fn_len,
+            file_bytes.len() - p,
+        ));
+    }
+    let filename = std::str::from_utf8(&file_bytes[p..p + fn_len])
+        .map_err(|_| AttachmentWireError::FilenameNotUtf8)?
+        .to_string();
+    p += fn_len;
+    let payload = file_bytes[p..].to_vec();
+    Ok((Vec::new(), filename, payload))
 }
 
 /// 8-hex-char random filename used as the upload name. Always

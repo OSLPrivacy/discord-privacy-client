@@ -458,6 +458,63 @@ async fn osl_open_attachment(
 /// whitelisted recipient in the scope. Returned string is what
 /// boot.js sets as the message-text body when an encrypted
 /// attachment is being sent.
+/// Phase 8d: one-shot seal that embeds the cover envelope inside
+/// the file so the Discord message text can stay empty. Replaces the
+/// 8c flow of (osl_seal_attachment + osl_encrypt_attachment_envelope
+/// + osl_encrypt_message_v2) for the attachment send path.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn osl_seal_attachment_with_cover_v2(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    original_bytes_b64: String,
+    original_filename: String,
+    random_filename: String,
+) -> Result<ipc::commands::SealedAttachmentV2, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_seal_attachment_with_cover_v2(
+            state.inner(),
+            scope_input,
+            channel_members,
+            self_discord_id,
+            original_bytes_b64,
+            original_filename,
+            random_filename,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 8d: full open including embedded-cover decrypt. Backwards-
+/// compatible with V1 files via the optional legacy_att_key_b64.
+#[tauri::command]
+async fn osl_open_attachment_v2(
+    app: tauri::AppHandle,
+    sender_discord_id: String,
+    scope_input: Option<ScopeInput>,
+    file_bytes_b64: String,
+    legacy_att_key_b64: Option<String>,
+) -> Result<ipc::attachment_wire::OpenedAttachment, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_open_attachment_v2(
+            state.inner(),
+            sender_discord_id,
+            scope_input,
+            file_bytes_b64,
+            legacy_att_key_b64,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 #[tauri::command]
 async fn osl_encrypt_attachment_envelope(
     app: tauri::AppHandle,
@@ -1394,6 +1451,8 @@ fn main() {
             osl_encrypt_message_v2,
             osl_seal_attachment,
             osl_open_attachment,
+            osl_seal_attachment_with_cover_v2,
+            osl_open_attachment_v2,
             osl_encrypt_attachment_envelope,
             osl_send_burn_marker,
             osl_send_whitelist_invitation,

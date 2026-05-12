@@ -1751,6 +1751,222 @@ pub fn cmd_osl_encrypt_attachment_envelope(
     .map_err(|e| format!("OSL: encrypt_v2 (attachment envelope): {e}"))
 }
 
+/// Phase 8d output: one-shot seal that returns everything JS needs
+/// to upload + reference the file. The cover envelope lives INSIDE
+/// `sealed_b64`; no separate cover-on-the-wire is needed.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SealedAttachmentV2 {
+    pub sealed_b64: String,
+    pub random_filename: String,
+    pub mime_type: String,
+}
+
+/// Phase 8d: one-shot seal. Generates a fresh per-attachment AEAD
+/// key, builds the v=2 cover (multi-recipient envelope carrying
+/// that AEAD key + filenames + MIME) using the existing
+/// MSG_TYPE_ATTACHMENT path, seals the file payload with the AEAD
+/// key, and assembles the V2 wire bundle. The JS caller never sees
+/// the AEAD key — it lives only inside the embedded cover, which
+/// only whitelisted recipients can decrypt.
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_osl_seal_attachment_with_cover_v2(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    original_bytes_b64: String,
+    original_filename: String,
+    random_filename: String,
+) -> Result<SealedAttachmentV2, String> {
+    let mime = crate::attachment_wire::mime_for_filename(&original_filename)
+        .ok_or_else(|| "OSL: unsupported file extension".to_string())?;
+    let original_bytes = STANDARD
+        .decode(&original_bytes_b64)
+        .map_err(|e| format!("OSL: original_bytes b64 decode: {e}"))?;
+
+    // Fresh attachment AEAD key. Lives only here + inside the
+    // ciphered cover; never returned to JS.
+    let key_bytes = random::random_bytes(32);
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(&key_bytes);
+    let att_key = crypto::aead::Key::from_bytes(key_arr);
+
+    // Build the CBOR-encoded envelope (single-attachment list).
+    let env = crate::control_messages::AttachmentEnvelope {
+        attachments: vec![crate::control_messages::AttachmentEnvelopeEntry {
+            att_key: key_arr,
+            original_filename: original_filename.clone(),
+            random_filename: random_filename.clone(),
+            mime_type: mime.to_string(),
+        }],
+    };
+    let env_bytes = crate::control_messages::serialize_attachment_envelope(&env)
+        .map_err(|e| format!("OSL: serialize attachment envelope: {e}"))?;
+
+    // Resolve identity + recipients for the v=2 multi-recipient
+    // wrap of the cover.
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    let self_pk = identity.x25519_public;
+    drop(id_guard);
+    let recipients = {
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        crate::whitelist::recipients_for_scope(
+            &ws_guard,
+            &pm_guard,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+        )
+    };
+
+    // Cover wire — the same shape MSG_TYPE_ATTACHMENT would have
+    // had on the message text; here we embed the raw v=2 wire
+    // bytes (no DPC0:: base64-string framing) inside the file.
+    let cover_wire_str = crate::wire_v2::encrypt_v2(
+        &env_bytes,
+        &recipients,
+        crate::wire_v2::MSG_TYPE_ATTACHMENT,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2 cover: {e}"))?;
+    let cover_bytes = STANDARD
+        .decode(
+            cover_wire_str
+                .strip_prefix("DPC0::")
+                .unwrap_or(&cover_wire_str),
+        )
+        .map_err(|e| format!("OSL: cover wire b64 decode: {e}"))?;
+
+    // Seal the file with the AEAD key + embed the cover.
+    let sealed_bytes = crate::attachment_wire::seal_attachment_v2(
+        att_key,
+        &original_bytes,
+        &original_filename,
+        &cover_bytes,
+    )
+    .map_err(|e| format!("OSL: seal_attachment_v2: {e}"))?;
+
+    Ok(SealedAttachmentV2 {
+        sealed_b64: STANDARD.encode(&sealed_bytes),
+        random_filename,
+        mime_type: mime.to_string(),
+    })
+}
+
+/// Phase 8d: one-shot open. Splits the file into (cover, filename,
+/// payload), decrypts the cover via the existing v=2 path, recovers
+/// the per-attachment AEAD key from the envelope, then decrypts the
+/// payload. Backwards-compatible with V1 files (signaled by the
+/// empty cover from `open_attachment_v2_split`) — falls back to the
+/// caller-supplied legacy `att_key_b64` argument for V1 only.
+pub fn cmd_osl_open_attachment_v2(
+    state: &AppState,
+    sender_discord_id: String,
+    scope_input: Option<crate::scope::ScopeInput>,
+    file_bytes_b64: String,
+    legacy_att_key_b64: Option<String>,
+) -> Result<crate::attachment_wire::OpenedAttachment, String> {
+    let file_bytes = STANDARD
+        .decode(&file_bytes_b64)
+        .map_err(|e| format!("OSL: file_bytes b64 decode: {e}"))?;
+    let (cover_bytes, filename, payload_bytes) =
+        crate::attachment_wire::open_attachment_v2_split(&file_bytes)
+            .map_err(|e| format!("OSL: open_attachment_v2_split: {e}"))?;
+
+    // Recover the attachment AEAD key. V2 path: decrypt the
+    // embedded cover via v=2 (uses our SK + sender PK + scope
+    // whitelist gate). V1 path: trust the caller-supplied
+    // att_key_b64 (legacy Phase 8/8c flow).
+    let att_key_arr: [u8; 32] = if !cover_bytes.is_empty() {
+        // Build the DPC0:: string the v=2 decoder expects.
+        let cover_wire = format!("DPC0::{}", STANDARD.encode(&cover_bytes));
+        // V2 cover MUST be MSG_TYPE_ATTACHMENT — dispatch through
+        // cmd_osl_decrypt_message_v2 to honour the scope gate.
+        let recovered = cmd_osl_decrypt_message_v2(
+            state,
+            None,
+            // channel_id is unused for MSG_TYPE_ATTACHMENT processing.
+            String::new(),
+            sender_discord_id,
+            cover_wire,
+            scope_input,
+            None,
+        )?;
+        if !recovered.starts_with(OSL_RESULT_ATTACHMENT_PREFIX) {
+            return Err(format!(
+                "OSL: V2 cover did not decode to attachment sentinel: {recovered}"
+            ));
+        }
+        let json_part = recovered.trim_start_matches(OSL_RESULT_ATTACHMENT_PREFIX);
+        let v: serde_json::Value = serde_json::from_str(json_part)
+            .map_err(|e| format!("OSL: V2 cover sentinel JSON: {e}"))?;
+        let arr = v["attachments"]
+            .as_array()
+            .ok_or_else(|| "OSL: V2 cover missing attachments[]".to_string())?;
+        if arr.is_empty() {
+            return Err("OSL: V2 cover attachments[] is empty".to_string());
+        }
+        // V2 currently has one entry per file (multi-file
+        // messages get one cover per file, embedded in each
+        // file's wire).
+        let entry = &arr[0];
+        let key_b64 = entry["attKey"]
+            .as_str()
+            .ok_or_else(|| "OSL: V2 cover missing attKey".to_string())?;
+        let key_bytes = STANDARD
+            .decode(key_b64)
+            .map_err(|e| format!("OSL: V2 cover attKey b64: {e}"))?;
+        if key_bytes.len() != 32 {
+            return Err(format!(
+                "OSL: V2 cover attKey length {} != 32",
+                key_bytes.len()
+            ));
+        }
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&key_bytes);
+        k
+    } else {
+        // V1 path: caller must supply the AEAD key.
+        let b64 = legacy_att_key_b64
+            .ok_or_else(|| "OSL: V1 file with no legacy att_key supplied".to_string())?;
+        let key_bytes = STANDARD
+            .decode(&b64)
+            .map_err(|e| format!("OSL: legacy att_key b64: {e}"))?;
+        if key_bytes.len() != 32 {
+            return Err(format!(
+                "OSL: legacy att_key length {} != 32",
+                key_bytes.len()
+            ));
+        }
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&key_bytes);
+        k
+    };
+    let file_key = crypto::aead::Key::from_bytes(att_key_arr);
+    let plaintext = crypto::attachment::decrypt_attachment(file_key, &payload_bytes)
+        .map_err(|e| format!("OSL: decrypt_attachment: {e:?}"))?;
+    let mime = crate::attachment_wire::mime_for_filename(&filename)
+        .ok_or_else(|| "OSL: unsupported file extension on decrypted name".to_string())?;
+    Ok(crate::attachment_wire::OpenedAttachment {
+        plaintext_b64: STANDARD.encode(&plaintext),
+        original_filename: filename,
+        mime_type: mime.to_string(),
+    })
+}
+
 /// Layer 10 / Phase 7b: send a burn marker for `scope` to the
 /// channel members who'd have been able to decrypt content in it
 /// (so they wipe their decryption capability).

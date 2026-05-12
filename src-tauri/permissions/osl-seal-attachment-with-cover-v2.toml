@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 8d: combined seal that embeds the cover envelope inside the
+# attachment file so the Discord message text stays empty.
+[[permission]]
+identifier = "allow-osl-seal-attachment-with-cover-v2"
+description = "Permits the discord.com main webview to invoke `osl_seal_attachment_with_cover_v2` — generates a per-attachment AEAD key, builds the v=2 cover envelope, and seals the file payload with that key, returning the upload-ready bundle. The AEAD key never leaves Rust."
+commands.allow = ["osl_seal_attachment_with_cover_v2"]
