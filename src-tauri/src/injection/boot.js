@@ -4124,10 +4124,17 @@
         if (!m) return;
         const msgId = m[1];
 
-        // Burned scope: leave decoy + skip.
+        // 8d-FIX1: capture channel_id alongside scope. We need it
+        // to construct the cdn.discordapp.com URL directly —
+        // media.discordapp.net (the URL on `<img src>`) is a
+        // re-encoding proxy that strips everything after the PNG
+        // IEND chunk including our OSL-ATT2 magic + cover + payload.
+        // Only cdn.discordapp.com serves the original bytes.
         let scope = null;
+        let channelId = null;
         try {
             const ctx = oslCurrentChannelContext();
+            channelId = (ctx && ctx.channelId) || null;
             scope = ctx && oslScopeForCurrentContext(ctx);
             if (
                 scope &&
@@ -4186,7 +4193,73 @@
         const newCache = { byRandomName: {}, blobUrls: [] };
         for (const cand of candidates) {
             try {
-                const fileB64 = await oslFetchAttachmentBase64(cand.url);
+                // 8d-FIX1: try cdn.discordapp.com first. Discord's
+                // media.discordapp.net proxy re-encodes uploads to
+                // strip trailing bytes (which is where our OSL-ATT2
+                // magic + cover envelope + payload live). cdn.disc-
+                // ordapp.com serves the originals untouched.
+                const cdnUrl = channelId
+                    ? "https://cdn.discordapp.com/attachments/" +
+                      channelId +
+                      "/" +
+                      msgId +
+                      "/" +
+                      cand.name
+                    : null;
+                console.log(
+                    "[OSL] attachment scan: msg=" +
+                        msgId +
+                        " channel=" +
+                        (channelId || "?") +
+                        " random=" +
+                        cand.name +
+                        " cdn_url=" +
+                        (cdnUrl
+                            ? cdnUrl.substring(0, 100)
+                            : "n/a") +
+                        " dom_url=" +
+                        cand.url.substring(0, 100)
+                );
+                let fileB64 = null;
+                let fetchedFrom = null;
+                if (cdnUrl) {
+                    try {
+                        fileB64 = await oslFetchAttachmentBase64(cdnUrl);
+                        fetchedFrom = "cdn";
+                    } catch (cdnErr) {
+                        console.warn(
+                            "[OSL] attachment fetch: cdn_url failed msg=" +
+                                msgId +
+                                " — falling back to dom_url. err=" +
+                                (cdnErr && cdnErr.message
+                                    ? cdnErr.message
+                                    : cdnErr)
+                        );
+                    }
+                }
+                if (fileB64 === null) {
+                    fileB64 = await oslFetchAttachmentBase64(cand.url);
+                    fetchedFrom = "dom";
+                }
+                // Quick magic-presence diagnostic — base64-decoded
+                // length + look for OSL-ATT[12] in the first 64KB
+                // so a future re-encoding regression at the CDN
+                // shows up clearly in logs.
+                try {
+                    const sniff = atob(fileB64.substring(0, 1024 * 96));
+                    const hasV2 = sniff.indexOf("OSL-ATT2") >= 0;
+                    const hasV1 = sniff.indexOf("OSL-ATT1") >= 0;
+                    console.log(
+                        "[OSL] attachment fetch: source=" +
+                            fetchedFrom +
+                            " msg=" +
+                            msgId +
+                            " b64_len=" +
+                            fileB64.length +
+                            " magic_present=" +
+                            (hasV2 ? "OSL-ATT2" : hasV1 ? "OSL-ATT1" : "no")
+                    );
+                } catch (_) {}
                 const decRes = await oslInvoke("osl_open_attachment_v2", {
                     senderDiscordId: senderId,
                     scopeInput: scope || null,
