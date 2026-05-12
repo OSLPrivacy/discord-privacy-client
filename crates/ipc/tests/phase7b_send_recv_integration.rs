@@ -28,7 +28,7 @@ use ipc::commands::{
     cmd_osl_set_whitelist, cmd_osl_unwhitelist_scope, OSL_RESULT_BURN_APPLIED,
     OSL_RESULT_INVITATION_RECEIVED, OSL_RESULT_RESPONSE_RECEIVED,
 };
-use ipc::peer_map::{PeerEntry, WhitelistEntry};
+use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
@@ -39,7 +39,6 @@ use keystore::generate_identity;
 
 const LIAM_DID: &str = "1477008451799482419";
 const HENRY_DID: &str = "1502770642930634812";
-const ALICE_DID: &str = "1602770642930634812";
 const GC_ID: &str = "1234567890";
 
 fn fresh_state_for_liam() -> (AppState, keystore::Identity) {
@@ -478,8 +477,7 @@ fn test_set_whitelist_then_accept_unlocks_decrypt() {
         .x25519_public;
 
     // Henry's state, with liam's pubkey + osl id pre-installed.
-    let mut henry_state = AppState::new();
-    henry_state = {
+    let henry_state = {
         let henry_id = generate_identity("henry".to_string());
         let s = AppState::new();
         *s.identity.lock().unwrap() = Some(henry_id);
