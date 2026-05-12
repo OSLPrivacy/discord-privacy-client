@@ -1485,6 +1485,22 @@
 
     const ATT_SUPPORTED_RE = /\.(jpe?g|png|gif|webp|mp4|webm|mov)$/i;
 
+    // FIX5: relative-time prefix (+Nms) so step1/step2/step3 timing
+    // is visible in DevTools without needing the performance panel.
+    // Baseline is module load; rolls over via `performance.now()`
+    // which is monotonic and unaffected by wall-clock changes.
+    const __oslAttT0 =
+        typeof performance !== "undefined" && performance.now
+            ? performance.now()
+            : Date.now();
+    function oslLogTime() {
+        const now =
+            typeof performance !== "undefined" && performance.now
+                ? performance.now()
+                : Date.now();
+        return "+" + Math.round(now - __oslAttT0) + "ms";
+    }
+
     function oslAbortXhr(xhr, reason, channelId) {
         console.warn(
             "[OSL] att abort: " +
@@ -1532,7 +1548,9 @@
             composerToggle.getAttribute("data-osl-encrypt-state");
         const isOn = stateAttr === "on";
         console.log(
-            "[OSL] step1 attachments: channel=" +
+            "[OSL] " +
+                oslLogTime() +
+                " step1 attachments: channel=" +
                 channelId +
                 " files=" +
                 body.files.length +
@@ -1644,7 +1662,9 @@
             f.filename = randomFilename;
             f.file_size = reservedSize;
             console.log(
-                "[OSL] step1 reserved: original=" +
+                "[OSL] " +
+                    oslLogTime() +
+                    " step1 reserved: original=" +
                     reservation.originalFilename +
                     " random=" +
                     randomFilename +
@@ -1654,22 +1674,42 @@
         });
 
         // Install a one-shot load listener to rekey reservations
-        // from tempId to upload_id once Discord answers.
+        // from tempId to upload_id once Discord answers. Discord
+        // registers its own `load` handler BEFORE our send proxy
+        // runs, so its handler fires first and may dispatch step 2
+        // (the GCS PUT) before our rekey runs. step 2 has a poll-
+        // with-retry to handle that race; here we just make sure
+        // the rekey itself stays synchronous (no awaits, no
+        // setTimeouts) so the gap stays measured in milliseconds.
         function onAttachmentsResponse() {
             try {
                 if (xhr.readyState !== 4) return;
+                console.log(
+                    "[OSL] " +
+                        oslLogTime() +
+                        " step1 response listener entered for channel=" +
+                        channelId +
+                        " status=" +
+                        xhr.status
+                );
                 if (xhr.status < 200 || xhr.status >= 300) {
                     // Discord rejected the pre-upload request —
                     // clean up our reservations so they don't leak.
                     for (const tempId of Object.values(indexToTempId)) {
                         window.__oslPendingUploads.delete(tempId);
                     }
+                    console.log(
+                        "[OSL] " +
+                            oslLogTime() +
+                            " step1 response listener exiting (non-2xx, reservations cleaned)"
+                    );
                     return;
                 }
                 const resp = JSON.parse(xhr.responseText);
                 const respAtts = Array.isArray(resp && resp.attachments)
                     ? resp.attachments
                     : [];
+                let rekeyed = 0;
                 respAtts.forEach(function (att, i) {
                     const tempId = indexToTempId[i];
                     if (!tempId) return;
@@ -1684,8 +1724,11 @@
                     if (uploadId) {
                         window.__oslPendingUploads.delete(tempId);
                         window.__oslPendingUploads.set(uploadId, reservation);
+                        rekeyed++;
                         console.log(
-                            "[OSL] step1 mapped upload_id=" +
+                            "[OSL] " +
+                                oslLogTime() +
+                                " step1 mapped upload_id=" +
                                 uploadId.substring(0, 20) +
                                 "... for random=" +
                                 reservation.randomFilename
@@ -1697,6 +1740,13 @@
                         );
                     }
                 });
+                console.log(
+                    "[OSL] " +
+                        oslLogTime() +
+                        " step1 response listener exiting after rekeying " +
+                        rekeyed +
+                        " reservation(s)"
+                );
             } catch (e) {
                 console.error("[OSL] step1 load listener threw:", e);
             }
@@ -1729,11 +1779,95 @@
      * upload_id, this is a non-OSL upload (encrypt was off when
      * step 1 ran) — passthrough.
      */
+    /**
+     * FIX5: returns true iff at least one reservation is still
+     * keyed by its tempId (i.e. step 1's response listener hasn't
+     * rekeyed it yet). Used by step 2 to decide whether the
+     * upload_id miss is plausibly a race or a genuine non-OSL
+     * upload — only the former is worth polling for.
+     */
+    function oslHasPendingRekey() {
+        for (const k of window.__oslPendingUploads.keys()) {
+            if (typeof k === "string" && k.startsWith("tmp:")) return true;
+        }
+        return false;
+    }
+
     async function oslInterceptStep2GcsPut(origSend, xhr, args, uploadId) {
-        const reservation = window.__oslPendingUploads.get(uploadId);
+        let reservation = window.__oslPendingUploads.get(uploadId);
+
+        // FIX5: rekey race. Discord registers its own `load`
+        // handler on the step 1 XHR BEFORE our send proxy runs, so
+        // Discord's handler fires first — and Discord then
+        // synchronously kicks off step 2's GCS PUT. Our load
+        // handler (which does the tempId → upload_id rekey) hasn't
+        // run yet, so the lookup misses. Poll briefly to give it
+        // a chance to land. Only poll if there's at least one
+        // outstanding tempId reservation — otherwise this is a
+        // genuine non-OSL upload (encrypt was off) and we want
+        // the passthrough to stay fast.
+        if (
+            (!reservation || reservation.status !== "pending_bytes") &&
+            oslHasPendingRekey()
+        ) {
+            const startMs = Date.now();
+            console.log(
+                "[OSL] " +
+                    oslLogTime() +
+                    " step2 await begin: upload_id=" +
+                    uploadId.substring(0, 20) +
+                    "..."
+            );
+            const MAX_ATTEMPTS = 10;
+            const INTERVAL_MS = 25;
+            for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+                await new Promise(function (r) {
+                    setTimeout(r, INTERVAL_MS);
+                });
+                reservation = window.__oslPendingUploads.get(uploadId);
+                if (reservation && reservation.status === "pending_bytes") {
+                    console.log(
+                        "[OSL] " +
+                            oslLogTime() +
+                            " step2 await success: upload_id=" +
+                            uploadId.substring(0, 20) +
+                            "... matched after " +
+                            (Date.now() - startMs) +
+                            "ms (attempt " +
+                            i +
+                            "/" +
+                            MAX_ATTEMPTS +
+                            ")"
+                    );
+                    break;
+                }
+                console.log(
+                    "[OSL] step2 polling for upload_id=" +
+                        uploadId.substring(0, 20) +
+                        "... attempt=" +
+                        i +
+                        "/" +
+                        MAX_ATTEMPTS
+                );
+            }
+            if (!reservation || reservation.status !== "pending_bytes") {
+                console.warn(
+                    "[OSL] " +
+                        oslLogTime() +
+                        " step2 await timeout: upload_id=" +
+                        uploadId.substring(0, 20) +
+                        "... gave up after " +
+                        (Date.now() - startMs) +
+                        "ms"
+                );
+            }
+        }
+
         if (!reservation || reservation.status !== "pending_bytes") {
             console.log(
-                "[OSL] step2 passthrough: upload_id=" +
+                "[OSL] " +
+                    oslLogTime() +
+                    " step2 passthrough: upload_id=" +
                     uploadId.substring(0, 20) +
                     "... " +
                     (reservation
@@ -1822,7 +1956,9 @@
         reservation.status = "pending_cover";
 
         console.log(
-            "[OSL] step2 GCS PUT: upload_id=" +
+            "[OSL] " +
+                oslLogTime() +
+                " step2 GCS PUT: upload_id=" +
                 uploadId.substring(0, 20) +
                 "... original_size=" +
                 originalBytes.length +
@@ -1918,7 +2054,9 @@
                 })
                 .join(",");
             console.log(
-                "[OSL] step3 cover: random_filenames=[" +
+                "[OSL] " +
+                    oslLogTime() +
+                    " step3 cover: random_filenames=[" +
                     randomNames +
                     "] cover_len=" +
                     envRes.value.length +
@@ -1928,7 +2066,9 @@
             return JSON.stringify(parsed);
         });
         console.log(
-            "[OSL] step3 /messages: attachments=" +
+            "[OSL] " +
+                oslLogTime() +
+                " step3 /messages: attachments=" +
                 parsed.attachments.length +
                 " encrypted_count=" +
                 matched.length
