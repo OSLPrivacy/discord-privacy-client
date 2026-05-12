@@ -8,8 +8,8 @@
  * Tauri command `osl_encrypt_message`, replace it with the returned
  * cover text, and forward.
  *
- * The legacy `osl_encrypt_message` path is still available for v1
- * compatibility. New scoped sends use `osl_encrypt_message_v2`.
+ * Phase 3 round 6: `osl_encrypt_message` is a stub returning
+ * `"[OSL-STUB] " + plaintext`. Phase 4 wires the real crypto path.
  *
  * ## Round 6: anti-detection mitigations
  *
@@ -140,8 +140,8 @@
     // ============================================================
     // Compile-time DEBUG switch.
     //
-    // Keep false by default. Local investigations can temporarily
-    // flip this to true while diagnosing hook behavior.
+    // PHASE 3 VERIFICATION: leave at `true` so console output stays
+    // visible for debugging. **FLIP TO `false` BEFORE RELEASE BUILDS.**
     //
     // When `false`: V8/SpiderMonkey dead-code-eliminate every
     // `if (DEBUG) { ... }` block during JIT optimisation, leaving no
@@ -151,7 +151,7 @@
     // `console.error` calls are intentionally NOT gated â€” failures
     // are signal we want to surface even in production builds.
     // ============================================================
-    const DEBUG = false;
+    const DEBUG = true;
 
     // ============================================================
     // Phase 7c round-3 (safe subset): fine-grained debug flags for
@@ -294,9 +294,10 @@
     }
 
     /**
-     * Thin wrapper around the legacy Tauri encryption command.
-     * Resolves to the cover-text string on success, rejects on
-     * IPC-level failure.
+     * Thin wrapper around the Tauri command. Resolves to the cover-
+     * text string on success, rejects on IPC-level failure. Phase 3:
+     * command body is stubbed to `[OSL-STUB] <plaintext>`. Phase 4
+     * swaps in the real crypto pipeline behind the same wire shape.
      */
     window.__OSL_INTERCEPT__ = function (channelId, plaintext, options) {
         const invoke = getTauriInvoke();
@@ -7707,3 +7708,4 @@
         oslInstallPhase7c();
     }
 })();
+
