@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Key server for discord-privacy-client. Register / fetch identity public keys, upload / fetch wrapped key blobs. Closed-beta deployable: pre-shared admin token gates state-mutating routes; user-id allowlist gates registration; rate limiting on mutations. Plain HTTP at the application layer (TLS provided by hosting platform).",
+  "engines": {
+    "node": "20"
+  },
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test 'test/**/*.test.js'"
