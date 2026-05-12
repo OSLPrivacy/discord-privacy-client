@@ -84,16 +84,20 @@ fn seal_open_round_trip_preserves_bytes_and_filename() {
     let sealed = cmd_osl_seal_attachment(&state, plaintext.clone(), "vacation.jpg".to_string())
         .expect("seal");
     assert_eq!(sealed.mime_type, "image/jpeg");
+    // 8d-FIX2: upload filename is `.bin` (was `.png`). Discord
+    // transcodes any image MIME at the CDN, so the wrapper is
+    // now application/octet-stream.
     assert!(
-        sealed.random_filename.ends_with(".png"),
-        "decoy upload name must be .png so Discord renders the decoy preview"
+        sealed.random_filename.ends_with(".bin"),
+        "upload name must be .bin so Discord doesn't transcode it"
     );
-    assert_eq!(sealed.random_filename.len(), "abcd1234.png".len());
+    assert_eq!(sealed.random_filename.len(), "abcd1234.bin".len());
     let key_b64 = sealed.att_key_b64.clone();
     let file_bytes = STANDARD.decode(&sealed.file_blob_b64).unwrap();
 
-    // OSL-ATT1 magic must be somewhere inside the uploaded file
-    // (after the decoy PNG bytes).
+    // V1 seal still emits the decoy PNG prefix (legacy code path
+    // kept for backward compat with files in flight). The OSL-ATT1
+    // magic must follow the PNG bytes.
     let magic_off = file_bytes
         .windows(OSL_ATT_MAGIC.len())
         .position(|w| w == OSL_ATT_MAGIC)
@@ -399,22 +403,20 @@ fn v2_seal_carries_v2_magic_and_round_trips() {
         LIAM_DID.to_string(),
         STANDARD.encode(&original),
         "selfie.jpg".to_string(),
-        "deadbeef.png".to_string(),
+        "deadbeef.bin".to_string(),
     )
     .expect("seal v2");
     assert_eq!(sealed.mime_type, "image/jpeg");
-    assert_eq!(sealed.random_filename, "deadbeef.png");
+    assert_eq!(sealed.random_filename, "deadbeef.bin");
     let bytes = STANDARD.decode(&sealed.sealed_b64).unwrap();
+    // 8d-FIX2: V2 wire starts directly with the magic — no decoy
+    // PNG prefix. Discord transcodes image-MIME attachments at the
+    // CDN, so we ship as `application/octet-stream` (.bin) and skip
+    // the PNG wrapper entirely.
     assert_eq!(
-        &bytes[..8],
-        &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']
-    );
-    // V2 magic must be present; V1 magic must NOT.
-    assert!(
-        bytes
-            .windows(OSL_ATT_MAGIC_V2.len())
-            .any(|w| w == OSL_ATT_MAGIC_V2),
-        "V2 magic missing in sealed bundle"
+        &bytes[..OSL_ATT_MAGIC_V2.len()],
+        OSL_ATT_MAGIC_V2,
+        "V2 magic must be at offset 0 (no decoy PNG prefix in 8d-FIX2)"
     );
     assert!(
         !bytes
@@ -496,7 +498,7 @@ fn v2_open_with_wrong_recipient_fails() {
         LIAM_DID.to_string(),
         STANDARD.encode(&original),
         "doc.png".to_string(),
-        "feedbabe.png".to_string(),
+        "feedbabe.bin".to_string(),
     )
     .expect("seal v2");
 

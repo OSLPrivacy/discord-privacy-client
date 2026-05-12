@@ -1359,7 +1359,10 @@
         for (let i = 0; i < sealedBinary.length; i++) {
             sealedBytes[i] = sealedBinary.charCodeAt(i);
         }
-        const sealedBlob = new Blob([sealedBytes], { type: "image/png" });
+        // 8d-FIX2: octet-stream so Discord's CDN doesn't transcode.
+        const sealedBlob = new Blob([sealedBytes], {
+            type: "application/octet-stream",
+        });
         return {
             sealedBlob: sealedBlob,
             sealedFilename: sealed.randomFilename,
@@ -1620,13 +1623,19 @@
         const indexToTempId = {};
         body.files.forEach(function (f, i) {
             const reservedSize = oslReservedSizeFor(f.file_size);
+            // 8d-FIX2: `.bin` (was `.png` through 8d). Discord
+            // transcodes any image MIME at the CDN — even the raw
+            // cdn.discordapp.com URL serves a re-encoded copy that
+            // strips our wire bytes. application/octet-stream is
+            // served through untouched. Non-OSL viewers see a
+            // generic file-attachment card instead of a gray decoy.
             const randomFilename = (function () {
                 const a = new Uint8Array(4);
                 crypto.getRandomValues(a);
                 let s = "";
                 for (const x of a)
                     s += x.toString(16).padStart(2, "0");
-                return s + ".png";
+                return s + ".bin";
             })();
             const tempId =
                 "tmp:" +
@@ -1661,6 +1670,12 @@
             indexToTempId[i] = tempId;
             f.filename = randomFilename;
             f.file_size = reservedSize;
+            // 8d-FIX2: declare octet-stream so Discord doesn't
+            // route the file through its image transcoder. The
+            // `content_type` field is honoured by Discord's pre-
+            // upload flow and propagated as Content-Type on the
+            // GCS presigned PUT URL.
+            f.content_type = "application/octet-stream";
             console.log(
                 "[OSL] " +
                     oslLogTime() +
@@ -1669,7 +1684,8 @@
                     " random=" +
                     randomFilename +
                     " reserved_size=" +
-                    reservedSize
+                    reservedSize +
+                    " content_type=application/octet-stream"
             );
         });
 
@@ -1983,10 +1999,13 @@
                 sealedBytes.length
         );
 
-        // Replace the PUT body with our sealed bundle. GCS uses
-        // octet-stream; preserve that content-type (Discord's XHR
-        // already set it before send).
-        const newBody = new Blob([sealedBytes], { type: "image/png" });
+        // 8d-FIX2: serve as application/octet-stream so Discord's
+        // CDN never tries to transcode it. (Pre-FIX2 we used
+        // image/png + .png to match the decoy wrapper; the decoy
+        // is gone and the wrapper is now .bin end-to-end.)
+        const newBody = new Blob([sealedBytes], {
+            type: "application/octet-stream",
+        });
         return Reflect.apply(origSend, xhr, [newBody]);
     }
 
@@ -4157,9 +4176,15 @@
             return;
         }
 
-        // Discover CDN media elements. The V2 scan doesn't know
-        // random_filename in advance, so collect every plausible
-        // candidate keyed by its URL's last path segment.
+        // Discover candidate elements. The V2 scan doesn't know
+        // random_filename in advance, so collect every CDN-hosted
+        // URL whose last path segment matches our upload-name shape.
+        //
+        // 8d-FIX2: accept both `.bin` (current, octet-stream
+        // wrapper) and `.png` (legacy V1/8d-pre-FIX2 with decoy-
+        // PNG wrapper). `.bin` files render as a download card,
+        // not an image — the relevant element is the `<a>` link to
+        // cdn.discordapp.com/attachments, not an `<img>`.
         const candidates = [];
         const els = li.querySelectorAll(
             "img[src*='discord'], video[src*='discord'], a[href*='discord']"
@@ -4172,11 +4197,7 @@
             if (typeof url !== "string") return;
             const path = url.split("?")[0];
             const last = path.split("/").pop() || "";
-            // Phase 8 / 8c / 8d uploads always carry a `.png`
-            // upload-filename (random 8-hex). Anchor on that
-            // suffix to filter out unrelated discord.com
-            // referenced URLs like profile images.
-            if (!/^[0-9a-f]{8}\.png$/i.test(last)) return;
+            if (!/^[0-9a-f]{8}\.(bin|png)$/i.test(last)) return;
             candidates.push({ el: el, url: url, name: last });
         });
         if (candidates.length === 0) return;
@@ -4193,66 +4214,34 @@
         const newCache = { byRandomName: {}, blobUrls: [] };
         for (const cand of candidates) {
             try {
-                // 8d-FIX1: try cdn.discordapp.com first. Discord's
-                // media.discordapp.net proxy re-encodes uploads to
-                // strip trailing bytes (which is where our OSL-ATT2
-                // magic + cover envelope + payload live). cdn.disc-
-                // ordapp.com serves the originals untouched.
-                const cdnUrl = channelId
-                    ? "https://cdn.discordapp.com/attachments/" +
-                      channelId +
-                      "/" +
-                      msgId +
-                      "/" +
-                      cand.name
-                    : null;
+                // 8d-FIX2: with `.bin` wrappers Discord doesn't
+                // transcode, so the DOM-rendered URL on the
+                // attachment card (typically the actual
+                // cdn.discordapp.com/attachments/{cid}/{aid}/{fn}
+                // pointing at the right attachment_id) is now
+                // authoritative. FIX1 tried to reconstruct the URL
+                // from message_id but Discord uses a separate
+                // attachment_id, so the reconstructed URL 404'd
+                // and we always fell back to the DOM URL anyway.
                 console.log(
                     "[OSL] attachment scan: msg=" +
                         msgId +
-                        " channel=" +
-                        (channelId || "?") +
                         " random=" +
                         cand.name +
-                        " cdn_url=" +
-                        (cdnUrl
-                            ? cdnUrl.substring(0, 100)
-                            : "n/a") +
-                        " dom_url=" +
+                        " fetch_url=" +
                         cand.url.substring(0, 100)
                 );
-                let fileB64 = null;
-                let fetchedFrom = null;
-                if (cdnUrl) {
-                    try {
-                        fileB64 = await oslFetchAttachmentBase64(cdnUrl);
-                        fetchedFrom = "cdn";
-                    } catch (cdnErr) {
-                        console.warn(
-                            "[OSL] attachment fetch: cdn_url failed msg=" +
-                                msgId +
-                                " — falling back to dom_url. err=" +
-                                (cdnErr && cdnErr.message
-                                    ? cdnErr.message
-                                    : cdnErr)
-                        );
-                    }
-                }
-                if (fileB64 === null) {
-                    fileB64 = await oslFetchAttachmentBase64(cand.url);
-                    fetchedFrom = "dom";
-                }
+                const fileB64 = await oslFetchAttachmentBase64(cand.url);
                 // Quick magic-presence diagnostic — base64-decoded
                 // length + look for OSL-ATT[12] in the first 64KB
-                // so a future re-encoding regression at the CDN
-                // shows up clearly in logs.
+                // so a future Discord-side regression that
+                // transcodes octet-stream uploads shows up clearly.
                 try {
                     const sniff = atob(fileB64.substring(0, 1024 * 96));
                     const hasV2 = sniff.indexOf("OSL-ATT2") >= 0;
                     const hasV1 = sniff.indexOf("OSL-ATT1") >= 0;
                     console.log(
-                        "[OSL] attachment fetch: source=" +
-                            fetchedFrom +
-                            " msg=" +
+                        "[OSL] attachment fetch: msg=" +
                             msgId +
                             " b64_len=" +
                             fileB64.length +

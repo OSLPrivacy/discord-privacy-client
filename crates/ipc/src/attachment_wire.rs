@@ -303,17 +303,17 @@ pub fn seal_attachment_v2(
     let inner_wire = att::encrypt_attachment(file_key, plaintext, content_id, 0)
         .map_err(|e| AttachmentWireError::InnerCrypto(format!("{e:?}")))?;
 
-    let decoy = decoy_png_bytes();
+    // 8d-FIX2: no decoy PNG prefix. Discord transcodes ANY image
+    // MIME-typed attachment at the CDN — even the cdn.discordapp.com
+    // URL returns re-encoded bytes that strip everything past the
+    // PNG IEND chunk. The fix is to upload as `application/octet-
+    // stream` (.bin) so Discord doesn't recognise the file as image
+    // and serves the bytes unmodified. Non-OSL viewers see a generic
+    // file-attachment card instead of a gray decoy image; the
+    // trade-off is bytes-intact recv.
     let mut out = Vec::with_capacity(
-        decoy.len()
-            + OSL_ATT_MAGIC_V2.len()
-            + 4
-            + cover_bytes.len()
-            + 2
-            + fn_bytes.len()
-            + inner_wire.len(),
+        OSL_ATT_MAGIC_V2.len() + 4 + cover_bytes.len() + 2 + fn_bytes.len() + inner_wire.len(),
     );
-    out.extend_from_slice(decoy);
     out.extend_from_slice(OSL_ATT_MAGIC_V2);
     out.extend_from_slice(&(cover_bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(cover_bytes);
@@ -417,14 +417,16 @@ pub fn open_attachment_v2_split(
     Ok((Vec::new(), filename, payload))
 }
 
-/// 8-hex-char random filename used as the upload name. Always
-/// ".png" because the decoy prefix is a PNG; Discord's CDN
-/// renderers will display the decoy when the URL is visited
-/// directly.
+/// 8-hex-char random filename used as the upload name. 8d-FIX2:
+/// `.bin` (was `.png` through 8d). Discord transcodes anything it
+/// recognises as an image MIME at the CDN, so the wrapper has to
+/// be a non-image type. `application/octet-stream` + `.bin`
+/// makes Discord render a generic download card and serve the
+/// bytes unmodified.
 pub fn random_upload_filename() -> String {
     let bytes = random::random_bytes(4);
     format!(
-        "{:02x}{:02x}{:02x}{:02x}.png",
+        "{:02x}{:02x}{:02x}{:02x}.bin",
         bytes[0], bytes[1], bytes[2], bytes[3]
     )
 }
@@ -643,9 +645,12 @@ mod tests {
     #[test]
     fn random_filename_shape() {
         let f = random_upload_filename();
-        assert!(f.ends_with(".png"));
-        assert_eq!(f.len(), "abcd1234.png".len());
-        for c in f.trim_end_matches(".png").chars() {
+        assert!(
+            f.ends_with(".bin"),
+            "8d-FIX2: upload filename is .bin so Discord doesn't transcode it"
+        );
+        assert_eq!(f.len(), "abcd1234.bin".len());
+        for c in f.trim_end_matches(".bin").chars() {
             assert!(c.is_ascii_hexdigit(), "non-hex char in random filename");
         }
     }
