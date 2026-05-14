@@ -31,7 +31,11 @@ function initSchema(db) {
       ik_mlkem768_pub TEXT NOT NULL,
       ik_x25519_signature TEXT NOT NULL,
       registered_at TEXT NOT NULL,
-      last_rotated_at TEXT
+      last_rotated_at TEXT,
+      -- Phase 9-A2: published Double Ratchet bootstrap pub. NULL for
+      -- pre-A2 records that re-register without it. Senders see NULL
+      -- as "peer not v=4 eligible" and route through v=3.
+      ik_ratchet_initial_pub TEXT
     ) WITHOUT ROWID;
 
     CREATE TABLE IF NOT EXISTS wrapped_keys (
@@ -77,6 +81,18 @@ function initSchema(db) {
       FOREIGN KEY (user_id) REFERENCES users (user_id)
     );
   `);
+
+  // Phase 9-A2 migration: pre-A2 production deployments have a `users`
+  // table built from the prior `CREATE TABLE IF NOT EXISTS` (no
+  // ik_ratchet_initial_pub column). `IF NOT EXISTS` won't add the
+  // column on second boot, so we ALTER additively if it's missing.
+  // sqlite stores column info in pragma_table_info; check + ALTER.
+  const hasRatchetCol = db
+    .prepare("SELECT 1 FROM pragma_table_info('users') WHERE name = 'ik_ratchet_initial_pub'")
+    .get();
+  if (!hasRatchetCol) {
+    db.exec("ALTER TABLE users ADD COLUMN ik_ratchet_initial_pub TEXT");
+  }
 }
 
 // ---- users ----
@@ -86,6 +102,9 @@ export function upsertUser(db, row) {
     .prepare('SELECT user_id FROM users WHERE user_id = ?')
     .get(row.user_id);
   const now = new Date().toISOString();
+  // Phase 9-A2: clients may omit ik_ratchet_initial_pub (legacy or
+  // pre-A2 builds). Normalize undefined → null so sqlite binds cleanly.
+  const ratchetPub = row.ik_ratchet_initial_pub ?? null;
   if (existing) {
     db.prepare(
       `UPDATE users
@@ -93,19 +112,21 @@ export function upsertUser(db, row) {
              ik_ed25519_pub = @ik_ed25519_pub,
              ik_mlkem768_pub = @ik_mlkem768_pub,
              ik_x25519_signature = @ik_x25519_signature,
+             ik_ratchet_initial_pub = @ik_ratchet_initial_pub,
              last_rotated_at = @now
        WHERE user_id = @user_id`,
-    ).run({ ...row, now });
+    ).run({ ...row, ik_ratchet_initial_pub: ratchetPub, now });
     return { isNew: false, last_rotated_at: now };
   }
   db.prepare(
     `INSERT INTO users
        (user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
-        ik_x25519_signature, registered_at, last_rotated_at)
+        ik_x25519_signature, ik_ratchet_initial_pub,
+        registered_at, last_rotated_at)
      VALUES
        (@user_id, @ik_x25519_pub, @ik_ed25519_pub, @ik_mlkem768_pub,
-        @ik_x25519_signature, @now, NULL)`,
-  ).run({ ...row, now });
+        @ik_x25519_signature, @ik_ratchet_initial_pub, @now, NULL)`,
+  ).run({ ...row, ik_ratchet_initial_pub: ratchetPub, now });
   return { isNew: true, registered_at: now };
 }
 
@@ -113,7 +134,7 @@ export function getUser(db, userId) {
   return db
     .prepare(
       `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
-              registered_at, last_rotated_at
+              ik_ratchet_initial_pub, registered_at, last_rotated_at
          FROM users WHERE user_id = ?`,
     )
     .get(userId);
@@ -179,7 +200,8 @@ export function popPrekeyBundle(db, userId) {
   const txn = db.transaction(() => {
     const user = db
       .prepare(
-        `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub
+        `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
+                ik_ratchet_initial_pub
            FROM users WHERE user_id = ?`,
       )
       .get(userId);
@@ -212,6 +234,10 @@ export function popPrekeyBundle(db, userId) {
       ik_x25519_pub: user.ik_x25519_pub,
       ik_ed25519_pub: user.ik_ed25519_pub,
       ik_mlkem768_pub: user.ik_mlkem768_pub,
+      // Phase 9-A2: surface the ratchet bootstrap pub on the prekey-
+      // bundle response so callers know v=4 eligibility without a
+      // second roundtrip to /v1/pubkeys.
+      ik_ratchet_initial_pub: user.ik_ratchet_initial_pub ?? null,
       spk_pub: spk.spk_pub,
       spk_signature: spk.spk_signature,
       spk_rotated_at: spk.spk_rotated_at,

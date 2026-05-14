@@ -673,3 +673,71 @@ test('rate limit: GET endpoints not rate-limited', async () => {
   }
   await s.close();
 });
+
+// ----- F1.4 cutover: redirectTarget mode -----
+
+test('F1.4 redirect: /v1/healthz returns 200 (no redirect — keeps Railway healthcheck green)', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    redirectTarget: 'https://keyserver.oslprivacy.com',
+  });
+  const r = await inject(s, { method: 'GET', url: '/v1/healthz' });
+  assert.equal(r.statusCode, 200);
+  await s.close();
+});
+
+test('F1.4 redirect: all non-healthz routes 308 with Location preserving path', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    redirectTarget: 'https://keyserver.oslprivacy.com',
+  });
+  // Use raw .inject so we get headers (the local `inject` helper
+  // strips them).
+  const r = await s.inject({ method: 'GET', url: '/v1/pubkeys/alice' });
+  assert.equal(r.statusCode, 308);
+  assert.equal(
+    r.headers.location,
+    'https://keyserver.oslprivacy.com/v1/pubkeys/alice',
+  );
+  const r2 = await s.inject({
+    method: 'POST',
+    url: '/v1/register',
+    payload: { user_id: 'x' },
+  });
+  assert.equal(r2.statusCode, 308);
+  assert.equal(
+    r2.headers.location,
+    'https://keyserver.oslprivacy.com/v1/register',
+  );
+  await s.close();
+});
+
+test('F1.4 redirect: trailing slash on redirectTarget is normalised', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    redirectTarget: 'https://keyserver.oslprivacy.com///',
+  });
+  const r = await s.inject({ method: 'GET', url: '/v1/pubkeys/x' });
+  assert.equal(r.statusCode, 308);
+  assert.equal(
+    r.headers.location,
+    'https://keyserver.oslprivacy.com/v1/pubkeys/x',
+  );
+  await s.close();
+});
+
+test('F1.4 redirect: unset redirectTarget is a no-op (default-serving mode)', async () => {
+  const s = await buildServer({
+    logger: false,
+    dbFile: ':memory:',
+    // redirectTarget omitted → falls through normal routing.
+  });
+  // /v1/pubkeys for an unknown user_id is the 404 path; we're
+  // confirming we hit that path, not a 308.
+  const r = await inject(s, { method: 'GET', url: '/v1/pubkeys/alice' });
+  assert.equal(r.statusCode, 404);
+  await s.close();
+});

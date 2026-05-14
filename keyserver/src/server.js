@@ -152,6 +152,11 @@ export async function buildServer({
   // default) skips plugin registration entirely so tests don't
   // trip the limiter on rapid `server.inject` calls.
   rateLimit = false,
+  // F1.4 cutover: when set, every route except `/v1/healthz` is
+  // 308-redirected to `${redirectTarget}<path>`. Keeps Railway's
+  // healthcheck happy while stragglers get pointed at the
+  // Workers deployment. Railway shuts down +30 days after cutover.
+  redirectTarget = null,
 } = {}) {
   const fastify = Fastify({ logger });
   const db = openDatabase(dbFile);
@@ -203,6 +208,22 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
     db.close();
   });
 
+  // F1.4 cutover: redirect everything except healthz to the new
+  // Workers deployment. Installed as an onRequest hook so it fires
+  // before any route handler (including the rate-limit plugin).
+  if (redirectTarget) {
+    const cleanTarget = String(redirectTarget).replace(/\/+$/, '');
+    fastify.addHook('onRequest', async (request, reply) => {
+      if (request.url === '/v1/healthz') return;
+      const dest = cleanTarget + request.url;
+      reply.code(308).header('location', dest).send();
+    });
+    fastify.log.warn(
+      { redirectTarget: cleanTarget },
+      'F1.4 cutover active: all routes except /v1/healthz 308 to new host'
+    );
+  }
+
   fastify.get('/v1/healthz', async () => ({ ok: true }));
 
   // ---- POST /v1/register ----
@@ -244,6 +265,17 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
       if (!isNonEmptyBase64(body[k])) {
         return reply.code(400).send({ error: `${k} must be base64` });
       }
+    }
+    // Phase 9-A2: ik_ratchet_initial_pub is optional. When supplied,
+    // it must be base64; absence is recorded as NULL.
+    if (
+      body.ik_ratchet_initial_pub !== undefined &&
+      body.ik_ratchet_initial_pub !== null &&
+      !isNonEmptyBase64(body.ik_ratchet_initial_pub)
+    ) {
+      return reply
+        .code(400)
+        .send({ error: 'ik_ratchet_initial_pub must be base64 (when present)' });
     }
     const result = upsertUser(db, body);
     if (result.isNew) {
@@ -588,6 +620,11 @@ if (isMain) {
     ? { max: 10, timeWindow: '1 minute' }
     : false;
 
+  // F1.4 cutover: set OSL_REDIRECT_TARGET=https://keyserver.oslprivacy.com
+  // on the Railway environment to switch this deployment to
+  // redirect-only mode. Unset = normal serving.
+  const redirectTarget = process.env.OSL_REDIRECT_TARGET || null;
+
   const server = await buildServer({
     logger: true,
     dbFile,
@@ -595,6 +632,7 @@ if (isMain) {
     adminToken,
     allowedUsers,
     rateLimit,
+    redirectTarget,
   });
   server.listen({ port, host }, (err, address) => {
     if (err) {
