@@ -121,9 +121,19 @@ use crate::error::{Error, Result};
 use crate::hkdf;
 use crate::random;
 use crate::x25519;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zeroize::ZeroizeOnDrop;
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// HKDF info labels — domain-separated for v1.
 const CHAIN_INIT_INFO: &[u8] = b"sender-keys/chain-init";
@@ -356,6 +366,16 @@ pub struct SenderChain {
     ck_n: SenderChainKey,
     n: u32,
     prev_chain_length: u32,
+    /// Phase 9-A3: unix-seconds timestamp at which this chain was
+    /// first seeded. Used by the IPC layer's 24-hour rotation
+    /// trigger. Stamped at `new()` / `rotate()`; otherwise immutable.
+    chain_started_at: u64,
+    /// Phase 9-A3: snapshot of the group's member set at the time
+    /// the chain was installed/rotated. The IPC layer compares this
+    /// against the current channel members on each send; any diff
+    /// triggers a rotate. Bytes here are caller-defined opaque
+    /// member ids (typically Discord snowflakes as UTF-8 bytes).
+    last_known_members: Vec<Vec<u8>>,
 }
 
 impl SenderChain {
@@ -370,6 +390,8 @@ impl SenderChain {
             ck_n: ck_0,
             n: 0,
             prev_chain_length: 0,
+            chain_started_at: now_unix_secs(),
+            last_known_members: Vec::new(),
         })
     }
 
@@ -388,7 +410,28 @@ impl SenderChain {
         self.ck_n = derive_ck_0(&self.rotation_root, self.chain_id)?;
         self.n = 0;
         self.prev_chain_length = prev;
+        self.chain_started_at = now_unix_secs();
+        // last_known_members reset by the orchestrator after rotate
+        // (it has the fresh member snapshot to install).
+        self.last_known_members.clear();
         Ok(())
+    }
+
+    /// Phase 9-A3: unix-seconds timestamp when this chain was seeded.
+    pub fn chain_started_at(&self) -> u64 {
+        self.chain_started_at
+    }
+
+    /// Phase 9-A3: snapshot of the member set at install/rotate time.
+    pub fn last_known_members(&self) -> &[Vec<u8>] {
+        &self.last_known_members
+    }
+
+    /// Phase 9-A3: install the current member-set snapshot. Called
+    /// by the IPC layer immediately after `new()`/`rotate()` once it
+    /// has gathered the channel's current members.
+    pub fn set_last_known_members(&mut self, members: Vec<Vec<u8>>) {
+        self.last_known_members = members;
     }
 
     pub fn current_chain_id(&self) -> u32 {
@@ -763,4 +806,250 @@ impl SenderKeyState {
             .ok_or_else(|| Error::Internal("sender keys: no receiver chain for peer".into()))?;
         chain.decrypt(msg, ctx)
     }
+}
+
+// ============================================================
+// Phase 9-A3: persistable mirror of sender-keys state
+// ============================================================
+
+/// On-disk version byte for [`SenderKeyStateOnDisk`]. Bump on any
+/// shape change to force a clean reject of stale-format records.
+pub const SENDER_KEY_STATE_ON_DISK_VERSION: u8 = 0x01;
+
+/// Errors raised when reconstructing live state from a persisted
+/// [`SenderKeyStateOnDisk`].
+#[derive(Debug, thiserror::Error)]
+pub enum SenderKeyPersistError {
+    #[error("sender-key state on-disk version 0x{got:02x} != supported 0x{want:02x}")]
+    UnsupportedVersion { got: u8, want: u8 },
+    #[error("sender-key state on-disk: base64 decode {field}: {source}")]
+    Base64 {
+        field: &'static str,
+        #[source]
+        source: base64::DecodeError,
+    },
+    #[error("sender-key state on-disk: {field} length {got} != expected {want}")]
+    BadLength {
+        field: &'static str,
+        got: usize,
+        want: usize,
+    },
+}
+
+/// Persistable mirror of [`SenderKeyState`]. Inner byte arrays are
+/// base64 strings (matching peer_map.json / ratchet_state convention).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SenderKeyStateOnDisk {
+    pub version: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<SenderChainOnDisk>,
+    /// HashMap encoded as Vec<(key, value)> so the on-disk JSON is a
+    /// stable sequence rather than serde_json's unordered object form.
+    /// Keys are opaque peer_id byte sequences (base64-encoded for
+    /// transport).
+    #[serde(default)]
+    pub receivers: Vec<(String, ReceiverChainOnDisk)>,
+}
+
+impl Default for SenderKeyStateOnDisk {
+    fn default() -> Self {
+        SenderKeyStateOnDisk {
+            version: SENDER_KEY_STATE_ON_DISK_VERSION,
+            sender: None,
+            receivers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SenderChainOnDisk {
+    pub rotation_root_b64: String,
+    pub chain_id: u32,
+    pub ck_n_b64: String,
+    pub n: u32,
+    pub prev_chain_length: u32,
+    pub chain_started_at: u64,
+    /// Base64-encoded opaque member ids (caller-defined; typically
+    /// Discord snowflakes as UTF-8 bytes).
+    #[serde(default)]
+    pub last_known_members_b64: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReceiverChainOnDisk {
+    pub chain_id: u32,
+    pub ck_n_b64: String,
+    pub n: u32,
+    #[serde(default)]
+    pub skipped: Vec<SkippedKeyOnDisk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkippedKeyOnDisk {
+    pub chain_id: u32,
+    pub n: u32,
+    pub hk_b64: String,
+    pub mk_b64: String,
+    pub added_at_unix_secs: u64,
+}
+
+impl From<&SenderKeyState> for SenderKeyStateOnDisk {
+    fn from(s: &SenderKeyState) -> Self {
+        SenderKeyStateOnDisk {
+            version: SENDER_KEY_STATE_ON_DISK_VERSION,
+            sender: s.sender.as_ref().map(SenderChainOnDisk::from),
+            receivers: s
+                .receivers
+                .iter()
+                .map(|(peer_id, chain)| {
+                    (STANDARD.encode(peer_id), ReceiverChainOnDisk::from(chain))
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&SenderChain> for SenderChainOnDisk {
+    fn from(c: &SenderChain) -> Self {
+        SenderChainOnDisk {
+            rotation_root_b64: STANDARD.encode(c.rotation_root.as_bytes()),
+            chain_id: c.chain_id,
+            ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
+            n: c.n,
+            prev_chain_length: c.prev_chain_length,
+            chain_started_at: c.chain_started_at,
+            last_known_members_b64: c
+                .last_known_members
+                .iter()
+                .map(|m| STANDARD.encode(m))
+                .collect(),
+        }
+    }
+}
+
+impl From<&ReceiverChain> for ReceiverChainOnDisk {
+    fn from(c: &ReceiverChain) -> Self {
+        ReceiverChainOnDisk {
+            chain_id: c.chain_id,
+            ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
+            n: c.n,
+            skipped: c
+                .skipped
+                .keys
+                .iter()
+                .map(|e| SkippedKeyOnDisk {
+                    chain_id: e.chain_id,
+                    n: e.n,
+                    hk_b64: STANDARD.encode(e.hk.as_bytes()),
+                    mk_b64: STANDARD.encode(e.mk.as_bytes()),
+                    added_at_unix_secs: e
+                        .inserted_at
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<SenderKeyStateOnDisk> for SenderKeyState {
+    type Error = SenderKeyPersistError;
+
+    fn try_from(s: SenderKeyStateOnDisk) -> std::result::Result<Self, Self::Error> {
+        if s.version != SENDER_KEY_STATE_ON_DISK_VERSION {
+            return Err(SenderKeyPersistError::UnsupportedVersion {
+                got: s.version,
+                want: SENDER_KEY_STATE_ON_DISK_VERSION,
+            });
+        }
+        let sender = match s.sender {
+            Some(disk) => Some(disk.try_into()?),
+            None => None,
+        };
+        let mut receivers: HashMap<Vec<u8>, ReceiverChain> = HashMap::new();
+        for (peer_b64, chain_disk) in s.receivers {
+            let peer_bytes =
+                STANDARD
+                    .decode(&peer_b64)
+                    .map_err(|source| SenderKeyPersistError::Base64 {
+                        field: "receivers.peer_id",
+                        source,
+                    })?;
+            let chain: ReceiverChain = chain_disk.try_into()?;
+            receivers.insert(peer_bytes, chain);
+        }
+        Ok(SenderKeyState { sender, receivers })
+    }
+}
+
+impl TryFrom<SenderChainOnDisk> for SenderChain {
+    type Error = SenderKeyPersistError;
+
+    fn try_from(d: SenderChainOnDisk) -> std::result::Result<Self, Self::Error> {
+        let rotation_root =
+            RotationRoot::from_bytes(decode_32(&d.rotation_root_b64, "rotation_root")?);
+        let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "ck_n")?);
+        let mut last_known_members = Vec::with_capacity(d.last_known_members_b64.len());
+        for (idx, b64) in d.last_known_members_b64.iter().enumerate() {
+            let m = STANDARD
+                .decode(b64)
+                .map_err(|source| SenderKeyPersistError::Base64 {
+                    // Static-str field name; the index is for logging only.
+                    field: "last_known_members[?]",
+                    source,
+                })?;
+            let _ = idx;
+            last_known_members.push(m);
+        }
+        Ok(SenderChain {
+            rotation_root,
+            chain_id: d.chain_id,
+            ck_n,
+            n: d.n,
+            prev_chain_length: d.prev_chain_length,
+            chain_started_at: d.chain_started_at,
+            last_known_members,
+        })
+    }
+}
+
+impl TryFrom<ReceiverChainOnDisk> for ReceiverChain {
+    type Error = SenderKeyPersistError;
+
+    fn try_from(d: ReceiverChainOnDisk) -> std::result::Result<Self, Self::Error> {
+        let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "receiver.ck_n")?);
+        let mut skipped_keys: Vec<SkippedKey> = Vec::with_capacity(d.skipped.len());
+        for entry in d.skipped {
+            skipped_keys.push(SkippedKey {
+                chain_id: entry.chain_id,
+                n: entry.n,
+                hk: aead::Key::from_bytes(decode_32(&entry.hk_b64, "skipped.hk")?),
+                mk: aead::Key::from_bytes(decode_32(&entry.mk_b64, "skipped.mk")?),
+                inserted_at: UNIX_EPOCH + Duration::from_secs(entry.added_at_unix_secs),
+            });
+        }
+        Ok(ReceiverChain {
+            chain_id: d.chain_id,
+            ck_n,
+            n: d.n,
+            skipped: SkippedKeyCache { keys: skipped_keys },
+        })
+    }
+}
+
+fn decode_32(s: &str, field: &'static str) -> std::result::Result<[u8; 32], SenderKeyPersistError> {
+    let bytes = STANDARD
+        .decode(s)
+        .map_err(|source| SenderKeyPersistError::Base64 { field, source })?;
+    if bytes.len() != 32 {
+        return Err(SenderKeyPersistError::BadLength {
+            field,
+            got: bytes.len(),
+            want: 32,
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }

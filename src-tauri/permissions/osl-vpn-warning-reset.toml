@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: re-enable the VPN banner. Settings → About → "Show VPN
+# warning on launch" toggle invokes this when the user flips it back
+# on after a previous "Don't show again".
+[[permission]]
+identifier = "allow-osl-vpn-warning-reset"
+description = "Permits invoking `osl_vpn_warning_reset`. Clears vpn_warning_dismissed_forever so the banner returns on the next launch."
+commands.allow = ["osl_vpn_warning_reset"]

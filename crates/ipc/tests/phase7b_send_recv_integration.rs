@@ -23,23 +23,20 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::x25519;
 use ipc::commands::{
-    cmd_osl_accept_invitation, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message_v2,
-    cmd_osl_send_burn_marker, cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response,
-    cmd_osl_set_whitelist, cmd_osl_unwhitelist_scope, OSL_RESULT_BURN_APPLIED,
-    OSL_RESULT_INVITATION_RECEIVED, OSL_RESULT_RESPONSE_RECEIVED,
+    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message_v2_wire, cmd_osl_send_burn_marker,
+    cmd_osl_unwhitelist_scope, OSL_RESULT_BURN_APPLIED,
 };
-use ipc::peer_map::{PeerEntry, WhitelistEntry};
+use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
-use ipc::wire_v2::{decrypt_v2, MSG_TYPE_CONTENT};
+use ipc::wire_v2::MSG_TYPE_CONTENT;
 use keystore::generate_identity;
 
 // ---- fixtures ----
 
 const LIAM_DID: &str = "1477008451799482419";
 const HENRY_DID: &str = "1502770642930634812";
-const ALICE_DID: &str = "1602770642930634812";
 const GC_ID: &str = "1234567890";
 
 fn fresh_state_for_liam() -> (AppState, keystore::Identity) {
@@ -61,6 +58,23 @@ fn install_peer_pubkey(state: &AppState, discord_id: &str, pk: x25519::PublicKey
     pe.discord_id = Some(discord_id.to_string());
 }
 
+/// Phase 9-A1: install peer pubkey + ML-KEM pubkey. Required for
+/// any test that sends through cmd_osl_encrypt_message_v2 (which is
+/// v=3 only post-9-A1). Tests that don't send (recv-only paths)
+/// can keep using install_peer_pubkey with X25519 only.
+fn install_peer_pubkey_v3(
+    state: &AppState,
+    discord_id: &str,
+    pk: x25519::PublicKey,
+    mlkem_pk: &crypto::ml_kem_768::EncapsulationKey,
+) {
+    let mut pm = state.peer_map.lock().unwrap();
+    let pe = pm.entry(discord_id.to_string()).or_default();
+    pe.pubkey = Some(STANDARD.encode(pk.as_bytes()));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(mlkem_pk.to_bytes()));
+    pe.discord_id = Some(discord_id.to_string());
+}
+
 fn install_dm_whitelist(state: &AppState, peer_discord_id: &str, broadened: bool) {
     let scope = Scope::dm(peer_discord_id);
     {
@@ -70,9 +84,6 @@ fn install_dm_whitelist(state: &AppState, peer_discord_id: &str, broadened: bool
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
-                full_whitelist: false,
-                members: vec![],
-                whitelisted_users: vec![],
             },
         );
     }
@@ -93,11 +104,16 @@ fn install_gc_full_whitelist(state: &AppState, gc_id: &str, members: &[&str]) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
-                full_whitelist: true,
-                members: members.iter().map(|s| s.to_string()).collect(),
-                whitelisted_users: vec![],
             },
         );
+    }
+    let mut pm = state.peer_map.lock().unwrap();
+    for m in members {
+        let pe = pm.entry((*m).to_string()).or_default();
+        pe.outgoing_whitelists.push(WhitelistEntry::Gc {
+            id: gc_id.to_string(),
+            user_specific: false,
+        });
     }
 }
 
@@ -110,30 +126,32 @@ fn si(s: &Scope) -> ScopeInput {
 
 #[test]
 fn test_osl_encrypt_message_v2_command() {
+    // Phase 9-A1: this exercise now goes through the v=3 path
+    // (cmd_osl_encrypt_message_v2 calls encrypt_v3 internally).
+    // Henry needs both X25519 + ML-KEM pubkeys in liam's peer_map,
+    // and we decrypt with henry's full Identity to recover the
+    // plaintext.
     let (state, _) = fresh_state_for_liam();
     let (henry_sk, henry_pk) = x25519::generate_keypair();
-    install_peer_pubkey(&state, HENRY_DID, henry_pk);
+    let (henry_mlkem_sk, henry_mlkem_pk) = crypto::ml_kem_768::generate_keypair();
+    install_peer_pubkey_v3(&state, HENRY_DID, henry_pk, &henry_mlkem_pk);
     install_dm_whitelist(&state, HENRY_DID, false);
 
     let scope = Scope::dm(HENRY_DID);
-    let wire = cmd_osl_encrypt_message_v2(
+    let wire = cmd_osl_encrypt_message_v2_wire(
         &state,
         "hello phase 7b".to_string(),
         si(&scope),
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
     )
-    .expect("encrypt v=2");
+    .expect("encrypt v=3");
+    assert!(
+        wire.starts_with("DPC0::"),
+        "v=3 still uses DPC0:: prefix; version byte is inside payload"
+    );
 
-    // Decrypt with henry's secret to verify the round-trip.
-    let liam_pub = state
-        .identity
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .x25519_public;
-    let recovered = decrypt_v2(&wire, &henry_sk, &liam_pub).unwrap();
+    let recovered = ipc::wire_v2::decrypt_v3(&wire, &henry_sk, &henry_mlkem_sk).unwrap();
     assert_eq!(recovered.msg_type, MSG_TYPE_CONTENT);
     assert_eq!(recovered.plaintext, b"hello phase 7b".to_vec());
 }
@@ -153,7 +171,7 @@ fn test_osl_encrypt_no_whitelist_encrypts_to_self() {
     install_peer_pubkey(&state, HENRY_DID, henry_pk);
 
     let scope = Scope::dm(HENRY_DID);
-    let wire = cmd_osl_encrypt_message_v2(
+    let wire = cmd_osl_encrypt_message_v2_wire(
         &state,
         "encrypted-to-self only".to_string(),
         si(&scope),
@@ -226,117 +244,10 @@ fn test_recv_burn_marker_applies_burn() {
     );
 }
 
-// ---- 4. invitation enqueues + populates pubkey ----
-
-#[test]
-fn test_recv_invitation_adds_to_pending() {
-    let (state, _) = fresh_state_for_liam();
-    let (henry_sk, henry_pk) = x25519::generate_keypair();
-    // Henry's pubkey must already be in peer_map for the v=2
-    // wrap leg to decrypt (the recipient needs the sender's
-    // pubkey to compute the ECDH shared secret). In production
-    // the bootstrap path or keyserver round-trip populates it
-    // before the first invitation arrives; here we install
-    // directly. The "populated eagerly" assertion below still
-    // verifies that the invitation re-stamps the on-disk
-    // pubkey (idempotent overwrite is harmless).
-    install_peer_pubkey(&state, HENRY_DID, henry_pk);
-
-    let scope = Scope::dm(LIAM_DID);
-    let invitation = ipc::control_messages::WhitelistInvitation {
-        from_discord_id: HENRY_DID.to_string(),
-        from_pubkey: henry_pk,
-        scope: scope.clone(),
-        sent_at: 1_700_000_001,
-    };
-    let body = ipc::control_messages::serialize_whitelist_invitation(&invitation).unwrap();
-    let wire = ipc::wire_v2::encrypt_v2(
-        &body,
-        &[state
-            .identity
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .x25519_public],
-        ipc::wire_v2::MSG_TYPE_WHITELIST_INVITATION,
-        &henry_sk,
-    )
-    .unwrap();
-
-    let result = cmd_osl_decrypt_message_v2(
-        &state,
-        None,
-        "channel".to_string(),
-        HENRY_DID.to_string(),
-        wire,
-        None,
-        None,
-    )
-    .expect("decrypt invitation");
-    assert_eq!(result, OSL_RESULT_INVITATION_RECEIVED);
-
-    let pi = state.pending_invitations.lock().unwrap();
-    assert_eq!(pi.len(), 1, "expected one pending invitation");
-    let key = format!("from_{}_{}", HENRY_DID, scope.storage_key());
-    assert!(pi.contains_key(&key));
-
-    // pubkey populated eagerly.
-    let pm = state.peer_map.lock().unwrap();
-    let henry = pm.get(HENRY_DID).unwrap();
-    assert!(henry.pubkey.is_some(), "henry pubkey should be populated");
-}
-
-// ---- 5. response updates outgoing_whitelist_responses ----
-
-#[test]
-fn test_recv_response_updates_outgoing_whitelist() {
-    let (state, _) = fresh_state_for_liam();
-    let (henry_sk, henry_pk) = x25519::generate_keypair();
-    install_peer_pubkey(&state, HENRY_DID, henry_pk);
-
-    let scope = Scope::dm(HENRY_DID);
-    let response = ipc::control_messages::WhitelistResponse {
-        scope: scope.clone(),
-        accepted: true,
-        responded_at: 1_700_000_002,
-    };
-    let body = ipc::control_messages::serialize_whitelist_response(&response).unwrap();
-    let wire = ipc::wire_v2::encrypt_v2(
-        &body,
-        &[state
-            .identity
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .x25519_public],
-        ipc::wire_v2::MSG_TYPE_WHITELIST_RESPONSE,
-        &henry_sk,
-    )
-    .unwrap();
-
-    let result = cmd_osl_decrypt_message_v2(
-        &state,
-        None,
-        "channel".to_string(),
-        HENRY_DID.to_string(),
-        wire,
-        None,
-        None,
-    )
-    .expect("decrypt response");
-    assert_eq!(result, OSL_RESULT_RESPONSE_RECEIVED);
-
-    let pm = state.peer_map.lock().unwrap();
-    let henry = pm.get(HENRY_DID).unwrap();
-    assert_eq!(
-        henry.outgoing_whitelist_responses.get(&scope.storage_key()),
-        Some(&true),
-        "expected accepted=true stored under {}",
-        scope.storage_key()
-    );
-}
+// 9-C1: test_recv_invitation_adds_to_pending +
+// test_recv_response_updates_outgoing_whitelist removed alongside
+// the invitation handshake. Permissive-decrypt coverage lives in
+// the C1 phase tests.
 
 // ---- 6. unwhitelist DM with revoke_broadened=true ----
 
@@ -355,9 +266,7 @@ fn test_unwhitelist_dm_with_broaden_revoke() {
     // Sanity: before un-whitelist, can_encrypt_to GC says yes.
     {
         let pm = state.peer_map.lock().unwrap();
-        let ws = state.whitelist_state.lock().unwrap();
         assert!(ipc::whitelist::can_encrypt_to(
-            &ws,
             &pm,
             &Scope::gc(GC_ID),
             HENRY_DID,
@@ -408,9 +317,8 @@ fn test_unwhitelist_dm_with_broaden_revoke() {
     // broadened revoke is what kills the GC grant.)
     {
         let pm = state.peer_map.lock().unwrap();
-        let ws = state.whitelist_state.lock().unwrap();
         assert!(
-            !ipc::whitelist::can_encrypt_to(&ws, &pm, &Scope::gc(GC_ID), HENRY_DID),
+            !ipc::whitelist::can_encrypt_to(&pm, &Scope::gc(GC_ID), HENRY_DID),
             "post-revoke: henry must lose GC access"
         );
     }
@@ -452,119 +360,22 @@ fn test_unwhitelist_dm_without_broaden_revoke() {
     // scopes remain."
     {
         let pm = state.peer_map.lock().unwrap();
-        let ws = state.whitelist_state.lock().unwrap();
         assert!(
-            ipc::whitelist::can_encrypt_to(&ws, &pm, &Scope::gc(GC_ID), HENRY_DID),
+            ipc::whitelist::can_encrypt_to(&pm, &Scope::gc(GC_ID), HENRY_DID),
             "post-no-revoke: henry retains GC access via explicit GC whitelist"
         );
     }
 }
 
-// ---- (extra) round-trip the encrypt + control commands ----
+// 9-C1: test_set_whitelist_then_accept_unlocks_decrypt removed
+// alongside the invitation handshake. Permissive decrypt means
+// there is no "unlock" step — if we have keys, we decrypt.
+// Coverage moved to `phase_c1_handshake_removal.rs`.
 
-#[test]
-fn test_set_whitelist_then_accept_unlocks_decrypt() {
-    // Liam set_whitelist for henry in DM → produces invitation
-    // wire. Henry's side: decrypt the invitation, accept it via
-    // cmd_osl_accept_invitation. Then a content message from
-    // liam in that scope decrypts on henry's side.
-    let (liam_state, _) = fresh_state_for_liam();
-    let liam_pub = liam_state
-        .identity
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .x25519_public;
-
-    // Henry's state, with liam's pubkey + osl id pre-installed.
-    let mut henry_state = AppState::new();
-    henry_state = {
-        let henry_id = generate_identity("henry".to_string());
-        let s = AppState::new();
-        *s.identity.lock().unwrap() = Some(henry_id);
-        s
-    };
-    let henry_pub = henry_state
-        .identity
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .x25519_public;
-    install_peer_pubkey(&liam_state, HENRY_DID, henry_pub);
-    install_peer_pubkey(&henry_state, LIAM_DID, liam_pub);
-
-    // Liam set whitelist.
-    let invitation_wire = cmd_osl_set_whitelist(
-        &liam_state,
-        HENRY_DID.to_string(),
-        si(&Scope::dm(HENRY_DID)),
-        /*broadened*/ false,
-        LIAM_DID.to_string(),
-    )
-    .expect("set_whitelist returns invitation");
-
-    // Henry receives the invitation.
-    let res = cmd_osl_decrypt_message_v2(
-        &henry_state,
-        None,
-        "channel".to_string(),
-        LIAM_DID.to_string(),
-        invitation_wire,
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(res, OSL_RESULT_INVITATION_RECEIVED);
-
-    // Henry accepts.
-    // The invitation_id format mirrors the recv-side enqueue.
-    let inv_id = format!("from_{}_{}", LIAM_DID, Scope::dm(HENRY_DID).storage_key());
-    // NB: henry's local view of the scope is "dm:<his own id>"
-    // because the invitation's scope.id is HENRY_DID, matching
-    // what liam encoded. So the invitation_id on henry's side
-    // uses liam's perspective. Verify via the pending map.
-    {
-        let pi = henry_state.pending_invitations.lock().unwrap();
-        assert!(
-            pi.contains_key(&inv_id),
-            "invitation id mismatch: have keys {:?}",
-            pi.keys().collect::<Vec<_>>()
-        );
-    }
-    cmd_osl_accept_invitation(&henry_state, inv_id).unwrap();
-
-    // Liam encrypts content; henry decrypts. But for
-    // cmd_osl_decrypt_message_v2 to use the
-    // should_decrypt_from gate, henry's incoming_decrypt_accepted
-    // map must be keyed by scope.storage_key() = "dm:henry_did".
-    // The accept stored under the invitation's own scope_id,
-    // which carries scope.id = HENRY_DID (liam's perspective).
-    // So the key matches. Verify by sending content + gating
-    // on the scope.
-    let content_wire = cmd_osl_encrypt_message_v2(
-        &liam_state,
-        "post-accept hello".to_string(),
-        si(&Scope::dm(HENRY_DID)),
-        vec![HENRY_DID.to_string()],
-        LIAM_DID.to_string(),
-    )
-    .expect("encrypt post-accept");
-    let pt = cmd_osl_decrypt_message_v2(
-        &henry_state,
-        None,
-        "channel".to_string(),
-        LIAM_DID.to_string(),
-        content_wire,
-        Some(si(&Scope::dm(HENRY_DID))),
-        None,
-    )
-    .expect("decrypt post-accept");
-    assert_eq!(pt, "post-accept hello");
-
-    // Suppress unused warning on the placeholder commands.
+#[allow(dead_code)]
+fn _retain_unused_import_warnings_suppressor() {
+    // Keep cmd_osl_send_burn_marker referenced so the import
+    // doesn't trigger an unused-import warning until S2 lands tests
+    // that actually exercise it directly here.
     let _ = cmd_osl_send_burn_marker;
-    let _ = cmd_osl_send_whitelist_invitation;
-    let _ = cmd_osl_send_whitelist_response;
 }

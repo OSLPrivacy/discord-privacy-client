@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C3: retroactive apply of server defaults to existing channels.
+[[permission]]
+identifier = "allow-osl-apply-server-default-to-existing-channels"
+description = "Permits invoking `osl_apply_server_default_to_existing_channels` (flip encrypt_toggle=true on every already-known ServerChannel scope in a guild, drawing the channel list from the cached guild_list). Settings-window only — the sidebar overlay's primary action is just to flip the default flag, retro-apply is an explicit user action via the settings modal."
+commands.allow = ["osl_apply_server_default_to_existing_channels"]

@@ -45,6 +45,15 @@ pub struct RegisterRequest {
     /// forward-compatibility with v1 stable, where it becomes
     /// load-bearing.
     pub ik_x25519_signature: String,
+    /// Phase 9-A2: base64-encoded X25519 public key used by peers
+    /// as the initial Double Ratchet bootstrap pub. Skipped on the
+    /// wire when the local build hasn't generated one (legacy
+    /// upgrades); the keyserver column is nullable so old servers
+    /// receive `null` and reject unmatched columns just as they did
+    /// before. Senders treat a missing column as "peer not v=4
+    /// eligible" and fall through to v=3.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ik_ratchet_initial_pub: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +72,13 @@ pub struct PubkeysResponse {
     pub ik_mlkem768_pub: String,
     pub registered_at: String,
     pub last_rotated_at: Option<String>,
+    /// Phase 9-A2: peer's published ratchet bootstrap pub. `None`
+    /// when the server hasn't been migrated yet OR the peer
+    /// registered before A2 rolled out OR the peer's build doesn't
+    /// support v=4 sends. Old servers return responses without
+    /// this field at all; `#[serde(default)]` lets them parse.
+    #[serde(default)]
+    pub ik_ratchet_initial_pub: Option<String>,
 }
 
 /// One-time prekey returned by `/v1/prekey-bundle/:user_id`. `None`
@@ -85,6 +101,11 @@ pub struct PrekeyBundleResponse {
     pub spk_rotated_at: String,
     pub opk: Option<PrekeyBundleOpk>,
     pub remaining_opk_count: u32,
+    /// Phase 9-A2: peer's ratchet bootstrap pub, surfaced on the
+    /// prekey-bundle endpoint so callers fetching a bundle for a
+    /// fresh session immediately know the v=4 eligibility.
+    #[serde(default)]
+    pub ik_ratchet_initial_pub: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +243,10 @@ impl KeyServerClient {
             ik_ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
             ik_mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
             ik_x25519_signature: STANDARD.encode(b"PROTOTYPE_NO_SIG"),
+            ik_ratchet_initial_pub: identity
+                .ratchet_initial_pub
+                .as_ref()
+                .map(|p| STANDARD.encode(p.as_bytes())),
         }
     }
 

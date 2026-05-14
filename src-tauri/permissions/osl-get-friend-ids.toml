@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C2: settings-window read of the cached friend-id list.
+[[permission]]
+identifier = "allow-osl-get-friend-ids"
+description = "Permits the trusted local settings window to invoke `osl_get_friend_ids` (read the cached Discord friend-id list pushed from the gateway tap). Used by the Bulk Whitelist modal's Friend-list action."
+commands.allow = ["osl_get_friend_ids"]

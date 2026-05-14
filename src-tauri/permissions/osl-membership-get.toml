@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-A3: read back the per-channel member roster.
+[[permission]]
+identifier = "allow-osl-membership-get"
+description = "Permits the discord.com main webview to invoke `osl_membership_get` (read back the gateway-derived discord_id roster for a channel). Read-only sibling to allow-osl-membership-update."
+commands.allow = ["osl_membership_get"]

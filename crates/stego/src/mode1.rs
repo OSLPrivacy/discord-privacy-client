@@ -30,11 +30,14 @@
 //!
 //! ## Length cap
 //!
-//! Discord caps text messages at 2000 chars. Each sentence emits
-//! ~25-50 chars; budget for ~40 sentences max → 40 × 20 bits = 800
-//! bits = 100 bytes of payload. We cap raw input at
-//! [`MODE1_MAX_RAW_LEN`] = 80 bytes (header eats 2; leaves slack for
-//! sentence punctuation).
+//! Discord caps free-tier text messages at 2000 chars. Each sentence
+//! emits ~25-50 chars; with the 9-B1a cap of 100 raw bytes we emit
+//! at most `(100*8 + 16)/20 = 41` sentences ≈ 1.7 KB of cover text,
+//! comfortably under Discord's free-tier limit. After the 14-byte
+//! chunk header (see [`crate::mode1_chunking`]), this leaves
+//! 86 bytes of wire-payload per chunk: a 1.3 KB v=4 wire chunks to
+//! ~16 covers, a 1.25 KB v=3 wire to ~15, and a 130 B v=5 wire to
+//! 2 covers. [`MODE1_MAX_RAW_LEN`] is 100 bytes total.
 
 use crate::mode1_templates::{
     SlotKind, Template, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES, TEMPLATES_LEN, TEMPLATE_BITS,
@@ -49,8 +52,14 @@ use sha2::Sha256;
 pub const MODE1_PREFIX: &str = "DPC1::";
 
 /// Maximum raw payload bytes (see module docs). Exceeding produces
-/// [`Error::Mode1TooLong`]; callers should split across messages.
-pub const MODE1_MAX_RAW_LEN: usize = 80;
+/// [`Error::Mode1TooLong`]; callers must split across messages
+/// (see [`crate::mode1_chunking`]).
+///
+/// 9-B1 bumped this from 80 to 128, then 9-B1a re-tuned to 100 so
+/// the encoded cover stays under Discord's free-tier 2000-char text
+/// limit. After the 14-byte chunk header the per-chunk wire payload
+/// is 86 bytes.
+pub const MODE1_MAX_RAW_LEN: usize = 100;
 
 /// Domain separator for the HKDF that derives wordlist permutations.
 pub const PERMUTATION_DOMAIN: &[u8] = b"discord-privacy-client/stego-mode1/permutation/v1";
@@ -632,6 +641,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 9-MODE1-FIX: guard against accidental duplicate entries
+    /// introduced by the wordbank scrub. Each slot index encodes 8
+    /// bits, so any actual collision would silently corrupt decode
+    /// (two different bytes producing the same word, then ambiguous
+    /// inverse). The existing `compass`/`compass2`-style suffixed
+    /// entries are distinct strings and pass this check naturally —
+    /// the test only catches *exact* duplicates.
+    #[test]
+    fn wordlist_no_collisions_within_list() {
+        let noun_set: HashSet<&str> = NOUNS.iter().copied().collect();
+        assert_eq!(
+            noun_set.len(),
+            NOUNS.len(),
+            "NOUNS contains a duplicate entry"
+        );
+        let adj_set: HashSet<&str> = ADJECTIVES.iter().copied().collect();
+        assert_eq!(
+            adj_set.len(),
+            ADJECTIVES.len(),
+            "ADJECTIVES contains a duplicate entry"
+        );
     }
 
     #[test]

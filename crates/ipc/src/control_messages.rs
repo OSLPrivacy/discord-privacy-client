@@ -13,12 +13,14 @@
 //! payload — the `type` byte in the v=2 header tells the recv
 //! path which struct to deserialize:
 //!
-//! | `msg_type` | Body shape                               |
-//! |-----------:|------------------------------------------|
+//! | `msg_type` | Body shape                                |
+//! |-----------:|-------------------------------------------|
 //! | `0x00`     | UTF-8 plaintext (the only non-control)    |
-//! | `0x01`     | CBOR-encoded [`BurnMarker`]              |
-//! | `0x02`     | CBOR-encoded [`WhitelistInvitation`]     |
-//! | `0x03`     | CBOR-encoded [`WhitelistResponse`]       |
+//! | `0x01`     | CBOR-encoded [`BurnMarker`]               |
+//! | `0x02`     | (removed in 9-C1: legacy whitelist inv)   |
+//! | `0x03`     | (removed in 9-C1: legacy whitelist resp)  |
+//! | `0x04`     | CBOR-encoded [`AttachmentEnvelope`]       |
+//! | `0x05`     | CBOR-encoded [`SenderKeyDistribution`]    |
 //!
 //! ## Serialization choice: CBOR
 //!
@@ -39,12 +41,11 @@
 //! - [`BurnMarker`] (§3): "burn for this scope, at this
 //!   timestamp." Recipient wipes its decryption capability for
 //!   the named scope.
-//! - [`WhitelistInvitation`] (§7.1): "I (`from_discord_id`,
-//!   `from_pubkey`) am inviting you to decrypt my messages in
-//!   this scope, sent at this time." Recipient surfaces a
-//!   persistent banner.
-//! - [`WhitelistResponse`] (§7.3 / §7.4): "I accept/decline your
-//!   invitation for this scope at this time."
+//!
+//! (9-C1: WhitelistInvitation / WhitelistResponse have been
+//! removed alongside the invitation handshake. Pre-C1 wire bytes
+//! arriving at the recv path return `OSL_RESULT_LEGACY_HANDSHAKE_IGNORED`
+//! and are dropped.)
 //!
 //! All timestamps are unix seconds (`i64`), matching the rest
 //! of the codebase. `from_pubkey` rides as the raw 32-byte
@@ -52,7 +53,6 @@
 //! sender can populate `peer_map[sender].pubkey` immediately.
 
 use crate::scope::{Scope, ScopeInput};
-use crypto::x25519;
 use serde::{Deserialize, Serialize};
 
 // ---- Errors ----
@@ -82,22 +82,10 @@ pub struct BurnMarker {
     pub burned_at: i64,
 }
 
-/// Type=0x02: "I'm inviting you to decrypt my messages in this scope."
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WhitelistInvitation {
-    pub from_discord_id: String,
-    pub from_pubkey: x25519::PublicKey,
-    pub scope: Scope,
-    pub sent_at: i64,
-}
-
-/// Type=0x03: "I accept/decline the invitation for this scope."
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WhitelistResponse {
-    pub scope: Scope,
-    pub accepted: bool,
-    pub responded_at: i64,
-}
+// 9-C1: `WhitelistInvitation` (0x02) + `WhitelistResponse` (0x03)
+// removed alongside the invitation handshake. The recv path now
+// surfaces a single "legacy handshake ignored" sentinel for any
+// 0x02/0x03 wire bytes still floating around from pre-C1 clients.
 
 /// Phase 8b: a single attachment's metadata inside an
 /// [`AttachmentEnvelope`]. The recv side matches `random_filename`
@@ -127,6 +115,23 @@ pub struct AttachmentEnvelope {
     pub attachments: Vec<AttachmentEnvelopeEntry>,
 }
 
+/// Phase 9-A3 type=0x05: "Here is my sender-keys rotation root for
+/// this group/server scope; please install or rotate the receiver
+/// chain you hold for me." Sent inside a v=4 message (so the wrap
+/// leg provides PQ identity binding); the receiver's v=4 decode path
+/// routes the plaintext to the SKDM handler instead of surfacing it
+/// as user-visible content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenderKeyDistribution {
+    /// `scope.storage_key()` of the group/server/channel this chain
+    /// targets. Stable across both peers because storage_key encodes
+    /// only the scope kind + id (no peer-specific perspective).
+    pub scope_storage_key: String,
+    pub chain_id: u32,
+    pub rotation_root: [u8; 32],
+    pub sent_at: i64,
+}
+
 // ---- CBOR wire reps ----
 //
 // We could derive Serialize/Deserialize directly on the structs
@@ -141,20 +146,9 @@ struct BurnMarkerWire {
     burned_at: i64,
 }
 
-#[derive(Serialize, Deserialize)]
-struct WhitelistInvitationWire {
-    from_discord_id: String,
-    from_pubkey: [u8; 32],
-    scope: ScopeInput,
-    sent_at: i64,
-}
-
-#[derive(Serialize, Deserialize)]
-struct WhitelistResponseWire {
-    scope: ScopeInput,
-    accepted: bool,
-    responded_at: i64,
-}
+// 9-C1: `WhitelistInvitationWire` / `WhitelistResponseWire`
+// removed. Legacy 0x02/0x03 wire bytes are short-circuited at the
+// dispatcher; we never deserialize the payload anymore.
 
 #[derive(Serialize, Deserialize)]
 struct AttachmentEnvelopeEntryWire {
@@ -167,6 +161,14 @@ struct AttachmentEnvelopeEntryWire {
 #[derive(Serialize, Deserialize)]
 struct AttachmentEnvelopeWire {
     attachments: Vec<AttachmentEnvelopeEntryWire>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SenderKeyDistributionWire {
+    scope_storage_key: String,
+    chain_id: u32,
+    rotation_root: [u8; 32],
+    sent_at: i64,
 }
 
 // ---- Serialize ----
@@ -196,41 +198,10 @@ pub fn deserialize_burn_marker(bytes: &[u8]) -> Result<BurnMarker, ControlError>
     })
 }
 
-pub fn serialize_whitelist_invitation(m: &WhitelistInvitation) -> Result<Vec<u8>, ControlError> {
-    cbor_encode(&WhitelistInvitationWire {
-        from_discord_id: m.from_discord_id.clone(),
-        from_pubkey: *m.from_pubkey.as_bytes(),
-        scope: ScopeInput::from(&m.scope),
-        sent_at: m.sent_at,
-    })
-}
-
-pub fn deserialize_whitelist_invitation(bytes: &[u8]) -> Result<WhitelistInvitation, ControlError> {
-    let wire: WhitelistInvitationWire = cbor_decode(bytes)?;
-    Ok(WhitelistInvitation {
-        from_discord_id: wire.from_discord_id,
-        from_pubkey: x25519::PublicKey::from_bytes(wire.from_pubkey),
-        scope: Scope::try_from(wire.scope)?,
-        sent_at: wire.sent_at,
-    })
-}
-
-pub fn serialize_whitelist_response(m: &WhitelistResponse) -> Result<Vec<u8>, ControlError> {
-    cbor_encode(&WhitelistResponseWire {
-        scope: ScopeInput::from(&m.scope),
-        accepted: m.accepted,
-        responded_at: m.responded_at,
-    })
-}
-
-pub fn deserialize_whitelist_response(bytes: &[u8]) -> Result<WhitelistResponse, ControlError> {
-    let wire: WhitelistResponseWire = cbor_decode(bytes)?;
-    Ok(WhitelistResponse {
-        scope: Scope::try_from(wire.scope)?,
-        accepted: wire.accepted,
-        responded_at: wire.responded_at,
-    })
-}
+// 9-C1: `serialize_whitelist_invitation` / `deserialize_whitelist_invitation`
+// / `serialize_whitelist_response` / `deserialize_whitelist_response` all
+// removed. The recv-side dispatcher returns
+// OSL_RESULT_LEGACY_HANDSHAKE_IGNORED for any 0x02/0x03 wire bytes.
 
 pub fn serialize_attachment_envelope(m: &AttachmentEnvelope) -> Result<Vec<u8>, ControlError> {
     cbor_encode(&AttachmentEnvelopeWire {
@@ -263,6 +234,29 @@ pub fn deserialize_attachment_envelope(bytes: &[u8]) -> Result<AttachmentEnvelop
     })
 }
 
+pub fn serialize_sender_key_distribution(
+    m: &SenderKeyDistribution,
+) -> Result<Vec<u8>, ControlError> {
+    cbor_encode(&SenderKeyDistributionWire {
+        scope_storage_key: m.scope_storage_key.clone(),
+        chain_id: m.chain_id,
+        rotation_root: m.rotation_root,
+        sent_at: m.sent_at,
+    })
+}
+
+pub fn deserialize_sender_key_distribution(
+    bytes: &[u8],
+) -> Result<SenderKeyDistribution, ControlError> {
+    let wire: SenderKeyDistributionWire = cbor_decode(bytes)?;
+    Ok(SenderKeyDistribution {
+        scope_storage_key: wire.scope_storage_key,
+        chain_id: wire.chain_id,
+        rotation_root: wire.rotation_root,
+        sent_at: wire.sent_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,29 +272,6 @@ mod tests {
         assert_eq!(back, m);
     }
 
-    #[test]
-    fn invitation_round_trip_inline() {
-        let (_sk, pk) = x25519::generate_keypair();
-        let m = WhitelistInvitation {
-            from_discord_id: "1477008451799482419".to_string(),
-            from_pubkey: pk,
-            scope: Scope::server_channel("9876", "5432"),
-            sent_at: 1_700_000_001,
-        };
-        let bytes = serialize_whitelist_invitation(&m).unwrap();
-        let back = deserialize_whitelist_invitation(&bytes).unwrap();
-        assert_eq!(back, m);
-    }
-
-    #[test]
-    fn response_round_trip_inline() {
-        let m = WhitelistResponse {
-            scope: Scope::gc("gc-123"),
-            accepted: true,
-            responded_at: 1_700_000_002,
-        };
-        let bytes = serialize_whitelist_response(&m).unwrap();
-        let back = deserialize_whitelist_response(&bytes).unwrap();
-        assert_eq!(back, m);
-    }
+    // 9-C1: invitation/response inline round-trip tests removed
+    // alongside the wire types they exercised.
 }

@@ -13,6 +13,10 @@ base64 = "0.22"
 # `mode1::permute_indices`).
 hkdf = { workspace = true }
 sha2 = { workspace = true }
+# Phase 9-B1: HMAC-SHA256 truncated to 8 bytes authenticates each
+# mode1 chunk header (session_id || index || total) against tampering
+# by anyone without the conversation salt.
+hmac = "0.12"
 rand = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }

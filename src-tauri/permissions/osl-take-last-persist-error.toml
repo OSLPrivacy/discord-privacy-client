@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-TD1.4: read + clear the last disk-persist failure message.
+# Boot.js + settings_window.html both poll this after mutations so
+# the user sees a toast if a write failed silently.
+[[permission]]
+identifier = "allow-osl-take-last-persist-error"
+description = "Permits invoking `osl_take_last_persist_error` (read + clear AppState.last_persist_error). Drives the 'couldn't save change to disk' toast surfaced after whitelist / burn / settings mutations."
+commands.allow = ["osl_take_last_persist_error"]

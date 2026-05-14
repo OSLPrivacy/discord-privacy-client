@@ -53,6 +53,19 @@ pub struct Identity {
     /// React fiber tree). Existing identities load with `None`
     /// via the InnerIdentity serde default; no version bump needed.
     pub discord_snowflake: Option<String>,
+
+    /// Phase 9-A2: secret half of the published Double Ratchet
+    /// bootstrap keypair. None for identities generated before A2;
+    /// `ensure_ratchet_bootstrap` populates this lazily on first
+    /// use. Receiver-side this is the `initial_ratchet_secret`
+    /// argument to `DoubleRatchet::new_responder`.
+    pub ratchet_initial_secret: Option<x25519::SecretKey>,
+
+    /// Phase 9-A2: public half of the bootstrap keypair. Published
+    /// in the keyserver's `ik_ratchet_initial_pub` column. Senders
+    /// fetching peer pubkeys use this to start a v=4 session as
+    /// initiator.
+    pub ratchet_initial_pub: Option<x25519::PublicKey>,
 }
 
 impl Identity {
@@ -76,7 +89,24 @@ impl Identity {
             mlkem_secret_bytes: Zeroizing::new(mlkem_secret_bytes),
             mlkem_public_bytes,
             discord_snowflake: None,
+            ratchet_initial_secret: None,
+            ratchet_initial_pub: None,
         }
+    }
+
+    /// Phase 9-A2: ensure a ratchet bootstrap keypair is present.
+    /// Idempotent; returns the public half so callers can ship it
+    /// to the keyserver. Generates a fresh X25519 keypair iff the
+    /// identity doesn't already carry one (lazy upgrade for
+    /// pre-A2 identities loaded from disk).
+    pub fn ensure_ratchet_bootstrap(&mut self) -> x25519::PublicKey {
+        if let Some(pub_key) = self.ratchet_initial_pub {
+            return pub_key;
+        }
+        let (sk, pk) = x25519::generate_keypair();
+        self.ratchet_initial_secret = Some(sk);
+        self.ratchet_initial_pub = Some(pk);
+        pk
     }
 
     /// Reconstitute the typed ML-KEM-768 decapsulation key from the
@@ -111,6 +141,12 @@ pub fn generate_identity(user_id: String) -> Identity {
         Zeroizing::new(out)
     };
 
+    // Phase 9-A2: bootstrap the ratchet keypair eagerly so freshly-
+    // generated identities can immediately publish a v=4-ready
+    // bundle. Pre-A2 identities loaded from disk get this populated
+    // lazily via `Identity::ensure_ratchet_bootstrap`.
+    let (ratchet_initial_secret, ratchet_initial_pub) = x25519::generate_keypair();
+
     Identity {
         user_id,
         x25519_secret,
@@ -120,5 +156,7 @@ pub fn generate_identity(user_id: String) -> Identity {
         mlkem_secret_bytes,
         mlkem_public_bytes: mlkem_encap.to_bytes(),
         discord_snowflake: None,
+        ratchet_initial_secret: Some(ratchet_initial_secret),
+        ratchet_initial_pub: Some(ratchet_initial_pub),
     }
 }

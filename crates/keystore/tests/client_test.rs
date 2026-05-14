@@ -192,3 +192,76 @@ fn http_status_error_propagates_body() {
         other => panic!("expected HttpStatus error, got {other:?}"),
     }
 }
+
+// ---- Phase 9-A2: ratchet bootstrap column ----
+
+#[test]
+fn publish_with_ratchet_pub_then_fetch_returns_it() {
+    let id = generate_identity("alice".to_string());
+    let req = KeyServerClient::build_register_request(&id);
+    let ratchet_b64 = req
+        .ik_ratchet_initial_pub
+        .clone()
+        .expect("fresh identity carries ratchet bootstrap pub");
+    let ratchet_decoded = STANDARD.decode(&ratchet_b64).unwrap();
+    assert_eq!(
+        ratchet_decoded.len(),
+        32,
+        "ratchet bootstrap pub must be 32 bytes (X25519)"
+    );
+
+    // Round-trip: server echoes back the column we registered with.
+    let echo = format!(
+        r#"{{"user_id":"alice","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","ik_ratchet_initial_pub":"{ratchet_b64}","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}}"#
+    );
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", echo.len()).as_bytes());
+    response.extend_from_slice(b"\r\n");
+    response.extend_from_slice(echo.as_bytes());
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let resp = client.fetch_pubkeys("alice").unwrap();
+    assert_eq!(
+        resp.ik_ratchet_initial_pub.as_deref(),
+        Some(ratchet_b64.as_str())
+    );
+}
+
+#[test]
+fn publish_without_ratchet_pub_then_fetch_returns_none() {
+    // Older clients may register without the field, or the server
+    // may have a NULL column post-migration. Either way the
+    // response carries ik_ratchet_initial_pub: null.
+    let echo = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","ik_ratchet_initial_pub":null,"registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", echo.len()).as_bytes());
+    response.extend_from_slice(b"\r\n");
+    response.extend_from_slice(echo);
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let resp = client.fetch_pubkeys("bob").unwrap();
+    assert!(resp.ik_ratchet_initial_pub.is_none());
+}
+
+#[test]
+fn fetch_against_legacy_response_without_field_parses_as_none() {
+    // Pre-A2 server response: the field is absent entirely (not
+    // even `null`). serde(default) must let this parse cleanly with
+    // None.
+    let legacy = br#"{"user_id":"charlie","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","registered_at":"2026-05-08T11:00:00Z","last_rotated_at":null}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", legacy.len()).as_bytes());
+    response.extend_from_slice(b"\r\n");
+    response.extend_from_slice(legacy);
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let resp = client.fetch_pubkeys("charlie").unwrap();
+    assert!(resp.ik_ratchet_initial_pub.is_none());
+    assert_eq!(resp.user_id, "charlie");
+}

@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-A3 / 9-C1 Stage 3: push per-channel member roster from
+# boot.js to Rust (gateway WS-tap feeds in-memory channel_members
+# cache used by v=5 SKDM dispatch + tri-state icon summary).
+[[permission]]
+identifier = "allow-osl-membership-update"
+description = "Permits the discord.com main webview to invoke `osl_membership_update` (push the gateway-derived discord_id roster for a channel into Rust state). 9-C1 Stage 3 gateway WS proxy + 9-A3 SKDM rotation feed depend on this."
+commands.allow = ["osl_membership_update"]

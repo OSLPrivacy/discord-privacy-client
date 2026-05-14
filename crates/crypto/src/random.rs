@@ -24,3 +24,11 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
     OsRng.fill_bytes(&mut bytes);
     bytes
 }
+
+/// Random `u32` from the OS RNG. Used by Mode 1 chunking to stamp
+/// each multi-message session with a unique id.
+pub fn random_u32() -> u32 {
+    let mut bytes = [0u8; 4];
+    OsRng.fill_bytes(&mut bytes);
+    u32::from_be_bytes(bytes)
+}

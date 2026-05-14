@@ -1,0 +1,15 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: VPN/proxy detection. Compares system locale country
+# against IP geolocation (ipapi.co); a mismatch implies an active
+# VPN. Boot.js fires this once per launch ~5s after DOMContentLoaded
+# to decide whether to render the warning banner.
+#
+# Outbound host (ipapi.co) is hard-allowlisted inside the command
+# body itself, consistent with `osl_fetch_attachment_bytes`. Network
+# failures return `ok = true` so the banner never false-positives on
+# offline users.
+[[permission]]
+identifier = "allow-osl-check-vpn"
+description = "Permits invoking `osl_check_vpn`. One-shot HTTP probe to ipapi.co; returns the system-vs-IP country comparison driving the boot.js VPN warning banner."
+commands.allow = ["osl_check_vpn"]

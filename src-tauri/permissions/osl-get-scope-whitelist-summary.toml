@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C1 Stage 2: tri-state header lock — whitelist summary read.
+[[permission]]
+identifier = "allow-osl-get-scope-whitelist-summary"
+description = "Permits the discord.com main webview to invoke `osl_get_scope_whitelist_summary` (compute the all/some/none/unknown whitelist state for the current channel against its live roster). Drives the channel-header tri-state lock icon paint + the icon click handler's pre-action re-poll."
+commands.allow = ["osl_get_scope_whitelist_summary"]

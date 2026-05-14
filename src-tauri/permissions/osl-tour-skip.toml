@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: set tour.skipped = true AND tour.completed = true.
+# Called on Esc from slide 2-7. `skipped` is diagnostic; `completed`
+# is what gates re-show — skipping equals dismissing.
+[[permission]]
+identifier = "allow-osl-tour-skip"
+description = "Permits invoking `osl_tour_skip`. Sets skipped + completed flags; called when the user presses Esc inside a tour spotlight."
+commands.allow = ["osl_tour_skip"]

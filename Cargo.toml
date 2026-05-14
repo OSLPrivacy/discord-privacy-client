@@ -51,6 +51,16 @@ ml-kem = "0.2"
 tauri = { version = "2", features = [] }
 tauri-build = "2"
 
+# Tauri plugins. Phase F0 brings these in for the deep-link smoke
+# test. The `deep-link` feature on `tauri-plugin-single-instance`
+# routes the second-launch URL into the first instance via the
+# deep-link plugin's event channel — required because Windows
+# spawns a new process when `osl://...` fires while OSL is
+# already running, and without single-instance we'd end up with
+# two windows fighting over the token.
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
 # Keystore
 keyring = "3"
 # Windows TPM access via TBS lives in the windows crate. tss-esapi is

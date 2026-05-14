@@ -1,5 +1,10 @@
 # Phase 7c — Manual Test Checklist
 
+> **9-C1 update:** the invitation banner + accept/decline flow is
+> gone. Sections referencing them are kept for archival reference
+> but should NOT pass on a current build. The new Stage 4 tri-state
+> header icon has its own checklist appended at the bottom (§J).
+
 Phase 7c shipped the first Whitelist UI surfaces in `boot.js` (profile
 popout button, channel-header encrypt toggle + burn button, persistent
 invitation banner) plus the v=2 send-path gate. Because this is a
@@ -186,3 +191,53 @@ These belong to Phase 7d:
 - Keybinds for toggle / burn.
 - Right-click context-menu integration.
 - Multi-select whitelist editing.
+
+## J. 9-C1 tri-state header icon
+
+1. Open any channel where you've never set a whitelist.
+2. **Expect:** the header lock icon renders as an *open* gray lock
+   (state = "none") OR as a "?"-marked lock (state = "unknown",
+   roster hasn't been seeded yet). For DM/GC scopes the React fiber
+   walk seeds the roster immediately; for server channels the
+   gateway tap typically seeds within 1–2 s of `GUILD_CREATE`.
+   - [ ] Icon color is muted gray, NOT green.
+3. Hover the icon and read the tooltip.
+   - [ ] Tooltip names the scope + says "No one whitelisted" or
+         "Channel roster unknown".
+4. Click the icon.
+   - For "none" state: a bulk-whitelist invocation should fire and
+     toast `"Whitelisted N peer(s) in <scope>"`. The icon then
+     re-paints to green (closed) on the next refresh.
+   - For "unknown" state: a toast prompts you to open the member
+     list so OSL can read who's in the channel.
+   - [ ] If the channel has >25 non-self members, a confirm modal
+         appears first.
+5. Click again with state = "all".
+   - [ ] Toast says `"Removed N peer(s) in <scope>"`, icon returns
+         to open/gray.
+6. Manually unwhitelist a single peer via their profile popout, so
+   the scope is in a mixed state.
+   - [ ] Icon renders as a *partial* yellow lock (state = "some").
+   - [ ] Tooltip reads e.g. `"Encrypting with 3/5 in this channel"`.
+   - [ ] Clicking surfaces a modal asking *Add the rest* vs *Stop
+         with all*.
+7. Verify the gateway tap is alive:
+   - In DevTools, type
+     `window.__OSL_CHANNEL_MEMBERS__.get(window.location.pathname.split('/').pop())`
+     after opening a DM/GC — it should return an array of recipient
+     Discord IDs.
+   - [ ] Array is non-empty for DM/GC channels.
+
+## K. 9-C1 permissive decrypt (smoke)
+
+The invitation flow is gone — verify no banner/accept-decline UI
+remains:
+
+- [ ] Receiving an encrypted message from a peer you've never
+      interacted with shows the plaintext directly (no banner).
+- [ ] No "Pending invitations" surface appears in the settings
+      window.
+- [ ] `pending_invitations.json` does not exist in the OSL config
+      dir after a fresh boot.
+- [ ] Old peers running pre-C1 builds: their 0x02/0x03 frames are
+      silently dropped (no garbled placeholder, no error toast).

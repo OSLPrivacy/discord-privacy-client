@@ -1,16 +1,15 @@
 //! Phase 7b whitelist resolution tests.
 //!
-//! Covers `whitelist::can_encrypt_to`, `recipients_for_scope`,
-//! `should_decrypt_from` against the scope hierarchy +
-//! broadened-DM + burn semantics from
-//! `docs/phase-7-design.md` §§ 2, 3, 7.
+//! Covers `whitelist::can_encrypt_to`, `recipients_for_scope`
+//! against the scope hierarchy + broadened-DM + burn semantics.
+//! 9-C1 removed `should_decrypt_from` tests alongside the gate.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::x25519;
 use ipc::peer_map::{BurnedScope, PeerEntry, PeerMap, WhitelistEntry};
 use ipc::scope::Scope;
-use ipc::whitelist::{can_encrypt_to, recipients_for_scope, should_decrypt_from};
+use ipc::whitelist::{can_encrypt_to, recipients_for_scope};
 use ipc::whitelist_state::{ScopeState, WhitelistState};
 
 // ---- fixtures ----
@@ -30,13 +29,14 @@ fn peer_entry_with_pubkey(discord_id: &str) -> (PeerEntry, x25519::PublicKey) {
     let entry = PeerEntry {
         osl_user_id: None,
         pubkey: Some(STANDARD.encode(pk.as_bytes())),
+        ik_mlkem768_pub: None,
         discord_id: Some(discord_id.to_string()),
         first_seen: None,
-        incoming_decrypt_accepted: Default::default(),
         outgoing_whitelists: vec![],
         burned_scopes: vec![],
-        outgoing_whitelist_responses: Default::default(),
         is_self: None,
+        ik_ratchet_initial_pub: None,
+        ratchet_state: None,
     };
     (entry, pk)
 }
@@ -54,9 +54,6 @@ fn add_dm_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
-            full_whitelist: false,
-            members: vec![],
-            whitelisted_users: vec![],
         },
     );
     let entry = peer_map.entry(peer_discord.to_string()).or_default();
@@ -79,9 +76,6 @@ fn add_gc_full_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
-            full_whitelist: true,
-            members: members.iter().map(|s| s.to_string()).collect(),
-            whitelisted_users: vec![],
         },
     );
     for m in members {
@@ -106,9 +100,6 @@ fn add_gc_per_user_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
-            full_whitelist: false,
-            members: vec![],
-            whitelisted_users: whitelisted.iter().map(|s| s.to_string()).collect(),
         },
     );
     for u in whitelisted {
@@ -134,9 +125,6 @@ fn add_server_channel_per_user_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
-            full_whitelist: false,
-            members: vec![],
-            whitelisted_users: whitelisted.iter().map(|s| s.to_string()).collect(),
         },
     );
     for u in whitelisted {
@@ -161,19 +149,18 @@ fn test_can_encrypt_to_dm_whitelisted() {
     add_dm_whitelist(&mut ws, &mut pm, HENRY_DID, /*broadened*/ false);
 
     let scope = Scope::dm(HENRY_DID);
-    assert!(can_encrypt_to(&ws, &pm, &scope, HENRY_DID));
+    assert!(can_encrypt_to(&pm, &scope, HENRY_DID));
 }
 
 // ---- 2. dm not whitelisted ----
 
 #[test]
 fn test_can_encrypt_to_dm_not_whitelisted() {
-    let ws = WhitelistState::new();
     let mut pm = PeerMap::new();
     pm.insert(HENRY_DID.to_string(), peer_entry_with_pubkey(HENRY_DID).0);
 
     let scope = Scope::dm(HENRY_DID);
-    assert!(!can_encrypt_to(&ws, &pm, &scope, HENRY_DID));
+    assert!(!can_encrypt_to(&pm, &scope, HENRY_DID));
 }
 
 // ---- 3. dm broaden grants gc access ----
@@ -187,7 +174,7 @@ fn test_dm_broaden_grants_gc_access() {
 
     let gc_scope = Scope::gc(GC_ID);
     assert!(
-        can_encrypt_to(&ws, &pm, &gc_scope, HENRY_DID),
+        can_encrypt_to(&pm, &gc_scope, HENRY_DID),
         "DM broaden should grant GC access without explicit GC whitelist"
     );
 }
@@ -203,7 +190,7 @@ fn test_dm_no_broaden_no_gc_access() {
 
     let gc_scope = Scope::gc(GC_ID);
     assert!(
-        !can_encrypt_to(&ws, &pm, &gc_scope, HENRY_DID),
+        !can_encrypt_to(&pm, &gc_scope, HENRY_DID),
         "DM whitelist without broaden must not grant GC access"
     );
 }
@@ -219,8 +206,8 @@ fn test_gc_per_user_whitelist() {
     add_gc_per_user_whitelist(&mut ws, &mut pm, GC_ID, &[HENRY_DID]);
 
     let scope = Scope::gc(GC_ID);
-    assert!(can_encrypt_to(&ws, &pm, &scope, HENRY_DID));
-    assert!(!can_encrypt_to(&ws, &pm, &scope, ALICE_DID));
+    assert!(can_encrypt_to(&pm, &scope, HENRY_DID));
+    assert!(!can_encrypt_to(&pm, &scope, ALICE_DID));
 }
 
 // ---- 6. gc full whitelist ----
@@ -234,8 +221,8 @@ fn test_gc_full_whitelist() {
     add_gc_full_whitelist(&mut ws, &mut pm, GC_ID, &[HENRY_DID, ALICE_DID]);
 
     let scope = Scope::gc(GC_ID);
-    assert!(can_encrypt_to(&ws, &pm, &scope, HENRY_DID));
-    assert!(can_encrypt_to(&ws, &pm, &scope, ALICE_DID));
+    assert!(can_encrypt_to(&pm, &scope, HENRY_DID));
+    assert!(can_encrypt_to(&pm, &scope, ALICE_DID));
 }
 
 // ---- 7. server-channel isolated from server-full ----
@@ -249,7 +236,7 @@ fn test_server_channel_isolated_from_server_full() {
 
     let server_full = Scope::server_full(SERVER_ID);
     assert!(
-        !can_encrypt_to(&ws, &pm, &server_full, HENRY_DID),
+        !can_encrypt_to(&pm, &server_full, HENRY_DID),
         "channel whitelist must not broaden to server-full"
     );
 }
@@ -269,7 +256,6 @@ fn test_recipients_for_scope_includes_self() {
     let (_, self_pk) = x25519::generate_keypair();
     let scope = Scope::gc(GC_ID);
     let recipients = recipients_for_scope(
-        &ws,
         &pm,
         &scope,
         &[
@@ -310,13 +296,12 @@ fn test_burned_scope_excludes_recipient() {
 
     let scope = Scope::gc(GC_ID);
     assert!(
-        !can_encrypt_to(&ws, &pm, &scope, HENRY_DID),
+        !can_encrypt_to(&pm, &scope, HENRY_DID),
         "burned recipient must not be encrypted-to"
     );
 
     let (_, self_pk) = x25519::generate_keypair();
     let recipients = recipients_for_scope(
-        &ws,
         &pm,
         &scope,
         &[LIAM_DID.to_string(), HENRY_DID.to_string()],
@@ -327,47 +312,4 @@ fn test_burned_scope_excludes_recipient() {
     assert_eq!(recipients, vec![self_pk]);
 }
 
-// ---- 10. should_decrypt_from accepted ----
-
-#[test]
-fn test_should_decrypt_from_accepted() {
-    let mut pm = PeerMap::new();
-    let mut entry = peer_entry_with_pubkey(LIAM_DID).0;
-    let scope = Scope::dm(LIAM_DID);
-    entry
-        .incoming_decrypt_accepted
-        .insert(scope.storage_key(), true);
-    pm.insert(LIAM_DID.to_string(), entry);
-
-    assert!(should_decrypt_from(&pm, &scope, LIAM_DID));
-}
-
-// ---- 11. should_decrypt_from declined ----
-
-#[test]
-fn test_should_decrypt_from_declined() {
-    let mut pm = PeerMap::new();
-    let mut entry = peer_entry_with_pubkey(LIAM_DID).0;
-    let scope = Scope::dm(LIAM_DID);
-    entry
-        .incoming_decrypt_accepted
-        .insert(scope.storage_key(), false);
-    pm.insert(LIAM_DID.to_string(), entry);
-
-    assert!(!should_decrypt_from(&pm, &scope, LIAM_DID));
-}
-
-// ---- 12. should_decrypt_from default (no entry) ----
-
-#[test]
-fn test_should_decrypt_from_not_yet_responded() {
-    let mut pm = PeerMap::new();
-    let entry = peer_entry_with_pubkey(LIAM_DID).0;
-    pm.insert(LIAM_DID.to_string(), entry);
-
-    let scope = Scope::dm(LIAM_DID);
-    assert!(
-        !should_decrypt_from(&pm, &scope, LIAM_DID),
-        "default must be false until explicit accept"
-    );
-}
+// 9-C1: should_decrypt_from tests removed alongside the gate.

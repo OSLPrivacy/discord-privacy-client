@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 8d-FIX5: Discord's CSP blocks cross-subdomain JS fetch from
+# discord.com to cdn.discordapp.com, so the boot.js attachment scanner
+# routes downloads through this Rust command. URL allowlist enforced
+# in main.rs to keep JS from directing Rust at arbitrary hosts.
+[[permission]]
+identifier = "allow-osl-fetch-attachment-bytes"
+description = "Permits the discord.com main webview to invoke `osl_fetch_attachment_bytes` — fetches the bytes of an allowlisted attachment URL (cdn.discordapp.com / media.discordapp.net / discord-attachments-uploads-prd.storage.googleapis.com) via the Rust HTTP client and returns base64. Required because Discord's CSP blocks browser-side fetch to those subdomains."
+commands.allow = ["osl_fetch_attachment_bytes"]

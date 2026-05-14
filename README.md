@@ -1,5 +1,7 @@
 # discord-privacy-client
 
+[![Rust Test](https://github.com/OSLPrivacy/discord-privacy-client/actions/workflows/rust-test.yml/badge.svg)](https://github.com/OSLPrivacy/discord-privacy-client/actions/workflows/rust-test.yml)
+
 Privacy-focused Discord client modification for Windows 10+. End-to-end
 encryption with post-quantum security, revocable message access, screenshot
 resistance, and metadata protection. Companion repo: `discord-privacy-keyserver`.

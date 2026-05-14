@@ -17,6 +17,23 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{StoreError, StoredMessage};
 
+// 9-TD2.3: F0-FIX3 trace logs.
+//
+// Set the `OSL_TRACE` env var (any value) to surface the snowflake
+// registration / identity-generation breadcrumbs on stderr. Default
+// off — these were always-on during F0-FIX3 diagnosis and shipped
+// that way. PowerShell:
+//   $env:OSL_TRACE = "1"; & "C:\Program Files\OSL\osl.exe"
+// bash:
+//   OSL_TRACE=1 ./osl
+macro_rules! osl_trace {
+    ($($arg:tt)*) => {
+        if std::env::var_os("OSL_TRACE").is_some() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 // =====================================================================
 // 7d-FIX1: persistence write-through helpers.
 //
@@ -51,7 +68,7 @@ use store::{StoreError, StoredMessage};
 pub fn verify_peer_map_self_entry(state: &AppState) -> Result<(String, bool), String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
-    let (osl_user_id, pubkey_b64, snowflake) = {
+    let (osl_user_id, pubkey_b64, mlkem_b64, snowflake) = {
         let guard = state.identity.lock().expect("identity mutex poisoned");
         let id = guard
             .as_ref()
@@ -61,7 +78,8 @@ pub fn verify_peer_map_self_entry(state: &AppState) -> Result<(String, bool), St
             .clone()
             .ok_or_else(|| "no_discord_snowflake".to_string())?;
         let pub_b64 = STANDARD.encode(id.x25519_public.as_bytes());
-        (id.user_id.clone(), pub_b64, snow)
+        let mlkem_b64 = STANDARD.encode(id.mlkem_public_bytes);
+        (id.user_id.clone(), pub_b64, mlkem_b64, snow)
     };
 
     let needs_repair = {
@@ -71,8 +89,9 @@ pub fn verify_peer_map_self_entry(state: &AppState) -> Result<(String, bool), St
             Some(entry) => {
                 let user_id_ok = entry.osl_user_id.as_deref() == Some(osl_user_id.as_str());
                 let pubkey_ok = entry.pubkey.as_deref() == Some(pubkey_b64.as_str());
+                let mlkem_ok = entry.ik_mlkem768_pub.as_deref() == Some(mlkem_b64.as_str());
                 let is_self_ok = entry.is_self.unwrap_or(false);
-                !(user_id_ok && pubkey_ok && is_self_ok)
+                !(user_id_ok && pubkey_ok && mlkem_ok && is_self_ok)
             }
         }
     };
@@ -86,6 +105,7 @@ pub fn verify_peer_map_self_entry(state: &AppState) -> Result<(String, bool), St
         let entry = pm.entry(snowflake.clone()).or_default();
         entry.osl_user_id = Some(osl_user_id);
         entry.pubkey = Some(pubkey_b64);
+        entry.ik_mlkem768_pub = Some(mlkem_b64);
         entry.discord_id = Some(snowflake.clone());
         entry.is_self = Some(true);
         // Leave outgoing_whitelists / incoming_decrypt_accepted /
@@ -115,12 +135,92 @@ pub fn verify_and_persist_peer_map_self_entry(state: &AppState) -> Result<(Strin
 /// existing recorded snowflake (account-change refusal). Idempotent
 /// for matching re-registrations (just runs verify).
 pub fn cmd_osl_register_self_snowflake(state: &AppState, snowflake: String) -> Result<(), String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: register_self_snowflake: config dir: {e}"))?;
+    cmd_osl_register_self_snowflake_with_dir(state, snowflake, &dir)
+}
+
+/// Test seam: same as [`cmd_osl_register_self_snowflake`] but takes
+/// the config dir explicitly so unit tests can point it at a
+/// `tempdir()` instead of the real `%APPDATA%\osl` / `~/.config/osl`.
+/// Production callers use the no-dir wrapper above.
+pub fn cmd_osl_register_self_snowflake_with_dir(
+    state: &AppState,
+    snowflake: String,
+    dir: &std::path::Path,
+) -> Result<(), String> {
+    osl_trace!("[F0-FIX3-TRACE] cmd_osl_register_self_snowflake entered (snowflake={snowflake})");
     if !snowflake.chars().all(|c| c.is_ascii_digit()) || !(17..=20).contains(&snowflake.len()) {
         return Err(format!(
             "OSL: register_self_snowflake: invalid format \
              (expected 17-20 digit numeric, got {} chars)",
             snowflake.len()
         ));
+    }
+
+    // 9-F0-FIX2: V2 clean-install path.
+    //
+    // Pre-FIX2, this command required `state.identity` to already be
+    // populated (bootstrap's `load_or_generate_identity` did the
+    // creation, gated on `keyserver.json` being present). V2 retired
+    // `keyserver.json`, so bootstrap never auto-creates the identity,
+    // and `cmd_osl_set_main_password` doesn't either (it has no
+    // user_id to seed with). The first moment we DO have a stable
+    // user identifier is when boot.js extracts the Discord snowflake
+    // from the React runtime and calls THIS command.
+    //
+    // If `state.identity` is None at entry, generate a fresh identity
+    // with the snowflake as `user_id`, stamp `discord_snowflake`,
+    // persist to disk via the configured sealer (TPM / Keyring /
+    // NoOp — identity at-rest protection lives in the sealer layer,
+    // not the file_storage_key envelope), then fall through to the
+    // existing peer_map self-entry repair via run_verify.
+    let needs_generation = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        guard.is_none()
+    };
+    if needs_generation {
+        osl_trace!("[F0-FIX3-TRACE] F0-FIX2 auto-gen path entered (state.identity was None)");
+        let identity = keystore::generate_identity(snowflake.clone());
+        let mut snapshot = keystore::Identity::from_bytes(
+            identity.user_id.clone(),
+            *identity.x25519_secret.as_bytes(),
+            *identity.x25519_public.as_bytes(),
+            *identity.ed25519_secret.as_bytes(),
+            *identity.ed25519_public.as_bytes(),
+            *identity.mlkem_secret_bytes(),
+            identity.mlkem_public_bytes,
+        );
+        snapshot.discord_snowflake = Some(snowflake.clone());
+        snapshot.ratchet_initial_secret = identity.ratchet_initial_secret.clone();
+        snapshot.ratchet_initial_pub = identity.ratchet_initial_pub.clone();
+
+        let path = dir.join("identity.json");
+        let sealer = keystore::select_best_sealer();
+        osl_trace!(
+            "[F0-FIX3-TRACE] save_identity target path={} sealer={}",
+            path.display(),
+            sealer.method_label()
+        );
+        // Ensure the parent dir exists — bootstrap's create_dir_all
+        // covers this for the production path, but tests pass in a
+        // tempdir that may or may not have the leaf created yet.
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match keystore::save_identity(&path, &snapshot, sealer.as_ref()) {
+            Ok(()) => {
+                osl_trace!("[F0-FIX3-TRACE] identity saved successfully");
+            }
+            Err(e) => {
+                osl_trace!("[F0-FIX3-TRACE] save_identity ERROR: {e}");
+                return Err(format!("OSL: save_identity (first-time): {e}"));
+            }
+        }
+
+        *state.identity.lock().expect("identity mutex poisoned") = Some(snapshot);
+        eprintln!("[OSL][f0-fix2] generated + saved fresh identity (user_id={snowflake})");
+        return run_verify(state);
     }
 
     enum Step {
@@ -164,8 +264,6 @@ pub fn cmd_osl_register_self_snowflake(state: &AppState, snowflake: String) -> R
         Step::Save(snapshot) => snapshot,
     };
 
-    let dir = keystore::osl_config_dir()
-        .map_err(|e| format!("OSL: register_self_snowflake: config dir: {e}"))?;
     let path = dir.join("identity.json");
     let sealer = keystore::select_best_sealer();
     if let Err(e) = keystore::save_identity(&path, &to_save, sealer.as_ref()) {
@@ -207,18 +305,65 @@ fn run_verify(state: &AppState) -> Result<(), String> {
     }
 }
 
+/// 9-TD1.4: stamp `state.last_persist_error` so a follow-up
+/// `cmd_osl_take_last_persist_error` call from the JS layer can
+/// surface "couldn't save change to disk" to the user. Pre-TD1
+/// these failures lived only as `tracing::warn!` lines that nobody
+/// read.
+fn record_persist_error(state: &AppState, what: &str, err: impl std::fmt::Display) {
+    let msg = format!("{what}: {err}");
+    tracing::warn!(error = %msg, "OSL: persist failed");
+    if let Ok(mut g) = state.last_persist_error.lock() {
+        *g = Some(msg);
+    }
+}
+
+/// 9-TD1.4: read + clear the last-persist-error slot. JS polls this
+/// after mutation invokes (whitelist add/remove, burn, settings
+/// changes, etc.) to surface persist failures as a toast. Read-once
+/// semantics — second call after a fresh persist failure returns
+/// `None`. The single-slot design intentionally collapses multiple
+/// rapid failures into a single "something failed, please retry"
+/// signal; the slot is for UX visibility, not for forensic audit
+/// (that lives in `tracing::warn!`).
+pub fn cmd_osl_take_last_persist_error(state: &AppState) -> Option<String> {
+    state
+        .last_persist_error
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+}
+
 fn persist_peer_map_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::warn!(?e, "OSL: persist peer_map: cannot resolve config dir");
+            record_persist_error(state, "peer_map dir resolve", e);
             return;
         }
     };
     let path = dir.join("peer_map.json");
     let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
     if let Err(e) = crate::peer_map::write_peer_map(&path, &pm) {
-        tracing::warn!(?e, path = %path.display(), "OSL: persist peer_map.json failed");
+        record_persist_error(state, "peer_map.json", e);
+    }
+}
+
+fn persist_sender_key_state_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "sender_key_state dir resolve", e);
+            return;
+        }
+    };
+    let path = dir.join("sender_key_state.json");
+    let g = state
+        .sender_key_state
+        .lock()
+        .expect("sender_key_state mutex poisoned");
+    if let Err(e) = crate::sender_key_state::write_sender_key_state(&path, &g) {
+        record_persist_error(state, "sender_key_state.json", e);
     }
 }
 
@@ -226,20 +371,33 @@ pub fn persist_whitelist_state_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::warn!(
-                ?e,
-                "OSL: persist whitelist_state: cannot resolve config dir"
-            );
+            record_persist_error(state, "whitelist_state dir resolve", e);
             return;
         }
     };
     let path = dir.join("whitelist_state.json");
+    // 9-C3: write the full envelope (scopes + server_defaults) so a
+    // mutation to either map round-trips both. Pre-C3 used the
+    // truncated `write_whitelist_state` which only carried scopes —
+    // that would have silently wiped server_defaults on every
+    // whitelist mutation.
     let ws = state
         .whitelist_state
         .lock()
-        .expect("whitelist_state mutex poisoned");
-    if let Err(e) = crate::whitelist_state::write_whitelist_state(&path, &ws) {
-        tracing::warn!(?e, path = %path.display(), "OSL: persist whitelist_state.json failed");
+        .expect("whitelist_state mutex poisoned")
+        .clone();
+    let sd = state
+        .server_defaults
+        .lock()
+        .expect("server_defaults mutex poisoned")
+        .clone();
+    let envelope = crate::whitelist_state::WhitelistStateFile {
+        migrated_c1: true,
+        scopes: ws,
+        server_defaults: sd,
+    };
+    if let Err(e) = crate::whitelist_state::write_whitelist_state_file(&path, &envelope) {
+        record_persist_error(state, "whitelist_state.json", e);
     }
 }
 
@@ -1553,30 +1711,128 @@ fn now_unix_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Phase 9-B1: shaped output for the send pipeline.
+///
+/// - `messages` — the cover strings to drop into Discord. Mode 0
+///   ships exactly one `DPC0::<b64>` element; Mode 1 ships one or
+///   more `DPC1::<sentences>` elements, each carrying one
+///   authenticated chunk of the underlying wire bytes.
+/// - `session_id` — `Some(_)` only in Mode 1, exposing the random
+///   chunk-session id for UI bookkeeping (e.g. progress badges).
+///
+/// 9-MODE1-FIX: `preview_required` field removed. Mode 1 sends fire
+/// chunks immediately with no user-facing confirmation modal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EncryptOutput {
+    pub messages: Vec<String>,
+    pub session_id: Option<u32>,
+}
+
 /// Layer 10 / Phase 7b IPC entry point: encrypt a v=2 content
 /// message for the whitelist-resolved recipients in `scope`.
+///
+/// **9-B1 shape change** — this function now returns
+/// [`EncryptOutput`] instead of `String`. Callers that only need the
+/// first wire string for backwards compatibility can use the
+/// [`cmd_osl_encrypt_message_v2_wire`] helper, which preserves the
+/// pre-B1 signature for tests and other direct call sites.
 ///
 /// Reads:
 /// - `state.identity` for our x25519 (secret + public).
 /// - `state.whitelist_state` + `state.peer_map` for scope
 ///   resolution.
-///
-/// Behaviour:
-/// 1. Resolve recipients via
-///    [`crate::whitelist::recipients_for_scope`]. Always includes
-///    self.
-/// 2. If the only recipient is self (no one to actually encrypt
-///    *to*), return `"no_whitelisted_recipients"`. The
-///    auto-self-include means the recipient list is never empty,
-///    so we test against `len == 1` for the "no peers" case.
-/// 3. Call [`crate::wire_v2::encrypt_v2`] with
-///    `msg_type = MSG_TYPE_CONTENT (0x00)`.
-/// 4. Return the `DPC0::<base64>` wire string.
-///
-/// Persistence of the local message row is deferred to the recv
-/// path (when our own bounced message arrives) so the v=2
-/// send-side stays uniform with v=1's existing flow.
+/// - `state.app_preferences` for the Mode 0/Mode 1 selector and
+///   preview confirmations.
 pub fn cmd_osl_encrypt_message_v2(
+    state: &AppState,
+    plaintext: String,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<EncryptOutput, String> {
+    let scope_for_mode: crate::scope::Scope = scope_input
+        .clone()
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+
+    let wire = cmd_osl_encrypt_message_v2_wire(
+        state,
+        plaintext,
+        scope_input,
+        channel_members,
+        self_discord_id,
+    )?;
+
+    // Mode dispatch: stego_mode selects DPC0:: vs chunked DPC1::.
+    // 9-MODE1-RETIRE: Mode 1 is disabled in V2 (template stego is
+    // unviable under the PQ-hybrid wire's ~1190-byte wrap leg). Legacy
+    // app_preferences.json files with stego_mode=mode1 are coerced
+    // silently to Mode 0 here. V3 will re-enable Mode 1 alongside an
+    // LLM-cipher revival; the chunking + decode code stays in tree.
+    let mode = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.stego_mode
+    };
+
+    use crate::app_preferences::StegoMode;
+    let mode = if matches!(mode, StegoMode::Mode1) {
+        tracing::warn!("Mode 1 disabled in V2; coercing to Mode 0. Legacy config?");
+        StegoMode::Mode0
+    } else {
+        mode
+    };
+
+    match mode {
+        StegoMode::Mode0 => Ok(EncryptOutput {
+            messages: vec![wire],
+            session_id: None,
+        }),
+        StegoMode::Mode1 => {
+            // Strip the DPC0:: prefix and recover the raw wire bytes
+            // — those are what we chunk into Mode 1 carriers. Each
+            // chunk is independently HMAC-authenticated against the
+            // conversation salt (see `mode1_chunking`).
+            let body = wire
+                .strip_prefix("DPC0::")
+                .ok_or_else(|| "OSL: Mode 1 wrap expected DPC0:: wire prefix".to_string())?;
+            let raw = STANDARD
+                .decode(body)
+                .map_err(|e| format!("OSL: Mode 1 wrap: base64 decode of wire body failed: {e}"))?;
+
+            let salt = scope_for_mode.storage_key().into_bytes();
+            let cipher = stego::ConversationCipher::from_salt(&salt);
+            let session_id = crypto::random::random_u32();
+
+            let chunks = stego::chunk_payload(&salt, session_id, &raw);
+            let mut messages = Vec::with_capacity(chunks.len());
+            for chunk in &chunks {
+                let cover = stego::encode_mode1(&cipher, &chunk.bytes)
+                    .map_err(|e| format!("OSL: Mode 1 encode_mode1: {e}"))?;
+                messages.push(cover);
+            }
+
+            tracing::info!(
+                chunks = messages.len(),
+                session_id = session_id,
+                scope = %scope_for_mode.storage_key(),
+                "OSL: mode1 send"
+            );
+
+            Ok(EncryptOutput {
+                messages,
+                session_id: Some(session_id),
+            })
+        }
+    }
+}
+
+/// Pre-9-B1 entry point that produces a single Mode 0
+/// `DPC0::<b64>` wire string. Retained for tests and any caller
+/// that wants the wire bytes without the Mode 1 cover layer.
+pub fn cmd_osl_encrypt_message_v2_wire(
     state: &AppState,
     plaintext: String,
     scope_input: crate::scope::ScopeInput,
@@ -1592,39 +1848,640 @@ pub fn cmd_osl_encrypt_message_v2(
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
     let sender_sk = identity.x25519_secret.clone();
     let self_pk = identity.x25519_public;
+    let self_mlkem_pub = identity.mlkem_encapsulation_key();
     drop(id_guard);
 
-    let recipients = {
-        let ws_guard = state
-            .whitelist_state
-            .lock()
-            .expect("whitelist_state mutex poisoned");
+    // Phase 9-A1: text sends now use v=3 (PQ-hybrid). Capability
+    // check happens in recipients_for_scope_v3 — any whitelisted
+    // member missing an ML-KEM pubkey fails the send with a
+    // pointed error. Phase 9-A1b adds a single keyserver-refresh
+    // retry for legacy peers whose entry pre-dates the ML-KEM
+    // schema bump: we'll attempt to fetch the missing pubkey and
+    // re-run the capability check before surfacing the error.
+    let resolve_recipients = || {
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        crate::whitelist::recipients_for_scope(
-            &ws_guard,
+        crate::whitelist::recipients_for_scope_v3(
             &pm_guard,
             &scope,
             &channel_members,
             &self_discord_id,
             &self_pk,
+            &self_mlkem_pub,
         )
     };
+    let recipients = match resolve_recipients() {
+        Ok(r) => r,
+        Err(crate::whitelist::RecipientsV3Error::PeerMissingMlkemPubkey { discord_id }) => {
+            // One-shot keyserver refresh attempt.
+            match refresh_peer_pubkeys_from_keyserver(state, &discord_id) {
+                Ok(true) => {
+                    // ML-KEM newly added; retry the capability check.
+                    resolve_recipients().map_err(|e| {
+                        format!("OSL: v=3 capability check (after keyserver refresh): {e}")
+                    })?
+                }
+                Ok(false) => {
+                    return Err(format!(
+                        "OSL: v=3 capability check: peer {discord_id} has no \
+                         ML-KEM-768 pubkey on file and keyserver refresh added \
+                         none (peer may need to regenerate identity)"
+                    ));
+                }
+                Err(refresh_err) => {
+                    return Err(format!(
+                        "OSL: v=3 capability check: peer {discord_id} missing \
+                         ML-KEM-768 pubkey; keyserver refresh failed: {refresh_err}"
+                    ));
+                }
+            }
+        }
+        Err(e) => return Err(format!("OSL: v=3 capability check: {e}")),
+    };
+
+    // Phase 9-A2: single-peer (DM-shaped) sends route through v=4
+    // when the peer is ratchet-eligible. `recipients[0]` is always
+    // self; non-self recipients are the actual peers. v=4 fires
+    // exactly when there's one non-self recipient.
+    let non_self_peers: Vec<&crate::wire_v2::RecipientV3> = recipients
+        .iter()
+        .skip(1) // recipients[0] is self per recipients_for_scope_v3
+        .collect();
+    if non_self_peers.len() == 1 {
+        let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
+        if let Some(peer_did) = peer_did_opt {
+            // Probe peer_map for v=4 eligibility. Eligible iff (a)
+            // peer entry has ratchet_state (continuation) or (b)
+            // entry has ik_ratchet_initial_pub (bootstrap target).
+            let mut eligible = false;
+            {
+                let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+                if let Some(pe) = pm_guard.get(&peer_did) {
+                    eligible = pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
+                }
+            }
+            // Phase 9-A1b precedent: refresh-on-error retry. If the
+            // entry has ML-KEM (so v=3 would work) but no ratchet
+            // pub, attempt a single keyserver fetch to populate it
+            // before deciding v=4 vs v=3.
+            if !eligible {
+                if let Ok(true) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
+                    let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+                    if let Some(pe) = pm_guard.get(&peer_did) {
+                        eligible =
+                            pe.ratchet_state.is_some() || pe.ik_ratchet_initial_pub.is_some();
+                    }
+                }
+            }
+            if eligible {
+                return encrypt_v4_send(
+                    state,
+                    &sender_sk,
+                    &self_pk,
+                    &peer_did,
+                    non_self_peers[0],
+                    &scope,
+                    plaintext.as_bytes(),
+                    &self_discord_id,
+                );
+            }
+        }
+    }
+
+    // Phase 9-A3: groups + server channels route to v=5 (sender-keys).
+    // DM-shape (handled above) routes to v=4. Anything else falls
+    // through to v=3.
+    if non_self_peers.len() >= 2 && scope_is_group_or_server(&scope) {
+        return encrypt_v5_send(
+            state,
+            &sender_sk,
+            &self_pk,
+            &scope,
+            &self_discord_id,
+            &channel_members,
+            &non_self_peers,
+            plaintext.as_bytes(),
+        );
+    }
 
     // 7d-PIVOT: encrypt_toggle is no longer coupled to having a
-    // peer whitelist. `recipients_for_scope` always returns at
-    // least self_pk (len >= 1); encrypt-to-self is a valid send
-    // result (you alone will be able to decrypt). The caller
-    // (boot.js v=2 send gate) decides whether to call this based
-    // on the per-scope encrypt_toggle, independent of whitelist
-    // size.
-
-    crate::wire_v2::encrypt_v2(
-        plaintext.as_bytes(),
+    // peer whitelist. recipients_for_scope_v3 always returns at
+    // least self (len >= 1); encrypt-to-self is a valid send
+    // result.
+    crate::wire_v2::encrypt_v3(
+        &sender_sk,
+        &self_pk,
         &recipients,
         crate::wire_v2::MSG_TYPE_CONTENT,
-        &sender_sk,
+        plaintext.as_bytes(),
     )
-    .map_err(|e| format!("OSL: encrypt_v2: {e}"))
+    .map_err(|e| format!("OSL: encrypt_v3: {e}"))
+}
+
+/// Phase 9-A3: group/server scopes are eligible for v=5 sender-keys.
+fn scope_is_group_or_server(scope: &crate::scope::Scope) -> bool {
+    use crate::scope::ScopeKind::*;
+    matches!(scope.kind, Gc | ServerChannel | ServerFull)
+}
+
+/// Phase 9-A3: 24-hour rotation timer threshold.
+const SENDER_KEY_ROTATE_AFTER_SECS: u64 = 24 * 60 * 60;
+
+/// Phase 9-A3: decide whether the sender-keys chain for this scope
+/// needs to rotate before the next send. Returns `true` when:
+/// - the time since `chain_started_at` exceeds 24 hours, OR
+/// - the current channel-member set differs from
+///   `last_known_members` (any join/leave).
+fn sender_key_needs_rotation(
+    sender: &crypto::sender_keys::SenderChain,
+    current_members: &[String],
+    now: u64,
+) -> bool {
+    if now.saturating_sub(sender.chain_started_at()) >= SENDER_KEY_ROTATE_AFTER_SECS {
+        return true;
+    }
+    let stored: std::collections::BTreeSet<&[u8]> = sender
+        .last_known_members()
+        .iter()
+        .map(|m| m.as_slice())
+        .collect();
+    let live: std::collections::BTreeSet<&[u8]> =
+        current_members.iter().map(|m| m.as_bytes()).collect();
+    stored != live
+}
+
+/// Phase 9-A3: v=5 group send. On-demand install/rotate of the
+/// outbound `SenderChain`, SKDM dispatch to each non-self peer via
+/// v=4, then encode the actual message under v=5.
+#[allow(clippy::too_many_arguments)]
+fn encrypt_v5_send(
+    state: &AppState,
+    sender_sk: &crypto::x25519::SecretKey,
+    self_pk: &crypto::x25519::PublicKey,
+    scope: &crate::scope::Scope,
+    self_discord_id: &str,
+    channel_members: &[String],
+    non_self_peers: &[&crate::wire_v2::RecipientV3],
+    plaintext: &[u8],
+) -> Result<String, String> {
+    use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
+
+    let scope_key = scope.storage_key();
+    let self_mlkem_pub_bytes: Vec<u8> = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        identity.mlkem_public_bytes.to_vec()
+    };
+    let now: u64 = now_unix_secs().max(0) as u64;
+
+    // Prefer the boot.js-pushed gateway snapshot of current channel
+    // members (state.channel_members) over the caller's
+    // `channel_members` list, which is built from React fiber props
+    // at send time and may be stale on server channels. The cache
+    // is populated by `cmd_osl_membership_update` from boot.js
+    // gateway hooks. Empty cache → fall through to caller list.
+    let live_members: Vec<String> = {
+        let cm = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        // Channel id for the cache key — for DM/GC scopes the
+        // scope's id field IS the channel id; for server channels
+        // it's scope.channel_id.
+        let cache_key = scope.channel_id.clone().unwrap_or_else(|| scope.id.clone());
+        cm.get(&cache_key).cloned().unwrap_or_default()
+    };
+    let effective_members: &[String] = if live_members.is_empty() {
+        channel_members
+    } else {
+        &live_members
+    };
+
+    // Load (or initialize) the per-scope SenderKeyState. We work on
+    // a clone to keep the lock window short; persist back after.
+    let mut sks: SenderKeyState = {
+        let g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        match g.states.get(&scope_key) {
+            Some(disk) => disk
+                .clone()
+                .try_into()
+                .map_err(|e| format!("OSL: v=5 send: load sender_key_state: {e}"))?,
+            None => SenderKeyState::new(),
+        }
+    };
+
+    // Decide install / rotate / continue.
+    let needs_install = sks.sender_chain().is_none();
+    let needs_rotate = sks
+        .sender_chain()
+        .map(|c| sender_key_needs_rotation(c, effective_members, now))
+        .unwrap_or(false);
+
+    let send_skdm = needs_install || needs_rotate;
+    if needs_install {
+        sks.install_sender()
+            .map_err(|e| format!("OSL: v=5 send: install_sender: {e}"))?;
+        let members_bytes: Vec<Vec<u8>> = effective_members
+            .iter()
+            .map(|m| m.as_bytes().to_vec())
+            .collect();
+        sks.sender_chain_mut()
+            .unwrap()
+            .set_last_known_members(members_bytes);
+    } else if needs_rotate {
+        sks.rotate_sender()
+            .map_err(|e| format!("OSL: v=5 send: rotate_sender: {e}"))?;
+        let members_bytes: Vec<Vec<u8>> = effective_members
+            .iter()
+            .map(|m| m.as_bytes().to_vec())
+            .collect();
+        sks.sender_chain_mut()
+            .unwrap()
+            .set_last_known_members(members_bytes);
+    }
+
+    let (chain_id, rotation_root) = {
+        let s = sks
+            .sender_chain()
+            .ok_or_else(|| "OSL: v=5 send: missing sender chain after install".to_string())?;
+        (s.current_chain_id(), s.rotation_root_bytes())
+    };
+
+    // Self-loopback: install/rotate a self-receiver chain seeded
+    // from the same rotation_root so self-decrypts work uniformly.
+    if send_skdm {
+        let self_bytes = self_discord_id.as_bytes().to_vec();
+        if sks.receiver_chain(&self_bytes).is_some() {
+            sks.rotate_receiver(&self_bytes, chain_id, &rotation_root)
+                .map_err(|e| format!("OSL: v=5 send: rotate_receiver(self): {e}"))?;
+        } else {
+            sks.install_receiver(self_bytes, chain_id, &rotation_root)
+                .map_err(|e| format!("OSL: v=5 send: install_receiver(self): {e}"))?;
+        }
+    }
+
+    // Encrypt the actual message under sender-keys.
+    let ctx = SenderContext {
+        sender_ik_x25519_pub: *self_pk,
+        sender_ik_mlkem_pub: self_mlkem_pub_bytes.clone(),
+        group_id: scope_key.clone().into_bytes(),
+        session_version: crypto::sender_keys::SESSION_VERSION_V1,
+    };
+    let em = sks
+        .encrypt(plaintext, &ctx)
+        .map_err(|e| format!("OSL: v=5 send: sender_keys::encrypt: {e}"))?;
+    let wire = crate::wire_v2::encrypt_v5(self_pk, crate::wire_v2::MSG_TYPE_CONTENT, 0, &em)
+        .map_err(|e| format!("OSL: v=5 send: encrypt_v5: {e}"))?;
+
+    // Persist updated state before any SKDM dispatch — if the SKDM
+    // wire goes out but persistence dies between send + crash, we'd
+    // be in a position where peers think we've installed and we
+    // don't.
+    {
+        let mut g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        g.states
+            .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&sks));
+        g.version = 1;
+    }
+    persist_sender_key_state_now(state);
+
+    // Dispatch SKDMs via v=4 to each non-self peer. Best-effort: a
+    // missing peer ratchet pub causes one keyserver refresh attempt
+    // before erroring. Each SKDM is one v=4 send.
+    if send_skdm {
+        let _ = send_skdm; // mark used
+        for (idx, peer) in non_self_peers.iter().enumerate() {
+            let peer_did = match channel_members
+                .iter()
+                .find(|m| m.as_str() != self_discord_id)
+                .map(|s| s.to_string())
+            {
+                Some(_) => match channel_members
+                    .iter()
+                    .filter(|m| m.as_str() != self_discord_id)
+                    .nth(idx)
+                {
+                    Some(d) => d.clone(),
+                    None => continue,
+                },
+                None => continue,
+            };
+            if let Err(e) = send_skdm_via_v4(
+                state,
+                sender_sk,
+                self_pk,
+                &peer_did,
+                peer,
+                &scope_key,
+                chain_id,
+                &rotation_root,
+            ) {
+                tracing::warn!(
+                    peer = %peer_did,
+                    error = %e,
+                    "[OSL] v=5 SKDM dispatch failed (best-effort; peer may need to retry)"
+                );
+            }
+        }
+    }
+
+    Ok(wire)
+}
+
+/// Phase 9-A3: ship a SenderKeyDistribution payload to one peer via
+/// a v=4 control message. Wraps `serialize_sender_key_distribution`
+/// in a v=4 wire with `msg_type = MSG_TYPE_SENDER_KEY_DISTRIBUTION`.
+#[allow(clippy::too_many_arguments)]
+fn send_skdm_via_v4(
+    state: &AppState,
+    sender_sk: &crypto::x25519::SecretKey,
+    self_pk: &crypto::x25519::PublicKey,
+    peer_did: &str,
+    peer_recipient: &crate::wire_v2::RecipientV3,
+    scope_storage_key: &str,
+    chain_id: u32,
+    rotation_root: &[u8; 32],
+) -> Result<String, String> {
+    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
+
+    let payload = crate::control_messages::SenderKeyDistribution {
+        scope_storage_key: scope_storage_key.to_string(),
+        chain_id,
+        rotation_root: *rotation_root,
+        sent_at: now_unix_secs(),
+    };
+    let body = crate::control_messages::serialize_sender_key_distribution(&payload)
+        .map_err(|e| format!("OSL: v=5 SKDM: serialize: {e}"))?;
+
+    let self_mlkem_pub_bytes: Vec<u8> = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        identity.mlkem_public_bytes.to_vec()
+    };
+    let peer_mlkem_pub_bytes: Vec<u8> = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard
+            .get(peer_did)
+            .ok_or_else(|| format!("OSL: v=5 SKDM: peer {peer_did} not in peer_map"))?;
+        let b64 = pe
+            .ik_mlkem768_pub
+            .as_deref()
+            .ok_or_else(|| format!("OSL: v=5 SKDM: peer {peer_did} missing ik_mlkem768_pub"))?;
+        STANDARD
+            .decode(b64)
+            .map_err(|e| format!("OSL: v=5 SKDM: peer ik_mlkem768_pub b64: {e}"))?
+    };
+
+    let ctx = SessionContext {
+        local_ik_x25519_pub: *self_pk,
+        local_ik_mlkem_pub: self_mlkem_pub_bytes,
+        peer_ik_x25519_pub: peer_recipient.x25519_pub,
+        peer_ik_mlkem_pub: peer_mlkem_pub_bytes,
+        conversation_id: dm_conversation_id(
+            &state
+                .peer_map
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|(did, pe)| {
+                    if pe.is_self == Some(true) {
+                        Some(did.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "self".to_string()),
+            peer_did,
+        ),
+        session_version: SESSION_VERSION_V1,
+    };
+
+    let (session_key, handshake) = crypto::pqxdh::initiate(
+        sender_sk,
+        &peer_recipient.x25519_pub,
+        &peer_recipient.x25519_pub,
+        None,
+        &peer_recipient.mlkem_pub,
+    )
+    .map_err(|e| format!("OSL: v=5 SKDM: pqxdh::initiate: {e}"))?;
+
+    let (mut dr, bootstrap) = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard
+            .get(peer_did)
+            .cloned()
+            .ok_or_else(|| format!("OSL: v=5 SKDM: peer {peer_did} not in peer_map"))?;
+        match pe.ratchet_state {
+            Some(disk) => {
+                let dr: DoubleRatchet = disk
+                    .try_into()
+                    .map_err(|e| format!("OSL: v=5 SKDM: load ratchet state: {e}"))?;
+                (dr, false)
+            }
+            None => {
+                let peer_ratchet_b64 = pe.ik_ratchet_initial_pub.as_deref().ok_or_else(|| {
+                    format!("OSL: v=5 SKDM: peer {peer_did} ratchet bootstrap pub missing")
+                })?;
+                let peer_ratchet_bytes = STANDARD
+                    .decode(peer_ratchet_b64)
+                    .map_err(|e| format!("OSL: v=5 SKDM: peer ratchet pub b64: {e}"))?;
+                if peer_ratchet_bytes.len() != 32 {
+                    return Err(format!(
+                        "OSL: v=5 SKDM: peer ratchet pub length {} != 32",
+                        peer_ratchet_bytes.len()
+                    ));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&peer_ratchet_bytes);
+                let peer_ratchet_pub = crypto::x25519::PublicKey::from_bytes(arr);
+                let dr = DoubleRatchet::new_initiator(&session_key, &peer_ratchet_pub, ctx)
+                    .map_err(|e| format!("OSL: v=5 SKDM: new_initiator: {e}"))?;
+                (dr, true)
+            }
+        }
+    };
+
+    let em = dr
+        .encrypt(&body)
+        .map_err(|e| format!("OSL: v=5 SKDM: dr.encrypt: {e}"))?;
+    let wire = crate::wire_v2::encrypt_v4_from_ratchet(
+        self_pk,
+        peer_recipient,
+        &session_key,
+        &handshake,
+        crate::wire_v2::MSG_TYPE_SENDER_KEY_DISTRIBUTION,
+        bootstrap,
+        &em,
+    )
+    .map_err(|e| format!("OSL: v=5 SKDM: encrypt_v4: {e}"))?;
+
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(peer_did.to_string()).or_default();
+        pe.ratchet_state = Some(RatchetStateOnDisk::from(&dr));
+    }
+    persist_peer_map_now(state);
+    Ok(wire)
+}
+
+/// Phase 9-A2: pick out the peer discord_id from
+/// `channel_members` so the v=4 dispatch can look up the peer's
+/// ratchet eligibility. Returns `None` when no non-self member is
+/// present (encrypt-to-self only, no peer to ratchet against).
+fn derive_v4_peer_discord_id(
+    _state: &AppState,
+    channel_members: &[String],
+    self_discord_id: &str,
+) -> Option<String> {
+    channel_members
+        .iter()
+        .find(|m| m.as_str() != self_discord_id)
+        .cloned()
+}
+
+/// Phase 9-A2: symmetric DM conversation_id for the DR session
+/// context. Each side derives the same string by sorting the two
+/// discord_ids — without this, alice's `Scope::dm(bob).storage_key()
+/// = "dm:bob"` and bob's `Scope::dm(alice).storage_key() = "dm:alice"`
+/// would mismatch on the DR's canonical AD.
+fn dm_conversation_id(self_did: &str, peer_did: &str) -> Vec<u8> {
+    let (a, b) = if self_did <= peer_did {
+        (self_did, peer_did)
+    } else {
+        (peer_did, self_did)
+    };
+    format!("dm:{a}:{b}").into_bytes()
+}
+
+/// Phase 9-A2: v=4 send. Loads peer's ratchet state (bootstrap iff
+/// None), runs `DoubleRatchet::encrypt`, persists the advanced DR
+/// state, and ships the wire blob.
+fn encrypt_v4_send(
+    state: &AppState,
+    sender_sk: &crypto::x25519::SecretKey,
+    self_pk: &crypto::x25519::PublicKey,
+    peer_did: &str,
+    recipient: &crate::wire_v2::RecipientV3,
+    scope: &crate::scope::Scope,
+    plaintext: &[u8],
+    self_discord_id: &str,
+) -> Result<String, String> {
+    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
+    let _ = scope; // reserved for non-DM scopes in a future phase
+
+    // Snapshot self ML-KEM pubkey for the SessionContext binding.
+    let self_mlkem_pub_bytes: Vec<u8> = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        identity.mlkem_public_bytes.to_vec()
+    };
+    // And peer's ML-KEM pub from peer_map for the AD binding.
+    let peer_mlkem_pub_bytes: Vec<u8> = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard
+            .get(peer_did)
+            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} not in peer_map"))?;
+        let b64 = pe
+            .ik_mlkem768_pub
+            .as_deref()
+            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} missing ik_mlkem768_pub"))?;
+        STANDARD
+            .decode(b64)
+            .map_err(|e| format!("OSL: v=4 send: peer ik_mlkem768_pub b64: {e}"))?
+    };
+
+    let ctx = SessionContext {
+        local_ik_x25519_pub: *self_pk,
+        local_ik_mlkem_pub: self_mlkem_pub_bytes,
+        peer_ik_x25519_pub: recipient.x25519_pub,
+        peer_ik_mlkem_pub: peer_mlkem_pub_bytes,
+        conversation_id: dm_conversation_id(self_discord_id, peer_did),
+        session_version: SESSION_VERSION_V1,
+    };
+
+    // Single PQXDH run per send. session_key serves both as the DR
+    // bootstrap seed (when bootstrapping) AND as the input to the
+    // wrap leg's HKDF — the receiver derives the same session_key
+    // from pqxdh::respond on the wire's handshake bytes.
+    let (session_key, handshake) = crypto::pqxdh::initiate(
+        sender_sk,
+        &recipient.x25519_pub,
+        &recipient.x25519_pub,
+        None,
+        &recipient.mlkem_pub,
+    )
+    .map_err(|e| format!("OSL: v=4 send: pqxdh::initiate: {e}"))?;
+
+    // Load (or bootstrap) the live DR.
+    let (mut dr, bootstrap) = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard
+            .get(peer_did)
+            .cloned()
+            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} not in peer_map"))?;
+        match pe.ratchet_state {
+            Some(disk) => {
+                let dr: DoubleRatchet = disk
+                    .try_into()
+                    .map_err(|e| format!("OSL: v=4 send: load ratchet state: {e}"))?;
+                (dr, false)
+            }
+            None => {
+                let peer_ratchet_b64 = pe.ik_ratchet_initial_pub.as_deref().ok_or_else(|| {
+                    format!("OSL: v=4 send: peer {peer_did} ratchet bootstrap pub missing")
+                })?;
+                let peer_ratchet_bytes = STANDARD
+                    .decode(peer_ratchet_b64)
+                    .map_err(|e| format!("OSL: v=4 send: peer ratchet pub b64: {e}"))?;
+                if peer_ratchet_bytes.len() != 32 {
+                    return Err(format!(
+                        "OSL: v=4 send: peer ratchet pub length {} != 32",
+                        peer_ratchet_bytes.len()
+                    ));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&peer_ratchet_bytes);
+                let peer_ratchet_pub = crypto::x25519::PublicKey::from_bytes(arr);
+                let dr = DoubleRatchet::new_initiator(&session_key, &peer_ratchet_pub, ctx.clone())
+                    .map_err(|e| format!("OSL: v=4 send: new_initiator: {e}"))?;
+                (dr, true)
+            }
+        }
+    };
+
+    let em = dr
+        .encrypt(plaintext)
+        .map_err(|e| format!("OSL: v=4 send: dr.encrypt: {e}"))?;
+    let wire = crate::wire_v2::encrypt_v4_from_ratchet(
+        self_pk,
+        recipient,
+        &session_key,
+        &handshake,
+        crate::wire_v2::MSG_TYPE_CONTENT,
+        bootstrap,
+        &em,
+    )
+    .map_err(|e| format!("OSL: v=4 send: encrypt_v4: {e}"))?;
+
+    // Persist the advanced DR state on the peer entry.
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(peer_did.to_string()).or_default();
+        pe.ratchet_state = Some(RatchetStateOnDisk::from(&dr));
+    }
+    persist_peer_map_now(state);
+    Ok(wire)
 }
 
 /// 7d-PIVOT-FIX2 Bug F: re-engaging a previously-burned scope by
@@ -1727,13 +2584,8 @@ pub fn cmd_osl_encrypt_attachment_envelope(
     drop(id_guard);
 
     let recipients = {
-        let ws_guard = state
-            .whitelist_state
-            .lock()
-            .expect("whitelist_state mutex poisoned");
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         crate::whitelist::recipients_for_scope(
-            &ws_guard,
             &pm_guard,
             &scope,
             &channel_members,
@@ -1817,13 +2669,8 @@ pub fn cmd_osl_seal_attachment_with_cover_v2(
     let self_pk = identity.x25519_public;
     drop(id_guard);
     let recipients = {
-        let ws_guard = state
-            .whitelist_state
-            .lock()
-            .expect("whitelist_state mutex poisoned");
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         crate::whitelist::recipients_for_scope(
-            &ws_guard,
             &pm_guard,
             &scope,
             &channel_members,
@@ -1866,25 +2713,138 @@ pub fn cmd_osl_seal_attachment_with_cover_v2(
     })
 }
 
+/// Phase 8e: V3 one-shot seal. Same envelope construction as V2 but
+/// emits an MP4-wrapped wire (decoy MP4 + `free` box carrying the
+/// payload) so the upload MIME is `video/mp4` and Discord renders a
+/// video-card preview surface instead of the `.bin` download card.
+/// JS calls this with `random_filename` ending in `.mp4` and uploads
+/// with `Content-Type: video/mp4`.
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_osl_seal_attachment_with_cover_v3(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    original_bytes_b64: String,
+    original_filename: String,
+    random_filename: String,
+) -> Result<SealedAttachmentV2, String> {
+    let mime = crate::attachment_wire::mime_for_filename(&original_filename)
+        .ok_or_else(|| "OSL: unsupported file extension".to_string())?;
+    let original_bytes = STANDARD
+        .decode(&original_bytes_b64)
+        .map_err(|e| format!("OSL: original_bytes b64 decode: {e}"))?;
+
+    let key_bytes = random::random_bytes(32);
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(&key_bytes);
+    let att_key = crypto::aead::Key::from_bytes(key_arr);
+
+    let env = crate::control_messages::AttachmentEnvelope {
+        attachments: vec![crate::control_messages::AttachmentEnvelopeEntry {
+            att_key: key_arr,
+            original_filename: original_filename.clone(),
+            random_filename: random_filename.clone(),
+            mime_type: mime.to_string(),
+        }],
+    };
+    let env_bytes = crate::control_messages::serialize_attachment_envelope(&env)
+        .map_err(|e| format!("OSL: serialize attachment envelope: {e}"))?;
+
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let sender_sk = identity.x25519_secret.clone();
+    let self_pk = identity.x25519_public;
+    drop(id_guard);
+    let recipients = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        crate::whitelist::recipients_for_scope(
+            &pm_guard,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+        )
+    };
+
+    let cover_wire_str = crate::wire_v2::encrypt_v2(
+        &env_bytes,
+        &recipients,
+        crate::wire_v2::MSG_TYPE_ATTACHMENT,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: encrypt_v2 cover: {e}"))?;
+    let cover_bytes = STANDARD
+        .decode(
+            cover_wire_str
+                .strip_prefix("DPC0::")
+                .unwrap_or(&cover_wire_str),
+        )
+        .map_err(|e| format!("OSL: cover wire b64 decode: {e}"))?;
+
+    let sealed_bytes = crate::attachment_wire::seal_attachment_v3(
+        att_key,
+        &original_bytes,
+        &original_filename,
+        &cover_bytes,
+    )
+    .map_err(|e| format!("OSL: seal_attachment_v3: {e}"))?;
+
+    Ok(SealedAttachmentV2 {
+        sealed_b64: STANDARD.encode(&sealed_bytes),
+        random_filename,
+        mime_type: mime.to_string(),
+    })
+}
+
 /// Phase 8d: one-shot open. Splits the file into (cover, filename,
 /// payload), decrypts the cover via the existing v=2 path, recovers
 /// the per-attachment AEAD key from the envelope, then decrypts the
 /// payload. Backwards-compatible with V1 files (signaled by the
 /// empty cover from `open_attachment_v2_split`) — falls back to the
 /// caller-supplied legacy `att_key_b64` argument for V1 only.
+///
+/// Phase 8e: open path now chains V3 → V2 → V1 magic detection via
+/// `open_attachment_v3_split`. JS callers don't need to know which
+/// wire version they're feeding in.
 pub fn cmd_osl_open_attachment_v2(
     state: &AppState,
     sender_discord_id: String,
     scope_input: Option<crate::scope::ScopeInput>,
     file_bytes_b64: String,
     legacy_att_key_b64: Option<String>,
+    discord_message_id: Option<String>,
 ) -> Result<crate::attachment_wire::OpenedAttachment, String> {
+    // 9-A1c: burn kill list defense-in-depth on attachment open.
+    // If this specific message was burned, refuse to recover its
+    // attachment even if the scope was later unburned.
+    if let (Some(input), Some(msg_id)) = (scope_input.as_ref(), discord_message_id.as_deref()) {
+        let scope: crate::scope::Scope = input
+            .clone()
+            .try_into()
+            .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+        if is_message_in_burn_kill_list(state, &scope, msg_id) {
+            tracing::info!(
+                msg_id = %msg_id,
+                "[OSL] attachment open blocked: in_burn_kill_list"
+            );
+            return Err(format!(
+                "OSL: attachment open blocked: msg={msg_id} reason=in_burn_kill_list"
+            ));
+        }
+    }
+
     let file_bytes = STANDARD
         .decode(&file_bytes_b64)
         .map_err(|e| format!("OSL: file_bytes b64 decode: {e}"))?;
     let (cover_bytes, filename, payload_bytes) =
-        crate::attachment_wire::open_attachment_v2_split(&file_bytes)
-            .map_err(|e| format!("OSL: open_attachment_v2_split: {e}"))?;
+        crate::attachment_wire::open_attachment_v3_split(&file_bytes)
+            .map_err(|e| format!("OSL: open_attachment_v3_split: {e}"))?;
 
     // Recover the attachment AEAD key. V2 path: decrypt the
     // embedded cover via v=2 (uses our SK + sender PK + scope
@@ -1897,7 +2857,7 @@ pub fn cmd_osl_open_attachment_v2(
         // cmd_osl_decrypt_message_v2 to honour the scope gate.
         let recovered = cmd_osl_decrypt_message_v2(
             state,
-            None,
+            discord_message_id,
             // channel_id is unused for MSG_TYPE_ATTACHMENT processing.
             String::new(),
             sender_discord_id,
@@ -1995,13 +2955,8 @@ pub fn cmd_osl_send_burn_marker(
     drop(id_guard);
 
     let recipients = {
-        let ws_guard = state
-            .whitelist_state
-            .lock()
-            .expect("whitelist_state mutex poisoned");
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         crate::whitelist::recipients_for_scope(
-            &ws_guard,
             &pm_guard,
             &scope,
             &channel_members,
@@ -2028,96 +2983,9 @@ pub fn cmd_osl_send_burn_marker(
     .map_err(|e| format!("OSL: encrypt_v2 burn_marker: {e}"))
 }
 
-/// Layer 10 / Phase 7b: build + encrypt a whitelist invitation
-/// for `to_discord_id` covering `scope`. The receiver's UI
-/// surfaces this as a banner; on accept they'll set
-/// `peer_map[<sender>].incoming_decrypt_accepted[scope_key]
-/// = true` and our subsequent v=2 messages in `scope` decrypt
-/// for them.
-///
-/// `from_discord_id` is supplied by the caller (boot.js, which
-/// extracts our Discord user_id from the page state). The
-/// [`Identity`] only carries the keyserver `user_id`, not the
-/// Discord snowflake.
-pub fn cmd_osl_send_whitelist_invitation(
-    state: &AppState,
-    to_discord_id: String,
-    scope_input: crate::scope::ScopeInput,
-    from_discord_id: String,
-) -> Result<String, String> {
-    let scope: crate::scope::Scope = scope_input
-        .try_into()
-        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
-    let identity = id_guard
-        .as_ref()
-        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    let sender_sk = identity.x25519_secret.clone();
-    let from_pubkey = identity.x25519_public;
-    drop(id_guard);
-
-    let to_pubkey = {
-        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        lookup_peer_pubkey(&pm_guard, &to_discord_id)?
-    };
-
-    let invitation = crate::control_messages::WhitelistInvitation {
-        from_discord_id,
-        from_pubkey,
-        scope,
-        sent_at: now_unix_secs(),
-    };
-    let body = crate::control_messages::serialize_whitelist_invitation(&invitation)
-        .map_err(|e| format!("OSL: serialize whitelist_invitation: {e}"))?;
-    crate::wire_v2::encrypt_v2(
-        &body,
-        &[to_pubkey],
-        crate::wire_v2::MSG_TYPE_WHITELIST_INVITATION,
-        &sender_sk,
-    )
-    .map_err(|e| format!("OSL: encrypt_v2 whitelist_invitation: {e}"))
-}
-
-/// Layer 10 / Phase 7b: build + encrypt a whitelist response
-/// (accept or decline) to `to_discord_id` for `scope`. The
-/// original inviter's UI consumes this to mark the
-/// outgoing-whitelist entry as accepted/declined.
-pub fn cmd_osl_send_whitelist_response(
-    state: &AppState,
-    to_discord_id: String,
-    scope_input: crate::scope::ScopeInput,
-    accepted: bool,
-) -> Result<String, String> {
-    let scope: crate::scope::Scope = scope_input
-        .try_into()
-        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
-    let identity = id_guard
-        .as_ref()
-        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    let sender_sk = identity.x25519_secret.clone();
-    drop(id_guard);
-
-    let to_pubkey = {
-        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        lookup_peer_pubkey(&pm_guard, &to_discord_id)?
-    };
-
-    let response = crate::control_messages::WhitelistResponse {
-        scope,
-        accepted,
-        responded_at: now_unix_secs(),
-    };
-    let body = crate::control_messages::serialize_whitelist_response(&response)
-        .map_err(|e| format!("OSL: serialize whitelist_response: {e}"))?;
-    crate::wire_v2::encrypt_v2(
-        &body,
-        &[to_pubkey],
-        crate::wire_v2::MSG_TYPE_WHITELIST_RESPONSE,
-        &sender_sk,
-    )
-    .map_err(|e| format!("OSL: encrypt_v2 whitelist_response: {e}"))
-}
+// 9-C1: `cmd_osl_send_whitelist_invitation` /
+// `cmd_osl_send_whitelist_response` removed alongside the
+// invitation handshake.
 
 // ---- Phase 7b: recv-path branching + helper commands ----
 //
@@ -2130,13 +2998,12 @@ pub fn cmd_osl_send_whitelist_response(
 /// message as ciphertext when it sees this.
 pub const OSL_RESULT_BURN_APPLIED: &str = "__OSL_CONTROL_BURN_APPLIED__";
 
-/// Returned when a v=2 invitation was queued in
-/// `pending_invitations`.
-pub const OSL_RESULT_INVITATION_RECEIVED: &str = "__OSL_CONTROL_INVITATION_RECEIVED__";
-
-/// Returned when a v=2 response updated
-/// `peer_map.outgoing_whitelist_responses`.
-pub const OSL_RESULT_RESPONSE_RECEIVED: &str = "__OSL_CONTROL_RESPONSE_RECEIVED__";
+/// Phase 9-C1: a legacy `MSG_TYPE_WHITELIST_INVITATION` (0x02) or
+/// `MSG_TYPE_WHITELIST_RESPONSE` (0x03) message arrived. C1 removed
+/// the entire invitation handshake; we silently ignore these so old
+/// clients can keep sending them without surfacing as visible
+/// ciphertext. boot.js logs + suppresses render.
+pub const OSL_RESULT_LEGACY_HANDSHAKE_IGNORED: &str = "__OSL_CONTROL_LEGACY_HANDSHAKE_IGNORED__";
 
 /// Phase 8 attachment-envelope sentinel prefix. The recv path returns
 /// `__OSL_CONTROL_ATTACHMENT__|<json-envelope>` when a v=2
@@ -2145,29 +3012,38 @@ pub const OSL_RESULT_RESPONSE_RECEIVED: &str = "__OSL_CONTROL_RESPONSE_RECEIVED_
 /// CDN-fetched blob.
 pub const OSL_RESULT_ATTACHMENT_PREFIX: &str = "__OSL_CONTROL_ATTACHMENT__|";
 
-/// Phase 7b recv-path entry point covering both wire versions.
-/// Peeks the wire's version byte after base64 decode and routes
-/// to the appropriate path:
+/// Phase 9-B1: Mode 1 receive sentinels.
 ///
-/// - v=1 → delegate to [`cmd_osl_decrypt_message_with_id`] (the
-///   Phase 5/6 path, untouched).
-/// - v=2 → run the v=2 decode + dispatch on msg_type:
-///   - 0x00 content: gate via [`crate::whitelist::should_decrypt_from`]
-///     when `scope_input` is `Some`, return plaintext as String.
-///   - 0x01 burn marker: apply the burn locally, return
-///     [`OSL_RESULT_BURN_APPLIED`].
-///   - 0x02 invitation: enqueue in pending_invitations, return
-///     [`OSL_RESULT_INVITATION_RECEIVED`].
-///   - 0x03 response: update peer_map.outgoing_whitelist_responses,
-///     return [`OSL_RESULT_RESPONSE_RECEIVED`].
+/// `__OSL_CONTROL_MODE1_INCOMPLETE__|<session_id>|<received>|<total>`
+/// — boot.js renders a "(Mode 1 part R/T)" placeholder and waits for
+/// the remaining chunks.
+pub const OSL_RESULT_MODE1_INCOMPLETE_PREFIX: &str = "__OSL_CONTROL_MODE1_INCOMPLETE__|";
+
+/// `__OSL_CONTROL_MODE1_CONFLICT__` — boot.js drops the in-flight
+/// session UI; the chunker on the sender side will need to restart
+/// the session.
+pub const OSL_RESULT_MODE1_CONFLICT: &str = "__OSL_CONTROL_MODE1_CONFLICT__";
+
+/// `__OSL_CONTROL_MODE1_INVALID__` — chunk bytes failed HMAC or
+/// header validation. Boot.js leaves the cover string visible
+/// (it's just innocuous English) and logs the rejection.
+pub const OSL_RESULT_MODE1_INVALID: &str = "__OSL_CONTROL_MODE1_INVALID__";
+
+/// Phase 7b recv-path entry point. Peeks the wire's version byte
+/// after base64 decode and dispatches:
 ///
-/// `scope_input` is **optional**: callers that don't yet know
-/// the scope (legacy Phase 5/6 boot.js) pass `None` and the v=2
-/// gate is skipped. Phase 7c boot.js will populate it.
+/// - v=1 → delegate to legacy `cmd_osl_decrypt_message_with_id`.
+/// - v=2 → v=2 decode + match on msg_type:
+///   - 0x00 content: return plaintext (9-C1: permissive — no gate).
+///   - 0x01 burn marker: apply locally, return `OSL_RESULT_BURN_APPLIED`.
+///   - 0x02 / 0x03 legacy handshake: return
+///     `OSL_RESULT_LEGACY_HANDSHAKE_IGNORED` (9-C1).
+///   - 0x04 attachment envelope: return `OSL_RESULT_ATTACHMENT_PREFIX|<json>`.
+/// - v=3 / v=4 / v=5: dispatch to their dedicated decrypt fns above.
 ///
-/// `config_dir` is required for the invitation-enqueue side
-/// effect (writes pending_invitations.json). Passed by the
-/// Tauri wrapper as `keystore::osl_config_dir()`.
+/// `scope_input` is optional and currently unused by the gate-free
+/// content paths; kept in the signature for the burn / attachment
+/// side-effects that still need it.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_osl_decrypt_message_v2(
     state: &AppState,
@@ -2178,33 +3054,13 @@ pub fn cmd_osl_decrypt_message_v2(
     scope_input: Option<crate::scope::ScopeInput>,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
-    // Peek the wire version.
-    let version = peek_wire_version(&content);
-    if version != Some(crate::wire_v2::WIRE_VERSION_V2) {
-        // v=1 (or unknown): preserve the existing Phase 5 path.
-        return cmd_osl_decrypt_message_with_id(
-            state,
-            discord_message_id,
-            channel_id,
-            sender_discord_id,
-            content,
-        );
-    }
-
-    // v=2 path.
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
-    let identity = id_guard
-        .as_ref()
-        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    let our_sk = identity.x25519_secret.clone();
-    drop(id_guard);
-
-    // Resolve sender pubkey from peer_map (v=2 carries it via
-    // invitations, so by the time we have content from a peer
-    // we should have their pubkey). Fall back to the keyserver
-    // round-trip path used by v=1 if it's not on file yet.
-    let sender_pub = resolve_sender_pubkey(state, &sender_discord_id)?;
-
+    // 9-B1: Mode 1 envelope handling. If the cover string carries
+    // a `DPC1::` prefix, decode it as a Mode 1 chunk and push to
+    // the per-channel reassembly buffer. When the buffer completes,
+    // re-frame the reassembled wire bytes as `DPC0::<b64>` and fall
+    // through to the existing version dispatch below. Incomplete
+    // / conflicting / invalid chunks return sentinel strings boot.js
+    // renders into UI placeholders.
     let scope_opt: Option<crate::scope::Scope> = match scope_input {
         Some(input) => Some(
             input
@@ -2214,17 +3070,153 @@ pub fn cmd_osl_decrypt_message_v2(
         None => None,
     };
 
-    let recovered = crate::wire_v2::decrypt_v2(&content, &our_sk, &sender_pub)
-        .map_err(|e| format!("OSL: {e}"))?;
+    let content = if stego::is_mode1(&content) {
+        // Mode 1 requires a scope so we know the conversation salt.
+        let scope = scope_opt
+            .as_ref()
+            .ok_or_else(|| "OSL: Mode 1 decode needs scope_input".to_string())?;
+        let salt = scope.storage_key().into_bytes();
+        let cipher = stego::ConversationCipher::from_salt(&salt);
+        let chunk_bytes = match stego::decode_mode1(&cipher, &content) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(error = %e, "OSL: Mode 1 decode_mode1 failed");
+                return Ok(OSL_RESULT_MODE1_INVALID.to_string());
+            }
+        };
+        let parsed = match stego::parse_chunk(&salt, &chunk_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!(error = %e, "OSL: Mode 1 chunk validation failed");
+                return Ok(OSL_RESULT_MODE1_INVALID.to_string());
+            }
+        };
+        let now = now_unix_secs() as u64;
+        let outcome = {
+            let mut bufs = state
+                .mode1_reassembly
+                .lock()
+                .expect("mode1_reassembly mutex poisoned");
+            let buf = bufs.entry(channel_id.clone()).or_default();
+            buf.push(
+                parsed.session_id,
+                parsed.chunk_index,
+                parsed.total_chunks,
+                parsed.payload,
+                now,
+            )
+        };
+        match outcome {
+            stego::PushOutcome::Incomplete { received, total } => {
+                return Ok(format!(
+                    "{}{}|{}|{}",
+                    OSL_RESULT_MODE1_INCOMPLETE_PREFIX, parsed.session_id, received, total
+                ));
+            }
+            stego::PushOutcome::Conflict => {
+                return Ok(OSL_RESULT_MODE1_CONFLICT.to_string());
+            }
+            stego::PushOutcome::Complete(c) => {
+                // Re-frame as DPC0::<b64> and fall through into the
+                // version-dispatch block below.
+                format!("DPC0::{}", STANDARD.encode(&c.wire_bytes))
+            }
+        }
+    } else {
+        content
+    };
+
+    // Peek the wire version byte (first byte after DPC0:: base64
+    // decode). Routes v=1 → legacy path, v=2 → existing decrypt_v2,
+    // v=3 → Phase 9-A1 PQ-hybrid decrypt_v3. Anything else falls
+    // through to the legacy v=1 path which surfaces its own errors.
+    let version = peek_wire_version(&content);
+
+    // 9-A1c: burn kill list defense-in-depth. If this specific
+    // discord_message_id was recorded in the scope's burn entry,
+    // refuse to decrypt regardless of whether the scope-level skip
+    // cache is currently set. Protects against the manual re-engage
+    // path inadvertently reviving old burned ciphertexts.
+    if let (Some(scope), Some(msg_id)) = (scope_opt.as_ref(), discord_message_id.as_deref()) {
+        if is_message_in_burn_kill_list(state, scope, msg_id) {
+            tracing::info!(msg_id = %msg_id, "[OSL] decrypt blocked: in_burn_kill_list");
+            return Err(format!(
+                "OSL: decrypt blocked: msg={msg_id} reason=in_burn_kill_list"
+            ));
+        }
+    }
+
+    let recovered = match version {
+        Some(crate::wire_v2::WIRE_VERSION_V2) => {
+            // v=2 path — X25519-only wrap.
+            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            let identity = id_guard
+                .as_ref()
+                .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+            let our_sk = identity.x25519_secret.clone();
+            drop(id_guard);
+            // v=2 needs the sender pubkey out-of-band (from peer_map
+            // or keyserver) because the wire only carries the recipient
+            // pubkey-hash prefix.
+            let sender_pub = resolve_sender_pubkey(state, &sender_discord_id)?;
+            tracing::debug!(wire_version = "v2", "v=2 decode dispatched");
+            crate::wire_v2::decrypt_v2(&content, &our_sk, &sender_pub)
+                .map_err(|e| format!("OSL: {e}"))?
+        }
+        Some(crate::wire_v2::WIRE_VERSION_V3) => {
+            // v=3 path — PQ-hybrid wrap. Sender ik pubkey is in the
+            // wire global header, so no peer_map lookup needed for
+            // the decrypt itself.
+            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            let identity = id_guard
+                .as_ref()
+                .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+            let our_sk = identity.x25519_secret.clone();
+            let our_mlkem_sk = identity.mlkem_decapsulation_key();
+            drop(id_guard);
+            tracing::debug!(wire_version = "v3", "v=3 decode dispatched");
+            crate::wire_v2::decrypt_v3(&content, &our_sk, &our_mlkem_sk)
+                .map_err(|e| format!("OSL: {e}"))?
+        }
+        Some(crate::wire_v2::WIRE_VERSION_V4) => {
+            // Phase 9-A2: v=4 ratcheted single-recipient decode.
+            // Parses the wire, runs PQXDH wrap-leg verification,
+            // bootstraps OR loads the live DR, advances it via
+            // dr.decrypt(...), persists the updated state, and
+            // returns the recovered plaintext.
+            tracing::debug!(wire_version = "v4", "v=4 decode dispatched");
+            return decrypt_v4_recv(
+                state,
+                sender_discord_id,
+                content,
+                scope_opt,
+                config_dir.as_deref(),
+            );
+        }
+        Some(crate::wire_v2::WIRE_VERSION_V5) => {
+            // Phase 9-A3: v=5 sender-keys group decode.
+            tracing::debug!(wire_version = "v5", "v=5 decode dispatched");
+            return decrypt_v5_recv(state, sender_discord_id, content, scope_opt);
+        }
+        _ => {
+            // v=1 or unknown: preserve the existing Phase 5 path.
+            return cmd_osl_decrypt_message_with_id(
+                state,
+                discord_message_id,
+                channel_id,
+                sender_discord_id,
+                content,
+            );
+        }
+    };
 
     match recovered.msg_type {
         crate::wire_v2::MSG_TYPE_CONTENT => {
-            if let Some(scope) = scope_opt.as_ref() {
-                let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-                if !crate::whitelist::should_decrypt_from(&pm_guard, scope, &sender_discord_id) {
-                    return Err("sender_not_accepted_in_scope".to_string());
-                }
-            }
+            // 9-C1: permissive decrypt. If we have the keys, we
+            // decrypt. Discord's own block feature is the user-facing
+            // trust boundary, not an OSL-internal per-scope accept
+            // gate. The prior `should_decrypt_from` check is gone.
+            let _ = scope_opt;
             String::from_utf8(recovered.plaintext)
                 .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())
         }
@@ -2234,37 +3226,21 @@ pub fn cmd_osl_decrypt_message_v2(
             apply_burn_recv(state, &sender_discord_id, &marker)?;
             Ok(OSL_RESULT_BURN_APPLIED.to_string())
         }
-        crate::wire_v2::MSG_TYPE_WHITELIST_INVITATION => {
-            let invitation =
-                crate::control_messages::deserialize_whitelist_invitation(&recovered.plaintext)
-                    .map_err(|e| format!("OSL: deserialize invitation: {e}"))?;
-            enqueue_invitation_recv(
-                state,
-                &sender_discord_id,
-                &invitation,
-                config_dir.as_deref(),
-            )?;
-            Ok(OSL_RESULT_INVITATION_RECEIVED.to_string())
-        }
-        crate::wire_v2::MSG_TYPE_WHITELIST_RESPONSE => {
-            let response =
-                crate::control_messages::deserialize_whitelist_response(&recovered.plaintext)
-                    .map_err(|e| format!("OSL: deserialize response: {e}"))?;
-            apply_response_recv(state, &sender_discord_id, &response)?;
-            Ok(OSL_RESULT_RESPONSE_RECEIVED.to_string())
+        // 9-C1: legacy whitelist invitation (0x02) + response (0x03).
+        // The handshake was removed; we suppress these so old peers'
+        // pre-C1 wire bytes don't render as visible ciphertext.
+        // Match raw values rather than reintroduce constants.
+        0x02 | 0x03 => {
+            tracing::info!(
+                msg_type = recovered.msg_type,
+                sender = %sender_discord_id,
+                "OSL: legacy handshake message ignored (C1 removed the invitation flow)"
+            );
+            Ok(OSL_RESULT_LEGACY_HANDSHAKE_IGNORED.to_string())
         }
         crate::wire_v2::MSG_TYPE_ATTACHMENT => {
-            // Phase 8: enforce the same per-scope acceptance gate
-            // that MSG_TYPE_CONTENT does. Anyone whitelisted in the
-            // scope can decrypt the attachment; anyone NOT
-            // whitelisted should see the decoy + ciphertext, just
-            // like an unwhitelisted text message.
-            if let Some(scope) = scope_opt.as_ref() {
-                let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-                if !crate::whitelist::should_decrypt_from(&pm_guard, scope, &sender_discord_id) {
-                    return Err("sender_not_accepted_in_scope".to_string());
-                }
-            }
+            // 9-C1: permissive — no per-scope accept gate.
+            let _ = scope_opt;
             let env =
                 crate::control_messages::deserialize_attachment_envelope(&recovered.plaintext)
                     .map_err(|e| format!("OSL: deserialize attachment envelope: {e}"))?;
@@ -2300,6 +3276,323 @@ fn peek_wire_version(cover: &str) -> Option<u8> {
     let body = cover.strip_prefix("DPC0::")?;
     let bytes = STANDARD.decode(body).ok()?;
     bytes.first().copied()
+}
+
+/// Phase 9-A2: receive-side v=4 dispatch. Returns the message-type
+/// string (matching the v=2/v=3 dispatcher's return convention).
+/// Persists advanced DR state to peer_map on success.
+fn decrypt_v4_recv(
+    state: &AppState,
+    sender_discord_id: String,
+    content: String,
+    scope_opt: Option<crate::scope::Scope>,
+    _config_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
+    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
+
+    let (our_sk, our_mlkem_sk, our_pk, self_mlkem_pub_bytes) = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        (
+            identity.x25519_secret.clone(),
+            identity.mlkem_decapsulation_key(),
+            identity.x25519_public,
+            identity.mlkem_public_bytes.to_vec(),
+        )
+    };
+
+    let parsed = crate::wire_v2::decrypt_v4(&content, &our_sk, &our_mlkem_sk)
+        .map_err(|e| format!("OSL: v=4 decode: {e}"))?;
+
+    // Peer ML-KEM pub for the AD binding (from peer_map; not on the
+    // wire). If absent, the AD won't match the sender's and the DR
+    // body AEAD will fail with a clear error.
+    let peer_mlkem_pub_bytes: Vec<u8> = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm_guard
+            .get(&sender_discord_id)
+            .and_then(|pe| pe.ik_mlkem768_pub.as_deref())
+            .and_then(|b64| STANDARD.decode(b64).ok())
+            .unwrap_or_default()
+    };
+
+    // Self's discord id is needed for the symmetric conversation_id
+    // used as the DR's AD binding. Read from peer_map (the local
+    // entry with is_self=true) — falls back to "self" if not yet
+    // registered (verify path will populate it later).
+    let self_did = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm_guard
+            .iter()
+            .find_map(|(did, pe)| {
+                if pe.is_self == Some(true) {
+                    Some(did.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "self".to_string())
+    };
+
+    let ctx = SessionContext {
+        local_ik_x25519_pub: our_pk,
+        local_ik_mlkem_pub: self_mlkem_pub_bytes,
+        peer_ik_x25519_pub: parsed.sender_ik_pub,
+        peer_ik_mlkem_pub: peer_mlkem_pub_bytes,
+        conversation_id: dm_conversation_id(&self_did, &sender_discord_id),
+        session_version: SESSION_VERSION_V1,
+    };
+
+    // Load OR bootstrap. Sender sets bootstrap=true on the first
+    // message it ever sends in a given DR session (i.e. while it
+    // still has no `ratchet_state` itself). The receiver may have
+    // already bootstrapped from a prior out-of-order arrival — in
+    // that case we just load the existing state and the
+    // bootstrap-flag-was-true case is idempotent.
+    let existing_state = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm_guard
+            .get(&sender_discord_id)
+            .and_then(|pe| pe.ratchet_state.clone())
+    };
+    let mut dr: DoubleRatchet = match (existing_state, parsed.bootstrap) {
+        (Some(disk), _) => disk
+            .try_into()
+            .map_err(|e| format!("OSL: v=4: load ratchet state: {e}"))?,
+        (None, true) => {
+            let ratchet_initial_secret = {
+                let id_guard = state.identity.lock().expect("identity mutex poisoned");
+                id_guard
+                    .as_ref()
+                    .and_then(|i| i.ratchet_initial_secret.clone())
+                    .ok_or_else(|| {
+                        "OSL: v=4 bootstrap: local identity missing \
+                         ratchet_initial_secret"
+                            .to_string()
+                    })?
+            };
+            DoubleRatchet::new_responder(&parsed.session_key, &ratchet_initial_secret, ctx)
+                .map_err(|e| format!("OSL: v=4 bootstrap: new_responder: {e}"))?
+        }
+        (None, false) => {
+            return Err(format!(
+                "OSL: v=4 continuation: peer {sender_discord_id} has no ratchet_state \
+                 — bootstrap flag was false but local state is None (desync)"
+            ));
+        }
+    };
+
+    let em = crypto::ratchet::EncryptedMessage {
+        header_nonce: parsed.enc_header_nonce,
+        enc_header: parsed.enc_header,
+        message_nonce: parsed.body_nonce,
+        ciphertext: parsed.body_ct,
+    };
+    let plaintext_bytes = dr
+        .decrypt(&em)
+        .map_err(|e| format!("OSL: v=4 dr.decrypt: {e}"))?;
+
+    // Persist updated DR state.
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm_guard.entry(sender_discord_id.clone()).or_default();
+        pe.ratchet_state = Some(RatchetStateOnDisk::from(&dr));
+    }
+    persist_peer_map_now(state);
+
+    // Phase 9-A3: v=4 now carries MSG_TYPE_SENDER_KEY_DISTRIBUTION
+    // for group/server scopes' sender-keys bootstrap. Route that
+    // body to the SKDM handler — the plaintext stays in Rust, JS
+    // never sees it.
+    if parsed.msg_type == crate::wire_v2::MSG_TYPE_SENDER_KEY_DISTRIBUTION {
+        return apply_skdm_recv(state, &sender_discord_id, &plaintext_bytes);
+    }
+
+    // For all other v=4 msg_types, only MSG_TYPE_CONTENT is currently
+    // supported. Burn / invitation / response routes remain on v=3.
+    if parsed.msg_type != crate::wire_v2::MSG_TYPE_CONTENT {
+        return Err(format!(
+            "OSL: v=4 msg_type 0x{:02x} not supported in v=4 (use v=3 for fan-out)",
+            parsed.msg_type
+        ));
+    }
+
+    // 9-C1: permissive decrypt — no per-scope accept gate.
+    let _ = scope_opt;
+    String::from_utf8(plaintext_bytes)
+        .map_err(|_| "OSL: v=4 decrypted plaintext is not valid UTF-8".to_string())
+}
+
+/// Phase 9-A3: SKDM control sentinel — boot.js ignores messages
+/// that decode to this string instead of rendering them.
+pub const OSL_RESULT_SKDM_APPLIED: &str = "__OSL_CONTROL_SKDM_APPLIED__";
+
+/// Phase 9-A3: install or rotate a peer's `ReceiverChain` for the
+/// scope named in the SKDM payload. Persists `sender_key_state.json`
+/// after mutation. Returns the sentinel string so the dispatcher
+/// surfaces "control handled, no user content" to the JS layer.
+fn apply_skdm_recv(
+    state: &AppState,
+    sender_discord_id: &str,
+    payload_bytes: &[u8],
+) -> Result<String, String> {
+    use crypto::sender_keys::{SenderKeyState, SenderKeyStateOnDisk};
+    let payload = crate::control_messages::deserialize_sender_key_distribution(payload_bytes)
+        .map_err(|e| format!("OSL: SKDM: deserialize: {e}"))?;
+
+    let scope_key = payload.scope_storage_key.clone();
+    // Reject SKDMs for an unknown scope_kind (defensive — boot.js
+    // should never produce one). `Scope::parse` returns None for
+    // malformed storage keys.
+    if crate::scope::Scope::parse(&scope_key).is_none() {
+        return Err(format!(
+            "OSL: SKDM: payload.scope_storage_key '{scope_key}' is not a valid scope"
+        ));
+    }
+
+    {
+        let mut g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        let entry = g.states.entry(scope_key.clone()).or_default();
+        let mut live: SenderKeyState = entry
+            .clone()
+            .try_into()
+            .map_err(|e| format!("OSL: SKDM: load existing state: {e}"))?;
+        let peer_bytes = sender_discord_id.as_bytes().to_vec();
+        if live.receiver_chain(&peer_bytes).is_some() {
+            live.rotate_receiver(&peer_bytes, payload.chain_id, &payload.rotation_root)
+                .map_err(|e| format!("OSL: SKDM: rotate_receiver: {e}"))?;
+        } else {
+            live.install_receiver(peer_bytes, payload.chain_id, &payload.rotation_root)
+                .map_err(|e| format!("OSL: SKDM: install_receiver: {e}"))?;
+        }
+        *entry = SenderKeyStateOnDisk::from(&live);
+        g.version = 1;
+    }
+    persist_sender_key_state_now(state);
+    tracing::info!(
+        sender = %sender_discord_id,
+        scope = %scope_key,
+        chain_id = payload.chain_id,
+        "[OSL] SKDM applied: receiver chain installed/rotated"
+    );
+    Ok(OSL_RESULT_SKDM_APPLIED.to_string())
+}
+
+/// Phase 9-A3: v=5 receive dispatch. Parses the wire, applies the
+/// kill-list gate (same as v=4), looks up the matching
+/// `SenderKeyState` + `ReceiverChain`, runs the sender-keys
+/// `decrypt`, persists, returns plaintext.
+fn decrypt_v5_recv(
+    state: &AppState,
+    sender_discord_id: String,
+    content: String,
+    scope_opt: Option<crate::scope::Scope>,
+) -> Result<String, String> {
+    use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
+
+    let parsed =
+        crate::wire_v2::decrypt_v5(&content).map_err(|e| format!("OSL: v=5 decode: {e}"))?;
+
+    let scope = scope_opt
+        .ok_or_else(|| "OSL: v=5 decode: scope required for sender-keys lookup".to_string())?;
+    let scope_key = scope.storage_key();
+
+    // Sender ML-KEM pub for AD binding. Two cases:
+    //   - Sender is the local user (self-decrypt loopback): pull
+    //     bytes from `identity.mlkem_public_bytes` so AD matches the
+    //     sender-side encrypt path exactly.
+    //   - Sender is a peer: pull bytes from peer_map. Empty Vec if
+    //     not yet known — AD will then differ and AEAD fails with
+    //     a clear error.
+    let sender_mlkem_pub_bytes: Vec<u8> = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        let is_self = parsed.sender_ik_pub.as_bytes() == identity.x25519_public.as_bytes();
+        if is_self {
+            identity.mlkem_public_bytes.to_vec()
+        } else {
+            drop(id_guard);
+            let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm_guard
+                .get(&sender_discord_id)
+                .and_then(|pe| pe.ik_mlkem768_pub.as_deref())
+                .and_then(|b64| STANDARD.decode(b64).ok())
+                .unwrap_or_default()
+        }
+    };
+
+    let ctx = SenderContext {
+        sender_ik_x25519_pub: parsed.sender_ik_pub,
+        sender_ik_mlkem_pub: sender_mlkem_pub_bytes,
+        group_id: scope_key.clone().into_bytes(),
+        session_version: crypto::sender_keys::SESSION_VERSION_V1,
+    };
+
+    // Load the per-scope SenderKeyState. If absent → no SKDM has
+    // arrived yet → return a clear retry-worthy error.
+    let mut sks: SenderKeyState = {
+        let g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        match g.states.get(&scope_key) {
+            Some(disk) => disk.clone().try_into().map_err(|e| {
+                format!("OSL: v=5 decode: load sender_key_state for scope {scope_key}: {e}")
+            })?,
+            None => {
+                return Err(format!(
+                    "OSL: v=5 decode: no installed sender-key state for peer \
+                     {sender_discord_id} in scope {scope_key} — awaiting SKDM"
+                ));
+            }
+        }
+    };
+
+    let peer_bytes = sender_discord_id.as_bytes().to_vec();
+    if sks.receiver_chain(&peer_bytes).is_none() {
+        return Err(format!(
+            "OSL: v=5 decode: no installed sender-key state for peer \
+             {sender_discord_id} in scope {scope_key} — awaiting SKDM"
+        ));
+    }
+
+    let em = crypto::sender_keys::EncryptedMessage {
+        header_nonce: parsed.header_nonce,
+        enc_header: parsed.enc_header,
+        message_nonce: parsed.message_nonce,
+        ciphertext: parsed.ciphertext,
+    };
+    let plaintext_bytes = sks
+        .decrypt_from(&peer_bytes, &em, &ctx)
+        .map_err(|e| format!("OSL: v=5 decode: decrypt_from: {e}"))?;
+
+    // Persist updated state.
+    {
+        let mut g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        g.states
+            .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&sks));
+        g.version = 1;
+    }
+    persist_sender_key_state_now(state);
+
+    // 9-C1: permissive decrypt — no per-scope accept gate. The
+    // self-sender pubkey-comparison bypass that previously guarded
+    // the gate is also gone (the gate is gone, so the bypass is
+    // moot).
+    let _ = (scope, sender_discord_id);
+
+    String::from_utf8(plaintext_bytes)
+        .map_err(|_| "OSL: v=5 decrypted plaintext is not valid UTF-8".to_string())
 }
 
 /// Resolve sender pubkey. Prefers `peer_map[sender].pubkey` (v=2
@@ -2353,6 +3646,110 @@ fn resolve_sender_pubkey(
     drop(ks_guard);
     state.sender_pubkey_cache.insert(osl_user_id, pub_key);
     Ok(pub_key)
+}
+
+/// Phase 9-A1b: populate peer's X25519 and ML-KEM pubkeys from a
+/// keyserver `FetchPubkeysResponse`. Pure function — separated
+/// from the HTTP fetch so tests can drive it without standing up
+/// a mock keyserver. Returns true if the ML-KEM pubkey was
+/// newly added (entry previously had None and the response had
+/// a non-empty value).
+pub fn populate_peer_from_fetch_response(
+    state: &AppState,
+    discord_id: &str,
+    resp: &keystore::client::PubkeysResponse,
+) -> Result<bool, String> {
+    if resp.ik_x25519_pub.is_empty() {
+        return Err(format!(
+            "OSL: keyserver response for {discord_id} missing ik_x25519_pub"
+        ));
+    }
+    // Validate decode shape early so we error before mutating peer_map.
+    let x_vec = STANDARD
+        .decode(&resp.ik_x25519_pub)
+        .map_err(|e| format!("OSL: decode X25519 pubkey for {discord_id}: {e}"))?;
+    if x_vec.len() != crypto::x25519::PUBLIC_KEY_SIZE {
+        return Err(format!(
+            "OSL: X25519 pubkey for {discord_id} wrong length: got {}",
+            x_vec.len()
+        ));
+    }
+    let mut mlkem_added = false;
+    if !resp.ik_mlkem768_pub.is_empty() {
+        let mlkem_vec = STANDARD
+            .decode(&resp.ik_mlkem768_pub)
+            .map_err(|e| format!("OSL: decode ML-KEM pubkey for {discord_id}: {e}"))?;
+        if mlkem_vec.len() != crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE {
+            return Err(format!(
+                "OSL: ML-KEM pubkey for {discord_id} wrong length: got {} (expected {})",
+                mlkem_vec.len(),
+                crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE
+            ));
+        }
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm_guard.entry(discord_id.to_string()).or_default();
+        let had_mlkem = entry.ik_mlkem768_pub.is_some();
+        entry.pubkey = Some(resp.ik_x25519_pub.clone());
+        entry.ik_mlkem768_pub = Some(resp.ik_mlkem768_pub.clone());
+        entry
+            .discord_id
+            .get_or_insert_with(|| discord_id.to_string());
+        mlkem_added = !had_mlkem;
+    } else {
+        // X25519 only; still refresh that side.
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm_guard.entry(discord_id.to_string()).or_default();
+        entry.pubkey = Some(resp.ik_x25519_pub.clone());
+        entry
+            .discord_id
+            .get_or_insert_with(|| discord_id.to_string());
+    }
+    Ok(mlkem_added)
+}
+
+/// Phase 9-A1b: keyserver-refresh helper. Looks up the peer's
+/// osl_user_id, queries the keyserver, and writes both pubkeys
+/// into peer_map via [`populate_peer_from_fetch_response`]. Used
+/// by the v=3 send path to recover from a missing-ML-KEM
+/// PeerEntry (legacy entries from before Phase 9-A1).
+///
+/// Returns:
+/// - `Ok(true)` if the ML-KEM pubkey was newly added,
+/// - `Ok(false)` if the peer had no osl_user_id (can't fetch) OR
+///   the keyserver returned no ML-KEM,
+/// - `Err(msg)` if the keyserver request itself errored.
+fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Result<bool, String> {
+    let osl_user_id = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(discord_id).and_then(|e| e.osl_user_id.clone())
+    };
+    let osl_user_id = match osl_user_id {
+        Some(s) => s,
+        None => {
+            tracing::info!(
+                discord_id = %discord_id,
+                "OSL: keyserver pubkey refresh: peer has no osl_user_id, can't fetch"
+            );
+            return Ok(false);
+        }
+    };
+    let resp = {
+        let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let client = ks_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+        client
+            .fetch_pubkeys(&osl_user_id)
+            .map_err(|e| format!("OSL: keyserver fetch_pubkeys({osl_user_id}): {e}"))?
+    };
+    let added = populate_peer_from_fetch_response(state, discord_id, &resp)?;
+    tracing::info!(
+        discord_id = %discord_id,
+        osl_user_id = %osl_user_id,
+        ml_kem_added = added,
+        "OSL: keyserver pubkey refresh"
+    );
+    Ok(added)
 }
 
 /// Apply a received burn marker:
@@ -2410,77 +3807,8 @@ fn apply_burn_recv(
     Ok(())
 }
 
-/// Enqueue a whitelist invitation in pending_invitations. ID
-/// shape: `from_<sender_discord_id>_<scope_storage_key>` for
-/// idempotency — re-receiving the same invitation is a no-op.
-fn enqueue_invitation_recv(
-    state: &AppState,
-    sender_discord_id: &str,
-    invitation: &crate::control_messages::WhitelistInvitation,
-    config_dir: Option<&std::path::Path>,
-) -> Result<(), String> {
-    use crate::pending_invitations::{InvitationStatus, PendingInvitation};
-    let invitation_id = format!(
-        "from_{}_{}",
-        sender_discord_id,
-        invitation.scope.storage_key()
-    );
-    let entry = PendingInvitation {
-        from: sender_discord_id.to_string(),
-        scope: format!("{:?}", invitation.scope.kind).to_ascii_lowercase(),
-        scope_id: Some(invitation.scope.storage_key()),
-        received_at: format_iso8601_secs(invitation.sent_at).unwrap_or_else(|| "?".to_string()),
-        status: InvitationStatus::Pending,
-    };
-    {
-        let mut pi_guard = state
-            .pending_invitations
-            .lock()
-            .expect("pending_invitations mutex poisoned");
-        pi_guard.entry(invitation_id).or_insert(entry);
-    }
-    // Persist the sender's pubkey eagerly — the invitation
-    // carries it.
-    {
-        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
-        pe.pubkey = Some(STANDARD.encode(invitation.from_pubkey.as_bytes()));
-        pe.discord_id
-            .get_or_insert_with(|| sender_discord_id.to_string());
-    }
-    // 7d-FIX1: persist peer_map (the new pubkey is new state).
-    persist_peer_map_now(state);
-    // Write-through to disk if we have a config_dir.
-    if let Some(dir) = config_dir {
-        let pi_path = dir.join("pending_invitations.json");
-        let pi_guard = state
-            .pending_invitations
-            .lock()
-            .expect("pending_invitations mutex poisoned");
-        if let Err(e) = crate::pending_invitations::write_pending_invitations(&pi_path, &pi_guard) {
-            tracing::warn!(error = %e, "OSL: write pending_invitations failed");
-        }
-    }
-    Ok(())
-}
-
-/// Apply a received whitelist response: update
-/// `peer_map[sender].outgoing_whitelist_responses[scope]`.
-fn apply_response_recv(
-    state: &AppState,
-    sender_discord_id: &str,
-    response: &crate::control_messages::WhitelistResponse,
-) -> Result<(), String> {
-    {
-        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.entry(sender_discord_id.to_string()).or_default();
-        pe.outgoing_whitelist_responses
-            .insert(response.scope.storage_key(), response.accepted);
-    }
-    // 7d-FIX1: persist peer_map.
-    persist_peer_map_now(state);
-    Ok(())
-}
+// 9-C1: `enqueue_invitation_recv` + `apply_response_recv` removed
+// alongside the invitation handshake.
 
 fn same_burn(a: &crate::peer_map::BurnedScope, b: &crate::peer_map::BurnedScope) -> bool {
     use crate::peer_map::BurnedScope as B;
@@ -2566,58 +3894,9 @@ pub fn cmd_osl_apply_burn(
     Ok(())
 }
 
-/// Accept a pending whitelist invitation. Side effects:
-/// - Set `peer_map[from].incoming_decrypt_accepted[scope] = true`
-///   so subsequent v=2 content from that sender + scope decrypts.
-/// - Remove the entry from pending_invitations (Phase 7c could
-///   alternatively mark it `Accepted` for a brief confirmation
-///   banner before removal; 7b removes outright).
-pub fn cmd_osl_accept_invitation(state: &AppState, invitation_id: String) -> Result<(), String> {
-    apply_invitation_decision(state, &invitation_id, true)
-}
-
-/// Decline a pending whitelist invitation. Side effects: same
-/// shape as `accept` but stores `false`.
-pub fn cmd_osl_decline_invitation(state: &AppState, invitation_id: String) -> Result<(), String> {
-    apply_invitation_decision(state, &invitation_id, false)
-}
-
-fn apply_invitation_decision(
-    state: &AppState,
-    invitation_id: &str,
-    accepted: bool,
-) -> Result<(), String> {
-    // Pull the invitation out of pending.
-    let invitation = {
-        let mut pi_guard = state
-            .pending_invitations
-            .lock()
-            .expect("pending_invitations mutex poisoned");
-        pi_guard
-            .remove(invitation_id)
-            .ok_or_else(|| format!("OSL: invitation '{invitation_id}' not pending"))?
-    };
-    let scope_key = invitation
-        .scope_id
-        .ok_or_else(|| "OSL: invitation missing scope_id".to_string())?;
-    {
-        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.entry(invitation.from.clone()).or_default();
-        pe.incoming_decrypt_accepted.insert(scope_key, accepted);
-    }
-    // 7d-FIX1: persist peer_map. Also persist pending_invitations
-    // since we mutated it above (remove `invitation_id`).
-    persist_peer_map_now(state);
-    if let Ok(dir) = keystore::osl_config_dir() {
-        let path = dir.join("pending_invitations.json");
-        let pi = state
-            .pending_invitations
-            .lock()
-            .expect("pending_invitations mutex poisoned");
-        let _ = crate::pending_invitations::write_pending_invitations(&path, &pi);
-    }
-    Ok(())
-}
+// 9-C1: `cmd_osl_accept_invitation` / `cmd_osl_decline_invitation`
+// / `apply_invitation_decision` removed alongside the invitation
+// handshake.
 
 /// Remove a whitelist entry for `peer` in `scope`. Returns the
 /// wire-format burn marker the caller must send through Discord's
@@ -2701,19 +3980,17 @@ pub fn cmd_osl_unwhitelist_scope(
     //    or any other peers remain whitelisted; otherwise we
     //    drop the empty entry to keep the file compact.
     {
+        // 9-C1: membership lives on PeerEntry only. The per-scope
+        // ScopeState carries just the encrypt-toggle / auto-enabled
+        // flag pair; drop the entire entry if the toggle is off so
+        // the file stays compact.
         let mut ws_guard = state
             .whitelist_state
             .lock()
             .expect("whitelist_state mutex poisoned");
         let key = scope.storage_key();
         let drop_entry = if let Some(entry) = ws_guard.get_mut(&key) {
-            entry.members.retain(|m| m != &peer_discord_id);
-            entry.whitelisted_users.retain(|u| u != &peer_discord_id);
-            // Drop only if there's nothing left worth persisting.
             !entry.encrypt_toggle
-                && entry.members.is_empty()
-                && entry.whitelisted_users.is_empty()
-                && !entry.full_whitelist
         } else {
             false
         };
@@ -2772,7 +4049,11 @@ pub fn cmd_osl_set_whitelist(
     scope_input: crate::scope::ScopeInput,
     broadened: bool,
     from_discord_id: String,
-) -> Result<String, String> {
+) -> Result<(), String> {
+    // 9-C1: `from_discord_id` is unused now that the handshake is
+    // gone. Kept in the signature for binding compatibility with the
+    // Tauri command surface; will be dropped in a follow-up.
+    let _ = from_discord_id;
     let scope: crate::scope::Scope = scope_input
         .clone()
         .try_into()
@@ -2818,6 +4099,8 @@ pub fn cmd_osl_set_whitelist(
 
     // 2. whitelist_state.
     {
+        // 9-C1: ScopeState carries only the encrypt-toggle pair.
+        // The per-peer membership lives on PeerEntry above.
         let mut ws_guard = state
             .whitelist_state
             .lock()
@@ -2827,11 +4110,6 @@ pub fn cmd_osl_set_whitelist(
             .or_insert_with(crate::whitelist_state::ScopeState::default);
         ws.encrypt_toggle = true;
         ws.auto_enabled = true;
-        if matches!(scope.kind, crate::scope::ScopeKind::Dm) {
-            // No list semantics for DM (the scope id IS the peer).
-        } else if !ws.whitelisted_users.iter().any(|u| u == &peer_discord_id) {
-            ws.whitelisted_users.push(peer_discord_id.clone());
-        }
     }
 
     // 7d-FIX1: persist BOTH files. Encryption-at-rest is applied
@@ -2852,9 +4130,156 @@ pub fn cmd_osl_set_whitelist(
         crate::scope::ScopeKind::ServerFull => "server_full",
     };
     let _ = cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id.clone());
+    let _ = scope_input;
+    let _ = peer_discord_id;
 
-    // 3. Build the wire invitation.
-    cmd_osl_send_whitelist_invitation(state, peer_discord_id, scope_input, from_discord_id)
+    // 9-C1: no more wire invitation — recv path is permissive.
+    Ok(())
+}
+
+/// 9-C1 Stage 3: bulk-whitelist N peers in a single scope. Used by
+/// the tri-state header icon's "encrypt with everyone" flow — one
+/// click promotes every channel member instead of N round-trips
+/// through `cmd_osl_set_whitelist`. Returns the count of peers
+/// whose `outgoing_whitelists` was actually mutated (skips no-ops
+/// where the entry was already present).
+pub fn cmd_osl_bulk_set_whitelist(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    member_dids: Vec<String>,
+) -> Result<usize, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let enabled_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+    let mut affected = 0usize;
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        for did in &member_dids {
+            let pe = pm_guard.entry(did.clone()).or_default();
+            if pe.discord_id.is_none() {
+                pe.discord_id = Some(did.clone());
+            }
+            let already = pe
+                .outgoing_whitelists
+                .iter()
+                .any(|w| whitelist_entry_matches(w, &scope));
+            if already {
+                continue;
+            }
+            let new_entry = match scope.kind {
+                crate::scope::ScopeKind::Dm => crate::peer_map::WhitelistEntry::Dm {
+                    broadened: false,
+                    enabled_at: Some(enabled_at_iso.clone()),
+                },
+                crate::scope::ScopeKind::Gc => crate::peer_map::WhitelistEntry::Gc {
+                    id: scope.id.clone(),
+                    user_specific: false,
+                },
+                crate::scope::ScopeKind::ServerChannel => {
+                    crate::peer_map::WhitelistEntry::ServerChannel {
+                        server_id: scope.server_id.clone().unwrap_or_default(),
+                        channel_id: scope.channel_id.clone().unwrap_or_default(),
+                        user_specific: false,
+                    }
+                }
+                crate::scope::ScopeKind::ServerFull => {
+                    crate::peer_map::WhitelistEntry::ServerFull {
+                        server_id: scope.server_id.clone().unwrap_or_default(),
+                        user_specific: false,
+                    }
+                }
+            };
+            pe.outgoing_whitelists.push(new_entry);
+            pe.burned_scopes.retain(|b| !burn_matches_scope(b, &scope));
+            affected += 1;
+        }
+    }
+    {
+        let mut ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let ws = ws_guard
+            .entry(scope.storage_key())
+            .or_insert_with(crate::whitelist_state::ScopeState::default);
+        ws.encrypt_toggle = true;
+        ws.auto_enabled = true;
+    }
+    persist_peer_map_now(state);
+    persist_whitelist_state_now(state);
+    Ok(affected)
+}
+
+/// 9-C1 Stage 3: bulk-unwhitelist N peers from a single scope.
+/// Symmetric to `cmd_osl_bulk_set_whitelist`. Drops each named
+/// peer's matching `WhitelistEntry`, adds a fresh `BurnedScope` to
+/// their `burned_scopes`. The scope's `encrypt_toggle` is left
+/// alone — the caller's confirm-modal UX decides whether to also
+/// flip the toggle off (a separate command).
+///
+/// Returns the count of peers actually mutated. Skips no-ops.
+/// Unlike the single-peer `cmd_osl_unwhitelist_scope`, this does
+/// NOT emit a burn-marker wire; the caller dispatches that
+/// separately if it wants peer notification.
+pub fn cmd_osl_bulk_unwhitelist_scope(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    member_dids: Vec<String>,
+) -> Result<usize, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let burned_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+    let mut affected = 0usize;
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        for did in &member_dids {
+            let pe = match pm_guard.get_mut(did) {
+                Some(p) => p,
+                None => continue,
+            };
+            let before = pe.outgoing_whitelists.len();
+            pe.outgoing_whitelists
+                .retain(|w| !whitelist_entry_matches(w, &scope));
+            if pe.outgoing_whitelists.len() == before {
+                // No matching entry to remove — skip the burn-marker
+                // bookkeeping to avoid spuriously marking peers as
+                // burned for scopes they never had.
+                continue;
+            }
+            let burn = match scope.kind {
+                crate::scope::ScopeKind::Dm => crate::peer_map::BurnedScope::Dm {
+                    burned_at: burned_at_iso.clone(),
+                },
+                crate::scope::ScopeKind::Gc => crate::peer_map::BurnedScope::Gc {
+                    id: scope.id.clone(),
+                    burned_at: burned_at_iso.clone(),
+                },
+                crate::scope::ScopeKind::ServerChannel => {
+                    crate::peer_map::BurnedScope::ServerChannel {
+                        server_id: scope.server_id.clone().unwrap_or_default(),
+                        channel_id: scope.channel_id.clone().unwrap_or_default(),
+                        burned_at: burned_at_iso.clone(),
+                    }
+                }
+                crate::scope::ScopeKind::ServerFull => crate::peer_map::BurnedScope::ServerFull {
+                    server_id: scope.server_id.clone().unwrap_or_default(),
+                    burned_at: burned_at_iso.clone(),
+                },
+            };
+            if !pe.burned_scopes.iter().any(|b| same_burn(b, &burn)) {
+                pe.burned_scopes.push(burn);
+            }
+            affected += 1;
+        }
+    }
+    if affected > 0 {
+        let _ = cmd_osl_apply_burn(state, (&scope).into());
+    }
+    persist_peer_map_now(state);
+    persist_whitelist_state_now(state);
+    Ok(affected)
 }
 
 fn burn_matches_scope(b: &crate::peer_map::BurnedScope, s: &crate::scope::Scope) -> bool {
@@ -2888,19 +4313,19 @@ fn burn_matches_scope(b: &crate::peer_map::BurnedScope, s: &crate::scope::Scope)
 /// - `encrypt_toggle`: the user's current ON/OFF state for
 ///   encryption in this scope. Drives the icon's "open lock vs
 ///   closed lock" visual.
-/// - `has_whitelist`: whether **any** recipient is whitelisted in
-///   this scope. Drives the icon's grayed-out state — without a
-///   whitelist there's no one to encrypt to, so the toggle is
-///   non-interactive.
+/// 9-C1: `has_whitelist` retained for backwards-compat with boot.js
+/// callers. New code should consume
+/// [`cmd_osl_get_scope_whitelist_summary`] for the tri-state icon.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ScopeEncryptionState {
     pub encrypt_toggle: bool,
+    /// 9-C1: always reports `true` for any scope with an
+    /// `encrypt_toggle == true` entry. Membership is no longer
+    /// scope-side, so an existing toggle is the closest analog to
+    /// the old "any recipient whitelisted in this scope" flag.
     pub has_whitelist: bool,
 }
 
-/// Layer 10 / Phase 7c: read the encryption posture for a scope.
-/// Boot.js calls this every channel-switch + after every
-/// whitelist mutation so the header icon updates promptly.
 pub fn cmd_osl_get_scope_encryption_state(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
@@ -2913,24 +4338,83 @@ pub fn cmd_osl_get_scope_encryption_state(
         .whitelist_state
         .lock()
         .expect("whitelist_state mutex poisoned");
-    let entry = ws_guard.get(&key);
-    let encrypt_toggle = entry.map(|s| s.encrypt_toggle).unwrap_or(false);
-    let has_whitelist = match entry {
-        None => false,
-        Some(s) => match scope.kind {
-            // DM scope: whitelist existence == ScopeState entry
-            // present (the scope id IS the peer; no member list
-            // is tracked).
-            crate::scope::ScopeKind::Dm => true,
-            // Other scopes: either a full whitelist with a
-            // member list, or a per-user whitelist with
-            // whitelisted_users.
-            _ => (s.full_whitelist && !s.members.is_empty()) || !s.whitelisted_users.is_empty(),
-        },
-    };
+    let encrypt_toggle = ws_guard
+        .get(&key)
+        .map(|s| s.encrypt_toggle)
+        .unwrap_or(false);
     Ok(ScopeEncryptionState {
         encrypt_toggle,
-        has_whitelist,
+        has_whitelist: encrypt_toggle,
+    })
+}
+
+/// 9-C1: per-channel whitelist intersection summary for the
+/// tri-state icon. Computes how many of the supplied
+/// `channel_members` are whitelisted for the given scope. JS
+/// passes the live channel members (typically from the React
+/// fiber walk or the gateway-fed `channel_members` cache).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ScopeWhitelistSummary {
+    pub encrypt_toggle: bool,
+    pub whitelisted_count: usize,
+    pub total_members: usize,
+    /// One of `"all"`, `"some"`, `"none"`, `"unknown"`. `"unknown"`
+    /// fires when `total_members == 0` — boot.js hits this on
+    /// server channels whose roster hasn't arrived yet via the
+    /// gateway tap.
+    pub state: String,
+}
+
+pub fn cmd_osl_get_scope_whitelist_summary(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<ScopeWhitelistSummary, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let encrypt_toggle = {
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        ws_guard
+            .get(&scope.storage_key())
+            .map(|s| s.encrypt_toggle)
+            .unwrap_or(false)
+    };
+    let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+    let non_self_members: Vec<&String> = channel_members
+        .iter()
+        .filter(|m| **m != self_discord_id)
+        .collect();
+    let total_members = non_self_members.len();
+    if total_members == 0 {
+        return Ok(ScopeWhitelistSummary {
+            encrypt_toggle,
+            whitelisted_count: 0,
+            total_members: 0,
+            state: "unknown".to_string(),
+        });
+    }
+    let whitelisted_count = non_self_members
+        .iter()
+        .filter(|m| crate::whitelist::can_encrypt_to(&pm_guard, &scope, m))
+        .count();
+    let summary_state = if whitelisted_count == 0 {
+        "none"
+    } else if whitelisted_count == total_members {
+        "all"
+    } else {
+        "some"
+    }
+    .to_string();
+    Ok(ScopeWhitelistSummary {
+        encrypt_toggle,
+        whitelisted_count,
+        total_members,
+        state: summary_state,
     })
 }
 
@@ -3006,56 +4490,8 @@ pub fn cmd_osl_set_scope_encrypt(
     Ok(enabled)
 }
 
-/// JS-facing DTO for one pending invitation. Mirrors
-/// [`crate::pending_invitations::PendingInvitation`] plus the
-/// invitation id (the map key) so boot.js can pass it back to
-/// accept/decline.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PendingInvitationDto {
-    pub id: String,
-    pub from: String,
-    pub scope: String,
-    pub scope_id: Option<String>,
-    pub received_at: String,
-    pub status: String,
-}
-
-/// Layer 10 / Phase 7c: list every entry in
-/// `pending_invitations` for the banner system. Returns an
-/// empty vec when none — boot.js renders zero banners.
-pub fn cmd_osl_list_pending_invitations(
-    state: &AppState,
-) -> Result<Vec<PendingInvitationDto>, String> {
-    let guard = state
-        .pending_invitations
-        .lock()
-        .expect("pending_invitations mutex poisoned");
-    let mut out: Vec<PendingInvitationDto> = guard
-        .iter()
-        .map(|(id, inv)| PendingInvitationDto {
-            id: id.clone(),
-            from: inv.from.clone(),
-            scope: inv.scope.clone(),
-            scope_id: inv.scope_id.clone(),
-            received_at: inv.received_at.clone(),
-            status: match inv.status {
-                crate::pending_invitations::InvitationStatus::Pending => "pending",
-                crate::pending_invitations::InvitationStatus::Accepted => "accepted",
-                crate::pending_invitations::InvitationStatus::Declined => "declined",
-            }
-            .to_string(),
-        })
-        .collect();
-    // Stable order — oldest first, by received_at. Falls back to
-    // id for ties (received_at strings are unix-second strings;
-    // ties are unlikely but possible).
-    out.sort_by(|a, b| {
-        a.received_at
-            .cmp(&b.received_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    Ok(out)
-}
+// 9-C1: `PendingInvitationDto` / `cmd_osl_list_pending_invitations`
+// removed alongside the invitation handshake.
 
 /// Phase 7c bug-fix #1 (round 3): return the local user's
 /// **Discord snowflake** by reverse-lookup against `peer_map`.
@@ -3439,7 +4875,7 @@ pub struct GateVerifyDto {
 }
 
 pub fn cmd_osl_verify_gate_password(
-    _state: &AppState,
+    state: &AppState,
     password: String,
 ) -> Result<GateVerifyDto, String> {
     use crate::main_password::GateMatch;
@@ -3462,6 +4898,30 @@ pub fn cmd_osl_verify_gate_password(
     match outcome {
         GateMatch::Main(file_key) => {
             crate::main_password::set_file_storage_key(Some(file_key));
+            // 9-D-FIX2: reload every encrypted-at-rest state file
+            // now that `file_storage_key` is in slot. Bootstrap
+            // attempted these reads pre-gate with no key, so each
+            // file's `maybe_decrypt` errored and AppState ended up
+            // seeded with defaults. Without this reload the user's
+            // whitelist, burns, sender chains, tour state, and
+            // stego-mode pref stay blank for the whole session and
+            // the tour replays on every launch.
+            match crate::state_reload::reload_encrypted_state_after_unlock(state, &dir) {
+                Ok(r) => tracing::info!(
+                    peer_map_entries = r.peer_map_entries,
+                    whitelist_scopes = r.whitelist_scopes,
+                    server_defaults_entries = r.server_defaults_entries,
+                    burned_scopes_count = r.burned_scopes_count,
+                    sender_keys_count = r.sender_keys_count,
+                    app_prefs_loaded = r.app_prefs_loaded,
+                    errors = ?r.errors,
+                    "OSL: state reloaded post-gate"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "OSL: post-gate state reload failed"
+                ),
+            }
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
@@ -3591,6 +5051,10 @@ pub fn cmd_osl_burn_scope_data(
         0
     };
     eprintln!("[OSL][burn] destroyed {rows} rows for channel {channel_id}");
+    // 9-B1: drop any in-flight Mode 1 reassembly buffers for this
+    // channel so chunked-but-not-yet-complete covers can't surface
+    // as plaintext after the burn.
+    drop_mode1_reassembly_for_channel(state, &channel_id);
     let _ = server_id;
     Ok(BurnScopeDataDto {
         rows_destroyed: rows,
@@ -3604,6 +5068,7 @@ pub fn cmd_osl_mark_scope_burned(
     scope_id: String,
     server_id: Option<String>,
     channel_id: Option<String>,
+    burned_message_ids: Vec<String>,
 ) -> Result<(), String> {
     use crate::burned_scopes_file::BurnedScopeEntry;
     let now = now_unix_secs();
@@ -3613,23 +5078,79 @@ pub fn cmd_osl_mark_scope_burned(
         server_id,
         channel_id,
         burned_at: now as i64,
+        burned_message_ids: burned_message_ids.clone(),
     };
     {
         let mut g = state
             .burned_scopes
             .lock()
             .expect("burned_scopes mutex poisoned");
-        if !g
+        if let Some(existing) = g
             .scopes
-            .iter()
-            .any(|e| e.scope_kind == scope_kind && e.scope_id == scope_id)
+            .iter_mut()
+            .find(|e| e.scope_kind == scope_kind && e.scope_id == scope_id)
         {
+            // 9-A1c: repeat burns on the same scope union new IDs
+            // into the existing kill list rather than overwriting.
+            for id in burned_message_ids {
+                if !existing.burned_message_ids.contains(&id) {
+                    existing.burned_message_ids.push(id);
+                }
+            }
+        } else {
             g.scopes.push(entry);
         }
         g.version = 1;
     }
     persist_burned_scopes_now(state);
     Ok(())
+}
+
+/// Phase 9-B1: drop any in-flight Mode 1 reassembly sessions
+/// belonging to the channel `channel_id`. Called from the burn
+/// pipeline so a freshly-burned scope's chunked-but-not-yet-complete
+/// covers can't unexpectedly resolve to plaintext after the burn.
+pub(crate) fn drop_mode1_reassembly_for_channel(state: &AppState, channel_id: &str) {
+    let mut bufs = state
+        .mode1_reassembly
+        .lock()
+        .expect("mode1_reassembly mutex poisoned");
+    bufs.remove(channel_id);
+}
+
+/// 9-A1c: burn kill list lookup. Returns true iff the given
+/// `message_id` was recorded under the burn entry that matches
+/// `scope`. Comparison uses the scope's `(kind, id)` pair, which
+/// is how `BurnedScopeEntry` rows are keyed.
+pub(crate) fn is_message_in_burn_kill_list(
+    state: &AppState,
+    scope: &crate::scope::Scope,
+    message_id: &str,
+) -> bool {
+    let scope_kind = scope_kind_to_str(scope.kind);
+    let scope_id = scope.id.as_str();
+    let g = state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned");
+    g.scopes.iter().any(|e| {
+        e.scope_kind == scope_kind
+            && e.scope_id == scope_id
+            && e.burned_message_ids.iter().any(|m| m == message_id)
+    })
+}
+
+/// snake_case form of a `ScopeKind` matching the JS-side strings
+/// passed into `osl_mark_scope_burned`. Kept local rather than
+/// added to the `Scope` impl to avoid expanding the public API
+/// surface for a single internal call site.
+fn scope_kind_to_str(kind: crate::scope::ScopeKind) -> &'static str {
+    match kind {
+        crate::scope::ScopeKind::Dm => "dm",
+        crate::scope::ScopeKind::Gc => "gc",
+        crate::scope::ScopeKind::ServerChannel => "server_channel",
+        crate::scope::ScopeKind::ServerFull => "server_full",
+    }
 }
 
 /// Returns `Ok(true)` if a burned-scopes entry was removed,
@@ -3673,6 +5194,424 @@ pub struct BurnedScopeDto {
     pub burned_at: i64,
 }
 
+/// Phase 9-A3: boot.js pushes the current channel-member set
+/// (gateway-derived) so the v=5 send dispatch can detect
+/// membership changes and trigger rotation. Stored in-memory only;
+/// the SenderChain's `last_known_members` snapshot is the
+/// persistent record.
+pub fn cmd_osl_membership_update(
+    state: &AppState,
+    channel_id: String,
+    member_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut g = state
+        .channel_members
+        .lock()
+        .expect("channel_members mutex poisoned");
+    g.insert(channel_id, member_ids);
+    Ok(())
+}
+
+/// Phase 9-A3: read back the cached members for a channel. Returns
+/// an empty vec when boot.js hasn't pushed yet (or the channel is
+/// genuinely empty).
+pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Vec<String>, String> {
+    let g = state
+        .channel_members
+        .lock()
+        .expect("channel_members mutex poisoned");
+    Ok(g.get(&channel_id).cloned().unwrap_or_default())
+}
+
+// ---- Phase 9-C2: friend list + guild list (ephemeral gateway snapshots) ----
+
+/// Guild metadata shipped from boot.js gateway tap to the settings
+/// window's Bulk Whitelist modal. Member list may be partial on large
+/// guilds — Discord only ships ~100 online members at GUILD_CREATE.
+///
+/// 9-C3 added `channel_ids` so the Server-Defaults "apply to existing
+/// channels" flow can iterate the full channel inventory of a guild
+/// without a second round-trip.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GuildDto {
+    pub id: String,
+    pub name: String,
+    pub member_ids: Vec<String>,
+    #[serde(default)]
+    pub channel_ids: Vec<String>,
+}
+
+/// 9-C2: boot.js pushes the user's friend-ids snapshot here on
+/// each gateway READY. Ephemeral — not persisted; repopulated on
+/// reconnect. Read via [`cmd_osl_get_friend_ids`].
+pub fn cmd_osl_set_friend_ids(state: &AppState, ids: Vec<String>) -> Result<(), String> {
+    let mut g = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+    *g = ids;
+    Ok(())
+}
+
+pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
+    let g = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+    Ok(g.clone())
+}
+
+/// 9-C2: boot.js pushes the user's guild-list snapshot here on
+/// each GUILD_CREATE. Ephemeral. Read via [`cmd_osl_get_guild_list`].
+pub fn cmd_osl_set_guild_list(state: &AppState, guilds: Vec<GuildDto>) -> Result<(), String> {
+    let mut g = state.guild_list.lock().expect("guild_list mutex poisoned");
+    *g = guilds;
+    Ok(())
+}
+
+pub fn cmd_osl_get_guild_list(state: &AppState) -> Result<Vec<GuildDto>, String> {
+    let g = state.guild_list.lock().expect("guild_list mutex poisoned");
+    Ok(g.clone())
+}
+
+/// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
+/// peer; each peer's DM scope flips encrypt_toggle=true alongside
+/// adding the Dm whitelist entry). Mirrors `cmd_osl_bulk_set_whitelist`
+/// in shape but iterates one scope per peer rather than one scope
+/// for all peers — DM scopes are inherently per-peer-keyed.
+///
+/// Single peer_map + whitelist_state persistence at end.
+/// Returns the count of peers whose `outgoing_whitelists` was
+/// actually mutated (skips no-ops where the DM entry was already
+/// present).
+pub fn cmd_osl_bulk_set_dm_whitelist(
+    state: &AppState,
+    member_dids: Vec<String>,
+) -> Result<usize, String> {
+    let enabled_at_iso = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+    let mut affected = 0usize;
+    {
+        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let mut ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        for did in &member_dids {
+            let scope = crate::scope::Scope::dm(did);
+            let pe = pm_guard.entry(did.clone()).or_default();
+            if pe.discord_id.is_none() {
+                pe.discord_id = Some(did.clone());
+            }
+            let already = pe
+                .outgoing_whitelists
+                .iter()
+                .any(|w| matches!(w, crate::peer_map::WhitelistEntry::Dm { .. }));
+            if !already {
+                pe.outgoing_whitelists
+                    .push(crate::peer_map::WhitelistEntry::Dm {
+                        broadened: false,
+                        enabled_at: Some(enabled_at_iso.clone()),
+                    });
+                pe.burned_scopes.retain(|b| !burn_matches_scope(b, &scope));
+                affected += 1;
+            }
+            let entry = ws_guard
+                .entry(scope.storage_key())
+                .or_insert_with(crate::whitelist_state::ScopeState::default);
+            entry.encrypt_toggle = true;
+            entry.auto_enabled = true;
+        }
+    }
+    persist_peer_map_now(state);
+    persist_whitelist_state_now(state);
+    Ok(affected)
+}
+
+// ---- Phase 9-C3: server-wide channel-encryption defaults ----
+
+/// DTO mirroring one (server_id → ServerDefaults) entry for the
+/// settings + sidebar UIs.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ServerDefaultDto {
+    pub server_id: String,
+    pub encrypt_by_default: bool,
+}
+
+/// 9-C3: write the per-server "encrypt new channels by default" flag.
+/// Persists to disk via the existing whitelist_state.json envelope.
+pub fn cmd_osl_set_server_default(
+    state: &AppState,
+    server_id: String,
+    encrypt_by_default: bool,
+) -> Result<(), String> {
+    if server_id.is_empty() {
+        return Err("OSL: server_id is empty".to_string());
+    }
+    {
+        let mut sd = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        sd.entry(server_id.clone())
+            .or_insert_with(crate::whitelist_state::ServerDefaults::default)
+            .encrypt_by_default = encrypt_by_default;
+    }
+    persist_whitelist_state_now(state);
+    Ok(())
+}
+
+/// 9-C3: read all server-default entries, sorted by server_id for
+/// deterministic UI rendering.
+pub fn cmd_osl_get_server_defaults(state: &AppState) -> Result<Vec<ServerDefaultDto>, String> {
+    let sd = state
+        .server_defaults
+        .lock()
+        .expect("server_defaults mutex poisoned");
+    let mut out: Vec<ServerDefaultDto> = sd
+        .iter()
+        .map(|(server_id, v)| ServerDefaultDto {
+            server_id: server_id.clone(),
+            encrypt_by_default: v.encrypt_by_default,
+        })
+        .collect();
+    out.sort_by(|a, b| a.server_id.cmp(&b.server_id));
+    Ok(out)
+}
+
+/// 9-C3: retroactively flip `ScopeState.encrypt_toggle = true` for
+/// every existing channel in `server_id`, drawing the channel
+/// inventory from `state.guild_list`. Returns the count of channels
+/// whose ScopeState was mutated (channels already on stay no-op).
+/// Single persist at end.
+pub fn cmd_osl_apply_server_default_to_existing_channels(
+    state: &AppState,
+    server_id: String,
+) -> Result<usize, String> {
+    if server_id.is_empty() {
+        return Err("OSL: server_id is empty".to_string());
+    }
+    let channel_ids: Vec<String> = {
+        let gl = state.guild_list.lock().expect("guild_list mutex poisoned");
+        gl.iter()
+            .find(|g| g.id == server_id)
+            .map(|g| g.channel_ids.clone())
+            .unwrap_or_default()
+    };
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut affected = 0usize;
+    {
+        let mut ws = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        for ch_id in &channel_ids {
+            let scope = crate::scope::Scope::server_channel(&server_id, ch_id);
+            let entry = ws
+                .entry(scope.storage_key())
+                .or_insert_with(crate::whitelist_state::ScopeState::default);
+            if !entry.encrypt_toggle {
+                entry.encrypt_toggle = true;
+                entry.auto_enabled = true;
+                affected += 1;
+            }
+        }
+    }
+    persist_whitelist_state_now(state);
+    Ok(affected)
+}
+
+// ---- Phase 9-B1: app preferences ----
+
+/// DTO mirroring [`crate::app_preferences::AppPreferences`] for the JS bridge.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppPreferencesDto {
+    pub stego_mode: crate::app_preferences::StegoMode,
+}
+
+pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto, String> {
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(AppPreferencesDto {
+        stego_mode: g.stego_mode,
+    })
+}
+
+pub fn cmd_osl_set_app_preferences(
+    state: &AppState,
+    dto: AppPreferencesDto,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.stego_mode = dto.stego_mode;
+    }
+    if let Some(dir) = config_dir {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let path = dir.join("app_preferences.json");
+        crate::app_preferences::write_app_preferences(&path, &g)?;
+    }
+    Ok(())
+}
+
+// ---- Phase 9-D: onboarding tour + VPN warning ----
+
+/// DTO mirroring [`crate::app_preferences::TourState`] plus the
+/// VPN-warning suppression flag. One round-trip lets boot.js +
+/// settings query everything they need from app_preferences.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TourStateDto {
+    pub completed: bool,
+    pub skipped: bool,
+    pub last_slide: u8,
+    pub vpn_warning_dismissed_forever: bool,
+}
+
+/// Result of [`cmd_osl_check_vpn`]. `ok = false` means the system
+/// locale country differs from the IP geolocation country — likely
+/// a VPN or geo-proxy. Network failures return `ok = true` with
+/// `error = Some(...)` so the banner never false-positives on
+/// offline users.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct VpnCheckResult {
+    pub ok: bool,
+    pub system_country: Option<String>,
+    pub ip_country: Option<String>,
+    pub provider: Option<String>,
+    pub error: Option<String>,
+}
+
+pub fn cmd_osl_tour_get_state(state: &AppState) -> Result<TourStateDto, String> {
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(TourStateDto {
+        completed: g.tour.completed,
+        skipped: g.tour.skipped,
+        last_slide: g.tour.last_slide,
+        vpn_warning_dismissed_forever: g.vpn_warning_dismissed_forever,
+    })
+}
+
+fn persist_app_preferences_now(state: &AppState, config_dir: Option<std::path::PathBuf>) {
+    let Some(dir) = config_dir else {
+        return;
+    };
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let path = dir.join("app_preferences.json");
+    if let Err(e) = crate::app_preferences::write_app_preferences(&path, &g) {
+        drop(g);
+        record_persist_error(state, "app_preferences.json", e);
+    }
+}
+
+pub fn cmd_osl_tour_advance(
+    state: &AppState,
+    slide: u8,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.tour.last_slide = slide;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(())
+}
+
+pub fn cmd_osl_tour_complete(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.tour.completed = true;
+        g.tour.last_slide = 9;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(())
+}
+
+pub fn cmd_osl_tour_skip(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.tour.skipped = true;
+        g.tour.completed = true;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(())
+}
+
+pub fn cmd_osl_tour_reset(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.tour = crate::app_preferences::TourState::default();
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(())
+}
+
+pub fn cmd_osl_vpn_warning_dismiss_forever(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.vpn_warning_dismissed_forever = true;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(())
+}
+
+pub fn cmd_osl_vpn_warning_reset(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.vpn_warning_dismissed_forever = false;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(())
+}
+
 pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto>, String> {
     let g = state
         .burned_scopes
@@ -3694,7 +5633,7 @@ fn persist_burned_scopes_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            tracing::warn!(?e, "OSL: persist burned_scopes: cannot resolve config dir");
+            record_persist_error(state, "burned_scopes dir resolve", e);
             return;
         }
     };
@@ -3704,7 +5643,8 @@ fn persist_burned_scopes_now(state: &AppState) {
         .lock()
         .expect("burned_scopes mutex poisoned");
     if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &g) {
-        tracing::warn!(?e, "OSL: persist burned_scopes.json failed");
+        drop(g);
+        record_persist_error(state, "burned_scopes.json", e);
     }
 }
 
@@ -3730,11 +5670,7 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
         .lock()
         .expect("whitelist_state mutex poisoned")
         .clear();
-    state
-        .pending_invitations
-        .lock()
-        .expect("pending_invitations mutex poisoned")
-        .clear();
+    // 9-C1: pending_invitations field gone.
     *state
         .message_store
         .lock()
@@ -3746,4 +5682,170 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
         .expect("burned_scopes mutex poisoned") =
         crate::burned_scopes_file::BurnedScopesFile::default();
     Ok(())
+}
+
+// =====================================================================
+// Phase F0: deep-link smoke test
+//
+// Pure URL parser for the `osl://...` scheme registered by
+// tauri-plugin-deep-link. Lives here (rather than in `src-tauri/`)
+// so it can be unit-tested without spinning up a Tauri runtime —
+// the `ipc` crate intentionally has no Tauri dep, per the design
+// note at the top of `lib.rs`.
+//
+// F0 scope: prove the parser handles every shape the smoke-test
+// matrix throws at it (URLs with token, without token, multiple
+// query params, malformed input). F2 replaces this with the real
+// `cmd_osl_redeem_unlock` that validates tokens against the
+// keyserver and resets the foreground-time ad timer.
+//
+// Note: this is NOT a full URI parser. We don't need percent-
+// decoding, fragment handling, or host validation for F0 — the
+// only URLs we'll ever see are `osl://<path>?token=<opaque>`.
+// F2 may swap this for `url::Url` if more robustness is needed,
+// but a hand-rolled split keeps the F0 dep footprint at zero.
+// =====================================================================
+
+/// Structured result of parsing an `osl://...` URL. Returned to JS
+/// by `cmd_osl_test_deep_link` so boot.js can `console.log` the
+/// fields independently of the Rust-side `tracing` output.
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OslTestDeepLinkResponse {
+    /// Scheme portion (`"osl"` for legal inputs).
+    pub scheme: String,
+    /// Path portion (everything between `://` and the first `?`, if any).
+    /// For `osl://test?token=ABC`, path is `"test"`.
+    pub path: String,
+    /// Value of the `token` query parameter if present. `None` if
+    /// the URL has no query string, or has a query string without
+    /// a `token` key.
+    pub token: Option<String>,
+    /// Full URL as received, for boot.js console-log fidelity.
+    pub url: String,
+}
+
+/// Phase F0 smoke-test command: parse an osl:// URL and return the
+/// scheme/path/token. Logs to the Rust console at INFO level so
+/// the manual verification matrix can confirm Rust-side reception
+/// works independently of the JS event channel.
+pub fn cmd_osl_test_deep_link(url: String) -> Result<OslTestDeepLinkResponse, String> {
+    tracing::info!(
+        target: "osl::deep_link",
+        url = %url,
+        "[OSL deep-link] received"
+    );
+
+    let (scheme, path, token) = parse_osl_url(&url)?;
+
+    tracing::info!(
+        target: "osl::deep_link",
+        token = ?token,
+        path = %path,
+        "[OSL deep-link] parsed token"
+    );
+
+    Ok(OslTestDeepLinkResponse {
+        scheme,
+        path,
+        token,
+        url,
+    })
+}
+
+/// Split `osl://<path>?<query>` into (scheme, path, token).
+/// Token is `Some(_)` iff the query contains a `token=...` pair.
+fn parse_osl_url(url: &str) -> Result<(String, String, Option<String>), String> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| format!("invalid URL: missing scheme separator in {url:?}"))?;
+
+    if scheme.is_empty() {
+        return Err(format!("invalid URL: empty scheme in {url:?}"));
+    }
+
+    let (path, query) = match rest.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (rest, None),
+    };
+
+    let token = query.and_then(|q| {
+        q.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            if k == "token" {
+                Some(v.to_string())
+            } else {
+                None
+            }
+        })
+    });
+
+    Ok((scheme.to_string(), path.to_string(), token))
+}
+
+#[cfg(test)]
+mod test_deep_link_parser {
+    use super::*;
+
+    #[test]
+    fn parses_url_with_token() {
+        let result = cmd_osl_test_deep_link("osl://test?token=ABC123".to_string()).unwrap();
+        assert_eq!(result.scheme, "osl");
+        assert_eq!(result.path, "test");
+        assert_eq!(result.token.as_deref(), Some("ABC123"));
+        assert_eq!(result.url, "osl://test?token=ABC123");
+    }
+
+    #[test]
+    fn parses_url_without_token() {
+        let result = cmd_osl_test_deep_link("osl://invalid".to_string()).unwrap();
+        assert_eq!(result.scheme, "osl");
+        assert_eq!(result.path, "invalid");
+        assert_eq!(result.token, None);
+    }
+
+    #[test]
+    fn parses_url_with_query_but_no_token() {
+        let result = cmd_osl_test_deep_link("osl://test?foo=bar".to_string()).unwrap();
+        assert_eq!(result.token, None);
+    }
+
+    #[test]
+    fn parses_url_with_multiple_query_params_picks_token() {
+        let result =
+            cmd_osl_test_deep_link("osl://unlock?foo=bar&token=DEF&baz=qux".to_string()).unwrap();
+        assert_eq!(result.token.as_deref(), Some("DEF"));
+    }
+
+    #[test]
+    fn parses_token_in_first_position() {
+        let result = cmd_osl_test_deep_link("osl://unlock?token=XYZ&other=1".to_string()).unwrap();
+        assert_eq!(result.token.as_deref(), Some("XYZ"));
+    }
+
+    #[test]
+    fn empty_token_value_is_still_some_empty() {
+        let result = cmd_osl_test_deep_link("osl://test?token=".to_string()).unwrap();
+        assert_eq!(result.token.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn rejects_url_without_scheme_separator() {
+        let result = cmd_osl_test_deep_link("not-a-url".to_string());
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("missing scheme separator"), "msg: {msg}");
+    }
+
+    #[test]
+    fn rejects_empty_scheme() {
+        let result = cmd_osl_test_deep_link("://test?token=ABC".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn round_trips_full_url_in_response() {
+        let input = "osl://complex?token=AAA&other=BBB".to_string();
+        let result = cmd_osl_test_deep_link(input.clone()).unwrap();
+        assert_eq!(result.url, input);
+    }
 }

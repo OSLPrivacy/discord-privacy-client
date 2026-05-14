@@ -1,0 +1,194 @@
+//! Phase 9-D-FIX2: post-gate encrypted-at-rest state reload.
+//!
+//! Bootstrap's encrypted-state loaders fire before the user enters
+//! their password — `file_storage_key` is `None` at that point, so
+//! every `OSL-ENC1` file's `maybe_decrypt` call errors and the
+//! individual loaders silently return `Default`. Once the gate
+//! successfully verifies the main password and installs the key,
+//! `AppState` still holds those defaults; without an explicit
+//! reload, the user's whitelist, burns, tour state, sender chains,
+//! etc. stay blank for the entire session and the next launch
+//! repeats the cycle.
+//!
+//! [`reload_encrypted_state_after_unlock`] re-runs the same loaders
+//! bootstrap used (so file-format / migration semantics stay
+//! identical), then replaces each `AppState` mutex slot with the
+//! disk-read value. Per-file failures are non-fatal and surface via
+//! `ReloadReport.errors`.
+
+use std::path::Path;
+
+use crate::peer_map::{load_peer_map_from_path, PeerMapError};
+use crate::AppState;
+
+/// Per-file outcome of a post-gate state reload. Bool flags
+/// indicate "load was attempted and succeeded for a file that
+/// existed on disk" — a `false` flag plus an empty `errors` vec
+/// means "file did not exist," which is the normal fresh-install
+/// case for everything except `peer_map`.
+#[derive(Debug, Default, Clone)]
+pub struct ReloadReport {
+    pub peer_map_loaded: bool,
+    pub peer_map_entries: usize,
+    pub whitelist_loaded: bool,
+    pub whitelist_scopes: usize,
+    pub server_defaults_loaded: bool,
+    pub server_defaults_entries: usize,
+    pub burned_scopes_loaded: bool,
+    pub burned_scopes_count: usize,
+    pub sender_keys_loaded: bool,
+    pub sender_keys_count: usize,
+    pub app_prefs_loaded: bool,
+    pub errors: Vec<String>,
+    /// 9-PEER-MAP-ENC: tracks the retroactive re-encryption sweep.
+    /// `true` if a plaintext-on-disk file was rewritten as OSL-ENC1
+    /// using the just-installed file_storage_key. One-shot — once
+    /// every file has the magic, this stays `false` on subsequent
+    /// reloads.
+    pub peer_map_reencrypted: bool,
+    pub self_entry_repaired_post_gate: bool,
+}
+
+/// Re-read every encrypted-at-rest state file from `config_dir`
+/// and replace `AppState`'s in-memory copy. Call this immediately
+/// after `set_file_storage_key(Some(...))` on a successful gate
+/// verify so the user's session sees their actual saved state
+/// instead of the empty defaults bootstrap seeded.
+///
+/// Each file is independent: a parse / decrypt error on one
+/// (recorded in `report.errors`) doesn't prevent the others from
+/// reloading. The returned `Result` is currently always `Ok` —
+/// the signature reserves room for a future catastrophic-failure
+/// path (e.g. config dir suddenly inaccessible) without changing
+/// callers.
+pub fn reload_encrypted_state_after_unlock(
+    state: &AppState,
+    config_dir: &Path,
+) -> Result<ReloadReport, String> {
+    let mut report = ReloadReport::default();
+
+    // peer_map.json — explicit error variants distinguish missing
+    // (fresh install, normal) from decrypt/parse failure.
+    let pm_path = config_dir.join("peer_map.json");
+    match load_peer_map_from_path(&pm_path) {
+        Ok(map) => {
+            report.peer_map_entries = map.len();
+            report.peer_map_loaded = true;
+            *state.peer_map.lock().expect("peer_map mutex poisoned") = map;
+        }
+        Err(PeerMapError::NotFound { .. }) => {}
+        Err(e) => report.errors.push(format!("peer_map: {e}")),
+    }
+
+    // whitelist_state.json — `migrate_whitelist_state_in_place`
+    // owns the load path (it also touches peer_map for the C1
+    // projection). Idempotent after first migration: a file with
+    // `migrated_c1 = true` loads scopes + server_defaults straight
+    // into state with no peer_map writes.
+    match crate::migration::migrate_whitelist_state_in_place(state, config_dir) {
+        Ok(None) => {}
+        Ok(Some(r)) => {
+            report.whitelist_loaded = true;
+            report.whitelist_scopes = r.scope_entries_loaded;
+            report.server_defaults_loaded = true;
+            report.server_defaults_entries = state
+                .server_defaults
+                .lock()
+                .expect("server_defaults mutex poisoned")
+                .len();
+        }
+        Err(e) => report.errors.push(format!("whitelist_state: {e}")),
+    }
+
+    // burned_scopes.json — the loader is infallible by signature
+    // (returns default on any failure), but missing files are the
+    // fresh-install case, not an error. Use file existence as a
+    // proxy for "should have data."
+    let bs_path = config_dir.join("burned_scopes.json");
+    if bs_path.exists() {
+        let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
+        report.burned_scopes_count = bs.scopes.len();
+        report.burned_scopes_loaded = true;
+        *state
+            .burned_scopes
+            .lock()
+            .expect("burned_scopes mutex poisoned") = bs;
+    }
+
+    // sender_key_state.json — same shape as burned_scopes (loader
+    // returns default on failure). Bootstrap pre-FIX2 never loaded
+    // this file at all; the reload path is the first time the
+    // on-disk sender chains actually populate AppState.
+    let sk_path = config_dir.join("sender_key_state.json");
+    if sk_path.exists() {
+        let sk = crate::sender_key_state::load_sender_key_state(&sk_path);
+        report.sender_keys_count = sk.states.len();
+        report.sender_keys_loaded = true;
+        *state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned") = sk;
+    }
+
+    // app_preferences.json — holds tour resume state, stego mode,
+    // and the VPN-warning dismissal. Without this reload, the tour
+    // replays on every launch (the trigger for 9-D-FIX2).
+    let prefs_path = config_dir.join("app_preferences.json");
+    if prefs_path.exists() {
+        let prefs = crate::app_preferences::load_app_preferences(&prefs_path);
+        report.app_prefs_loaded = true;
+        *state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned") = prefs;
+    }
+
+    // 9-PEER-MAP-ENC: retroactive re-encryption of plaintext peer_map.
+    // Users on pre-fix builds had bootstrap clobber their encrypted
+    // peer_map.json with a plaintext stub on every launch. Now that
+    // the password gate has run and file_storage_key is installed,
+    // sniff the on-disk file: if no OSL-ENC1 magic, rewrite via
+    // write_peer_map which will encrypt-on-write. One-shot; subsequent
+    // reloads see the magic and skip.
+    if pm_path.exists() {
+        if let Ok(blob) = std::fs::read(&pm_path) {
+            if !crate::main_password::has_enc_magic(&blob) {
+                let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+                match crate::peer_map::write_peer_map(&pm_path, &pm) {
+                    Ok(()) => {
+                        report.peer_map_reencrypted = true;
+                        tracing::info!("OSL: retroactively re-encrypted plaintext peer_map.json");
+                    }
+                    Err(e) => report.errors.push(format!("peer_map re-encrypt: {e}")),
+                }
+            }
+        }
+    }
+
+    // Re-run the self-entry verify now that the disk-load reflects
+    // real state (key in slot). Bootstrap's pre-gate verify either
+    // ran against an empty in-memory map (encrypted source unreadable)
+    // and was refused at the persist step by write_peer_map's guard,
+    // OR it ran against a stale state. Either way, with the real map
+    // now loaded, a fresh verify is the correct repair point. Persist
+    // succeeds here because the key is installed.
+    match crate::commands::verify_and_persist_peer_map_self_entry(state) {
+        Ok((_, repaired)) => {
+            if repaired {
+                report.self_entry_repaired_post_gate = true;
+                tracing::info!(
+                    "OSL: peer_map self-entry repaired post-gate \
+                     (would have been refused pre-gate)"
+                );
+            }
+        }
+        Err(reason) if reason == "no_discord_snowflake" || reason == "identity_not_loaded" => {
+            // Both are expected during early bootstrap; boot.js will
+            // retry via cmd_osl_register_self_snowflake once the
+            // Discord runtime exposes the snowflake.
+        }
+        Err(other) => report.errors.push(format!("self_entry_repair: {other}")),
+    }
+
+    Ok(report)
+}

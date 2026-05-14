@@ -32,7 +32,6 @@
 //!     "pubkey": null,
 //!     "discord_id": "1477008451799482419",
 //!     "first_seen": "2026-05-09T12:34:56Z",
-//!     "incoming_decrypt_accepted": false,
 //!     "outgoing_whitelists": [],
 //!     "burned_scopes": []
 //!   }
@@ -75,6 +74,15 @@ pub struct PeerEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<String>,
 
+    /// Phase 9-A1: base64-encoded ML-KEM-768 encapsulation key.
+    /// Populated alongside `pubkey` for peers whose identity was
+    /// generated after the PQ-hybrid upgrade. None for pre-9-A1
+    /// peers; v=3 send requires this for every recipient (no
+    /// automatic v=2 fallback — peers without ML-KEM must
+    /// regenerate identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ik_mlkem768_pub: Option<String>,
+
     /// Discord snowflake for the peer — redundant with the map key,
     /// but the design doc lists it explicitly so we serialize it.
     /// Useful for log lines that only carry the value, not the key.
@@ -87,22 +95,12 @@ pub struct PeerEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_seen: Option<String>,
 
-    /// Per-scope record of whether this peer's whitelist
-    /// invitation to *us* has been accepted. Key is the scope
-    /// storage_key (`crate::scope::Scope::storage_key`); value is
-    /// `true` for accept, `false` for explicit decline.
-    /// **Missing key = not yet responded** (the recv-path treats
-    /// that as "leave cover in place" — see §7).
-    ///
-    /// Phase 7a shipped this as a single `bool` matching the
-    /// design doc §5.1 example. Phase 7b promotes it to a map per
-    /// §7.3 ("Henry's client stores:
-    /// `incoming_decrypt_accepted[liam][scope] = true`"); the
-    /// outer indirection is peer_map itself, leaving this inner
-    /// map keyed by scope.
-    #[serde(default)]
-    pub incoming_decrypt_accepted: std::collections::HashMap<String, bool>,
-
+    // 9-C1: `incoming_decrypt_accepted` removed. Decrypt is now
+    // permissive — Discord's block feature is the user-facing trust
+    // boundary. Old on-disk JSON still carrying this field deserialises
+    // fine (serde silently ignores unknown fields on Deserialize for
+    // struct without `#[serde(deny_unknown_fields)]`), and the field
+    // is dropped on the next write.
     /// Our outgoing whitelists for this peer, per scope (§2.1).
     /// Phase 7a stores them; 7b consults them on every send.
     #[serde(default)]
@@ -113,20 +111,9 @@ pub struct PeerEntry {
     #[serde(default)]
     pub burned_scopes: Vec<BurnedScope>,
 
-    /// Phase 7b: per-scope acceptance status FROM this peer
-    /// for our outgoing invitations. Key is scope storage_key;
-    /// value is `true` for accepted, `false` for declined.
-    /// **Missing key = invitation sent but no response yet.**
-    ///
-    /// Mirrors `incoming_decrypt_accepted` but in the opposite
-    /// direction — that map records *our* response to the peer's
-    /// invitations, this one records the *peer's* response to
-    /// ours. The UI (Phase 7c) reads this to show
-    /// "accepted" / "declined" / "pending" pills next to each
-    /// outgoing whitelist entry.
-    #[serde(default)]
-    pub outgoing_whitelist_responses: std::collections::HashMap<String, bool>,
-
+    // 9-C1: `outgoing_whitelist_responses` removed alongside the
+    // invitation handshake. Pre-C1 on-disk entries deserialise OK
+    // (unknown field ignored) and the field disappears on next write.
     /// 7d-FIX3b: marker for the local user's own peer_map entry.
     /// Populated by `osl_register_self_snowflake` or by bootstrap
     /// repair (see `verify_peer_map_self_entry`). Lets the
@@ -136,6 +123,25 @@ pub struct PeerEntry {
     /// peer_map.json files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_self: Option<bool>,
+
+    /// Phase 9-A2: base64-encoded X25519 public key that the peer
+    /// published as their initial Double Ratchet bootstrap. Used by
+    /// v=4 senders on the *first* outbound message to a peer — once
+    /// `ratchet_state` is populated this field is no longer read
+    /// (the live DR's `dhr` carries the peer's current ratchet pub).
+    /// `None` for peers whose keyserver record predates the A2
+    /// fourth-column rollout; senders fall through to v=3 in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ik_ratchet_initial_pub: Option<String>,
+
+    /// Phase 9-A2: persisted Double Ratchet state. `Some` once a v=4
+    /// session has been initialized (either by a successful bootstrap
+    /// send or a successful bootstrap receive). DM-scope only — GC
+    /// and server channels stay on v=3 in this phase. Serialized
+    /// inline so the existing `peer_map.json` encryption-at-rest
+    /// envelope covers the ratchet too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratchet_state: Option<crypto::ratchet::RatchetStateOnDisk>,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to
@@ -229,6 +235,17 @@ impl From<PeerEntryRepr> for PeerEntry {
 
 /// Discord-id → [`PeerEntry`] map. Keys are Discord snowflakes.
 pub type PeerMap = HashMap<String, PeerEntry>;
+
+impl PeerEntry {
+    /// Phase 9-A1: this peer is eligible for v=3 PQ-hybrid sends —
+    /// we have both their X25519 ik pubkey and ML-KEM-768 encap key
+    /// on file. v=3 has no automatic v=2 fallback in production; if
+    /// `supports_v3()` returns false for any recipient, the send
+    /// path returns an error pointing at that peer's discord_id.
+    pub fn supports_v3(&self) -> bool {
+        self.pubkey.is_some() && self.ik_mlkem768_pub.is_some()
+    }
+}
 
 /// Construct a minimal v=1-compatible [`PeerEntry`] from an
 /// `osl_user_id`. Used by tests + the legacy migration to seed
@@ -347,7 +364,30 @@ pub fn load_peer_map_from_path(path: &Path) -> Result<PeerMap, PeerMapError> {
 /// Serialise + write `map` to `path` atomically (via a tempfile +
 /// rename, so a crash mid-write doesn't truncate the existing
 /// file).
+///
+/// 9-PEER-MAP-ENC defense-in-depth: refuse to overwrite an existing
+/// encrypted file with plaintext when `file_storage_key` is absent.
+/// Pre-fix, bootstrap's `verify_and_persist_peer_map_self_entry`
+/// fired BEFORE the password gate (key=None), failed to decrypt the
+/// existing file (so state defaulted to empty), then "repaired" the
+/// missing self-entry and persisted — overwriting the encrypted
+/// peer_map with a 1-entry plaintext stub on every launch. This
+/// guard makes the destructive path Err out rather than clobber:
+/// callers see the failure and can defer the persist to after the
+/// gate has installed the key.
 pub fn write_peer_map(path: &Path, map: &PeerMap) -> Result<(), std::io::Error> {
+    if crate::main_password::get_file_storage_key().is_none() && path.exists() {
+        if let Ok(existing) = std::fs::read(path) {
+            if crate::main_password::has_enc_magic(&existing) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "OSL: refusing to write plaintext peer_map over encrypted file \
+                     — file_storage_key not in slot (password not yet entered)",
+                ));
+            }
+        }
+    }
+
     let body = serde_json::to_string_pretty(map)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // 7d-B4 (scoped): if a file_storage_key is installed (main
@@ -426,6 +466,10 @@ mod tests {
     fn modern_object_values_load() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
+        // 9-C1: the JSON literal still carries
+        // `incoming_decrypt_accepted` — pre-C1 on-disk files do — and
+        // serde silently drops the unknown field on load. We assert
+        // the surviving fields still round-trip.
         fs::write(
             &path,
             r#"{
@@ -445,12 +489,6 @@ mod tests {
         let map = load_peer_map_from_path(&path).expect("modern format should load");
         let entry = map.get("1477008451799482419").unwrap();
         assert_eq!(entry.osl_user_id.as_deref(), Some("liam"));
-        assert_eq!(
-            entry
-                .incoming_decrypt_accepted
-                .get("dm:1477008451799482419"),
-            Some(&true)
-        );
         assert_eq!(entry.outgoing_whitelists.len(), 1);
         match &entry.outgoing_whitelists[0] {
             WhitelistEntry::Dm { broadened, .. } => assert!(*broadened),

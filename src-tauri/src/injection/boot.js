@@ -108,6 +108,123 @@
     }
     window.__OSL_BOOT_INSTALLED__ = true;
 
+    // 9-TD2.2: F0-FIX1's `/login` / `/register` early-bail block
+    // was removed from here. F0-FIX3 diagnostics established that
+    // Discord ptb/canary/stable serve the login form inline at
+    // `/app` — those routes never actually load — so the bail was
+    // unreachable code defending against a page Discord doesn't
+    // navigate to. The real login gating happens in
+    // `oslTourWaitForLoggedIn` and `oslEnsureSelfSnowflakeRegistered`,
+    // which detect the logged-in shell from React runtime state
+    // rather than URL. (The canary's separate `/login` skip below
+    // is left intact as a no-op safety net.)
+
+    // ============================================================
+    // 9-PERF1: loading splash on post-unlock navigation.
+    //
+    // The gate page sets `__osl_post_unlock_nav` in sessionStorage
+    // right before `window.location.href` fires. Boot.js sees the
+    // flag synchronously here (before Discord's bundle parses) and
+    // paints a full-screen splash so the user sees "OSL is loading
+    // Discord" rather than 2+ seconds of unstyled WebView2 white.
+    // The splash hides on the first gateway READY frame, or 8s of
+    // wallclock, or a click — whichever fires first.
+    //
+    // sessionStorage survives the gate → discord.com navigation
+    // because the WebView2 window context persists; only the page
+    // unloads. The flag is removed on first read so a manual page
+    // refresh (Ctrl+R) inside Discord doesn't re-show the splash.
+    // ============================================================
+    const __OSL_IS_POST_UNLOCK = (function () {
+        try {
+            const v = window.sessionStorage.getItem("__osl_post_unlock_nav");
+            if (v) {
+                window.sessionStorage.removeItem("__osl_post_unlock_nav");
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    })();
+
+    const __OSL_SPLASH_ID = "__osl_loading_splash";
+    let __osl_splash_timeout = null;
+
+    function oslShowLoadingSplash() {
+        // Mount on documentElement because document.body may not
+        // exist yet at initialization_script time.
+        if (document.getElementById(__OSL_SPLASH_ID)) return;
+        const css = document.createElement("style");
+        css.id = "__osl_loading_splash_css";
+        css.textContent =
+            "@keyframes __osl_pulse{" +
+            "0%,100%{opacity:0.55;transform:scale(0.94);}" +
+            "50%{opacity:1;transform:scale(1.06);}}" +
+            "#" + __OSL_SPLASH_ID + "{" +
+            "position:fixed;inset:0;z-index:100001;" +
+            "background:#0a0a0a;color:#dbdee1;" +
+            "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" +
+            "transition:opacity 300ms ease;opacity:1;" +
+            "user-select:none;cursor:default;}" +
+            "#" + __OSL_SPLASH_ID + ".__osl_fade{opacity:0;}" +
+            "#" + __OSL_SPLASH_ID + " .__osl_splash_lock{" +
+            "width:56px;height:56px;color:#5865f2;" +
+            "animation:__osl_pulse 1.6s ease-in-out infinite;" +
+            "margin-bottom:18px;}" +
+            "#" + __OSL_SPLASH_ID + " .__osl_splash_text{" +
+            "font-size:15px;font-weight:500;color:#b5bac1;letter-spacing:0.2px;}";
+        (document.head || document.documentElement).appendChild(css);
+
+        const overlay = document.createElement("div");
+        overlay.id = __OSL_SPLASH_ID;
+        // Inline-SVG closed padlock. Self-contained — does not depend
+        // on oslLockSvg which lives much later in this IIFE.
+        overlay.innerHTML =
+            '<svg class="__osl_splash_lock" viewBox="0 0 24 24" fill="none" ' +
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>' +
+            '<path d="M7 11V7a5 5 0 0 1 10 0v4"/>' +
+            '</svg>' +
+            '<div class="__osl_splash_text">Loading Discord…</div>';
+        // Escape hatch: any click dismisses. Users who suspect the
+        // splash is stuck can recover without restarting.
+        overlay.addEventListener("click", function () {
+            oslHideLoadingSplash();
+        });
+
+        const root = document.body || document.documentElement;
+        root.appendChild(overlay);
+
+        // Fallback: never let the splash outlive 8 seconds. Even if
+        // gateway READY never fires (offline, Discord outage, hook
+        // missed the frame), the user gets to whatever Discord
+        // managed to render. Bind to window directly because the
+        // later-in-file `nativeSetTimeout` const is in TDZ at this
+        // point.
+        __osl_splash_timeout = window.setTimeout(function () {
+            oslHideLoadingSplash();
+        }, 8000);
+    }
+
+    function oslHideLoadingSplash() {
+        if (__osl_splash_timeout) {
+            try { window.clearTimeout(__osl_splash_timeout); } catch (_) {}
+            __osl_splash_timeout = null;
+        }
+        const overlay = document.getElementById(__OSL_SPLASH_ID);
+        if (!overlay) return;
+        overlay.classList.add("__osl_fade");
+        window.setTimeout(function () {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            const css = document.getElementById("__osl_loading_splash_css");
+            if (css && css.parentNode) css.parentNode.removeChild(css);
+        }, 320);
+    }
+
+    if (__OSL_IS_POST_UNLOCK) {
+        oslShowLoadingSplash();
+    }
+
     // ============================================================
     // Phase 7d-B2 Stealth gate.
     //
@@ -655,12 +772,22 @@
         // back our own cover in a follow-up request. Either way,
         // re-encrypting would double-wrap and corrupt; pass the
         // body through untouched.
-        if (parsed.content.indexOf("DPC0::") === 0) {
+        //
+        // 9-MODE1-FIX: same guard for DPC1:: covers. Mode 1 chunks
+        // posted via `oslSendCoverMessage` come through this fetch
+        // hook; without this branch the interceptor would treat the
+        // sentence cover as plaintext and try to re-encrypt it,
+        // which is what produced the "Failed to fetch" symptom on
+        // every Mode 1 send.
+        if (
+            parsed.content.indexOf("DPC0::") === 0 ||
+            parsed.content.indexOf("DPC1::") === 0
+        ) {
             if (DEBUG)
                 console.log(
                     "[OSL] outgoing /messages (" +
                         source +
-                        "): content already DPC0::; passthrough (pre-encrypted)"
+                        "): content already DPC0::/DPC1::; passthrough (pre-encrypted)"
                 );
             return onPassthrough();
         }
@@ -904,56 +1031,64 @@
                     memberIds,
                     selfId
                 ).then(
-                function (wire) {
-                    if (typeof wire !== "string") {
+                function (out) {
+                    if (
+                        !out ||
+                        !Array.isArray(out.messages) ||
+                        out.messages.length === 0
+                    ) {
                         console.error(
                             "[OSL] v=2 send gate (" +
                                 source +
-                                "): oslEncryptV2 returned non-string; ABORT (fail-closed)"
+                                "): oslEncryptV2 returned malformed; ABORT (fail-closed)"
                         );
                         return onAbort(new Error("v2_encrypt_failed"));
                     }
-                    parsed.content = wire;
-                    // 7d-PIVOT-FIX3 Bug F: inline post-burn re-engage.
-                    // A successful encrypt-send into a burned scope
-                    // un-burns it. PIVOT-FIX2 routed this through the
-                    // `osl:scope_unburned` cross-window event, but
-                    // Discord's CSP can drop those events before they
-                    // reach this origin's listener — leaving the JS
-                    // `__oslBurnedScopes` cache stale and the receive
-                    // observer continuing to skip decrypts for the
-                    // re-engaged scope. Do it locally and persist via
-                    // a fire-and-forget IPC call. The Rust command is
-                    // idempotent so the cross-window path (still wired
-                    // for Settings Window initiated unburns) is safe
-                    // to keep alongside this.
-                    try {
-                        oslInlineUnburnAfterEncrypt(v7cScope);
-                    } catch (_) {}
-                    let newBody;
-                    try {
-                        newBody = JSON.stringify(parsed);
-                    } catch (e) {
-                        console.error(
-                            "[OSL] v=2 send gate (" +
-                                source +
-                                "): re-serialising mutated body failed; ABORT (fail-closed)",
-                            e
-                        );
-                        return onAbort(e);
+                    // Mode 0 fast path: single cover, ship through
+                    // Discord's own send. Mode 1 always lands on the
+                    // mode1SendPipeline branch below.
+                    if (out.messages.length === 1) {
+                        parsed.content = out.messages[0];
+                        let newBody;
+                        try {
+                            newBody = JSON.stringify(parsed);
+                        } catch (e) {
+                            console.error(
+                                "[OSL] v=2 send gate (" +
+                                    source +
+                                    "): re-serialising mutated body failed; ABORT (fail-closed)",
+                                e
+                            );
+                            return onAbort(e);
+                        }
+                        if (DEBUG)
+                            console.log(
+                                "[OSL] v=2 send gate (" +
+                                    source +
+                                    "): wire=DPC0:: channel=" +
+                                    channelId +
+                                    " scope=" +
+                                    v7cScope.kind +
+                                    ":" +
+                                    v7cScope.id
+                            );
+                        return onMutated(newBody);
                     }
-                    if (DEBUG)
-                        console.log(
-                            "[OSL] v=2 send gate (" +
-                                source +
-                                "): wire=DPC0:: channel=" +
-                                channelId +
-                                " scope=" +
-                                v7cScope.kind +
-                                ":" +
-                                v7cScope.id
-                        );
-                    return onMutated(newBody);
+                    // 9-MODE1-RETIRE: Mode 1 dispatch suppressed for
+                    // V2. Rust coerces stego_mode=mode1 → Mode 0 at
+                    // encrypt time, so reaching this branch implies
+                    // a stale Rust binary that still emits chunked
+                    // covers. Fail-closed (abort the send) rather
+                    // than ship anything — the alternative is either
+                    // an unencrypted plaintext leak or a broken
+                    // multi-message post the receive side can't
+                    // reassemble. mode1SendPipeline stays defined
+                    // (used by V3 revival); just unreachable here.
+                    console.warn(
+                        "[OSL] mode1 dispatch suppressed: Mode 1 disabled in V2 " +
+                            "(unexpected — Rust should have coerced to Mode 0; check binary)"
+                    );
+                    return onAbort(new Error("mode1_disabled_in_v2"));
                 },
                 function (err) {
                     console.error(
@@ -1012,14 +1147,30 @@
     // in `crates/ipc/src/commands.rs`. If those change, update
     // here.
     const OSL_RESULT_BURN_APPLIED = "__OSL_CONTROL_BURN_APPLIED__";
-    const OSL_RESULT_INVITATION_RECEIVED =
-        "__OSL_CONTROL_INVITATION_RECEIVED__";
-    const OSL_RESULT_RESPONSE_RECEIVED = "__OSL_CONTROL_RESPONSE_RECEIVED__";
+    // 9-C1: the invitation handshake was removed. Old peers running
+    // pre-C1 clients can still post 0x02/0x03 control messages; the
+    // recv path surfaces the legacy-ignored sentinel and boot.js
+    // silently drops the render.
+    const OSL_RESULT_LEGACY_HANDSHAKE_IGNORED =
+        "__OSL_CONTROL_LEGACY_HANDSHAKE_IGNORED__";
     // Phase 8: recv-side sentinel for an attachment envelope. The
     // full result string is `OSL_RESULT_ATTACHMENT_PREFIX + json`,
     // where the JSON carries the per-attachment AEAD key + filenames
     // + MIME for boot.js to feed into `osl_open_attachment`.
     const OSL_RESULT_ATTACHMENT_PREFIX = "__OSL_CONTROL_ATTACHMENT__|";
+    // Phase 9-A3: a v=4 SKDM (Sender Key Distribution Message) ships
+    // a rotation_root for a group sender-keys chain. The Rust side
+    // applies it to sender_key_state.json and returns this sentinel.
+    // boot.js must NOT render this as user-visible text.
+    const OSL_RESULT_SKDM_APPLIED = "__OSL_CONTROL_SKDM_APPLIED__";
+    // Phase 9-B1: Mode 1 chunk reassembly sentinels. Boot.js renders
+    // a placeholder badge when the receive side is still waiting on
+    // chunks, treats a conflict as a dropped session, and surfaces
+    // an invalid chunk inline (the cover text stays visible).
+    const OSL_RESULT_MODE1_INCOMPLETE_PREFIX =
+        "__OSL_CONTROL_MODE1_INCOMPLETE__|";
+    const OSL_RESULT_MODE1_CONFLICT = "__OSL_CONTROL_MODE1_CONFLICT__";
+    const OSL_RESULT_MODE1_INVALID = "__OSL_CONTROL_MODE1_INVALID__";
 
     /**
      * Phase 7b: encrypt `plaintext` for the whitelist-resolved
@@ -1063,26 +1214,131 @@
                 (plaintext ? plaintext.length : 0)
         );
         try {
-            const wire = await invoke("osl_encrypt_message_v2", {
+            // 9-B1: osl_encrypt_message_v2 now returns
+            // { messages, session_id, preview_required }. For Mode 0
+            // sends, messages.length === 1 and preview_required is
+            // false — the caller can keep using the first element as
+            // the single wire string, matching pre-B1 behavior.
+            const out = await invoke("osl_encrypt_message_v2", {
                 plaintext: plaintext,
                 scopeInput: scopeInput,
                 channelMembers: channelMembers,
                 selfDiscordId: selfDiscordId,
             });
-            if (typeof wire === "string" && wire.indexOf("DPC0::") === 0) {
+            if (out && Array.isArray(out.messages) && out.messages.length > 0) {
                 console.log(
-                    "[OSL] osl_encrypt_message_v2 returned, body now DPC0:: prefix"
+                    "[OSL] osl_encrypt_message_v2 returned, messages=" +
+                        out.messages.length +
+                        " session_id=" +
+                        (out.session_id == null ? "none" : out.session_id)
                 );
-                return wire;
+                return out;
             }
             console.log(
-                "[OSL] oslEncryptV2 FAIL reason=non_string_or_missing_prefix"
+                "[OSL] oslEncryptV2 FAIL reason=malformed_encrypt_output"
             );
             return null;
         } catch (err) {
             const msg = err && err.message ? err.message : String(err);
             console.log("[OSL] oslEncryptV2 FAIL reason=" + msg);
             return null;
+        }
+    }
+
+    // ============================================================
+    // Phase 9-B1: Mode 1 multi-message send pipeline.
+    //
+    // When osl_encrypt_message_v2 returns more than one cover string
+    // (Mode 1), we cannot let Discord's own message-create handle the
+    // send: we fire each cover via the REST API with a randomized
+    // 500-1500ms delay between sends so that the chunks don't all
+    // arrive within a single Discord rate-limit window or get
+    // reordered by the gateway.
+    //
+    // The pipeline is fire-and-forget: it returns true if all covers
+    // went out, false on first failure. The interceptBody caller
+    // treats this as "send accepted" and aborts Discord's own send so
+    // Discord doesn't double-post.
+    //
+    // 9-MODE1-FIX removed the preview-confirm gate; chunks fire
+    // immediately without a user-facing modal.
+    // ============================================================
+
+    function mode1RandomDelayMs() {
+        return 500 + Math.floor(Math.random() * 1000);
+    }
+
+    async function mode1SendPipeline(channelId, encryptOutput, scopeKey) {
+        const messages = encryptOutput.messages;
+        console.log(
+            "[OSL] mode1 send: chunks=" + messages.length +
+                " session_id=" + (encryptOutput.session_id || "?") +
+                " scope=" + scopeKey
+        );
+        for (let i = 0; i < messages.length; i++) {
+            const cover = messages[i];
+            // Use the same REST helper as control messages — it
+            // POSTs to /api/v9/channels/<id>/messages with the
+            // captured auth token.
+            const ok = await oslSendCoverMessage(channelId, cover);
+            if (!ok) {
+                console.log(
+                    "[OSL] mode1SendPipeline chunk " + (i + 1) + "/" +
+                        messages.length + " FAIL"
+                );
+                return false;
+            }
+            if (i + 1 < messages.length) {
+                await new Promise(function (r) {
+                    setTimeout(r, mode1RandomDelayMs());
+                });
+            }
+        }
+        console.log(
+            "[OSL] mode1SendPipeline OK channel=" + channelId +
+                " messages=" + messages.length
+        );
+        return true;
+    }
+
+    // Generic cover-message send (Mode 0 or Mode 1). Reuses the
+    // same REST shape as oslSendControlMessage but without the
+    // DPC0:: prefix gate, since Mode 1 covers start with DPC1::.
+    async function oslSendCoverMessage(channelId, coverString) {
+        if (!editOverlayAuthToken) {
+            console.log("[OSL] oslSendCoverMessage FAIL reason=no_auth_token");
+            return false;
+        }
+        if (typeof coverString !== "string" || coverString.length === 0) {
+            console.log("[OSL] oslSendCoverMessage FAIL reason=empty_cover");
+            return false;
+        }
+        const url = "/api/v9/channels/" + channelId + "/messages";
+        try {
+            // 9-B3: retry-on-stale-token wraps the bare fetch so a
+            // mid-rotation 401 doesn't tank a Mode 1 multi-chunk
+            // send. Any non-401 failure (403, 5xx, network) returns
+            // immediately — handled below as before.
+            const resp = await oslFetchWithTokenRetry(url, {
+                method: "POST",
+                headers: {
+                    Authorization: editOverlayAuthToken,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ content: coverString }),
+            });
+            if (resp && resp.ok) return true;
+            console.log(
+                "[OSL] oslSendCoverMessage FAIL channel=" + channelId +
+                    " status=" + (resp ? resp.status : "no_response")
+            );
+            return false;
+        } catch (err) {
+            console.log(
+                "[OSL] oslSendCoverMessage FAIL channel=" + channelId +
+                    " err=" + (err && err.message ? err.message : err)
+            );
+            return false;
         }
     }
 
@@ -1115,7 +1371,11 @@
         }
         const url = "/api/v9/channels/" + channelId + "/messages";
         try {
-            const resp = await fetch(url, {
+            // 9-B3: retry-on-stale-token wrapper. SKDM dispatch and
+            // burn-marker sends rely on this path; a stale-token
+            // 401 mid-burn or mid-SKDM would silently drop the
+            // control message.
+            const resp = await oslFetchWithTokenRetry(url, {
                 method: "POST",
                 headers: {
                     Authorization: editOverlayAuthToken,
@@ -1225,17 +1485,51 @@
             case OSL_RESULT_BURN_APPLIED:
                 console.log("[OSL] v=2 burn applied msg=" + msgId);
                 return true;
-            case OSL_RESULT_INVITATION_RECEIVED:
+            case OSL_RESULT_LEGACY_HANDSHAKE_IGNORED:
+                console.log("[OSL] legacy handshake ignored: msg=" + msgId);
+                return true;
+            case OSL_RESULT_SKDM_APPLIED:
+                // Phase 9-A3: SKDM applied silently. Rust already
+                // updated sender_key_state.json; the JS layer must
+                // NOT render this sentinel as visible text.
+                console.log("[OSL] v=4 SKDM applied msg=" + msgId);
+                return true;
+            case OSL_RESULT_MODE1_CONFLICT:
                 console.log(
-                    "[OSL] v=2 invitation received msg=" + msgId
+                    "[OSL] Mode 1 reassembly conflict; session dropped msg=" +
+                        msgId
                 );
                 return true;
-            case OSL_RESULT_RESPONSE_RECEIVED:
+            case OSL_RESULT_MODE1_INVALID:
                 console.log(
-                    "[OSL] v=2 response received msg=" + msgId
+                    "[OSL] Mode 1 chunk rejected (HMAC/header) msg=" + msgId
                 );
                 return true;
             default:
+                // Phase 9-B1: Mode 1 in-progress reassembly. The
+                // sentinel carries session_id|received|total. The
+                // locked UI policy is "cover-messages-stay-visible"
+                // — chunks 1..N-1 keep their sentence covers in the
+                // DOM (they read as innocuous English). Only the
+                // final chunk's decrypt resolves to plaintext, at
+                // which point the recv observer swaps the cover in
+                // the usual way.
+                if (
+                    typeof result === "string" &&
+                    result.indexOf(OSL_RESULT_MODE1_INCOMPLETE_PREFIX) === 0
+                ) {
+                    const tail = result.slice(
+                        OSL_RESULT_MODE1_INCOMPLETE_PREFIX.length
+                    );
+                    const parts = tail.split("|");
+                    const received = parts.length > 1 ? parts[1] : "?";
+                    const total = parts.length > 2 ? parts[2] : "?";
+                    console.log(
+                        "[OSL] Mode 1 reassembly incomplete msg=" + msgId +
+                            " " + received + "/" + total
+                    );
+                    return true;
+                }
                 return false;
         }
     }
@@ -1271,9 +1565,17 @@
             return null;
         }
         const members = Array.isArray(channelMembers) ? channelMembers : [];
-        const wire = await oslEncryptV2(plaintext, scope, members, selfDiscordId);
-        if (!wire) return null;
-        return await oslSendControlMessage(channelId, wire);
+        const out = await oslEncryptV2(plaintext, scope, members, selfDiscordId);
+        if (!out) return null;
+        // 9-B1: encrypt-v2 now returns { messages, ... }. The debug
+        // helper just ships every cover via the standard send path —
+        // identical to mode1SendPipeline minus the preview gate.
+        if (out.messages.length === 1) {
+            return await oslSendControlMessage(channelId, out.messages[0]);
+        }
+        const scopeKey = scope.kind + ":" + scope.id;
+        const ok = await mode1SendPipeline(channelId, out, scopeKey);
+        return ok ? true : null;
     };
 
     // ============================================================
@@ -1359,9 +1661,12 @@
         for (let i = 0; i < sealedBinary.length; i++) {
             sealedBytes[i] = sealedBinary.charCodeAt(i);
         }
-        // 8d-FIX2: octet-stream so Discord's CDN doesn't transcode.
+        // 8e: video/mp4 so Discord renders a video-card preview
+        // surface (not a `.bin` download card) AND doesn't transcode
+        // the bytes (unlike image MIMEs). The Rust seal command
+        // already wrapped our payload in an MP4 container.
         const sealedBlob = new Blob([sealedBytes], {
-            type: "application/octet-stream",
+            type: "video/mp4",
         });
         return {
             sealedBlob: sealedBlob,
@@ -1424,6 +1729,227 @@
             if (v.uploadFilename === uploadFilename) return v;
         }
         return null;
+    }
+
+    // ---- 8e-FIX3: attachment URL cache ----
+    //
+    // Discord's "video failed to load" file card for our zero-sample
+    // decoy MP4 (Phase 8e) doesn't render the CDN URL on any DOM
+    // attribute — the URL lives only in React state. The scanner's
+    // DOM walk (8e-FIX2) can't find it. We pull the URL out of the
+    // message API responses Discord fetches and stash it locally,
+    // keyed by Discord message_id. The scanner falls back to this
+    // cache when the DOM walk returns zero candidates.
+    //
+    // LRU at ~1000 entries (Map preserves insertion order; we touch-
+    // -bump on re-cache so active messages survive eviction). On
+    // overflow we drop the oldest 100.
+    if (!window.__oslAttachmentUrlCache) {
+        window.__oslAttachmentUrlCache = new Map();
+    }
+    const OSL_ATT_URL_CACHE_CAP = 1000;
+    const OSL_ATT_URL_CACHE_EVICT_BATCH = 100;
+
+    function oslCacheAttachmentUrls(msgId, attachments) {
+        if (!msgId || !Array.isArray(attachments) || attachments.length === 0) {
+            return 0;
+        }
+        const entries = [];
+        for (const a of attachments) {
+            if (!a || typeof a !== "object") continue;
+            const url = a.url || a.proxy_url || null;
+            const filename = a.filename || null;
+            if (typeof url !== "string" || typeof filename !== "string") continue;
+            entries.push({
+                url: url,
+                filename: filename,
+                contentType: a.content_type || null,
+                size: typeof a.size === "number" ? a.size : null,
+            });
+        }
+        if (entries.length === 0) return 0;
+        // Touch-bump so re-cached msgs move to the LRU tail.
+        if (window.__oslAttachmentUrlCache.has(msgId)) {
+            window.__oslAttachmentUrlCache.delete(msgId);
+        }
+        window.__oslAttachmentUrlCache.set(msgId, entries);
+        console.log(
+            "[OSL] attachment url cache: msg=" +
+                msgId +
+                " cached=" +
+                entries.length +
+                " filenames=" +
+                JSON.stringify(entries.map(function (e) {
+                    return e.filename;
+                }))
+        );
+        if (window.__oslAttachmentUrlCache.size > OSL_ATT_URL_CACHE_CAP) {
+            const before = window.__oslAttachmentUrlCache.size;
+            const iter = window.__oslAttachmentUrlCache.keys();
+            for (let i = 0; i < OSL_ATT_URL_CACHE_EVICT_BATCH; i++) {
+                const k = iter.next();
+                if (k.done) break;
+                window.__oslAttachmentUrlCache.delete(k.value);
+            }
+            const after = window.__oslAttachmentUrlCache.size;
+            console.log(
+                "[OSL] url cache evict: removed " +
+                    (before - after) +
+                    " oldest entries (was " +
+                    before +
+                    ", now " +
+                    after +
+                    ")"
+            );
+        }
+        return entries.length;
+    }
+
+    function oslGetCachedAttachmentUrls(msgId) {
+        if (!msgId) return null;
+        return window.__oslAttachmentUrlCache.get(msgId) || null;
+    }
+
+    /**
+     * Walk a parsed message-API response payload and cache any
+     * `attachments[]` URLs found. Handles both shapes Discord ships:
+     *   - single message object (POST send response, PATCH edit response)
+     *   - array of message objects (GET /messages history-load)
+     */
+    function oslMaybeCacheFromApiResponse(method, data, source) {
+        const src = source || "fetch";
+        let urlsCached = 0;
+        let msgs = 0;
+        let kind = "unknown";
+        if (Array.isArray(data)) {
+            kind = "history";
+            msgs = data.length;
+            for (const m of data) {
+                if (
+                    m &&
+                    typeof m.id === "string" &&
+                    Array.isArray(m.attachments) &&
+                    oslCacheAttachmentUrls(m.id, m.attachments) > 0
+                ) {
+                    urlsCached++;
+                }
+            }
+        } else if (data && typeof data === "object" && typeof data.id === "string") {
+            kind = method === "PATCH" ? "edit" : "send";
+            msgs = 1;
+            if (
+                Array.isArray(data.attachments) &&
+                oslCacheAttachmentUrls(data.id, data.attachments) > 0
+            ) {
+                urlsCached = 1;
+            }
+        }
+        if (urlsCached > 0) {
+            console.log(
+                "[OSL] msg api response (" +
+                    src +
+                    "): type=" +
+                    kind +
+                    " msgs=" +
+                    msgs +
+                    " urls_cached=" +
+                    urlsCached
+            );
+        }
+    }
+
+    /**
+     * Wrap a fetch Promise so the response body is cloned + parsed
+     * for `attachments[]` URL caching. The original Response is
+     * returned untouched. Body-read failures are swallowed (partial
+     * responses, non-JSON shapes) — message decryption falls back
+     * to the regular DOM walk when the cache is empty.
+     */
+    function oslCaptureMessageApiResponse(fetchPromise, method) {
+        return fetchPromise.then(function (resp) {
+            try {
+                if (resp && typeof resp.clone === "function") {
+                    const clone = resp.clone();
+                    clone.text().then(
+                        function (text) {
+                            if (!text) return;
+                            try {
+                                const data = JSON.parse(text);
+                                oslMaybeCacheFromApiResponse(
+                                    method,
+                                    data,
+                                    "fetch"
+                                );
+                            } catch (e) {
+                                // Not JSON / partial; skip.
+                            }
+                        },
+                        function () {
+                            // Body read rejected; skip.
+                        }
+                    );
+                }
+            } catch (e) {
+                console.warn(
+                    "[OSL] msg api response capture failed:",
+                    e
+                );
+            }
+            return resp;
+        });
+    }
+
+    // 8e-FIX4: shared URL pattern for /messages API calls — POST send,
+    // PATCH edit, GET history-load all flow through the same endpoint
+    // family. Used by the XHR open() proxy to decide whether to attach
+    // a response listener.
+    const MSG_API_RE =
+        /\/api\/v\d+\/channels\/\d+\/messages(?:\/\d+)?(?:\?|$)/;
+
+    // 9-A1b FIX-CARRY: periodic blob URL cleanup. Walks every
+    // [data-osl-injected="1"] element; if its containing <li> is no
+    // longer in document.body (Discord re-mounted or scrolled past),
+    // revoke the blob URL on the src. Without this, decrypted
+    // attachments leak ~1-10 MB per scrollback. The 60s cadence is
+    // a tradeoff between memory pressure and CPU churn; tune via
+    // OSL_BLOB_CLEANUP_INTERVAL_MS if it surfaces as a problem.
+    const OSL_BLOB_CLEANUP_INTERVAL_MS = 60 * 1000;
+    if (!window.__oslBlobCleanupInstalled) {
+        window.__oslBlobCleanupInstalled = true;
+        nativeSetInterval(function () {
+            try {
+                const injected = document.querySelectorAll(
+                    '[data-osl-injected="1"]'
+                );
+                let revoked = 0;
+                for (const el of injected) {
+                    const li = el.closest('li[id^="chat-messages-"]');
+                    if (li && document.contains(li)) continue;
+                    const src = el.getAttribute("src");
+                    if (
+                        typeof src === "string" &&
+                        src.indexOf("blob:") === 0
+                    ) {
+                        try {
+                            URL.revokeObjectURL(src);
+                            revoked++;
+                        } catch (_) {}
+                    }
+                    try {
+                        el.remove();
+                    } catch (_) {}
+                }
+                if (revoked > 0) {
+                    console.log(
+                        "[OSL] blob cleanup: revoked " +
+                            revoked +
+                            " orphaned blob URLs"
+                    );
+                }
+            } catch (e) {
+                console.warn("[OSL] blob cleanup threw:", e);
+            }
+        }, OSL_BLOB_CLEANUP_INTERVAL_MS);
     }
 
     /**
@@ -1579,12 +2105,8 @@
             console.log("[OSL] step1: scope unresolvable, passthrough");
             return Reflect.apply(origSend, xhr, args);
         }
-        if (oslBurnedScopesShouldSkip(scope.channel_id || scope.id)) {
-            oslToast(
-                "Cannot send attachment to burned scope. Re-engage encryption first by sending a text message."
-            );
-            return oslAbortXhr(xhr, "burned scope", channelId);
-        }
+        // 9-A1c: auto-unburn removed. Burned scopes are permanent
+        // until the user manually re-engages via the composer toggle.
 
         // Pre-validate every file. Reject the whole batch on any
         // failure (strict all-or-nothing).
@@ -1606,8 +2128,12 @@
                 );
                 return oslAbortXhr(xhr, "unsupported ext: " + f.filename, channelId);
             }
-            if (f.file_size > 24 * 1024 * 1024) {
-                oslToast("File too large for encrypted upload (max 24 MB)");
+            // 8e: 23 MB cap (was 24 MB on .bin). The MP4 decoy +
+            // free-box framing add ~12 KB; cutting the input cap by
+            // 1 MB keeps borderline uploads safely under Discord's
+            // 25 MB free-tier limit with headroom for AEAD framing.
+            if (f.file_size > 23 * 1024 * 1024) {
+                oslToast("File too large for encrypted upload (max 23 MB)");
                 return oslAbortXhr(
                     xhr,
                     "oversize: " + f.filename + " " + f.file_size + "B",
@@ -1623,19 +2149,19 @@
         const indexToTempId = {};
         body.files.forEach(function (f, i) {
             const reservedSize = oslReservedSizeFor(f.file_size);
-            // 8d-FIX2: `.bin` (was `.png` through 8d). Discord
-            // transcodes any image MIME at the CDN — even the raw
-            // cdn.discordapp.com URL serves a re-encoded copy that
-            // strips our wire bytes. application/octet-stream is
-            // served through untouched. Non-OSL viewers see a
-            // generic file-attachment card instead of a gray decoy.
+            // 8e: `.mp4` (was `.bin` post-8d-FIX2, `.png` through 8d).
+            // MP4 is a non-image MIME that Discord doesn't transcode,
+            // and renders as a video-card preview surface instead of
+            // a generic download card — better visual UX for non-OSL
+            // viewers. The Rust seal command wraps our payload inside
+            // an MP4 `free` box appended to a decoy MP4 container.
             const randomFilename = (function () {
                 const a = new Uint8Array(4);
                 crypto.getRandomValues(a);
                 let s = "";
                 for (const x of a)
                     s += x.toString(16).padStart(2, "0");
-                return s + ".bin";
+                return s + ".mp4";
             })();
             const tempId =
                 "tmp:" +
@@ -1670,12 +2196,13 @@
             indexToTempId[i] = tempId;
             f.filename = randomFilename;
             f.file_size = reservedSize;
-            // 8d-FIX2: declare octet-stream so Discord doesn't
-            // route the file through its image transcoder. The
-            // `content_type` field is honoured by Discord's pre-
-            // upload flow and propagated as Content-Type on the
-            // GCS presigned PUT URL.
-            f.content_type = "application/octet-stream";
+            // 8e: declare video/mp4 so Discord renders a video-card
+            // preview surface (better UX than the .bin download card)
+            // and doesn't transcode our bytes (MP4 isn't re-encoded
+            // the way image MIMEs are). The `content_type` here is
+            // honoured by Discord's pre-upload flow and propagated as
+            // Content-Type on the GCS presigned PUT URL.
+            f.content_type = "video/mp4";
             console.log(
                 "[OSL] " +
                     oslLogTime() +
@@ -1685,7 +2212,7 @@
                     randomFilename +
                     " reserved_size=" +
                     reservedSize +
-                    " content_type=application/octet-stream"
+                    " content_type=video/mp4"
             );
         });
 
@@ -1947,7 +2474,12 @@
             oslToast("Encryption failed, attachment not sent");
             return oslAbortXhr(xhr, "step2: no self_discord_id");
         }
-        const sealRes = await oslInvoke("osl_seal_attachment_with_cover_v2", {
+        // 8e: V3 seal — MP4-wrapped wire. Cover envelope still lives
+        // inside the file; outer wrapper is now an MP4 container so
+        // the upload MIME is video/mp4 (video-card preview, no
+        // transcode) instead of the .bin download card the V2 wire
+        // produced post-8d-FIX2.
+        const sealRes = await oslInvoke("osl_seal_attachment_with_cover_v3", {
             scopeInput: reservation.scope,
             channelMembers: reservation.channelMembers,
             selfDiscordId: selfId,
@@ -1999,12 +2531,13 @@
                 sealedBytes.length
         );
 
-        // 8d-FIX2: serve as application/octet-stream so Discord's
-        // CDN never tries to transcode it. (Pre-FIX2 we used
-        // image/png + .png to match the decoy wrapper; the decoy
-        // is gone and the wrapper is now .bin end-to-end.)
+        // 8e: serve as video/mp4 so Discord's CDN doesn't transcode
+        // (MP4 isn't re-encoded the way image MIMEs are) and the
+        // file renders as a video-card preview on non-OSL clients.
+        // The Rust seal command already wrapped our payload in an
+        // MP4 container.
         const newBody = new Blob([sealedBytes], {
-            type: "application/octet-stream",
+            type: "video/mp4",
         });
         return Reflect.apply(origSend, xhr, [newBody]);
     }
@@ -2324,6 +2857,354 @@
         return toast;
     }
 
+    // ============================================================
+    // 9-D: oslBanner — persistent bottom-right notification with
+    // optional action buttons. Sibling to #__osl_toast_stack so a
+    // pinned banner doesn't block transient toasts above it. Used
+    // for the VPN warning ("Dismiss" / "Don't show again").
+    //
+    // Idempotent on `#__osl_banner`: a second oslBanner call replaces
+    // any existing banner content. Returns the banner element so
+    // callers can dismiss early via `el.remove()`.
+    // ============================================================
+    function oslBanner(opts) {
+        opts = opts || {};
+        const existing = document.getElementById("__osl_banner");
+        if (existing) existing.remove();
+        const banner = document.createElement("div");
+        banner.id = "__osl_banner";
+        banner.style.position = "fixed";
+        banner.style.bottom = "16px";
+        banner.style.right = "16px";
+        banner.style.zIndex = "99998";
+        banner.style.maxWidth = "380px";
+        banner.style.background = "var(--background-floating, #18191c)";
+        banner.style.color = "var(--text-normal, #dbdee1)";
+        banner.style.padding = "14px 16px 14px 18px";
+        banner.style.borderRadius = "8px";
+        banner.style.borderLeft = "4px solid var(--status-warning, #f0b132)";
+        banner.style.fontSize = "13px";
+        banner.style.lineHeight = "1.5";
+        banner.style.boxShadow = "0 6px 18px rgba(0, 0, 0, 0.45)";
+        banner.style.display = "flex";
+        banner.style.flexDirection = "column";
+        banner.style.gap = "10px";
+        banner.style.pointerEvents = "auto";
+
+        const close = document.createElement("button");
+        close.textContent = "✕";
+        close.setAttribute("aria-label", "Close");
+        close.style.position = "absolute";
+        close.style.top = "6px";
+        close.style.right = "8px";
+        close.style.background = "transparent";
+        close.style.border = "none";
+        close.style.color = "var(--interactive-normal, #b5bac1)";
+        close.style.cursor = "pointer";
+        close.style.fontSize = "14px";
+        close.style.padding = "2px 6px";
+        close.addEventListener("click", function () {
+            if (banner.parentNode) banner.parentNode.removeChild(banner);
+            if (typeof opts.onClose === "function") {
+                try {
+                    opts.onClose();
+                } catch (_) {}
+            }
+        });
+        banner.appendChild(close);
+
+        const msg = document.createElement("div");
+        msg.textContent = String(opts.message || "");
+        msg.style.paddingRight = "16px";
+        msg.style.whiteSpace = "pre-line";
+        banner.appendChild(msg);
+
+        if (Array.isArray(opts.actions) && opts.actions.length > 0) {
+            const row = document.createElement("div");
+            row.style.display = "flex";
+            row.style.gap = "8px";
+            row.style.justifyContent = "flex-end";
+            for (const act of opts.actions) {
+                const btn = document.createElement("button");
+                btn.textContent = String(act.label || "");
+                btn.style.padding = "6px 12px";
+                btn.style.borderRadius = "4px";
+                btn.style.fontSize = "13px";
+                btn.style.cursor = "pointer";
+                btn.style.border = "none";
+                if (act.secondary) {
+                    btn.style.background = "transparent";
+                    btn.style.color = "var(--text-muted, #949ba4)";
+                    btn.style.border = "1px solid var(--background-modifier-accent, #3f4147)";
+                } else {
+                    btn.style.background = "var(--brand-experiment, #5865f2)";
+                    btn.style.color = "white";
+                }
+                btn.addEventListener("click", function () {
+                    if (banner.parentNode) banner.parentNode.removeChild(banner);
+                    if (typeof act.onClick === "function") {
+                        try {
+                            act.onClick();
+                        } catch (_) {}
+                    }
+                });
+                row.appendChild(btn);
+            }
+            banner.appendChild(row);
+        }
+
+        document.body.appendChild(banner);
+        return banner;
+    }
+
+    // ============================================================
+    // 9-D: oslSpotlight — the onboarding tour's primary visual.
+    //
+    // Renders a full-screen dim backdrop with an optional rectangular
+    // cutout around `opts.target`, a tooltip card positioned relative
+    // to the target (or centered when target is null), and the
+    // action button + optional skip link.
+    //
+    // Keyboard contract:
+    //   Enter / ArrowRight → advance (calls opts.onAdvance)
+    //   Esc → skip if opts.onSkip is set, else no-op
+    //   Backdrop click → soft-pause (no advance — explicit choice
+    //                    per the D spec's locked design)
+    //
+    // Edge case: `opts.target` selector may not yet exist (e.g. tour
+    // fires before Discord's loaded enough). Caller should resolve
+    // the element ahead of time; for the slide driver, see the
+    // `waitForElement` helper.
+    //
+    // Z-index 99999 (below oslConfirm modals at 100000, above the
+    // VPN banner at 99998 — keeps the priority ordering sane).
+    //
+    // Returns `{ el, close }`. `close()` removes the overlay and
+    // unbinds listeners; callers must close before constructing the
+    // next slide.
+    // ============================================================
+    function oslSpotlight(opts) {
+        opts = opts || {};
+        const overlay = document.createElement("div");
+        overlay.setAttribute("data-osl-modal", "1");
+        overlay.setAttribute("data-osl-tour", "1");
+        overlay.style.position = "fixed";
+        overlay.style.inset = "0";
+        overlay.style.zIndex = "99999";
+        overlay.style.pointerEvents = "auto";
+
+        const dimBg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        dimBg.setAttribute("width", "100%");
+        dimBg.setAttribute("height", "100%");
+        dimBg.style.position = "absolute";
+        dimBg.style.inset = "0";
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        const mask = document.createElementNS("http://www.w3.org/2000/svg", "mask");
+        const maskId = "__osl_tour_mask_" + Math.floor(Math.random() * 1e9);
+        mask.setAttribute("id", maskId);
+        const maskBg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        maskBg.setAttribute("width", "100%");
+        maskBg.setAttribute("height", "100%");
+        maskBg.setAttribute("fill", "white");
+        mask.appendChild(maskBg);
+        const cutout = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        cutout.setAttribute("fill", "black");
+        cutout.setAttribute("rx", "6");
+        cutout.setAttribute("ry", "6");
+        mask.appendChild(cutout);
+        defs.appendChild(mask);
+        dimBg.appendChild(defs);
+        const dimRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        dimRect.setAttribute("width", "100%");
+        dimRect.setAttribute("height", "100%");
+        dimRect.setAttribute("fill", "rgba(0, 0, 0, 0.65)");
+        dimRect.setAttribute("mask", "url(#" + maskId + ")");
+        dimBg.appendChild(dimRect);
+        overlay.appendChild(dimBg);
+
+        const card = document.createElement("div");
+        card.style.position = "absolute";
+        card.style.background = "var(--background-floating, #18191c)";
+        card.style.color = "var(--text-normal, #dbdee1)";
+        card.style.padding = "20px 22px";
+        card.style.borderRadius = "10px";
+        card.style.boxShadow = "0 12px 28px rgba(0, 0, 0, 0.55)";
+        card.style.maxWidth = "420px";
+        card.style.minWidth = "320px";
+        card.style.fontSize = "14px";
+        card.style.lineHeight = "1.55";
+
+        if (typeof opts.onSkip === "function") {
+            const skipLink = document.createElement("button");
+            skipLink.textContent = "Skip tour";
+            skipLink.style.position = "absolute";
+            skipLink.style.top = "10px";
+            skipLink.style.right = "12px";
+            skipLink.style.background = "transparent";
+            skipLink.style.border = "none";
+            skipLink.style.color = "var(--text-muted, #949ba4)";
+            skipLink.style.fontSize = "12px";
+            skipLink.style.cursor = "pointer";
+            skipLink.style.padding = "2px 4px";
+            skipLink.addEventListener("click", function (e) {
+                e.stopPropagation();
+                doSkip();
+            });
+            card.appendChild(skipLink);
+        }
+
+        const titleEl = document.createElement("h3");
+        titleEl.style.margin = "0 0 10px 0";
+        titleEl.style.fontSize = "18px";
+        titleEl.style.fontWeight = "600";
+        titleEl.style.paddingRight = "60px";
+        titleEl.textContent = opts.title || "";
+        card.appendChild(titleEl);
+
+        const bodyEl = document.createElement("div");
+        bodyEl.style.whiteSpace = "pre-line";
+        bodyEl.style.marginBottom = "16px";
+        bodyEl.textContent = opts.body || "";
+        card.appendChild(bodyEl);
+
+        if (opts.formContent instanceof Node) {
+            card.appendChild(opts.formContent);
+        }
+
+        const advanceBtn = document.createElement("button");
+        advanceBtn.textContent = opts.buttonLabel || "Next →";
+        advanceBtn.style.padding = "8px 16px";
+        advanceBtn.style.borderRadius = "5px";
+        advanceBtn.style.fontSize = "14px";
+        advanceBtn.style.fontWeight = "500";
+        advanceBtn.style.cursor = "pointer";
+        advanceBtn.style.border = "none";
+        advanceBtn.style.background = "var(--brand-experiment, #5865f2)";
+        advanceBtn.style.color = "white";
+        advanceBtn.style.float = "right";
+        advanceBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            doAdvance();
+        });
+        const actionRow = document.createElement("div");
+        actionRow.style.display = "flex";
+        actionRow.style.justifyContent = "flex-end";
+        actionRow.appendChild(advanceBtn);
+        card.appendChild(actionRow);
+
+        overlay.appendChild(card);
+
+        function positionCard() {
+            const target = opts.target;
+            if (!target || !document.body.contains(target)) {
+                cutout.setAttribute("x", "-100");
+                cutout.setAttribute("y", "-100");
+                cutout.setAttribute("width", "0");
+                cutout.setAttribute("height", "0");
+                card.style.top = "50%";
+                card.style.left = "50%";
+                card.style.transform = "translate(-50%, -50%)";
+                return;
+            }
+            const r = target.getBoundingClientRect();
+            const pad = 8;
+            cutout.setAttribute("x", String(Math.max(0, r.left - pad)));
+            cutout.setAttribute("y", String(Math.max(0, r.top - pad)));
+            cutout.setAttribute("width", String(r.width + 2 * pad));
+            cutout.setAttribute("height", String(r.height + 2 * pad));
+            card.style.transform = "none";
+            const vh = window.innerHeight;
+            const vw = window.innerWidth;
+            const cardH = 220;
+            const cardW = 360;
+            let top, left;
+            if (r.top > vh / 2) {
+                top = Math.max(20, r.top - cardH - 20);
+            } else {
+                top = Math.min(vh - cardH - 20, r.bottom + 20);
+            }
+            left = Math.max(20, Math.min(vw - cardW - 20, r.left + r.width / 2 - cardW / 2));
+            card.style.top = top + "px";
+            card.style.left = left + "px";
+        }
+        positionCard();
+
+        function onResize() {
+            positionCard();
+        }
+        window.addEventListener("resize", onResize);
+
+        let mutObs = null;
+        if (opts.target && opts.target.parentNode) {
+            try {
+                mutObs = new MutationObserver(function () {
+                    positionCard();
+                });
+                mutObs.observe(opts.target.parentNode, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                });
+            } catch (_) {}
+        }
+
+        function onKey(e) {
+            if (e.key === "Enter" || e.key === "ArrowRight") {
+                e.preventDefault();
+                e.stopPropagation();
+                doAdvance();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                doSkip();
+            }
+        }
+        window.addEventListener("keydown", onKey, true);
+
+        overlay.addEventListener("click", function (e) {
+            if (e.target === overlay || e.target === dimBg || e.target === dimRect) {
+                // Soft-pause: do nothing (locked design).
+                e.stopPropagation();
+            }
+        });
+
+        function close() {
+            window.removeEventListener("resize", onResize);
+            window.removeEventListener("keydown", onKey, true);
+            if (mutObs) mutObs.disconnect();
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        }
+
+        function doAdvance() {
+            close();
+            if (typeof opts.onAdvance === "function") {
+                try {
+                    opts.onAdvance();
+                } catch (e) {
+                    console.error("[OSL] tour: onAdvance threw", e);
+                }
+            }
+        }
+        function doSkip() {
+            if (typeof opts.onSkip !== "function") return;
+            close();
+            try {
+                opts.onSkip();
+            } catch (e) {
+                console.error("[OSL] tour: onSkip threw", e);
+            }
+        }
+
+        document.body.appendChild(overlay);
+        nativeSetTimeout(function () {
+            try {
+                advanceBtn.focus();
+            } catch (_) {}
+        }, 30);
+
+        return { el: overlay, close: close };
+    }
+
     /**
      * Phase 7c: modal confirmation dialog. Returns a Promise that
      * resolves to `true` on confirm, `false` on cancel /
@@ -2339,6 +3220,9 @@
     function oslConfirm(opts) {
         return new Promise(function (resolve) {
             const backdrop = document.createElement("div");
+            // 9-B4: tag every OSL modal backdrop so the global keybind
+            // dispatcher can suppress firing while a modal is up.
+            backdrop.setAttribute("data-osl-modal", "1");
             backdrop.style.position = "fixed";
             backdrop.style.inset = "0";
             backdrop.style.background = "rgba(0, 0, 0, 0.5)";
@@ -2549,8 +3433,50 @@
     }
 
     /**
+     * 9-TD1.4: after any state-mutating invoke, poll the persist-
+     * error slot once and surface a toast if a disk write failed
+     * silently. Idempotent — the take-and-clear semantics mean
+     * over-polling is harmless; the cost of NOT polling is the user
+     * thinking a change saved when it didn't.
+     *
+     * Fire-and-forget — callers don't await this; it runs after
+     * their primary invoke completes. A failing poll itself is
+     * silently swallowed (no double-toast).
+     */
+    function oslCheckPersistError() {
+        try {
+            const invoke = getTauriInvoke();
+            if (typeof invoke !== "function") return;
+            invoke("osl_take_last_persist_error", {})
+                .then(function (msg) {
+                    if (typeof msg === "string" && msg.length > 0) {
+                        try {
+                            if (typeof oslToast === "function") {
+                                oslToast(
+                                    "Couldn't save change to disk — please try again. (" + msg + ")",
+                                    { durationMs: 6000 }
+                                );
+                            } else {
+                                console.warn("[OSL] persist error: " + msg);
+                            }
+                        } catch (_) {}
+                    }
+                })
+                .catch(function () {});
+        } catch (_) {}
+    }
+
+    /**
      * Phase 7c: invoke a Tauri command with a uniform error
      * shape. Returns `{ ok: true, value }` or `{ ok: false, error }`.
+     *
+     * 9-TD1.4: after every successful non-self invoke, opportunistically
+     * poll the persist-error slot. If a recent Rust-side persist
+     * failed silently (whitelist write, burn flush, settings save,
+     * gateway-tap state push, etc.), the user sees a toast. Skips the
+     * poll if we're invoking the take-error command itself (avoids
+     * infinite recursion) and if the command failed (don't double-
+     * toast a single failure).
      */
     async function oslInvoke(name, args) {
         const invoke = getTauriInvoke();
@@ -2559,6 +3485,9 @@
         }
         try {
             const value = await invoke(name, args || {});
+            if (name !== "osl_take_last_persist_error") {
+                oslCheckPersistError();
+            }
             return { ok: true, value: value };
         } catch (err) {
             const msg = err && err.message ? err.message : String(err);
@@ -2576,15 +3505,44 @@
      * currentColor so theme-aware CSS variables apply.
      */
     function oslLockSvg(state) {
-        const open = state === "open";
+        // 9-C1 Stage 4: tri-state lock — "closed" (all whitelisted),
+        // "partial" (some), "open" (none), "unknown" (roster unknown).
+        // The shackle path varies per state; the body is constant.
+        let shackle;
+        switch (state) {
+            case "closed":
+                shackle = '<path d="M8 11V7a4 4 0 0 1 8 0v4"/>';
+                break;
+            case "partial":
+                // Half-open shackle — closes from the left, dashes
+                // on the right.
+                shackle =
+                    '<path d="M8 11V7a4 4 0 0 1 4-4"/>' +
+                    '<path d="M12 3a4 4 0 0 1 4 4" stroke-dasharray="2 2"/>';
+                break;
+            case "unknown":
+                // Question-mark inside an upside-down shackle.
+                return (
+                    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+                    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+                    'stroke-linejoin="round" aria-hidden="true">' +
+                    '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
+                    '<path d="M8 11V7a4 4 0 0 1 8 0"/>' +
+                    '<text x="12" y="19" text-anchor="middle" font-size="9" ' +
+                    'font-weight="bold" stroke="none" fill="currentColor">?</text>' +
+                    "</svg>"
+                );
+            case "open":
+            default:
+                shackle = '<path d="M8 11V7a4 4 0 0 1 8 0"/>';
+                break;
+        }
         return (
             '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
             'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
             'stroke-linejoin="round" aria-hidden="true">' +
             '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
-            (open
-                ? '<path d="M8 11V7a4 4 0 0 1 8 0"/>'
-                : '<path d="M8 11V7a4 4 0 0 1 8 0v4"/>') +
+            shackle +
             "</svg>"
         );
     }
@@ -2707,6 +3665,9 @@
         const ctx = oslCurrentChannelContext();
         const dd = document.createElement("div");
         dd.id = "__osl_scope_dropdown";
+        // 9-B4: dropdown intercepts Escape and traps user focus, so
+        // treat it as a modal for the global keybind suppression gate.
+        dd.setAttribute("data-osl-modal", "1");
         const rect = anchorBtn.getBoundingClientRect();
         dd.style.position = "fixed";
         dd.style.top = rect.bottom + 6 + "px";
@@ -2962,11 +3923,107 @@
         hasWhitelist: false,
     };
 
+    /**
+     * 9-C1-FIX1: locate the channel header across DM / GC / server-channel
+     * contexts. The pre-FIX1 selector
+     * `section[class*="title_"][class*="container__"]` had a double-
+     * underscore matcher on `container__` that only matched some
+     * Discord builds; on builds using single-underscore class hashes
+     * (`container_<hash>`) the selector returned null in GC + server
+     * channel headers and the icon row was never installed.
+     *
+     * New strategy: try the strictest selector first (preserve any
+     * lucky-match behaviour from older builds), then progressively
+     * broaden. Each candidate is validated by checking it actually
+     * contains *some* icon-row affordance via
+     * `oslFindHeaderIconContainer`.
+     */
+    function oslFindChannelHeader() {
+        const candidates = [
+            'section[class*="title_"][class*="container__"]',
+            'section[class*="title_"][class*="container_"]',
+            'section[class*="title_"]',
+            'header[class*="title_"]',
+            // Fallback: the chat area's <section> wrapper. Discord
+            // renders the channel topbar as a direct child.
+            'section[class*="chat_"] > section',
+        ];
+        for (const sel of candidates) {
+            try {
+                const el = document.querySelector(sel);
+                if (el) return el;
+            } catch (_) {}
+        }
+        return null;
+    }
+
+    /**
+     * 9-C1-FIX1: locate the icon-row container inside a channel
+     * header. Discord uses several class shapes across DM / GC /
+     * server contexts:
+     *   - DM 1-on-1:    `[class*="iconWrapper_"]` per icon
+     *   - GC:           same
+     *   - Server text:  `[class*="toolbar_"]` wrapping the icon row,
+     *                   `iconWrapper_*` per child icon
+     *
+     * We try iconWrapper-style anchors first (pre-FIX1 behaviour for
+     * back-compat), then `toolbar_*`, then fall back to "any element
+     * inside header that has ≥2 button-like children."
+     */
     function oslFindHeaderIconContainer(header) {
-        const firstIcon = header.querySelector('[class*="iconWrapper__"]');
-        return firstIcon && firstIcon.parentElement
-            ? firstIcon.parentElement
-            : null;
+        if (!header) return null;
+
+        // 9-C1-FIX2: prefer `toolbar_*` first. Discord uses
+        // `toolbar_<hash>` as the wrapping element for the right-hand
+        // icon row across DM, GC, AND server-channel headers.
+        // Pre-FIX2 the resolver took the parent of the FIRST
+        // `iconWrapper_*` in document order; in server channels the
+        // first match is often the leftmost channel-mute / topic icon
+        // whose parent is a left-side container, not the right-hand
+        // icon row. Toolbar-first lands every injection in the same
+        // visual spot regardless of which context we're in.
+        const toolbar = header.querySelector('[class*="toolbar_"]');
+        if (toolbar) return toolbar;
+
+        // Fallback chain: iconWrapper parent. Try double-underscore
+        // first (older builds), then single-underscore. The "use
+        // LAST iconWrapper" variant guards against the same wrong-
+        // sibling-container problem the toolbar branch was added to
+        // fix, but is only reached when no toolbar exists.
+        const anchorSelectors = [
+            '[class*="iconWrapper__"]',
+            '[class*="iconWrapper_"]',
+        ];
+        for (const sel of anchorSelectors) {
+            const matches = header.querySelectorAll(sel);
+            if (matches.length === 0) continue;
+            const last = matches[matches.length - 1];
+            if (last && last.parentElement) {
+                return last.parentElement;
+            }
+        }
+
+        // Final fallback: scan the header subtree for a container
+        // holding ≥2 button-like children. Avoids hardcoding Discord
+        // class names entirely.
+        const nodes = header.querySelectorAll("div, nav, section");
+        for (const n of nodes) {
+            let buttonish = 0;
+            for (const c of n.children) {
+                if (
+                    (c.tagName === "DIV" || c.tagName === "BUTTON") &&
+                    (c.getAttribute("role") === "button" ||
+                        c.getAttribute("aria-label") ||
+                        (c.className &&
+                            typeof c.className === "string" &&
+                            c.className.indexOf("icon") !== -1))
+                ) {
+                    buttonish++;
+                    if (buttonish >= 2) return n;
+                }
+            }
+        }
+        return null;
     }
 
     // 7d-D: account burn icon, distinct from the scope-burn button
@@ -3117,9 +4174,21 @@
     }
 
     function oslAccountBurnInject(header) {
-        if (!header) return;
+        if (!header) {
+            console.log(
+                "[OSL] account burn: no header container in context=" +
+                    oslDetectChannelContext()
+            );
+            return;
+        }
         const container = oslFindHeaderIconContainer(header);
-        if (!container) return;
+        if (!container) {
+            console.log(
+                "[OSL] account burn: no icon-row container in context=" +
+                    oslDetectChannelContext()
+            );
+            return;
+        }
         // Idempotent: bail if the account burn already exists.
         if (
             container.querySelector(
@@ -3128,7 +4197,13 @@
         ) {
             return;
         }
-        const sample = header.querySelector('[class*="iconWrapper__"]');
+        // 9-C1-FIX1: broadened sample anchor — match the same
+        // single-or-double-underscore variants the header detector
+        // accepts, so the button inherits Discord's per-icon styling
+        // on every build.
+        const sample =
+            header.querySelector('[class*="iconWrapper__"]') ||
+            header.querySelector('[class*="iconWrapper_"]');
         const sampleClass = sample ? sample.className : "";
         const btn = document.createElement("div");
         btn.setAttribute("role", "button");
@@ -3170,6 +4245,10 @@
         // this one, so appending here keeps the icon inside the icon
         // group and before the search.
         container.appendChild(btn);
+        console.log(
+            "[OSL] account burn button injected: context=" +
+                oslDetectChannelContext()
+        );
     }
 
     // ---- 7d-PIVOT: composer encrypt toggle ----
@@ -3314,6 +4393,38 @@
             oslToast("Encrypt toggle failed: " + set.error);
             return;
         }
+        // 9-A1c: toggling encryption ON in a burned scope is the
+        // explicit manual re-engage path. Unburn synchronously so
+        // the next inbound DPC0 is decrypted instead of skipped, and
+        // persist via osl_unburn_scope (idempotent on both sides).
+        if (!currentOn) {
+            const scopeKey = oslBurnedScopesKey(scope.kind, scope.id);
+            const wasBurned =
+                window.__oslBurnedScopes &&
+                window.__oslBurnedScopes.has(scopeKey);
+            if (wasBurned) {
+                console.log(
+                    "[OSL] manual unburn: scope=" + scopeKey + " via UI toggle"
+                );
+                oslBurnedScopesRemove(scope.kind, scope.id);
+                try {
+                    oslInvoke("osl_unburn_scope", {
+                        scopeKind: scope.kind,
+                        scopeId: scope.id,
+                    }).catch(function (err) {
+                        console.error(
+                            "[OSL] manual unburn: osl_unburn_scope failed",
+                            err
+                        );
+                    });
+                } catch (err) {
+                    console.error(
+                        "[OSL] manual unburn: invoke threw",
+                        err
+                    );
+                }
+            }
+        }
         // Confirm visual matches the result (no-op if optimistic
         // matched).
         oslComposerToggleStyle(btn, !!set.value);
@@ -3380,11 +4491,51 @@
         oslComposerToggleRefresh(btn, opts).catch(function () {});
     }
 
+    /**
+     * 9-C1-FIX1: cheap classifier for log lines so we can tell which
+     * header context the injector is firing in (helps debug Discord
+     * class renames later).
+     */
+    function oslDetectChannelContext() {
+        try {
+            const path = (window.location && window.location.pathname) || "";
+            const parts = path.split("/").filter((x) => x);
+            // /channels/@me/<id>      → dm or gc (disambiguated below)
+            // /channels/<guildId>/<id> → server
+            if (parts[0] === "channels") {
+                if (parts[1] === "@me") {
+                    const ctx = oslCurrentChannelContext();
+                    if (ctx && ctx.channelType === 3) return "gc";
+                    return "dm";
+                }
+                if (parts.length >= 3) return "server";
+            }
+        } catch (_) {}
+        return "unknown";
+    }
+
     function oslHeaderInjectButtons(header) {
-        if (!header) return;
+        if (!header) {
+            console.log(
+                "[OSL] lock icon: no header container found in context=" +
+                    oslDetectChannelContext()
+            );
+            return;
+        }
         const container = oslFindHeaderIconContainer(header);
-        if (!container) return;
-        const sample = header.querySelector('[class*="iconWrapper__"]');
+        if (!container) {
+            console.log(
+                "[OSL] lock icon: no icon-row container found in context=" +
+                    oslDetectChannelContext()
+            );
+            return;
+        }
+        // Sample className: try the same-broadened anchor selectors
+        // we use in oslFindHeaderIconContainer so the new buttons
+        // inherit Discord's per-icon styling regardless of build.
+        const sample =
+            header.querySelector('[class*="iconWrapper__"]') ||
+            header.querySelector('[class*="iconWrapper_"]');
         const sampleClass = sample ? sample.className : "";
 
         // Don't double-inject; if the buttons exist already we just
@@ -3396,6 +4547,14 @@
             "[" + HEADER_BURN_DATA_ATTR + "='1']"
         );
 
+        if (encryptBtn && burnBtn) {
+            console.log(
+                "[OSL] lock icon already present: skipping context=" +
+                    oslDetectChannelContext()
+            );
+        }
+
+        let injectedAny = false;
         if (!encryptBtn) {
             encryptBtn = document.createElement("div");
             encryptBtn.setAttribute("role", "button");
@@ -3406,8 +4565,16 @@
             encryptBtn.style.alignItems = "center";
             encryptBtn.style.justifyContent = "center";
             encryptBtn.style.cursor = "pointer";
-            encryptBtn.addEventListener("click", oslOnEncryptToggleClick);
+            // 9-C1-FIX2: paint a default "unknown" glyph immediately
+            // so the icon is visible BEFORE the first summary fetch
+            // resolves (and stays visible if the fetch fails). The
+            // refresh path overwrites this once the summary lands.
+            encryptBtn.style.color = "var(--text-muted, #87898c)";
+            encryptBtn.innerHTML = oslLockSvg("unknown");
+            encryptBtn.title = "Whitelist state loading…";
+            encryptBtn.addEventListener("click", oslOnWhitelistIconClick);
             container.insertBefore(encryptBtn, container.firstChild);
+            injectedAny = true;
         }
 
         if (!burnBtn) {
@@ -3425,6 +4592,17 @@
             burnBtn.innerHTML = oslFlameSvg();
             burnBtn.addEventListener("click", oslOnBurnClick);
             container.insertBefore(burnBtn, encryptBtn.nextSibling);
+            injectedAny = true;
+        }
+
+        if (injectedAny) {
+            const ctx = oslCurrentChannelContext();
+            console.log(
+                "[OSL] lock icon injected: context=" +
+                    oslDetectChannelContext() +
+                    " channel_id=" +
+                    ((ctx && ctx.channelId) || "?")
+            );
         }
 
         // Refresh state.
@@ -3444,6 +4622,32 @@
     // Pass `{ force: true }` from cross-window-event listeners
     // (Rust side mutated state we couldn't otherwise see).
     let oslHeaderStateLastScopeKey = null;
+    // 9-C1 Stage 4: cache the most recent summary so the click
+    // handler doesn't have to round-trip again.
+    let oslHeaderLastSummary = null;
+
+    function oslHeaderChannelMembers(ctx) {
+        // For DM/GC the React fiber walk has the recipients directly.
+        // For server channels, we use the gateway tap's per-channel
+        // cache (populated by GUILD_CREATE / CHANNEL_CREATE frames
+        // in Stage 3). Returns an array of discord IDs; empty array
+        // means "roster unknown" → tri-state will render "unknown".
+        if (!ctx) return [];
+        if (Array.isArray(ctx.members) && ctx.members.length > 0) {
+            return ctx.members
+                .map((m) => (m && typeof m.id === "string" ? m.id : null))
+                .filter((s) => !!s);
+        }
+        try {
+            const cache = window.__OSL_CHANNEL_MEMBERS__;
+            if (cache && ctx.channelId && cache.get) {
+                const arr = cache.get(ctx.channelId);
+                if (Array.isArray(arr)) return arr.slice();
+            }
+        } catch (_) {}
+        return [];
+    }
+
     async function oslRefreshHeaderState(opts) {
         const ctx = oslCurrentChannelContext();
         if (!ctx || !ctx.channelId) {
@@ -3465,46 +4669,95 @@
             return;
         }
         oslHeaderStateLastScopeKey = key;
-        const result = await oslInvoke("osl_get_scope_encryption_state", {
+
+        const selfId = await oslSelfDiscordId();
+        const members = oslHeaderChannelMembers(ctx);
+        const result = await oslInvoke("osl_get_scope_whitelist_summary", {
             scopeInput: scopeInput,
+            channelMembers: members,
+            selfDiscordId: selfId || "",
         });
         if (!result.ok) {
             console.log(
-                "[OSL] header state refresh failed: " + result.error
+                "[OSL] header summary refresh failed: " + result.error
             );
+            // 9-C1-FIX2: paint a muted "unknown" lock so the user
+            // sees SOMETHING even when the summary command isn't
+            // available (capability gap, transient error, etc.). Do
+            // NOT bail with the button blank — that was the FIX1-era
+            // failure mode the live console traced.
+            encryptBtn.innerHTML = oslLockSvg("unknown");
+            encryptBtn.style.color = "var(--text-muted, #87898c)";
+            encryptBtn.setAttribute(
+                "aria-label",
+                "OSL whitelist: unknown (summary fetch failed)"
+            );
+            encryptBtn.title =
+                "Whitelist state unknown — " +
+                "summary fetch failed: " +
+                (result.error || "?");
+            // Allow next refresh attempt to retry — clear the cache
+            // sentinel so a follow-up channel switch (or force refresh)
+            // re-runs.
+            oslHeaderStateLastScopeKey = null;
             return;
         }
-        const st = result.value;
-        oslHeaderState.scopeKey = oslScopeStorageKey(scopeInput);
-        oslHeaderState.encryptToggle = !!st.encrypt_toggle;
-        oslHeaderState.hasWhitelist = !!st.has_whitelist;
-        // 7d-PIVOT: header lock now indicates WHITELIST coverage,
-        // not encrypt_toggle. The composer pill is the new
-        // encrypt-toggle control surface; this icon shows whether
-        // any peer in this scope is whitelisted to decrypt your
-        // messages. Two-state for this phase — gray (no peers
-        // whitelisted) vs green (≥ 1 peer whitelisted). The full
-        // tri-state (gray / yellow / green) tied to participant
-        // overlap is a follow-up.
-        encryptBtn.innerHTML = oslLockSvg(st.has_whitelist ? "closed" : "open");
-        encryptBtn.setAttribute(
-            "aria-label",
-            "OSL whitelist: " +
-                (st.has_whitelist ? "active" : "none")
-        );
+        const summary = result.value;
+        oslHeaderLastSummary = {
+            scopeInput: scopeInput,
+            members: members,
+            selfId: selfId,
+            summary: summary,
+        };
+        oslHeaderState.scopeKey = key;
+        oslHeaderState.encryptToggle = !!summary.encrypt_toggle;
+        oslHeaderState.hasWhitelist = summary.state !== "none";
+
+        // 9-C1 Stage 4: tri-state icon.
+        //   "all"     → closed/green
+        //   "some"    → partial/yellow
+        //   "none"    → open/gray
+        //   "unknown" → question-marked lock, muted
+        let lockState;
+        let color;
+        let label;
+        switch (summary.state) {
+            case "all":
+                lockState = "closed";
+                color = "var(--status-positive, #23a559)";
+                label = "Encrypting with everyone in " + oslScopeLabel(scopeInput);
+                break;
+            case "some":
+                lockState = "partial";
+                color = "var(--status-warning, #f0b132)";
+                label =
+                    "Encrypting with " +
+                    summary.whitelisted_count +
+                    "/" +
+                    summary.total_members +
+                    " in " +
+                    oslScopeLabel(scopeInput);
+                break;
+            case "none":
+                lockState = "open";
+                color = "var(--text-muted, #87898c)";
+                label = "No one whitelisted in " + oslScopeLabel(scopeInput);
+                break;
+            case "unknown":
+            default:
+                lockState = "unknown";
+                color = "var(--text-muted, #87898c)";
+                label =
+                    "Channel roster unknown — open the member list, " +
+                    "or click to refresh";
+                break;
+        }
+        encryptBtn.innerHTML = oslLockSvg(lockState);
+        encryptBtn.setAttribute("aria-label", "OSL whitelist: " + summary.state);
         encryptBtn.style.opacity = "1";
         encryptBtn.style.pointerEvents = "auto";
-        encryptBtn.style.color = st.has_whitelist
-            ? "var(--status-positive, #23a559)"
-            : "var(--text-muted, #87898c)";
-        encryptBtn.title = st.has_whitelist
-            ? "Whitelist active in " +
-              oslScopeLabel(scopeInput) +
-              " — click for whitelist details"
-            : "No whitelist in " +
-              oslScopeLabel(scopeInput) +
-              " — encrypted messages here go to self only. " +
-              "Add a peer via their profile popup.";
+        encryptBtn.style.color = color;
+        encryptBtn.title = label;
         if (burnBtn) {
             burnBtn.title =
                 "Burn your messages in " + oslScopeLabel(scopeInput);
@@ -3563,15 +4816,20 @@
         }
     }
 
-    // 7d-PIVOT: header-lock click is now a passive informational
-    // surface. The composer pill is the encrypt control; the header
-    // icon indicates whitelist coverage. Click opens a hint toast
-    // pointing at the whitelist management surface (settings window
-    // or profile popup). Full tri-state + bulk-toggle behavior
-    // (whitelist all participants on click) is a follow-up phase —
-    // it needs participant enumeration from Discord's React fiber
-    // which deserves a focused implementation.
-    async function oslOnEncryptToggleClick(e) {
+    // 9-C1 Stage 4: tri-state header lock click. The action depends
+    // on the current `summary.state`:
+    //   "none"    → bulk-set-whitelist for every non-self channel member
+    //   "all"     → bulk-unwhitelist every non-self channel member
+    //   "some"    → ask the user (modal): promote or demote?
+    //   "unknown" → refresh the cache + nudge the user to open the
+    //               member list to populate the roster
+    //
+    // When the action would affect more than 25 peers we surface a
+    // confirm modal first — a single click that whitelists 80+
+    // members would be impossible to undo by memory alone.
+    const BULK_CONFIRM_THRESHOLD = 25;
+
+    async function oslOnWhitelistIconClick(e) {
         e.preventDefault();
         e.stopPropagation();
         const ctx = oslCurrentChannelContext();
@@ -3580,12 +4838,99 @@
             oslToast("OSL: cannot determine current scope");
             return;
         }
-        oslToast(
-            "Whitelist management: open Settings → Whitelist Manager, " +
-                "or click a user's avatar + their OSL whitelist button. " +
-                "Use the composer pill to toggle encryption."
+        const selfId = await oslSelfDiscordId();
+        const members = oslHeaderChannelMembers(ctx).filter(
+            (m) => m !== selfId
         );
+
+        // Re-poll the summary right before acting — the user could
+        // have changed whitelists elsewhere since the last refresh.
+        const sumRes = await oslInvoke("osl_get_scope_whitelist_summary", {
+            scopeInput: scopeInput,
+            channelMembers: members.concat(selfId ? [selfId] : []),
+            selfDiscordId: selfId || "",
+        });
+        if (!sumRes.ok) {
+            oslToast("OSL: " + sumRes.error);
+            return;
+        }
+        const summary = sumRes.value;
+
+        if (summary.state === "unknown" || members.length === 0) {
+            oslToast(
+                "Channel roster unknown — open the member list once " +
+                    "so OSL can read who's here, then click again."
+            );
+            return;
+        }
+
+        const scopeLabel = oslScopeLabel(scopeInput);
+        let actionKind; // "set" | "unset"
+        if (summary.state === "none") {
+            actionKind = "set";
+        } else if (summary.state === "all") {
+            actionKind = "unset";
+        } else {
+            // "some" — ask which way to go.
+            const promote = await oslConfirm({
+                title: "Encrypt with everyone in " + scopeLabel + "?",
+                body:
+                    summary.whitelisted_count +
+                    " of " +
+                    summary.total_members +
+                    " are whitelisted. Click Confirm to add the remaining " +
+                    (summary.total_members - summary.whitelisted_count) +
+                    " peers; click Cancel to stop encrypting with the " +
+                    summary.whitelisted_count +
+                    " who are.",
+                confirmText: "Add the rest",
+                cancelText: "Stop with all",
+            });
+            actionKind = promote ? "set" : "unset";
+        }
+
+        if (members.length > BULK_CONFIRM_THRESHOLD) {
+            const verb = actionKind === "set" ? "whitelist" : "remove from whitelist";
+            const ok = await oslConfirm({
+                title: verb + " " + members.length + " peers?",
+                body:
+                    "This will " +
+                    verb +
+                    " " +
+                    members.length +
+                    " people at once in " +
+                    scopeLabel +
+                    ". The change applies locally only — peers aren't " +
+                    "notified beyond the normal scope-burn signal.",
+                confirmText: "Confirm",
+                cancelText: "Cancel",
+            });
+            if (!ok) return;
+        }
+
+        const cmd =
+            actionKind === "set"
+                ? "osl_bulk_set_whitelist"
+                : "osl_bulk_unwhitelist_scope";
+        const res = await oslInvoke(cmd, {
+            scopeInput: scopeInput,
+            memberDids: members,
+        });
+        if (!res.ok) {
+            oslToast("OSL: bulk action failed: " + res.error);
+            return;
+        }
+        oslToast(
+            (actionKind === "set" ? "Whitelisted " : "Removed ") +
+                res.value +
+                " peer" +
+                (res.value === 1 ? "" : "s") +
+                " in " +
+                scopeLabel
+        );
+        oslRefreshHeaderState({ force: true });
     }
+
 
     async function oslOnBurnClick(e) {
         e.preventDefault();
@@ -3661,11 +5006,38 @@
         } else if (!dataResult.ok) {
             console.log("[OSL][burn] burn_scope_data failed: " + dataResult.error);
         }
+        // 9-A1c: collect message IDs visible in the channel so the
+        // server can record them in the burn kill list. The decrypt
+        // entry-points (cmd_osl_decrypt_message_v2 /
+        // cmd_osl_open_attachment_v2) refuse to surface plaintext
+        // for any message_id in this list — defense-in-depth for
+        // the case where the scope-level skip cache is cleared by a
+        // later manual re-engage.
+        const burnedMessageIds = [];
+        try {
+            const burnChannelId =
+                scopeInput.channel_id || ctx.channelId || null;
+            if (burnChannelId) {
+                const items = document.querySelectorAll(
+                    'li[id^="chat-messages-' + burnChannelId + '-"]'
+                );
+                const re = /chat-messages-\d{15,22}-(\d{15,22})/;
+                items.forEach(function (li) {
+                    const m = re.exec(li.id);
+                    if (m && m[1]) burnedMessageIds.push(m[1]);
+                });
+            }
+        } catch (e) {
+            console.log(
+                "[OSL][burn] collecting kill list message IDs failed: " + e
+            );
+        }
         const markResult = await oslInvoke("osl_mark_scope_burned", {
             scopeKind: scopeInput.kind,
             scopeId: scopeInput.id,
             serverId: scopeInput.server_id || null,
             channelId: scopeInput.channel_id || ctx.channelId || null,
+            burnedMessageIds: burnedMessageIds,
         });
         if (!markResult.ok) {
             console.log("[OSL][burn] mark_scope_burned failed: " + markResult.error);
@@ -3700,6 +5072,148 @@
                 " messages destroyed)"
         );
         oslRefreshHeaderState();
+    }
+
+    // ============================================================
+    // Phase 9-B4: Global keybinds.
+    //
+    //   Ctrl+Shift+O           → open settings window
+    //   E (bare letter)        → flip the composer encrypt pill
+    //   B (bare letter)        → burn the current scope (confirms)
+    //   Ctrl+Shift+Backspace   → account-burn chord (arm/execute,
+    //                            reuses oslAccountBurnOnActivate)
+    //
+    // Dispatch gates (in this order; any tripping gate exits):
+    //   a. focused INPUT / TEXTAREA element → typing, not a keybind
+    //   b. focused contenteditable (composer, edit overlay, search) → same
+    //   c. an OSL modal is up (any element with [data-osl-modal='1']) →
+    //      don't compete with the modal's own input handling
+    //
+    // The bare-letter check is case-insensitive: pressing capslock-E
+    // is the same as e.
+    // ============================================================
+
+    function oslKeybindActiveIsTextEntry() {
+        const el = document.activeElement;
+        if (!el) return false;
+        const tag = el.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return true;
+        // contenteditable can be inherited from any ancestor. Walk up.
+        let node = el;
+        while (node && node.nodeType === 1) {
+            const ce = node.getAttribute && node.getAttribute("contenteditable");
+            if (ce === "true" || ce === "") return true;
+            node = node.parentElement;
+        }
+        return false;
+    }
+
+    function oslKeybindAnyModalOpen() {
+        return !!document.querySelector("[data-osl-modal='1']");
+    }
+
+    async function oslKeybindOpenSettings() {
+        console.log("[OSL] keybind: open settings");
+        const result = await oslInvoke("osl_open_settings_window", {});
+        if (!result.ok) {
+            console.error(
+                "[OSL] keybind: open settings failed: " + result.error
+            );
+            oslToast("Failed to open settings: " + result.error);
+        }
+    }
+
+    async function oslKeybindEncryptToggle() {
+        const btn = document.querySelector(
+            "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+        );
+        if (!btn) {
+            console.log("[OSL] keybind: encrypt toggle no-op (no pill mounted)");
+            return;
+        }
+        await oslComposerToggleOnClick(btn);
+        // After the async call, data-osl-encrypt-state reflects new state.
+        const state = btn.getAttribute("data-osl-encrypt-state") || "?";
+        console.log("[OSL] keybind: encrypt toggle (state=" + state + ")");
+    }
+
+    async function oslKeybindBurnScope() {
+        const ctx = oslCurrentChannelContext();
+        const scopeInput = ctx ? oslScopeForCurrentContext(ctx) : null;
+        if (!scopeInput) {
+            console.log("[OSL] keybind: burn no-op (no scope)");
+            return;
+        }
+        const scopeKey = scopeInput.kind + ":" + scopeInput.id;
+        console.log("[OSL] keybind: burn scope=" + scopeKey);
+        // Synthesize an event-shaped arg for oslOnBurnClick — it only
+        // touches preventDefault/stopPropagation.
+        oslOnBurnClick({
+            preventDefault: function () {},
+            stopPropagation: function () {},
+        });
+    }
+
+    function oslKeybindAccountBurnChord() {
+        const btn = document.querySelector(
+            "[" + HEADER_ACCOUNT_BURN_DATA_ATTR + "='1']"
+        );
+        if (!btn) {
+            console.log("[OSL] keybind: account burn no-op (no icon mounted)");
+            return;
+        }
+        const wasArmed = oslAccountBurnArmed;
+        oslAccountBurnOnActivate(btn);
+        console.log(
+            "[OSL] keybind: account burn chord (armed=" + (!wasArmed) + ")"
+        );
+    }
+
+    function oslGlobalKeydownDispatcher(event) {
+        // Modal gate runs uniformly: if an OSL modal is up, no keybind
+        // fires (the user can dismiss the modal first).
+        if (oslKeybindAnyModalOpen()) return;
+
+        const k = event.key;
+        const kLower = typeof k === "string" ? k.toLowerCase() : "";
+        const noMods = !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey;
+        const ctrlShift = event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey;
+        // Text-entry gate applies only to BARE-letter keybinds (e/b).
+        // Modifier-chord keybinds (Ctrl+Shift+O, Ctrl+Shift+Backspace)
+        // are intentional accelerators that should fire even while
+        // the composer is focused — that's the whole point of the
+        // chord, and Discord's text fields don't claim Ctrl+Shift+O
+        // or Ctrl+Shift+Backspace for anything.
+        const inTextEntry = oslKeybindActiveIsTextEntry();
+
+        if (ctrlShift && kLower === "o") {
+            event.preventDefault();
+            oslKeybindOpenSettings();
+            return;
+        }
+        if (ctrlShift && k === "Backspace") {
+            event.preventDefault();
+            oslKeybindAccountBurnChord();
+            return;
+        }
+        if (inTextEntry) return;
+        if (noMods && kLower === "e") {
+            event.preventDefault();
+            oslKeybindEncryptToggle();
+            return;
+        }
+        if (noMods && kLower === "b") {
+            event.preventDefault();
+            oslKeybindBurnScope();
+            return;
+        }
+    }
+
+    function oslInstallKeybinds() {
+        if (window.__oslKeybindsInstalled) return;
+        window.__oslKeybindsInstalled = true;
+        document.addEventListener("keydown", oslGlobalKeydownDispatcher, true);
+        console.log("[OSL] keybinds installed");
     }
 
     /**
@@ -3744,6 +5258,16 @@
         );
         let repainted = 0;
         let blanked = 0;
+        // Phase 9-A1b FIX10: also wipe decrypted attachment state so
+        // burned scopes hide their images, not just their text.
+        let injectedRemoved = 0;
+        let blobUrlsRevoked = 0;
+        // 9-A1c: split aftermath unhide counter into hidden vs swapped.
+        // Wrapper-path swaps stamp data-osl-swapped instead of
+        // data-osl-hidden; both need to be reverted post-burn so the
+        // native broken-video placeholder returns.
+        let unhidHidden = 0;
+        let unhidSwapped = 0;
         items.forEach(function (li) {
             const div = li.querySelector(
                 '[id^="' + RECV_MESSAGE_ID_PREFIX + '"]'
@@ -3788,6 +5312,72 @@
                 blanked++;
             }
             div.replaceChildren(span);
+
+            // 9-A1b FIX10: remove decrypted-attachment injections.
+            const injected = li.querySelectorAll('[data-osl-injected="1"]');
+            for (const el of injected) {
+                const src = el.getAttribute("src");
+                if (
+                    typeof src === "string" &&
+                    src.indexOf("blob:") === 0
+                ) {
+                    try {
+                        URL.revokeObjectURL(src);
+                        blobUrlsRevoked++;
+                    } catch (_) {}
+                }
+                try {
+                    el.remove();
+                    injectedRemoved++;
+                } catch (_) {}
+            }
+
+            // Un-hide any wrappers we hid OR swapped earlier so
+            // Discord's native "broken video" placeholder returns —
+            // that's a visible signal to the user that this slot
+            // held encrypted attachment data that's now burned.
+            const restorable = li.querySelectorAll(
+                '[data-osl-hidden="1"], [data-osl-swapped="1"]'
+            );
+            for (const el of restorable) {
+                const wasHidden = el.getAttribute("data-osl-hidden") === "1";
+                const wasSwapped = el.getAttribute("data-osl-swapped") === "1";
+                try {
+                    el.style.display = "";
+                    if (wasHidden) {
+                        el.removeAttribute("data-osl-hidden");
+                        unhidHidden++;
+                    }
+                    if (wasSwapped) {
+                        el.removeAttribute("data-osl-swapped");
+                        unhidSwapped++;
+                    }
+                } catch (_) {}
+            }
+
+            // Drop attachment URL cache entry for this message.
+            try {
+                if (window.__oslAttachmentUrlCache) {
+                    window.__oslAttachmentUrlCache.delete(messageId);
+                }
+            } catch (_) {}
+
+            // Drop decrypted-blob cache + revoke its URLs.
+            try {
+                if (window.__oslAttachmentDecrypted) {
+                    const cached =
+                        window.__oslAttachmentDecrypted.get(messageId);
+                    if (cached && Array.isArray(cached.blobUrls)) {
+                        for (const url of cached.blobUrls) {
+                            try {
+                                URL.revokeObjectURL(url);
+                                blobUrlsRevoked++;
+                            } catch (_) {}
+                        }
+                    }
+                    window.__oslAttachmentDecrypted.delete(messageId);
+                }
+            } catch (_) {}
         });
         console.log(
             "[OSL] burn aftermath: channel=" +
@@ -3797,7 +5387,15 @@
                 " repainted=" +
                 repainted +
                 " blanked=" +
-                blanked
+                blanked +
+                " injected_removed=" +
+                injectedRemoved +
+                " blob_urls_revoked=" +
+                blobUrlsRevoked +
+                " unhid_hidden=" +
+                unhidHidden +
+                " unhid_swapped=" +
+                unhidSwapped
         );
     }
 
@@ -3859,100 +5457,741 @@
     }
 
     /**
-     * Inside `li`, find every CDN-hosted media element (<img> for
-     * images, <a> with class containing "originalLink" for video
-     * thumbnails) whose filename matches `randomFilename`. The
-     * filename match is conservative: we look for the last
-     * URL path segment so query strings (Discord auth tokens) are
-     * ignored.
+     * 8e-FIX5: build an inline media element for swap injection.
+     * Returns a <video controls> for video MIMEs, <img> otherwise.
+     * Styling approximates Discord's normal embed image rendering
+     * so the swapped element fits the message flow without bespoke
+     * CSS. `data-osl-injected="1"` marks the replacement so the
+     * idempotency check in swap can skip a re-injection on the
+     * next observer pass.
+     */
+    function oslMakeInlineMedia(blobUrl, mime) {
+        if (typeof mime === "string" && mime.indexOf("video/") === 0) {
+            const video = document.createElement("video");
+            video.setAttribute("src", blobUrl);
+            video.setAttribute("controls", "controls");
+            video.setAttribute("preload", "metadata");
+            video.setAttribute("data-osl-injected", "1");
+            video.style.maxWidth = "550px";
+            video.style.maxHeight = "350px";
+            video.style.borderRadius = "8px";
+            return video;
+        }
+        const img = document.createElement("img");
+        img.setAttribute("src", blobUrl);
+        img.setAttribute("data-osl-injected", "1");
+        img.style.maxWidth = "550px";
+        img.style.maxHeight = "350px";
+        img.style.borderRadius = "8px";
+        img.style.objectFit = "contain";
+        return img;
+    }
+
+    /**
+     * 8e-FIX5: walk up from a URL-carrying element to find the
+     * Discord attachment-card wrapper. Discord's classnames are
+     * hash-suffixed (`messageAttachment-2L3vk7`, `attachment-3F8sJ`,
+     * etc.) so we substring-match the de-suffixed root tokens.
+     * Stops at the message <li> boundary so we never hide anything
+     * outside the message bubble. Returns null if no wrapper found
+     * within 8 ancestor levels — caller falls back to hiding `el`
+     * itself.
+     */
+    function oslFindAttachmentCardWrapper(el) {
+        let node = el;
+        for (let i = 0; i < 8 && node; i++) {
+            if (node.nodeType !== 1) {
+                node = node.parentNode;
+                continue;
+            }
+            if (node.tagName === "LI") return null;
+            const cls =
+                node.className && typeof node.className === "string"
+                    ? node.className.toLowerCase()
+                    : "";
+            if (
+                cls.indexOf("attachment") >= 0 ||
+                cls.indexOf("messageattachment") >= 0 ||
+                cls.indexOf("embed") >= 0 ||
+                cls.indexOf("mediaplaceholder") >= 0
+            ) {
+                return node;
+            }
+            node = node.parentNode;
+        }
+        return null;
+    }
+
+    /**
+     * Inside `li`, find every element whose attribute values carry
+     * a CDN URL whose last path segment matches `randomFilename`.
+     * Returns targets ordered by preferred swap strategy:
+     *   1. <img>  (just swap src)
+     *   2. <video> (just swap src)
+     *   3. <a>     (replace anchor with inline media)
+     *   4. wrapper (any other tag — hide its card ancestor, inject
+     *               inline media as a sibling)
+     *
+     * Phase 8e-FIX5 broadened path 4: Discord's "video failed to
+     * load" file card for our zero-sample decoy MP4 carries the
+     * CDN URL on a `<div data-*>` or `<span aria-*>` rather than
+     * any standard media tag — same pattern the FIX2 scanner walk
+     * targets.
      */
     function oslFindAttachmentTargets(li, randomFilename) {
         if (!li || !randomFilename) return [];
         const out = [];
-        const candidates = li.querySelectorAll(
-            "img, video, a[href*='discord']"
-        );
-        candidates.forEach(function (el) {
-            const url =
-                el.tagName === "A"
-                    ? el.getAttribute("href")
-                    : el.getAttribute("src");
-            if (typeof url !== "string") return;
-            // Extract the last path segment, drop any query string.
+        const seen = new Set();
+
+        const ATTACHMENT_URL_RE =
+            /https:\/\/(?:cdn|media)\.discordapp\.(?:com|net)\/attachments\/[^\s"'<>]+/g;
+
+        function matchesLastSegment(url) {
             const path = url.split("?")[0];
-            const segs = path.split("/");
-            const last = segs[segs.length - 1] || "";
-            if (last === randomFilename) {
-                out.push({ el, url });
-            }
+            const last = path.split("/").pop() || "";
+            return last === randomFilename;
+        }
+
+        // Paths 1 + 2: direct media tags.
+        li.querySelectorAll("img, video").forEach(function (el) {
+            if (seen.has(el)) return;
+            const url = el.getAttribute("src");
+            if (typeof url !== "string" || !matchesLastSegment(url)) return;
+            seen.add(el);
+            out.push({
+                el: el,
+                url: url,
+                kind: el.tagName === "VIDEO" ? "video" : "img",
+            });
         });
+
+        // Path 3: <a href>.
+        li.querySelectorAll("a[href]").forEach(function (el) {
+            if (seen.has(el)) return;
+            const url = el.getAttribute("href");
+            if (typeof url !== "string" || !matchesLastSegment(url)) return;
+            seen.add(el);
+            out.push({ el: el, url: url, kind: "anchor" });
+        });
+
+        // Path 4: full-subtree attribute walk. Same broadening as
+        // the FIX2 scanner. Skip the inline-injected <img>/<video>
+        // markers so we don't pick our own injected media as a
+        // candidate for re-swap.
+        const allEls = li.querySelectorAll("*");
+        for (const el of allEls) {
+            if (seen.has(el)) continue;
+            if (el.getAttribute && el.getAttribute("data-osl-injected") === "1") {
+                continue;
+            }
+            if (!el.attributes || el.attributes.length === 0) continue;
+            let matchedUrl = null;
+            for (let i = 0; i < el.attributes.length; i++) {
+                const val = el.attributes[i].value;
+                if (typeof val !== "string") continue;
+                if (val.indexOf("discordapp") < 0) continue;
+                const matches = val.match(ATTACHMENT_URL_RE);
+                if (!matches) continue;
+                for (const url of matches) {
+                    if (matchesLastSegment(url)) {
+                        matchedUrl = url;
+                        break;
+                    }
+                }
+                if (matchedUrl) break;
+            }
+            if (matchedUrl) {
+                seen.add(el);
+                out.push({ el: el, url: matchedUrl, kind: "wrapper" });
+            }
+        }
+
         return out;
     }
 
     /**
-     * Promise-returning helper: fetch the attachment URL as bytes,
-     * convert to base64 (chunked to avoid blowing the string-arg
-     * size for `String.fromCharCode` on large videos).
+     * 8d-FIX5: fetch the attachment URL via Rust. Discord's CSP
+     * (connect-src) blocks browser fetch from discord.com to
+     * cdn.discordapp.com, so we route through the Rust HTTP client
+     * via `osl_fetch_attachment_bytes`. Rust returns standard
+     * base64 (same shape as the old `btoa(arrayBuffer)` path) and
+     * enforces a URL allowlist server-side.
      */
     async function oslFetchAttachmentBase64(url) {
-        const resp = await fetch(url, { credentials: "omit" });
-        if (!resp.ok) {
-            throw new Error(
-                "attachment fetch HTTP " + resp.status + " for " + url
+        const result = await oslInvoke("osl_fetch_attachment_bytes", { url });
+        if (!result.ok) {
+            const errMsg = result.error || "unknown";
+            console.log(
+                "[OSL] fetch via IPC: url=" +
+                    url.substring(0, 100) +
+                    " error=" +
+                    errMsg
             );
+            throw new Error("osl_fetch_attachment_bytes: " + errMsg);
         }
-        const buf = await resp.arrayBuffer();
-        // Chunked base64 — 32 KB at a time so a 24 MB blob doesn't
-        // synthesize a 24 MB argument string for fromCharCode.
-        const bytes = new Uint8Array(buf);
-        let binary = "";
-        const CHUNK = 32 * 1024;
-        for (let i = 0; i < bytes.length; i += CHUNK) {
-            const slice = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
-            binary += String.fromCharCode.apply(null, slice);
-        }
-        return btoa(binary);
+        console.log(
+            "[OSL] fetch via IPC: url=" +
+                url.substring(0, 100) +
+                " result_len=" +
+                result.value.length
+        );
+        return result.value;
     }
 
     /**
-     * Swap a single rendered element to point at `blobUrl`. For
-     * <img> we just replace src; for <a> linking to a video we
-     * mutate the closest containing tile to inline a <video> element.
+     * 9-A1b FIX9: schedule a delayed retry of the broken-video-card
+     * hide. Discord renders the "Image failed to load." text AFTER
+     * our swap completes — the synchronous FIX7 walk runs before
+     * the text exists in the DOM and silently gives up. We attach a
+     * MutationObserver on the <li> watching for the text to appear
+     * (and a 1500ms setTimeout as a backstop), then re-run the
+     * hide. The observer self-disconnects on first successful hide
+     * or after a 5-second cap, whichever comes first.
+     */
+    function oslScheduleBrokenCardRetry(li, msgIdHint, injectedMedia) {
+        if (!li) return;
+        let done = false;
+        const attempt = function (delayed) {
+            if (done) return;
+            const before = li.querySelectorAll(
+                '[data-osl-hidden="1"]'
+            ).length;
+            try {
+                console.log(
+                    "[OSL] cube hide attempt: msg=" +
+                        msgIdHint +
+                        " delayed=" +
+                        (delayed ? "yes" : "no")
+                );
+                oslHideBrokenVideoCard(li, msgIdHint, injectedMedia);
+            } catch (e) {
+                console.warn("[OSL] cube hide retry threw:", e);
+            }
+            const after = li.querySelectorAll(
+                '[data-osl-hidden="1"]'
+            ).length;
+            if (after > before) {
+                done = true;
+            }
+        };
+
+        // Immediate-delay backstop in case Discord renders the cube
+        // text during this microtask flush.
+        nativeSetTimeout(function () {
+            attempt(true);
+        }, 1500);
+
+        // MutationObserver — fires on any subtree change. Throttled
+        // to avoid re-attempt thrashing during React's render churn.
+        let lastAttempt = 0;
+        const observer = new MutationObserver(function () {
+            if (done) return;
+            const now = Date.now();
+            if (now - lastAttempt < 200) return;
+            lastAttempt = now;
+            attempt(true);
+        });
+        try {
+            observer.observe(li, {
+                subtree: true,
+                childList: true,
+                characterData: true,
+            });
+        } catch (_) {}
+
+        // Hard cap: disconnect after 5 seconds regardless. Avoids
+        // observers piling up on scrollback-mounted messages.
+        nativeSetTimeout(function () {
+            try {
+                observer.disconnect();
+            } catch (_) {}
+            if (!done) {
+                console.log(
+                    "[OSL] cube hide gave up: msg=" +
+                        msgIdHint +
+                        " reason=no_text_after_5s"
+                );
+            }
+        }, 5000);
+    }
+
+    /**
+     * 8e-FIX7: locate and hide Discord's broken-video / file-card UI
+     * after a cache-hit fallback injection. Called only on the
+     * `fallback_content` path (the `found_url` path already hides
+     * its wrapper directly).
+     *
+     * Detection (try in order, take first hit):
+     *   1. visible descendant whose `textContent` matches
+     *      /video failed|image failed|failed to load/i;
+     *   2. descendant whose class contains attachment/embed/placeholder
+     *      tokens (case-insensitive) and isn't on the exclude list;
+     *   3. descendant with `aria-label` matching attachment/video/image.
+     *
+     * From the matched element, walk up at most 6 ancestor levels,
+     * stopping at: the `<li>` root, the message-content div, any
+     * ancestor that contains the injected media (would over-hide),
+     * or any ancestor with an excluded class (username/avatar/
+     * timestamp/header/reactions/toolbar). The final element is the
+     * card root we hide.
+     *
+     * Safety: never hides an ancestor of the injected media. Skips
+     * already-hidden elements (`data-osl-hidden="1"`).
+     */
+    function oslHideBrokenVideoCard(li, msgIdHint, injectedMedia) {
+        if (!li) return;
+        const TEXT_FAIL_RE = /(video failed|image failed|failed to load)/i;
+        const CARD_CLASS_RE =
+            /(attachment|mediaplaceholder|embed|messageattachment|loadingplaceholder|placeholder|noimage|errorimage)/i;
+        const ARIA_RE = /(attachment|video|image)/i;
+        const EXCLUDE_CLASS_RE =
+            /(username|avatar|timestamp|reactions|buttons|header|toolbar)/i;
+
+        function isVisible(el) {
+            try {
+                const cs = window.getComputedStyle(el);
+                if (cs.display === "none") return false;
+                if (cs.visibility === "hidden") return false;
+                return true;
+            } catch (_) {
+                return true;
+            }
+        }
+        function skipEl(el) {
+            if (!el || el.nodeType !== 1) return true;
+            if (el === injectedMedia) return true;
+            if (injectedMedia && injectedMedia.contains(el)) return true;
+            if (el.getAttribute) {
+                if (el.getAttribute("data-osl-hidden") === "1") return true;
+                if (el.getAttribute("data-osl-injected") === "1") return true;
+                if (el.getAttribute("data-osl-swapped") === "1") return true;
+            }
+            return false;
+        }
+
+        const all = li.querySelectorAll("*");
+        let matched = null;
+        let matchedBy = null;
+        let matchedSample = "";
+
+        // 9-A1c FIX11 Pass 0 (structural primary). Discord renders the
+        // failed-image cube via div.imageErrorWrapper_<hash> inside a
+        // div.loadingOverlay_<hash> wrapper inside the imageWrapper.
+        // The hash suffix changes between Discord builds; prefix-match
+        // via [class*="..."] survives that churn. Prefer hiding the
+        // loadingOverlay parent so the reserved aspect-ratio layout
+        // slot collapses too, not just the error icon. Pass 1-3 below
+        // remain as defensive fallbacks for future DOM shapes.
+        const structural = li.querySelector(
+            'div[class*="imageErrorWrapper"], div[class*="loadingOverlay"]'
+        );
+        if (structural && !skipEl(structural) && isVisible(structural)) {
+            // Prefer the loadingOverlay ancestor when the match was
+            // an imageErrorWrapper child; otherwise use the match itself.
+            const cls =
+                structural.className &&
+                typeof structural.className === "string"
+                    ? structural.className
+                    : "";
+            let toHide = structural;
+            if (
+                /imageErrorWrapper/.test(cls) &&
+                !/loadingOverlay/.test(cls)
+            ) {
+                const overlay = structural.closest(
+                    '[class*="loadingOverlay"]'
+                );
+                if (overlay && !skipEl(overlay) && isVisible(overlay)) {
+                    toHide = overlay;
+                }
+            }
+            // Defensive: never hide an ancestor of the injected media.
+            if (!injectedMedia || !toHide.contains(injectedMedia)) {
+                toHide.style.display = "none";
+                toHide.setAttribute("data-osl-hidden", "1");
+                const toHideCls =
+                    toHide.className &&
+                    typeof toHide.className === "string"
+                        ? toHide.className.substring(0, 80)
+                        : "";
+                console.log(
+                    "[OSL] cube hidden: msg=" +
+                        msgIdHint +
+                        " method=pass0_structural target_tag=" +
+                        toHide.tagName.toLowerCase() +
+                        " target_class=" +
+                        toHideCls
+                );
+                return;
+            }
+        }
+
+        // Pass 1: text match.
+        for (const el of all) {
+            if (skipEl(el)) continue;
+            if (!isVisible(el)) continue;
+            const cls =
+                el.className && typeof el.className === "string"
+                    ? el.className
+                    : "";
+            if (cls && EXCLUDE_CLASS_RE.test(cls)) continue;
+            const text = (el.textContent || "").trim();
+            if (
+                text.length > 0 &&
+                text.length < 200 &&
+                TEXT_FAIL_RE.test(text)
+            ) {
+                matched = el;
+                matchedBy = "text";
+                matchedSample = text.substring(0, 50);
+                break;
+            }
+        }
+        // Pass 2: card-class match.
+        if (!matched) {
+            for (const el of all) {
+                if (skipEl(el)) continue;
+                if (!isVisible(el)) continue;
+                const cls =
+                    el.className && typeof el.className === "string"
+                        ? el.className
+                        : "";
+                if (!cls) continue;
+                if (EXCLUDE_CLASS_RE.test(cls)) continue;
+                if (CARD_CLASS_RE.test(cls)) {
+                    matched = el;
+                    matchedBy = "class";
+                    matchedSample = cls.substring(0, 50);
+                    break;
+                }
+            }
+        }
+        // Pass 3: aria-label match.
+        if (!matched) {
+            for (const el of all) {
+                if (skipEl(el)) continue;
+                if (!isVisible(el)) continue;
+                const aria =
+                    (el.getAttribute && el.getAttribute("aria-label")) || "";
+                if (aria && ARIA_RE.test(aria)) {
+                    matched = el;
+                    matchedBy = "aria";
+                    matchedSample = aria.substring(0, 50);
+                    break;
+                }
+            }
+        }
+
+        if (!matched) {
+            console.log(
+                "[OSL] no broken-video card found to hide: msg=" +
+                    msgIdHint +
+                    " li_descendants=" +
+                    all.length
+            );
+            return;
+        }
+
+        // Walk up to the card root.
+        let toHide = matched;
+        for (let i = 0; i < 6; i++) {
+            const parent = toHide.parentNode;
+            if (!parent || parent === li) break;
+            if (parent.id && parent.id.indexOf("message-content-") === 0) {
+                break;
+            }
+            if (injectedMedia && parent.contains(injectedMedia)) break;
+            const pcls =
+                parent.className && typeof parent.className === "string"
+                    ? parent.className
+                    : "";
+            if (pcls && EXCLUDE_CLASS_RE.test(pcls)) break;
+            toHide = parent;
+        }
+        if (injectedMedia && toHide.contains(injectedMedia)) {
+            console.log(
+                "[OSL] no broken-video card found to hide: msg=" +
+                    msgIdHint +
+                    " reason=would_hide_injected_media"
+            );
+            return;
+        }
+
+        toHide.style.display = "none";
+        toHide.setAttribute("data-osl-hidden", "1");
+        const toHideCls =
+            toHide.className && typeof toHide.className === "string"
+                ? toHide.className.substring(0, 80)
+                : "";
+        console.log(
+            "[OSL] hid broken-video card: msg=" +
+                msgIdHint +
+                " tag=" +
+                toHide.tagName.toLowerCase() +
+                " class=" +
+                toHideCls +
+                " matched_by=" +
+                matchedBy +
+                " text_sample=" +
+                matchedSample
+        );
+    }
+
+    /**
+     * 8e-FIX6: cache-hit swap fallback. Called when the swap target
+     * has `el: null` — happens for the FIX3 url-cache-fallback path,
+     * where the scanner pushed a candidate based on the message-API
+     * URL cache rather than a DOM walk. The DOM has no element
+     * exposing the URL (Discord's broken-MP4 file card keeps it
+     * in React state only), so we:
+     *
+     *   1. Re-scan the `<li>` once more in case Discord mounted the
+     *      URL after the scanner ran (race), and if found use the
+     *      regular wrapper-hide-and-inject path.
+     *   2. Otherwise inject inline media as a sibling of the
+     *      message-content div. The original file card stays
+     *      visible alongside — acceptable since we can't reliably
+     *      identify which `<div>` ancestor IS the card.
+     *
+     * Idempotent via a per-attachment `data-osl-injected-for="<name>"`
+     * marker on the injected media; re-scans walk past it.
+     */
+    function oslSwapCacheHitFallback(target, blobUrl, mime) {
+        const msgIdLog = target.msgId || "?";
+        const li =
+            target.li ||
+            (target.msgId
+                ? document.querySelector("li[id$='-" + target.msgId + "']")
+                : null);
+        if (!li) {
+            console.log(
+                "[OSL] attachment swap: msg=" +
+                    msgIdLog +
+                    " reason=li_not_found_for_cache_hit"
+            );
+            return;
+        }
+        // Idempotency: skip if we already injected media for this
+        // filename in this <li>. The marker survives observer reruns
+        // because we only swap-in our own elements.
+        if (target.name) {
+            const injected = li.querySelectorAll("[data-osl-injected-for]");
+            for (const e of injected) {
+                if (e.getAttribute("data-osl-injected-for") === target.name) {
+                    return;
+                }
+            }
+        }
+        // Second-pass URL search — Discord may have mounted the URL
+        // between the scanner's walk and now. Skip elements we
+        // already injected so we don't bind to our own media.
+        let foundEl = null;
+        if (target.url) {
+            const all = li.querySelectorAll("*");
+            for (const el of all) {
+                if (
+                    el.getAttribute &&
+                    el.getAttribute("data-osl-injected") === "1"
+                ) {
+                    continue;
+                }
+                if (!el.attributes || el.attributes.length === 0) continue;
+                for (let i = 0; i < el.attributes.length; i++) {
+                    const v = el.attributes[i].value;
+                    if (typeof v === "string" && v.indexOf(target.url) >= 0) {
+                        foundEl = el;
+                        break;
+                    }
+                }
+                if (foundEl) break;
+            }
+        }
+
+        const media = oslMakeInlineMedia(blobUrl, mime);
+        if (target.name) {
+            media.setAttribute("data-osl-injected-for", target.name);
+        }
+
+        let method;
+        if (foundEl) {
+            const wrapper = oslFindAttachmentCardWrapper(foundEl) || foundEl;
+            if (wrapper.getAttribute("data-osl-swapped") !== "1") {
+                wrapper.style.display = "none";
+                wrapper.setAttribute("data-osl-swapped", "1");
+                const wrapperCls =
+                    wrapper.className &&
+                    typeof wrapper.className === "string"
+                        ? wrapper.className.substring(0, 80)
+                        : "";
+                console.log(
+                    "[OSL] hid original attachment wrapper: tag=" +
+                        wrapper.tagName.toLowerCase() +
+                        " class=" +
+                        wrapperCls
+                );
+            }
+            method = "found_url";
+            const parent = wrapper.parentNode;
+            if (parent) {
+                parent.insertBefore(media, wrapper.nextSibling);
+            } else {
+                li.appendChild(media);
+            }
+        } else {
+            method = "fallback_content";
+            const content = li.querySelector('[id^="message-content-"]');
+            if (content && content.parentNode) {
+                content.parentNode.insertBefore(media, content.nextSibling);
+            } else {
+                li.appendChild(media);
+            }
+            // 8e-FIX7: locate + hide Discord's broken-video / file
+            // card so it doesn't sit alongside our decrypted image.
+            // Runs only on the fallback_content path; the found_url
+            // path already hides its wrapper.
+            try {
+                oslHideBrokenVideoCard(li, msgIdLog, media);
+            } catch (e) {
+                console.warn(
+                    "[OSL] hid broken-video card threw:",
+                    e
+                );
+            }
+            // 9-A1b FIX9: the cube text ("Image failed to load.")
+            // often renders AFTER our injection finishes. The
+            // synchronous hide above misses it; this scheduler
+            // re-attempts via MutationObserver + 1500ms backstop,
+            // capped at 5s.
+            try {
+                oslScheduleBrokenCardRetry(li, msgIdLog, media);
+            } catch (e) {
+                console.warn(
+                    "[OSL] schedule broken-card retry threw:",
+                    e
+                );
+            }
+        }
+        console.log(
+            "[OSL] attachment swap: msg=" +
+                msgIdLog +
+                " target=cache method=" +
+                method +
+                " injected=" +
+                media.tagName.toLowerCase()
+        );
+    }
+
+    /**
+     * Swap a single rendered element to point at `blobUrl`.
+     *
+     * 8e-FIX5: handles four target kinds (set by oslFindAttachmentTargets):
+     *   - `img` / `video`: just swap `src` (existing-tag fast path).
+     *   - `anchor`: replace `<a>` with inline media via replaceWith.
+     *   - `wrapper`: any other tag. Find the closest attachment-card
+     *               ancestor, hide it with display:none, insert
+     *               inline media as a sibling immediately after.
+     *               Falls back to hiding the target itself if no
+     *               wrapper ancestor matches.
+     *
+     * Idempotent: tags swapped elements with `data-osl-swapped="1"`
+     * and skips on a second call. The injected media carries
+     * `data-osl-injected="1"` so the scanner's target-discovery
+     * doesn't pick it up as a candidate.
      */
     function oslSwapAttachmentElement(target, blobUrl, mime) {
         try {
-            if (target.el.tagName === "IMG") {
-                target.el.setAttribute("src", blobUrl);
-                target.el.removeAttribute("srcset");
+            const el = target.el;
+            if (!el) {
+                // 8e-FIX6: cache-hit candidate path. The scanner's
+                // url-cache fallback (8e-FIX3) creates targets with
+                // `el: null` when Discord's file card doesn't expose
+                // the CDN URL anywhere we can locate in the DOM.
+                oslSwapCacheHitFallback(target, blobUrl, mime);
                 return;
             }
-            if (target.el.tagName === "VIDEO") {
-                target.el.setAttribute("src", blobUrl);
-                target.el.setAttribute("type", mime);
+            const kind =
+                target.kind ||
+                (el.tagName === "IMG"
+                    ? "img"
+                    : el.tagName === "VIDEO"
+                      ? "video"
+                      : el.tagName === "A"
+                        ? "anchor"
+                        : "wrapper");
+
+            if (el.getAttribute && el.getAttribute("data-osl-swapped") === "1") {
+                // Already swapped in a previous observer tick.
                 return;
             }
-            if (target.el.tagName === "A" && mime.indexOf("video/") === 0) {
-                // Replace the link with an inline video element.
-                const video = document.createElement("video");
-                video.setAttribute("src", blobUrl);
-                video.setAttribute("controls", "controls");
-                video.setAttribute("preload", "metadata");
-                video.style.maxWidth = "100%";
-                video.style.maxHeight = "440px";
-                video.style.borderRadius = "4px";
-                target.el.replaceWith(video);
+
+            if (kind === "img") {
+                el.setAttribute("src", blobUrl);
+                el.removeAttribute("srcset");
+                el.setAttribute("data-osl-swapped", "1");
+                console.log(
+                    "[OSL] attachment swap: target=img method=src-replace"
+                );
                 return;
             }
-            // <a> linking to an image: append the decrypted image
-            // alongside the link so it shows inline without
-            // disturbing other rendering.
-            if (target.el.tagName === "A") {
-                const img = document.createElement("img");
-                img.setAttribute("src", blobUrl);
-                img.style.maxWidth = "100%";
-                img.style.borderRadius = "4px";
-                target.el.replaceWith(img);
+            if (kind === "video") {
+                el.setAttribute("src", blobUrl);
+                el.setAttribute("type", mime);
+                el.setAttribute("data-osl-swapped", "1");
+                console.log(
+                    "[OSL] attachment swap: target=video method=src-replace"
+                );
+                return;
             }
+            if (kind === "anchor") {
+                const replacement = oslMakeInlineMedia(blobUrl, mime);
+                el.replaceWith(replacement);
+                // The original <a> is detached; mark the replacement
+                // so a re-scan via observer doesn't re-swap.
+                console.log(
+                    "[OSL] attachment swap: target=a method=replace-with-" +
+                        replacement.tagName.toLowerCase()
+                );
+                return;
+            }
+
+            // wrapper: hide closest attachment-card ancestor + inject.
+            const wrapper = oslFindAttachmentCardWrapper(el) || el;
+            const wrapperCls =
+                wrapper.className && typeof wrapper.className === "string"
+                    ? wrapper.className.substring(0, 80)
+                    : "";
+            wrapper.style.display = "none";
+            wrapper.setAttribute("data-osl-swapped", "1");
+            console.log(
+                "[OSL] hid original attachment wrapper: tag=" +
+                    wrapper.tagName.toLowerCase() +
+                    " class=" +
+                    wrapperCls
+            );
+            const replacement = oslMakeInlineMedia(blobUrl, mime);
+            if (wrapper.parentNode) {
+                wrapper.parentNode.insertBefore(
+                    replacement,
+                    wrapper.nextSibling
+                );
+                console.log(
+                    "[OSL] attachment swap: target=" +
+                        el.tagName.toLowerCase() +
+                        " method=wrapper-hide-and-sibling-append" +
+                        " injected=" +
+                        replacement.tagName.toLowerCase()
+                );
+            } else {
+                // Detached wrapper (rare). Re-show + inject as child.
+                wrapper.style.display = "";
+                wrapper.appendChild(replacement);
+                console.log(
+                    "[OSL] attachment swap: target=" +
+                        el.tagName.toLowerCase() +
+                        " method=wrapper-child-append (parent missing)"
+                );
+            }
+            return;
         } catch (e) {
             console.warn(
                 "[OSL] attachment swap failed for " + target.url + ":",
@@ -4139,9 +6378,23 @@
      */
     async function oslScanLiAttachmentsV2(li) {
         if (!li || !li.id) return;
-        const m = /chat-messages-(?:\d{15,22})-(\d{15,22})/.exec(li.id);
-        if (!m) return;
+        const __dbg_li_id = li.id;
+        console.log("[OSL] scan entry: li_id=" + __dbg_li_id);
+        const m = /chat-messages-(?:\d{15,22})-(\d{15,22})/.exec(__dbg_li_id);
+        if (!m) {
+            console.log(
+                "[OSL] scan no candidates: li_id=" +
+                    __dbg_li_id +
+                    " reason=li_id_shape_mismatch"
+            );
+            return;
+        }
         const msgId = m[1];
+
+        // 8d-FIX4: wrap remaining body so async rejections / unexpected
+        // throws are surfaced. The caller (.catch(()=>{}) at the two
+        // observer call sites) was swallowing them silently.
+        try {
 
         // 8d-FIX1: capture channel_id alongside scope. We need it
         // to construct the cdn.discordapp.com URL directly —
@@ -4159,6 +6412,11 @@
                 scope &&
                 oslBurnedScopesShouldSkip(scope.channel_id || scope.id)
             ) {
+                console.log(
+                    "[OSL] scan skip: msg=" +
+                        msgId +
+                        " reason=burned_scope"
+                );
                 return;
             }
         } catch (_) {}
@@ -4169,47 +6427,245 @@
             for (const randomName of Object.keys(cacheEntry.byRandomName)) {
                 const cached = cacheEntry.byRandomName[randomName];
                 const targets = oslFindAttachmentTargets(li, randomName);
-                targets.forEach(function (t) {
-                    oslSwapAttachmentElement(t, cached.blobUrl, cached.mime);
-                });
+                if (targets.length === 0) {
+                    // 8e-FIX6: same fallback as the new-decrypt path
+                    // when the DOM doesn't carry the URL.
+                    oslSwapAttachmentElement(
+                        {
+                            el: null,
+                            url: cached.url || null,
+                            name: randomName,
+                            li: li,
+                            msgId: msgId,
+                        },
+                        cached.blobUrl,
+                        cached.mime
+                    );
+                } else {
+                    targets.forEach(function (t) {
+                        oslSwapAttachmentElement(
+                            t,
+                            cached.blobUrl,
+                            cached.mime
+                        );
+                    });
+                }
             }
+            console.log(
+                "[OSL] scan skip: msg=" + msgId + " reason=cache_replay"
+            );
             return;
         }
 
-        // Discover candidate elements. The V2 scan doesn't know
-        // random_filename in advance, so collect every CDN-hosted
-        // URL whose last path segment matches our upload-name shape.
-        //
-        // 8d-FIX2: accept both `.bin` (current, octet-stream
-        // wrapper) and `.png` (legacy V1/8d-pre-FIX2 with decoy-
-        // PNG wrapper). `.bin` files render as a download card,
-        // not an image — the relevant element is the `<a>` link to
-        // cdn.discordapp.com/attachments, not an `<img>`.
+        // 8e-FIX2: full-subtree walk. Previous (img/video/a) selector
+        // missed Discord's "video failed to load" card for our
+        // zero-sample decoy MP4 — that card probably renders the CDN
+        // URL on a <div data-*> or similar non-standard surface. Walk
+        // every descendant, scan every attribute value for a CDN
+        // attachments URL, then filter by the OSL filename regex.
+        // ~50 descendants × ~5 attrs per Discord message <li> ≈ 250
+        // string-indexOf calls; cheap.
+        const CDN_URL_RE =
+            /https:\/\/(?:cdn|media)\.discordapp\.(?:com|net)\/attachments\/[^\s"'<>]+/g;
+        const NAME_RE = /^[0-9a-f]{8}\.(mp4|bin|png)$/i;
         const candidates = [];
-        const els = li.querySelectorAll(
-            "img[src*='discord'], video[src*='discord'], a[href*='discord']"
+        const seenUrls = new Set();
+        const filenamesSeen = [];
+        let elementsWithCdn = 0;
+        const allEls = li.querySelectorAll("*");
+        for (const el of allEls) {
+            if (!el.attributes || el.attributes.length === 0) continue;
+            let elHadCdn = false;
+            for (let i = 0; i < el.attributes.length; i++) {
+                const attr = el.attributes[i];
+                const val = attr.value;
+                if (typeof val !== "string") continue;
+                if (val.indexOf("discordapp") < 0) continue;
+                const matches = val.match(CDN_URL_RE);
+                if (!matches) continue;
+                for (const url of matches) {
+                    if (seenUrls.has(url)) continue;
+                    seenUrls.add(url);
+                    if (!elHadCdn) {
+                        elementsWithCdn++;
+                        elHadCdn = true;
+                    }
+                    const path = url.split("?")[0];
+                    const last = path.split("/").pop() || "";
+                    if (NAME_RE.test(last)) {
+                        candidates.push({
+                            el: el,
+                            url: url,
+                            name: last,
+                        });
+                        console.log(
+                            "[OSL] scan candidate found: tag=" +
+                                el.tagName +
+                                " attribute=" +
+                                attr.name +
+                                " url=" +
+                                url.substring(0, 100)
+                        );
+                    } else if (last) {
+                        filenamesSeen.push(last);
+                    }
+                }
+            }
+        }
+        const domCount = candidates.length;
+        let cacheCount = 0;
+        const cacheFilenamesSeen = [];
+        // 8e-FIX3: if the DOM walk turned up nothing, fall back to
+        // the attachment URL cache (populated by intercepting
+        // Discord's /messages API responses). Discord's zero-sample
+        // decoy MP4 renders as a "video failed to load" card whose
+        // DOM doesn't expose the CDN URL anywhere — the URL only
+        // exists in React state we can't reach. The cache is our
+        // out-of-band path to that URL.
+        if (domCount === 0) {
+            const cached = oslGetCachedAttachmentUrls(msgId);
+            if (cached) {
+                for (const entry of cached) {
+                    const path = entry.url.split("?")[0];
+                    const last = path.split("/").pop() || "";
+                    if (!NAME_RE.test(last)) {
+                        if (last) cacheFilenamesSeen.push(last);
+                        continue;
+                    }
+                    if (seenUrls.has(entry.url)) continue;
+                    seenUrls.add(entry.url);
+                    candidates.push({ el: null, url: entry.url, name: last });
+                    cacheCount++;
+                    console.log(
+                        "[OSL] scan url cache hit: msg=" +
+                            msgId +
+                            " url=" +
+                            entry.url.substring(0, 100) +
+                            " filename=" +
+                            last
+                    );
+                }
+            }
+        }
+
+        console.log(
+            "[OSL] scan candidates: count=" +
+                candidates.length +
+                " for li_id=" +
+                __dbg_li_id +
+                " (dom=" +
+                domCount +
+                ", cache=" +
+                cacheCount +
+                ", descendants=" +
+                allEls.length +
+                ", elements_with_cdn=" +
+                elementsWithCdn +
+                ")"
         );
-        els.forEach(function (el) {
-            const url =
-                el.tagName === "A"
-                    ? el.getAttribute("href")
-                    : el.getAttribute("src");
-            if (typeof url !== "string") return;
-            const path = url.split("?")[0];
-            const last = path.split("/").pop() || "";
-            if (!/^[0-9a-f]{8}\.(bin|png)$/i.test(last)) return;
-            candidates.push({ el: el, url: url, name: last });
-        });
-        if (candidates.length === 0) return;
+        if (candidates.length === 0) {
+            // Three distinct "nothing to scan" reasons now:
+            // - no_cdn_url_in_subtree: DOM had no CDN URLs anywhere
+            //   AND the cache had no entry (or empty) for this msg.
+            // - cdn_urls_found_but_filename_unmatched: DOM had CDN
+            //   URLs but none matched the random-filename regex
+            //   (emoji/avatar URLs).
+            // - url_cache_filename_unmatched: cache had URLs for
+            //   this msg but their filenames didn't match the regex
+            //   (unencrypted attachment).
+            const cached = oslGetCachedAttachmentUrls(msgId);
+            let reason;
+            if (cacheFilenamesSeen.length > 0) {
+                reason =
+                    "url_cache_filename_unmatched cached_filenames=[" +
+                    cacheFilenamesSeen.join(", ") +
+                    "]";
+            } else if (elementsWithCdn > 0) {
+                reason =
+                    "cdn_urls_found_but_filename_unmatched filenames=[" +
+                    filenamesSeen.join(", ") +
+                    "]";
+            } else if (cached && cached.length > 0) {
+                // Defensive: cached entries existed but had no usable
+                // filename (shouldn't happen with the cache helper's
+                // null filter, but keep the branch for clarity).
+                reason = "url_cache_entries_have_no_usable_filename";
+            } else {
+                reason = "no_cdn_url_in_subtree";
+            }
+            console.log(
+                "[OSL] scan no candidates: li_id=" +
+                    __dbg_li_id +
+                    " reason=" +
+                    reason
+            );
+            return;
+        }
 
         // Sender id is required for the cover decrypt (v=2 wrap is
         // bound to sender's pubkey on the recv side). Pull from
         // li's data-author-id, walking up if needed.
+        //
+        // 8e: self-sent .mp4 messages mount the <li> before React
+        // hydrates the data-author-id attribute, so recvExtractAuthorId
+        // returns null on the first observer pass. Retry briefly,
+        // then fall back to oslSelfDiscordId() — peer messages won't
+        // hit the fallback (their author id resolves immediately or
+        // their <li> dispatches a second observer event once hydrated;
+        // a wrong-author scope-mismatch on the fallback is caught
+        // downstream by the v=2 scope-acceptance gate).
         let senderId = null;
+        let resolutionMethod = "recv";
         try {
             senderId = recvExtractAuthorId(li);
         } catch (_) {}
-        if (!senderId) return;
+        for (let attempt = 1; attempt <= 3 && !senderId; attempt++) {
+            await new Promise(function (res) {
+                nativeSetTimeout(res, 100);
+            });
+            try {
+                senderId = recvExtractAuthorId(li);
+            } catch (_) {}
+            console.log(
+                "[OSL] scan retry author id: msg=" +
+                    msgId +
+                    " attempt=" +
+                    attempt +
+                    "/3 resolved=" +
+                    (senderId ? "yes" : "no")
+            );
+            if (senderId) {
+                resolutionMethod = "retry";
+            }
+        }
+        if (!senderId) {
+            const selfId = await oslSelfDiscordId();
+            if (selfId) {
+                senderId = selfId;
+                resolutionMethod = "self_fallback";
+                console.log(
+                    "[OSL] scan: author id fallback to self (" +
+                        selfId +
+                        ") for msg=" +
+                        msgId
+                );
+            } else {
+                console.log(
+                    "[OSL] scan skip: msg=" +
+                        msgId +
+                        " reason=no_sender_id_no_self_fallback"
+                );
+                return;
+            }
+        }
+        console.log(
+            "[OSL] scan author resolution: msg=" +
+                msgId +
+                " method=" +
+                resolutionMethod +
+                " id=" +
+                senderId
+        );
 
         const newCache = { byRandomName: {}, blobUrls: [] };
         for (const cand of candidates) {
@@ -4238,6 +6694,7 @@
                 // transcodes octet-stream uploads shows up clearly.
                 try {
                     const sniff = atob(fileB64.substring(0, 1024 * 96));
+                    const hasV3 = sniff.indexOf("OSL-ATT3") >= 0;
                     const hasV2 = sniff.indexOf("OSL-ATT2") >= 0;
                     const hasV1 = sniff.indexOf("OSL-ATT1") >= 0;
                     console.log(
@@ -4246,14 +6703,42 @@
                             " b64_len=" +
                             fileB64.length +
                             " magic_present=" +
-                            (hasV2 ? "OSL-ATT2" : hasV1 ? "OSL-ATT1" : "no")
+                            (hasV3
+                                ? "OSL-ATT3"
+                                : hasV2
+                                  ? "OSL-ATT2"
+                                  : hasV1
+                                    ? "OSL-ATT1"
+                                    : "no")
                     );
                 } catch (_) {}
+                // 8e-FIX1: self-bypass on the scope-acceptance gate.
+                // Rust's `should_decrypt_from` checks
+                // `peer_map[sender].incoming_decrypt_accepted[scope]`,
+                // which is never populated for self (you never "accept"
+                // your own invitation). Passing `scope_input=None` for
+                // self-sent attachments skips the gate — Rust guards
+                // the check on `if let Some(scope) = scope_opt`. Peer
+                // messages still gate normally.
+                let isSelfSent = false;
+                try {
+                    const sId = await oslSelfDiscordId();
+                    isSelfSent = !!sId && senderId === sId;
+                } catch (_) {}
+                console.log(
+                    "[OSL] attachment decrypt invoke: msg=" +
+                        msgId +
+                        " sender=" +
+                        senderId +
+                        " isSelf=" +
+                        isSelfSent
+                );
                 const decRes = await oslInvoke("osl_open_attachment_v2", {
                     senderDiscordId: senderId,
-                    scopeInput: scope || null,
+                    scopeInput: isSelfSent ? null : scope || null,
                     fileBytesB64: fileB64,
                     legacyAttKeyB64: null,
+                    discordMessageId: msgId || null,
                 });
                 if (!decRes.ok) {
                     // Most common: MagicNotFound for non-OSL files.
@@ -4282,12 +6767,34 @@
                 newCache.byRandomName[cand.name] = {
                     blobUrl: blobUrl,
                     mime: plain.mimeType,
+                    // 8e-FIX6: cache the URL too so the replay path
+                    // can fall back to message-content injection when
+                    // the DOM walk misses (zero-sample MP4 file card).
+                    url: cand.url,
                 };
                 newCache.blobUrls.push(blobUrl);
                 const targets = oslFindAttachmentTargets(li, cand.name);
-                targets.forEach(function (t) {
-                    oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
-                });
+                if (targets.length === 0) {
+                    // 8e-FIX6: targets empty when Discord's file card
+                    // hides the CDN URL in React state (zero-sample
+                    // MP4 path). Let the swap function re-locate by
+                    // URL and fall back to message-content injection.
+                    oslSwapAttachmentElement(
+                        {
+                            el: null,
+                            url: cand.url,
+                            name: cand.name,
+                            li: li,
+                            msgId: msgId,
+                        },
+                        blobUrl,
+                        plain.mimeType
+                    );
+                } else {
+                    targets.forEach(function (t) {
+                        oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
+                    });
+                }
                 console.log(
                     "[OSL] attachment decrypt: msg=" +
                         msgId +
@@ -4312,6 +6819,12 @@
         if (newCache.blobUrls.length > 0) {
             window.__oslAttachmentDecrypted.set(msgId, newCache);
             oslAttachmentCacheEvictIfFull();
+        }
+        } catch (err) {
+            console.warn(
+                "[OSL] scan error: li_id=" + __dbg_li_id + " err=",
+                err
+            );
         }
     }
 
@@ -4381,15 +6894,14 @@
     }
 
     /**
-     * 7d-PIVOT-FIX3 Bug F: drop `scopeInput` from `__oslBurnedScopes`
-     * locally (synchronous, no event round-trip) and persist the
-     * unburn to disk via `osl_unburn_scope`. Called from the send
-     * gate after a successful encrypt, so a re-engaged scope's next
-     * inbound DPC0 message is decrypted instead of being skipped by
-     * `oslBurnedScopesShouldSkip`.
+     * @deprecated Use osl_unburn_scope directly via UI flow.
      *
-     * Idempotent: if the scope wasn't burned, the local Map delete
-     * is a no-op and the Rust command returns Ok(false).
+     * Auto-unburn on encrypt-send was removed in 9-A1c. Burned scopes
+     * are permanent until the user manually re-engages via the
+     * composer encrypt toggle, which calls osl_unburn_scope explicitly.
+     * Function body is kept here in case a manual re-engage flow wants
+     * the synchronous local-cache update for future use; current call
+     * sites have all been removed.
      */
     function oslInlineUnburnAfterEncrypt(scopeInput) {
         if (!scopeInput || !scopeInput.kind || !scopeInput.id) return;
@@ -4501,182 +7013,19 @@
     }
 
     // ---- Section 5: pending invitation banner ----
-
-    const BANNER_STACK_ID = "__osl_invitation_banners";
-    const BANNER_ATTR = "data-osl-invitation-banner";
-
-    /**
-     * Phase 7c: insert the banner stack inside Discord's chat
-     * content area, above the message list. The stack is a
-     * pinned-top sibling of the message scroller so banners stay
-     * visible while the user scrolls back through history.
-     */
-    function oslEnsureBannerStack() {
-        let stack = document.getElementById(BANNER_STACK_ID);
-        if (stack && document.body.contains(stack)) return stack;
-        // Discord's chat content sits in <main>; find the chat area
-        // by looking for the channel header's parent.
-        const header = document.querySelector(
-            'section[class*="title_"][class*="container__"]'
-        );
-        const parent = header && header.parentElement;
-        if (!parent) return null;
-        stack = document.createElement("div");
-        stack.id = BANNER_STACK_ID;
-        stack.style.display = "flex";
-        stack.style.flexDirection = "column";
-        stack.style.gap = "4px";
-        // Insert just below the header.
-        parent.insertBefore(stack, header.nextSibling);
-        return stack;
-    }
+    //
+    // 9-C1: the invitation-banner subsystem was removed alongside
+    // the handshake. `oslRefreshBanners` survives as a no-op stub
+    // so the few remaining call sites (refreshHeaderState chain,
+    // observer hooks) don't need surgery.
 
     async function oslRefreshBanners() {
-        const stack = oslEnsureBannerStack();
-        if (!stack) return;
-        const listResult = await oslInvoke(
-            "osl_list_pending_invitations",
-            {}
-        );
-        if (!listResult.ok) {
-            console.log(
-                "[OSL] list pending invitations failed: " + listResult.error
-            );
-            return;
-        }
-        // Clear existing banners and re-render. Cheap for the
-        // expected size (≤ a handful of pending invitations).
-        const existing = stack.querySelectorAll("[" + BANNER_ATTR + "='1']");
-        for (const e of existing) e.remove();
-        for (const inv of listResult.value) {
-            stack.appendChild(oslRenderBanner(inv));
-        }
+        // 9-C1: stub. No pending invitations exist post-handshake.
     }
 
-    function oslRenderBanner(inv) {
-        const el = document.createElement("div");
-        el.setAttribute(BANNER_ATTR, "1");
-        el.setAttribute("data-osl-invitation-id", inv.id);
-        el.style.padding = "12px 16px";
-        el.style.background = "var(--background-tertiary, #1e1f22)";
-        el.style.color = "var(--text-normal, #dbdee1)";
-        el.style.display = "flex";
-        el.style.alignItems = "center";
-        el.style.justifyContent = "space-between";
-        el.style.gap = "12px";
-        el.style.borderBottom =
-            "1px solid var(--background-modifier-accent, #2e3035)";
-
-        const msg = document.createElement("div");
-        msg.style.flex = "1";
-        msg.style.fontSize = "14px";
-        msg.textContent =
-            "OSL: " +
-            inv.from +
-            " wants to send you encrypted messages in " +
-            oslBannerScopeLabel(inv) +
-            ".";
-        el.appendChild(msg);
-
-        const accept = document.createElement("button");
-        accept.textContent = "Accept";
-        accept.style.padding = "6px 14px";
-        accept.style.borderRadius = "4px";
-        accept.style.border = "none";
-        accept.style.background = "var(--brand-560, #5865f2)";
-        accept.style.color = "white";
-        accept.style.cursor = "pointer";
-        accept.style.fontSize = "13px";
-        accept.addEventListener("click", function () {
-            oslOnInvitationDecision(inv, true);
-        });
-        el.appendChild(accept);
-
-        const decline = document.createElement("button");
-        decline.textContent = "Decline";
-        decline.style.padding = "6px 14px";
-        decline.style.borderRadius = "4px";
-        decline.style.border =
-            "1px solid var(--background-modifier-accent, #4f545c)";
-        decline.style.background = "transparent";
-        decline.style.color = "inherit";
-        decline.style.cursor = "pointer";
-        decline.style.fontSize = "13px";
-        decline.addEventListener("click", function () {
-            oslOnInvitationDecision(inv, false);
-        });
-        el.appendChild(decline);
-
-        return el;
-    }
-
-    function oslBannerScopeLabel(inv) {
-        // inv.scope is the scope-kind string from
-        // pending_invitations.json ("dm", "gc", "server_channel",
-        // "server_full"); inv.scope_id is the storage_key.
-        switch (inv.scope) {
-            case "dm":
-                return "this DM";
-            case "gc":
-                return "this group chat";
-            case "server_channel":
-                return "this server channel";
-            case "server_full":
-                return "an entire server";
-            default:
-                return "an OSL scope";
-        }
-    }
-
-    async function oslOnInvitationDecision(inv, accepted) {
-        const cmd = accepted
-            ? "osl_accept_invitation"
-            : "osl_decline_invitation";
-        const result = await oslInvoke(cmd, { invitationId: inv.id });
-        if (!result.ok) {
-            oslToast(
-                "OSL: " +
-                    (accepted ? "accept" : "decline") +
-                    " failed: " +
-                    result.error
-            );
-            return;
-        }
-        // Build + ship the response wire so the inviter's UI
-        // updates. Reconstruct the scope from inv.scope_id (the
-        // storage_key embeds it).
-        const ctx = oslCurrentChannelContext();
-        if (ctx && ctx.channelId && inv.scope_id) {
-            const scopeInput = oslScopeInputFromStorageKey(inv.scope_id);
-            if (scopeInput) {
-                const respResult = await oslInvoke(
-                    "osl_send_whitelist_response",
-                    {
-                        toDiscordId: inv.from,
-                        scopeInput: scopeInput,
-                        accepted: accepted,
-                    }
-                );
-                if (respResult.ok) {
-                    await oslSendControlMessage(
-                        ctx.channelId,
-                        respResult.value
-                    );
-                }
-            }
-        }
-        oslToast(
-            accepted
-                ? "Accepted. " +
-                      inv.from +
-                      "'s messages will now decrypt."
-                : "Declined. " +
-                      inv.from +
-                      "'s messages will stay encrypted."
-        );
-        oslRefreshBanners();
-        oslRefreshHeaderState();
-    }
+    // 9-C1: oslEnsureBannerStack / second oslRefreshBanners /
+    // oslRenderBanner / oslBannerScopeLabel / oslOnInvitationDecision
+    // all removed alongside the invitation handshake.
 
     function oslScopeInputFromStorageKey(key) {
         if (typeof key !== "string") return null;
@@ -4742,13 +7091,9 @@
                     );
                 }
                 oslRefreshHeaderState();
-            } else if (result === OSL_RESULT_INVITATION_RECEIVED) {
-                oslRefreshBanners();
-            } else if (result === OSL_RESULT_RESPONSE_RECEIVED) {
-                oslToast(
-                    "OSL: a peer accepted/declined your whitelist invitation."
-                );
-                oslRefreshHeaderState();
+            } else if (result === OSL_RESULT_LEGACY_HANDSHAKE_IGNORED) {
+                // 9-C1: no side effect; the recv pipeline already
+                // logged the suppress.
             } else if (
                 typeof result === "string" &&
                 result.indexOf(OSL_RESULT_ATTACHMENT_PREFIX) === 0
@@ -5005,9 +7350,7 @@
         // (data-attr guard) so re-running on every observer tick
         // is cheap, and the rAF defer keeps us out of React's way.
         const headerObs = new MutationObserver(function () {
-            const header = document.querySelector(
-                'section[class*="title_"][class*="container__"]'
-            );
+            const header = oslFindChannelHeader();
             if (header) {
                 oslHeaderInjectButtons(header);
                 // 7d-D: account burn appears on ALL channel headers,
@@ -5040,9 +7383,7 @@
         // class rename breaking `oslAccountBurnInject`) doesn't
         // break the others.
         nativeSetTimeout(function () {
-            const header = document.querySelector(
-                'section[class*="title_"][class*="container__"]'
-            );
+            const header = oslFindChannelHeader();
             if (header) {
                 try {
                     oslHeaderInjectButtons(header);
@@ -5145,14 +7486,21 @@
         // Discord's React tree is well-populated (the gear +
         // account-burn injections at 500ms already exercise the
         // same surfaces).
+        // 9-F0-FIX3: the function is now async (it awaits the
+        // logged-in shell internally). Drop the synchronous
+        // try/catch — sync throws can't escape an async function;
+        // any rejection lands in the returned Promise and is logged
+        // there. Catch the Promise tail to keep the legacy warn
+        // semantics for fingerprint-detectable failures.
         nativeSetTimeout(function () {
-            try {
-                oslEnsureSelfSnowflakeRegistered();
-            } catch (e) {
-                console.warn(
-                    "[OSL] oslEnsureSelfSnowflakeRegistered threw:",
-                    (e && e.message) || e
-                );
+            const p = oslEnsureSelfSnowflakeRegistered();
+            if (p && typeof p.catch === "function") {
+                p.catch(function (e) {
+                    console.warn(
+                        "[OSL] oslEnsureSelfSnowflakeRegistered threw:",
+                        (e && e.message) || e
+                    );
+                });
             }
         }, 1500);
 
@@ -5249,50 +7597,123 @@
     /**
      * 7d-FIX3b: probe Tauri-side identity for a registered snowflake;
      * if missing, extract from Discord runtime + register via
-     * `osl_register_self_snowflake`. Idempotent server-side. Run
-     * once per boot. The Rust side validates 17-20 digits and
-     * refuses retag to a different snowflake.
+     * `osl_register_self_snowflake`. Idempotent server-side. The
+     * Rust side validates 17-20 digits and refuses retag to a
+     * different snowflake.
+     *
+     * 9-F0-FIX3: gate the whole flow on the logged-in shell being
+     * mounted. Pre-fix this fired 1500ms after DOMContentLoaded —
+     * on a fresh install that's while the user is still typing
+     * their Discord login. Extraction (`oslExtractDiscordSnowflakeFromRuntime`)
+     * structurally fails on the login page (no panels__ avatar, no
+     * title_ header to walk the React fiber from), and the
+     * single-shot `oslSnowflakeBootstrapDone` guard then prevents
+     * any retry once Discord finishes login.
+     *
+     * Fix: await `oslTourWaitForLoggedIn` (the same gate F0-FIX2 Bug B
+     * used to fix the tour) BEFORE tripping the single-shot guard,
+     * and retry extraction inside a 10s poll window since Discord's
+     * React fiber may need a moment to populate the user prop after
+     * the shell mounts.
      */
     let oslSnowflakeBootstrapDone = false;
-    function oslEnsureSelfSnowflakeRegistered() {
-        if (oslSnowflakeBootstrapDone) return;
-        oslSnowflakeBootstrapDone = true;
-        oslInvoke("osl_get_self_user_id", {}).then(function (r) {
-            if (r.ok && typeof r.value === "string" && /^\d{17,20}$/.test(r.value)) {
-                // Already registered — bootstrap already repaired
-                // peer_map. Nothing more to do.
-                return;
-            }
+
+    // 9-TD2.3: F0-FIX3 trace helper. Default off; set
+    // `window.__OSL_TRACE__ = true` in DevTools (or pre-paint in a
+    // userscript) to re-enable the snowflake-registration / login-
+    // gate breadcrumbs. Kept narrow to F0-FIX3 sites.
+    function oslTrace(msg) {
+        if (window.__OSL_TRACE__) {
+            console.log(msg);
+        }
+    }
+
+    /**
+     * 9-F0-FIX3: poll `oslExtractDiscordSnowflakeFromRuntime` for up
+     * to `maxWaitMs` (default 10s). Discord's React tree may have
+     * mounted the panels__ avatar before the user prop on that
+     * fiber is populated, so the first extract call can miss even
+     * on a logged-in shell. Polling closes that race.
+     */
+    async function oslExtractSnowflakeRetry(maxWaitMs) {
+        const deadline = Date.now() + (maxWaitMs || 10000);
+        while (Date.now() < deadline) {
             const sf = oslExtractDiscordSnowflakeFromRuntime();
-            if (!sf) {
-                console.warn(
-                    "[OSL] could not extract discord snowflake from runtime; " +
-                        "some features will be unavailable until next launch"
-                );
-                return;
-            }
-            console.log(
-                "[OSL] self snowflake extracted from runtime: " + sf
+            if (sf) return sf;
+            await new Promise(function (r) {
+                window.setTimeout(r, 500);
+            });
+        }
+        return null;
+    }
+
+    async function oslEnsureSelfSnowflakeRegistered() {
+        if (oslSnowflakeBootstrapDone) return;
+
+        oslTrace("[F0-FIX3-TRACE] snowflake bootstrap entered");
+
+        // 9-F0-FIX3: wait for the logged-in shell BEFORE tripping
+        // the single-shot guard. Reuses the same selector pair F0-FIX2
+        // Bug B locked the tour on: `nav[class*="guilds_"]` AND
+        // `section[class*="panels__"]`, both of which only exist
+        // post-login.
+        const loggedIn = await oslTourWaitForLoggedIn(30 * 60 * 1000);
+        if (!loggedIn) {
+            console.warn(
+                "[OSL][F0-FIX3] snowflake bootstrap: logged-in shell " +
+                    "never detected; deferring to next launch"
             );
-            oslInvoke("osl_register_self_snowflake", { snowflake: sf }).then(
-                function (reg) {
-                    if (reg.ok) {
-                        console.log(
-                            "[OSL] self snowflake registered from Discord runtime"
-                        );
-                        // Reset the cached miss so subsequent
-                        // oslSelfDiscordId() calls re-fetch.
-                        oslSelfDiscordIdCache = null;
-                        oslSelfDiscordIdLastError = null;
-                    } else {
-                        console.warn(
-                            "[OSL] self snowflake registration failed:",
-                            reg.error
-                        );
-                    }
-                }
+            return;
+        }
+
+        // Trip the guard now — the wait above could in theory run
+        // for ~30min, during which a second caller might enter. The
+        // guard prevents racing post-wait invocations.
+        oslSnowflakeBootstrapDone = true;
+        oslTrace("[F0-FIX3-TRACE] snowflake bootstrap: shell ready, proceeding");
+
+        const r = await oslInvoke("osl_get_self_user_id", {});
+        if (r.ok && typeof r.value === "string" && /^\d{17,20}$/.test(r.value)) {
+            // Already registered — bootstrap already repaired
+            // peer_map. Nothing more to do.
+            oslTrace(
+                "[F0-FIX3-TRACE] snowflake bootstrap: already registered (" +
+                    r.value +
+                    ")"
             );
+            return;
+        }
+
+        const sf = await oslExtractSnowflakeRetry(10000);
+        oslTrace(
+            "[F0-FIX3-TRACE] extracted snowflake=" + (sf || "null")
+        );
+        if (!sf) {
+            console.warn(
+                "[OSL][F0-FIX3] snowflake extraction failed after 10s " +
+                    "poll on logged-in shell; identity not generated. " +
+                    "User will need to reload Discord to retry."
+            );
+            return;
+        }
+        console.log("[OSL] self snowflake extracted from runtime: " + sf);
+
+        const reg = await oslInvoke("osl_register_self_snowflake", {
+            snowflake: sf,
         });
+        if (reg.ok) {
+            oslTrace("[F0-FIX3-TRACE] registration succeeded");
+            console.log("[OSL] self snowflake registered from Discord runtime");
+            // Reset the cached miss so subsequent
+            // oslSelfDiscordId() calls re-fetch.
+            oslSelfDiscordIdCache = null;
+            oslSelfDiscordIdLastError = null;
+        } else {
+            oslTrace(
+                "[F0-FIX3-TRACE] registration failed: " + (reg.error || "?")
+            );
+            console.warn("[OSL] self snowflake registration failed:", reg.error);
+        }
     }
 
     /**
@@ -5952,6 +8373,532 @@
     }
 
     // ============================================================
+    // 9-C1 Stage 3: gateway WebSocket tap for channel-roster cache.
+    //
+    // The tri-state header icon needs the live channel roster so it
+    // can compute how many of the channel's members are whitelisted.
+    // Discord's gateway dispatches roster changes via JSON frames on
+    // the WebSocket; we install a thin proxy on `window.WebSocket`
+    // that decodes `op:0` dispatch frames and pushes the resulting
+    // member set to Rust via `osl_membership_update`, throttled to
+    // one update per channel per 2 s.
+    //
+    // The proxy is install-once at IIFE head; the message-decoded
+    // `osl_membership_update` invoke uses `oslInvoke` which is
+    // defined further down — that's fine because the invoke is async
+    // and only fires after Tauri is ready (gateway frames arrive
+    // many ms after boot.js runs).
+    //
+    // Throttling: a per-channel `Map<channelId, lastSentEpochMs>`
+    // suppresses duplicate pushes within a 2 s window. A trailing
+    // update is scheduled via setTimeout so the final state lands.
+    //
+    // Anti-detect: the proxy is a `new Proxy(origWS, ...)` over the
+    // constructor, mirroring the fetch wrapper's shape. `addEvent-
+    // Listener('message', h)` intercepts handler registration and
+    // wraps the handler to peek at the frame before forwarding.
+    // ============================================================
+    const origWebSocket = typeof window.WebSocket === "function" ? window.WebSocket : null;
+    if (origWebSocket) {
+        const MEMBER_UPDATE_THROTTLE_MS = 2000;
+        const channelMemberCache = new Map();
+        const lastSentEpochMs = new Map();
+        const pendingTrail = new Map();
+
+        function oslChannelMembersUpdate(channelId, members) {
+            if (!channelId || !Array.isArray(members)) {
+                return;
+            }
+            const uniq = Array.from(new Set(members.filter((m) => typeof m === "string")));
+            channelMemberCache.set(channelId, uniq);
+            const now = Date.now();
+            const last = lastSentEpochMs.get(channelId) || 0;
+            const gap = now - last;
+            const dispatch = () => {
+                lastSentEpochMs.set(channelId, Date.now());
+                pendingTrail.delete(channelId);
+                try {
+                    if (typeof oslInvoke === "function") {
+                        oslInvoke("osl_membership_update", {
+                            channelId: channelId,
+                            memberIds: uniq,
+                        });
+                    }
+                } catch (_) {}
+            };
+            if (gap >= MEMBER_UPDATE_THROTTLE_MS) {
+                dispatch();
+            } else if (!pendingTrail.has(channelId)) {
+                const delay = MEMBER_UPDATE_THROTTLE_MS - gap;
+                const handle = setTimeout(dispatch, delay);
+                pendingTrail.set(channelId, handle);
+            }
+        }
+
+        // Expose the cache so the tri-state icon UX (Stage 4) can
+        // read it synchronously for first-paint state before any
+        // gateway event fires.
+        window.__OSL_CHANNEL_MEMBERS__ = channelMemberCache;
+        window.__OSL_MEMBERS_UPDATE__ = oslChannelMembersUpdate;
+
+        function ingestPrivateChannel(ch) {
+            if (!ch || typeof ch.id !== "string" || !Array.isArray(ch.recipients)) {
+                return;
+            }
+            const members = ch.recipients
+                .map((r) => (r && typeof r.id === "string" ? r.id : null))
+                .filter((s) => !!s);
+            oslChannelMembersUpdate(ch.id, members);
+        }
+
+        function ingestFrame(data) {
+            let payload;
+            try {
+                payload = JSON.parse(data);
+            } catch (_) {
+                return;
+            }
+            if (!payload || typeof payload !== "object" || payload.op !== 0) {
+                return;
+            }
+            const t = payload.t;
+            const d = payload.d;
+            if (!t || !d) {
+                return;
+            }
+            switch (t) {
+                case "READY": {
+                    // 9-PERF1: gateway READY = Discord is interactive.
+                    // Fade the loading splash. No-op if splash wasn't
+                    // shown (e.g. user didn't go through unlock this
+                    // navigation) or already hidden by timeout/click.
+                    try {
+                        if (typeof oslHideLoadingSplash === "function") {
+                            oslHideLoadingSplash();
+                        }
+                    } catch (_) {}
+                    if (Array.isArray(d.private_channels)) {
+                        for (const ch of d.private_channels) {
+                            ingestPrivateChannel(ch);
+                        }
+                    }
+                    // 9-C2: capture the friend-id list for the Bulk
+                    // Whitelist modal. relationships[*].type === 1
+                    // → friend (2=blocked, 3=incoming req, 4=outgoing).
+                    if (Array.isArray(d.relationships)) {
+                        const friendIds = d.relationships
+                            .filter(
+                                (r) =>
+                                    r &&
+                                    r.type === 1 &&
+                                    r.user &&
+                                    typeof r.user.id === "string"
+                            )
+                            .map((r) => r.user.id);
+                        try {
+                            if (typeof oslInvoke === "function") {
+                                oslInvoke("osl_set_friend_ids", { ids: friendIds });
+                                console.log(
+                                    "[OSL] friend list seeded: count=" +
+                                        friendIds.length
+                                );
+                            }
+                        } catch (_) {}
+                    }
+                    break;
+                }
+                case "CHANNEL_CREATE": {
+                    ingestPrivateChannel(d);
+                    // 9-C3: server-channel auto-apply. CREATE only —
+                    // don't re-apply on UPDATE because the user may
+                    // have explicitly toggled the channel off since
+                    // it was created.
+                    if (
+                        d &&
+                        typeof d.guild_id === "string" &&
+                        typeof d.id === "string"
+                    ) {
+                        oslC3MaybeAutoApply(d.guild_id, d.id).catch((_) => {});
+                    }
+                    break;
+                }
+                case "CHANNEL_UPDATE": {
+                    ingestPrivateChannel(d);
+                    break;
+                }
+                case "GUILD_CREATE": {
+                    // Seed each guild channel with the full member
+                    // roster — a permissive over-set for the icon
+                    // (channel overwrites would narrow it but we
+                    // don't track those here).
+                    const memberIds = Array.isArray(d.members)
+                        ? d.members
+                              .map((m) =>
+                                  m && m.user && typeof m.user.id === "string"
+                                      ? m.user.id
+                                      : null
+                              )
+                              .filter((s) => !!s)
+                        : [];
+                    if (Array.isArray(d.channels)) {
+                        for (const ch of d.channels) {
+                            if (ch && typeof ch.id === "string") {
+                                oslChannelMembersUpdate(ch.id, memberIds);
+                            }
+                        }
+                    }
+                    // 9-C2: stash guild metadata for the Bulk Whitelist
+                    // modal's Server picker. Keep a per-instance cache
+                    // keyed by guild id; push the full snapshot to Rust
+                    // on each update (simpler than incremental).
+                    // 9-C3 added channel_ids to the GuildDto so the
+                    // settings "apply to existing channels" flow can
+                    // iterate the channel inventory in one round-trip.
+                    if (d && typeof d.id === "string") {
+                        const channelIds = Array.isArray(d.channels)
+                            ? d.channels
+                                  .map((c) =>
+                                      c && typeof c.id === "string" ? c.id : null
+                                  )
+                                  .filter((s) => !!s)
+                            : [];
+                        window.__OSL_GUILD_CACHE__ =
+                            window.__OSL_GUILD_CACHE__ || {};
+                        window.__OSL_GUILD_CACHE__[d.id] = {
+                            id: d.id,
+                            name:
+                                typeof d.name === "string"
+                                    ? d.name
+                                    : "(guild " + d.id + ")",
+                            member_ids: memberIds,
+                            channel_ids: channelIds,
+                        };
+                        try {
+                            if (typeof oslInvoke === "function") {
+                                oslInvoke("osl_set_guild_list", {
+                                    guilds: Object.values(
+                                        window.__OSL_GUILD_CACHE__
+                                    ),
+                                });
+                            }
+                        } catch (_) {}
+                    }
+                    break;
+                }
+                case "GUILD_MEMBER_ADD":
+                case "GUILD_MEMBER_REMOVE":
+                case "GUILD_MEMBER_UPDATE": {
+                    // We don't track per-channel guild rosters
+                    // precisely here — the GUILD_MEMBERS_CHUNK and
+                    // GUILD_MEMBER_LIST_UPDATE flows would be more
+                    // accurate, but they fire only when the user
+                    // opens the member list. Stage 3 keeps this
+                    // permissive — boot.js consumers fall back to
+                    // the "unknown" tri-state when the cache is
+                    // empty for a channel.
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
+        function wrapMessageHandler(handler) {
+            if (typeof handler !== "function") {
+                return handler;
+            }
+            return function (ev) {
+                try {
+                    if (ev && typeof ev.data === "string") {
+                        ingestFrame(ev.data);
+                    }
+                } catch (_) {}
+                return handler.call(this, ev);
+            };
+        }
+
+        const wsHandler = {
+            construct: function (target, args) {
+                const inst = Reflect.construct(target, args);
+                const origAdd = inst.addEventListener.bind(inst);
+                inst.addEventListener = function (type, listener, options) {
+                    if (type === "message") {
+                        return origAdd(type, wrapMessageHandler(listener), options);
+                    }
+                    return origAdd(type, listener, options);
+                };
+                // onmessage setter property: route through the
+                // instance's prototype-level setter while wrapping.
+                try {
+                    let _onmsg = null;
+                    Object.defineProperty(inst, "onmessage", {
+                        configurable: true,
+                        enumerable: true,
+                        get: function () {
+                            return _onmsg;
+                        },
+                        set: function (fn) {
+                            _onmsg = fn;
+                            origAdd("message", wrapMessageHandler(fn));
+                        },
+                    });
+                } catch (_) {}
+                return inst;
+            },
+        };
+        try {
+            window.WebSocket = new Proxy(origWebSocket, wsHandler);
+        } catch (_) {
+            // Defensive: if the host blocks Proxy on WebSocket, leave
+            // the original untouched — the tri-state icon will render
+            // as "unknown" for guild channels until manual refresh.
+        }
+    }
+
+    // ============================================================
+    // 9-C3: per-server "encrypt new channels by default" helpers.
+    //
+    // The CHANNEL_CREATE hook (above) calls `oslC3MaybeAutoApply` to
+    // check whether `server_defaults[guild_id].encrypt_by_default` is
+    // on; if so, it flips the new ServerChannel scope's encrypt_toggle.
+    // A small TTL cache avoids an IPC round-trip on every CHANNEL_CREATE
+    // burst (channel-rename storms during admin bulk edits, etc.).
+    // The cache is invalidated by the cross-window `osl:server_default_changed`
+    // event emitted from the settings Server Defaults modal.
+    // ============================================================
+    const OSL_C3_CACHE_TTL_MS = 30_000;
+    let oslC3Cache = null; // { ts: number, map: { [server_id]: bool } }
+
+    async function oslC3GetDefaults() {
+        const now = Date.now();
+        if (oslC3Cache && now - oslC3Cache.ts < OSL_C3_CACHE_TTL_MS) {
+            return oslC3Cache.map;
+        }
+        try {
+            const r = await oslInvoke("osl_get_server_defaults", {});
+            if (!r.ok) {
+                return oslC3Cache ? oslC3Cache.map : {};
+            }
+            const map = {};
+            for (const row of r.value || []) {
+                if (row && row.server_id) {
+                    map[row.server_id] = !!row.encrypt_by_default;
+                }
+            }
+            oslC3Cache = { ts: now, map: map };
+            return map;
+        } catch (_) {
+            return oslC3Cache ? oslC3Cache.map : {};
+        }
+    }
+
+    function oslC3InvalidateCache() {
+        oslC3Cache = null;
+    }
+
+    async function oslC3MaybeAutoApply(guildId, channelId) {
+        const map = await oslC3GetDefaults();
+        if (!map[guildId]) return;
+        try {
+            await oslInvoke("osl_set_scope_encrypt", {
+                scopeInput: {
+                    kind: "server_channel",
+                    id: guildId + ":" + channelId,
+                    server_id: guildId,
+                    channel_id: channelId,
+                },
+                enabled: true,
+            });
+            console.log(
+                "[OSL] C3 auto-encrypt: new channel " +
+                    channelId +
+                    " in guild " +
+                    guildId
+            );
+        } catch (e) {
+            console.log(
+                "[OSL] C3 auto-apply failed for channel=" +
+                    channelId +
+                    ": " +
+                    ((e && e.message) || e)
+            );
+        }
+    }
+
+    // 9-C3: sidebar overlay icon — paints a small lock badge on each
+    // guild icon in the left rail, reflecting the server's encrypt-
+    // by-default state. Click toggles + (when turning on) retro-
+    // applies to existing channels.
+    const OSL_C3_SIDEBAR_DATA_ATTR = "data-osl-server-default-icon";
+
+    function oslC3FindGuildSidebar() {
+        const candidates = [
+            'nav[class*="guilds_"] [class*="scroller_"]',
+            'nav[class*="guilds_"]',
+            '[class*="guildsList_"]',
+            '[class*="guildsList__"]',
+        ];
+        for (const sel of candidates) {
+            try {
+                const el = document.querySelector(sel);
+                if (el) return el;
+            } catch (_) {}
+        }
+        return null;
+    }
+
+    function oslC3GuildIdFromListItem(li) {
+        // Strategy A: data-list-item-id="guildsnav___<guild_id>"
+        try {
+            const v = li.getAttribute && li.getAttribute("data-list-item-id");
+            if (typeof v === "string" && v.indexOf("___") !== -1) {
+                const parts = v.split("___");
+                const id = parts[parts.length - 1];
+                if (/^\d{15,21}$/.test(id)) return id;
+            }
+        } catch (_) {}
+        // Strategy B: nested <a href="/channels/<guild_id>/...">
+        try {
+            const a = li.querySelector('a[href^="/channels/"]');
+            if (a) {
+                const href = a.getAttribute("href") || "";
+                const m = /^\/channels\/(\d{15,21})(?:\/|$)/.exec(href);
+                if (m) return m[1];
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function oslC3LockSvg(state) {
+        // Small corner-badge SVG. closed = encrypt-by-default ON.
+        const closed = state === "closed";
+        return (
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="' +
+            (closed ? "#23a559" : "#87898c") +
+            '" aria-hidden="true">' +
+            '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
+            (closed
+                ? '<path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="' +
+                  (closed ? "#23a559" : "#87898c") +
+                  '" stroke-width="2" fill="none" stroke-linecap="round"/>'
+                : '<path d="M8 11V7a4 4 0 0 1 8 0" stroke="#87898c" stroke-width="2" fill="none" stroke-linecap="round"/>') +
+            "</svg>"
+        );
+    }
+
+    function oslC3PaintOverlay(badge, on) {
+        badge.innerHTML = oslC3LockSvg(on ? "closed" : "open");
+        badge.title = on
+            ? "OSL: encrypt new channels by default — ON (click to disable)"
+            : "OSL: encrypt new channels by default — OFF (click to enable)";
+        badge.setAttribute("data-osl-c3-state", on ? "on" : "off");
+    }
+
+    async function oslC3OnOverlayClick(e, guildId, badge) {
+        e.preventDefault();
+        e.stopPropagation();
+        const currentlyOn =
+            badge.getAttribute("data-osl-c3-state") === "on";
+        const next = !currentlyOn;
+        // Optimistically repaint.
+        oslC3PaintOverlay(badge, next);
+        const setR = await oslInvoke("osl_set_server_default", {
+            serverId: guildId,
+            encryptByDefault: next,
+        });
+        if (!setR.ok) {
+            oslC3PaintOverlay(badge, currentlyOn);
+            return;
+        }
+        oslC3InvalidateCache();
+    }
+
+    async function oslC3SidebarOverlayInject() {
+        const sidebar = oslC3FindGuildSidebar();
+        if (!sidebar) return;
+        const items = sidebar.querySelectorAll('[class*="listItem_"]');
+        if (items.length === 0) return;
+        const map = await oslC3GetDefaults();
+        for (const li of items) {
+            const guildId = oslC3GuildIdFromListItem(li);
+            if (!guildId) continue;
+            if (li.querySelector("[" + OSL_C3_SIDEBAR_DATA_ATTR + "='1']")) {
+                // Already injected — just repaint the state.
+                const existing = li.querySelector(
+                    "[" + OSL_C3_SIDEBAR_DATA_ATTR + "='1']"
+                );
+                if (existing) oslC3PaintOverlay(existing, !!map[guildId]);
+                continue;
+            }
+            // Anchor: try to find the guild icon's clickable wrapper
+            // so we can place the badge at its bottom-right corner.
+            const anchor =
+                li.querySelector('[class*="wrapper_"]') ||
+                li.querySelector('[class*="blobContainer_"]') ||
+                li;
+            // Ensure the anchor is positioned so our absolute badge
+            // overlays correctly.
+            const cs = window.getComputedStyle(anchor);
+            if (cs.position === "static") {
+                anchor.style.position = "relative";
+            }
+            const badge = document.createElement("div");
+            badge.setAttribute(OSL_C3_SIDEBAR_DATA_ATTR, "1");
+            badge.style.cssText =
+                "position:absolute;bottom:-2px;right:-2px;width:16px;height:16px;" +
+                "background:var(--background-floating, #18191c);border-radius:50%;" +
+                "display:flex;align-items:center;justify-content:center;" +
+                "cursor:pointer;z-index:2;pointer-events:auto;" +
+                "box-shadow:0 0 0 2px var(--background-tertiary, #1e1f22);";
+            oslC3PaintOverlay(badge, !!map[guildId]);
+            badge.addEventListener("click", (e) =>
+                oslC3OnOverlayClick(e, guildId, badge)
+            );
+            anchor.appendChild(badge);
+        }
+    }
+
+    // Sidebar observer: re-inject on DOM mutation. Periodic sweep as
+    // backup since Discord's React rendering sometimes re-mounts the
+    // guild list without triggering childList mutations on the
+    // outer scroller.
+    try {
+        const sidebar0 = oslC3FindGuildSidebar();
+        if (sidebar0) {
+            const obs = new MutationObserver(() => {
+                try {
+                    oslC3SidebarOverlayInject();
+                } catch (_) {}
+            });
+            obs.observe(sidebar0, { childList: true, subtree: true });
+        }
+        // Periodic backstop every 5s.
+        nativeSetInterval(() => {
+            try {
+                oslC3SidebarOverlayInject();
+            } catch (_) {}
+        }, 5000);
+        // Initial pass after Tauri is ready.
+        nativeSetTimeout(() => {
+            try {
+                oslC3SidebarOverlayInject();
+            } catch (_) {}
+        }, 800);
+    } catch (_) {}
+
+    // Cross-window event from settings → invalidate cache + repaint.
+    try {
+        if (window.__TAURI__ && window.__TAURI__.event) {
+            window.__TAURI__.event
+                .listen("osl:server_default_changed", () => {
+                    oslC3InvalidateCache();
+                    oslC3SidebarOverlayInject().catch((_) => {});
+                })
+                .catch((_) => {});
+        }
+    } catch (_) {}
+
+    // ============================================================
     // Capture originals BEFORE any wrapping. These references are
     // closed over by the proxy handlers below; once
     // `window.fetch` / `XMLHttpRequest.prototype.{open,send}` /
@@ -6025,6 +8972,7 @@
                             auth = h.Authorization || h.authorization;
                         }
                         if (typeof auth === "string" && auth.length > 0) {
+                            oslMaybeLogTokenChange(auth);
                             editOverlayAuthToken = auth;
                         }
                     }
@@ -6038,6 +8986,7 @@
                             args[0].headers.get("Authorization") ||
                             args[0].headers.get("authorization");
                         if (typeof auth === "string" && auth.length > 0) {
+                            oslMaybeLogTokenChange(auth);
                             editOverlayAuthToken = auth;
                         }
                     }
@@ -6054,14 +9003,17 @@
 
                 const editMatch = EDIT_RE.exec(url);
                 if (editMatch && method === "PATCH") {
-                    return handleFetchEdit(
-                        target,
-                        thisArg,
-                        args,
-                        input,
-                        init,
-                        editMatch[1],
-                        editMatch[2]
+                    return oslCaptureMessageApiResponse(
+                        handleFetchEdit(
+                            target,
+                            thisArg,
+                            args,
+                            input,
+                            init,
+                            editMatch[1],
+                            editMatch[2]
+                        ),
+                        "PATCH"
                     );
                 }
 
@@ -6083,6 +9035,16 @@
                 }
 
                 const sendMatch = SEND_RE.exec(url);
+                // 8e-FIX3: GET /messages (history load) is read-only
+                // from our side. We clone the response to populate
+                // the attachment URL cache so the scanner can find
+                // .mp4 URLs that Discord's DOM doesn't expose.
+                if (sendMatch && method === "GET") {
+                    return oslCaptureMessageApiResponse(
+                        Reflect.apply(target, thisArg, args),
+                        "GET"
+                    );
+                }
                 if (!sendMatch || method !== "POST") {
                     return Reflect.apply(target, thisArg, args);
                 }
@@ -6091,34 +9053,37 @@
                 const initBody = init && init.body;
 
                 if (typeof initBody === "string") {
-                    return interceptBody(
-                        "fetch",
-                        channelId,
-                        initBody,
-                        function (newBody) {
-                            const newInit = Object.assign({}, init, {
-                                body: newBody,
-                            });
-                            return Reflect.apply(target, thisArg, [
-                                input,
-                                newInit,
-                            ]);
-                        },
-                        function () {
-                            // onPassthrough â€” no plaintext to
-                            // encrypt; safe to forward.
-                            return Reflect.apply(target, thisArg, args);
-                        },
-                        function () {
-                            // onAbort â€” Phase 4 fail-closed.
-                            // Reject the fetch Promise to simulate
-                            // a network failure; Discord shows the
-                            // message as "Failed to send" rather
-                            // than leaking plaintext on the wire.
-                            return Promise.reject(
-                                new TypeError("Failed to fetch")
-                            );
-                        }
+                    return oslCaptureMessageApiResponse(
+                        interceptBody(
+                            "fetch",
+                            channelId,
+                            initBody,
+                            function (newBody) {
+                                const newInit = Object.assign({}, init, {
+                                    body: newBody,
+                                });
+                                return Reflect.apply(target, thisArg, [
+                                    input,
+                                    newInit,
+                                ]);
+                            },
+                            function () {
+                                // onPassthrough â€” no plaintext to
+                                // encrypt; safe to forward.
+                                return Reflect.apply(target, thisArg, args);
+                            },
+                            function () {
+                                // onAbort â€” Phase 4 fail-closed.
+                                // Reject the fetch Promise to simulate
+                                // a network failure; Discord shows the
+                                // message as "Failed to send" rather
+                                // than leaking plaintext on the wire.
+                                return Promise.reject(
+                                    new TypeError("Failed to fetch")
+                                );
+                            }
+                        ),
+                        "POST"
                     );
                 }
 
@@ -6134,7 +9099,10 @@
                                 "); passthrough (Phase 4 will handle multipart)"
                         );
                     }
-                    return Reflect.apply(target, thisArg, args);
+                    return oslCaptureMessageApiResponse(
+                        Reflect.apply(target, thisArg, args),
+                        "POST"
+                    );
                 }
 
                 if (resolved.isRequestObj) {
@@ -6148,44 +9116,50 @@
                         );
                         return Reflect.apply(target, thisArg, args);
                     }
-                    return cloned.text().then(
-                        function (bodyText) {
-                            if (!bodyText) {
+                    return oslCaptureMessageApiResponse(
+                        cloned.text().then(
+                            function (bodyText) {
+                                if (!bodyText) {
+                                    return Reflect.apply(target, thisArg, args);
+                                }
+                                return interceptBody(
+                                    "fetch",
+                                    channelId,
+                                    bodyText,
+                                    function (newBody) {
+                                        return Reflect.apply(target, thisArg, [
+                                            new Request(input, { body: newBody }),
+                                        ]);
+                                    },
+                                    function () {
+                                        // onPassthrough â€” see string-
+                                        // body branch above.
+                                        return Reflect.apply(target, thisArg, args);
+                                    },
+                                    function () {
+                                        // onAbort â€” Phase 4 fail-closed.
+                                        return Promise.reject(
+                                            new TypeError("Failed to fetch")
+                                        );
+                                    }
+                                );
+                            },
+                            function (err) {
+                                console.error(
+                                    "[OSL] failed to read Request body (fetch); passthrough",
+                                    err
+                                );
                                 return Reflect.apply(target, thisArg, args);
                             }
-                            return interceptBody(
-                                "fetch",
-                                channelId,
-                                bodyText,
-                                function (newBody) {
-                                    return Reflect.apply(target, thisArg, [
-                                        new Request(input, { body: newBody }),
-                                    ]);
-                                },
-                                function () {
-                                    // onPassthrough â€” see string-
-                                    // body branch above.
-                                    return Reflect.apply(target, thisArg, args);
-                                },
-                                function () {
-                                    // onAbort â€” Phase 4 fail-closed.
-                                    return Promise.reject(
-                                        new TypeError("Failed to fetch")
-                                    );
-                                }
-                            );
-                        },
-                        function (err) {
-                            console.error(
-                                "[OSL] failed to read Request body (fetch); passthrough",
-                                err
-                            );
-                            return Reflect.apply(target, thisArg, args);
-                        }
+                        ),
+                        "POST"
                     );
                 }
 
-                return Reflect.apply(target, thisArg, args);
+                return oslCaptureMessageApiResponse(
+                    Reflect.apply(target, thisArg, args),
+                    "POST"
+                );
             },
         };
     }
@@ -6196,18 +9170,22 @@
 
             apply: function (target, thisArg, args) {
                 // args = [method, url, async?, user?, password?]
+                let method = "GET";
+                let url = "";
                 try {
+                    method =
+                        typeof args[0] === "string"
+                            ? args[0].toUpperCase()
+                            : "GET";
+                    url =
+                        typeof args[1] === "string"
+                            ? args[1]
+                            : args[1] == null
+                              ? ""
+                              : String(args[1]);
                     thisArg[OSL_XHR_META] = {
-                        method:
-                            typeof args[0] === "string"
-                                ? args[0].toUpperCase()
-                                : "GET",
-                        url:
-                            typeof args[1] === "string"
-                                ? args[1]
-                                : args[1] == null
-                                ? ""
-                                : String(args[1]),
+                        method: method,
+                        url: url,
                         async: args[2] !== false,
                     };
                 } catch (e) {
@@ -6215,6 +9193,60 @@
                         "[OSL] failed to stash XHR meta on open(); passthrough",
                         e
                     );
+                }
+
+                // 8e-FIX4: Discord uses XHR (not fetch) for outgoing
+                // /messages traffic. Without this hook the fetch-side
+                // capture (8e-FIX3) never fires for sends. Attach a
+                // load listener now in open() so the URL/method are
+                // already known by the time send() runs.
+                try {
+                    if (
+                        MSG_API_RE.test(url) &&
+                        (method === "POST" ||
+                            method === "PATCH" ||
+                            method === "GET")
+                    ) {
+                        thisArg.addEventListener("load", function () {
+                            try {
+                                let data = null;
+                                // responseType "json" exposes a
+                                // pre-parsed object on .response.
+                                if (
+                                    thisArg.responseType === "json" &&
+                                    thisArg.response != null
+                                ) {
+                                    data = thisArg.response;
+                                } else {
+                                    const text = thisArg.responseText;
+                                    if (
+                                        typeof text === "string" &&
+                                        text.length > 0
+                                    ) {
+                                        data = JSON.parse(text);
+                                    }
+                                }
+                                if (data != null) {
+                                    oslMaybeCacheFromApiResponse(
+                                        method,
+                                        data,
+                                        "XHR"
+                                    );
+                                }
+                            } catch (err) {
+                                console.log(
+                                    "[OSL] msg api xhr response parse failed: " +
+                                        (err && err.message
+                                            ? err.message
+                                            : String(err))
+                                );
+                            }
+                        });
+                    }
+                } catch (e) {
+                    // addEventListener failure on a non-standard XHR
+                    // shim — skip silently, the fetch path covers most
+                    // history loads as a backstop.
                 }
                 return Reflect.apply(target, thisArg, args);
             },
@@ -6242,6 +9274,7 @@
                         typeof args[1] === "string" &&
                         args[1].length > 0
                     ) {
+                        oslMaybeLogTokenChange(args[1]);
                         editOverlayAuthToken = args[1];
                     }
                 } catch (e) {
@@ -6771,6 +9804,16 @@
     // ============================================================
 
     const RECV_PREFIX = "DPC0::";
+    // Phase 9-B1: Mode 1 cover messages start with DPC1::. Receive
+    // observer checks both prefixes via oslMessageIsStego().
+    const RECV_PREFIX_MODE1 = "DPC1::";
+    function oslMessageIsStego(text) {
+        if (typeof text !== "string") return false;
+        return (
+            text.indexOf(RECV_PREFIX) === 0 ||
+            text.indexOf(RECV_PREFIX_MODE1) === 0
+        );
+    }
     // Discord wraps each rendered message body in a div with a
     // stable id `message-content-<discord_message_id>`. The
     // **inner** `<span>` that holds the actual text is replaced
@@ -6906,6 +9949,102 @@
     const editOverlayActive = new Map();
     let editOverlayTemplate = null;
     let editOverlayAuthToken = null;
+    // 9-B3: throttled visibility log for token rotations so we can
+    // observe Discord's refresh cadence in real use without flooding
+    // the console (Discord re-sends the Authorization header on
+    // every heartbeat / presence / typing call, which is constant).
+    let _lastTokenLogAt = 0;
+    let _lastTokenLogged = null;
+    function oslMaybeLogTokenChange(newToken) {
+        if (typeof newToken !== "string" || newToken.length === 0) return;
+        if (newToken === _lastTokenLogged) return;
+        _lastTokenLogged = newToken;
+        const now = Date.now();
+        if (now - _lastTokenLogAt < 60_000) return;
+        _lastTokenLogAt = now;
+        // Log only the first 8 chars; the full token is a session
+        // credential and should never reach a log line in full.
+        console.log(
+            "[OSL] token refreshed: prefix=" + newToken.slice(0, 8)
+        );
+    }
+    // ============================================================
+    // Phase 9-B3: retry-on-stale-token wrapper around fetch().
+    //
+    // The fetch + XHR proxies (~lines 7497-7539 and 7807-7830) sniff
+    // every outgoing Authorization header from Discord's own client
+    // and keep `editOverlayAuthToken` current — but there's a race:
+    // when Discord rotates the token, an OSL-issued fetch already in
+    // flight (or composed against the prior value) returns 401. The
+    // B1 Mode 1 multi-message pipeline makes this race materially
+    // more likely because one rotation during a 12-16-chunk send
+    // aborts the entire pipeline.
+    //
+    // This wrapper handles exactly the 401-stale-token case: one
+    // retry after a 500ms wait (long enough for Discord's next
+    // heartbeat to refresh our sniffed cache), rebuilding the
+    // Authorization header from whatever editOverlayAuthToken now
+    // holds. Any other failure (403, 404, 5xx, network) returns
+    // immediately — those aren't stale-token problems.
+    //
+    // Token-staleness is the only failure mode we retry. We do NOT
+    // retry on network errors, transient 5xx, or Discord rate
+    // limits — those each have their own characteristics and need
+    // separate handling if they ever become a problem.
+    // ============================================================
+    async function oslFetchWithTokenRetry(url, init) {
+        const firstResp = await fetch(url, init);
+        if (!firstResp || firstResp.status !== 401) {
+            return firstResp;
+        }
+        console.log(
+            "[OSL] token retry: url=" + url +
+                " status=401, awaiting refresh"
+        );
+        // 500ms is one Discord heartbeat cycle in the typical case.
+        // The fetch + XHR proxies will sniff the next outbound
+        // Authorization header from Discord's own client and update
+        // editOverlayAuthToken inside this window.
+        await new Promise(function (resolve) { setTimeout(resolve, 500); });
+
+        // Rebuild headers with the (hopefully) refreshed token.
+        // init.headers may be a plain object or a Headers instance.
+        const retryInit = Object.assign({}, init || {});
+        const freshHeaders = {};
+        const src = init && init.headers ? init.headers : {};
+        if (typeof src.forEach === "function") {
+            // Headers instance.
+            src.forEach(function (value, key) { freshHeaders[key] = value; });
+        } else {
+            for (const k in src) {
+                if (Object.prototype.hasOwnProperty.call(src, k)) {
+                    freshHeaders[k] = src[k];
+                }
+            }
+        }
+        // Overwrite Authorization specifically — leave Content-Type
+        // and any other caller-supplied headers untouched.
+        if (editOverlayAuthToken) {
+            freshHeaders["Authorization"] = editOverlayAuthToken;
+        }
+        retryInit.headers = freshHeaders;
+
+        const secondResp = await fetch(url, retryInit);
+        if (secondResp && secondResp.status === 401) {
+            console.log(
+                "[OSL] token retry failed: url=" + url +
+                    " still 401 after refresh"
+            );
+        } else {
+            console.log(
+                "[OSL] token retry: url=" + url +
+                    " recovered status=" +
+                    (secondResp ? secondResp.status : "?")
+            );
+        }
+        return secondResp;
+    }
+
     // editOverlayLocallyApplied: message_ids whose plaintext was just
     // written to the DOM directly by editOverlaySave on PATCH 200.
     // Discord's MESSAGE_UPDATE will re-render the message using its
@@ -7733,7 +10872,10 @@
             "/api/v9/channels/" + channelId + "/messages/" + messageId;
         const body = JSON.stringify({ content: newPlaintext });
 
-        fetch(url, {
+        // 9-B3: retry-on-stale-token wrapper. The "no token at all"
+        // guard above (editOverlayAuthToken === null) stays — that's
+        // a different failure shape than a stale 401.
+        oslFetchWithTokenRetry(url, {
             method: "PATCH",
             headers: {
                 "Authorization": editOverlayAuthToken,
@@ -8111,6 +11253,31 @@
         }
         const text = div.textContent;
         if (!text) {
+            // 8d-FIX3: an encrypted-attachment message has empty
+            // text by design (cover envelope lives in the file
+            // post-FIX2). If the enclosing <li> carries Discord-
+            // hosted media, route to the attachment scanner
+            // instead of skipping. The scanner does its own
+            // filename-shape filter + MagicNotFound rejection, so
+            // a stray emoji/avatar match here is harmless and the
+            // hot path on plain empty messages remains the skip.
+            try {
+                const li = div.closest("li[id^='chat-messages-']");
+                if (
+                    li &&
+                    li.querySelector(
+                        "img[src*='discord'], video[src*='discord'], a[href*='discord']"
+                    )
+                ) {
+                    console.log(
+                        "[OSL] recvHandleDiv id=" +
+                            __dbg_id +
+                            " empty textContent but has attachments, routing to attachment scan"
+                    );
+                    oslScanLiAttachmentsV2(li).catch(function () {});
+                    return;
+                }
+            } catch (_) {}
             console.log(
                 "[OSL] recvHandleDiv SKIP id=" +
                     __dbg_id +
@@ -8118,12 +11285,12 @@
             );
             return;
         }
-        if (text.indexOf(RECV_PREFIX) !== 0) {
+        if (!oslMessageIsStego(text)) {
             if (OSL_DEBUG_RECV) {
                 console.log(
                     "[OSL] recvHandleDiv SKIP id=" +
                         __dbg_id +
-                        " reason=no_DPC0_prefix" +
+                        " reason=no_DPC0_or_DPC1_prefix" +
                         " (first8=" +
                         text.substring(0, 8) +
                         ")"
@@ -8390,10 +11557,25 @@
                 nativeClearTimeout(timeoutHandle);
                 recvInFlight.delete(messageId);
                 if (DEBUG) {
+                    // Phase 9-A1: also surface which wire version
+                    // we received. The version byte lives inside
+                    // the base64-decoded payload (one byte past the
+                    // DPC0:: prefix); peek it locally so this log
+                    // doesn't require a Rust round-trip.
+                    let wireVersion = "?";
+                    try {
+                        if (coverText.indexOf("DPC0::") === 0) {
+                            const first =
+                                atob(coverText.slice(6, 10)).charCodeAt(0);
+                            wireVersion = "v" + first;
+                        }
+                    } catch (_) {}
                     console.log(
                         "[OSL] decrypt result for msg=" +
                             messageId +
-                            ": ok"
+                            ": ok (wire_version=" +
+                            wireVersion +
+                            ")"
                     );
                 }
                 // Cache by message_id so React replacing the
@@ -8469,8 +11651,7 @@
                             return;
                         }
                         const delayed = sweepDiv.textContent || "";
-                        const reverted =
-                            delayed.indexOf(RECV_PREFIX) === 0;
+                        const reverted = oslMessageIsStego(delayed);
                         console.log(
                             "[OSL] msg=" +
                                 messageId +
@@ -8675,7 +11856,7 @@
                         let rendered = false;
                         if (span) {
                             const t = span.textContent || "";
-                            if (t.indexOf(RECV_PREFIX) === 0) {
+                            if (oslMessageIsStego(t)) {
                                 recvApplyPlaintext(span, dto.plaintext);
                                 recvPlaintext.set(mid, dto.plaintext);
                                 // Phase 6a: bind cover â†” plaintext.
@@ -8757,7 +11938,7 @@
             let dispatchedCount = 0;
             for (const div of divs) {
                 const text = div.textContent;
-                if (!text || text.indexOf(RECV_PREFIX) !== 0) continue;
+                if (!text || !oslMessageIsStego(text)) continue;
                 const messageId = recvMessageIdOf(div);
                 const cached = recvPlaintext.get(messageId);
                 if (cached) {
@@ -8857,16 +12038,765 @@
         }
     }
 
+    // ============================================================
+    // 9-D: onboarding tour driver + VPN warning installer.
+    //
+    // The tour spans slides 1..9. Slides 1-5 and 8-9 fire in the
+    // Discord main webview (this file); slides 6-7 fire in the
+    // settings window (settings_window.html). Boot.js owns the
+    // driver state machine for main-side slides and the cross-window
+    // event handshake.
+    //
+    // Locked slide copy lives in TOUR_SLIDES; do not paraphrase —
+    // the user-facing spec mandates exact wording.
+    // ============================================================
+    const TOUR_SLIDES = {
+        1: {
+            title: "Welcome to OSL",
+            body:
+                "OSL adds end-to-end encryption to Discord. Your messages stay private from Discord, your network, and anyone else watching.\n\nThis quick tour shows you what each button does. It takes about a minute.",
+            buttonLabel: "Start →",
+            target: null,
+            skippable: false,
+        },
+        2: {
+            title: "The encrypt toggle",
+            body:
+                "This lock icon appears in every channel header. Click to cycle through encryption states:\n\n🔓 No one in this channel is set up — messages are plain\n🟡 Some people are set up — messages encrypted for them\n🔒 Everyone is set up — fully encrypted channel",
+            buttonLabel: "Next →",
+            targetSelector: "[data-osl-encrypt-toggle]",
+            skippable: true,
+        },
+        3: {
+            title: "Burn this conversation",
+            body:
+                "Burns your encryption keys for this channel only. Messages you sent before become permanently unreadable — even to you.\n\nUse this if you no longer trust the people in this channel with your past messages.",
+            buttonLabel: "Next →",
+            targetSelector: "[data-osl-burn-btn]",
+            skippable: true,
+        },
+        4: {
+            title: "Account burn",
+            body:
+                "Burns everything. Every key, every conversation, every peer you've ever talked to. All your encrypted history becomes permanently unreadable.\n\nHold the icon for 3 seconds, or press Ctrl + Shift + Backspace twice.",
+            buttonLabel: "Next →",
+            targetSelector: "[data-osl-account-burn]",
+            skippable: true,
+        },
+        5: {
+            title: "Open your settings",
+            body:
+                "Click the gear to open OSL settings. We'll show you two features in there before finishing up.",
+            buttonLabel: "Open settings →",
+            targetSelector: "[data-osl-settings-btn='1']",
+            skippable: true,
+        },
+        8: {
+            title: "One more thing",
+            body:
+                "OSL encrypts everything on your computer, too — your keys, your message history, your peer list. None of it can be read without your password.\n\nSet a strong password on the next screen. If you forget it, your encrypted history is permanently lost. There is no recovery.",
+            buttonLabel: "Set my password →",
+            target: null,
+            skippable: false,
+        },
+        // Slide 9 (password form) is constructed dynamically — it
+        // embeds an HTMLFormElement in the spotlight card.
+    };
+
+    function oslTourWaitForElement(selector, timeoutMs) {
+        const deadline = Date.now() + (timeoutMs || 10000);
+        return new Promise(function (resolve) {
+            function tick() {
+                const el = document.querySelector(selector);
+                if (el) {
+                    resolve(el);
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    resolve(null);
+                    return;
+                }
+                nativeSetTimeout(tick, 200);
+            }
+            tick();
+        });
+    }
+
+    function oslTourBuildPasswordForm(onSubmit) {
+        const wrap = document.createElement("form");
+        wrap.style.display = "flex";
+        wrap.style.flexDirection = "column";
+        wrap.style.gap = "10px";
+        wrap.style.marginBottom = "16px";
+
+        // 9-D-FIX1: copy reconciled to V1's actual 6-char floor
+        // enforced by cmd_osl_set_main_password. The earlier "8 chars"
+        // copy lied — accepted 6 but flagged it as "Too short".
+        const pw = document.createElement("input");
+        pw.type = "password";
+        pw.placeholder = "Password";
+        pw.autocomplete = "new-password";
+        pw.minLength = 6;
+        pw.style.padding = "8px 10px";
+        pw.style.borderRadius = "4px";
+        pw.style.background = "var(--input-background, #1e1f22)";
+        pw.style.color = "var(--text-normal, #dbdee1)";
+        pw.style.border = "1px solid var(--background-modifier-accent, #3f4147)";
+        pw.style.fontSize = "14px";
+        wrap.appendChild(pw);
+
+        const confirm = document.createElement("input");
+        confirm.type = "password";
+        confirm.placeholder = "Confirm password";
+        confirm.autocomplete = "new-password";
+        confirm.minLength = 6;
+        confirm.style.padding = "8px 10px";
+        confirm.style.borderRadius = "4px";
+        confirm.style.background = "var(--input-background, #1e1f22)";
+        confirm.style.color = "var(--text-normal, #dbdee1)";
+        confirm.style.border = "1px solid var(--background-modifier-accent, #3f4147)";
+        confirm.style.fontSize = "14px";
+        wrap.appendChild(confirm);
+
+        const helper = document.createElement("div");
+        helper.textContent = "At least 6 characters. Longer is stronger.";
+        helper.style.fontSize = "12px";
+        helper.style.color = "var(--text-muted, #949ba4)";
+        wrap.appendChild(helper);
+
+        const strength = document.createElement("div");
+        strength.style.fontSize = "12px";
+        strength.style.color = "var(--text-muted, #949ba4)";
+        strength.style.minHeight = "16px";
+        wrap.appendChild(strength);
+
+        const MUTED = "var(--text-muted, #949ba4)";
+        const DANGER = "var(--status-danger, #ed4245)";
+        const WARN = "var(--status-warning, #f0b132)";
+        const OK_NEUTRAL = "var(--text-normal, #dbdee1)";
+        const STRONG_OK = "var(--status-positive, #23a55a)";
+
+        function rateStrength(s) {
+            if (!s) return { label: "", color: MUTED };
+            if (s.length < 6) {
+                return { label: "Too short (" + s.length + "/6)", color: DANGER };
+            }
+            if (s.length < 10) return { label: "Weak", color: WARN };
+            if (s.length < 16) return { label: "OK", color: OK_NEUTRAL };
+            return { label: "Strong", color: STRONG_OK };
+        }
+        pw.addEventListener("input", function () {
+            const r = rateStrength(pw.value);
+            strength.textContent = r.label;
+            strength.style.color = r.color;
+        });
+
+        wrap.__oslSubmit = function () {
+            if (pw.value.length < 6) {
+                strength.textContent = "Password must be at least 6 characters.";
+                strength.style.color = DANGER;
+                return false;
+            }
+            if (pw.value !== confirm.value) {
+                strength.textContent = "Passwords don't match.";
+                strength.style.color = DANGER;
+                return false;
+            }
+            return pw.value;
+        };
+
+        return wrap;
+    }
+
+    async function oslTourStartFromSlide(startSlide) {
+        let currentSpotlight = null;
+        function close() {
+            if (currentSpotlight) {
+                try {
+                    currentSpotlight.close();
+                } catch (_) {}
+                currentSpotlight = null;
+            }
+        }
+        async function persistAdvance(n) {
+            try {
+                await oslInvoke("osl_tour_advance", { slide: n });
+            } catch (_) {}
+        }
+        async function persistComplete() {
+            try {
+                await oslInvoke("osl_tour_complete", {});
+            } catch (_) {}
+        }
+        async function persistSkip() {
+            try {
+                await oslInvoke("osl_tour_skip", {});
+            } catch (_) {}
+        }
+        async function jumpToSlide8() {
+            close();
+            await persistSkip();
+            renderSlide(8);
+        }
+
+        async function renderSlide(n) {
+            close();
+            await persistAdvance(n);
+            if (n === 6) {
+                // Slide 6 lives in the settings window; main waits for
+                // osl:tour_return_to_main. Nothing to render here.
+                return;
+            }
+            if (n === 9) {
+                renderPasswordSlide();
+                return;
+            }
+            const slide = TOUR_SLIDES[n];
+            if (!slide) {
+                console.warn("[OSL] tour: no slide for n=" + n);
+                return;
+            }
+            let target = null;
+            if (slide.targetSelector) {
+                target = await oslTourWaitForElement(slide.targetSelector, 10000);
+                if (!target) {
+                    console.warn(
+                        "[OSL] tour: target missing for slide " +
+                            n +
+                            " (" +
+                            slide.targetSelector +
+                            "), advancing"
+                    );
+                    if (n < 9) {
+                        renderSlide(n + 1);
+                    } else {
+                        await persistComplete();
+                    }
+                    return;
+                }
+            }
+            const opts = {
+                title: slide.title,
+                body: slide.body,
+                buttonLabel: slide.buttonLabel,
+                target: target,
+                onAdvance: function () {
+                    handleAdvance(n);
+                },
+            };
+            if (slide.skippable) {
+                opts.onSkip = jumpToSlide8;
+            }
+            currentSpotlight = oslSpotlight(opts);
+        }
+
+        function renderPasswordSlide() {
+            close();
+            const form = oslTourBuildPasswordForm();
+            const opts = {
+                title: "Set your password",
+                body:
+                    "This password protects everything OSL stores on your computer. Make it strong. Write it down somewhere safe.",
+                buttonLabel: "Encrypt my keys →",
+                target: null,
+                formContent: form,
+                onAdvance: async function () {
+                    const pwValue = form.__oslSubmit && form.__oslSubmit();
+                    if (!pwValue) {
+                        // Validation failed — re-render the slide.
+                        renderPasswordSlide();
+                        return;
+                    }
+                    // 9-D-FIX2: stuck-tour recovery. If a previous
+                    // tour attempt set the password but the next
+                    // launch couldn't read `tour.completed=true`
+                    // (encrypted app_preferences read before gate),
+                    // the tour replays and slide 9 would loop forever
+                    // because `osl_set_main_password` refuses to
+                    // overwrite an existing marker. Detect that case
+                    // and treat it as a clean completion.
+                    const statusRes = await oslInvoke("osl_password_status", {});
+                    if (statusRes.ok && statusRes.value && statusRes.value.is_set) {
+                        await persistComplete();
+                        oslToast("Tour complete — your keys are already encrypted.");
+                        return;
+                    }
+                    const res = await oslInvoke("osl_set_main_password", {
+                        password: pwValue,
+                    });
+                    if (!res.ok) {
+                        oslToast("Setting password failed: " + res.error);
+                        renderPasswordSlide();
+                        return;
+                    }
+                    await persistComplete();
+                    oslToast("Welcome to OSL — your keys are now encrypted.");
+                },
+            };
+            currentSpotlight = oslSpotlight(opts);
+        }
+
+        function handleAdvance(n) {
+            if (n === 5) {
+                // Slide 5 → open settings window, mark slide 6 as
+                // the resume cursor, emit advance event so settings
+                // picks it up on its end.
+                oslInvoke("osl_open_settings_window", {}).then(async function (r) {
+                    if (!r.ok) {
+                        oslToast("Failed to open settings: " + r.error);
+                        return;
+                    }
+                    await persistAdvance(6);
+                    try {
+                        if (
+                            window.__TAURI__ &&
+                            window.__TAURI__.event &&
+                            typeof window.__TAURI__.event.emit === "function"
+                        ) {
+                            window.__TAURI__.event.emit(
+                                "osl:tour_advance_to_slide",
+                                { slide: 6 }
+                            );
+                        }
+                    } catch (e) {
+                        console.warn("[OSL] tour: emit advance_to_slide failed", e);
+                    }
+                });
+                return;
+            }
+            if (n === 8) {
+                renderSlide(9);
+                return;
+            }
+            renderSlide(n + 1);
+        }
+
+        // Boot the tour at startSlide. Slides 6/7 live in settings —
+        // if startSlide is 6 or 7, we open settings and wait for the
+        // settings-side handler to surface the slide.
+        if (startSlide === 6 || startSlide === 7) {
+            const r = await oslInvoke("osl_open_settings_window", {});
+            if (r.ok) {
+                try {
+                    if (
+                        window.__TAURI__ &&
+                        window.__TAURI__.event &&
+                        typeof window.__TAURI__.event.emit === "function"
+                    ) {
+                        window.__TAURI__.event.emit("osl:tour_advance_to_slide", {
+                            slide: startSlide,
+                        });
+                    }
+                } catch (_) {}
+            }
+            return;
+        }
+        renderSlide(startSlide);
+    }
+
+    let oslTourActive = false;
+
+    /**
+     * 9-F0-FIX2 B: poll the DOM for positive evidence that the user
+     * is in Discord's logged-in shell, not on the login / register
+     * screen. The pre-fix tour install waited on
+     * `[class*="title_"], [class*="guilds_"]` which matched some
+     * elements on Discord's auth pages too — slide 1 of the tour
+     * would render on top of the login form before the user had
+     * even authenticated.
+     *
+     * We now require TWO selectors to both resolve at the same
+     * time, both of which exist only in the logged-in shell:
+     *   - `nav[class*="guilds_"]`             — left server rail
+     *   - `section[class*="panels__"]`        — bottom-left user pane
+     *
+     * Neither is present on Discord's auth pages. Polling continues
+     * until the user signs in (up to 30 min, since they may take
+     * arbitrary time on the auth page) or the page navigates.
+     */
+    function oslTourWaitForLoggedIn(timeoutMs) {
+        const deadline = Date.now() + (timeoutMs || 30 * 60 * 1000);
+        return new Promise(function (resolve) {
+            function tick() {
+                const guildsRail = document.querySelector('nav[class*="guilds_"]');
+                const userPanel = document.querySelector('section[class*="panels__"]');
+                if (guildsRail && userPanel) {
+                    resolve(true);
+                    return;
+                }
+                if (Date.now() > deadline) {
+                    resolve(false);
+                    return;
+                }
+                window.setTimeout(tick, 500);
+            }
+            tick();
+        });
+    }
+
+    async function oslInstallTour() {
+        if (oslTourActive) return;
+        const state = await oslInvoke("osl_tour_get_state", {});
+        if (!state.ok) {
+            console.warn("[OSL] tour: get_state failed:", state.error);
+            return;
+        }
+        if (state.value && state.value.completed) {
+            return;
+        }
+        // 9-F0-FIX2 B: require POSITIVE logged-in detection (guilds
+        // rail AND user panel both present) before the tour fires.
+        // Pre-fix used a single-selector wait that matched both the
+        // logged-in channel header AND a login-page header element,
+        // letting slide 1 render on top of the login form.
+        const loggedIn = await oslTourWaitForLoggedIn(30 * 60 * 1000);
+        if (!loggedIn) {
+            console.warn(
+                "[OSL] tour: Discord logged-in shell not detected within 30 min; deferring"
+            );
+            return;
+        }
+        oslTourActive = true;
+        const startSlide = state.value.last_slide && state.value.last_slide > 0
+            ? state.value.last_slide
+            : 1;
+        console.log("[OSL] tour: starting at slide " + startSlide);
+        oslTourStartFromSlide(startSlide);
+    }
+
+    function oslTourWireCrossWindowReturn() {
+        const event =
+            window.__TAURI__ && window.__TAURI__.event
+                ? window.__TAURI__.event
+                : null;
+        if (!event || typeof event.listen !== "function") return;
+        try {
+            event.listen("osl:tour_return_to_main", function () {
+                // Settings sent us back at slide 7-end. Render slide 8.
+                console.log("[OSL] tour: return_to_main received");
+                if (!oslTourActive) {
+                    oslTourActive = true;
+                    oslTourStartFromSlide(8);
+                } else {
+                    // Active tour: drive the state forward.
+                    oslTourStartFromSlide(8);
+                }
+            });
+        } catch (e) {
+            console.warn("[OSL] tour: listener wire failed", e);
+        }
+        try {
+            event.listen("osl:tour_replay_requested", function () {
+                console.log("[OSL] tour: replay_requested received");
+                oslTourActive = false;
+                oslTourStartFromSlide(1);
+            });
+        } catch (e) {
+            console.warn("[OSL] tour: replay listener wire failed", e);
+        }
+    }
+
+    // ============================================================
+    // 9-D: VPN warning banner installer.
+    // ============================================================
+    async function oslInstallVpnWarning() {
+        // 5s settle delay — give Discord time to mount and avoid
+        // banner-during-loading-screen visual clash.
+        await new Promise(function (r) {
+            nativeSetTimeout(r, 5000);
+        });
+        const state = await oslInvoke("osl_tour_get_state", {});
+        if (!state.ok) return;
+        if (state.value && state.value.vpn_warning_dismissed_forever) {
+            return;
+        }
+        const result = await oslInvoke("osl_check_vpn", {});
+        if (!result.ok) {
+            console.warn("[OSL] VPN check failed:", result.error);
+            return;
+        }
+        const v = result.value;
+        if (!v || v.ok) {
+            return;
+        }
+        const sys = v.system_country || "?";
+        const ip = v.ip_country || "?";
+        oslBanner({
+            message:
+                "VPN not active — your IP is visible.\n" +
+                "System region: " + sys + "  IP region: " + ip,
+            actions: [
+                { label: "Dismiss" },
+                {
+                    label: "Don't show again",
+                    secondary: true,
+                    onClick: function () {
+                        oslInvoke("osl_vpn_warning_dismiss_forever", {});
+                    },
+                },
+            ],
+        });
+    }
+
+    // ============================================================
+    // 9-TD1.3: Discord-update canary.
+    //
+    // Discord redesigns silently — a class rename can break the
+    // lock icon injection, the scanner anchor, the composer toggle,
+    // or the profile-popup button without any error in our code.
+    // The user just sees "OSL doesn't seem to be working." This
+    // canary probes a fixed list of selectors ~10s after page load,
+    // logs structured warnings for misses, and surfaces a banner if
+    // critical surfaces are missing — turning silent UI breakage
+    // into "OSL UI partially broken — Discord may have updated."
+    //
+    // We don't try to auto-recover. The expected response is a
+    // selector patch from a developer; the canary just surfaces the
+    // need.
+    // ============================================================
+    const OSL_CANARY_CHECKS = [
+        {
+            name: "channel_header",
+            critical: true,
+            probe: function () {
+                return typeof oslFindChannelHeader === "function"
+                    ? oslFindChannelHeader()
+                    : null;
+            },
+        },
+        {
+            name: "user_panel",
+            critical: true,
+            probe: function () {
+                return document.querySelector('section[class*="panels__"]');
+            },
+        },
+        {
+            name: "composer",
+            critical: true,
+            probe: function () {
+                return document.querySelector('[class*="channelTextArea__"]');
+            },
+        },
+        {
+            name: "guilds_rail",
+            critical: true,
+            probe: function () {
+                return document.querySelector('nav[class*="guilds_"]');
+            },
+        },
+        // Message content is keyed on per-message ids; if no channel
+        // is open, none will be present. Treat as informational.
+        {
+            name: "message_content_present",
+            critical: false,
+            probe: function () {
+                return document.querySelector('[id^="message-content-"]');
+            },
+        },
+        // Our own settings-gear inject. Tests both that
+        // `panels__` was found AND that `oslSettingsGearInject`
+        // succeeded — confirms our injection pipeline still works.
+        {
+            name: "settings_gear_injected",
+            critical: false,
+            probe: function () {
+                return document.querySelector("[data-osl-settings-btn='1']");
+            },
+        },
+        // Profile popouts only exist when the user has opened one,
+        // so this is best-effort. We probe but don't penalise misses.
+        {
+            name: "profile_surface_when_open",
+            critical: false,
+            probe: function () {
+                return typeof oslFindProfileSurface === "function"
+                    ? oslFindProfileSurface()
+                    : null;
+            },
+        },
+    ];
+
+    let oslCanaryRan = false;
+    function oslRunDomCanary() {
+        if (oslCanaryRan) return;
+        // 9-F0-FIX1: skip canary on Discord login / register routes.
+        // None of the critical selectors (channel header, user panel,
+        // composer, guilds rail) exist in the logged-out shell, so
+        // the canary would always report "fail" and pop the banner
+        // for every clean-install launch. The post-login navigation
+        // re-injects boot.js and re-arms the canary on /channels/.
+        try {
+            const path =
+                (typeof window !== "undefined" &&
+                    window.location &&
+                    window.location.pathname) ||
+                "";
+            if (
+                path === "/login" ||
+                path.startsWith("/login/") ||
+                path === "/register" ||
+                path.startsWith("/register/")
+            ) {
+                console.log(
+                    "[OSL canary] skipped on " + path + " (no logged-in shell)"
+                );
+                oslCanaryRan = true;
+                return;
+            }
+        } catch (_) {}
+        oslCanaryRan = true;
+        const results = [];
+        let criticalMissing = 0;
+        let totalMissing = 0;
+        for (const check of OSL_CANARY_CHECKS) {
+            let el = null;
+            try {
+                el = check.probe();
+            } catch (e) {
+                el = null;
+            }
+            const ok = !!el;
+            results.push({ name: check.name, ok: ok, critical: !!check.critical });
+            if (!ok) {
+                totalMissing++;
+                if (check.critical) {
+                    criticalMissing++;
+                    console.warn(
+                        "[OSL canary] missing: " + check.name + " (critical)"
+                    );
+                } else {
+                    console.log(
+                        "[OSL canary] absent: " + check.name + " (non-critical)"
+                    );
+                }
+            }
+        }
+        let level;
+        if (criticalMissing === 0) {
+            level = "pass";
+        } else if (criticalMissing <= 1) {
+            level = "degraded";
+        } else {
+            level = "fail";
+        }
+        console.log(
+            "[OSL canary] result=" +
+                level +
+                " critical_missing=" +
+                criticalMissing +
+                " total_missing=" +
+                totalMissing +
+                " of " +
+                OSL_CANARY_CHECKS.length
+        );
+        if (level !== "pass") {
+            try {
+                if (typeof oslBanner === "function") {
+                    oslBanner({
+                        message:
+                            level === "fail"
+                                ? "OSL UI broken — Discord may have updated. " +
+                                  "Several core features are missing their anchors. " +
+                                  "Check for an OSL update."
+                                : "OSL UI partially broken — Discord may have updated. " +
+                                  "Some features may be missing or misplaced. " +
+                                  "Check for an OSL update.",
+                        actions: [{ label: "Dismiss" }],
+                    });
+                }
+            } catch (e) {
+                console.warn("[OSL canary] banner display failed:", e);
+            }
+        }
+    }
+
+    function oslScheduleDomCanary() {
+        // Fire once, ~10s after the install hook ran. By then Discord
+        // has either mounted its UI or is permanently stuck — either
+        // way the probe result is meaningful.
+        window.setTimeout(oslRunDomCanary, 10000);
+    }
+
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", recvInstallObserver);
         // document.addEventListener("DOMContentLoaded", editTabStartObserver);  // disabled: broken Slate-model swap, pending overlay rewrite
         document.addEventListener("DOMContentLoaded", editOverlayInstall);
         document.addEventListener("DOMContentLoaded", oslInstallPhase7c);
+        document.addEventListener("DOMContentLoaded", oslInstallKeybinds);
+        document.addEventListener("DOMContentLoaded", oslInstallTour);
+        document.addEventListener("DOMContentLoaded", oslTourWireCrossWindowReturn);
+        document.addEventListener("DOMContentLoaded", oslInstallVpnWarning);
+        document.addEventListener("DOMContentLoaded", oslScheduleDomCanary);
     } else {
         recvInstallObserver();
         // editTabStartObserver();  // disabled: broken Slate-model swap, pending overlay rewrite
         editOverlayInstall();
         oslInstallPhase7c();
+        oslInstallKeybinds();
+        oslInstallTour();
+        oslTourWireCrossWindowReturn();
+        oslInstallVpnWarning();
+        oslScheduleDomCanary();
+    }
+})();
+
+// =====================================================================
+// Phase F0: deep-link smoke test
+//
+// The Rust on_open_url callback (main.rs, registered in `setup`)
+// emits "osl:deep-link-received" with the full URL as payload
+// whenever Windows delivers an osl://... activation. We:
+//
+//   1. Log the URL to the JS console (proves the Rust → JS event
+//      pipe is alive).
+//   2. Invoke `osl_test_deep_link(url)` to round-trip the URL
+//      through Rust's parser (proves JS → Rust IPC works AFTER
+//      receiving the event, which is the inverse direction from
+//      the deep-link arrival itself).
+//   3. Show an oslToast with the extracted token so the manual
+//      verification matrix's UX expectation is satisfied.
+//
+// All three steps are wrapped in try/catch so a failure in any
+// one doesn't break the others. F0 is plumbing-only; F2 replaces
+// this listener with the real ad-session unlock flow (validate
+// token against keyserver, reset foreground timer).
+//
+// Race note: if osl://... fires while OSL is launching (scenario
+// a of the F0 verification matrix), the Rust on_open_url emit
+// may happen before this listener registers. The Rust console
+// log still proves the URL arrived; the toast may not appear on
+// the very first activation. F2 will add a buffered-URL replay
+// pattern; F0 just documents the race.
+// =====================================================================
+(async () => {
+    try {
+        const T = window.__TAURI__;
+        if (!T || !T.event || !T.core) {
+            console.warn("[OSL deep-link] __TAURI__ globals not available; listener not installed");
+            return;
+        }
+        await T.event.listen("osl:deep-link-received", async (event) => {
+            const url = event && event.payload;
+            console.log("[OSL deep-link] event:", url);
+            if (typeof url !== "string") {
+                console.warn("[OSL deep-link] payload was not a string:", event);
+                return;
+            }
+            try {
+                const parsed = await T.core.invoke("osl_test_deep_link", { url });
+                console.log("[OSL deep-link] parsed:", parsed);
+                const token = (parsed && parsed.token) || "(none)";
+                if (typeof oslToast === "function") {
+                    oslToast("Deep link received: " + token, { durationMs: 5000 });
+                }
+            } catch (err) {
+                console.error("[OSL deep-link] osl_test_deep_link invoke failed:", err);
+            }
+        });
+        console.log("[OSL deep-link] listener registered");
+    } catch (e) {
+        console.warn("[OSL deep-link] listener install failed:", e);
     }
 })();
 

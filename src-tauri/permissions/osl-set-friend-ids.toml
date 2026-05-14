@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C2: gateway tap pushes the friend-id list to Rust on READY.
+[[permission]]
+identifier = "allow-osl-set-friend-ids"
+description = "Permits the discord.com main webview to invoke `osl_set_friend_ids` (push the user's Discord friend ids snapshot — relationships with type=1 — into ephemeral Rust state for the settings-window Bulk Whitelist modal's Friend-list action)."
+commands.allow = ["osl_set_friend_ids"]

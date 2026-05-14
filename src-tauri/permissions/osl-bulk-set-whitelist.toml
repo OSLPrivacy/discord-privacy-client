@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C1 Stage 3: bulk-set the same scope for N channel members.
+[[permission]]
+identifier = "allow-osl-bulk-set-whitelist"
+description = "Permits the discord.com main webview to invoke `osl_bulk_set_whitelist` (atomically add the named peer set to a scope, single peer_map persist at end). Triggered from the tri-state header lock's 'encrypt with everyone' action."
+commands.allow = ["osl_bulk_set_whitelist"]

@@ -13,13 +13,15 @@ fn cipher(salt: &[u8]) -> ConversationCipher {
 }
 
 #[test]
-fn fits_under_discord_2000_char_limit_at_max_raw() {
+fn fits_under_discord_text_cap_at_max_raw() {
+    // 9-B1a: MAX re-tuned to 100 raw bytes so the encoded cover
+    // stays under Discord's free-tier 2000-char text-message cap.
     let c = cipher(b"length-cap-test");
     let payload = vec![0xABu8; MODE1_MAX_RAW_LEN];
     let s = encode_mode1(&c, &payload).unwrap();
     assert!(
         s.chars().count() < 2000,
-        "Mode 1 at max raw len produced {} chars (>= 2000)",
+        "Mode 1 at max raw len produced {} chars (>= 2000 — overruns free-tier cap)",
         s.chars().count()
     );
     let got = decode_mode1(&c, &s).unwrap();
@@ -96,6 +98,62 @@ fn round_trip_random_byte_distributions() {
         let s = encode_mode1(&c, &case).unwrap();
         let got = decode_mode1(&c, &s).unwrap();
         assert_eq!(got, case, "len={}", case.len());
+    }
+}
+
+// ---- 9-B1a: MODE1_MAX_RAW_LEN tuned to 100 for free-tier fit. ----
+
+#[test]
+fn b1_max_raw_len_is_100() {
+    assert_eq!(MODE1_MAX_RAW_LEN, 100);
+}
+
+#[test]
+fn b1_roundtrip_at_exact_100_byte_payload() {
+    let c = cipher(b"b1-boundary");
+    let payload: Vec<u8> = (0..100u8).collect();
+    assert_eq!(payload.len(), MODE1_MAX_RAW_LEN);
+    let s = encode_mode1(&c, &payload).unwrap();
+    let got = decode_mode1(&c, &s).unwrap();
+    assert_eq!(got, payload);
+    // 9-B1a: at max raw the cover stays under Discord's free-tier
+    // 2000-char cap (≈1700 chars in practice).
+    assert!(
+        s.chars().count() < 2000,
+        "100-byte payload produced {} chars (>= 2000)",
+        s.chars().count()
+    );
+}
+
+#[test]
+fn encode_at_new_max_capacity_100_bytes_produces_under_2000_chars() {
+    // Explicit regression guard for the 9-B1a free-tier-fit target.
+    // Multiple salts to confirm the bound isn't an artifact of one
+    // wordlist permutation.
+    for salt in [b"salt-1" as &[u8], b"salt-2", b"salt-3"] {
+        let c = cipher(salt);
+        let payload = vec![0xAAu8; 100];
+        let s = encode_mode1(&c, &payload).unwrap();
+        assert!(
+            s.chars().count() < 2000,
+            "salt={:?} produced {} chars",
+            salt,
+            s.chars().count()
+        );
+    }
+}
+
+#[test]
+fn b1_rejects_101_byte_payload_with_too_long_error() {
+    let c = cipher(b"b1-oversize");
+    let payload = vec![0xCDu8; 101];
+    match encode_mode1(&c, &payload) {
+        Err(Error::Mode1TooLong { got, max }) => {
+            assert_eq!(got, 101);
+            assert_eq!(max, MODE1_MAX_RAW_LEN);
+            assert_eq!(max, 100);
+        }
+        other => panic!("expected Mode1TooLong, got {other:?}"),
     }
 }
 

@@ -27,43 +27,65 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// One scope's encryption + whitelist state. Fields default to
-/// safe values so a minimal hand-edit (`{}`) still parses.
+/// One scope's encryption state. 9-C1 collapsed the membership tables
+/// (`full_whitelist`, `members`, `whitelisted_users`) into the per-peer
+/// `outgoing_whitelists` on `PeerEntry` — see the bootstrap migration
+/// for the one-shot lossless move. What remains is the user's per-scope
+/// "encrypt by default?" toggle plus a UI hint flag.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScopeState {
     /// Whether outgoing messages in this scope encrypt by default.
-    /// Drives the per-scope "lock" icon in the channel header
-    /// (Phase 7c UI).
+    /// Drives the composer pill in the channel header.
     #[serde(default)]
     pub encrypt_toggle: bool,
 
     /// `true` if the toggle was auto-enabled by adding a whitelist
-    /// (§2.3), `false` if the user toggled it explicitly. Lets the
-    /// UI distinguish "encryption defaults to on because you
-    /// whitelisted someone" from "you turned encryption on
-    /// manually." Mostly for the tooltip.
+    /// (§2.3), `false` if the user toggled it explicitly. UI hint
+    /// for the composer tooltip.
     #[serde(default)]
     pub auto_enabled: bool,
-
-    /// `true` for full-scope whitelists (e.g. full-GC), `false`
-    /// for per-user whitelists. Only meaningful for multi-user
-    /// scopes; DMs ignore this field.
-    #[serde(default)]
-    pub full_whitelist: bool,
-
-    /// For full-scope whitelists: the snapshot of scope membership
-    /// at whitelist time. Used to compute the per-recipient
-    /// wrapped-K list in `wire_v2` send-time (Phase 7b).
-    #[serde(default)]
-    pub members: Vec<String>,
-
-    /// For per-user whitelists: the explicit allow-list.
-    #[serde(default)]
-    pub whitelisted_users: Vec<String>,
 }
 
-/// Top-level shape: scope string → [`ScopeState`].
+/// Top-level shape: scope string → [`ScopeState`]. The optional
+/// `migrated_c1` sentinel sits alongside scope entries via the
+/// [`WhitelistStateFile`] envelope; this raw map type stays the
+/// in-memory representation.
 pub type WhitelistState = HashMap<String, ScopeState>;
+
+/// 9-C3: per-server "encrypt new channels by default" preference.
+/// Stored alongside the scopes map (rather than as a `server_full:*`
+/// scope entry) because the semantics are distinct: this controls
+/// **auto-application of encrypt_toggle to new ServerChannel
+/// scopes**, not "encrypt to everyone in the server" (the latter is
+/// a whitelist-coverage concept handled via per-peer outgoing
+/// whitelists). Keeping the two separate avoids overloading
+/// ScopeState with three different opt-in surfaces.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerDefaults {
+    /// When `true`, newly-created channels in this server auto-flip
+    /// their `ScopeState.encrypt_toggle` to `true` on CHANNEL_CREATE.
+    /// Users can override per-channel via the tri-state header icon.
+    #[serde(default)]
+    pub encrypt_by_default: bool,
+}
+
+/// 9-C1: on-disk envelope around [`WhitelistState`] carrying the
+/// one-shot migration marker. The loader unwraps; older v1 JSON
+/// files (no envelope) also parse since the on-disk format is a
+/// flat object keyed by scope string. See
+/// [`load_whitelist_state_from_path`].
+///
+/// 9-C3 added `server_defaults`. Legacy files load cleanly with an
+/// empty map via `#[serde(default)]`.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct WhitelistStateFile {
+    #[serde(default)]
+    pub migrated_c1: bool,
+    #[serde(default)]
+    pub scopes: WhitelistState,
+    #[serde(default)]
+    pub server_defaults: HashMap<String, ServerDefaults>,
+}
 
 /// Errors returned by the loader. The fresh-start path produces
 /// an empty file on first launch, so [`NotFound`] is the
@@ -89,11 +111,12 @@ pub enum WhitelistStateError {
     },
 }
 
-/// Load whitelist state from `path`. Returns the parsed map on
-/// success, [`WhitelistStateError::NotFound`] when the file is
-/// absent (caller treats as empty), and the obvious typed errors
-/// otherwise.
-pub fn load_whitelist_state_from_path(path: &Path) -> Result<WhitelistState, WhitelistStateError> {
+/// Load whitelist state from `path`. Returns the parsed map plus the
+/// migration marker on success, [`WhitelistStateError::NotFound`]
+/// when the file is absent. Tolerates both legacy v1 (`{ "dm:peer":
+/// {...} }` keyed-by-scope) and 9-C1 v2 (`{ "migrated_c1": true,
+/// "scopes": {...} }` envelope) shapes.
+pub fn load_whitelist_state_file(path: &Path) -> Result<WhitelistStateFile, WhitelistStateError> {
     let blob = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -108,27 +131,83 @@ pub fn load_whitelist_state_from_path(path: &Path) -> Result<WhitelistState, Whi
             });
         }
     };
-    // 7d-B4 (scoped): transparent decrypt for OSL-ENC1 blobs.
     let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
         WhitelistStateError::ParseFailed {
             path: path.to_path_buf(),
             source: serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         }
     })?;
-    serde_json::from_slice(&plain).map_err(|source| WhitelistStateError::ParseFailed {
-        path: path.to_path_buf(),
-        source,
-    })
+    // Try the C1 envelope first; fall back to a flat map for v1.
+    let value: serde_json::Value =
+        serde_json::from_slice(&plain).map_err(|source| WhitelistStateError::ParseFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let is_envelope = value.get("scopes").is_some() || value.get("migrated_c1").is_some();
+    if is_envelope {
+        let file: WhitelistStateFile =
+            serde_json::from_value(value).map_err(|source| WhitelistStateError::ParseFailed {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(file)
+    } else {
+        // Legacy v1: the top-level object IS the scope-keyed map.
+        let scopes: WhitelistState =
+            serde_json::from_value(value).map_err(|source| WhitelistStateError::ParseFailed {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(WhitelistStateFile {
+            migrated_c1: false,
+            scopes,
+            server_defaults: HashMap::default(),
+        })
+    }
+}
+
+/// Backwards-compat wrapper: returns just the inner [`WhitelistState`]
+/// map for callers that don't need the migration marker.
+pub fn load_whitelist_state_from_path(path: &Path) -> Result<WhitelistState, WhitelistStateError> {
+    Ok(load_whitelist_state_file(path)?.scopes)
 }
 
 /// Serialise + atomically write `state` to `path` (tempfile +
 /// rename, so a crash mid-write doesn't truncate the existing
-/// file).
+/// file). 9-C1: writes the envelope form unconditionally; the
+/// loader still reads pre-envelope v1 files via the fallback
+/// branch above.
 pub fn write_whitelist_state(path: &Path, state: &WhitelistState) -> Result<(), std::io::Error> {
-    let body = serde_json::to_string_pretty(state)
+    // Note: this writer drops `server_defaults` because the legacy
+    // signature only takes the scopes map. Callers that need to
+    // round-trip both fields MUST go through
+    // `write_whitelist_state_file` (which `persist_whitelist_state_now`
+    // does post-9-C3). Used today only by `fresh_start` (writes an
+    // empty file at first launch) — no risk of clobbering real data.
+    let file = WhitelistStateFile {
+        migrated_c1: true,
+        scopes: state.clone(),
+        server_defaults: HashMap::default(),
+    };
+    let body = serde_json::to_string_pretty(&file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // 7d-B4 (scoped): encrypt on write if a file_storage_key is
-    // installed; otherwise pass plain.
+    let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &out_bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// 9-C1: write the full envelope (including the `migrated_c1`
+/// marker) — used by the bootstrap migration to stamp the marker
+/// independently of mutating writes.
+pub fn write_whitelist_state_file(
+    path: &Path,
+    file: &WhitelistStateFile,
+) -> Result<(), std::io::Error> {
+    let body = serde_json::to_string_pretty(file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("json.tmp");
@@ -153,10 +232,14 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_design_doc_example() {
+    fn legacy_v1_parses_with_extra_fields_dropped() {
+        // 9-C1: legacy v1 files carry the now-removed
+        // `full_whitelist` / `members` / `whitelisted_users` fields.
+        // Serde silently ignores unknown fields; the bootstrap
+        // migration is responsible for projecting the membership
+        // data into peer_map before this file's next write.
         let dir = tempdir().unwrap();
         let path = dir.path().join("whitelist_state.json");
-        // Example shape from docs/phase-7-design.md §5.2.
         fs::write(
             &path,
             r#"{
@@ -177,13 +260,15 @@ mod tests {
         let state = load_whitelist_state_from_path(&path).unwrap();
         assert_eq!(state.len(), 3);
         let gc = state.get("gc:1234567890").unwrap();
-        assert!(gc.full_whitelist);
-        assert_eq!(gc.members.len(), 3);
+        assert!(gc.encrypt_toggle);
 
-        // Round-trip: write back and reload.
+        // Round-trip via the post-C1 envelope.
         write_whitelist_state(&path, &state).unwrap();
         let reloaded = load_whitelist_state_from_path(&path).unwrap();
         assert_eq!(reloaded, state);
+        // Migration marker now present on disk.
+        let file = load_whitelist_state_file(&path).unwrap();
+        assert!(file.migrated_c1);
     }
 
     #[test]

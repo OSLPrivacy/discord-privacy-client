@@ -55,7 +55,6 @@
 //!   which the JS hook handles silently).
 
 use ipc::peer_map::{load_peer_map_from_path, PeerMapError};
-use ipc::whitelist_state::{load_whitelist_state_from_path, WhitelistStateError};
 use ipc::AppState;
 use keystore::{
     generate_identity, load_identity, save_identity, select_best_sealer, KeyServerClient,
@@ -105,6 +104,22 @@ pub fn run_autostart(state: &AppState) {
             return;
         }
     };
+    // 9-F0-FIX1: ensure the config dir exists before any loader /
+    // persister runs. On a truly clean install (%APPDATA%\osl
+    // absent on Windows, ~/.config/osl absent on Linux), the
+    // individual writers' create_dir_all calls cover their own
+    // parent paths, but `persist_app_preferences_now` writes
+    // straight to `<dir>/app_preferences.json.tmp` without a
+    // parent-mkdir and surfaces `os error 3 (cannot find path)`.
+    // Doing the mkdir once here covers every downstream loader +
+    // writer that lives inside `dir`.
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            error = %e,
+            path = %dir.display(),
+            "OSL bootstrap: create_dir_all failed; downstream writes will likely fail"
+        );
+    }
     tracing::info!(config_dir = %dir.display(), "OSL bootstrap: starting");
 
     let keyserver_cfg = read_keyserver_config(&dir);
@@ -197,6 +212,40 @@ pub fn run_autostart(state: &AppState) {
         .lock()
         .expect("burned_scopes mutex poisoned") = bs;
     tracing::info!(entries = n, "OSL bootstrap: burned_scopes loaded");
+
+    // Phase 9-C1: pending_invitations.json is obsolete (handshake
+    // removed). Delete it unconditionally so a downgrade doesn't
+    // bring the banner UI back from an old file.
+    let pi_path = dir.join("pending_invitations.json");
+    if pi_path.exists() {
+        match std::fs::remove_file(&pi_path) {
+            Ok(()) => tracing::info!(
+                path = %pi_path.display(),
+                "OSL bootstrap: removed legacy pending_invitations.json (C1)"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                path = %pi_path.display(),
+                "OSL bootstrap: could not remove legacy pending_invitations.json"
+            ),
+        }
+    }
+
+    // Phase 9-B1: load app_preferences.json. Missing file → defaults
+    // (Mode 0). The send pipeline reads `stego_mode` to pick between
+    // DPC0:: and DPC1:: cover envelopes. 9-MODE1-FIX dropped the
+    // preview-modal-related fields; legacy files still load via
+    // serde's unknown-field tolerance.
+    let prefs_path = dir.join("app_preferences.json");
+    let prefs = ipc::app_preferences::load_app_preferences(&prefs_path);
+    tracing::info!(
+        mode = ?prefs.stego_mode,
+        "OSL bootstrap: app_preferences loaded"
+    );
+    *state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned") = prefs;
 
     tracing::info!("OSL bootstrap: done");
 }
@@ -309,55 +358,37 @@ fn load_peer_map(state: &AppState, dir: &std::path::Path) {
 /// start with encrypt_toggle = false.
 fn load_and_migrate_whitelist_state(state: &AppState, dir: &std::path::Path) {
     let path = dir.join("whitelist_state.json");
-    let mut map = match load_whitelist_state_from_path(&path) {
-        Ok(m) => m,
-        Err(WhitelistStateError::NotFound { .. }) => {
+    match ipc::migration::migrate_whitelist_state_in_place(state, dir) {
+        Ok(None) => {
             tracing::info!(
                 path = %path.display(),
                 "OSL bootstrap: whitelist_state.json not found (fresh install)"
             );
-            return;
+        }
+        Ok(Some(report)) => {
+            if report.was_already_migrated {
+                tracing::info!(
+                    path = %path.display(),
+                    entries = report.scope_entries_loaded,
+                    "OSL bootstrap: whitelist_state loaded (already migrated)"
+                );
+            } else {
+                tracing::info!(
+                    path = %path.display(),
+                    entries = report.scope_entries_loaded,
+                    migrated_scope_entries = report.legacy_scope_entries_migrated,
+                    migrated_peer_links = report.peer_links_added,
+                    "OSL bootstrap: migrated N whitelist entries from whitelist_state to peer_map (C1)"
+                );
+            }
         }
         Err(e) => {
             tracing::warn!(
-                path = %path.display(),
                 error = %e,
-                "OSL bootstrap: whitelist_state.json could not be loaded; \
-                 encrypt_toggle defaults to false for every scope until fixed"
+                path = %path.display(),
+                "OSL bootstrap: whitelist_state migration failed; skipping"
             );
-            return;
         }
-    };
-
-    let mut migrated = 0usize;
-    for (scope_key, scope_state) in map.iter_mut() {
-        let had_whitelist =
-            !scope_state.members.is_empty() || !scope_state.whitelisted_users.is_empty();
-        if had_whitelist && !scope_state.encrypt_toggle {
-            scope_state.encrypt_toggle = true;
-            eprintln!(
-                "[OSL] migrated scope {scope_key}: encrypt_toggle = true (had existing whitelist)"
-            );
-            migrated += 1;
-        }
-    }
-
-    let total = map.len();
-    *state
-        .whitelist_state
-        .lock()
-        .expect("whitelist_state mutex poisoned") = map;
-    tracing::info!(
-        path = %path.display(),
-        entries = total,
-        migrated = migrated,
-        "OSL bootstrap: whitelist_state loaded"
-    );
-
-    if migrated > 0 {
-        // Persist the migration result so the user only sees the
-        // per-scope log lines once, even across restarts.
-        ipc::commands::persist_whitelist_state_now(state);
     }
 }
 

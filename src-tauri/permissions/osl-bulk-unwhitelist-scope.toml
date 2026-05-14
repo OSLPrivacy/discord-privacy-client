@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C1 Stage 3: bulk-remove the same scope from N channel members.
+[[permission]]
+identifier = "allow-osl-bulk-unwhitelist-scope"
+description = "Permits the discord.com main webview to invoke `osl_bulk_unwhitelist_scope` (atomically remove the named peer set from a scope + stamp BurnedScope on each). Triggered from the tri-state header lock's 'stop encrypting with everyone' action."
+commands.allow = ["osl_bulk_unwhitelist_scope"]

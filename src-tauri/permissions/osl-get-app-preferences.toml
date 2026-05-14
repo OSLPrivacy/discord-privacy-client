@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-B1: read user app preferences (stego mode, etc.).
+[[permission]]
+identifier = "allow-osl-get-app-preferences"
+description = "Permits the trusted local settings window to invoke `osl_get_app_preferences` (read AppPreferences: stego_mode, always_preview_mode1, mode1_confirmed_scopes). Drives the Stego Mode settings page's initial render."
+commands.allow = ["osl_get_app_preferences"]

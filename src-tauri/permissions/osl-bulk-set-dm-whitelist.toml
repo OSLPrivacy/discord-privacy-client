@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C2: bulk-whitelist N peers under DM scope (one DM scope per peer).
+[[permission]]
+identifier = "allow-osl-bulk-set-dm-whitelist"
+description = "Permits the trusted local settings window to invoke `osl_bulk_set_dm_whitelist` (atomically add N peers to their respective DM scopes, single peer_map+whitelist_state persist at end). Used by the Bulk Whitelist modal's Friend-list and Paste-IDs actions."
+commands.allow = ["osl_bulk_set_dm_whitelist"]

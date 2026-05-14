@@ -926,7 +926,6 @@ pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
     for name in [
         "peer_map.json",
         "whitelist_state.json",
-        "pending_invitations.json",
         "burned_scopes.json",
     ] {
         let path = dir.join(name);
@@ -963,11 +962,7 @@ pub fn encrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), St
 /// the supplied (old) key. Called from `remove_main_password`
 /// before clearing the global key.
 pub fn decrypt_existing_state_files(dir: &Path, key: &[u8; 32]) -> Result<(), String> {
-    for name in [
-        "peer_map.json",
-        "whitelist_state.json",
-        "pending_invitations.json",
-    ] {
+    for name in ["peer_map.json", "whitelist_state.json"] {
         let path = dir.join(name);
         if !path.exists() {
             continue;
@@ -995,11 +990,7 @@ pub fn rotate_state_files(
     old_key: &[u8; 32],
     new_key: &[u8; 32],
 ) -> Result<(), String> {
-    for name in [
-        "peer_map.json",
-        "whitelist_state.json",
-        "pending_invitations.json",
-    ] {
+    for name in ["peer_map.json", "whitelist_state.json"] {
         let path = dir.join(name);
         if !path.exists() {
             continue;
@@ -1253,7 +1244,6 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         "peer_map.json",
         "channels.json",
         "whitelist_state.json",
-        "pending_invitations.json",
         "password_marker.json",
         "lockout_state.json",
         // 7d-FIX1: also wipe burned-scopes ledger.

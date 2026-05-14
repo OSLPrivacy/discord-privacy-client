@@ -34,7 +34,6 @@
 //! sqlite path is `<config_dir>/store/messages.sqlite`.
 
 use crate::peer_map::write_peer_map;
-use crate::pending_invitations::write_pending_invitations;
 use crate::whitelist_state::write_whitelist_state;
 use keystore::{generate_identity, save_identity, select_best_sealer, Identity};
 use std::path::{Path, PathBuf};
@@ -156,13 +155,9 @@ pub fn cmd_osl_fresh_start(
         }
     })?;
 
-    let invitations_path = config_dir.join("pending_invitations.json");
-    write_pending_invitations(&invitations_path, &Default::default()).map_err(|source| {
-        FreshStartError::WriteFailed {
-            path: invitations_path,
-            source,
-        }
-    })?;
+    // 9-C1: pending_invitations.json is obsolete. The fresh-start
+    // wipe step above already removed any leftover file; we no longer
+    // write an empty stub.
 
     Ok(identity)
 }

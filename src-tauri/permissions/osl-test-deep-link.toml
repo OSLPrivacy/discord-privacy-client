@@ -1,0 +1,18 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase F0: smoke-test for the tauri-plugin-deep-link integration.
+# Parses an osl:// URL string passed from JS (typically forwarded
+# by boot.js after the "osl:deep-link-received" event fires from
+# the Rust-side on_open_url callback) and returns the parsed
+# scheme/path/token as JSON.
+#
+# Pure parser. No state, no I/O beyond `tracing` log lines. Designed
+# to be removed or replaced in F2 when the real unlock-token
+# command (`cmd_osl_redeem_unlock`) ships and validates tokens
+# against the keyserver. F0's job is just to prove the
+# Rust → JS → Rust round-trip works end-to-end before F1 builds
+# Stripe / license infrastructure on top of it.
+[[permission]]
+identifier = "allow-osl-test-deep-link"
+description = "Permits invoking `osl_test_deep_link`. Smoke-test parser for osl:// URLs delivered by tauri-plugin-deep-link. F0 only — removed when F2 wires the real unlock-token handler."
+commands.allow = ["osl_test_deep_link"]

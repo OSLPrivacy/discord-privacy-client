@@ -11,9 +11,10 @@
 //! - [`recipients_for_scope`] — given a scope and the channel's
 //!   current member list, produce the `Vec<PublicKey>` to wrap K
 //!   for. Always includes self.
-//! - [`should_decrypt_from`] — given `(peer_map, scope, sender)`,
-//!   decide whether incoming messages from `sender` in `scope`
-//!   should be decrypted (after AEAD, before render).
+//!
+//! 9-C1 removed the `should_decrypt_from` per-scope accept gate.
+//! Decrypt is permissive — Discord's block feature is the trust
+//! boundary.
 //!
 //! ## Sources of truth
 //!
@@ -42,37 +43,27 @@
 
 use crate::peer_map::{BurnedScope, PeerEntry, PeerMap, WhitelistEntry};
 use crate::scope::{Scope, ScopeKind};
-use crate::whitelist_state::WhitelistState;
+use crate::wire_v2::RecipientV3;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use crypto::x25519;
+use crypto::{ml_kem_768, x25519};
 
 /// Can outgoing messages to `recipient_discord_id` in `scope` be
-/// encrypted under v=2?
+/// encrypted?
 ///
-/// Logic (per §2.2, "most-permissive wins"):
+/// 9-C1 logic (per-peer source of truth):
 ///
-/// 1. If `recipient` is burned in `scope` → false. Burns are
-///    absolute and override any whitelist.
-/// 2. If `scope` has a whitelist entry with `encrypt_toggle` on
-///    AND `recipient` is named in that scope's full or per-user
-///    list → true.
+/// 1. If `recipient` is burned in `scope` → false. Burns override.
+/// 2. If `peer_map[recipient].outgoing_whitelists` has a matching
+///    entry for `scope` → true.
 /// 3. If `scope.kind != Dm` and `recipient` has a DM whitelist
-///    with `broadened = true` → true. DM broaden grants are
-///    cross-scope and don't depend on the target scope's toggle
-///    (the DM toggle was the user's "I want to encrypt to this
-///    peer" decision; broadening makes that decision portable).
+///    with `broadened = true` → true. Cross-scope grant.
 /// 4. Otherwise false.
-pub fn can_encrypt_to(
-    whitelist_state: &WhitelistState,
-    peer_map: &PeerMap,
-    scope: &Scope,
-    recipient_discord_id: &str,
-) -> bool {
+pub fn can_encrypt_to(peer_map: &PeerMap, scope: &Scope, recipient_discord_id: &str) -> bool {
     if is_burned_in_scope(peer_map, scope, recipient_discord_id) {
         return false;
     }
-    if scope_explicit_grant(whitelist_state, scope, recipient_discord_id) {
+    if has_explicit_whitelist_entry(peer_map, scope, recipient_discord_id) {
         return true;
     }
     if scope.kind != ScopeKind::Dm && has_broadened_dm_access(peer_map, recipient_discord_id) {
@@ -98,7 +89,6 @@ pub fn can_encrypt_to(
 /// (we add `self_pubkey` ourselves up front) so a self-listed
 /// channel doesn't double-include.
 pub fn recipients_for_scope(
-    whitelist_state: &WhitelistState,
     peer_map: &PeerMap,
     scope: &Scope,
     channel_members: &[String],
@@ -111,7 +101,7 @@ pub fn recipients_for_scope(
         if member == self_discord_id {
             continue;
         }
-        if !can_encrypt_to(whitelist_state, peer_map, scope, member) {
+        if !can_encrypt_to(peer_map, scope, member) {
             continue;
         }
         if let Some(pk) = peer_pubkey(peer_map, member) {
@@ -121,23 +111,102 @@ pub fn recipients_for_scope(
     out
 }
 
-/// Should an incoming AEAD-decrypted message from `sender` in
-/// `scope` be surfaced as plaintext, or held as cover until the
-/// user explicitly accepts?
+/// Phase 9-A1: PQ-hybrid recipient resolution for v=3 sends.
 ///
-/// Default: **false** (cover stays in place). The user must
-/// accept the sender's whitelist invitation for the scope before
-/// any of their messages decrypt — see §7.3.
+/// Same gate as [`recipients_for_scope`] (whitelist + per-member
+/// `can_encrypt_to`), but every member of the output **must** carry
+/// both an X25519 ik pubkey AND an ML-KEM-768 encap key in
+/// `peer_map`. If any whitelisted member lacks ML-KEM, the function
+/// returns [`RecipientsV3Error::PeerMissingMlkemPubkey`] with that
+/// peer's `discord_id` — no automatic v=2 fallback (locked policy).
 ///
-/// Lookup: `peer_map[sender].incoming_decrypt_accepted[scope.storage_key()]`.
-/// Returns the stored value if present, else false.
-pub fn should_decrypt_from(peer_map: &PeerMap, scope: &Scope, sender_discord_id: &str) -> bool {
-    peer_map
-        .get(sender_discord_id)
-        .and_then(|e| e.incoming_decrypt_accepted.get(&scope.storage_key()))
-        .copied()
-        .unwrap_or(false)
+/// Self is always the first entry (we have both keys on our own
+/// Identity). The caller supplies them so this fn stays free of a
+/// keystore dep.
+pub fn recipients_for_scope_v3(
+    peer_map: &PeerMap,
+    scope: &Scope,
+    channel_members: &[String],
+    self_discord_id: &str,
+    self_x25519_pub: &x25519::PublicKey,
+    self_mlkem_pub: &ml_kem_768::EncapsulationKey,
+) -> Result<Vec<RecipientV3>, RecipientsV3Error> {
+    let mut out: Vec<RecipientV3> = Vec::new();
+    out.push(RecipientV3 {
+        x25519_pub: *self_x25519_pub,
+        mlkem_pub: self_mlkem_pub.clone(),
+    });
+    for member in channel_members {
+        if member == self_discord_id {
+            continue;
+        }
+        if !can_encrypt_to(peer_map, scope, member) {
+            continue;
+        }
+        let entry = match peer_map.get(member) {
+            Some(e) => e,
+            None => continue,
+        };
+        // Mirror recipients_for_scope's silent-skip on missing
+        // X25519 (legacy v=1 entries) — they wouldn't be valid
+        // recipients in any wire format.
+        let x25519_pub = match peer_pubkey(peer_map, member) {
+            Some(pk) => pk,
+            None => continue,
+        };
+        // ML-KEM is REQUIRED for v=3 recipients; missing is a
+        // hard fail surfaced to the caller (not a silent skip)
+        // so the user is told to ask the peer to regen.
+        let mlkem_b64 = entry.ik_mlkem768_pub.as_ref().ok_or_else(|| {
+            RecipientsV3Error::PeerMissingMlkemPubkey {
+                discord_id: member.clone(),
+            }
+        })?;
+        let mlkem_bytes =
+            STANDARD
+                .decode(mlkem_b64)
+                .map_err(|e| RecipientsV3Error::PeerMlkemPubkeyDecode {
+                    discord_id: member.clone(),
+                    reason: e.to_string(),
+                })?;
+        if mlkem_bytes.len() != ml_kem_768::ENCAPSULATION_KEY_SIZE {
+            return Err(RecipientsV3Error::PeerMlkemPubkeyDecode {
+                discord_id: member.clone(),
+                reason: format!(
+                    "expected {} bytes, got {}",
+                    ml_kem_768::ENCAPSULATION_KEY_SIZE,
+                    mlkem_bytes.len()
+                ),
+            });
+        }
+        let mut mlkem_arr = [0u8; ml_kem_768::ENCAPSULATION_KEY_SIZE];
+        mlkem_arr.copy_from_slice(&mlkem_bytes);
+        let mlkem_pub = ml_kem_768::EncapsulationKey::from_bytes(&mlkem_arr);
+        out.push(RecipientV3 {
+            x25519_pub,
+            mlkem_pub,
+        });
+    }
+    Ok(out)
 }
+
+/// Phase 9-A1: v=3 capability-check failures. Surfaced to the user
+/// with the offending peer's discord_id so they know who needs to
+/// regenerate identity.
+#[derive(Debug, thiserror::Error)]
+pub enum RecipientsV3Error {
+    #[error(
+        "peer {discord_id} has no ML-KEM-768 pubkey on file; ask them \
+         to regenerate identity (no v=2 fallback in production)"
+    )]
+    PeerMissingMlkemPubkey { discord_id: String },
+    #[error("peer {discord_id} ML-KEM pubkey decode failed: {reason}")]
+    PeerMlkemPubkeyDecode { discord_id: String, reason: String },
+}
+
+// 9-C1: `should_decrypt_from` removed. Decrypt is permissive — if
+// we have keys, we surface plaintext. Discord's native block feature
+// is the user-facing trust boundary.
 
 // ---- helpers ----
 
@@ -169,35 +238,47 @@ fn burned_matches(b: &BurnedScope, s: &Scope) -> bool {
     }
 }
 
-/// Explicit grant: `scope` has a `WhitelistState` entry with
-/// `encrypt_toggle` on, and `recipient` is in the appropriate
-/// list (full-whitelist members for full scope, or
-/// `whitelisted_users` for per-user scope). DMs are a special
-/// case — the scope id IS the recipient's discord_id, so the
-/// recipient match is implicit.
-fn scope_explicit_grant(
-    whitelist_state: &WhitelistState,
+/// 9-C1: does `peer_map[recipient].outgoing_whitelists` carry a
+/// [`WhitelistEntry`] matching `scope`? This replaces the prior
+/// `scope_explicit_grant` which consulted the per-scope membership
+/// tables in `WhitelistState`. Membership now lives only on
+/// `PeerEntry`.
+fn has_explicit_whitelist_entry(
+    peer_map: &PeerMap,
     scope: &Scope,
     recipient_discord_id: &str,
 ) -> bool {
-    let Some(state) = whitelist_state.get(&scope.storage_key()) else {
+    let Some(entry) = peer_map.get(recipient_discord_id) else {
         return false;
     };
-    if !state.encrypt_toggle {
-        return false;
-    }
-    match scope.kind {
-        ScopeKind::Dm => recipient_discord_id == scope.id,
-        ScopeKind::Gc | ScopeKind::ServerChannel | ScopeKind::ServerFull => {
-            if state.full_whitelist {
-                state.members.iter().any(|m| m == recipient_discord_id)
-            } else {
-                state
-                    .whitelisted_users
-                    .iter()
-                    .any(|u| u == recipient_discord_id)
-            }
+    entry
+        .outgoing_whitelists
+        .iter()
+        .any(|w| whitelist_entry_matches_scope(w, scope))
+}
+
+fn whitelist_entry_matches_scope(w: &WhitelistEntry, s: &Scope) -> bool {
+    match (w, &s.kind) {
+        (WhitelistEntry::Dm { .. }, ScopeKind::Dm) => {
+            // The DM whitelist is on the *peer's* entry, which
+            // already keys by recipient_discord_id. So if a Dm
+            // variant is present in the peer's outgoing list, it
+            // applies to a DM scope with that peer.
+            true
         }
+        (WhitelistEntry::Gc { id, .. }, ScopeKind::Gc) => id == &s.id,
+        (
+            WhitelistEntry::ServerChannel {
+                server_id,
+                channel_id,
+                ..
+            },
+            ScopeKind::ServerChannel,
+        ) => Some(server_id) == s.server_id.as_ref() && Some(channel_id) == s.channel_id.as_ref(),
+        (WhitelistEntry::ServerFull { server_id, .. }, ScopeKind::ServerFull) => {
+            Some(server_id) == s.server_id.as_ref()
+        }
+        _ => false,
     }
 }
 

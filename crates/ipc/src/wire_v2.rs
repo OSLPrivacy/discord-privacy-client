@@ -78,11 +78,33 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use crypto::{aes_gcm, hkdf, x25519};
+use crypto::{aead, aes_gcm, hkdf, ml_kem_768, pqxdh, random, x25519};
 use sha2::{Digest, Sha256};
 
 /// Wire format version byte for v=2.
 pub const WIRE_VERSION_V2: u8 = 0x02;
+
+/// Phase 9-A1 wire format version byte for v=3 (PQ-hybrid wrap).
+/// Per-recipient wrap key is derived via pqxdh::initiate
+/// (X25519 + ML-KEM-768 → HKDF combiner) rather than raw X25519
+/// ECDH. Body cipher (AES-256-GCM) is unchanged from v=2.
+pub const WIRE_VERSION_V3: u8 = 0x03;
+
+/// Phase 9-A2 wire format version byte for v=4 (ratcheted single-
+/// recipient). Wire shape mirrors v=3 but adds a fixed 84-byte
+/// ratchet header (header_nonce(24) || enc_header(60)) between the
+/// global header and the slot, and a 1-byte `flags` field inside
+/// the global header. N is fixed at 1; multi-recipient sends stay
+/// on v=3. See `encrypt_v4` / `decrypt_v4` for the full layout.
+pub const WIRE_VERSION_V4: u8 = 0x04;
+
+/// Phase 9-A3 wire format version byte for v=5 (sender-keys
+/// multi-recipient). No per-recipient slot — the scope_storage_key
+/// in the caller's context tells the recipient which SenderKeyState
+/// to consult, and `sender_ik_x25519_pub` in the global header picks
+/// the matching ReceiverChain inside that state. Bootstrap is
+/// out-of-band via v=4-wrapped SKDMs (`MSG_TYPE_SENDER_KEY_DISTRIBUTION`).
+pub const WIRE_VERSION_V5: u8 = 0x05;
 
 /// Message-type byte: ordinary content (post-decrypt rendered as
 /// the user-visible message body).
@@ -94,14 +116,10 @@ pub const MSG_TYPE_CONTENT: u8 = 0x00;
 /// yet act on it; Phase 7b adds the side-effect handling.
 pub const MSG_TYPE_BURN: u8 = 0x01;
 
-/// Message-type byte: whitelist invitation. Body contains a JSON
-/// envelope describing the scope being offered. Phase 7b adds the
-/// envelope schema + side-effect handling.
-pub const MSG_TYPE_WHITELIST_INVITATION: u8 = 0x02;
-
-/// Message-type byte: whitelist response. Body contains a JSON
-/// envelope with accept/decline + the originating invitation id.
-pub const MSG_TYPE_WHITELIST_RESPONSE: u8 = 0x03;
+// 9-C1: `MSG_TYPE_WHITELIST_INVITATION` (0x02) and
+// `MSG_TYPE_WHITELIST_RESPONSE` (0x03) removed alongside the
+// invitation handshake. The dispatcher matches literal `0x02 | 0x03`
+// in the legacy-ignored arm.
 
 /// Phase 8 message-type byte: attachment envelope. Body is a CBOR-
 /// encoded [`AttachmentEnvelope`] carrying the per-attachment AEAD
@@ -110,6 +128,15 @@ pub const MSG_TYPE_WHITELIST_RESPONSE: u8 = 0x03;
 /// reports for `attachments[N].url`; the recv side fetches that
 /// file, scans for the OSL-ATT1 magic, and decrypts with `att_key`.
 pub const MSG_TYPE_ATTACHMENT: u8 = 0x04;
+
+/// Phase 9-A3 message-type byte: sender-keys distribution. Body is a
+/// CBOR-encoded [`crate::control_messages::SenderKeyDistribution`]
+/// carrying `(scope_storage_key, chain_id, rotation_root)`. Ships
+/// inside a v=4 message (one v=4 per group member) so the wrap leg
+/// provides PQ identity binding for the rotation_root delivery.
+/// Recipients route this msg_type to the SKDM handler in
+/// `decrypt_v4_recv` rather than surfacing as user-visible content.
+pub const MSG_TYPE_SENDER_KEY_DISTRIBUTION: u8 = 0x05;
 
 /// Length of the per-recipient pubkey-hash prefix on the wire
 /// (8 bytes = leading bytes of SHA-256(recipient_pubkey)). 8 bytes
@@ -134,6 +161,69 @@ pub const AD_BODY_V2: &[u8] = b"OSL/P7/body/v2";
 /// HKDF info string for deriving the per-recipient wrap key from
 /// the static-static X25519 shared secret.
 pub const HKDF_INFO_WRAP_V2: &[u8] = b"OSL/P7/wrap-key/v2";
+
+/// Phase 9-A1 v=3 AADs + HKDF info. Distinct from v=2 so a wrong-
+/// version body cipher attempt fails its tag check rather than
+/// silently producing garbage.
+pub const AD_WRAP_V3: &[u8] = b"OSL/A1/wrap/v3";
+pub const AD_BODY_V3: &[u8] = b"OSL/A1/body/v3";
+pub const HKDF_INFO_WRAP_V3: &[u8] = b"OSL/A1/wrap-key/v3";
+
+/// Phase 9-A2 v=4 AADs + HKDF info.
+/// `AD_HEADER_V4` is a new label not present in v=3 — it binds the
+/// 37-byte global header bytes to the wrap AEAD so any tamper on
+/// the global header invalidates every slot.
+pub const AD_WRAP_V4: &[u8] = b"OSL/A1/wrap/v4";
+pub const AD_BODY_V4: &[u8] = b"OSL/A1/body/v4";
+pub const AD_HEADER_V4: &[u8] = b"OSL/A1/header/v4";
+pub const HKDF_INFO_WRAP_V4: &[u8] = b"OSL/A1/wrap-key/v4";
+
+/// Phase 9-A3 v=5 AAD label. No wrap leg in v=5 (sender-keys
+/// inherit identity binding from the SKDM that installed the chain),
+/// so only the body AAD label is defined here.
+pub const AD_BODY_V5: &[u8] = b"OSL/A3/body/v5";
+
+/// v=5 global header: version(1) + msg_type(1) + sender_ik_x25519_pub(32)
+/// + flags(1) = 35 bytes. Same shape as v=3's global header (`N` is
+/// implicit at 1-sender-many-recipients).
+pub const V5_GLOBAL_HEADER_BYTES: usize = 1 + 1 + 32 + 1;
+
+/// v=5 reserved-bits mask. All bits in the flags byte are reserved
+/// in this phase; non-zero rejects.
+pub const V5_FLAG_RESERVED_MASK: u8 = 0xFF;
+
+/// v=5 sender-keys header on the wire:
+/// `header_nonce(24) || enc_header(16-byte Header + 16-byte AEAD tag = 32)`.
+/// Total 56 bytes.
+pub const V5_SENDER_KEYS_HEADER_BYTES: usize = 24 + (16 + 16);
+
+/// v=4 global header size: version(1) + msg_type(1) + flags(1) +
+/// sender_ik_x25519_pub(32) + N(1) = 36 bytes.
+pub const V4_GLOBAL_HEADER_BYTES: usize = 1 + 1 + 1 + 32 + 1;
+
+/// v=4 fixed flags byte. Bit 0 = bootstrap; bits 1..7 = reserved
+/// (decode rejects any non-zero reserved bit).
+pub const V4_FLAG_BOOTSTRAP: u8 = 0x01;
+pub const V4_FLAG_RESERVED_MASK: u8 = 0xFE;
+
+/// v=4 ratchet header on the wire:
+/// `header_nonce(24) || enc_header(serialized 44-byte plain header
+/// + 16-byte AEAD tag = 60 bytes)`. Total 84 bytes.
+pub const V4_RATCHET_NONCE_BYTES: usize = 24;
+pub const V4_RATCHET_ENC_HEADER_BYTES: usize = 44 + 16;
+pub const V4_RATCHET_HEADER_BYTES: usize = V4_RATCHET_NONCE_BYTES + V4_RATCHET_ENC_HEADER_BYTES;
+
+/// v=3 per-recipient slot layout:
+///   [8  bytes : recipient pubkey hash prefix]
+///   [32 bytes : sender ephemeral X25519 pub (InitiatorHandshake.ek_x25519_pub)]
+///   [2  bytes LE : mlkem_ct_len = 1088]
+///   [1088 bytes : ML-KEM-768 ciphertext]
+///   [12 bytes : wrap_nonce]
+///   [48 bytes : AES-GCM(wrap_key, body_K=32) = 32B ct + 16B tag]
+/// Total = 8 + 32 + 2 + 1088 + 12 + 48 = 1190 bytes per recipient.
+/// 10-recipient message header overhead ≈ 12 KB.
+pub const SLOT_V3_BYTES: usize =
+    RECIPIENT_HASH_PREFIX_LEN + 32 + 2 + ml_kem_768::CIPHERTEXT_SIZE + WRAPPED_K_BYTES;
 
 /// Plaintext + metadata recovered from a v=2 wire blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,4 +535,742 @@ fn pubkey_hash_prefix(pk: &x25519::PublicKey) -> [u8; RECIPIENT_HASH_PREFIX_LEN]
     let mut out = [0u8; RECIPIENT_HASH_PREFIX_LEN];
     out.copy_from_slice(&digest[..RECIPIENT_HASH_PREFIX_LEN]);
     out
+}
+
+// ============================================================
+// Phase 9-A1: v=3 PQ-hybrid wire format
+// ============================================================
+
+/// Phase 9-A1: recipient bundle for v=3. Carries both the X25519
+/// ik pubkey (needed for slot hash + pqxdh DH legs) and the ML-KEM
+/// encap key (needed for the PQ leg). The send-side capability
+/// check (whitelist::recipients_for_scope_v3) returns these for
+/// every member of the scope whitelist; if any member lacks an
+/// ML-KEM pubkey the check errors out (no v=2 fallback in
+/// production per locked policy).
+#[derive(Clone)]
+pub struct RecipientV3 {
+    pub x25519_pub: x25519::PublicKey,
+    pub mlkem_pub: ml_kem_768::EncapsulationKey,
+}
+
+/// Phase 9-A1: encode a v=3 wire blob.
+///
+/// Global header:
+///   [version=0x03 | msg_type | sender_ik_x25519_pub(32) | N]
+/// Then N × [SLOT_V3_BYTES] (see SLOT_V3_BYTES doc for layout).
+/// Trailer: [body_nonce(12) | body_ct + 16B tag].
+///
+/// Per recipient: pqxdh::initiate(sender_ik_sk, recip_ik /*as ik+spk*/,
+/// None /*opk*/, recip_mlkem) → (SessionKey, InitiatorHandshake).
+/// wrap_key = HKDF(SessionKey, info=HKDF_INFO_WRAP_V3). The fresh
+/// 32-byte body_K is sealed under wrap_key per recipient; body
+/// itself sealed under body_K once.
+pub fn encrypt_v3(
+    sender_ik_sk: &x25519::SecretKey,
+    sender_ik_pub: &x25519::PublicKey,
+    recipients: &[RecipientV3],
+    msg_type: u8,
+    plaintext: &[u8],
+) -> Result<String, V2Error> {
+    if recipients.is_empty() {
+        return Err(V2Error::ZeroRecipients);
+    }
+    if recipients.len() > 255 {
+        return Err(V2Error::Crypto(format!(
+            "v=3 recipient count {} exceeds u8 max 255",
+            recipients.len()
+        )));
+    }
+
+    // Fresh body key K. Sealed once; per-recipient wrap covers the
+    // same K under each recipient's wrap_key.
+    let k_bytes = random::random_bytes(aes_gcm::KEY_SIZE);
+    let mut k_arr = [0u8; aes_gcm::KEY_SIZE];
+    k_arr.copy_from_slice(&k_bytes);
+    let k = aes_gcm::Key::from_bytes(k_arr);
+
+    let (body_nonce, body_ct) = aes_gcm::seal(&k, AD_BODY_V3, plaintext)
+        .map_err(|e| V2Error::Crypto(format!("v3 body seal: {e}")))?;
+
+    let n = recipients.len() as u8;
+    let mut wire: Vec<u8> = Vec::with_capacity(
+        // version + msg_type + sender_ik(32) + N + slots + body
+        4 + 32 + (n as usize) * SLOT_V3_BYTES + aes_gcm::NONCE_SIZE + body_ct.len(),
+    );
+    wire.push(WIRE_VERSION_V3);
+    wire.push(msg_type);
+    wire.extend_from_slice(sender_ik_pub.as_bytes());
+    wire.push(n);
+
+    for (ix, recip) in recipients.iter().enumerate() {
+        // pqxdh::initiate: recipient_ik plays both ik and spk
+        // roles in OSL's flow (we don't run a separate signed-
+        // prekey publication infrastructure). OPK is always None.
+        let (session_key, handshake) = pqxdh::initiate(
+            sender_ik_sk,
+            &recip.x25519_pub,
+            &recip.x25519_pub,
+            None,
+            &recip.mlkem_pub,
+        )
+        .map_err(|e| V2Error::Crypto(format!("slot {ix} pqxdh::initiate: {e}")))?;
+
+        let wrap_key_bytes = hkdf::derive_32(&[], session_key.as_bytes(), HKDF_INFO_WRAP_V3)
+            .map_err(|e| V2Error::Crypto(format!("slot {ix} wrap HKDF: {e}")))?;
+        let wrap_key = aes_gcm::Key::from_bytes(wrap_key_bytes);
+        let (wrap_nonce, wrap_ct) = aes_gcm::seal(&wrap_key, AD_WRAP_V3, k.as_bytes())
+            .map_err(|e| V2Error::Crypto(format!("slot {ix} wrap seal: {e}")))?;
+        if wrap_ct.len() != aes_gcm::KEY_SIZE + aes_gcm::TAG_SIZE {
+            return Err(V2Error::Crypto(format!(
+                "slot {ix} wrap ct length {} != {}",
+                wrap_ct.len(),
+                aes_gcm::KEY_SIZE + aes_gcm::TAG_SIZE
+            )));
+        }
+
+        let hash = pubkey_hash_prefix(&recip.x25519_pub);
+        wire.extend_from_slice(&hash);
+        wire.extend_from_slice(handshake.ek_x25519_pub.as_bytes());
+        let ct_bytes = handshake.mlkem_ciphertext.to_bytes();
+        let ct_len = ct_bytes.len() as u16;
+        wire.extend_from_slice(&ct_len.to_le_bytes());
+        wire.extend_from_slice(&ct_bytes);
+        wire.extend_from_slice(wrap_nonce.as_bytes());
+        wire.extend_from_slice(&wrap_ct);
+    }
+
+    wire.extend_from_slice(body_nonce.as_bytes());
+    wire.extend_from_slice(&body_ct);
+
+    let b64 = STANDARD.encode(&wire);
+    let mut out = String::with_capacity(b64.len() + "DPC0::".len());
+    out.push_str("DPC0::");
+    out.push_str(&b64);
+    Ok(out)
+}
+
+/// Phase 9-A1: decode a v=3 wire blob.
+///
+/// Reverses encrypt_v3. Receiver finds its slot via pubkey-hash
+/// prefix, reconstructs the InitiatorHandshake from slot fields,
+/// calls pqxdh::respond to recover the same SessionKey, derives
+/// wrap_key via HKDF, unwraps body_K, decrypts body under body_K.
+///
+/// Returns DecryptedV2 (msg_type + plaintext) so callers can share
+/// the v=2 result type — the recovered shape is identical.
+pub fn decrypt_v3(
+    wire: &str,
+    recipient_ik_sk: &x25519::SecretKey,
+    recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
+) -> Result<DecryptedV2, V2Error> {
+    let body = wire.strip_prefix("DPC0::").ok_or(V2Error::BadPrefix)?;
+    let raw = STANDARD
+        .decode(body)
+        .map_err(|e| V2Error::Base64(e.to_string()))?;
+
+    // version + msg_type + sender_ik(32) + N + ≥1 slot + body_nonce + tag
+    let min_framing = 4 + 32 + SLOT_V3_BYTES + aes_gcm::NONCE_SIZE + aes_gcm::TAG_SIZE;
+    if raw.len() < min_framing {
+        return Err(V2Error::TooShort {
+            got: raw.len(),
+            expected: min_framing,
+        });
+    }
+    if raw[0] != WIRE_VERSION_V3 {
+        return Err(V2Error::WrongVersion {
+            got: raw[0],
+            expected: WIRE_VERSION_V3,
+        });
+    }
+    let msg_type = raw[1];
+    let mut sender_ik_bytes = [0u8; 32];
+    sender_ik_bytes.copy_from_slice(&raw[2..34]);
+    let sender_ik_pub = x25519::PublicKey::from_bytes(sender_ik_bytes);
+    let n = raw[34] as usize;
+    if n == 0 {
+        return Err(V2Error::ZeroRecipients);
+    }
+    let slots_start = 35;
+    let slots_end = slots_start + n * SLOT_V3_BYTES;
+    if raw.len() < slots_end + aes_gcm::NONCE_SIZE + aes_gcm::TAG_SIZE {
+        return Err(V2Error::TooShort {
+            got: raw.len(),
+            expected: slots_end + aes_gcm::NONCE_SIZE + aes_gcm::TAG_SIZE,
+        });
+    }
+
+    let our_pub = x25519::derive_public(recipient_ik_sk);
+    let our_hash = pubkey_hash_prefix(&our_pub);
+
+    let mut recovered_k: Option<aes_gcm::Key> = None;
+    for slot_ix in 0..n {
+        let base = slots_start + slot_ix * SLOT_V3_BYTES;
+        let hash = &raw[base..base + RECIPIENT_HASH_PREFIX_LEN];
+        if hash != our_hash {
+            continue;
+        }
+        let mut p = base + RECIPIENT_HASH_PREFIX_LEN;
+        let mut ek_bytes = [0u8; 32];
+        ek_bytes.copy_from_slice(&raw[p..p + 32]);
+        let ek_x25519_pub = x25519::PublicKey::from_bytes(ek_bytes);
+        p += 32;
+        let ct_len = u16::from_le_bytes([raw[p], raw[p + 1]]) as usize;
+        p += 2;
+        if ct_len != ml_kem_768::CIPHERTEXT_SIZE {
+            return Err(V2Error::Crypto(format!(
+                "slot {slot_ix} mlkem_ct_len {ct_len} != {}",
+                ml_kem_768::CIPHERTEXT_SIZE
+            )));
+        }
+        let mut ct_bytes = [0u8; ml_kem_768::CIPHERTEXT_SIZE];
+        ct_bytes.copy_from_slice(&raw[p..p + ct_len]);
+        let mlkem_ciphertext = ml_kem_768::Ciphertext::from_bytes(&ct_bytes);
+        p += ct_len;
+        let mut wrap_nonce_bytes = [0u8; aes_gcm::NONCE_SIZE];
+        wrap_nonce_bytes.copy_from_slice(&raw[p..p + aes_gcm::NONCE_SIZE]);
+        let wrap_nonce = aes_gcm::Nonce::from_bytes(wrap_nonce_bytes);
+        p += aes_gcm::NONCE_SIZE;
+        let wrap_ct = &raw[p..p + aes_gcm::KEY_SIZE + aes_gcm::TAG_SIZE];
+
+        let handshake = pqxdh::InitiatorHandshake {
+            ek_x25519_pub,
+            mlkem_ciphertext,
+            no_opk: true,
+            opk_id: None,
+        };
+        let session_key = pqxdh::respond(
+            recipient_ik_sk,
+            recipient_ik_sk,
+            None,
+            recipient_mlkem_sk,
+            &sender_ik_pub,
+            &handshake,
+        )
+        .map_err(|e| V2Error::Crypto(format!("slot {slot_ix} pqxdh::respond: {e}")))?;
+        let wrap_key_bytes = hkdf::derive_32(&[], session_key.as_bytes(), HKDF_INFO_WRAP_V3)
+            .map_err(|e| V2Error::Crypto(format!("slot {slot_ix} wrap HKDF: {e}")))?;
+        let wrap_key = aes_gcm::Key::from_bytes(wrap_key_bytes);
+        if let Ok(k_bytes) = aes_gcm::open(&wrap_key, &wrap_nonce, AD_WRAP_V3, wrap_ct) {
+            if k_bytes.len() == aes_gcm::KEY_SIZE {
+                let mut k_arr = [0u8; aes_gcm::KEY_SIZE];
+                k_arr.copy_from_slice(&k_bytes);
+                recovered_k = Some(aes_gcm::Key::from_bytes(k_arr));
+                // Note: matches v=2's "don't break early on hash
+                // collision" comment — but here pqxdh::respond is
+                // expensive (ML-KEM decap), so we DO break on the
+                // first successful unwrap. Hash collisions at 1/2^64
+                // are not worth the ML-KEM round on every slot.
+                break;
+            }
+        }
+    }
+
+    let k = recovered_k.ok_or(V2Error::NoMatchingSlot)?;
+
+    let mut body_nonce_bytes = [0u8; aes_gcm::NONCE_SIZE];
+    body_nonce_bytes.copy_from_slice(&raw[slots_end..slots_end + aes_gcm::NONCE_SIZE]);
+    let body_nonce = aes_gcm::Nonce::from_bytes(body_nonce_bytes);
+    let body_ct = &raw[slots_end + aes_gcm::NONCE_SIZE..];
+
+    let plaintext = aes_gcm::open(&k, &body_nonce, AD_BODY_V3, body_ct)
+        .map_err(|e| V2Error::Crypto(format!("v3 body open: {e}")))?;
+
+    Ok(DecryptedV2 {
+        msg_type,
+        plaintext,
+    })
+}
+
+// ============================================================
+// Phase 9-A2: v=4 ratcheted single-recipient wire format
+// ============================================================
+
+/// Encode a v=4 wire blob.
+///
+/// Layout (bytes):
+/// ```text
+///   global header (36 bytes):
+///     [ version(1)=0x04 | msg_type(1) | flags(1)
+///       | sender_ik_x25519_pub(32) | N(1)=1 ]
+///   ratchet header (84 bytes):
+///     [ header_nonce(24) | enc_header(60) ]
+///   slot (SLOT_V3_BYTES = 1190):
+///     [ pubkey_hash(8) | ek_x25519(32) | mlkem_ct_len(2)=1088
+///       | mlkem_ct(1088) | wrap_nonce(12) | wrap_ct(48) ]
+///   trailer:
+///     [ body_nonce(24) | body_ct + 16B tag ]
+/// ```
+///
+/// The caller pre-runs `DoubleRatchet::encrypt` and passes the
+/// resulting `EncryptedMessage` parts in: `enc_header_nonce`,
+/// `enc_header` (the AEAD-sealed ratchet header), and `body_em` —
+/// where `body_em.message_nonce` becomes the wire's `body_nonce` and
+/// `body_em.ciphertext` becomes the wire's `body_ct`. The DR's body
+/// AEAD already binds `canonical_AD || enc_header` as AAD so the
+/// wire's role is to add identity-bound transport.
+///
+/// The PQXDH slot's wrap leg seals a 32-byte sentinel under
+/// `wrap_key = HKDF(SessionKey, HKDF_INFO_WRAP_V4)` with AAD
+/// `AD_WRAP_V4 || global_header`. The sentinel itself carries no
+/// information — the auth tag is the carrier. A tamper that flips
+/// the bootstrap flag bit (or rewrites any byte of the global
+/// header) invalidates the wrap tag and the recipient rejects
+/// before touching the DR.
+pub fn encrypt_v4(
+    sender_ik_pub: &x25519::PublicKey,
+    recipient: &RecipientV3,
+    session_key: &pqxdh::SessionKey,
+    handshake: &pqxdh::InitiatorHandshake,
+    msg_type: u8,
+    flags: u8,
+    enc_header_nonce: &aead::Nonce,
+    enc_header: &[u8],
+    body_nonce: &aead::Nonce,
+    body_ct: &[u8],
+) -> Result<String, V2Error> {
+    if (flags & V4_FLAG_RESERVED_MASK) != 0 {
+        return Err(V2Error::Crypto(format!(
+            "v=4 encode: reserved flags bits set in 0x{flags:02x}"
+        )));
+    }
+    if enc_header.len() != V4_RATCHET_ENC_HEADER_BYTES {
+        return Err(V2Error::Crypto(format!(
+            "v=4 encode: enc_header length {} != expected {}",
+            enc_header.len(),
+            V4_RATCHET_ENC_HEADER_BYTES
+        )));
+    }
+
+    let n: u8 = 1;
+    let mut global_header = Vec::with_capacity(V4_GLOBAL_HEADER_BYTES);
+    global_header.push(WIRE_VERSION_V4);
+    global_header.push(msg_type);
+    global_header.push(flags);
+    global_header.extend_from_slice(sender_ik_pub.as_bytes());
+    global_header.push(n);
+    debug_assert_eq!(global_header.len(), V4_GLOBAL_HEADER_BYTES);
+
+    let wrap_key_bytes = hkdf::derive_32(&[], session_key.as_bytes(), HKDF_INFO_WRAP_V4)
+        .map_err(|e| V2Error::Crypto(format!("v=4 wrap HKDF: {e}")))?;
+    let wrap_key = aes_gcm::Key::from_bytes(wrap_key_bytes);
+    let mut wrap_aad = Vec::with_capacity(AD_WRAP_V4.len() + V4_GLOBAL_HEADER_BYTES);
+    wrap_aad.extend_from_slice(AD_WRAP_V4);
+    wrap_aad.extend_from_slice(&global_header);
+    let sentinel = [0u8; 32];
+    let (wrap_nonce, wrap_ct) = aes_gcm::seal(&wrap_key, &wrap_aad, &sentinel)
+        .map_err(|e| V2Error::Crypto(format!("v=4 wrap seal: {e}")))?;
+
+    let mut wire = Vec::with_capacity(
+        V4_GLOBAL_HEADER_BYTES
+            + V4_RATCHET_HEADER_BYTES
+            + SLOT_V3_BYTES
+            + aead::NONCE_SIZE
+            + body_ct.len(),
+    );
+    wire.extend_from_slice(&global_header);
+    wire.extend_from_slice(enc_header_nonce.as_bytes());
+    wire.extend_from_slice(enc_header);
+    let hash = pubkey_hash_prefix(&recipient.x25519_pub);
+    wire.extend_from_slice(&hash);
+    wire.extend_from_slice(handshake.ek_x25519_pub.as_bytes());
+    let mlkem_ct_bytes = handshake.mlkem_ciphertext.to_bytes();
+    let mlkem_ct_len = mlkem_ct_bytes.len() as u16;
+    wire.extend_from_slice(&mlkem_ct_len.to_le_bytes());
+    wire.extend_from_slice(&mlkem_ct_bytes);
+    wire.extend_from_slice(wrap_nonce.as_bytes());
+    wire.extend_from_slice(&wrap_ct);
+    wire.extend_from_slice(body_nonce.as_bytes());
+    wire.extend_from_slice(body_ct);
+
+    let b64 = STANDARD.encode(&wire);
+    let mut out = String::with_capacity(b64.len() + "DPC0::".len());
+    out.push_str("DPC0::");
+    out.push_str(&b64);
+    Ok(out)
+}
+
+/// Caller-side helper: takes the pre-computed PQXDH session_key +
+/// handshake (so the wrap leg and DR bootstrap share ONE pqxdh run)
+/// and packages the DR's `EncryptedMessage` onto the wire. Reduces
+/// ceremony at the IPC dispatch site.
+pub fn encrypt_v4_from_ratchet(
+    sender_ik_pub: &x25519::PublicKey,
+    recipient: &RecipientV3,
+    session_key: &pqxdh::SessionKey,
+    handshake: &pqxdh::InitiatorHandshake,
+    msg_type: u8,
+    bootstrap: bool,
+    em: &crypto::ratchet::EncryptedMessage,
+) -> Result<String, V2Error> {
+    let flags = if bootstrap { V4_FLAG_BOOTSTRAP } else { 0 };
+    encrypt_v4(
+        sender_ik_pub,
+        recipient,
+        session_key,
+        handshake,
+        msg_type,
+        flags,
+        &em.header_nonce,
+        &em.enc_header,
+        &em.message_nonce,
+        &em.ciphertext,
+    )
+}
+
+/// Parsed v=4 wire bytes plus the recovered PQXDH `SessionKey` —
+/// hand-off type for the IPC layer. The caller:
+/// 1. Verifies the wrap-leg sentinel auth tag (`verify_sentinel` on
+///    this type).
+/// 2. Bootstraps OR loads the live `DoubleRatchet` per the
+///    `bootstrap` flag, using `session_key` as the seed when
+///    bootstrapping.
+/// 3. Constructs a `ratchet::EncryptedMessage` from `enc_header_nonce`
+///    + `enc_header` + `body_nonce` + `body_ct` and calls
+///    `dr.decrypt(&em)` to recover the plaintext.
+pub struct ParsedV4 {
+    pub msg_type: u8,
+    pub bootstrap: bool,
+    pub sender_ik_pub: x25519::PublicKey,
+    pub enc_header_nonce: aead::Nonce,
+    pub enc_header: Vec<u8>,
+    pub body_nonce: aead::Nonce,
+    pub body_ct: Vec<u8>,
+    /// PQXDH session key — used as the DR bootstrap seed on first
+    /// message; discarded on continuation messages.
+    pub session_key: crypto::pqxdh::SessionKey,
+}
+
+impl std::fmt::Debug for ParsedV4 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParsedV4")
+            .field("msg_type", &format_args!("0x{:02x}", self.msg_type))
+            .field("bootstrap", &self.bootstrap)
+            .field("enc_header_len", &self.enc_header.len())
+            .field("body_ct_len", &self.body_ct.len())
+            .field("session_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Phase 9-A2: parse a v=4 wire blob, run the PQXDH wrap leg, and
+/// return [`ParsedV4`] for the caller to drive through its DR.
+///
+/// Rejects (with no DR / state mutation) for:
+/// - wrong version byte
+/// - N != 1
+/// - reserved flags bits
+/// - hash mismatch on the slot (`NoMatchingSlot`)
+/// - wrap-leg AEAD failure (sentinel didn't unseal)
+pub fn decrypt_v4(
+    wire: &str,
+    recipient_ik_sk: &x25519::SecretKey,
+    recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
+) -> Result<ParsedV4, V2Error> {
+    let body = wire.strip_prefix("DPC0::").ok_or(V2Error::BadPrefix)?;
+    let raw = STANDARD
+        .decode(body)
+        .map_err(|e| V2Error::Base64(e.to_string()))?;
+
+    // Check version byte BEFORE length checks. A v=3 wire is
+    // ~1264 bytes vs v=4's ~1350-byte minimum; failing on length
+    // first would surface a misleading `TooShort` error for what is
+    // really just the wrong wire version.
+    if raw.is_empty() {
+        return Err(V2Error::TooShort {
+            got: 0,
+            expected: 1,
+        });
+    }
+    if raw[0] != WIRE_VERSION_V4 {
+        return Err(V2Error::WrongVersion {
+            got: raw[0],
+            expected: WIRE_VERSION_V4,
+        });
+    }
+    let min_framing = V4_GLOBAL_HEADER_BYTES
+        + V4_RATCHET_HEADER_BYTES
+        + SLOT_V3_BYTES
+        + aead::NONCE_SIZE
+        + aes_gcm::TAG_SIZE;
+    if raw.len() < min_framing {
+        return Err(V2Error::TooShort {
+            got: raw.len(),
+            expected: min_framing,
+        });
+    }
+    let msg_type = raw[1];
+    let flags = raw[2];
+    if (flags & V4_FLAG_RESERVED_MASK) != 0 {
+        return Err(V2Error::Crypto(format!(
+            "v=4 decode: reserved flags bits set in 0x{flags:02x}"
+        )));
+    }
+    let bootstrap = (flags & V4_FLAG_BOOTSTRAP) != 0;
+    let mut sender_pub_bytes = [0u8; 32];
+    sender_pub_bytes.copy_from_slice(&raw[3..35]);
+    let sender_ik_pub = x25519::PublicKey::from_bytes(sender_pub_bytes);
+    let n = raw[35] as usize;
+    if n != 1 {
+        return Err(V2Error::Crypto(format!(
+            "v=4 decode: N must be 1 (got {n}) — multi-recipient sends route through v=3"
+        )));
+    }
+    let global_header_bytes = raw[..V4_GLOBAL_HEADER_BYTES].to_vec();
+
+    let rh_start = V4_GLOBAL_HEADER_BYTES;
+    let rh_end = rh_start + V4_RATCHET_HEADER_BYTES;
+    let mut header_nonce_bytes = [0u8; V4_RATCHET_NONCE_BYTES];
+    header_nonce_bytes.copy_from_slice(&raw[rh_start..rh_start + V4_RATCHET_NONCE_BYTES]);
+    let enc_header_nonce = aead::Nonce::from_bytes(header_nonce_bytes);
+    let enc_header = raw[rh_start + V4_RATCHET_NONCE_BYTES..rh_end].to_vec();
+
+    let slot_start = rh_end;
+    let slot_end = slot_start + SLOT_V3_BYTES;
+    if raw.len() < slot_end + aead::NONCE_SIZE + aes_gcm::TAG_SIZE {
+        return Err(V2Error::TooShort {
+            got: raw.len(),
+            expected: slot_end + aead::NONCE_SIZE + aes_gcm::TAG_SIZE,
+        });
+    }
+    let our_pub = x25519::derive_public(recipient_ik_sk);
+    let our_hash = pubkey_hash_prefix(&our_pub);
+    let mut p = slot_start;
+    if raw[p..p + RECIPIENT_HASH_PREFIX_LEN] != our_hash {
+        return Err(V2Error::NoMatchingSlot);
+    }
+    p += RECIPIENT_HASH_PREFIX_LEN;
+    let mut ek_bytes = [0u8; 32];
+    ek_bytes.copy_from_slice(&raw[p..p + 32]);
+    let ek_x25519_pub = x25519::PublicKey::from_bytes(ek_bytes);
+    p += 32;
+    let ct_len = u16::from_le_bytes([raw[p], raw[p + 1]]) as usize;
+    p += 2;
+    if ct_len != ml_kem_768::CIPHERTEXT_SIZE {
+        return Err(V2Error::Crypto(format!(
+            "v=4 mlkem_ct_len {ct_len} != {}",
+            ml_kem_768::CIPHERTEXT_SIZE
+        )));
+    }
+    let mut ct_bytes = [0u8; ml_kem_768::CIPHERTEXT_SIZE];
+    ct_bytes.copy_from_slice(&raw[p..p + ct_len]);
+    let mlkem_ciphertext = ml_kem_768::Ciphertext::from_bytes(&ct_bytes);
+    p += ct_len;
+    let mut wrap_nonce_bytes = [0u8; aes_gcm::NONCE_SIZE];
+    wrap_nonce_bytes.copy_from_slice(&raw[p..p + aes_gcm::NONCE_SIZE]);
+    let wrap_nonce = aes_gcm::Nonce::from_bytes(wrap_nonce_bytes);
+    p += aes_gcm::NONCE_SIZE;
+    let wrap_ct = &raw[p..p + aes_gcm::KEY_SIZE + aes_gcm::TAG_SIZE];
+
+    let handshake = pqxdh::InitiatorHandshake {
+        ek_x25519_pub,
+        mlkem_ciphertext,
+        no_opk: true,
+        opk_id: None,
+    };
+    let session_key = pqxdh::respond(
+        recipient_ik_sk,
+        recipient_ik_sk,
+        None,
+        recipient_mlkem_sk,
+        &sender_ik_pub,
+        &handshake,
+    )
+    .map_err(|e| V2Error::Crypto(format!("v=4 pqxdh::respond: {e}")))?;
+    let wrap_key_bytes = hkdf::derive_32(&[], session_key.as_bytes(), HKDF_INFO_WRAP_V4)
+        .map_err(|e| V2Error::Crypto(format!("v=4 wrap HKDF: {e}")))?;
+    let wrap_key = aes_gcm::Key::from_bytes(wrap_key_bytes);
+    let mut wrap_aad = Vec::with_capacity(AD_WRAP_V4.len() + V4_GLOBAL_HEADER_BYTES);
+    wrap_aad.extend_from_slice(AD_WRAP_V4);
+    wrap_aad.extend_from_slice(&global_header_bytes);
+    let sentinel = aes_gcm::open(&wrap_key, &wrap_nonce, &wrap_aad, wrap_ct)
+        .map_err(|_| V2Error::WrapAeadFailed)?;
+    if sentinel.len() != 32 || sentinel.iter().any(|&b| b != 0) {
+        return Err(V2Error::Crypto(
+            "v=4 wrap sentinel not 32 zero bytes".to_string(),
+        ));
+    }
+
+    let body_nonce_off = slot_end;
+    let body_nonce_end = body_nonce_off + aead::NONCE_SIZE;
+    let mut body_nonce_bytes = [0u8; aead::NONCE_SIZE];
+    body_nonce_bytes.copy_from_slice(&raw[body_nonce_off..body_nonce_end]);
+    let body_nonce = aead::Nonce::from_bytes(body_nonce_bytes);
+    let body_ct = raw[body_nonce_end..].to_vec();
+
+    Ok(ParsedV4 {
+        msg_type,
+        bootstrap,
+        sender_ik_pub,
+        enc_header_nonce,
+        enc_header,
+        body_nonce,
+        body_ct,
+        session_key,
+    })
+}
+
+// ============================================================
+// Phase 9-A3: v=5 sender-keys multi-recipient wire format
+// ============================================================
+
+/// Parsed v=5 wire bytes — hand-off type for the IPC layer. The
+/// caller looks up `SenderKeyState` for the relevant scope, picks
+/// the `ReceiverChain` matching `sender_ik_pub`, reconstructs the
+/// sender-keys `EncryptedMessage`, and calls `chain.decrypt(...)`.
+pub struct ParsedV5 {
+    pub msg_type: u8,
+    pub sender_ik_pub: x25519::PublicKey,
+    pub flags: u8,
+    pub header_nonce: aead::Nonce,
+    pub enc_header: Vec<u8>,
+    pub message_nonce: aead::Nonce,
+    pub ciphertext: Vec<u8>,
+    pub global_header_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ParsedV5 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParsedV5")
+            .field("msg_type", &format_args!("0x{:02x}", self.msg_type))
+            .field("flags", &format_args!("0x{:02x}", self.flags))
+            .field("enc_header_len", &self.enc_header.len())
+            .field("body_ct_len", &self.ciphertext.len())
+            .finish()
+    }
+}
+
+/// Phase 9-A3: encode a v=5 wire blob. The caller pre-ran the
+/// sender-keys `SenderChain::encrypt` (or `SenderKeyState::encrypt`)
+/// and passes the resulting `sender_keys::EncryptedMessage` parts
+/// in. The body cipher uses an AES-GCM-style nonce here, but the
+/// sender-keys construction uses XChaCha20-Poly1305 (24-byte nonce,
+/// 16-byte tag) for both header and body — so `header_nonce` and
+/// `message_nonce` are both 24 bytes (`aead::Nonce`).
+///
+/// Layout:
+/// ```text
+///   global header (35 bytes):
+///     [ version(1)=0x05 | msg_type(1) | sender_ik_x25519_pub(32) | flags(1) ]
+///   sender-keys header (56 bytes):
+///     [ header_nonce(24) | enc_header(32 = 16 header_bytes + 16 AEAD tag) ]
+///   trailer:
+///     [ message_nonce(24) | ciphertext + 16B AEAD tag ]
+/// ```
+///
+/// The body AEAD's AAD inside `sender_keys::SenderChain::encrypt`
+/// is `canonical_ad_sender_keys(...) || enc_header`. The wire-layer
+/// adds no extra AAD — the canonical AD already binds sender_ik +
+/// group_id + chain_id + n, and the global header's bytes are
+/// implicitly authenticated via `sender_ik_x25519_pub` (any tamper
+/// on that field selects the wrong ReceiverChain on decode and the
+/// AEAD fails).
+pub fn encrypt_v5(
+    sender_ik_pub: &x25519::PublicKey,
+    msg_type: u8,
+    flags: u8,
+    em: &crypto::sender_keys::EncryptedMessage,
+) -> Result<String, V2Error> {
+    if (flags & V5_FLAG_RESERVED_MASK) != 0 {
+        return Err(V2Error::Crypto(format!(
+            "v=5 encode: reserved flags bits set in 0x{flags:02x}"
+        )));
+    }
+    if em.enc_header.len() != 32 {
+        return Err(V2Error::Crypto(format!(
+            "v=5 encode: enc_header length {} != expected 32",
+            em.enc_header.len()
+        )));
+    }
+
+    let mut wire = Vec::with_capacity(
+        V5_GLOBAL_HEADER_BYTES
+            + V5_SENDER_KEYS_HEADER_BYTES
+            + aead::NONCE_SIZE
+            + em.ciphertext.len(),
+    );
+    wire.push(WIRE_VERSION_V5);
+    wire.push(msg_type);
+    wire.extend_from_slice(sender_ik_pub.as_bytes());
+    wire.push(flags);
+    wire.extend_from_slice(em.header_nonce.as_bytes());
+    wire.extend_from_slice(&em.enc_header);
+    wire.extend_from_slice(em.message_nonce.as_bytes());
+    wire.extend_from_slice(&em.ciphertext);
+
+    let b64 = STANDARD.encode(&wire);
+    let mut out = String::with_capacity(b64.len() + "DPC0::".len());
+    out.push_str("DPC0::");
+    out.push_str(&b64);
+    Ok(out)
+}
+
+/// Phase 9-A3: parse a v=5 wire blob. Returns [`ParsedV5`] for the
+/// caller to drive through its `SenderKeyState`. Validates:
+/// - DPC0:: prefix + base64 round-trip
+/// - version byte = 0x05 (checked before length so wrong-version
+///   wires get a clean WrongVersion error)
+/// - flags reserved bits all zero
+/// - exact length matches the fixed framing
+pub fn decrypt_v5(wire: &str) -> Result<ParsedV5, V2Error> {
+    let body = wire.strip_prefix("DPC0::").ok_or(V2Error::BadPrefix)?;
+    let raw = STANDARD
+        .decode(body)
+        .map_err(|e| V2Error::Base64(e.to_string()))?;
+
+    if raw.is_empty() {
+        return Err(V2Error::TooShort {
+            got: 0,
+            expected: 1,
+        });
+    }
+    if raw[0] != WIRE_VERSION_V5 {
+        return Err(V2Error::WrongVersion {
+            got: raw[0],
+            expected: WIRE_VERSION_V5,
+        });
+    }
+    let min_framing = V5_GLOBAL_HEADER_BYTES + V5_SENDER_KEYS_HEADER_BYTES + aead::NONCE_SIZE + 16;
+    if raw.len() < min_framing {
+        return Err(V2Error::TooShort {
+            got: raw.len(),
+            expected: min_framing,
+        });
+    }
+    let msg_type = raw[1];
+    let mut sender_pub_bytes = [0u8; 32];
+    sender_pub_bytes.copy_from_slice(&raw[2..34]);
+    let sender_ik_pub = x25519::PublicKey::from_bytes(sender_pub_bytes);
+    let flags = raw[34];
+    if (flags & V5_FLAG_RESERVED_MASK) != 0 {
+        return Err(V2Error::Crypto(format!(
+            "v=5 decode: reserved flags bits set in 0x{flags:02x}"
+        )));
+    }
+    let global_header_bytes = raw[..V5_GLOBAL_HEADER_BYTES].to_vec();
+
+    let rh_start = V5_GLOBAL_HEADER_BYTES;
+    let mut header_nonce_bytes = [0u8; aead::NONCE_SIZE];
+    header_nonce_bytes.copy_from_slice(&raw[rh_start..rh_start + aead::NONCE_SIZE]);
+    let header_nonce = aead::Nonce::from_bytes(header_nonce_bytes);
+    let enc_header =
+        raw[rh_start + aead::NONCE_SIZE..rh_start + V5_SENDER_KEYS_HEADER_BYTES].to_vec();
+
+    let body_off = rh_start + V5_SENDER_KEYS_HEADER_BYTES;
+    let body_nonce_end = body_off + aead::NONCE_SIZE;
+    let mut body_nonce_bytes = [0u8; aead::NONCE_SIZE];
+    body_nonce_bytes.copy_from_slice(&raw[body_off..body_nonce_end]);
+    let message_nonce = aead::Nonce::from_bytes(body_nonce_bytes);
+    let ciphertext = raw[body_nonce_end..].to_vec();
+
+    Ok(ParsedV5 {
+        msg_type,
+        sender_ik_pub,
+        flags,
+        header_nonce,
+        enc_header,
+        message_nonce,
+        ciphertext,
+        global_header_bytes,
+    })
 }

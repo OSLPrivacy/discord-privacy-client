@@ -42,6 +42,10 @@ rand_core = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 thiserror = { workspace = true }
+# Phase 9-A2: ratchet state persistence (mirror struct uses base64
+# strings for fixed-size byte fields to match peer_map.json convention).
+base64 = "0.22"
 
 [dev-dependencies]
 hex = { workspace = true }
+serde_json = { workspace = true }

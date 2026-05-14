@@ -35,16 +35,16 @@ mod screenshot;
 
 use ipc::commands::{
     cmd_aead_open, cmd_aead_seal, cmd_fetch_pubkeys, cmd_generate_identity, cmd_init_keyserver,
-    cmd_load_identity, cmd_osl_accept_invitation, cmd_osl_apply_burn, cmd_osl_burn_engage,
-    cmd_osl_burn_message, cmd_osl_burn_password_status, cmd_osl_burn_scope_data,
-    cmd_osl_change_main_password, cmd_osl_decline_invitation, cmd_osl_decrypt_message_v2,
-    cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
-    cmd_osl_get_scope_encryption_state, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
-    cmd_osl_list_burned_scopes, cmd_osl_list_pending_invitations, cmd_osl_load_channel_history,
-    cmd_osl_lockout_status, cmd_osl_mark_scope_burned, cmd_osl_password_status,
-    cmd_osl_persist_edit, cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password,
-    cmd_osl_remove_main_password, cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker,
-    cmd_osl_send_whitelist_invitation, cmd_osl_send_whitelist_response, cmd_osl_set_burn_password,
+    cmd_load_identity, cmd_osl_apply_burn, cmd_osl_bulk_set_whitelist,
+    cmd_osl_bulk_unwhitelist_scope, cmd_osl_burn_engage, cmd_osl_burn_message,
+    cmd_osl_burn_password_status, cmd_osl_burn_scope_data, cmd_osl_change_main_password,
+    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2,
+    cmd_osl_get_identity_info, cmd_osl_get_scope_encryption_state,
+    cmd_osl_get_scope_whitelist_summary, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
+    cmd_osl_list_burned_scopes, cmd_osl_load_channel_history, cmd_osl_lockout_status,
+    cmd_osl_mark_scope_burned, cmd_osl_password_status, cmd_osl_persist_edit,
+    cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
+    cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker, cmd_osl_set_burn_password,
     cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
     cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
     cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
@@ -53,7 +53,7 @@ use ipc::commands::{
     cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
     AeadSealRequest, AeadSealResponse, BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse,
     GateVerifyDto, GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
-    PendingInvitationDto, RegisterResponse, ScopeEncryptionState, StatusResponse,
+    RegisterResponse, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
     WhitelistRowDto,
 };
@@ -61,6 +61,11 @@ use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
 use runtime::ScreenshotProtection;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+// Phase F0: deep-link plugin extension trait. Brings the
+// `.deep_link()` method into scope on `&AppHandle`, returning the
+// plugin's runtime handle from which we register the `on_open_url`
+// callback in `setup`.
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[tauri::command]
 async fn generate_identity(
@@ -359,6 +364,10 @@ async fn osl_persist_edit(
 /// Layer 10 / Phase 7b: encrypt a v=2 content message under a
 /// whitelist-resolved recipient list. See
 /// [`ipc::commands::cmd_osl_encrypt_message_v2`].
+///
+/// 9-B1 shape change — returns [`ipc::commands::EncryptOutput`]
+/// which carries one or more Mode 0/Mode 1 cover strings plus
+/// chunking metadata.
 #[tauri::command]
 async fn osl_encrypt_message_v2(
     app: tauri::AppHandle,
@@ -366,42 +375,42 @@ async fn osl_encrypt_message_v2(
     scope_input: ScopeInput,
     channel_members: Vec<String>,
     self_discord_id: String,
-) -> Result<String, String> {
+) -> Result<ipc::commands::EncryptOutput, String> {
     let app_handle = app.clone();
     let scope_for_unburn = scope_input.clone();
     let scope_for_event = scope_input.clone();
-    let result: Result<String, String> = tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        let wire = cmd_osl_encrypt_message_v2(
-            state.inner(),
-            plaintext,
-            scope_input,
-            channel_members,
-            self_discord_id,
-        )?;
-        // 7d-PIVOT-FIX2 Bug F: re-engaging a burned scope via a
-        // fresh encrypted send un-burns it. Returns true iff the
-        // scope was actually in the burned ledger and got removed.
-        let unburned =
-            ipc::commands::cmd_osl_unburn_scope_after_encrypt(state.inner(), scope_for_unburn);
-        Ok((wire, unburned))
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-    .map(|(wire, unburned)| {
-        if unburned {
-            let payload = serde_json::json!({
-                "scope_kind": scope_for_event.kind,
-                "scope_id": scope_for_event.id,
-                "server_id": scope_for_event.server_id,
-                "channel_id": scope_for_event.channel_id,
-            });
-            if let Err(e) = app.emit("osl:scope_unburned", payload) {
-                tracing::debug!(?e, "OSL: emit scope_unburned event failed");
+    let result: Result<ipc::commands::EncryptOutput, String> =
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app_handle.state::<AppState>();
+            let out = cmd_osl_encrypt_message_v2(
+                state.inner(),
+                plaintext,
+                scope_input,
+                channel_members,
+                self_discord_id,
+            )?;
+            // 7d-PIVOT-FIX2 Bug F: re-engaging a burned scope via a
+            // fresh encrypted send un-burns it.
+            let unburned =
+                ipc::commands::cmd_osl_unburn_scope_after_encrypt(state.inner(), scope_for_unburn);
+            Ok((out, unburned))
+        })
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+        .map(|(out, unburned)| {
+            if unburned {
+                let payload = serde_json::json!({
+                    "scope_kind": scope_for_event.kind,
+                    "scope_id": scope_for_event.id,
+                    "server_id": scope_for_event.server_id,
+                    "channel_id": scope_for_event.channel_id,
+                });
+                if let Err(e) = app.emit("osl:scope_unburned", payload) {
+                    tracing::debug!(?e, "OSL: emit scope_unburned event failed");
+                }
             }
-        }
-        wire
-    });
+            out
+        });
     result
 }
 
@@ -499,6 +508,7 @@ async fn osl_open_attachment_v2(
     scope_input: Option<ScopeInput>,
     file_bytes_b64: String,
     legacy_att_key_b64: Option<String>,
+    discord_message_id: Option<String>,
 ) -> Result<ipc::attachment_wire::OpenedAttachment, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -509,6 +519,7 @@ async fn osl_open_attachment_v2(
             scope_input,
             file_bytes_b64,
             legacy_att_key_b64,
+            discord_message_id,
         )
     })
     .await
@@ -538,6 +549,71 @@ async fn osl_encrypt_attachment_envelope(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 8e: V3 seal — MP4 wrapper around the same envelope V2 used.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn osl_seal_attachment_with_cover_v3(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+    original_bytes_b64: String,
+    original_filename: String,
+    random_filename: String,
+) -> Result<ipc::commands::SealedAttachmentV2, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_seal_attachment_with_cover_v3(
+            state.inner(),
+            scope_input,
+            channel_members,
+            self_discord_id,
+            original_bytes_b64,
+            original_filename,
+            random_filename,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 8d-FIX5: fetch an attachment URL's bytes from Rust so the
+/// browser's CSP (which blocks cross-subdomain fetch from discord.com
+/// to cdn.discordapp.com) doesn't stop the encrypted-attachment
+/// scanner. Returns standard base64 to match what the existing JS
+/// path produced via `btoa(arrayBuffer)`. URL allowlist enforced
+/// here so JS can't direct the Rust client at arbitrary hosts.
+#[tauri::command]
+async fn osl_fetch_attachment_bytes(url: String) -> Result<String, String> {
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "https://cdn.discordapp.com/attachments/",
+        "https://media.discordapp.net/attachments/",
+        "https://discord-attachments-uploads-prd.storage.googleapis.com/",
+    ];
+    if !ALLOWED_PREFIXES.iter().any(|p| url.starts_with(p)) {
+        return Err(format!("URL not in allowlist: {url}"));
+    }
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("reqwest client build: {e}"))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status} for {url}"));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("body read failed: {e}"))?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
 /// Layer 10 / Phase 7b: build the wire-format burn marker for a
 /// scope. Caller (boot.js) ships the wire string through
 /// Discord's API; the same scope's local state is then mutated
@@ -558,46 +634,8 @@ async fn osl_send_burn_marker(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Layer 10 / Phase 7b: build the wire-format whitelist
-/// invitation for a peer + scope. See §7.1.
-#[tauri::command]
-async fn osl_send_whitelist_invitation(
-    app: tauri::AppHandle,
-    to_discord_id: String,
-    scope_input: ScopeInput,
-    from_discord_id: String,
-) -> Result<String, String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        cmd_osl_send_whitelist_invitation(
-            state.inner(),
-            to_discord_id,
-            scope_input,
-            from_discord_id,
-        )
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-/// Layer 10 / Phase 7b: build the wire-format whitelist response
-/// (accept / decline). See §7.3 / §7.4.
-#[tauri::command]
-async fn osl_send_whitelist_response(
-    app: tauri::AppHandle,
-    to_discord_id: String,
-    scope_input: ScopeInput,
-    accepted: bool,
-) -> Result<String, String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        cmd_osl_send_whitelist_response(state.inner(), to_discord_id, scope_input, accepted)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
+// 9-C1: osl_send_whitelist_invitation / osl_send_whitelist_response
+// removed alongside the invitation handshake.
 
 /// Layer 10 / Phase 7b: apply a local burn for `scope`. Wipes
 /// `wrapped_key` on matching rows in messages.sqlite.
@@ -612,33 +650,8 @@ async fn osl_apply_burn(app: tauri::AppHandle, scope_input: ScopeInput) -> Resul
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Layer 10 / Phase 7b: accept a pending whitelist invitation
-/// and grant future decryption of `(from, scope)` messages.
-#[tauri::command]
-async fn osl_accept_invitation(app: tauri::AppHandle, invitation_id: String) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        cmd_osl_accept_invitation(state.inner(), invitation_id)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-/// Layer 10 / Phase 7b: decline a pending whitelist invitation.
-#[tauri::command]
-async fn osl_decline_invitation(
-    app: tauri::AppHandle,
-    invitation_id: String,
-) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        cmd_osl_decline_invitation(state.inner(), invitation_id)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
+// 9-C1: osl_accept_invitation / osl_decline_invitation removed
+// alongside the invitation handshake.
 
 /// Layer 10 / Phase 7b: un-whitelist a peer in a scope. Returns
 /// the wire-format burn marker to ship through Discord's API
@@ -669,8 +682,9 @@ async fn osl_unwhitelist_scope(
 }
 
 /// Layer 10 / Phase 7b: set a whitelist for a peer + scope.
-/// Returns the wire-format invitation to ship through Discord's
-/// API so the peer can accept/decline.
+/// 9-C1: per-peer whitelist set. Permissive decrypt means there's
+/// no wire invitation to ship — the peer's recv path will simply
+/// decrypt our messages once it has the keys.
 #[tauri::command]
 async fn osl_set_whitelist(
     app: tauri::AppHandle,
@@ -678,7 +692,7 @@ async fn osl_set_whitelist(
     scope_input: ScopeInput,
     broadened: bool,
     from_discord_id: String,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -708,6 +722,68 @@ async fn osl_get_scope_encryption_state(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
         cmd_osl_get_scope_encryption_state(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C1: tri-state whitelist summary for the channel header icon.
+/// boot.js feeds in the live channel roster (via the gateway tap
+/// in Stage 3); we return whether all/some/none/unknown of the
+/// non-self members are whitelisted.
+#[tauri::command]
+async fn osl_get_scope_whitelist_summary(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    channel_members: Vec<String>,
+    self_discord_id: String,
+) -> Result<ScopeWhitelistSummary, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_get_scope_whitelist_summary(
+            state.inner(),
+            scope_input,
+            channel_members,
+            self_discord_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C1 Stage 3: bulk-promote N channel members to whitelisted in
+/// a single scope. Boot.js calls this from the tri-state header
+/// icon's "encrypt with everyone" flow. Returns the count of peers
+/// whose state was actually mutated.
+#[tauri::command]
+async fn osl_bulk_set_whitelist(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    member_dids: Vec<String>,
+) -> Result<usize, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_bulk_set_whitelist(state.inner(), scope_input, member_dids)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C1 Stage 3: bulk-demote N channel members from a scope.
+/// Used by the tri-state icon's "stop encrypting with everyone"
+/// flow. Returns the count of peers actually mutated.
+#[tauri::command]
+async fn osl_bulk_unwhitelist_scope(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    member_dids: Vec<String>,
+) -> Result<usize, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_bulk_unwhitelist_scope(state.inner(), scope_input, member_dids)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -765,20 +841,8 @@ async fn osl_set_scope_encrypt(
     result
 }
 
-/// Phase 7c: list `pending_invitations` for the banner system.
-/// Returns one DTO per pending entry, oldest first.
-#[tauri::command]
-async fn osl_list_pending_invitations(
-    app: tauri::AppHandle,
-) -> Result<Vec<PendingInvitationDto>, String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        cmd_osl_list_pending_invitations(state.inner())
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
+// 9-C1: osl_list_pending_invitations removed alongside the
+// invitation handshake.
 
 /// Phase 7c bug-fix #1: surface the loaded identity's `user_id`
 /// (== local Discord ID) so boot.js can stamp it onto send/burn
@@ -1036,11 +1100,19 @@ async fn osl_mark_scope_burned(
     scope_id: String,
     server_id: Option<String>,
     channel_id: Option<String>,
+    burned_message_ids: Option<Vec<String>>,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_mark_scope_burned(state.inner(), scope_kind, scope_id, server_id, channel_id)
+        cmd_osl_mark_scope_burned(
+            state.inner(),
+            scope_kind,
+            scope_id,
+            server_id,
+            channel_id,
+            burned_message_ids.unwrap_or_default(),
+        )
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -1070,6 +1142,411 @@ async fn osl_list_burned_scopes(app: tauri::AppHandle) -> Result<Vec<BurnedScope
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 9-A3: boot.js pushes the gateway-derived membership of a
+/// channel here. Updates the in-memory `channel_members` cache that
+/// the v=5 sender-keys dispatcher consults to detect membership
+/// changes and trigger rotation.
+#[tauri::command]
+async fn osl_membership_update(
+    app: tauri::AppHandle,
+    channel_id: String,
+    member_ids: Vec<String>,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_membership_update(state.inner(), channel_id, member_ids)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_membership_get(
+    app: tauri::AppHandle,
+    channel_id: String,
+) -> Result<Vec<String>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_membership_get(state.inner(), channel_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// ---- Phase 9-C2: friend list + guild list + bulk-DM whitelist ----
+
+/// 9-C2: boot.js gateway tap pushes the user's friend-id list here
+/// on every Discord READY. Consumed by the settings-window Bulk
+/// Whitelist modal's "Friend list" action.
+#[tauri::command]
+async fn osl_set_friend_ids(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_friend_ids(state.inner(), ids)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C2: settings-window read of the friend-id snapshot. Empty
+/// vec if the user hasn't connected to Discord yet (gateway READY
+/// hasn't fired).
+#[tauri::command]
+async fn osl_get_friend_ids(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_friend_ids(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C2: boot.js gateway tap pushes the user's guild list here on
+/// each GUILD_CREATE. The member_ids list may be partial on large
+/// guilds (Discord only ships the ~100 online members at that
+/// time).
+#[tauri::command]
+async fn osl_set_guild_list(
+    app: tauri::AppHandle,
+    guilds: Vec<ipc::commands::GuildDto>,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_guild_list(state.inner(), guilds)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C2: settings-window read of the guild-list snapshot. Empty
+/// vec if no GUILD_CREATE has fired yet.
+#[tauri::command]
+async fn osl_get_guild_list(app: tauri::AppHandle) -> Result<Vec<ipc::commands::GuildDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_guild_list(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
+/// peer). Used by the Bulk Whitelist modal's "Friend list" and
+/// "Paste IDs" actions. Returns the count actually mutated.
+#[tauri::command]
+async fn osl_bulk_set_dm_whitelist(
+    app: tauri::AppHandle,
+    member_dids: Vec<String>,
+) -> Result<usize, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_bulk_set_dm_whitelist(state.inner(), member_dids)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// ---- Phase 9-C3: per-server "encrypt new channels by default" ----
+
+/// 9-C3: set or clear the per-server "encrypt new channels by default"
+/// flag. Persists to disk via the whitelist_state.json envelope.
+#[tauri::command]
+async fn osl_set_server_default(
+    app: tauri::AppHandle,
+    server_id: String,
+    encrypt_by_default: bool,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_server_default(state.inner(), server_id, encrypt_by_default)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C3: read all server-default entries (sorted by server_id).
+/// Used by the settings modal + the sidebar overlay's paint pass.
+#[tauri::command]
+async fn osl_get_server_defaults(
+    app: tauri::AppHandle,
+) -> Result<Vec<ipc::commands::ServerDefaultDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_server_defaults(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// 9-C3: retroactively flip `encrypt_toggle = true` on every
+/// already-known channel in `server_id`. Returns the count mutated.
+/// Settings-window only (the sidebar overlay's primary action is
+/// just to flip the default; retro-apply is opt-in).
+#[tauri::command]
+async fn osl_apply_server_default_to_existing_channels(
+    app: tauri::AppHandle,
+    server_id: String,
+) -> Result<usize, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_apply_server_default_to_existing_channels(state.inner(), server_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 9-B1: read user-tunable preferences (stego mode, Mode 1
+/// preview flags). Returns the in-memory snapshot loaded at boot.
+#[tauri::command]
+async fn osl_get_app_preferences(
+    app: tauri::AppHandle,
+) -> Result<ipc::commands::AppPreferencesDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_app_preferences(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_set_app_preferences(
+    app: tauri::AppHandle,
+    prefs: ipc::commands::AppPreferencesDto,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_set_app_preferences(state.inner(), prefs, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// ---- Phase 9-D: onboarding tour + VPN warning ----
+
+/// 9-TD1.4: read + clear the most recent disk-persist failure
+/// message. Boot.js calls this after mutation invokes to surface
+/// "couldn't save change to disk" as a toast.
+#[tauri::command]
+async fn osl_take_last_persist_error(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        Ok::<_, String>(ipc::commands::cmd_osl_take_last_persist_error(
+            state.inner(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_tour_get_state(app: tauri::AppHandle) -> Result<ipc::commands::TourStateDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_tour_get_state(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_tour_advance(app: tauri::AppHandle, slide: u8) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_tour_advance(state.inner(), slide, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_tour_complete(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_tour_complete(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_tour_skip(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_tour_skip(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_tour_reset(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_tour_reset(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_vpn_warning_dismiss_forever(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_vpn_warning_dismiss_forever(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_vpn_warning_reset(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_vpn_warning_reset(state.inner(), dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 9-D: one-shot VPN/proxy check.
+///
+/// Compares the system locale country (resolved via `sys-locale`)
+/// against the country reported by an IP geolocation lookup at
+/// `https://ipapi.co/json/`. If both resolve and differ, return
+/// `ok = false` — the boot.js banner uses that signal to surface
+/// "VPN active" to the user. Any other outcome (network failure,
+/// missing locale, unparseable response) returns `ok = true` with
+/// a diagnostic `error` field — the banner never false-positives on
+/// offline users.
+///
+/// Outbound host is hard-allowlisted here (consistent with
+/// `osl_fetch_attachment_bytes` at L584). 5s timeout. Single-shot —
+/// no caching, no retries; boot.js fires this once per launch.
+#[tauri::command]
+async fn osl_check_vpn() -> Result<ipc::commands::VpnCheckResult, String> {
+    const VPN_PROVIDER_URL: &str = "https://ipapi.co/json/";
+    const VPN_PROVIDER_NAME: &str = "ipapi.co";
+
+    let system_country = sys_locale::get_locale()
+        .and_then(|loc| extract_country_from_locale(&loc))
+        .map(|c| c.to_uppercase());
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(ipc::commands::VpnCheckResult {
+                ok: true,
+                system_country,
+                ip_country: None,
+                provider: Some(VPN_PROVIDER_NAME.to_string()),
+                error: Some(format!("client build: {e}")),
+            });
+        }
+    };
+
+    let resp = match client.get(VPN_PROVIDER_URL).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(ipc::commands::VpnCheckResult {
+                ok: true,
+                system_country,
+                ip_country: None,
+                provider: Some(VPN_PROVIDER_NAME.to_string()),
+                error: Some(format!("network failure: {e}")),
+            });
+        }
+    };
+    if !resp.status().is_success() {
+        return Ok(ipc::commands::VpnCheckResult {
+            ok: true,
+            system_country,
+            ip_country: None,
+            provider: Some(VPN_PROVIDER_NAME.to_string()),
+            error: Some(format!("HTTP {}", resp.status())),
+        });
+    }
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(ipc::commands::VpnCheckResult {
+                ok: true,
+                system_country,
+                ip_country: None,
+                provider: Some(VPN_PROVIDER_NAME.to_string()),
+                error: Some(format!("parse failure: {e}")),
+            });
+        }
+    };
+    let ip_country = body
+        .get("country_code")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_uppercase());
+
+    let ok = match (&system_country, &ip_country) {
+        (Some(s), Some(i)) => s == i,
+        // Either side missing → silent skip. Banner stays quiet.
+        _ => true,
+    };
+
+    Ok(ipc::commands::VpnCheckResult {
+        ok,
+        system_country,
+        ip_country,
+        provider: Some(VPN_PROVIDER_NAME.to_string()),
+        error: None,
+    })
+}
+
+/// Phase 9-D: pull the 2-letter ISO country code out of a locale
+/// string. `sys_locale::get_locale` returns BCP-47-ish values like
+/// `"en-US"`, `"en_US.UTF-8"`, or just `"en"`. We accept both `-`
+/// and `_` separators, strip any trailing `.encoding`, and require
+/// the region segment to be exactly two ASCII letters before
+/// returning it.
+fn extract_country_from_locale(locale: &str) -> Option<String> {
+    let after_sep = locale
+        .split(|c: char| c == '-' || c == '_')
+        .nth(1)?
+        .split('.')
+        .next()?;
+    if after_sep.len() == 2 && after_sep.chars().all(|c| c.is_ascii_alphabetic()) {
+        Some(after_sep.to_string())
+    } else {
+        None
+    }
 }
 
 /// Phase 7d-C: open the trusted local settings window.
@@ -1215,8 +1692,56 @@ const PASSWORD_GATE_HTML: &str = include_str!("../assets/password_gate.html");
 /// identity display) do not run on the Discord remote origin.
 const SETTINGS_WINDOW_HTML: &str = include_str!("../assets/settings_window.html");
 
+/// Phase F0: deep-link smoke-test wrapper. Round-trips an `osl://...`
+/// URL string through the pure parser in `ipc::commands` and
+/// returns the structured response to JS.
+///
+/// The actual deep-link arrival is handled by the `on_open_url`
+/// callback registered in the Builder's `setup` block — that's
+/// what fires when Windows activates `osl://...`. This command is
+/// the JS → Rust direction: boot.js receives the
+/// `osl:deep-link-received` event and invokes us to do a Rust-side
+/// parse + log + return-to-JS, which proves the full
+/// Rust → JS → Rust round-trip path.
+///
+/// Replaced in F2 by `cmd_osl_redeem_unlock`, which validates the
+/// token against the keyserver and resets the foreground-time
+/// ad timer.
+#[tauri::command]
+async fn osl_test_deep_link(url: String) -> Result<ipc::commands::OslTestDeepLinkResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || ipc::commands::cmd_osl_test_deep_link(url))
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 fn main() {
     tauri::Builder::default()
+        // Phase F0: single-instance plugin MUST be initialized before
+        // tauri-plugin-deep-link. Windows spawns a new process when
+        // `osl://...` fires while OSL is already running; without
+        // single-instance we'd end up with two OSL windows fighting
+        // over the same Discord login. The `deep-link` feature on the
+        // single-instance crate forwards the second process's CLI
+        // args through the deep-link plugin's event channel, so the
+        // existing instance's `on_open_url` callback fires (rather
+        // than the spawned duplicate having to handle it).
+        //
+        // The closure body runs in the *first* instance when the OS
+        // hands off a second-instance launch. We just bring the main
+        // window to the front; the URL itself flows through the
+        // deep-link feature's automatic forwarding.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            tracing::info!(
+                target: "osl::deep_link",
+                ?argv,
+                "[OSL deep-link] second instance launched; focusing main window"
+            );
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .manage(AppState::new())
         // Phase 7d-B1 / 7d-C: serve bundled local HTML pages on the
         // `osl-gate://` custom URI scheme. WebView2 routes requests
@@ -1427,6 +1952,44 @@ fn main() {
             let app_state = app.state::<AppState>();
             bootstrap::run_autostart(app_state.inner());
 
+            // Phase F0: register the deep-link on_open_url handler.
+            // tauri-plugin-deep-link delivers `osl://...` URLs here
+            // whenever Windows activates our protocol. We log to the
+            // Rust console (proves Rust-side reception independently
+            // of any webview event channel) and emit a Tauri event
+            // to the webview so boot.js's listener can show a toast
+            // and round-trip the URL through `osl_test_deep_link`.
+            //
+            // `event.urls()` returns a Vec because the OS can hand
+            // off multiple URLs in a single activation (rare but
+            // possible). F0 logs and emits each one independently —
+            // F2 will replace this whole callback with the real
+            // unlock-token handler.
+            //
+            // Best-effort emit: if no webview is up yet (race during
+            // cold launch — scenario a in the F0 verification
+            // matrix), the emit drops silently. The Rust log still
+            // proves the URL arrived. F2 adds a buffered-URL replay
+            // pattern keyed on a "boot.js ready" signal.
+            let app_handle_for_dl = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let url_str = url.to_string();
+                    tracing::info!(
+                        target: "osl::deep_link",
+                        url = %url_str,
+                        "[OSL deep-link] arrived from on_open_url"
+                    );
+                    if let Err(e) = app_handle_for_dl.emit("osl:deep-link-received", &url_str) {
+                        tracing::warn!(
+                            target: "osl::deep_link",
+                            error = ?e,
+                            "[OSL deep-link] emit to webview failed"
+                        );
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1454,18 +2017,19 @@ fn main() {
             osl_seal_attachment_with_cover_v2,
             osl_open_attachment_v2,
             osl_encrypt_attachment_envelope,
+            osl_seal_attachment_with_cover_v3,
+            osl_fetch_attachment_bytes,
             osl_send_burn_marker,
-            osl_send_whitelist_invitation,
-            osl_send_whitelist_response,
+            // 9-C1: invitation/response/accept/decline/list_pending all retired.
             osl_apply_burn,
-            osl_accept_invitation,
-            osl_decline_invitation,
             osl_unwhitelist_scope,
             osl_set_whitelist,
             osl_get_scope_encryption_state,
+            osl_get_scope_whitelist_summary,
+            osl_bulk_set_whitelist,
+            osl_bulk_unwhitelist_scope,
             osl_toggle_scope_encryption,
             osl_set_scope_encrypt,
-            osl_list_pending_invitations,
             osl_get_self_user_id,
             osl_register_self_snowflake,
             osl_get_identity_info,
@@ -1492,8 +2056,31 @@ fn main() {
             osl_mark_scope_burned,
             osl_unburn_scope,
             osl_list_burned_scopes,
+            osl_membership_update,
+            osl_membership_get,
+            osl_set_friend_ids,
+            osl_get_friend_ids,
+            osl_set_guild_list,
+            osl_get_guild_list,
+            osl_bulk_set_dm_whitelist,
+            osl_set_server_default,
+            osl_get_server_defaults,
+            osl_apply_server_default_to_existing_channels,
+            osl_get_app_preferences,
+            osl_set_app_preferences,
+            osl_tour_get_state,
+            osl_tour_advance,
+            osl_tour_complete,
+            osl_tour_skip,
+            osl_tour_reset,
+            osl_vpn_warning_dismiss_forever,
+            osl_vpn_warning_reset,
+            osl_check_vpn,
+            osl_take_last_persist_error,
             osl_open_settings_window,
             osl_close_settings_window_if_open,
+            // Phase F0: deep-link smoke-test parser. Removed in F2.
+            osl_test_deep_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

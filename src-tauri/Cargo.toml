@@ -10,6 +10,21 @@ tauri-build = { workspace = true }
 
 [dependencies]
 tauri = { workspace = true }
+
+# Phase F0: deep-link plugin + single-instance plugin.
+# - `tauri-plugin-deep-link`: registers the `osl://` URL scheme and
+#   surfaces incoming URLs via an event handler. NSIS bundler picks
+#   up `plugins.deep-link.desktop.schemes` from tauri.conf.json and
+#   writes the HKCR registry entries at install time.
+# - `tauri-plugin-single-instance` (with the `deep-link` feature):
+#   intercepts the OS-spawned second instance when `osl://...` fires
+#   while OSL is already running, hands the URL off to the existing
+#   instance via the deep-link plugin's event channel, then exits
+#   the spawned process. Without this, every osl://... activation
+#   would open a duplicate OSL window.
+tauri-plugin-deep-link = { workspace = true }
+tauri-plugin-single-instance = { workspace = true }
+
 serde = { workspace = true }
 # Layer 10 / Phase 3: `osl_encrypt_message` accepts an opaque
 # `options: serde_json::Value` so the JS-side hook can pass through
@@ -20,6 +35,21 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+
+# Phase 8d-FIX5: Discord's CSP blocks browser-side fetch to
+# cdn.discordapp.com (cross-subdomain from discord.com). The
+# `osl_fetch_attachment_bytes` command routes attachment downloads
+# through Rust so the encrypted-attachment scanner can pull bytes
+# without tripping the page's `connect-src` directive. rustls-tls
+# matches the keystore HTTP client's TLS posture; default-features
+# off avoids the native-tls dep cascade.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
+
+# Phase 9-D: system-locale lookup for VPN-warning country comparison.
+# Tiny crate, pure Rust, cross-platform (Windows GetUserDefaultLocaleName +
+# Mac CFLocale + Linux LC_* env). Used only inside `osl_check_vpn`.
+sys-locale = "0.3"
 
 # Local crates
 crypto = { path = "../crates/crypto" }

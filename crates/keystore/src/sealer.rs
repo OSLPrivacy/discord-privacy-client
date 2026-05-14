@@ -264,7 +264,6 @@ mod tpm {
     use super::{Result, Sealer, SealerError, METHOD_TPM};
     use crypto::aead;
     use crypto::random;
-    use std::ffi::c_void;
     use windows::core::PCWSTR;
     use windows::Win32::Security::Cryptography::{
         NCryptCreatePersistedKey, NCryptDecrypt, NCryptEncrypt, NCryptFinalizeKey,

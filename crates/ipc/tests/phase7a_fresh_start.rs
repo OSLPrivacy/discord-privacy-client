@@ -13,7 +13,6 @@
 
 use ipc::fresh_start::cmd_osl_fresh_start;
 use ipc::peer_map::load_peer_map_from_path;
-use ipc::pending_invitations::load_pending_invitations_from_path;
 use ipc::whitelist_state::load_whitelist_state_from_path;
 use keystore::{load_identity, save_identity, select_best_sealer};
 use std::fs;
@@ -106,9 +105,13 @@ fn test_fresh_start_wipes_and_regenerates() {
         load_whitelist_state_from_path(&dir.join("whitelist_state.json")).expect("whitelist_state");
     assert!(whitelist.is_empty(), "whitelist_state must be empty");
 
-    let invitations = load_pending_invitations_from_path(&dir.join("pending_invitations.json"))
-        .expect("pending_invitations");
-    assert!(invitations.is_empty(), "pending_invitations must be empty");
+    // 9-C1: pending_invitations.json is unconditionally deleted by
+    // bootstrap. Fresh-start's own remove-if-present pass also nukes
+    // it, and we no longer write a stub.
+    assert!(
+        !dir.join("pending_invitations.json").exists(),
+        "pending_invitations.json must be absent after C1 fresh_start"
+    );
 
     // identity.json present, new keypair, new user_id.
     let identity_on_disk =
@@ -142,5 +145,5 @@ fn test_fresh_start_works_on_empty_directory() {
     assert!(dir.join("peer_map.json").exists());
     assert!(dir.join("channels.json").exists());
     assert!(dir.join("whitelist_state.json").exists());
-    assert!(dir.join("pending_invitations.json").exists());
+    // 9-C1: pending_invitations.json no longer written by fresh_start.
 }

@@ -113,7 +113,10 @@ use crate::hkdf;
 use crate::pqxdh::SessionKey;
 use crate::random;
 use crate::x25519;
-use std::time::{Duration, SystemTime};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zeroize::ZeroizeOnDrop;
 
 /// HKDF info labels — domain-separated for v1.
@@ -851,4 +854,247 @@ pub struct EncryptedMessage {
     /// AEAD ciphertext of the plaintext payload (MK, AAD = canonical
     /// AD || `enc_header`).
     pub ciphertext: Vec<u8>,
+}
+
+// ============================================================
+// Phase 9-A2: persistable mirror of DoubleRatchet state
+// ============================================================
+
+/// Wire/disk version byte for [`RatchetStateOnDisk`]. Bump on any
+/// shape change to force a clean reject of stale-format records.
+pub const RATCHET_STATE_ON_DISK_VERSION: u8 = 0x01;
+
+/// Errors raised when reconstructing a [`DoubleRatchet`] from a
+/// persisted [`RatchetStateOnDisk`] record.
+#[derive(Debug, thiserror::Error)]
+pub enum RatchetPersistError {
+    /// On-disk version byte doesn't match what this build understands.
+    #[error("ratchet state on-disk version 0x{got:02x} != supported 0x{want:02x}")]
+    UnsupportedVersion { got: u8, want: u8 },
+    /// A base64 string failed to decode.
+    #[error("ratchet state on-disk: base64 decode {field}: {source}")]
+    Base64 {
+        field: &'static str,
+        #[source]
+        source: base64::DecodeError,
+    },
+    /// A decoded byte slice was the wrong length.
+    #[error("ratchet state on-disk: {field} length {got} != expected {want}")]
+    BadLength {
+        field: &'static str,
+        got: usize,
+        want: usize,
+    },
+}
+
+/// Persistable mirror of [`DoubleRatchet`]. All fixed-size byte fields
+/// are base64-encoded strings (matching `peer_map.json`'s convention
+/// for `pubkey`/`ik_mlkem768_pub`); variable-length byte slices use
+/// base64 too. Counters and `session_version` ride as raw integers.
+///
+/// Conversion is lossless and idempotent: `RatchetStateOnDisk::from(&dr)
+/// .try_into::<DoubleRatchet>()` reproduces a ratchet that emits and
+/// accepts the same wire bytes as the original.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RatchetStateOnDisk {
+    pub version: u8,
+    pub root_key_b64: String,
+    pub dhs_secret_b64: String,
+    pub dhs_pub_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhr_b64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sending_chain_b64: Option<String>,
+    pub sending_counter: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiving_chain_b64: Option<String>,
+    pub receiving_counter: u32,
+    pub prev_sending_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hks_b64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hkr_b64: Option<String>,
+    pub nhks_b64: String,
+    pub nhkr_b64: String,
+    #[serde(default)]
+    pub skipped: Vec<SkippedKeyOnDisk>,
+    pub ctx: SessionContextOnDisk,
+}
+
+/// One persisted entry of the skipped-message-key cache.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkippedKeyOnDisk {
+    pub hk_b64: String,
+    pub counter: u32,
+    pub mk_b64: String,
+    pub inserted_at_unix_secs: u64,
+}
+
+/// Persistable mirror of [`SessionContext`]. Variable-length ML-KEM
+/// pubkey bytes and `conversation_id` ride as base64 strings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContextOnDisk {
+    pub local_ik_x25519_pub_b64: String,
+    pub local_ik_mlkem_pub_b64: String,
+    pub peer_ik_x25519_pub_b64: String,
+    pub peer_ik_mlkem_pub_b64: String,
+    pub conversation_id_b64: String,
+    pub session_version: u32,
+}
+
+impl From<&DoubleRatchet> for RatchetStateOnDisk {
+    fn from(dr: &DoubleRatchet) -> Self {
+        RatchetStateOnDisk {
+            version: RATCHET_STATE_ON_DISK_VERSION,
+            root_key_b64: STANDARD.encode(dr.root_key.as_bytes()),
+            dhs_secret_b64: STANDARD.encode(dr.dhs_secret.as_bytes()),
+            dhs_pub_b64: STANDARD.encode(dr.dhs_pub.as_bytes()),
+            dhr_b64: dr.dhr.as_ref().map(|p| STANDARD.encode(p.as_bytes())),
+            sending_chain_b64: dr
+                .sending_chain
+                .as_ref()
+                .map(|c| STANDARD.encode(c.as_bytes())),
+            sending_counter: dr.sending_counter,
+            receiving_chain_b64: dr
+                .receiving_chain
+                .as_ref()
+                .map(|c| STANDARD.encode(c.as_bytes())),
+            receiving_counter: dr.receiving_counter,
+            prev_sending_count: dr.prev_sending_count,
+            hks_b64: dr.hks.as_ref().map(|k| STANDARD.encode(k.as_bytes())),
+            hkr_b64: dr.hkr.as_ref().map(|k| STANDARD.encode(k.as_bytes())),
+            nhks_b64: STANDARD.encode(dr.nhks.as_bytes()),
+            nhkr_b64: STANDARD.encode(dr.nhkr.as_bytes()),
+            skipped: dr
+                .skipped
+                .keys
+                .iter()
+                .map(|e| SkippedKeyOnDisk {
+                    hk_b64: STANDARD.encode(e.hk.as_bytes()),
+                    counter: e.counter,
+                    mk_b64: STANDARD.encode(e.mk.as_bytes()),
+                    inserted_at_unix_secs: e
+                        .inserted_at
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                })
+                .collect(),
+            ctx: SessionContextOnDisk {
+                local_ik_x25519_pub_b64: STANDARD.encode(dr.ctx.local_ik_x25519_pub.as_bytes()),
+                local_ik_mlkem_pub_b64: STANDARD.encode(&dr.ctx.local_ik_mlkem_pub),
+                peer_ik_x25519_pub_b64: STANDARD.encode(dr.ctx.peer_ik_x25519_pub.as_bytes()),
+                peer_ik_mlkem_pub_b64: STANDARD.encode(&dr.ctx.peer_ik_mlkem_pub),
+                conversation_id_b64: STANDARD.encode(&dr.ctx.conversation_id),
+                session_version: dr.ctx.session_version,
+            },
+        }
+    }
+}
+
+impl TryFrom<RatchetStateOnDisk> for DoubleRatchet {
+    type Error = RatchetPersistError;
+
+    fn try_from(s: RatchetStateOnDisk) -> std::result::Result<Self, Self::Error> {
+        if s.version != RATCHET_STATE_ON_DISK_VERSION {
+            return Err(RatchetPersistError::UnsupportedVersion {
+                got: s.version,
+                want: RATCHET_STATE_ON_DISK_VERSION,
+            });
+        }
+        let root_key = RootKey::from_bytes(decode_32(&s.root_key_b64, "root_key")?);
+        let dhs_secret = x25519::SecretKey::from_bytes(decode_32(&s.dhs_secret_b64, "dhs_secret")?);
+        let dhs_pub = x25519::PublicKey::from_bytes(decode_32(&s.dhs_pub_b64, "dhs_pub")?);
+        let dhr = match s.dhr_b64 {
+            Some(b) => Some(x25519::PublicKey::from_bytes(decode_32(&b, "dhr")?)),
+            None => None,
+        };
+        let sending_chain = match s.sending_chain_b64 {
+            Some(b) => Some(ChainKey::from_bytes(decode_32(&b, "sending_chain")?)),
+            None => None,
+        };
+        let receiving_chain = match s.receiving_chain_b64 {
+            Some(b) => Some(ChainKey::from_bytes(decode_32(&b, "receiving_chain")?)),
+            None => None,
+        };
+        let hks = match s.hks_b64 {
+            Some(b) => Some(aead::Key::from_bytes(decode_32(&b, "hks")?)),
+            None => None,
+        };
+        let hkr = match s.hkr_b64 {
+            Some(b) => Some(aead::Key::from_bytes(decode_32(&b, "hkr")?)),
+            None => None,
+        };
+        let nhks = aead::Key::from_bytes(decode_32(&s.nhks_b64, "nhks")?);
+        let nhkr = aead::Key::from_bytes(decode_32(&s.nhkr_b64, "nhkr")?);
+
+        let mut skipped_keys: Vec<SkippedKey> = Vec::with_capacity(s.skipped.len());
+        for entry in s.skipped {
+            skipped_keys.push(SkippedKey {
+                hk: aead::Key::from_bytes(decode_32(&entry.hk_b64, "skipped.hk")?),
+                counter: entry.counter,
+                mk: aead::Key::from_bytes(decode_32(&entry.mk_b64, "skipped.mk")?),
+                inserted_at: UNIX_EPOCH + Duration::from_secs(entry.inserted_at_unix_secs),
+            });
+        }
+        let skipped = SkippedKeyCache { keys: skipped_keys };
+
+        let ctx = SessionContext {
+            local_ik_x25519_pub: x25519::PublicKey::from_bytes(decode_32(
+                &s.ctx.local_ik_x25519_pub_b64,
+                "ctx.local_ik_x25519_pub",
+            )?),
+            local_ik_mlkem_pub: decode_var(
+                &s.ctx.local_ik_mlkem_pub_b64,
+                "ctx.local_ik_mlkem_pub",
+            )?,
+            peer_ik_x25519_pub: x25519::PublicKey::from_bytes(decode_32(
+                &s.ctx.peer_ik_x25519_pub_b64,
+                "ctx.peer_ik_x25519_pub",
+            )?),
+            peer_ik_mlkem_pub: decode_var(&s.ctx.peer_ik_mlkem_pub_b64, "ctx.peer_ik_mlkem_pub")?,
+            conversation_id: decode_var(&s.ctx.conversation_id_b64, "ctx.conversation_id")?,
+            session_version: s.ctx.session_version,
+        };
+
+        Ok(DoubleRatchet {
+            root_key,
+            dhs_secret,
+            dhs_pub,
+            dhr,
+            sending_chain,
+            sending_counter: s.sending_counter,
+            receiving_chain,
+            receiving_counter: s.receiving_counter,
+            prev_sending_count: s.prev_sending_count,
+            hks,
+            hkr,
+            nhks,
+            nhkr,
+            skipped,
+            ctx,
+        })
+    }
+}
+
+fn decode_32(s: &str, field: &'static str) -> std::result::Result<[u8; 32], RatchetPersistError> {
+    let bytes = STANDARD
+        .decode(s)
+        .map_err(|source| RatchetPersistError::Base64 { field, source })?;
+    if bytes.len() != 32 {
+        return Err(RatchetPersistError::BadLength {
+            field,
+            got: bytes.len(),
+            want: 32,
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn decode_var(s: &str, field: &'static str) -> std::result::Result<Vec<u8>, RatchetPersistError> {
+    STANDARD
+        .decode(s)
+        .map_err(|source| RatchetPersistError::Base64 { field, source })
 }

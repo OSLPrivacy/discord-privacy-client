@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: set tour.completed = true. Called by boot.js on slide 9
+# password-set success. Suppresses re-show across launches.
+[[permission]]
+identifier = "allow-osl-tour-complete"
+description = "Permits invoking `osl_tour_complete`. Marks the tour finished so it no longer auto-fires on subsequent launches."
+commands.allow = ["osl_tour_complete"]

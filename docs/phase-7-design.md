@@ -1,8 +1,15 @@
 # Phase 7 — Whitelist Trust Model + Scoped Burns
 
-**Status:** DRAFT — pending sign-off
+**Status:** SUPERSEDED by 9-C1 in the handshake area — see
+[`phase-9-c1-permissive-decrypt.md`](./phase-9-c1-permissive-decrypt.md).
+The §2 trust model + §3 scope semantics still apply; the §4
+invitation handshake (control messages 0x02 / 0x03, `incoming_decrypt_accepted`,
+accept/decline banners) was removed. Recv is now permissive: if we
+have the keys, we decrypt — Discord's block list is the trust
+boundary, not an OSL-internal accept queue.
+
 **Replaces:** original Phase 6b (panic-button burn spec, shelved)
-**Migration:** fresh start, wipe all local state and regenerate identity
+**Migration:** lossless one-shot in `ipc::migration` at boot (9-C1)
 **Estimated scope:** 6–8 weeks solo dev
 
 ---

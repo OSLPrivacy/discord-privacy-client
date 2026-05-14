@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-B1: write user app preferences (stego mode, etc.).
+[[permission]]
+identifier = "allow-osl-set-app-preferences"
+description = "Permits the trusted local settings window to invoke `osl_set_app_preferences` (persist AppPreferences to disk via the OSL-ENC1 envelope when a main password is set). Used by the Stego Mode toggle + Mode 1 always-preview switch."
+commands.allow = ["osl_set_app_preferences"]

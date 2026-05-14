@@ -518,16 +518,16 @@ const wlCollapse = new Map();
 // ============================================================
 // Layout: sidebar + content panes.
 // ============================================================
+// 9-C4: dropped FUTURE_ITEMS (Duress, Danger Zone, Keybinds-stub).
+// Keybinds promoted to a live read-only page. Duress + Danger Zone
+// removed entirely — they were UI stubs with no implementation.
 const LIVE_ITEMS = [
   { id: "identity", label: "Identity" },
   { id: "whitelist", label: "Whitelist Manager" },
   { id: "passwords", label: "Passwords" },
+  { id: "stego", label: "Stego Mode" },
+  { id: "keybinds", label: "Keybinds" },
   { id: "about", label: "About" },
-];
-const FUTURE_ITEMS = [
-  { id: "_keybinds", label: "Keybinds" },
-  { id: "_duress", label: "Duress" },
-  { id: "_danger", label: "Danger Zone" },
 ];
 
 function buildSidebar() {
@@ -538,22 +538,6 @@ function buildSidebar() {
     el.setAttribute("data-osl-page", item.id);
     el.textContent = item.label;
     el.addEventListener("click", (e) => { e.stopPropagation(); switchPage(item.id); });
-    sb.appendChild(el);
-  }
-  const divider = document.createElement("div");
-  divider.className = "osl-sidebar-divider";
-  sb.appendChild(divider);
-  for (const item of FUTURE_ITEMS) {
-    const el = document.createElement("div");
-    el.className = "osl-sidebar-item disabled";
-    el.title = "Coming soon";
-    const label = document.createElement("span");
-    label.textContent = item.label;
-    const tag = document.createElement("span");
-    tag.className = "osl-sidebar-tag";
-    tag.textContent = "Soon";
-    el.appendChild(label);
-    el.appendChild(tag);
     sb.appendChild(el);
   }
 }
@@ -568,7 +552,94 @@ function switchPage(pageId) {
   if (pageId === "identity") renderIdentity();
   else if (pageId === "whitelist") renderWhitelist();
   else if (pageId === "passwords") renderPasswords();
+  else if (pageId === "stego") renderStego();
+  else if (pageId === "keybinds") renderKeybinds();
   else if (pageId === "about") renderAbout();
+}
+
+// ============================================================
+// Phase 9-B1: Stego Mode settings page.
+// ============================================================
+async function renderStego() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const h = document.createElement("h2");
+  h.className = "osl-h2";
+  h.textContent = "Stego Mode";
+  pane.appendChild(h);
+  const desc = document.createElement("p");
+  desc.style.cssText = "margin:0 0 16px 0;font-size:13px;color:#b5bac1;";
+  desc.innerHTML =
+    "<b>Mode 0</b> sends one <code>DPC0::&lt;base64&gt;</code> cover per message via " +
+    "the PQ-hybrid wire (X25519 + ML-KEM-768 + ratchet/sender-keys).<br>" +
+    "<b>Mode 1</b> (natural-language disguise) is deferred to a future release.";
+  pane.appendChild(desc);
+
+  const status = await oslInvoke("osl_get_app_preferences", {});
+  if (!status.ok) {
+    const err = document.createElement("div");
+    err.className = "osl-empty";
+    err.textContent = "Could not load preferences: " + status.error;
+    pane.appendChild(err);
+    return;
+  }
+  // 9-MODE1-RETIRE: V2 ships Mode 0 only. Legacy app_preferences.json
+  // files with stego_mode=mode1 are coerced to Mode 0 in Rust on send;
+  // here we just render Mode 0 selected + Mode 1 disabled regardless.
+  const _prefs = status.value || { stego_mode: "mode0" };
+
+  function radio(name, value, label, opts) {
+    opts = opts || {};
+    const wrap = document.createElement("label");
+    wrap.style.cssText =
+      "display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0;" +
+      (opts.disabled ? "opacity:0.55;cursor:not-allowed;" : "");
+    const r = document.createElement("input");
+    r.type = "radio";
+    r.name = name;
+    r.value = value;
+    if (opts.checked) r.checked = true;
+    if (opts.disabled) r.disabled = true;
+    wrap.appendChild(r);
+    wrap.appendChild(document.createTextNode(label));
+    if (opts.badge) {
+      const tag = document.createElement("span");
+      tag.className = "osl-sidebar-tag";
+      tag.style.cssText = "margin-left:6px;";
+      tag.textContent = opts.badge;
+      wrap.appendChild(tag);
+    }
+    return { wrap, input: r };
+  }
+  const mode0 = radio(
+    "stego_mode",
+    "mode0",
+    "Mode 0 — Post-quantum encryption (active)",
+    { checked: true, disabled: true }
+  );
+  const mode1 = radio(
+    "stego_mode",
+    "mode1",
+    "Mode 1 — Natural language disguise (coming in a future release)",
+    { disabled: true, badge: "Soon" }
+  );
+  pane.appendChild(mode0.wrap);
+  pane.appendChild(mode1.wrap);
+
+  const save = document.createElement("button");
+  save.className = "osl-row-btn osl-row-btn-remove";
+  save.style.cssText = "padding:8px 16px;margin-top:16px;";
+  save.textContent = "Save";
+  save.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    // 9-MODE1-RETIRE: always persist Mode 0 regardless of any radio
+    // state. The Mode 1 radio is disabled, so this is just defensive.
+    const next = { stego_mode: "mode0" };
+    const r = await oslInvoke("osl_set_app_preferences", { prefs: next });
+    if (r.ok) oslToast("Preferences saved.");
+    else oslToast("Save failed: " + r.error);
+  });
+  pane.appendChild(save);
 }
 
 function getPane() { return document.getElementById("osl-content"); }
@@ -701,8 +772,33 @@ async function renderWhitelist() {
     wlData = null;
     renderWhitelist();
   });
+  // 9-C2: Bulk Whitelist entry point.
+  const bulk = document.createElement("button");
+  bulk.className = "osl-row-btn osl-row-btn-remove";
+  bulk.style.marginLeft = "8px";
+  bulk.textContent = "Bulk Whitelist";
+  bulk.setAttribute("data-osl-bulk-whitelist-btn", "1");
+  bulk.addEventListener("click", (e) => {
+    e.stopPropagation();
+    oslBulkWhitelistModal();
+  });
+  // 9-C3: Server Defaults entry point.
+  const srvDefaults = document.createElement("button");
+  srvDefaults.className = "osl-row-btn osl-row-btn-remove";
+  srvDefaults.style.marginLeft = "8px";
+  srvDefaults.textContent = "Server Defaults";
+  srvDefaults.setAttribute("data-osl-server-defaults-btn", "1");
+  srvDefaults.addEventListener("click", (e) => {
+    e.stopPropagation();
+    oslServerDefaultsModal();
+  });
+  const toolbarBtns = document.createElement("div");
+  toolbarBtns.style.cssText = "display:flex;gap:0;align-items:center;";
+  toolbarBtns.appendChild(refresh);
+  toolbarBtns.appendChild(bulk);
+  toolbarBtns.appendChild(srvDefaults);
   toolbar.appendChild(h1);
-  toolbar.appendChild(refresh);
+  toolbar.appendChild(toolbarBtns);
   pane.appendChild(toolbar);
   const hint = document.createElement("div");
   hint.className = "osl-hint";
@@ -887,6 +983,568 @@ async function onBurnScope(row) {
   renderWhitelist();
 }
 
+// ============================================================
+// 9-C2: Bulk Whitelist modal.
+// ============================================================
+const BULK_CONFIRM_THRESHOLD = 25;
+
+function oslBulkWhitelistModal() {
+  // Backdrop + modal scaffolding.
+  const backdrop = document.createElement("div");
+  backdrop.setAttribute("data-osl-modal", "1");
+  backdrop.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100000;" +
+    "display:flex;align-items:center;justify-content:center;";
+  const modal = document.createElement("div");
+  modal.style.cssText =
+    "background:var(--osl-bg-floating, #18191c);color:var(--osl-text-normal);" +
+    "padding:24px;border-radius:8px;width:560px;max-width:90vw;max-height:80vh;" +
+    "overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,0.5);font-size:14px;";
+
+  const title = document.createElement("h2");
+  title.className = "osl-h2";
+  title.style.margin = "0 0 6px 0";
+  title.textContent = "Bulk Whitelist";
+  modal.appendChild(title);
+  const subtitle = document.createElement("p");
+  subtitle.style.cssText = "margin:0 0 16px 0;font-size:13px;color:#b5bac1;";
+  subtitle.textContent = "Quickly whitelist multiple peers at once.";
+  modal.appendChild(subtitle);
+
+  const pickerRow = document.createElement("div");
+  pickerRow.style.cssText = "display:flex;gap:8px;margin-bottom:16px;";
+  modal.appendChild(pickerRow);
+
+  const contentArea = document.createElement("div");
+  contentArea.style.cssText = "min-height:80px;margin-bottom:16px;";
+  modal.appendChild(contentArea);
+
+  const footer = document.createElement("div");
+  footer.style.cssText =
+    "display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--osl-bg-accent);padding-top:12px;";
+  modal.appendChild(footer);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "osl-row-btn osl-row-btn-remove";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => close());
+  const submitBtn = document.createElement("button");
+  submitBtn.className = "osl-row-btn osl-row-btn-remove";
+  submitBtn.textContent = "Whitelist";
+  submitBtn.disabled = true;
+  submitBtn.style.opacity = "0.55";
+  footer.appendChild(cancelBtn);
+  footer.appendChild(submitBtn);
+
+  // ---- state ----
+  let activeAction = null; // "friends" | "server" | "paste"
+  let pendingPayload = null; // shape depends on action
+
+  function setSubmitEnabled(enabled) {
+    submitBtn.disabled = !enabled;
+    submitBtn.style.opacity = enabled ? "1" : "0.55";
+    submitBtn.style.cursor = enabled ? "pointer" : "not-allowed";
+  }
+
+  function close() {
+    document.removeEventListener("keydown", onKey, true);
+    if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+  }
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+
+  function makeActionTile(action, headline, sub) {
+    const btn = document.createElement("button");
+    btn.dataset.action = action;
+    btn.style.cssText =
+      "flex:1;padding:12px;background:var(--osl-bg-secondary);color:inherit;" +
+      "border:1px solid var(--osl-bg-accent);border-radius:6px;cursor:pointer;" +
+      "text-align:left;display:flex;flex-direction:column;gap:4px;";
+    const h = document.createElement("strong");
+    h.textContent = headline;
+    const s = document.createElement("small");
+    s.style.cssText = "font-size:12px;color:#b5bac1;";
+    s.textContent = sub;
+    btn.appendChild(h);
+    btn.appendChild(s);
+    btn.addEventListener("click", () => switchAction(action));
+    return btn;
+  }
+  pickerRow.appendChild(
+    makeActionTile("friends", "Friend list", "Whitelist Discord friends as DM peers")
+  );
+  pickerRow.appendChild(
+    makeActionTile("server", "Server members", "Whitelist all members of a server")
+  );
+  pickerRow.appendChild(
+    makeActionTile("paste", "Paste IDs", "Whitelist by Discord ID list (DM scope)")
+  );
+
+  function switchAction(action) {
+    activeAction = action;
+    pendingPayload = null;
+    setSubmitEnabled(false);
+    // Highlight the active tile.
+    for (const tile of pickerRow.children) {
+      const on = tile.dataset.action === action;
+      tile.style.borderColor = on
+        ? "var(--osl-brand, #5865f2)"
+        : "var(--osl-bg-accent)";
+      tile.style.background = on
+        ? "var(--osl-bg-selected, rgba(78,80,88,0.60))"
+        : "var(--osl-bg-secondary)";
+    }
+    contentArea.innerHTML = "";
+    if (action === "friends") renderFriendsTab();
+    else if (action === "server") renderServerTab();
+    else if (action === "paste") renderPasteTab();
+  }
+
+  async function renderFriendsTab() {
+    const loading = document.createElement("div");
+    loading.className = "osl-hint";
+    loading.textContent = "Loading friend list…";
+    contentArea.appendChild(loading);
+    const r = await oslInvoke("osl_get_friend_ids", {});
+    contentArea.innerHTML = "";
+    if (!r.ok) {
+      const err = document.createElement("div");
+      err.className = "osl-empty";
+      err.textContent = "Friend list fetch failed: " + r.error;
+      contentArea.appendChild(err);
+      return;
+    }
+    const ids = Array.isArray(r.value) ? r.value : [];
+    if (ids.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "osl-empty";
+      empty.textContent =
+        "No friends loaded yet. The gateway READY frame hasn't surfaced your relationships list — make sure you're connected to Discord, then re-open this modal.";
+      contentArea.appendChild(empty);
+      return;
+    }
+    const selfRes = await oslInvoke("osl_get_self_user_id", {});
+    const selfId = selfRes.ok ? selfRes.value : null;
+    const filtered = ids.filter((id) => id !== selfId);
+    const summary = document.createElement("p");
+    summary.style.cssText = "margin:0 0 8px 0;";
+    summary.textContent =
+      filtered.length + " friend(s) found — they'll be whitelisted as DM peers.";
+    contentArea.appendChild(summary);
+    const list = document.createElement("div");
+    list.style.cssText =
+      "max-height:160px;overflow-y:auto;background:var(--osl-bg-tertiary);" +
+      "padding:8px;border-radius:4px;font-family:monospace;font-size:12px;";
+    list.textContent = filtered.join("\n");
+    contentArea.appendChild(list);
+    pendingPayload = { kind: "dm", ids: filtered };
+    setSubmitEnabled(filtered.length > 0);
+  }
+
+  async function renderServerTab() {
+    const loading = document.createElement("div");
+    loading.className = "osl-hint";
+    loading.textContent = "Loading server list…";
+    contentArea.appendChild(loading);
+    const r = await oslInvoke("osl_get_guild_list", {});
+    contentArea.innerHTML = "";
+    if (!r.ok) {
+      const err = document.createElement("div");
+      err.className = "osl-empty";
+      err.textContent = "Server list fetch failed: " + r.error;
+      contentArea.appendChild(err);
+      return;
+    }
+    const guilds = Array.isArray(r.value) ? r.value : [];
+    if (guilds.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "osl-empty";
+      empty.textContent =
+        "No servers loaded yet. GUILD_CREATE frames haven't fired — make sure you're connected to Discord and a guild is loaded.";
+      contentArea.appendChild(empty);
+      return;
+    }
+    const lbl = document.createElement("label");
+    lbl.style.cssText = "display:block;margin:0 0 6px 0;font-size:13px;color:#b5bac1;";
+    lbl.textContent = "Pick a server:";
+    contentArea.appendChild(lbl);
+    const select = document.createElement("select");
+    select.style.cssText =
+      "width:100%;padding:8px;background:var(--osl-bg-tertiary);color:inherit;" +
+      "border:1px solid var(--osl-bg-accent);border-radius:4px;font-size:14px;";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "— select a server —";
+    select.appendChild(placeholder);
+    for (const g of guilds) {
+      const opt = document.createElement("option");
+      opt.value = g.id;
+      const count = Array.isArray(g.member_ids) ? g.member_ids.length : 0;
+      opt.textContent = g.name + " (" + count + " members loaded)";
+      select.appendChild(opt);
+    }
+    contentArea.appendChild(select);
+
+    const note = document.createElement("p");
+    note.style.cssText = "margin:8px 0 0 0;font-size:12px;color:#b5bac1;";
+    note.textContent =
+      "Large guilds ship only ~100 online members at connect — scroll the server's member-list panel in Discord to load more, then re-open this modal.";
+    contentArea.appendChild(note);
+
+    const selfRes = await oslInvoke("osl_get_self_user_id", {});
+    const selfId = selfRes.ok ? selfRes.value : null;
+
+    select.addEventListener("change", () => {
+      const id = select.value;
+      if (!id) {
+        pendingPayload = null;
+        setSubmitEnabled(false);
+        return;
+      }
+      const g = guilds.find((x) => x.id === id);
+      const members = (g && Array.isArray(g.member_ids) ? g.member_ids : [])
+        .filter((m) => m !== selfId);
+      pendingPayload = {
+        kind: "server_full",
+        scope_id: id,
+        ids: members,
+      };
+      setSubmitEnabled(members.length > 0);
+    });
+  }
+
+  function renderPasteTab() {
+    const ta = document.createElement("textarea");
+    ta.style.cssText =
+      "width:100%;height:120px;padding:8px;background:var(--osl-bg-tertiary);" +
+      "color:inherit;border:1px solid var(--osl-bg-accent);border-radius:4px;" +
+      "font-family:monospace;font-size:12px;resize:vertical;";
+    ta.placeholder =
+      "Paste Discord IDs (one per line or comma-separated). Each must be 17–19 digits.";
+    contentArea.appendChild(ta);
+
+    const preview = document.createElement("div");
+    preview.style.cssText =
+      "margin-top:8px;max-height:140px;overflow-y:auto;font-family:monospace;font-size:12px;";
+    contentArea.appendChild(preview);
+
+    const SNOWFLAKE = /^\d{17,19}$/;
+    const reparse = () => {
+      preview.innerHTML = "";
+      const raw = ta.value;
+      if (!raw.trim()) {
+        pendingPayload = null;
+        setSubmitEnabled(false);
+        return;
+      }
+      const lines = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      const valid = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const ok = SNOWFLAKE.test(line);
+        const row = document.createElement("div");
+        row.style.color = ok ? "var(--osl-positive, #23a559)" : "var(--osl-danger, #ed4245)";
+        row.textContent = (ok ? "✓ " : "✗ ") + line;
+        preview.appendChild(row);
+        if (ok) valid.push(line);
+      }
+      // Dedupe.
+      const unique = Array.from(new Set(valid));
+      pendingPayload = { kind: "dm", ids: unique };
+      setSubmitEnabled(unique.length > 0);
+      const summary = document.createElement("div");
+      summary.style.cssText = "margin-top:6px;font-size:12px;color:#b5bac1;";
+      summary.textContent =
+        unique.length + " valid ID(s), " + (lines.length - valid.length) + " rejected.";
+      preview.appendChild(summary);
+    };
+    ta.addEventListener("input", reparse);
+    ta.addEventListener("blur", reparse);
+  }
+
+  async function doSubmit() {
+    if (!activeAction || !pendingPayload) return;
+    const ids = pendingPayload.ids || [];
+    // Self-filter (defensive — friends + paste already filter, server filters on select).
+    const selfRes = await oslInvoke("osl_get_self_user_id", {});
+    const selfId = selfRes.ok ? selfRes.value : null;
+    const dids = ids.filter((m) => m !== selfId);
+    if (dids.length === 0) {
+      oslToast("Nothing to whitelist.");
+      return;
+    }
+    // >25 confirm gate.
+    if (dids.length > BULK_CONFIRM_THRESHOLD) {
+      const ok = await oslConfirm({
+        title: "Whitelist " + dids.length + " peers?",
+        body:
+          "This will whitelist " +
+          dids.length +
+          " peers at once. Most won't have keys on file until you next send them a message — keys fetch automatically at first send. Continue?",
+        confirmText: "Whitelist all",
+        cancelText: "Cancel",
+      });
+      if (!ok) return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Working…";
+    let r;
+    if (pendingPayload.kind === "dm") {
+      r = await oslInvoke("osl_bulk_set_dm_whitelist", {
+        memberDids: dids,
+      });
+    } else if (pendingPayload.kind === "server_full") {
+      r = await oslInvoke("osl_bulk_set_whitelist", {
+        scopeInput: {
+          kind: "server_full",
+          id: pendingPayload.scope_id,
+          server_id: pendingPayload.scope_id,
+        },
+        memberDids: dids,
+      });
+    } else {
+      oslToast("Unknown action.");
+      return;
+    }
+    if (!r.ok) {
+      oslToast("Bulk whitelist failed: " + r.error);
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Whitelist";
+      return;
+    }
+    const count = typeof r.value === "number" ? r.value : dids.length;
+    oslToast(
+      "Whitelisted " +
+        count +
+        " peer(s). They'll fetch keys when you next send them a message."
+    );
+    // Notify Discord origin to refresh in-memory caches.
+    oslEmit("osl:bulk_whitelist_applied", {
+      kind: pendingPayload.kind,
+      count: count,
+    });
+    close();
+    wlData = null;
+    renderWhitelist();
+  }
+  submitBtn.addEventListener("click", doSubmit);
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+}
+
+// ============================================================
+// 9-C3: Server Defaults modal.
+// ============================================================
+async function oslServerDefaultsModal() {
+  const backdrop = document.createElement("div");
+  backdrop.setAttribute("data-osl-modal", "1");
+  backdrop.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100000;" +
+    "display:flex;align-items:center;justify-content:center;";
+  const modal = document.createElement("div");
+  modal.style.cssText =
+    "background:var(--osl-bg-floating, #18191c);color:var(--osl-text-normal);" +
+    "padding:24px;border-radius:8px;width:640px;max-width:90vw;max-height:80vh;" +
+    "overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,0.5);font-size:14px;";
+
+  const title = document.createElement("h2");
+  title.className = "osl-h2";
+  title.style.margin = "0 0 6px 0";
+  title.textContent = "Server Defaults";
+  modal.appendChild(title);
+
+  const subtitle = document.createElement("p");
+  subtitle.style.cssText = "margin:0 0 12px 0;font-size:13px;color:#b5bac1;";
+  subtitle.textContent =
+    "When enabled, new channels created in this server will be encrypted by default. " +
+    "Existing channels can be retroactively encrypted by clicking 'Apply to existing channels'.";
+  modal.appendChild(subtitle);
+
+  const sep = document.createElement("p");
+  sep.style.cssText =
+    "margin:0 0 16px 0;font-size:12px;color:#b5bac1;padding:8px;" +
+    "background:var(--osl-bg-secondary);border-radius:4px;";
+  sep.textContent =
+    "Server Defaults controls auto-encryption for new channels. Bulk Whitelist controls who can read your encrypted messages — these settings are independent.";
+  modal.appendChild(sep);
+
+  const listEl = document.createElement("div");
+  listEl.style.cssText = "margin-bottom:16px;";
+  modal.appendChild(listEl);
+
+  const footer = document.createElement("div");
+  footer.style.cssText =
+    "display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--osl-bg-accent);padding-top:12px;";
+  modal.appendChild(footer);
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "osl-row-btn osl-row-btn-remove";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => close());
+  footer.appendChild(closeBtn);
+
+  function close() {
+    document.removeEventListener("keydown", onKey, true);
+    if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+  }
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+
+  // Render the row list.
+  const loading = document.createElement("div");
+  loading.className = "osl-hint";
+  loading.textContent = "Loading guilds…";
+  listEl.appendChild(loading);
+
+  const [guildsRes, defaultsRes] = await Promise.all([
+    oslInvoke("osl_get_guild_list", {}),
+    oslInvoke("osl_get_server_defaults", {}),
+  ]);
+  listEl.innerHTML = "";
+
+  if (!guildsRes.ok) {
+    const err = document.createElement("div");
+    err.className = "osl-empty";
+    err.textContent = "Could not load guild list: " + guildsRes.error;
+    listEl.appendChild(err);
+  } else {
+    const guilds = Array.isArray(guildsRes.value) ? guildsRes.value : [];
+    if (guilds.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "osl-empty";
+      empty.textContent =
+        "No guilds loaded yet. GUILD_CREATE frames haven't fired — make sure you're connected to Discord.";
+      listEl.appendChild(empty);
+    } else {
+      const defaultMap = {};
+      if (defaultsRes.ok) {
+        for (const row of defaultsRes.value || []) {
+          if (row && row.server_id) {
+            defaultMap[row.server_id] = !!row.encrypt_by_default;
+          }
+        }
+      }
+      // Sort guilds alphabetically for stable display.
+      const sortedGuilds = guilds
+        .slice()
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      for (const g of sortedGuilds) {
+        listEl.appendChild(buildServerRow(g, defaultMap[g.id] === true));
+      }
+    }
+  }
+
+  function buildServerRow(guild, initialOn) {
+    const row = document.createElement("div");
+    row.style.cssText =
+      "display:flex;align-items:center;gap:12px;padding:10px;" +
+      "border-bottom:1px solid var(--osl-bg-accent);";
+    const nameWrap = document.createElement("div");
+    nameWrap.style.cssText = "flex:1;min-width:0;";
+    const nm = document.createElement("div");
+    nm.style.cssText = "font-weight:600;";
+    nm.textContent = guild.name || "(guild " + guild.id + ")";
+    const meta = document.createElement("div");
+    meta.style.cssText = "font-size:12px;color:#b5bac1;";
+    const channelCount = Array.isArray(guild.channel_ids)
+      ? guild.channel_ids.length
+      : 0;
+    meta.textContent = channelCount + " channels loaded · id=" + guild.id;
+    nameWrap.appendChild(nm);
+    nameWrap.appendChild(meta);
+    row.appendChild(nameWrap);
+
+    // Toggle.
+    const toggle = document.createElement("div");
+    toggle.className = "osl-toggle";
+    const bg = document.createElement("div");
+    bg.className = "osl-toggle-bg" + (initialOn ? " on" : "");
+    const knob = document.createElement("div");
+    knob.className = "osl-toggle-knob";
+    bg.appendChild(knob);
+    toggle.appendChild(bg);
+    row.appendChild(toggle);
+
+    // Apply-existing button (only visible when toggle is on).
+    const apply = document.createElement("button");
+    apply.className = "osl-row-btn osl-row-btn-remove";
+    apply.style.cssText = "font-size:12px;padding:4px 10px;";
+    apply.textContent = "Apply to existing";
+    apply.style.display = initialOn ? "inline-block" : "none";
+    row.appendChild(apply);
+
+    let currentlyOn = initialOn;
+    toggle.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const next = !currentlyOn;
+      const r = await oslInvoke("osl_set_server_default", {
+        serverId: guild.id,
+        encryptByDefault: next,
+      });
+      if (!r.ok) {
+        oslToast("Failed to update server default: " + r.error);
+        return;
+      }
+      currentlyOn = next;
+      bg.classList.toggle("on", currentlyOn);
+      apply.style.display = currentlyOn ? "inline-block" : "none";
+      oslToast(
+        "Server defaults updated: " +
+          (guild.name || guild.id) +
+          " — " +
+          (currentlyOn ? "ON" : "OFF")
+      );
+      oslEmit("osl:server_default_changed", {
+        server_id: guild.id,
+        encrypt_by_default: currentlyOn,
+      });
+    });
+    apply.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      apply.disabled = true;
+      apply.textContent = "Working…";
+      const r = await oslInvoke(
+        "osl_apply_server_default_to_existing_channels",
+        { serverId: guild.id }
+      );
+      apply.disabled = false;
+      apply.textContent = "Apply to existing";
+      if (!r.ok) {
+        oslToast("Apply failed: " + r.error);
+        return;
+      }
+      const count = typeof r.value === "number" ? r.value : 0;
+      oslToast(
+        "Encrypted " + count + " existing channel(s) in " + (guild.name || guild.id)
+      );
+      // Refresh underlying whitelist table on close.
+      wlData = null;
+    });
+    return row;
+  }
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+}
+
 function renderWlFlat(rows) {
   const wrap = document.createElement("div");
   const table = document.createElement("table");
@@ -1038,6 +1696,112 @@ function scopeGroup(headerLabel, collapseKey, rows, labelFn) {
 // ============================================================
 // About page.
 // ============================================================
+// ============================================================
+// 9-C4: Keybinds (read-only, V2).
+//
+// Source of truth for the dispatch logic lives in
+// src-tauri/src/injection/boot.js (`oslGlobalKeydownDispatcher`).
+// This page is a display-only mirror: keep these arrays in sync
+// with the boot.js handler if either changes.
+// ============================================================
+const KEYBINDS_V2 = {
+  modifier: [
+    { keys: "Ctrl + Shift + O", action: "Open settings" },
+    { keys: "Ctrl + Shift + Backspace", action: "Account burn (arm / execute)" },
+  ],
+  bareLetters: [
+    { keys: "E", action: "Toggle composer encrypt pill" },
+    { keys: "B", action: "Burn current scope" },
+  ],
+};
+
+function makeKeybindRow(kb) {
+  const row = document.createElement("div");
+  row.className = "osl-field";
+  const lab = document.createElement("div");
+  lab.className = "osl-field-label";
+  lab.textContent = kb.action;
+  const val = document.createElement("div");
+  val.className = "osl-field-value";
+  const span = document.createElement("span");
+  span.textContent = kb.keys;
+  span.style.fontFamily =
+    "ui-monospace, SFMono-Regular, Menlo, monospace";
+  span.style.userSelect = "text";
+  val.appendChild(span);
+  row.appendChild(lab);
+  row.appendChild(val);
+  return row;
+}
+
+function renderKeybinds() {
+  const pane = getPane();
+  pane.innerHTML = "";
+
+  const h1 = document.createElement("h1");
+  h1.className = "osl-h1";
+  h1.textContent = "Keybinds";
+  pane.appendChild(h1);
+
+  const intro = document.createElement("p");
+  intro.style.fontSize = "14px";
+  intro.style.lineHeight = "1.5";
+  intro.style.margin = "16px 0";
+  intro.textContent =
+    "Global shortcuts that fire while the Discord window has focus. " +
+    "Keybinds are not customizable in V2.";
+  pane.appendChild(intro);
+
+  const h2a = document.createElement("h2");
+  h2a.className = "osl-h2";
+  h2a.textContent = "Modifier shortcuts";
+  pane.appendChild(h2a);
+  for (const kb of KEYBINDS_V2.modifier) {
+    pane.appendChild(makeKeybindRow(kb));
+  }
+
+  const h2b = document.createElement("h2");
+  h2b.className = "osl-h2";
+  h2b.textContent = "Bare-letter shortcuts";
+  pane.appendChild(h2b);
+
+  const bareNote = document.createElement("p");
+  bareNote.style.fontSize = "13px";
+  bareNote.style.lineHeight = "1.5";
+  bareNote.style.margin = "8px 0 16px 0";
+  bareNote.style.color = "var(--osl-text-muted, #949ba4)";
+  bareNote.textContent =
+    "These fire only when the message composer or any text field is " +
+    "not focused — typing 'e' or 'b' in chat won't trigger them.";
+  pane.appendChild(bareNote);
+
+  for (const kb of KEYBINDS_V2.bareLetters) {
+    pane.appendChild(makeKeybindRow(kb));
+  }
+
+  const h2c = document.createElement("h2");
+  h2c.className = "osl-h2";
+  h2c.textContent = "When keybinds don't fire";
+  pane.appendChild(h2c);
+
+  const ul = document.createElement("ul");
+  ul.style.margin = "8px 0 0 0";
+  ul.style.padding = "0 0 0 20px";
+  ul.style.fontSize = "13px";
+  ul.style.lineHeight = "1.6";
+  const reasons = [
+    "When any OSL modal is open",
+    "When a text field is focused (bare-letter shortcuts only)",
+    "When OSL or Discord is not the focused window",
+  ];
+  for (const text of reasons) {
+    const li = document.createElement("li");
+    li.textContent = text;
+    ul.appendChild(li);
+  }
+  pane.appendChild(ul);
+}
+
 function renderAbout() {
   const pane = getPane();
   pane.innerHTML = "";
@@ -1095,6 +1859,78 @@ function renderAbout() {
     ul.appendChild(li);
   }
   pane.appendChild(ul);
+
+  // 9-D: Onboarding controls — replay tour.
+  const onboardingH = document.createElement("h2");
+  onboardingH.className = "osl-h2";
+  onboardingH.style.marginTop = "24px";
+  onboardingH.textContent = "Onboarding";
+  pane.appendChild(onboardingH);
+  const replayBtn = document.createElement("button");
+  replayBtn.className = "osl-row-btn";
+  replayBtn.textContent = "Replay onboarding tour";
+  replayBtn.addEventListener("click", async () => {
+    const r = await oslInvoke("osl_tour_reset", {});
+    if (!r.ok) { oslToast("Failed to reset tour: " + r.error); return; }
+    await oslEmit("osl:tour_replay_requested", null);
+    // Close the settings window so the tour starts cleanly in main.
+    setTimeout(() => {
+      oslInvoke("osl_close_settings_window_if_open", {}).catch(() => {});
+    }, 80);
+  });
+  pane.appendChild(replayBtn);
+
+  // 9-D: Privacy — VPN warning toggle.
+  const privacyH = document.createElement("h2");
+  privacyH.className = "osl-h2";
+  privacyH.style.marginTop = "24px";
+  privacyH.textContent = "Privacy";
+  pane.appendChild(privacyH);
+
+  const vpnRow = document.createElement("div");
+  vpnRow.className = "osl-field";
+  vpnRow.style.alignItems = "center";
+  const vpnLab = document.createElement("div");
+  vpnLab.className = "osl-field-label";
+  vpnLab.textContent = "Show VPN warning on launch";
+  const vpnVal = document.createElement("div");
+  vpnVal.className = "osl-field-value";
+  const vpnToggle = document.createElement("button");
+  vpnToggle.className = "osl-row-btn";
+  vpnToggle.textContent = "Loading…";
+  vpnToggle.disabled = true;
+  vpnVal.appendChild(vpnToggle);
+  vpnRow.appendChild(vpnLab);
+  vpnRow.appendChild(vpnVal);
+  pane.appendChild(vpnRow);
+
+  // Load current state then wire the toggle.
+  (async () => {
+    const state = await oslInvoke("osl_tour_get_state", {});
+    if (!state.ok || !state.value) {
+      vpnToggle.textContent = "Unavailable";
+      return;
+    }
+    let enabled = !state.value.vpn_warning_dismissed_forever;
+    function paint() {
+      vpnToggle.textContent = enabled ? "Enabled" : "Disabled";
+      vpnToggle.disabled = false;
+    }
+    paint();
+    vpnToggle.addEventListener("click", async () => {
+      vpnToggle.disabled = true;
+      const next = !enabled;
+      const cmd = next ? "osl_vpn_warning_reset" : "osl_vpn_warning_dismiss_forever";
+      const r = await oslInvoke(cmd, {});
+      if (!r.ok) {
+        oslToast("Toggle failed: " + r.error);
+        vpnToggle.disabled = false;
+        return;
+      }
+      enabled = next;
+      paint();
+    });
+  })();
 }
 
 // ============================================================
@@ -1581,10 +2417,239 @@ async function removeSecondaryPassword(opts) {
 }
 
 // ============================================================
+// 9-D: tour spotlight for slides 6-7 inside the settings window.
+//
+// Mirrors the main-window spotlight contract from boot.js but lives
+// here because the cross-window split keeps the Bulk Whitelist /
+// Server Defaults buttons settings-local. On enter we navigate to
+// the Whitelist Manager page so the spotlight target exists.
+// ============================================================
+const OSL_SETTINGS_TOUR_SLIDES = {
+  6: {
+    title: "Whitelist people in bulk",
+    body:
+      "Encryption only works with people you've whitelisted. Use this button to whitelist your friends, paste a list of Discord IDs, or whitelist everyone in a server.\n\nYou can always whitelist individual people via their profile menu.",
+    buttonLabel: "Next →",
+    targetSelector: "[data-osl-bulk-whitelist-btn]",
+  },
+  7: {
+    title: "Encrypt entire servers",
+    body:
+      "Turn on Server Defaults for any server, and every new channel in that server will be encrypted by default.\n\nExisting channels can be encrypted retroactively with one click.",
+    buttonLabel: "Next →",
+    targetSelector: "[data-osl-server-defaults-btn]",
+  },
+};
+
+function oslSettingsTourWaitFor(selector, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 10000);
+  return new Promise(function (resolve) {
+    function tick() {
+      const el = document.querySelector(selector);
+      if (el) { resolve(el); return; }
+      if (Date.now() > deadline) { resolve(null); return; }
+      setTimeout(tick, 150);
+    }
+    tick();
+  });
+}
+
+function oslSettingsSpotlight(opts) {
+  opts = opts || {};
+  const overlay = document.createElement("div");
+  overlay.setAttribute("data-osl-modal", "1");
+  overlay.setAttribute("data-osl-tour", "1");
+  overlay.style.cssText =
+    "position:fixed;inset:0;z-index:99999;pointer-events:auto;";
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  svg.style.cssText = "position:absolute;inset:0;";
+  const defs = document.createElementNS(svgNs, "defs");
+  const mask = document.createElementNS(svgNs, "mask");
+  const maskId = "osl_st_mask_" + Math.floor(Math.random() * 1e9);
+  mask.setAttribute("id", maskId);
+  const mBg = document.createElementNS(svgNs, "rect");
+  mBg.setAttribute("width", "100%"); mBg.setAttribute("height", "100%"); mBg.setAttribute("fill", "white");
+  mask.appendChild(mBg);
+  const cutout = document.createElementNS(svgNs, "rect");
+  cutout.setAttribute("fill", "black"); cutout.setAttribute("rx", "6"); cutout.setAttribute("ry", "6");
+  mask.appendChild(cutout);
+  defs.appendChild(mask); svg.appendChild(defs);
+  const dim = document.createElementNS(svgNs, "rect");
+  dim.setAttribute("width", "100%"); dim.setAttribute("height", "100%");
+  dim.setAttribute("fill", "rgba(0,0,0,0.65)"); dim.setAttribute("mask", "url(#" + maskId + ")");
+  svg.appendChild(dim);
+  overlay.appendChild(svg);
+
+  const card = document.createElement("div");
+  card.style.cssText =
+    "position:absolute;background:var(--background-floating,#18191c);color:var(--text-normal,#dbdee1);" +
+    "padding:20px 22px;border-radius:10px;box-shadow:0 12px 28px rgba(0,0,0,0.55);" +
+    "max-width:420px;min-width:320px;font-size:14px;line-height:1.55;";
+  const skipLink = document.createElement("button");
+  skipLink.textContent = "Skip tour";
+  skipLink.style.cssText =
+    "position:absolute;top:10px;right:12px;background:transparent;border:none;" +
+    "color:var(--text-muted,#949ba4);font-size:12px;cursor:pointer;padding:2px 4px;";
+  skipLink.addEventListener("click", (e) => { e.stopPropagation(); doSkip(); });
+  card.appendChild(skipLink);
+  const titleEl = document.createElement("h3");
+  titleEl.style.cssText = "margin:0 0 10px 0;font-size:18px;font-weight:600;padding-right:60px;";
+  titleEl.textContent = opts.title || "";
+  card.appendChild(titleEl);
+  const bodyEl = document.createElement("div");
+  bodyEl.style.cssText = "white-space:pre-line;margin-bottom:16px;";
+  bodyEl.textContent = opts.body || "";
+  card.appendChild(bodyEl);
+  const btn = document.createElement("button");
+  btn.textContent = opts.buttonLabel || "Next →";
+  btn.style.cssText =
+    "padding:8px 16px;border-radius:5px;font-size:14px;font-weight:500;cursor:pointer;" +
+    "border:none;background:var(--brand-experiment,#5865f2);color:white;float:right;";
+  btn.addEventListener("click", (e) => { e.stopPropagation(); doAdvance(); });
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;justify-content:flex-end;";
+  row.appendChild(btn);
+  card.appendChild(row);
+  overlay.appendChild(card);
+
+  function positionCard() {
+    const t = opts.target;
+    if (!t || !document.body.contains(t)) {
+      cutout.setAttribute("x", "-100"); cutout.setAttribute("y", "-100");
+      cutout.setAttribute("width", "0"); cutout.setAttribute("height", "0");
+      card.style.top = "50%"; card.style.left = "50%"; card.style.transform = "translate(-50%,-50%)";
+      return;
+    }
+    const r = t.getBoundingClientRect();
+    const pad = 8;
+    cutout.setAttribute("x", String(Math.max(0, r.left - pad)));
+    cutout.setAttribute("y", String(Math.max(0, r.top - pad)));
+    cutout.setAttribute("width", String(r.width + 2 * pad));
+    cutout.setAttribute("height", String(r.height + 2 * pad));
+    card.style.transform = "none";
+    const vh = window.innerHeight, vw = window.innerWidth, cH = 220, cW = 360;
+    let top = r.top > vh / 2 ? Math.max(20, r.top - cH - 20) : Math.min(vh - cH - 20, r.bottom + 20);
+    let left = Math.max(20, Math.min(vw - cW - 20, r.left + r.width / 2 - cW / 2));
+    card.style.top = top + "px"; card.style.left = left + "px";
+  }
+  positionCard();
+  function onResize() { positionCard(); }
+  window.addEventListener("resize", onResize);
+  function onKey(e) {
+    if (e.key === "Enter" || e.key === "ArrowRight") {
+      e.preventDefault(); e.stopPropagation(); doAdvance();
+    } else if (e.key === "Escape") {
+      e.preventDefault(); e.stopPropagation(); doSkip();
+    }
+  }
+  window.addEventListener("keydown", onKey, true);
+  function close() {
+    window.removeEventListener("resize", onResize);
+    window.removeEventListener("keydown", onKey, true);
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  }
+  function doAdvance() { close(); if (typeof opts.onAdvance === "function") opts.onAdvance(); }
+  function doSkip() { close(); if (typeof opts.onSkip === "function") opts.onSkip(); }
+  document.body.appendChild(overlay);
+  setTimeout(() => { try { btn.focus(); } catch (_) {} }, 30);
+  return { el: overlay, close };
+}
+
+let oslSettingsCurrentSpotlight = null;
+function oslSettingsCloseSpotlight() {
+  if (oslSettingsCurrentSpotlight) {
+    try { oslSettingsCurrentSpotlight.close(); } catch (_) {}
+    oslSettingsCurrentSpotlight = null;
+  }
+}
+
+async function oslSettingsRenderTourSlide(n) {
+  oslSettingsCloseSpotlight();
+  const slide = OSL_SETTINGS_TOUR_SLIDES[n];
+  if (!slide) return;
+  if (currentPage !== "whitelist") {
+    switchPage("whitelist");
+  }
+  // Persist resume cursor.
+  oslInvoke("osl_tour_advance", { slide: n }).catch(() => {});
+  const target = await oslSettingsTourWaitFor(slide.targetSelector, 10000);
+  if (!target) {
+    console.warn("[OSL settings] tour: target missing for slide " + n);
+    if (n < 7) {
+      oslSettingsRenderTourSlide(n + 1);
+    } else {
+      handleSettingsAdvance(n);
+    }
+    return;
+  }
+  oslSettingsCurrentSpotlight = oslSettingsSpotlight({
+    title: slide.title,
+    body: slide.body,
+    buttonLabel: slide.buttonLabel,
+    target: target,
+    onAdvance: () => handleSettingsAdvance(n),
+    onSkip: async () => {
+      await oslInvoke("osl_tour_skip", {}).catch(() => {});
+      await oslEmit("osl:tour_return_to_main", null);
+      try {
+        await oslInvoke("osl_close_settings_window_if_open", {}).catch(() => {});
+      } catch (_) {}
+    },
+  });
+}
+
+async function handleSettingsAdvance(n) {
+  if (n === 6) {
+    oslSettingsRenderTourSlide(7);
+    return;
+  }
+  if (n === 7) {
+    // Done in settings — hand back to main.
+    oslSettingsCloseSpotlight();
+    await oslInvoke("osl_tour_advance", { slide: 8 }).catch(() => {});
+    await oslEmit("osl:tour_return_to_main", null);
+    setTimeout(() => {
+      oslInvoke("osl_close_settings_window_if_open", {}).catch(() => {});
+    }, 50);
+  }
+}
+
+async function oslSettingsBootTourIfActive() {
+  const state = await oslInvoke("osl_tour_get_state", {});
+  if (!state.ok || !state.value) return;
+  if (state.value.completed) return;
+  const slide = state.value.last_slide;
+  if (slide === 6 || slide === 7) {
+    oslSettingsRenderTourSlide(slide);
+  }
+}
+
+function oslSettingsWireTourEvents() {
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === "function") {
+      window.__TAURI__.event.listen("osl:tour_advance_to_slide", (e) => {
+        const payload = e && e.payload;
+        const slide = payload && typeof payload.slide === "number" ? payload.slide : null;
+        if (slide === 6 || slide === 7) {
+          oslSettingsRenderTourSlide(slide);
+        }
+      });
+    }
+  } catch (e) {
+    console.warn("[OSL settings] tour listener wire failed:", e);
+  }
+}
+
+// ============================================================
 // Boot.
 // ============================================================
 buildSidebar();
 switchPage("identity");
+oslSettingsWireTourEvents();
+oslSettingsBootTourIfActive();
 </script>
 </body>
 </html>

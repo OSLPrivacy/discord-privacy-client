@@ -1,0 +1,11 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 8e: V3 attachment seal. Wraps the V2 envelope-bearing wire
+# inside an MP4 `free` box appended to a decoy MP4 container so the
+# upload MIME is video/mp4 (Discord renders a video-card preview
+# surface) and Discord doesn't transcode the bytes the way image
+# MIME types get re-encoded.
+[[permission]]
+identifier = "allow-osl-seal-attachment-with-cover-v3"
+description = "Permits the discord.com main webview to invoke `osl_seal_attachment_with_cover_v3` — builds the v=2 cover envelope carrying a fresh per-attachment AEAD key, seals the file payload, and wraps the bundle inside an MP4 `free` box (Phase 8e wire). Output bytes are uploaded as `video/mp4` so Discord serves them verbatim and renders a video-card preview surface."
+commands.allow = ["osl_seal_attachment_with_cover_v3"]

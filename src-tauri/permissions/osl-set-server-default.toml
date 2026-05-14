@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C3: per-server "encrypt new channels by default" — writer.
+[[permission]]
+identifier = "allow-osl-set-server-default"
+description = "Permits invoking `osl_set_server_default` (write the per-server encrypt-new-channels-by-default flag, persists via whitelist_state.json envelope). Granted to both the Discord-origin webview (sidebar overlay click) and the trusted local settings window (Server Defaults modal toggle)."
+commands.allow = ["osl_set_server_default"]

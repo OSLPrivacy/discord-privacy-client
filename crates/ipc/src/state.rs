@@ -14,7 +14,6 @@
 //! state per group, wrapped-key cache, manifest cache, etc.
 
 use crate::peer_map::PeerMap;
-use crate::pending_invitations::PendingInvitations;
 use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
@@ -153,15 +152,10 @@ pub struct AppState {
     /// to disk via `crate::whitelist_state::write_whitelist_state`.
     pub whitelist_state: Mutex<WhitelistState>,
 
-    /// Receiver-side queue of whitelist invitations awaiting
-    /// accept/decline, mirroring
-    /// `<config_dir>/pending_invitations.json`. Empty by default;
-    /// populated by the recv path when a peer's
-    /// type=0x02 control message is processed. Mutating Tauri
-    /// commands write-through to disk via
-    /// `crate::pending_invitations::write_pending_invitations`.
-    pub pending_invitations: Mutex<PendingInvitations>,
-
+    // 9-C1: `pending_invitations` field removed alongside the
+    // invitation handshake subsystem. The on-disk
+    // `pending_invitations.json` is unconditionally deleted at
+    // bootstrap.
     /// Phase 7d-B1: one-time recovery token issued by
     /// `osl_verify_recovery_phrase` and consumed by
     /// `osl_set_main_password_after_recovery`. Tuple is
@@ -189,6 +183,70 @@ pub struct AppState {
     /// B from the spec — re-whitelist removes the burn entry so
     /// fresh messages decrypt normally).
     pub burned_scopes: Mutex<crate::burned_scopes_file::BurnedScopesFile>,
+
+    /// Phase 9-A3: per-group sender-keys state, mirroring
+    /// `sender_key_state.json`. One row per group/server scope. The
+    /// send-side dispatcher consults this to decide v=5 vs v=3,
+    /// installs/rotates sender chains, and persists on every send.
+    /// The recv-side path consults it to recover the
+    /// per-(scope, sender) receiver chain.
+    pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
+
+    /// Phase 9-A3: in-memory cache of the current channel-member set
+    /// per channel_id. Populated by `osl_membership_update` (boot.js
+    /// pushes gateway-derived membership). Consulted by the v=5 send
+    /// dispatcher to detect membership changes against
+    /// `SenderChain.last_known_members`. Not persisted: only the
+    /// SenderChain's snapshot is durable.
+    pub channel_members: Mutex<std::collections::HashMap<String, Vec<String>>>,
+
+    /// Phase 9-B1: app-wide user preferences (stego mode selector,
+    /// Mode 1 preview confirmations). Mirrors
+    /// `<config_dir>/app_preferences.json`. Loaded at bootstrap.
+    /// Mutated via `osl_set_app_preferences`; write-through to disk
+    /// is the caller's responsibility.
+    pub app_preferences: Mutex<crate::app_preferences::AppPreferences>,
+
+    /// Phase 9-B1: per-channel Mode 1 receive-side reassembly state.
+    /// Sessions are bounded to 16 concurrent and expire after 5
+    /// minutes (see [`stego::ReassemblyBuffer`]). Not persisted —
+    /// receive replays after a restart will reassemble fresh.
+    pub mode1_reassembly: Mutex<HashMap<String, stego::ReassemblyBuffer>>,
+
+    /// Phase 9-C2: ephemeral list of the user's Discord friend ids
+    /// (relationships with type=1). Pushed from boot.js's gateway-tap
+    /// READY handler via `osl_set_friend_ids`; consumed by the
+    /// settings-window's Bulk Whitelist modal. Not persisted —
+    /// repopulated on every Discord reconnect.
+    pub friend_ids: Mutex<Vec<String>>,
+
+    /// Phase 9-C2: ephemeral list of guilds the user has access to,
+    /// each carrying the gateway-loaded subset of members. Pushed
+    /// from boot.js's gateway-tap GUILD_CREATE handler via
+    /// `osl_set_guild_list`; consumed by the Bulk Whitelist modal's
+    /// server-picker. Not persisted; member_ids may be partial for
+    /// large guilds (Discord ships only ~100 online members at
+    /// GUILD_CREATE time).
+    pub guild_list: Mutex<Vec<crate::commands::GuildDto>>,
+
+    /// Phase 9-C3: per-server "encrypt new channels by default"
+    /// preference. Persisted alongside `whitelist_state.json` in the
+    /// envelope's `server_defaults` field. Separate Mutex from
+    /// `whitelist_state` for lock granularity — the CHANNEL_CREATE
+    /// auto-apply hook reads this without taking the (potentially
+    /// contended) whitelist_state lock.
+    pub server_defaults:
+        Mutex<std::collections::HashMap<String, crate::whitelist_state::ServerDefaults>>,
+
+    /// 9-TD1.4: most-recent disk-persist failure message. Pre-TD1
+    /// every `persist_*_now` swallowed errors silently with a
+    /// `tracing::warn!`; the user thought their whitelist / burn /
+    /// preference change was saved but it only lived in memory.
+    /// Each persist path now stores its failure here (overwriting
+    /// any prior value — last-write-wins is fine for "something
+    /// went wrong, please retry" UX). `cmd_osl_take_last_persist_error`
+    /// reads + clears the slot so the JS layer can surface a toast.
+    pub last_persist_error: Mutex<Option<String>>,
 }
 
 impl AppState {

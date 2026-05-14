@@ -76,6 +76,14 @@ struct InnerIdentity {
     /// path defers self-entry creation to boot.js registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     discord_snowflake: Option<String>,
+
+    /// Phase 9-A2: X25519 secret for the published Double Ratchet
+    /// bootstrap. None for pre-A2 sealed blobs; the next save after
+    /// `Identity::ensure_ratchet_bootstrap` runs will populate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ratchet_initial_secret_b64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ratchet_initial_pub_b64: Option<String>,
 }
 
 /// Save `identity` to `path` sealed under `sealer`.
@@ -89,6 +97,14 @@ pub fn save_identity(path: &Path, identity: &Identity, sealer: &dyn Sealer) -> R
         mlkem_secret_b64: STANDARD.encode(identity.mlkem_secret_bytes()),
         mlkem_public_b64: STANDARD.encode(identity.mlkem_public_bytes),
         discord_snowflake: identity.discord_snowflake.clone(),
+        ratchet_initial_secret_b64: identity
+            .ratchet_initial_secret
+            .as_ref()
+            .map(|sk| STANDARD.encode(sk.as_bytes())),
+        ratchet_initial_pub_b64: identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|pk| STANDARD.encode(pk.as_bytes())),
     };
     let inner_bytes = serde_json::to_vec(&inner)?;
     let sealed = sealer.seal(&inner_bytes)?;
@@ -196,6 +212,15 @@ pub fn load_identity(path: &Path, sealer: &dyn Sealer) -> Result<Identity> {
         mlkem_public,
     );
     identity.discord_snowflake = inner.discord_snowflake;
+    if let Some(sk_b64) = inner.ratchet_initial_secret_b64.as_deref() {
+        let sk_bytes =
+            decode_array::<{ x25519::SECRET_KEY_SIZE }>("ratchet_initial_secret", sk_b64)?;
+        identity.ratchet_initial_secret = Some(x25519::SecretKey::from_bytes(sk_bytes));
+    }
+    if let Some(pk_b64) = inner.ratchet_initial_pub_b64.as_deref() {
+        let pk_bytes = decode_array::<{ x25519::PUBLIC_KEY_SIZE }>("ratchet_initial_pub", pk_b64)?;
+        identity.ratchet_initial_pub = Some(x25519::PublicKey::from_bytes(pk_bytes));
+    }
     Ok(identity)
 }
 

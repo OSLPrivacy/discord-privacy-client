@@ -131,15 +131,23 @@ fn verify_repairs_wrong_pubkey() {
 #[test]
 fn verify_is_noop_when_entry_already_correct() {
     let state = fresh_state_with_identity(Some(SELF_DID));
-    let pk_b64 = {
+    let (pk_b64, mlkem_b64) = {
         let id_guard = state.identity.lock().unwrap();
-        STANDARD.encode(id_guard.as_ref().unwrap().x25519_public.as_bytes())
+        let id = id_guard.as_ref().unwrap();
+        (
+            STANDARD.encode(id.x25519_public.as_bytes()),
+            STANDARD.encode(id.mlkem_public_bytes),
+        )
     };
     {
         let mut pm = state.peer_map.lock().unwrap();
         pm.entry(SELF_DID.to_string()).or_insert_with(|| PeerEntry {
             osl_user_id: Some("liam".to_string()),
             pubkey: Some(pk_b64),
+            // Phase 9-A1: self entry also stores the ML-KEM pubkey;
+            // verify_peer_map_self_entry treats its absence as
+            // needs-repair.
+            ik_mlkem768_pub: Some(mlkem_b64),
             discord_id: Some(SELF_DID.to_string()),
             is_self: Some(true),
             ..Default::default()

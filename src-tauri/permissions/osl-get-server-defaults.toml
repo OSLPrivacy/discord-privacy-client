@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-C3: per-server "encrypt new channels by default" — reader.
+[[permission]]
+identifier = "allow-osl-get-server-defaults"
+description = "Permits invoking `osl_get_server_defaults` (read all per-server defaults, sorted by server_id). Granted to both windows: the Discord-origin sidebar overlay paints icons from it, and the settings Server Defaults modal renders the row list."
+commands.allow = ["osl_get_server_defaults"]

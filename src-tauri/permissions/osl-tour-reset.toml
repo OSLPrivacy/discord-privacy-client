@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: clear all tour state (completed=false, skipped=false,
+# last_slide=0). Drives the Settings → About → "Replay onboarding
+# tour" button.
+[[permission]]
+identifier = "allow-osl-tour-reset"
+description = "Permits invoking `osl_tour_reset`. Reverts the tour to its initial state so the next boot starts at slide 1."
+commands.allow = ["osl_tour_reset"]

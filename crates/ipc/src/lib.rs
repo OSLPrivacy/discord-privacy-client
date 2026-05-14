@@ -35,16 +35,23 @@
 //! work: collapse all rejection paths into a single
 //! `IpcError::Rejected` once the protocol is stable.
 
+pub mod app_preferences;
 pub mod attachment_wire;
 pub mod burned_scopes_file;
 pub mod commands;
 pub mod control_messages;
+pub mod decoy_mp4;
 pub mod fresh_start;
 pub mod main_password;
+pub mod migration;
 pub mod peer_map;
-pub mod pending_invitations;
+// 9-C1: `pending_invitations` module removed alongside the
+// invitation handshake. Pre-C1 `pending_invitations.json` files are
+// unconditionally deleted at bootstrap.
 pub mod scope;
+pub mod sender_key_state;
 pub mod state;
+pub mod state_reload;
 pub mod whitelist;
 pub mod whitelist_state;
 pub mod wire_v2;

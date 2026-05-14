@@ -42,6 +42,13 @@ pub struct BurnedScopeEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
     pub burned_at: i64,
+    // 9-A1c: defense-in-depth burn kill list. Discord message IDs
+    // present in the channel at burn time are recorded here and
+    // checked at decrypt-entry; even if the per-channel skip cache
+    // is later cleared (manual re-engage), these specific messages
+    // remain blocked from decryption.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub burned_message_ids: Vec<String>,
 }
 
 pub fn load_burned_scopes(path: &Path) -> BurnedScopesFile {

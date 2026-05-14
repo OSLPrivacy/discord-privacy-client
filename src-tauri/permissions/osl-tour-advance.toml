@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: persist tour.last_slide. Boot.js calls this after each
+# slide advance in slides 1-5 + 8-9; settings window calls it for
+# slides 6-7. Either window may legitimately advance the cursor.
+[[permission]]
+identifier = "allow-osl-tour-advance"
+description = "Permits invoking `osl_tour_advance(slide)`. Persists the tour resume cursor so a mid-tour quit re-opens at the right slide on next launch."
+commands.allow = ["osl_tour_advance"]

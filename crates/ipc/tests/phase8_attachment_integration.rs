@@ -23,10 +23,12 @@ use base64::Engine;
 use crypto::x25519;
 use ipc::attachment_wire::{
     cmd_osl_open_attachment, cmd_osl_seal_attachment, decoy_png, OSL_ATT_MAGIC, OSL_ATT_MAGIC_V2,
+    OSL_ATT_MAGIC_V3,
 };
 use ipc::commands::{
     cmd_osl_decrypt_message_v2, cmd_osl_encrypt_attachment_envelope, cmd_osl_open_attachment_v2,
-    cmd_osl_seal_attachment_with_cover_v2, AttachmentEnvelopeInput, OSL_RESULT_ATTACHMENT_PREFIX,
+    cmd_osl_seal_attachment_with_cover_v2, cmd_osl_seal_attachment_with_cover_v3,
+    AttachmentEnvelopeInput, OSL_RESULT_ATTACHMENT_PREFIX,
 };
 use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
@@ -59,9 +61,6 @@ fn install_dm_whitelist(state: &AppState, peer_discord_id: &str) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
-                full_whitelist: false,
-                members: vec![],
-                whitelisted_users: vec![],
             },
         );
     }
@@ -84,14 +83,16 @@ fn seal_open_round_trip_preserves_bytes_and_filename() {
     let sealed = cmd_osl_seal_attachment(&state, plaintext.clone(), "vacation.jpg".to_string())
         .expect("seal");
     assert_eq!(sealed.mime_type, "image/jpeg");
-    // 8d-FIX2: upload filename is `.bin` (was `.png`). Discord
-    // transcodes any image MIME at the CDN, so the wrapper is
-    // now application/octet-stream.
+    // 8e: upload filename is `.mp4` (was `.bin` post-8d-FIX2, `.png`
+    // pre-FIX2). MP4 is non-image so Discord doesn't transcode, and
+    // the file renders as a video-card preview surface instead of a
+    // generic download card. The V1 seal path tested here still
+    // produces a decoy-PNG wire; the V3 path is tested separately.
     assert!(
-        sealed.random_filename.ends_with(".bin"),
-        "upload name must be .bin so Discord doesn't transcode it"
+        sealed.random_filename.ends_with(".mp4"),
+        "upload name must be .mp4 (8e)"
     );
-    assert_eq!(sealed.random_filename.len(), "abcd1234.bin".len());
+    assert_eq!(sealed.random_filename.len(), "abcd1234.mp4".len());
     let key_b64 = sealed.att_key_b64.clone();
     let file_bytes = STANDARD.decode(&sealed.file_blob_b64).unwrap();
 
@@ -381,10 +382,10 @@ fn fresh_henry_state_with_liam_pubkey(
 /// the named scope. Lets the cover decrypt's `should_decrypt_from`
 /// gate pass.
 fn mark_sender_accepted_in_scope(state: &AppState, sender_did: &str, scope: &Scope) {
-    let mut pm = state.peer_map.lock().unwrap();
-    let pe = pm.entry(sender_did.to_string()).or_default();
-    pe.incoming_decrypt_accepted
-        .insert(scope.storage_key(), true);
+    // 9-C1: handshake gate removed; this helper is a no-op kept
+    // for call-site stability. Permissive decrypt means no sender-accept
+    // state needs to exist.
+    let _ = (state, sender_did, scope);
 }
 
 #[test]
@@ -436,12 +437,140 @@ fn v2_seal_carries_v2_magic_and_round_trips() {
         Some(si(&scope)),
         sealed.sealed_b64.clone(),
         None,
+        None,
     )
     .expect("open v2");
     assert_eq!(opened.original_filename, "selfie.jpg");
     assert_eq!(opened.mime_type, "image/jpeg");
     let recovered = STANDARD.decode(&opened.plaintext_b64).unwrap();
     assert_eq!(recovered, original);
+}
+
+#[test]
+fn v3_seal_carries_v3_magic_in_mp4_free_box_and_round_trips() {
+    // Phase 8e: V3 seal wraps the V2 cover+filename+payload triple
+    // in an MP4 `free` box appended to a decoy MP4. Open chain
+    // detects V3 first, then V2/V1. Whitelisted recipient unwraps
+    // without any out-of-band cover key.
+    let liam_state = fresh_state_for_liam();
+    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
+    install_dm_whitelist(&liam_state, HENRY_DID);
+
+    let scope = Scope::dm(HENRY_DID);
+    let original = vec![0xCDu8; 16 * 1024];
+    let sealed = cmd_osl_seal_attachment_with_cover_v3(
+        &liam_state,
+        si(&scope),
+        vec![HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+        STANDARD.encode(&original),
+        "vacation.mp4".to_string(),
+        "cafef00d.mp4".to_string(),
+    )
+    .expect("seal v3");
+    assert_eq!(sealed.mime_type, "video/mp4");
+    assert_eq!(sealed.random_filename, "cafef00d.mp4");
+    let bytes = STANDARD.decode(&sealed.sealed_b64).unwrap();
+    // ftyp box at offset 0 — MP4 container start.
+    assert_eq!(
+        &bytes[4..8],
+        b"ftyp",
+        "V3 wire must start with MP4 ftyp box"
+    );
+    // V3 magic is somewhere past the decoy bytes (inside a free box).
+    assert!(
+        bytes
+            .windows(OSL_ATT_MAGIC_V3.len())
+            .any(|w| w == OSL_ATT_MAGIC_V3),
+        "V3 magic must be present in the sealed bundle"
+    );
+    // V2/V1 magics must NOT appear in a V3 bundle.
+    assert!(
+        !bytes
+            .windows(OSL_ATT_MAGIC_V2.len())
+            .any(|w| w == OSL_ATT_MAGIC_V2),
+        "V2 magic should not appear in a V3-only bundle"
+    );
+    assert!(
+        !bytes
+            .windows(OSL_ATT_MAGIC.len())
+            .any(|w| w == OSL_ATT_MAGIC),
+        "V1 magic should not appear in a V3-only bundle"
+    );
+
+    // Henry, as a whitelisted recipient who has accepted Liam in
+    // this scope, opens the V3 bundle through the same V2-named
+    // command (the open chain auto-detects V3 → V2 → V1).
+    let henry_state = fresh_henry_state_with_liam_pubkey(&liam_state, &henry_sk, henry_pk);
+    mark_sender_accepted_in_scope(&henry_state, LIAM_DID, &scope);
+    let opened = cmd_osl_open_attachment_v2(
+        &henry_state,
+        LIAM_DID.to_string(),
+        Some(si(&scope)),
+        sealed.sealed_b64.clone(),
+        None,
+        None,
+    )
+    .expect("open v3 via cmd_osl_open_attachment_v2");
+    assert_eq!(opened.original_filename, "vacation.mp4");
+    assert_eq!(opened.mime_type, "video/mp4");
+    let recovered = STANDARD.decode(&opened.plaintext_b64).unwrap();
+    assert_eq!(recovered, original);
+}
+
+#[test]
+fn v3_open_chain_still_decodes_v2_and_v1() {
+    // Decode chain must remain backward-compatible: V2 wires
+    // (8d-FIX2) and V1 wires (8/8c) need to keep decrypting after
+    // the V3 chain is added to cmd_osl_open_attachment_v2.
+    let liam_state = fresh_state_for_liam();
+    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
+    install_dm_whitelist(&liam_state, HENRY_DID);
+
+    let scope = Scope::dm(HENRY_DID);
+    let original = vec![0x77u8; 4096];
+
+    // V2 round-trip via V3 open chain.
+    let v2_sealed = cmd_osl_seal_attachment_with_cover_v2(
+        &liam_state,
+        si(&scope),
+        vec![HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+        STANDARD.encode(&original),
+        "legacy.png".to_string(),
+        "0badcafe.bin".to_string(),
+    )
+    .expect("seal v2 for backward-compat test");
+    let henry_state = fresh_henry_state_with_liam_pubkey(&liam_state, &henry_sk, henry_pk);
+    mark_sender_accepted_in_scope(&henry_state, LIAM_DID, &scope);
+    let opened_v2 = cmd_osl_open_attachment_v2(
+        &henry_state,
+        LIAM_DID.to_string(),
+        Some(si(&scope)),
+        v2_sealed.sealed_b64,
+        None,
+        None,
+    )
+    .expect("open v2 wire through v3 chain");
+    assert_eq!(opened_v2.original_filename, "legacy.png");
+    assert_eq!(STANDARD.decode(&opened_v2.plaintext_b64).unwrap(), original);
+
+    // V1 round-trip via V3 open chain (legacy att_key path).
+    let v1_sealed = cmd_osl_seal_attachment(&liam_state, original.clone(), "thumb.png".to_string())
+        .expect("seal v1");
+    let opened_v1 = cmd_osl_open_attachment_v2(
+        &henry_state,
+        LIAM_DID.to_string(),
+        None,
+        v1_sealed.file_blob_b64,
+        Some(v1_sealed.att_key_b64.clone()),
+        None,
+    )
+    .expect("open v1 wire through v3 chain with legacy key");
+    assert_eq!(opened_v1.original_filename, "thumb.png");
+    assert_eq!(STANDARD.decode(&opened_v1.plaintext_b64).unwrap(), original);
 }
 
 #[test]
@@ -462,6 +591,7 @@ fn v2_open_without_legacy_key_fails_on_v1_bundle() {
         None,
         v1_bytes_b64.clone(),
         None,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -476,6 +606,7 @@ fn v2_open_without_legacy_key_fails_on_v1_bundle() {
         None,
         v1_bytes_b64,
         Some(sealed.att_key_b64.clone()),
+        None,
     )
     .expect("open v1 via v2 with legacy key");
     let recovered = STANDARD.decode(&opened.plaintext_b64).unwrap();
@@ -485,7 +616,7 @@ fn v2_open_without_legacy_key_fails_on_v1_bundle() {
 #[test]
 fn v2_open_with_wrong_recipient_fails() {
     let liam_state = fresh_state_for_liam();
-    let (henry_sk, henry_pk) = x25519::generate_keypair();
+    let (_henry_sk, henry_pk) = x25519::generate_keypair();
     install_peer_pubkey(&liam_state, HENRY_DID, henry_pk);
     install_dm_whitelist(&liam_state, HENRY_DID);
 
@@ -522,6 +653,7 @@ fn v2_open_with_wrong_recipient_fails() {
         LIAM_DID.to_string(),
         None,
         sealed.sealed_b64,
+        None,
         None,
     )
     .unwrap_err();

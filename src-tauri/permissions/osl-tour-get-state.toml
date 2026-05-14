@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 9-D: read TourState + vpn_warning_dismissed_forever from
+# app_preferences. Both the Discord-origin main webview (boot.js'
+# tour driver) and the settings window (About page's replay button,
+# tour mode in settings for slides 6-7) consult this on launch.
+[[permission]]
+identifier = "allow-osl-tour-get-state"
+description = "Permits invoking `osl_tour_get_state` (read TourState + vpn_warning_dismissed_forever). Drives the boot.js tour resume logic and the settings About page replay/VPN-toggle render."
+commands.allow = ["osl_tour_get_state"]

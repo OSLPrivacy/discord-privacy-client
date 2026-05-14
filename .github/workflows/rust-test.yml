@@ -14,6 +14,31 @@ jobs:
         with:
           toolchain: '1.82.0'
           components: rustfmt, clippy
+      # 9-TD1: rust-cache keeps cold-cache 5-7 min runs from blowing
+      # out PR feedback latency once Phase F adds new crates.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  quality-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # boot.js is parsed by WebView2 (V8) at runtime; a syntax error
+      # there is a hard crash for every OSL user with no fast feedback
+      # short of a manual launch. `node --check` reproduces that
+      # parse step in ~50ms per file.
+      - name: boot.js parses
+        run: node --check src-tauri/src/injection/boot.js
+      # 9-TD1.2: every #[tauri::command] needs all 5 artifacts. A
+      # missing TOML or capability grant makes the command silently
+      # unreachable from JS — we lost debug days to that pre-9-C1.
+      - name: Capability audit
+        run: python3 scripts/audit_capabilities.py
