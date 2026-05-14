@@ -1,0 +1,42 @@
+name = "oslprivacy-keyserver"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+compatibility_flags = ["nodejs_compat"]
+
+# Production secrets (set via `wrangler secret put`):
+#   OSL_KEYSERVER_ADMIN_TOKEN     — pre-shared bearer token for mutation routes
+#   OSL_KEYSERVER_ALLOWED_USERS   — CSV of user_ids permitted to register
+#   SELECTOR_MANIFEST_JSON        — optional signed selector-manifest envelope
+# Stripe / Resend secrets land here in F1.2.
+
+[observability]
+enabled = true
+
+# D1 database — create with:
+#   wrangler d1 create osl-keyserver-prod
+# then paste the database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "osl-keyserver-prod"
+database_id = "1de837cd-3bf6-4d33-be82-12d358523600"
+migrations_dir = "migrations"
+
+# Workers KV for IP rate limiting on mutation routes. Create with:
+#   wrangler kv namespace create RATE_LIMIT_KV
+# then paste the id below.
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "e6267cb7cc434745bade1334afaea725"
+
+# F1.4 cutover. Cloudflare auto-issues TLS for the custom hostname
+# (configure the DNS record `keyserver` as a proxied CNAME / A in
+# the oslprivacy.com zone before `wrangler deploy`).
+[[routes]]
+pattern = "keyserver.oslprivacy.com/*"
+zone_name = "oslprivacy.com"
+
+# F1.2 hourly EXPIRED sweep + F1.3 daily crypto-price snapshot.
+# Two distinct cron expressions — the scheduled() handler routes
+# on controller.cron.
+[triggers]
+crons = ["0 * * * *", "0 0 * * *"]
