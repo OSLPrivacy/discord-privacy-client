@@ -42,6 +42,17 @@ const HENRY_DID: &str = "1502770642930634812";
 fn fresh_state_for_liam() -> AppState {
     let state = AppState::new();
     *state.identity.lock().unwrap() = Some(generate_identity("liam".to_string()));
+    // F3.6: attachment-seal tests need a Paid license_state so the
+    // F3.6 attachment-send tier gate at
+    // `cmd_osl_seal_attachment_with_cover_v3` doesn't fire. These
+    // tests predate F3.6 and exercise wire-format / round-trip
+    // properties, not tier gating.
+    *state.license_state.lock().unwrap() = keystore::LicenseStateDto {
+        state: keystore::LicenseState::Paid,
+        raw_status: "ACTIVE".to_string(),
+        current_period_end: None,
+        last_validated_at: None,
+    };
     state
 }
 

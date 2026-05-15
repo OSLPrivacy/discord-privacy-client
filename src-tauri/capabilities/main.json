@@ -60,6 +60,8 @@
     "allow-osl-vpn-warning-dismiss-forever",
     "allow-osl-take-last-persist-error",
     "allow-osl-test-deep-link",
+    "allow-osl-get-license-state",
+    "allow-osl-get-tier-gate-status",
     "core:event:allow-listen",
     "core:event:allow-emit"
   ]

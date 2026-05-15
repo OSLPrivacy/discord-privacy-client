@@ -1,0 +1,12 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# F2.1: validate a user-entered license key against the keyserver's
+# public /v1/license/validate endpoint. Hot path invoked from the
+# Settings Account page (F2.3) when the user clicks "Validate" /
+# "Save". F2.2 will add a separate command for the cached-state
+# read (osl_get_license_state) which lives in both main + settings
+# windows; THIS command is settings-only.
+[[permission]]
+identifier = "allow-osl-validate-license"
+description = "Permits the local `settings` window's Account page to invoke `osl_validate_license`, which round-trips the user-entered license key against the keyserver and returns the {status, current_period_end, checksum_ok} envelope."
+commands.allow = ["osl_validate_license"]

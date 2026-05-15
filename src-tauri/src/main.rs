@@ -38,9 +38,10 @@ use ipc::commands::{
     cmd_load_identity, cmd_osl_apply_burn, cmd_osl_bulk_set_whitelist,
     cmd_osl_bulk_unwhitelist_scope, cmd_osl_burn_engage, cmd_osl_burn_message,
     cmd_osl_burn_password_status, cmd_osl_burn_scope_data, cmd_osl_change_main_password,
-    cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2,
-    cmd_osl_get_identity_info, cmd_osl_get_scope_encryption_state,
-    cmd_osl_get_scope_whitelist_summary, cmd_osl_get_self_user_id, cmd_osl_list_all_whitelists,
+    cmd_osl_clear_license, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_license_state,
+    cmd_osl_get_scope_encryption_state, cmd_osl_get_scope_whitelist_summary,
+    cmd_osl_get_self_user_id, cmd_osl_get_tier_gate_status, cmd_osl_list_all_whitelists,
     cmd_osl_list_burned_scopes, cmd_osl_load_channel_history, cmd_osl_lockout_status,
     cmd_osl_mark_scope_burned, cmd_osl_password_status, cmd_osl_persist_edit,
     cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
@@ -48,14 +49,15 @@ use ipc::commands::{
     cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
     cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
     cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
-    cmd_osl_unwhitelist_scope, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
-    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register, cmd_save_identity,
-    cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman, AeadOpenRequest,
-    AeadSealRequest, AeadSealResponse, BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse,
-    GateVerifyDto, GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
+    cmd_osl_unwhitelist_scope, cmd_osl_validate_license, cmd_osl_verify_gate_password,
+    cmd_osl_verify_main_password, cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase,
+    cmd_register, cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
+    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
+    BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
+    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
     RegisterResponse, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
-    WhitelistRowDto,
+    TierGateStatusDto, WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -893,6 +895,71 @@ async fn osl_get_identity_info(app: tauri::AppHandle) -> Result<IdentityInfoDto,
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
+
+/// F2.1: validate a user-entered license key against the keyserver.
+/// F2.2 added the sealed cache write on a successful round-trip.
+/// Invoked from the Settings Account page (F2.3); also from F2.4's
+/// scheduled re-validate.
+#[tauri::command]
+async fn osl_validate_license(
+    app: tauri::AppHandle,
+    license_key: String,
+) -> Result<keystore::LicenseValidateResponse, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_validate_license(state.inner(), license_key)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// F2.2: read the cached license classification. Exposed to BOTH
+/// the settings window (Account page) and the main webview (F3
+/// will read this from boot.js for ad gating).
+#[tauri::command]
+async fn osl_get_license_state(app: tauri::AppHandle) -> Result<keystore::LicenseStateDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_get_license_state(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// F2.2: idempotently delete the cached license. Settings-only.
+#[tauri::command]
+async fn osl_clear_license(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_clear_license(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// F3.1: read the in-memory tier-gate snapshot. Both windows
+/// (main + settings) consume this — main for the encrypt gate +
+/// nag toast; settings for the Account-page countdown next to
+/// the license state.
+#[tauri::command]
+async fn osl_get_tier_gate_status(app: tauri::AppHandle) -> Result<TierGateStatusDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_get_tier_gate_status(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+// F3.6 pivot: `osl_record_ad_unlock` (F3.1) is deleted alongside
+// the ad-unlock + launch-window model. There's no deep-link
+// redemption flow under the new "free text / paid attachments"
+// tier model — paid users acquire entitlement through Stripe /
+// crypto checkout, not through an in-app ad watch.
 
 /// Phase 7d-A: settings-menu Whitelist Manager data source.
 #[tauri::command]
@@ -1952,6 +2019,54 @@ fn main() {
             let app_state = app.state::<AppState>();
             bootstrap::run_autostart(app_state.inner());
 
+            // F2.4: license-refresh task. `run_autostart` did the
+            // synchronous cache-only classify (so the first webview
+            // render reads a real value, not Free-by-default). This
+            // task then:
+            //   1. Fires one immediate `refresh_license_state` —
+            //      the keyserver round-trip happens in the
+            //      background; AppState gets the fresh classification
+            //      typically within a second or two of launch.
+            //   2. Re-fires every 6 hours for the lifetime of the
+            //      process. The interval is from-launch, not
+            //      wallclock — fine per F2 discovery D5.
+            //
+            // Sync `refresh_license_state` uses `reqwest::blocking`
+            // (which carries its own tokio runtime); we wrap it in
+            // `spawn_blocking` so it doesn't stall tauri's async
+            // runtime. AppState's Mutex serialises against the
+            // hot-path `osl_validate_license` write — they can't
+            // race destructively.
+            let refresh_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use std::time::Duration;
+                // Immediate fire.
+                let h = refresh_handle.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let s = h.state::<AppState>();
+                    if let Ok(dir) = keystore::osl_config_dir() {
+                        let _ = ipc::license_lifecycle::refresh_license_state(s.inner(), &dir);
+                    }
+                })
+                .await;
+                // Then every 6 hours. `tokio::time::interval`'s
+                // first tick fires immediately; we discard it
+                // because we just ran the refresh above.
+                let mut iv = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
+                iv.tick().await;
+                loop {
+                    iv.tick().await;
+                    let h = refresh_handle.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        let s = h.state::<AppState>();
+                        if let Ok(dir) = keystore::osl_config_dir() {
+                            let _ = ipc::license_lifecycle::refresh_license_state(s.inner(), &dir);
+                        }
+                    })
+                    .await;
+                }
+            });
+
             // Phase F0: register the deep-link on_open_url handler.
             // tauri-plugin-deep-link delivers `osl://...` URLs here
             // whenever Windows activates our protocol. We log to the
@@ -2033,6 +2148,10 @@ fn main() {
             osl_get_self_user_id,
             osl_register_self_snowflake,
             osl_get_identity_info,
+            osl_validate_license,
+            osl_get_license_state,
+            osl_clear_license,
+            osl_get_tier_gate_status,
             osl_list_all_whitelists,
             osl_password_status,
             osl_set_main_password,

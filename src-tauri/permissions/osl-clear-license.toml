@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# F2.2: idempotently delete the cached license. Only the Account
+# page (settings window) exposes a "Clear license" button; main
+# webview must NOT be able to wipe paid-status state.
+[[permission]]
+identifier = "allow-osl-clear-license"
+description = "Permits the local settings window's Account page to invoke `osl_clear_license`, which removes `<config_dir>/license.json` (idempotent on missing-file)."
+commands.allow = ["osl_clear_license"]

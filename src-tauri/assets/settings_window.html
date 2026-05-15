@@ -525,6 +525,7 @@ const LIVE_ITEMS = [
   { id: "identity", label: "Identity" },
   { id: "whitelist", label: "Whitelist Manager" },
   { id: "passwords", label: "Passwords" },
+  { id: "account", label: "Account" },
   { id: "stego", label: "Stego Mode" },
   { id: "keybinds", label: "Keybinds" },
   { id: "about", label: "About" },
@@ -552,6 +553,7 @@ function switchPage(pageId) {
   if (pageId === "identity") renderIdentity();
   else if (pageId === "whitelist") renderWhitelist();
   else if (pageId === "passwords") renderPasswords();
+  else if (pageId === "account") renderAccount();
   else if (pageId === "stego") renderStego();
   else if (pageId === "keybinds") renderKeybinds();
   else if (pageId === "about") renderAbout();
@@ -722,6 +724,348 @@ async function renderIdentity() {
     info.keyserver_url === "Unknown" ? "Not configured" : "Configured",
     false
   ));
+}
+
+// ============================================================
+// F2.3: Account page. Drives the F2.1/F2.2 IPC surface
+// (osl_validate_license, osl_get_license_state, osl_clear_license).
+//
+// Two branches off LicenseStateDto.raw_status:
+//   - "Unconfigured" → CASE B: explainer + key input + Validate
+//   - anything else  → CASE A: status + renews + Clear license
+// ============================================================
+
+// Format a unix-seconds timestamp as a short readable date.
+// "—" when missing. Locale-default formatting — the UI is
+// English-only for the beta; revisit if i18n lands.
+function fmtPeriodEnd(unixSec) {
+  if (typeof unixSec !== "number" || !Number.isFinite(unixSec) || unixSec <= 0) {
+    return "—";
+  }
+  try {
+    const d = new Date(unixSec * 1000);
+    return d.toLocaleDateString(undefined, {
+      year: "numeric", month: "short", day: "numeric",
+    });
+  } catch (_) {
+    return "—";
+  }
+}
+
+// Light client-side shape check. Real validation is the keyserver;
+// this just catches obvious-empty / obviously-wrong input without
+// a round-trip. Matches the OSL-XXXX-XXXX-XXXX-XXXX format from
+// F1.2's license generation (4 Crockford chars per group + 3
+// dashes + "OSL-" prefix = 23 chars total). Trim + uppercase
+// canonicalize before checking.
+function looksLikeLicenseKey(raw) {
+  if (typeof raw !== "string") return false;
+  const s = raw.trim().toUpperCase();
+  return /^OSL-[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/.test(s);
+}
+
+// F3.2: parse the typed `OSL-VALIDATE-ERR:{json}` reply emitted by
+// `cmd_osl_validate_license_with_dir_and_url`. The JSON tail
+// deserialises to `ValidateLicenseError` (Rust side) — the `kind`
+// discriminator drives user-facing copy. Anything that doesn't
+// carry the prefix (e.g. "OSL: keyserver not configured", which
+// is the pre-_with_dir_and_url path) falls through to the generic
+// "wasn't recognized" line.
+//
+// Retires F2.1's substring-match dispatch — the discovery report
+// flagged that as temporary and F3.2 is the natural retirement
+// point.
+function friendlyValidateError(rawError) {
+  const msg = String(rawError || "");
+  const PREFIX = "OSL-VALIDATE-ERR:";
+  if (msg.startsWith(PREFIX)) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(msg.slice(PREFIX.length));
+    } catch (_) {
+      // Malformed JSON tail — degrade to the generic copy.
+    }
+    if (parsed && typeof parsed.kind === "string") {
+      switch (parsed.kind) {
+        case "unreachable":
+          return "Couldn't reach the license server. Check your connection and try again.";
+        case "malformed":
+          return "Unexpected response from the license server. Try again shortly.";
+        case "rejected":
+        case "other":
+        default:
+          return "That license key wasn't recognized. Double-check it and try again.";
+      }
+    }
+  }
+  // No prefix (or parse failure) — generic copy. Covers
+  // "OSL: keyserver not configured" and any unexpected error
+  // shape from the Rust side.
+  return "That license key wasn't recognized. Double-check it and try again.";
+}
+
+// Emit the cross-window event so F3's main webview can later
+// react to mid-session license changes. Best-effort; oslEmit
+// already swallows failures internally.
+async function emitLicenseChanged(state) {
+  try {
+    if (typeof oslEmit === "function") {
+      await oslEmit("osl:license-changed", { state: state || null });
+    }
+  } catch (_) {
+    // Fire-and-forget. F3 will tolerate missing events.
+  }
+}
+
+async function renderAccount() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const h1 = document.createElement("h1");
+  h1.className = "osl-h1";
+  h1.textContent = "Account";
+  pane.appendChild(h1);
+
+  const loading = document.createElement("div");
+  loading.className = "osl-hint";
+  loading.textContent = "Loading…";
+  pane.appendChild(loading);
+
+  const result = await oslInvoke("osl_get_license_state", {});
+  if (currentPage !== "account") return;
+  loading.remove();
+  if (!result.ok) {
+    const err = document.createElement("div");
+    err.className = "osl-empty";
+    err.textContent = "Could not load license state: " + result.error;
+    pane.appendChild(err);
+    return;
+  }
+
+  const dto = result.value || { state: "Free", raw_status: "Unconfigured" };
+  if (dto.raw_status === "Unconfigured") {
+    renderAccountUnconfigured(pane);
+  } else {
+    renderAccountConfigured(pane, dto);
+  }
+}
+
+// F3.6: a single placeholder hosted page for the pricing CTA. Kept
+// at the top of the Account section so a future config swap is a
+// single-line edit. Same URL also surfaced from boot.js's
+// `oslTierGateModal`.
+const OSL_UPGRADE_URL = "https://oslprivacy.com/pricing";
+
+function renderAccountUnconfigured(pane) {
+  // F3.6: explainer rewritten for the post-pivot model.
+  // Free tier has unlimited encrypted text forever; paid unlocks
+  // encrypted attachment sending + beta channel access.
+  const explainer = document.createElement("p");
+  explainer.style.cssText =
+    "margin:0 0 20px 0;font-size:13px;color:#b5bac1;line-height:1.55;";
+  explainer.textContent =
+    "If you've purchased a license, enter the key you received by " +
+    "email here. Don't have one yet? See the Free tier section " +
+    "below for what's included.";
+  pane.appendChild(explainer);
+
+  // F3.6: Free-tier subsection. Renders only when the user is in
+  // the Unconfigured branch (no license entered). The Configured
+  // branch is reached for ACTIVE/CANCELLED/GRACE — Paid users
+  // don't see this. Single "Upgrade" CTA opens the placeholder
+  // pricing URL.
+  const freeWrap = document.createElement("div");
+  freeWrap.style.cssText =
+    "margin:0 0 24px 0;padding:14px 16px;border:1px solid var(--background-modifier-accent, #3f4147);" +
+    "border-radius:8px;background:rgba(88,101,242,0.06);";
+  const freeTitle = document.createElement("div");
+  freeTitle.style.cssText =
+    "font-size:14px;font-weight:600;margin:0 0 6px 0;color:var(--text-normal, #dbdee1);";
+  freeTitle.textContent = "Free tier";
+  const freeBody = document.createElement("p");
+  freeBody.style.cssText =
+    "margin:0 0 12px 0;font-size:13px;line-height:1.55;color:#b5bac1;";
+  freeBody.textContent =
+    "You're on the free tier. Encrypted text messaging is unlimited. " +
+    "Encrypted attachment sending and beta channel access require a paid license.";
+  const upgradeBtn = document.createElement("button");
+  upgradeBtn.type = "button";
+  upgradeBtn.className = "osl-row-btn osl-row-btn-remove";
+  upgradeBtn.style.cssText =
+    "padding:8px 16px;background:var(--brand-560,#5865f2);color:white;border:none;" +
+    "border-radius:4px;cursor:pointer;font-size:14px;font-weight:500;";
+  upgradeBtn.textContent = "Upgrade";
+  upgradeBtn.addEventListener("click", () => {
+    try {
+      window.open(OSL_UPGRADE_URL, "_blank", "noopener,noreferrer");
+    } catch (_) {}
+  });
+  freeWrap.appendChild(freeTitle);
+  freeWrap.appendChild(freeBody);
+  freeWrap.appendChild(upgradeBtn);
+  pane.appendChild(freeWrap);
+
+  // Input row, modelled on pwMakeInput's wrapper / label / input
+  // shape so the visual rhythm matches the Passwords page.
+  const wrap = document.createElement("div");
+  wrap.style.marginBottom = "12px";
+  const label = document.createElement("div");
+  label.className = "osl-field-label";
+  label.textContent = "License key";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.autocapitalize = "off";
+  input.autocorrect = "off";
+  input.spellcheck = false;
+  input.placeholder = "OSL-XXXX-XXXX-XXXX-XXXX";
+  input.className = "osl-pw-input";
+  // Friendly: highlight + auto-uppercase as the user types since
+  // Crockford Base32 normalises to upper anyway. Doesn't replace
+  // the keyserver-side normalisation; just makes the field feel
+  // case-correct.
+  input.addEventListener("input", () => {
+    const cursor = input.selectionStart;
+    input.value = input.value.toUpperCase();
+    if (cursor !== null) {
+      try { input.setSelectionRange(cursor, cursor); } catch (_) {}
+    }
+    hideErr();
+  });
+  wrap.appendChild(label);
+  wrap.appendChild(input);
+  pane.appendChild(wrap);
+
+  // Inline error slot (osl-empty styling is over-large for this
+  // context; use osl-hint + danger color to stay compact).
+  const errSlot = document.createElement("div");
+  errSlot.style.cssText = "font-size:12px;color:var(--osl-danger);margin:0 0 12px 0;min-height:14px;";
+  pane.appendChild(errSlot);
+  function showErr(text) { errSlot.textContent = text; }
+  function hideErr() { errSlot.textContent = ""; }
+
+  // Submit.
+  const submit = document.createElement("button");
+  submit.className = "osl-row-btn osl-row-btn-remove";
+  submit.style.cssText = "padding:8px 16px;";
+  submit.textContent = "Validate & Save";
+  submit.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const raw = input.value.trim();
+    if (raw.length === 0) {
+      showErr("Enter your license key.");
+      return;
+    }
+    if (!looksLikeLicenseKey(raw)) {
+      showErr("That license key wasn't recognized. Double-check it and try again.");
+      return;
+    }
+    // Lock UI during the round-trip.
+    submit.disabled = true;
+    submit.style.opacity = "0.6";
+    submit.textContent = "Validating…";
+    const r = await oslInvoke("osl_validate_license", { licenseKey: raw });
+    if (currentPage !== "account") return;
+    if (!r.ok) {
+      showErr(friendlyValidateError(r.error));
+      submit.disabled = false;
+      submit.style.opacity = "1";
+      submit.textContent = "Validate & Save";
+      return;
+    }
+    // Server may still surface "UNKNOWN" or "REVOKED" inside a
+    // 200 response — that's not an HTTP error but it's a
+    // user-facing "this key doesn't work" outcome.
+    const resp = r.value || {};
+    if (resp.status === "UNKNOWN" || resp.checksum_ok === false) {
+      showErr("That license key wasn't recognized. Double-check it and try again.");
+      submit.disabled = false;
+      submit.style.opacity = "1";
+      submit.textContent = "Validate & Save";
+      return;
+    }
+    if (resp.status === "REVOKED") {
+      showErr("This license has been revoked. Contact support if you believe this is an error.");
+      submit.disabled = false;
+      submit.style.opacity = "1";
+      submit.textContent = "Validate & Save";
+      return;
+    }
+    oslToast("License saved.");
+    emitLicenseChanged(resp.status);
+    // Re-render → flips into CASE A.
+    renderAccount();
+  });
+  pane.appendChild(submit);
+}
+
+function renderAccountConfigured(pane, dto) {
+  // Status + renews. raw_status is the keyserver's wire string
+  // ("ACTIVE" / "GRACE" / etc.) — surface it verbatim so the
+  // user sees the same vocabulary the receipt / portal uses.
+  pane.appendChild(identityField("Status", dto.raw_status || "—", false));
+  pane.appendChild(identityField(
+    "Renews",
+    fmtPeriodEnd(dto.current_period_end),
+    false
+  ));
+
+  // Status-specific notice lines. Non-alarming for offline-grace
+  // (it's a transient infrastructure case); actionable for GRACE
+  // (Stripe payment-retry — the user needs to do something).
+  if (dto.state === "PaidOfflineGrace") {
+    const hint = document.createElement("div");
+    hint.className = "osl-hint";
+    hint.style.cssText = "margin:12px 0 0 0;font-size:12px;color:#b5bac1;";
+    hint.textContent =
+      "Couldn't reach the license server — using your cached license.";
+    pane.appendChild(hint);
+  } else if (dto.raw_status === "GRACE") {
+    const hint = document.createElement("div");
+    hint.className = "osl-hint";
+    hint.style.cssText = "margin:12px 0 0 0;font-size:12px;color:var(--osl-danger);";
+    hint.textContent =
+      "Payment failed — please update your card to keep your subscription.";
+    pane.appendChild(hint);
+  } else if (dto.raw_status === "CANCELLED") {
+    const hint = document.createElement("div");
+    hint.className = "osl-hint";
+    hint.style.cssText = "margin:12px 0 0 0;font-size:12px;color:#b5bac1;";
+    hint.textContent =
+      "Subscription cancelled — paid features remain until the renewal date above.";
+    pane.appendChild(hint);
+  }
+
+  // Clear license button (danger; double-confirm via oslConfirm).
+  const clear = document.createElement("button");
+  clear.className = "osl-row-btn osl-row-btn-burn";
+  clear.style.cssText = "padding:8px 16px;margin-top:20px;";
+  clear.textContent = "Clear license";
+  clear.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const ok = await oslConfirm({
+      title: "Clear license?",
+      body:
+        "This removes the cached license from this device. You'll " +
+        "need to re-enter the key to restore paid features. The " +
+        "license itself stays valid — clearing here doesn't cancel " +
+        "your subscription.",
+      confirmText: "Clear",
+      cancelText: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+    if (currentPage !== "account") return;
+    const r = await oslInvoke("osl_clear_license", {});
+    if (currentPage !== "account") return;
+    if (!r.ok) {
+      oslToast("Couldn't clear license: " + r.error);
+      return;
+    }
+    oslToast("License cleared.");
+    emitLicenseChanged(null);
+    renderAccount();
+  });
+  pane.appendChild(clear);
 }
 
 // ============================================================

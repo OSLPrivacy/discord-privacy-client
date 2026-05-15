@@ -265,3 +265,127 @@ fn fetch_against_legacy_response_without_field_parses_as_none() {
     assert!(resp.ik_ratchet_initial_pub.is_none());
     assert_eq!(resp.user_id, "charlie");
 }
+
+// ---- F2.1: license/validate ----
+
+/// All seven statuses the keyserver may surface must deserialise
+/// cleanly. The type is intentionally a free `String` so the
+/// keystore crate doesn't have to ship a new variant every time
+/// the keyserver's state machine grows; consuming layers
+/// (F2.2 `LicenseState`) do the mapping.
+#[test]
+fn license_validate_response_deserialises_all_status_values() {
+    use keystore::LicenseValidateResponse;
+    for status in [
+        "ACTIVE",
+        "GRACE",
+        "CANCELLED",
+        "EXPIRED",
+        "REVOKED",
+        "UNKNOWN",
+        "PENDING",
+    ] {
+        let body = format!(
+            r#"{{"status":"{status}","current_period_end":1800000000,"checksum_ok":true}}"#
+        );
+        let resp: LicenseValidateResponse =
+            serde_json::from_str(&body).unwrap_or_else(|e| panic!("deserialise {status}: {e}"));
+        assert_eq!(resp.status, status);
+        assert_eq!(resp.current_period_end, Some(1_800_000_000));
+        assert!(resp.checksum_ok);
+    }
+}
+
+#[test]
+fn license_validate_response_handles_null_current_period_end() {
+    use keystore::LicenseValidateResponse;
+    let body = r#"{"status":"PENDING","current_period_end":null,"checksum_ok":true}"#;
+    let resp: LicenseValidateResponse = serde_json::from_str(body).unwrap();
+    assert_eq!(resp.status, "PENDING");
+    assert_eq!(resp.current_period_end, None);
+    assert!(resp.checksum_ok);
+}
+
+#[test]
+fn license_validate_response_handles_missing_current_period_end() {
+    // `#[serde(default)]` on current_period_end lets older keyserver
+    // responses that omit the field entirely still deserialise.
+    use keystore::LicenseValidateResponse;
+    let body = r#"{"status":"UNKNOWN","checksum_ok":false}"#;
+    let resp: LicenseValidateResponse = serde_json::from_str(body).unwrap();
+    assert_eq!(resp.status, "UNKNOWN");
+    assert_eq!(resp.current_period_end, None);
+    assert!(!resp.checksum_ok);
+}
+
+#[test]
+fn validate_license_round_trips_through_mock_server() {
+    let response_body =
+        br#"{"status":"ACTIVE","current_period_end":1800000000,"checksum_ok":true}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    response.extend_from_slice(response_body);
+    let (port, rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let resp = client
+        .validate_license("OSL-2222-3333-4444-5555")
+        .expect("validate_license should succeed against mock");
+    assert_eq!(resp.status, "ACTIVE");
+    assert_eq!(resp.current_period_end, Some(1_800_000_000));
+    assert!(resp.checksum_ok);
+
+    // Wire check: POST to /v1/license/validate with the JSON body
+    // shape the keyserver expects.
+    let req_bytes = rx.recv().unwrap();
+    let req_text = std::str::from_utf8(&req_bytes).unwrap();
+    let lower = req_text.to_ascii_lowercase();
+    assert!(lower.starts_with("post /v1/license/validate http/1.1\r\n"));
+    assert!(lower.contains("content-type: application/json"));
+    assert!(req_text.contains(r#""license_key":"OSL-2222-3333-4444-5555""#));
+}
+
+#[test]
+fn validate_license_propagates_keyserver_unreachable_as_transport_error() {
+    // Bind a port, then close immediately so a connect attempt
+    // either races or hits a closed port. Either way, the client
+    // surfaces the error as Error::Transport (NOT HttpStatus) —
+    // F2.4's offline-grace logic depends on telling these apart.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.validate_license("OSL-X") {
+        Err(Error::Transport(_)) => {
+            // Expected — caller can match on this variant to
+            // honour the cached state during offline grace.
+        }
+        other => panic!("expected Error::Transport, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_license_propagates_non_2xx_as_http_status_error() {
+    // Rate-limit / server-side rejection path. F2.4 treats this
+    // as "keyserver answered, cached state is stale" — distinct
+    // from the unreachable case.
+    let response_body = br#"{"error":"rate_limited"}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 429 Too Many Requests\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(b"Retry-After: 30\r\n\r\n");
+    response.extend_from_slice(response_body);
+    let (port, _rx) = one_shot_server(response);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    match client.validate_license("OSL-X") {
+        Err(Error::HttpStatus { status, body }) => {
+            assert_eq!(status, 429);
+            assert!(body.contains("rate_limited"));
+        }
+        other => panic!("expected Error::HttpStatus, got {other:?}"),
+    }
+}

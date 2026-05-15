@@ -34,6 +34,7 @@ pub mod burn_alert;
 pub mod client;
 pub mod duress;
 pub mod identity;
+pub mod license_cache;
 pub mod password;
 pub mod prekeys;
 pub mod recipients;
@@ -43,14 +44,18 @@ pub mod storage;
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
-    BurnResponse, KeyServerClient, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
-    RegisterResponse, ReplenishResponse,
+    BurnResponse, KeyServerClient, LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse,
+    PubkeysResponse, RegisterResponse, ReplenishResponse,
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
     StepOutcome, WipeFn, WipeStep,
 };
 pub use identity::{generate_identity, Identity, IDENTITY_BLOB_VERSION};
+pub use license_cache::{
+    classify_state, load_license_cache, save_license_cache, LicenseCacheInner, LicenseCacheOnDisk,
+    LicenseState, LicenseStateDto,
+};
 pub use password::{
     load_password_record, save_password_record, validate_password, validate_setup_pair,
     verify_against_record, Argon2Params, InactivityTimer, PasswordError, PasswordHash,

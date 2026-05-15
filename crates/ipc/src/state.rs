@@ -247,6 +247,25 @@ pub struct AppState {
     /// went wrong, please retry" UX). `cmd_osl_take_last_persist_error`
     /// reads + clears the slot so the JS layer can surface a toast.
     pub last_persist_error: Mutex<Option<String>>,
+
+    /// F2.4: in-memory license classification. Populated at launch
+    /// by `crate::license_lifecycle::launch_classify` (synchronous
+    /// cache load — no network) and refreshed by
+    /// `refresh_license_state` (called from bootstrap's async
+    /// follow-up + the 6h cron task in main.rs setup). Read by
+    /// `cmd_osl_get_license_state` on every render of any UI that
+    /// gates on paid status; F3's ad gate will be the heaviest
+    /// reader.
+    ///
+    /// Defaults to `LicenseStateDto::unconfigured()` so a fresh
+    /// `AppState` (or one whose launch hook hasn't run yet)
+    /// reads as Free, not as a crashed unwrap.
+    pub license_state: Mutex<keystore::LicenseStateDto>,
+    // F3.6 pivot: `launch_time` and `free_tier_unlocked_until`
+    // (added in F3.1 for the 60-min launch-window + ad-unlock
+    // model) are removed. The new model has unlimited free text
+    // encryption + paid-only attachments; no clocks, no unlocks.
+    // The license_state mutex above is the sole tier surface.
 }
 
 impl AppState {

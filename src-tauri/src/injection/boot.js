@@ -388,6 +388,58 @@
     }
 
     // ============================================================
+    // TD3-1.3: short-circuit fetches to ipc.localhost / tauri.localhost.
+    //
+    // Tauri 2's @tauri-apps/api invoke() tries fetch(http://ipc.localhost)
+    // first, then falls back to window.postMessage if fetch rejects.
+    // On Discord's webview the fetch attempt routinely fails (CSP race
+    // pre-strip, or the IPC custom protocol not bound on this build),
+    // which leaves WebView2's Chromium network stack logging dozens of
+    // red "Failed to fetch ipc.localhost" lines per launch — purely
+    // cosmetic noise because the postMessage fallback handles every
+    // invoke transparently.
+    //
+    // Reject the fetch synthetically (a JS-level rejection, NOT an
+    // actual network dispatch) so WebView2 has nothing to log. Tauri's
+    // own catch fires and postMessage takes over with no observable
+    // behaviour change. The Proxy form ensures any downstream fetch
+    // wrappers (Phase 4 send-side interception further down) still see
+    // the same callable shape.
+    // ============================================================
+    try {
+        if (typeof window.fetch === "function" && !window.__OSL_IPC_FETCH_GUARD__) {
+            window.__OSL_IPC_FETCH_GUARD__ = true;
+            const origFetch = window.fetch;
+            window.fetch = new Proxy(origFetch, {
+                apply: function (target, thisArg, args) {
+                    let urlStr = "";
+                    try {
+                        const input = args[0];
+                        if (typeof input === "string") {
+                            urlStr = input;
+                        } else if (input && typeof input.url === "string") {
+                            urlStr = input.url;
+                        }
+                    } catch (_) {}
+                    if (
+                        urlStr.indexOf("//ipc.localhost") !== -1 ||
+                        urlStr.indexOf("//tauri.localhost") !== -1
+                    ) {
+                        return Promise.reject(new TypeError("Failed to fetch"));
+                    }
+                    return Reflect.apply(target, thisArg, args);
+                },
+            });
+            console.log("[OSL] IPC fetch shortcut installed (postMessage transport)");
+        }
+    } catch (e) {
+        console.warn(
+            "[OSL] IPC fetch shortcut install failed:",
+            (e && e.message) || e
+        );
+    }
+
+    // ============================================================
     // Compile-time DEBUG switch.
     //
     // PHASE 3 VERIFICATION: leave at `true` so console output stays
@@ -485,11 +537,25 @@
     let oslSelfDiscordIdInFlight = null;
     let oslSelfDiscordIdLastError = null;
     let oslSelfDiscordIdToastShown = false;
+    // TD3 sweep: every failed invoke used to emit a fresh console.error
+    // and the next caller (often the next paint tick) would re-fire,
+    // producing a long red ladder in DevTools on a launch where the
+    // snowflake isn't yet registered. Keep a fail-until timestamp and
+    // a logged-once flag so subsequent callers reuse the cached null
+    // for the backoff window without re-spamming. The Rust side hasn't
+    // changed; this is purely cosmetic + console-hygiene.
+    let oslSelfDiscordIdFailUntil = 0;
+    let oslSelfDiscordIdFailLogged = false;
+    const OSL_SELF_ID_FAIL_BACKOFF_MS = 5000;
     function oslSelfDiscordId() {
         if (typeof oslSelfDiscordIdCache === "string") {
             return Promise.resolve(oslSelfDiscordIdCache);
         }
         if (oslSelfDiscordIdInFlight) return oslSelfDiscordIdInFlight;
+        if (Date.now() < oslSelfDiscordIdFailUntil) {
+            // Inside the backoff window after a recent failure.
+            return Promise.resolve(null);
+        }
         const invoke = getTauriInvoke();
         if (typeof invoke !== "function") {
             return Promise.resolve(null);
@@ -503,6 +569,7 @@
                 if (typeof id === "string" && /^\d{17,20}$/.test(id)) {
                     oslSelfDiscordIdCache = id;
                     oslSelfDiscordIdLastError = null;
+                    oslSelfDiscordIdFailLogged = false;
                     return id;
                 }
                 // Log the actual rejected value so we can diagnose
@@ -511,7 +578,11 @@
                 oslSelfDiscordIdLastError =
                     "osl_get_self_user_id returned non-snowflake value " +
                     JSON.stringify(id);
-                console.error("[OSL] " + oslSelfDiscordIdLastError);
+                if (!oslSelfDiscordIdFailLogged) {
+                    oslSelfDiscordIdFailLogged = true;
+                    console.error("[OSL] " + oslSelfDiscordIdLastError);
+                }
+                oslSelfDiscordIdFailUntil = Date.now() + OSL_SELF_ID_FAIL_BACKOFF_MS;
                 return null;
             })
             .catch(function (err) {
@@ -522,7 +593,11 @@
                             ? err.message
                             : String(err);
                 oslSelfDiscordIdLastError = msg;
-                console.error("[OSL] osl_get_self_user_id failed: " + msg);
+                if (!oslSelfDiscordIdFailLogged) {
+                    oslSelfDiscordIdFailLogged = true;
+                    console.error("[OSL] osl_get_self_user_id failed: " + msg);
+                }
+                oslSelfDiscordIdFailUntil = Date.now() + OSL_SELF_ID_FAIL_BACKOFF_MS;
                 // One-shot toast so the user sees the actionable Rust
                 // error (e.g. "add to peer_map.json") without it
                 // re-spamming on every click. Helper-internal so all
@@ -2488,11 +2563,39 @@
             randomFilename: reservation.randomFilename,
         });
         if (!sealRes.ok) {
+            // F3.6 / F-FIX1: free users hit the tier gate at the v3
+            // seal entry and get back `OSL-TIER-BLOCKED:{json}`.
+            // Render the upgrade modal instead of the generic
+            // "encryption failed" toast. The in-flight upload is
+            // aborted unconditionally below — Discord's send
+            // pipeline can't strip the file mid-flight, so it
+            // cannot proceed whichever modal button the user picks.
+            // The "Cancel and send text only" path shows a toast
+            // telling the user to remove the file and resend; the
+            // text then goes through the normal (ungated) encrypt
+            // path.
+            const handled = oslMaybeHandleTierBlocked(
+                sealRes.error,
+                /* onCancelTextOnly */ function () {
+                    oslToast(
+                        "Attached file is a paid feature. " +
+                            "Click the × on the file in your message to remove it, " +
+                            "then click Send again — your text will go through encrypted.",
+                        { durationMs: 8000 }
+                    );
+                }
+            );
             window.__oslPendingUploads.delete(uploadId);
-            oslToast("Encryption failed, attachment not sent");
+            if (!handled) {
+                // Not a tier block — preserve the existing
+                // generic-error UX.
+                oslToast("Encryption failed, attachment not sent");
+            }
             return oslAbortXhr(
                 xhr,
-                "step2: seal_with_cover_v2 failed: " + sealRes.error
+                handled
+                    ? "step2: tier-gate blocked (free user, paid feature: encrypted attachments)"
+                    : "step2: seal_with_cover_v3 failed: " + sealRes.error
             );
         }
         const sealed = sealRes.value;
@@ -3312,6 +3415,239 @@
             backdrop.appendChild(modal);
             document.body.appendChild(backdrop);
         });
+    }
+
+    // ============================================================
+    // F3.6 / F-FIX1: oslTierGateModal — paid-feature gate.
+    //
+    // Surfaced when the Rust attachment-seal command returns
+    // `OSL-TIER-BLOCKED:{json}` (free user tried to send an
+    // encrypted attachment). The in-flight GCS upload is already
+    // aborted by the caller before this modal renders — Discord's
+    // send pipeline can't cleanly strip a file mid-flight, so the
+    // file cannot proceed regardless of which button is chosen.
+    // F-FIX1 collapsed the F3.6 three-button layout (where "Send
+    // without attachment" and "Cancel" both just aborted, making
+    // the middle button misleading) to two honest actions:
+    //
+    //   1. "Upgrade" (primary blue)        — opens OSL_UPGRADE_URL
+    //   2. "Cancel and send text only"
+    //      (muted outline)                 — onCancelTextOnly
+    //
+    // Click-outside is absorbed (no dismiss). ESC unbound. The user
+    // MUST pick a button. Idempotent on `#__osl_tier_modal` — a
+    // second call while the modal is up focuses the existing one
+    // instead of stacking.
+    //
+    // `opts`:
+    //   - feature           : string (diagnostic label, e.g.
+    //                          "encrypted attachments"; not rendered,
+    //                          surfaced as a data attribute)
+    //   - onCancelTextOnly() : called after the "Cancel and send
+    //                          text only" button closes the modal
+    //                          (wired to the "remove the file and
+    //                          resend" toast). Optional.
+    //
+    // Upgrade is handled fully internally (opens the pricing URL).
+    // The send-side abort is unconditional and happens in the
+    // caller before the modal is even shown — no per-button
+    // abort callback is needed.
+    //
+    // Returns the modal element so callers can dismiss
+    // programmatically via `el.remove()` if needed.
+    // ============================================================
+    const OSL_UPGRADE_URL = "https://oslprivacy.com/pricing";
+    function oslTierGateModal(opts) {
+        opts = opts || {};
+        const feature = String(opts.feature || "this feature");
+
+        // Idempotency: if a modal is already up, focus it and
+        // bail. (A second tier-blocked event during the same
+        // user click shouldn't stack two modals on top of each
+        // other.)
+        const existing = document.getElementById("__osl_tier_modal");
+        if (existing) {
+            const focusable = existing.querySelector("button");
+            if (focusable) {
+                try {
+                    focusable.focus();
+                } catch (_) {}
+            }
+            return existing;
+        }
+
+        const backdrop = document.createElement("div");
+        backdrop.id = "__osl_tier_modal";
+        backdrop.setAttribute("data-osl-modal", "1");
+        backdrop.style.position = "fixed";
+        backdrop.style.inset = "0";
+        backdrop.style.background = "rgba(0, 0, 0, 0.72)";
+        backdrop.style.zIndex = "100001";
+        backdrop.style.display = "flex";
+        backdrop.style.alignItems = "center";
+        backdrop.style.justifyContent = "center";
+
+        const modal = document.createElement("div");
+        modal.style.background = "var(--background-floating, #18191c)";
+        modal.style.color = "var(--text-normal, #dbdee1)";
+        modal.style.padding = "28px 28px 20px 28px";
+        modal.style.borderRadius = "10px";
+        modal.style.maxWidth = "460px";
+        modal.style.boxShadow = "0 12px 36px rgba(0, 0, 0, 0.65)";
+        modal.style.fontSize = "14px";
+        modal.style.lineHeight = "1.5";
+
+        const title = document.createElement("h2");
+        title.style.margin = "0 0 12px 0";
+        title.style.fontSize = "20px";
+        title.style.fontWeight = "600";
+        title.style.letterSpacing = "-0.01em";
+        title.textContent = "Encrypted attachments are a paid feature";
+        modal.appendChild(title);
+
+        const body = document.createElement("p");
+        body.style.margin = "0 0 22px 0";
+        body.style.color = "var(--text-normal, #dbdee1)";
+        body.textContent =
+            "Paid users can send fully encrypted images, files, and other attachments. " +
+            "They also get early access to new features.";
+        modal.appendChild(body);
+        // The `feature` field is surfaced as a data attribute on
+        // the modal so DevTools / a future test can verify the
+        // gate fired with the expected label. Not rendered.
+        modal.setAttribute("data-osl-feature", feature);
+
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.flexDirection = "column";
+        row.style.gap = "10px";
+        row.style.marginBottom = "14px";
+
+        function makeBtn(label, primary, onClick) {
+            const btn = document.createElement("button");
+            btn.textContent = label;
+            btn.style.padding = "10px 14px";
+            btn.style.borderRadius = "6px";
+            btn.style.fontSize = "14px";
+            btn.style.fontWeight = primary ? "500" : "400";
+            btn.style.cursor = "pointer";
+            btn.style.border = "none";
+            btn.style.textAlign = "center";
+            if (primary) {
+                btn.style.background = "var(--brand-560, #5865f2)";
+                btn.style.color = "white";
+            } else {
+                btn.style.background = "transparent";
+                btn.style.color = "var(--text-muted, #949ba4)";
+                btn.style.border =
+                    "1px solid var(--background-modifier-accent, #3f4147)";
+            }
+            btn.addEventListener("click", function () {
+                close();
+                try {
+                    onClick();
+                } catch (e) {
+                    console.error("[OSL] tier-modal action threw:", e);
+                }
+            });
+            return btn;
+        }
+
+        const upgradeBtn = makeBtn("Upgrade", true, function () {
+            try {
+                window.open(OSL_UPGRADE_URL, "_blank", "noopener,noreferrer");
+            } catch (_) {}
+        });
+        const cancelBtn = makeBtn(
+            "Cancel and send text only",
+            false,
+            function () {
+                if (typeof opts.onCancelTextOnly === "function") {
+                    opts.onCancelTextOnly();
+                }
+            }
+        );
+        row.appendChild(upgradeBtn);
+        row.appendChild(cancelBtn);
+        modal.appendChild(row);
+
+        const footer = document.createElement("p");
+        footer.style.margin = "8px 0 0 0";
+        footer.style.fontSize = "12px";
+        footer.style.color = "var(--text-muted, #949ba4)";
+        footer.style.lineHeight = "1.45";
+        footer.textContent =
+            "\"Cancel and send text only\" cancels the attached file upload. " +
+            "You can remove the file in the composer and send your text on " +
+            "its own — it'll still be encrypted. Discord itself stays fully " +
+            "usable; only encrypted attachment sending requires a paid license.";
+        modal.appendChild(footer);
+
+        function close() {
+            if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+        }
+
+        // Absorb click-outside (no dismiss): a stray composer click
+        // shouldn't ship the user past the choice point.
+        backdrop.addEventListener("click", function (e) {
+            if (e.target === backdrop) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        });
+
+        backdrop.appendChild(modal);
+        document.body.appendChild(backdrop);
+
+        // Focus the primary action on render so keyboard users
+        // can immediately Enter to upgrade.
+        try {
+            upgradeBtn.focus();
+        } catch (_) {}
+
+        return backdrop;
+    }
+
+    /**
+     * F3.6 / F-FIX1: detect + handle the OSL-TIER-BLOCKED reply
+     * from a Rust attachment-seal command. Returns true if the gate
+     * fired and the modal was shown; the caller MUST stop the
+     * in-flight send (abort the XHR) regardless of which button the
+     * user later picks — the file cannot proceed either way.
+     * Returns false if the error doesn't carry the prefix — caller
+     * handles as a normal error.
+     *
+     * `onCancelTextOnly` is invoked AFTER the modal's "Cancel and
+     * send text only" button closes the modal. Wire it to the
+     * "remove the file and resend" toast. Upgrade is handled
+     * internally by the modal (opens the pricing URL); it needs no
+     * caller callback because the send-side abort is unconditional.
+     */
+    function oslMaybeHandleTierBlocked(errMsg, onCancelTextOnly) {
+        const msg = typeof errMsg === "string" ? errMsg : "";
+        const PREFIX = "OSL-TIER-BLOCKED:";
+        if (!msg.startsWith(PREFIX)) return false;
+        let parsed = null;
+        try {
+            parsed = JSON.parse(msg.slice(PREFIX.length));
+        } catch (e) {
+            console.warn("[OSL] tier-blocked JSON tail unparseable:", e, msg);
+            // Fall through to true so the caller still aborts — the
+            // gate fired even if we can't render the right copy.
+            parsed = { feature: "this feature" };
+        }
+        if (parsed.kind && parsed.kind !== "paid_feature_required") {
+            console.warn("[OSL] tier-blocked kind unexpected:", parsed.kind);
+        }
+        oslTierGateModal({
+            feature: parsed.feature || "encrypted attachments",
+            onCancelTextOnly: function () {
+                if (typeof onCancelTextOnly === "function") {
+                    onCancelTextOnly();
+                }
+            },
+        });
+        return true;
     }
 
     // ---- Section 2: current-channel-context helper ----
@@ -12618,7 +12954,49 @@
     ];
 
     let oslCanaryRan = false;
-    function oslRunDomCanary() {
+    // TD3-1.1: retry-before-escalate schedule (10s, 20s, 40s). Pre-fix,
+    // a single 10s probe escalated to "fail" if Discord hadn't finished
+    // rendering — common on cold-start under WSL2 / slower disks — and
+    // popped the "OSL UI broken" banner on every launch. Now we probe
+    // three times with widening gaps; only a probe whose criticalMissing
+    // remains > 0 on the FINAL attempt counts as a real fail. Any earlier
+    // pass short-circuits cleanly (no banner, log "pass on retry N").
+    const OSL_CANARY_RETRY_DELAYS_MS = [10000, 10000, 20000];
+
+    // Returns { level, criticalMissing, totalMissing, results } without
+    // any logging or banner side-effects — the orchestrator decides
+    // whether to log/banner based on attempt number.
+    function oslProbeDomOnce() {
+        const results = [];
+        let criticalMissing = 0;
+        let totalMissing = 0;
+        for (const check of OSL_CANARY_CHECKS) {
+            let el = null;
+            try {
+                el = check.probe();
+            } catch (e) {
+                el = null;
+            }
+            const ok = !!el;
+            results.push({ name: check.name, ok: ok, critical: !!check.critical });
+            if (!ok) {
+                totalMissing++;
+                if (check.critical) criticalMissing++;
+            }
+        }
+        let level;
+        if (criticalMissing === 0) level = "pass";
+        else if (criticalMissing <= 1) level = "degraded";
+        else level = "fail";
+        return {
+            level: level,
+            criticalMissing: criticalMissing,
+            totalMissing: totalMissing,
+            results: results,
+        };
+    }
+
+    function oslRunDomCanary(attempt) {
         if (oslCanaryRan) return;
         // 9-F0-FIX1: skip canary on Discord login / register routes.
         // None of the critical selectors (channel header, user panel,
@@ -12645,77 +13023,95 @@
                 return;
             }
         } catch (_) {}
-        oslCanaryRan = true;
-        const results = [];
-        let criticalMissing = 0;
-        let totalMissing = 0;
-        for (const check of OSL_CANARY_CHECKS) {
-            let el = null;
-            try {
-                el = check.probe();
-            } catch (e) {
-                el = null;
-            }
-            const ok = !!el;
-            results.push({ name: check.name, ok: ok, critical: !!check.critical });
-            if (!ok) {
-                totalMissing++;
-                if (check.critical) {
-                    criticalMissing++;
-                    console.warn(
-                        "[OSL canary] missing: " + check.name + " (critical)"
-                    );
-                } else {
-                    console.log(
-                        "[OSL canary] absent: " + check.name + " (non-critical)"
-                    );
-                }
-            }
+
+        const attemptNum = typeof attempt === "number" ? attempt : 1;
+        const isFinalAttempt = attemptNum >= OSL_CANARY_RETRY_DELAYS_MS.length;
+        const probe = oslProbeDomOnce();
+
+        if (probe.level === "pass") {
+            // Terminal pass — done.
+            oslCanaryRan = true;
+            console.log(
+                "[OSL canary] result=pass" +
+                    " critical_missing=0" +
+                    " total_missing=" +
+                    probe.totalMissing +
+                    " of " +
+                    OSL_CANARY_CHECKS.length +
+                    (attemptNum > 1 ? " (passed on retry " + attemptNum + ")" : "")
+            );
+            return;
         }
-        let level;
-        if (criticalMissing === 0) {
-            level = "pass";
-        } else if (criticalMissing <= 1) {
-            level = "degraded";
-        } else {
-            level = "fail";
+
+        if (!isFinalAttempt) {
+            // Non-terminal probe — log at debug (single line, no banner)
+            // and schedule the next retry. This is the path that used to
+            // false-banner the user on a slow render.
+            console.log(
+                "[OSL canary] attempt " +
+                    attemptNum +
+                    "/" +
+                    OSL_CANARY_RETRY_DELAYS_MS.length +
+                    " critical_missing=" +
+                    probe.criticalMissing +
+                    " — retrying in " +
+                    OSL_CANARY_RETRY_DELAYS_MS[attemptNum] +
+                    "ms"
+            );
+            window.setTimeout(function () {
+                oslRunDomCanary(attemptNum + 1);
+            }, OSL_CANARY_RETRY_DELAYS_MS[attemptNum]);
+            return;
+        }
+
+        // Final attempt still failing — this is the real surface.
+        oslCanaryRan = true;
+        for (const r of probe.results) {
+            if (r.ok) continue;
+            if (r.critical) {
+                console.warn("[OSL canary] missing: " + r.name + " (critical)");
+            } else {
+                console.log("[OSL canary] absent: " + r.name + " (non-critical)");
+            }
         }
         console.log(
             "[OSL canary] result=" +
-                level +
+                probe.level +
                 " critical_missing=" +
-                criticalMissing +
+                probe.criticalMissing +
                 " total_missing=" +
-                totalMissing +
+                probe.totalMissing +
                 " of " +
-                OSL_CANARY_CHECKS.length
+                OSL_CANARY_CHECKS.length +
+                " (final after " +
+                OSL_CANARY_RETRY_DELAYS_MS.length +
+                " attempts)"
         );
-        if (level !== "pass") {
-            try {
-                if (typeof oslBanner === "function") {
-                    oslBanner({
-                        message:
-                            level === "fail"
-                                ? "OSL UI broken — Discord may have updated. " +
-                                  "Several core features are missing their anchors. " +
-                                  "Check for an OSL update."
-                                : "OSL UI partially broken — Discord may have updated. " +
-                                  "Some features may be missing or misplaced. " +
-                                  "Check for an OSL update.",
-                        actions: [{ label: "Dismiss" }],
-                    });
-                }
-            } catch (e) {
-                console.warn("[OSL canary] banner display failed:", e);
+        try {
+            if (typeof oslBanner === "function") {
+                oslBanner({
+                    message:
+                        probe.level === "fail"
+                            ? "OSL UI broken — Discord may have updated. " +
+                              "Several core features are missing their anchors. " +
+                              "Check for an OSL update."
+                            : "OSL UI partially broken — Discord may have updated. " +
+                              "Some features may be missing or misplaced. " +
+                              "Check for an OSL update.",
+                    actions: [{ label: "Dismiss" }],
+                });
             }
+        } catch (e) {
+            console.warn("[OSL canary] banner display failed:", e);
         }
     }
 
     function oslScheduleDomCanary() {
-        // Fire once, ~10s after the install hook ran. By then Discord
-        // has either mounted its UI or is permanently stuck — either
-        // way the probe result is meaningful.
-        window.setTimeout(oslRunDomCanary, 10000);
+        // TD3-1.1: schedule first probe; oslRunDomCanary itself
+        // chains subsequent retries via OSL_CANARY_RETRY_DELAYS_MS.
+        window.setTimeout(function () {
+            oslRunDomCanary(1);
+        }, OSL_CANARY_RETRY_DELAYS_MS[0]);
     }
 
     if (document.readyState === "loading") {

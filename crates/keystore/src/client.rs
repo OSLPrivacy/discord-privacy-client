@@ -121,6 +121,42 @@ pub struct BurnResponse {
     pub deleted_count: u32,
 }
 
+/// Body of `POST /v1/license/validate`.
+#[derive(Serialize)]
+struct LicenseValidateRequest<'a> {
+    license_key: &'a str,
+}
+
+/// Response body for `POST /v1/license/validate`.
+///
+/// The endpoint always returns HTTP 200 on a parseable request,
+/// even when the license is unknown / revoked / malformed —
+/// the *meaning* lives in `status`. F2.4 distinguishes a
+/// `keyserver-unreachable` outcome (mapped to `Error::Transport`
+/// by the client) from a `keyserver-rejected` outcome (mapped to
+/// `Error::HttpStatus` or a deserialised `UNKNOWN` / `REVOKED`
+/// response) when deciding whether to honour the offline-grace
+/// window.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LicenseValidateResponse {
+    /// One of: `"ACTIVE"`, `"GRACE"`, `"CANCELLED"`, `"EXPIRED"`,
+    /// `"REVOKED"`, `"UNKNOWN"`, `"PENDING"`. Kept as a free-form
+    /// string here so the keystore crate doesn't have to evolve
+    /// alongside the keyserver's state machine; the consuming
+    /// layer (F2.2's `LicenseState`) does the mapping.
+    pub status: String,
+    /// Unix seconds. `None` when the subscription is `PENDING` /
+    /// `UNKNOWN`, or (legacy, pre-F2.0) when the keyserver hadn't
+    /// stamped a period yet under the old Stripe API shape.
+    #[serde(default)]
+    pub current_period_end: Option<i64>,
+    /// `true` iff the HMAC checksum on the 14-char license body
+    /// matched. `false` is the cheap "user mistyped" gate — the
+    /// client SHOULD distinguish this from a legitimately unknown
+    /// key when surfacing UI text.
+    pub checksum_ok: bool,
+}
+
 #[derive(Serialize)]
 struct BurnRequest<'a> {
     scope: &'a str,
@@ -386,6 +422,36 @@ impl KeyServerClient {
         let resp = self.send_request(
             "DELETE",
             "/v1/wrapped-keys",
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&resp)?;
+        Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// `POST /v1/license/validate`. Public endpoint — no admin
+    /// token attached even when one is configured (the keyserver
+    /// rate-limits per IP for this route). Returns a
+    /// [`LicenseValidateResponse`] on HTTP 200 regardless of the
+    /// license's actual `status`; the meaning lives in the body.
+    ///
+    /// Error mapping (load-bearing for F2.4 offline grace):
+    ///   - network / TLS / DNS failure → [`Error::Transport`]
+    ///   - rate limit (429) / unexpected non-2xx → [`Error::HttpStatus`]
+    ///   - 200 with unparseable JSON → [`Error::Json`]
+    ///
+    /// `Error::Transport` is the "keyserver unreachable" case
+    /// F2.4 honours via the cached state + 7-day grace. The
+    /// other variants mean the keyserver answered — the cached
+    /// state should be considered stale (or in the case of
+    /// `HttpStatus 429`, retried later with backoff).
+    pub fn validate_license(&self, license_plaintext: &str) -> Result<LicenseValidateResponse> {
+        let body = LicenseValidateRequest {
+            license_key: license_plaintext,
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let resp = self.send_request(
+            "POST",
+            "/v1/license/validate",
             Some(("application/json", &body_json)),
         )?;
         check_2xx(&resp)?;

@@ -35,6 +35,17 @@ const MSG_ID_FRESH: &str = "1700000000000000002";
 fn fresh_state(name: &str) -> AppState {
     let state = AppState::new();
     *state.identity.lock().unwrap() = Some(generate_identity(name.to_string()));
+    // F3.6: tests that hit `cmd_osl_seal_attachment_with_cover_v3`
+    // need a Paid license_state — the F3.6 attachment-send gate
+    // would otherwise block the seal. These tests predate F3.6 and
+    // exercise burn-kill-list semantics on attachments, not tier
+    // gating.
+    *state.license_state.lock().unwrap() = keystore::LicenseStateDto {
+        state: keystore::LicenseState::Paid,
+        raw_status: "ACTIVE".to_string(),
+        current_period_end: None,
+        last_validated_at: None,
+    };
     state
 }
 

@@ -1,0 +1,11 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# F2.2: read the cached license classification (LicenseStateDto).
+# Granted in BOTH `main-capability` (so F3's boot.js can gate ads
+# from the Discord-origin webview) AND `settings-window-capability`
+# (so the Account page can render the current state). Read-only;
+# no writes to the cache, no keyserver round-trip.
+[[permission]]
+identifier = "allow-osl-get-license-state"
+description = "Permits the main Discord webview AND the local settings window to invoke `osl_get_license_state`, which reads the sealed license cache and returns the LicenseStateDto F3's ad gate consumes."
+commands.allow = ["osl_get_license_state"]

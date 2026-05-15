@@ -343,6 +343,29 @@ fn persist_peer_map_now(state: &AppState) {
         }
     };
     let path = dir.join("peer_map.json");
+
+    // TD3-1.4: bootstrap fires `verify_and_persist_peer_map_self_entry`
+    // BEFORE the password gate installs `file_storage_key`. If the
+    // on-disk peer_map is encrypted (OSL-ENC1 magic), `write_peer_map`
+    // refuses (defense-in-depth against clobbering an encrypted file
+    // with plaintext) and `record_persist_error` emits a warn. That
+    // warn is a launch-log false alarm — `state_reload.rs::
+    // reload_encrypted_state_after_unlock` re-runs this exact verify
+    // immediately after the gate installs the key, and the persist
+    // succeeds there. Short-circuit silently in the pre-gate-encrypted
+    // case so a normal launch doesn't surface the warn line.
+    if crate::main_password::get_file_storage_key().is_none() {
+        if let Ok(existing) = std::fs::read(&path) {
+            if crate::main_password::has_enc_magic(&existing) {
+                tracing::info!(
+                    "OSL: deferring peer_map persist (file_storage_key not yet \
+                     installed; post-gate reload will persist)"
+                );
+                return;
+            }
+        }
+    }
+
     let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
     if let Err(e) = crate::peer_map::write_peer_map(&path, &pm) {
         record_persist_error(state, "peer_map.json", e);
@@ -729,6 +752,35 @@ pub const OSL_PHASE4_AD_WRAP: &[u8] = b"OSL/P4/wrap/v1";
 /// 32 bytes of high-entropy DH output and the AEAD nonces provide
 /// per-message uniqueness.
 pub const OSL_PHASE4_HKDF_INFO_WRAP: &[u8] = b"OSL/P4/wrap-key/v1";
+
+/// F3.6: error-string prefix for tier-gate-blocked operations.
+/// The JSON tail after the colon deserialises to
+/// [`crate::tier_gate::TierGateError`]; boot.js's modal handler
+/// parses `kind = "paid_feature_required"` and renders the
+/// upgrade modal. F3.2's text-encrypt gate retired in F3.6; the
+/// surviving gate is the attachment-send check at
+/// [`cmd_osl_seal_attachment_with_cover_v3`]. Stable wire string —
+/// bump only if the JSON shape changes incompatibly.
+pub const OSL_TIER_BLOCKED_PREFIX: &str = "OSL-TIER-BLOCKED:";
+
+/// F3.6 attachment-send tier gate. Called at the top of
+/// [`cmd_osl_seal_attachment_with_cover_v3`]. Paid + PaidOfflineGrace
+/// callers fall through; Free/Unconfigured/EXPIRED/etc. get the
+/// prefixed JSON error boot.js parses to surface the upgrade modal.
+///
+/// `serde_json::to_string` on `TierGateError` cannot realistically
+/// fail; the fallback `{"kind":"paid_feature_required"}` is
+/// defensive only.
+fn enforce_attachment_tier_gate(state: &AppState) -> Result<(), String> {
+    match crate::tier_gate::check_attachment_allowed(state) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let json = serde_json::to_string(&e)
+                .unwrap_or_else(|_| "{\"kind\":\"paid_feature_required\"}".to_string());
+            Err(format!("{OSL_TIER_BLOCKED_PREFIX}{json}"))
+        }
+    }
+}
 
 /// Pure encoder for the Phase 4 wire format. Takes pre-resolved
 /// recipient pubkeys and returns the Mode 0 cover string.
@@ -1750,6 +1802,11 @@ pub fn cmd_osl_encrypt_message_v2(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<EncryptOutput, String> {
+    // F3.6 pivot: text encryption is unconditional for everyone.
+    // The F3.2 launch-window gate that lived here is retired
+    // alongside the 60-min model; the surviving tier gate fires
+    // at `cmd_osl_seal_attachment_with_cover_v3` instead.
+
     let scope_for_mode: crate::scope::Scope = scope_input
         .clone()
         .try_into()
@@ -1839,6 +1896,10 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     channel_members: Vec<String>,
     self_discord_id: String,
 ) -> Result<String, String> {
+    // F3.6 pivot: text encryption is unconditional. The F3.2
+    // gate here is retired; see the matching note at
+    // `cmd_osl_encrypt_message_v2`.
+
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -2729,6 +2790,12 @@ pub fn cmd_osl_seal_attachment_with_cover_v3(
     original_filename: String,
     random_filename: String,
 ) -> Result<SealedAttachmentV2, String> {
+    // F3.6 attachment-send tier gate. Free users get blocked at
+    // the entry with a `OSL-TIER-BLOCKED:{json}` error whose JSON
+    // tail parses to `TierGateError::PaidFeatureRequired`. Boot.js
+    // detects the prefix and surfaces the upgrade modal.
+    enforce_attachment_tier_gate(state)?;
+
     let mime = crate::attachment_wire::mime_for_filename(&original_filename)
         .ok_or_else(|| "OSL: unsupported file extension".to_string())?;
     let original_bytes = STANDARD
@@ -4605,6 +4672,314 @@ pub fn cmd_osl_get_identity_info(state: &AppState) -> Result<IdentityInfoDto, St
         pubkey: pubkey_b64,
         keyserver_url,
     })
+}
+
+/// F2.1: validate a license key against the keyserver's
+/// `/v1/license/validate` endpoint.
+///
+/// Reads the keyserver base URL from `<config_dir>/keyserver.json`
+/// the same way `cmd_osl_get_identity_info` does — best-effort
+/// inline read, no shared bootstrap helper (the bootstrap loader
+/// is private to bootstrap.rs).
+///
+/// This sub-phase does NOT cache the result; F2.2 layers the
+/// sealed `license.json` cache on top. `state` is accepted for
+/// forward-compatibility with F2.2's cache writes.
+///
+/// Error surface (load-bearing for F2.4 offline-grace logic):
+///   - "OSL: keyserver not configured" — no `keyserver.json` or
+///     missing `base_url` field. Caller treats as `UNKNOWN`.
+///   - "OSL-VALIDATE-ERR:{json}" with `kind = "unreachable"` —
+///     network / TLS / DNS failure (`keystore::Error::Transport`).
+///     Caller honours cached state when within the 7-day grace
+///     window (F2.4).
+///   - "OSL-VALIDATE-ERR:{json}" with `kind = "rejected"` — non-2xx
+///     response. Caller treats the cached state as stale; do NOT
+///     honour offline grace.
+///   - "OSL-VALIDATE-ERR:{json}" with `kind = "malformed"` — 200
+///     but body didn't deserialise. Caller treats as stale.
+///   - "OSL-VALIDATE-ERR:{json}" with `kind = "other"` — defensive
+///     catch-all. Treat as stale; surface generic error copy.
+///
+/// F3.2 retired the F2.1 freeform string prefixes for the
+/// validate paths; the JSON tail shape is defined by
+/// [`ValidateLicenseError`].
+pub fn cmd_osl_validate_license(
+    state: &AppState,
+    license_key: String,
+) -> Result<keystore::LicenseValidateResponse, String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let base_url = read_keyserver_base_url(&dir)
+        .ok_or_else(|| "OSL: keyserver not configured (no keyserver.json)".to_string())?;
+    cmd_osl_validate_license_with_dir_and_url(state, license_key, &dir, &base_url)
+}
+
+/// F3.2: typed error surface for [`cmd_osl_validate_license_with_dir_and_url`].
+/// Retires the F2.1 string-prefix-dispatch the F2.1 ship report
+/// flagged as temporary. The four variants cover every failure
+/// path the inner client can produce:
+///
+/// - [`Self::Unreachable`] — network / TLS / DNS failure
+///   ([`keystore::Error::Transport`]). F2.4's offline-grace honours
+///   the cached state when this variant fires.
+/// - [`Self::Rejected`] — keyserver answered with a non-2xx
+///   ([`keystore::Error::HttpStatus`]). Cache treated as stale; no
+///   grace extension.
+/// - [`Self::Malformed`] — keyserver answered 200 but the body
+///   didn't deserialise ([`keystore::Error::Json`]). Same cache
+///   policy as `Rejected`.
+/// - [`Self::Other`] — defensive catch-all for unreachable-in-
+///   practice variants (Io, Sealer, Base64, BlobVersionMismatch,
+///   BlobMethodMismatch) plus client-construction errors.
+///
+/// Wire shape: the IPC returns `Err(format!("OSL-VALIDATE-ERR:{}",
+/// serde_json::to_string(&v).unwrap()))`. F2.3's
+/// `friendlyValidateError` in `settings_window.html` parses the
+/// JSON tail after the prefix.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ValidateLicenseError {
+    Unreachable { message: String },
+    Rejected { status: u16, body: String },
+    Malformed { message: String },
+    Other { message: String },
+}
+
+/// F3.2: error-string prefix for typed validate-license rejections.
+/// JSON tail deserialises to [`ValidateLicenseError`]. Stable wire
+/// string — bump only if the JSON shape changes incompatibly.
+pub const OSL_VALIDATE_ERR_PREFIX: &str = "OSL-VALIDATE-ERR:";
+
+fn validate_err(v: ValidateLicenseError) -> String {
+    // Inline the unreachable serde fallback. `serde_json::to_string`
+    // on this enum cannot realistically fail; the literal default
+    // matches the Other-variant shape so a JS parser hitting it
+    // gracefully degrades to the generic copy.
+    let json = serde_json::to_string(&v).unwrap_or_else(|_| {
+        "{\"kind\":\"other\",\"message\":\"validate-err serde failed\"}".to_string()
+    });
+    format!("{OSL_VALIDATE_ERR_PREFIX}{json}")
+}
+
+/// Test-seam variant of [`cmd_osl_validate_license`]. Takes the
+/// config dir + keyserver base URL explicitly so unit tests can
+/// point at a `tempdir()` + an in-process mock server instead of
+/// the real `%APPDATA%\osl` / `keyserver.oslprivacy.com`.
+///
+/// Cache-write policy (load-bearing for F2.4):
+///   - Ok(response)               → save cache, bump
+///                                  last_validated_at to now()
+///   - Err(Transport)             → DO NOT touch cache (keyserver
+///                                  unreachable; F2.4 honours the
+///                                  stale cache during 7-day grace)
+///   - Err(HttpStatus / Json)     → DO NOT touch cache (keyserver
+///                                  answered, treat cache as stale)
+///
+/// Error shape (F3.2): all rejection paths return
+/// `Err(format!("OSL-VALIDATE-ERR:{json}"))` where the JSON
+/// deserialises to [`ValidateLicenseError`]. The F2.1 string-prefix
+/// dispatch is retired; F2.3's `friendlyValidateError` JS helper
+/// has been updated to parse the new shape in the same sub-phase.
+pub fn cmd_osl_validate_license_with_dir_and_url(
+    state: &AppState,
+    license_key: String,
+    dir: &std::path::Path,
+    base_url: &str,
+) -> Result<keystore::LicenseValidateResponse, String> {
+    let client = keystore::KeyServerClient::new(base_url).map_err(|e| {
+        validate_err(ValidateLicenseError::Other {
+            message: format!("client init: {e}"),
+        })
+    })?;
+    match client.validate_license(&license_key) {
+        Ok(resp) => {
+            // F2.4 tidy-up: only persist the cache when the
+            // keyserver returned a durable, recognized status. A
+            // 200 with UNKNOWN or checksum_ok:false means the
+            // user mistyped or supplied a never-issued key —
+            // writing license.json with status=UNKNOWN would
+            // leave a junk cache that the launch hook + 6h
+            // refresh would then keep re-classifying as Free.
+            let durable = resp.checksum_ok && resp.status != "UNKNOWN";
+            if durable {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let inner = keystore::LicenseCacheInner {
+                    license_plaintext: license_key.clone(),
+                    last_validated_status: resp.status.clone(),
+                    current_period_end: resp.current_period_end,
+                    last_validated_at: now,
+                    checksum_ok: resp.checksum_ok,
+                };
+                let sealer = keystore::select_best_sealer();
+                let path = dir.join("license.json");
+                if let Err(e) = keystore::save_license_cache(&path, &inner, sealer.as_ref()) {
+                    // Don't fail the command — the validation
+                    // itself was successful from the user's POV.
+                    // Log so operators see persistent breakage.
+                    eprintln!(
+                        "[OSL] WARN save_license_cache failed: {e}; \
+                         validation succeeded but result not cached"
+                    );
+                } else {
+                    // F2.4: stamp AppState in-memory too so a
+                    // subsequent get_license_state read sees the
+                    // fresh value without waiting for a relaunch
+                    // or the 6h cron.
+                    *state
+                        .license_state
+                        .lock()
+                        .expect("license_state mutex poisoned") =
+                        keystore::LicenseStateDto::from_cache(&inner);
+                }
+            }
+            Ok(resp)
+        }
+        Err(keystore::Error::Transport(msg)) => {
+            Err(validate_err(ValidateLicenseError::Unreachable {
+                message: msg,
+            }))
+        }
+        Err(keystore::Error::HttpStatus { status, body }) => {
+            Err(validate_err(ValidateLicenseError::Rejected {
+                status,
+                body,
+            }))
+        }
+        Err(keystore::Error::Json(e)) => Err(validate_err(ValidateLicenseError::Malformed {
+            message: e.to_string(),
+        })),
+        Err(e) => Err(validate_err(ValidateLicenseError::Other {
+            message: e.to_string(),
+        })),
+    }
+}
+
+/// F2.4: read the in-memory license classification stamped by
+/// the launch hook + 6h refresh task. Cheap — a single mutex
+/// lock + clone. F3's ad gate will hit this on every render of
+/// the main webview's hooked surfaces; the AppState read keeps
+/// it sub-microsecond.
+///
+/// File I/O happens at launch (via
+/// [`crate::license_lifecycle::launch_classify`]) and on each
+/// background refresh — never on this read path.
+pub fn cmd_osl_get_license_state(state: &AppState) -> Result<keystore::LicenseStateDto, String> {
+    Ok(state
+        .license_state
+        .lock()
+        .expect("license_state mutex poisoned")
+        .clone())
+}
+
+/// Test-seam variant. Loads the cache from `dir` via
+/// [`crate::license_lifecycle::launch_classify`] (which stamps
+/// AppState), then returns the freshly-stamped value. The F2.2
+/// integration tests use this to verify file→DTO classification
+/// without going through the production launch path.
+pub fn cmd_osl_get_license_state_with_dir(
+    state: &AppState,
+    dir: &std::path::Path,
+) -> Result<keystore::LicenseStateDto, String> {
+    crate::license_lifecycle::launch_classify(state, dir);
+    cmd_osl_get_license_state(state)
+}
+
+/// F2.2: idempotently delete the cached license. Settings →
+/// Account → "Clear license" calls this. Missing file is not an
+/// error — the desired post-state is "no cache", regardless of
+/// where we started.
+pub fn cmd_osl_clear_license(state: &AppState) -> Result<(), String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    cmd_osl_clear_license_with_dir(state, &dir)
+}
+
+/// Test-seam variant of [`cmd_osl_clear_license`]. Also stamps
+/// `license_state` to Unconfigured in memory so a follow-up
+/// `cmd_osl_get_license_state` doesn't keep returning the
+/// pre-clear Paid value for the rest of the session.
+///
+/// F3.6 pivot: the F3.1 `tier_gate::clear_ad_unlock` call that
+/// lived here is removed alongside the ad-unlock window model.
+/// Nothing to wipe in tier state on clear — the next gate read
+/// derives from license_state directly.
+pub fn cmd_osl_clear_license_with_dir(
+    state: &AppState,
+    dir: &std::path::Path,
+) -> Result<(), String> {
+    *state
+        .license_state
+        .lock()
+        .expect("license_state mutex poisoned") = keystore::LicenseStateDto::unconfigured();
+    let path = dir.join("license.json");
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("OSL: clear_license: {e}")),
+    }
+}
+
+/// F3.6: read-only snapshot of the tier-gate state. Cheap — one
+/// mutex lock + a string clone. Boot.js's read-through cache and
+/// the settings Account page both consume this.
+///
+/// Cross-window grants live in both `main.json` (boot.js consumes
+/// for the attachment-gate fast path + future paid-feature checks)
+/// AND `settings-window.json` (Account page Free-tier subsection
+/// renders the upgrade CTA off this).
+///
+/// F3.6 pivot: dropped `free_window_active` and `free_window_end`
+/// (cf. F3.1) — there's no window any more. Added
+/// `attachment_send_allowed` as a named alias for `is_paid` so
+/// future paid features (beta channels etc.) can add their own
+/// `*_allowed` flags without DTO-shape churn.
+pub fn cmd_osl_get_tier_gate_status(state: &AppState) -> Result<TierGateStatusDto, String> {
+    let is_paid = crate::tier_gate::is_paid_equivalent(state);
+    let raw_license_state = state
+        .license_state
+        .lock()
+        .expect("license_state mutex poisoned")
+        .raw_status
+        .clone();
+    Ok(TierGateStatusDto {
+        is_paid,
+        attachment_send_allowed: is_paid,
+        raw_license_state,
+    })
+}
+
+/// F3.6 DTO returned by [`cmd_osl_get_tier_gate_status`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TierGateStatusDto {
+    /// `true` iff `LicenseState::Paid` or `PaidOfflineGrace`.
+    /// The load-bearing flag — every paid-feature flag below is
+    /// currently an alias for this one, kept named separately so
+    /// future paid features can flip independently.
+    pub is_paid: bool,
+    /// `true` iff the user may invoke
+    /// `cmd_osl_seal_attachment_with_cover_v3`. Today identical
+    /// to `is_paid`; named separately so the JS gate has a
+    /// feature-specific flag to consult.
+    pub attachment_send_allowed: bool,
+    /// `LicenseStateDto.raw_status` mirror ("ACTIVE", "Free",
+    /// "Unconfigured", "EXPIRED", etc.). Surfaced for diagnostic
+    /// rendering on the settings Account page.
+    pub raw_license_state: String,
+}
+
+/// Best-effort read of `<config_dir>/keyserver.json` → `base_url`.
+/// Mirrors the inline helper in `cmd_osl_get_identity_info`; returns
+/// `None` on any failure (file missing, malformed JSON, no
+/// `base_url` field).
+fn read_keyserver_base_url(dir: &std::path::Path) -> Option<String> {
+    let path = dir.join("keyserver.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("base_url")?.as_str().map(|s| s.to_string())
 }
 
 /// 7d-A: one row in the Whitelist Manager's flat table. The

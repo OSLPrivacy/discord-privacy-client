@@ -247,6 +247,32 @@ pub fn run_autostart(state: &AppState) {
         .lock()
         .expect("app_preferences mutex poisoned") = prefs;
 
+    // F2.4: sync cache-only classify of the license state. Stamps
+    // AppState.license_state so the very first `osl_get_license_state`
+    // read from the webview returns the cached classification — no
+    // launch flicker for a paid user. The async keyserver refresh
+    // (driven by main.rs setup's 6h-tick task) overwrites this
+    // value when it returns. Cache-only here means no network and
+    // no PaidOfflineGrace: that case requires a failed online
+    // attempt, which only happens in `refresh_license_state`.
+    ipc::license_lifecycle::launch_classify(state, &dir);
+    tracing::info!(
+        license_state = ?state
+            .license_state
+            .lock()
+            .expect("license_state mutex poisoned")
+            .state,
+        "OSL bootstrap: license cache classified"
+    );
+
+    // F3.6 pivot: the F3.1 `set_launch_time_once` stamp has been
+    // removed alongside the 60-min launch-window model. New tier
+    // model is feature-gated: free users get unlimited encrypted
+    // text; paid users additionally unlock encrypted attachments
+    // + beta-channel access. No clocks anywhere in the tier
+    // pipeline; `tier_gate::is_paid_equivalent` is the sole
+    // bottom-line check.
+
     tracing::info!("OSL bootstrap: done");
 }
 
