@@ -70,7 +70,11 @@ function licenseEmailText(input: SendLicenseEmailInput): string {
     `Welcome to OSL.\n\n` +
     `Your license key:\n\n` +
     `  ${input.licensePlaintext}\n\n` +
-    `Enter this in OSL Settings → Account to activate paid features.\n\n` +
+    `To activate your license:\n` +
+    `  1. Open OSL Privacy\n` +
+    `  2. Click the settings gear, then go to the Account page\n` +
+    `  3. Paste your license key and click Validate & Save\n\n` +
+    `That's it — your paid features unlock immediately and stay active automatically.\n\n` +
     `Save this email — you'll need the key to reinstall on a new device.\n\n` +
     portalLine +
     `Questions? Reply to this email or write to ${input.supportEmail}.\n\n` +
@@ -90,7 +94,13 @@ function licenseEmailHtml(input: SendLicenseEmailInput): string {
       <h1 style="margin:0 0 20px;font-size:22px;font-weight:600;letter-spacing:-0.01em;">Welcome to OSL.</h1>
       <p style="margin:0 0 20px;font-size:15px;line-height:1.55;">Your license key:</p>
       <pre style="margin:0;padding:18px 22px;background:#0e1929;color:#dbe4f0;font-family:'SFMono-Regular',Menlo,Consolas,monospace;font-size:18px;letter-spacing:0.04em;border-radius:8px;text-align:center;">${escapeHtml(input.licensePlaintext)}</pre>
-      <p style="margin:24px 0 0;font-size:14px;color:#5b6b80;">Enter this in <strong>OSL → Settings → Account</strong> to activate paid features.</p>
+      <p style="margin:24px 0 8px;font-size:14px;color:#1a2332;font-weight:600;">To activate your license:</p>
+      <ol style="margin:0 0 0 20px;padding:0;font-size:14px;line-height:1.6;color:#5b6b80;">
+        <li>Open OSL Privacy</li>
+        <li>Click the settings gear, then go to the <strong>Account</strong> page</li>
+        <li>Paste your license key and click <strong>Validate &amp; Save</strong></li>
+      </ol>
+      <p style="margin:14px 0 0;font-size:14px;color:#5b6b80;">That's it — your paid features unlock immediately and stay active automatically.</p>
       <p style="margin:14px 0 0;font-size:14px;color:#5b6b80;">Save this email — you'll need the key to reinstall on a new device.</p>
       ${portalLine}
       <p style="margin:32px 0 0;font-size:13px;color:#8493a8;">Questions? Reply to this email or write to <a href="mailto:${escapeHtml(input.supportEmail)}" style="color:#7c5cff;">${escapeHtml(input.supportEmail)}</a>.</p>

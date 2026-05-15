@@ -103,6 +103,133 @@ describe("POST /v1/stripe/webhook idempotency", () => {
 });
 
 describe("POST /v1/stripe/webhook state machine", () => {
+  // F2.0 regression: prior to the readCurrentPeriodEnd fix, a
+  // Stripe 2025-03-31+ payload (which puts current_period_end
+  // under items.data[0]) left the D1 row with
+  // current_period_end=null. License validate then returned
+  // current_period_end:null even though the subscription was
+  // ACTIVE. This test pins the new wire shape.
+  it("customer.subscription.created with items.data[0].current_period_end (2025-03-31 shape) → period stored", async () => {
+    const subId = uniqueSubId();
+    await env.DB.prepare(
+      `INSERT INTO subscriptions (subscription_id, customer_id, customer_email,
+        status, current_period_end, cancel_at_period_end, created_at, updated_at)
+       VALUES (?, 'cus_test', 'a@b.com', 'PENDING', NULL, 0,
+         strftime('%s','now'), strftime('%s','now'))`,
+    )
+      .bind(subId)
+      .run();
+
+    const expectedPeriod = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const res = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "customer.subscription.created",
+      data: {
+        object: {
+          id: subId,
+          customer: "cus_test",
+          status: "active",
+          cancel_at_period_end: false,
+          // NOTE: no top-level current_period_end — this matches
+          // the Stripe 2025-03-31 API wire shape exactly.
+          items: {
+            data: [
+              { current_period_end: expectedPeriod, current_period_start: expectedPeriod - 30 * 86400 },
+            ],
+          },
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare(
+      "SELECT status, current_period_end FROM subscriptions WHERE subscription_id = ?",
+    )
+      .bind(subId)
+      .first<{ status: string; current_period_end: number | null }>();
+    expect(row?.status).toBe("ACTIVE");
+    expect(row?.current_period_end).toBe(expectedPeriod);
+  });
+
+  it("invoice.paid stamps current_period_end from lines.data[0].period.end (defence-in-depth)", async () => {
+    // Simulates the worst-case ordering: customer.subscription.created
+    // never landed (or was lost), but the first invoice.paid does. The
+    // worker should stamp current_period_end from the invoice line
+    // rather than leaving it null forever.
+    const subId = uniqueSubId();
+    await env.DB.prepare(
+      `INSERT INTO subscriptions (subscription_id, customer_id, customer_email,
+        status, current_period_end, cancel_at_period_end, created_at, updated_at)
+       VALUES (?, 'cus_test', 'a@b.com', 'PENDING', NULL, 0,
+         strftime('%s','now'), strftime('%s','now'))`,
+    )
+      .bind(subId)
+      .run();
+
+    const expectedPeriod = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const res = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_test",
+          subscription: subId,
+          lines: {
+            data: [
+              { period: { end: expectedPeriod, start: expectedPeriod - 30 * 86400 } },
+            ],
+          },
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare(
+      "SELECT status, current_period_end FROM subscriptions WHERE subscription_id = ?",
+    )
+      .bind(subId)
+      .first<{ status: string; current_period_end: number | null }>();
+    expect(row?.status).toBe("ACTIVE");
+    expect(row?.current_period_end).toBe(expectedPeriod);
+  });
+
+  it("invoice.paid without a line period.end leaves the existing current_period_end intact", async () => {
+    // Inverse of the previous test: don't clobber a good
+    // current_period_end (stamped by an earlier subscription event)
+    // when invoice.paid happens to lack the period field.
+    const subId = uniqueSubId();
+    const seeded = Math.floor(Date.now() / 1000) + 14 * 86400;
+    await env.DB.prepare(
+      `INSERT INTO subscriptions (subscription_id, customer_id, customer_email,
+        status, current_period_end, cancel_at_period_end, created_at, updated_at)
+       VALUES (?, 'cus_test', 'a@b.com', 'GRACE', ?, 0,
+         strftime('%s','now'), strftime('%s','now'))`,
+    )
+      .bind(subId, seeded)
+      .run();
+
+    const res = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_test_no_lines",
+          subscription: subId,
+          // no `lines` field — older Stripe shape or test event
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare(
+      "SELECT status, current_period_end FROM subscriptions WHERE subscription_id = ?",
+    )
+      .bind(subId)
+      .first<{ status: string; current_period_end: number | null }>();
+    expect(row?.status).toBe("ACTIVE");
+    expect(row?.current_period_end).toBe(seeded);
+  });
+
   it("customer.subscription.created → ACTIVE in DB", async () => {
     const subId = uniqueSubId();
     // Bootstrap: create a PENDING row via a synthetic INSERT (the
