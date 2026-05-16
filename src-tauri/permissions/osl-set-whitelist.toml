@@ -3,5 +3,5 @@
 # Permission for Phase 7b set-whitelist operation.
 [[permission]]
 identifier = "allow-osl-set-whitelist"
-description = "Permits the discord.com main webview to invoke `osl_set_whitelist` (add a whitelist entry for a peer + scope and produce the invitation wire to send). Phase 7b — see §§2.3, 7.1."
+description = "Permits the discord.com main webview to invoke `osl_set_whitelist` (add a per-peer whitelist entry for a scope and flip the scope encrypt toggle). Local-only since 9-C1 — no invitation, no wire; decrypt is permissive."
 commands.allow = ["osl_set_whitelist"]

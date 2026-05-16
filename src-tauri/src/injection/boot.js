@@ -4121,11 +4121,10 @@
 
             row.addEventListener("click", async function () {
                 close();
-                await oslSendWhitelistInvitation(
+                await oslAddWhitelist(
                     user,
                     opt.scopeInput,
-                    opt.kind === "dm" ? broadenChecked : false,
-                    ctx
+                    opt.kind === "dm" ? broadenChecked : false
                 );
             });
             dd.appendChild(row);
@@ -4176,23 +4175,18 @@
     }
 
     /**
-     * Phase 7c: send a whitelist invitation. Issues
-     * `osl_set_whitelist` (Rust mutates local state + returns the
-     * wire) then `oslSendControlMessage` (Discord delivery).
+     * Add a local whitelist for `user` in `scopeInput`. This is a
+     * LOCAL action only: `osl_set_whitelist` mutates client state
+     * and returns nothing. There is NO invitation and NO wire — the
+     * 9-C1 handshake was removed and decrypt is permissive, so the
+     * peer needs no acceptance; once they have our keys their recv
+     * path simply decrypts our (new) messages in this scope.
      */
-    async function oslSendWhitelistInvitation(user, scopeInput, broadened, ctx) {
-        const selfId = await oslSelfDiscordId();
-        if (!selfId) {
-            oslToast(
-                "OSL: could not resolve your Discord id (identity not loaded?)"
-            );
-            return;
-        }
+    async function oslAddWhitelist(user, scopeInput, broadened) {
         const setResult = await oslInvoke("osl_set_whitelist", {
             peerDiscordId: user.id,
             scopeInput: scopeInput,
             broadened: broadened,
-            fromDiscordId: selfId,
         });
         if (!setResult.ok) {
             oslToast("OSL: whitelist failed: " + setResult.error);
@@ -4204,32 +4198,12 @@
             );
             return;
         }
-        const wire = setResult.value;
-        // For DM scope: deliver via the DM channel (channelId IS the
-        // user id in our representation; Discord's DM channel id is
-        // different — fall back to the current channelId if it
-        // matches a DM with this user, else log a deferral).
-        const deliveryChannelId =
-            scopeInput.kind === "dm"
-                ? ctx.channelId
-                : ctx.channelId;
-        if (!deliveryChannelId) {
-            oslToast(
-                "OSL: invitation wire built but no delivery channel; open the target channel and re-invite"
-            );
-            console.log(
-                "[OSL] invitation queued (no delivery channel) user=" +
-                    user.id
-            );
-            return;
-        }
-        await oslSendControlMessage(deliveryChannelId, wire);
-        // 7d-FIX1 decision-B: the Rust set_whitelist call above
-        // auto-removed the scope from the burned-scopes ledger; mirror
-        // that to the in-memory JS cache so the recv observer
-        // immediately resumes decrypting (new) messages in this
-        // scope on the next sweep tick. Old ciphertext stays
-        // unreadable (wrapped_keys gone).
+        // The Rust set_whitelist call auto-removed the scope from the
+        // burned-scopes ledger; mirror that to the in-memory JS cache
+        // so the recv observer immediately resumes decrypting (new)
+        // messages in this scope on the next sweep tick. Old
+        // ciphertext stays unreadable (wrapped_keys gone). This is a
+        // legitimate local cache sync, not invitation cruft.
         try {
             oslBurnedScopesRemove(scopeInput.kind, scopeInput.id);
             console.log(
@@ -4240,7 +4214,7 @@
                     " re-whitelisted, removed from burned list"
             );
         } catch (_) {}
-        oslToast("Invitation sent to " + user.username);
+        oslToast("Whitelisted " + (user.username || user.id));
         // Refresh the channel header (encrypt toggle may have
         // become available).
         oslRefreshHeaderState();
@@ -5084,8 +5058,8 @@
                 lockState = "unknown";
                 color = "var(--text-muted, #87898c)";
                 label =
-                    "Channel roster unknown — open the member list, " +
-                    "or click to refresh";
+                    "Channel roster not loaded yet — open & scroll the " +
+                    "member list, then click to refresh";
                 break;
         }
         encryptBtn.innerHTML = oslLockSvg(lockState);
@@ -5194,8 +5168,9 @@
 
         if (summary.state === "unknown" || members.length === 0) {
             oslToast(
-                "Channel roster unknown — open the member list once " +
-                    "so OSL can read who's here, then click again."
+                "Channel roster not loaded yet — open the member list " +
+                    "and scroll it so Discord sends the full roster, " +
+                    "then click again."
             );
             return;
         }
@@ -8787,6 +8762,119 @@
             oslChannelMembersUpdate(ch.id, members);
         }
 
+        // Bug B (whitelist repair): caps so __OSL_CHANNEL_MEMBERS__
+        // cannot grow unbounded under chunk bursts.
+        const OSL_ROSTER_CAPS = {
+            maxPerChannel: 2000,
+            maxChannels: 500,
+            // A single frame carrying more ids than this is treated
+            // as pathological and skipped entirely (defensive — never
+            // block the passthrough on parsing a giant frame).
+            maxIngest: 10000,
+        };
+
+        // __OSL_TEST_EXTRACT_START oslIngestRosterFrame
+        // Pure, OBSERVE-ONLY roster accumulator. Given an already-
+        // parsed gateway frame (t, d), union any member ids it
+        // carries into `cache` (channelId -> string[]), keyed to the
+        // channels of d.guild_id via `guildCache`. Merges (never
+        // clobbers — chunks are partial), caps per-channel + total
+        // channels (oldest-channel eviction), skips malformed /
+        // oversized frames silently, NEVER throws, and NEVER mutates
+        // `d` or anything that is forwarded to Discord. Returns the
+        // list of channel ids it touched (for throttled propagation
+        // by the caller); returns [] for non-roster / skipped frames.
+        function oslIngestRosterFrame(cache, guildCache, t, d, caps) {
+            try {
+                if (
+                    t !== "GUILD_MEMBERS_CHUNK" &&
+                    t !== "GUILD_MEMBER_LIST_UPDATE"
+                ) {
+                    return [];
+                }
+                if (!d || typeof d.guild_id !== "string") {
+                    return [];
+                }
+                const guildId = d.guild_id;
+                const ids = [];
+                if (t === "GUILD_MEMBERS_CHUNK") {
+                    if (Array.isArray(d.members)) {
+                        for (const m of d.members) {
+                            const uid =
+                                m && m.user && typeof m.user.id === "string"
+                                    ? m.user.id
+                                    : null;
+                            if (uid) ids.push(uid);
+                        }
+                    }
+                } else {
+                    // GUILD_MEMBER_LIST_UPDATE: ops[].items[].member
+                    // (SYNC/INSERT/UPDATE). `group` items carry no
+                    // user — skipped. Defensive at every hop.
+                    if (Array.isArray(d.ops)) {
+                        for (const op of d.ops) {
+                            if (!op) continue;
+                            const items = Array.isArray(op.items)
+                                ? op.items
+                                : op.item
+                                  ? [op.item]
+                                  : [];
+                            for (const it of items) {
+                                const uid =
+                                    it &&
+                                    it.member &&
+                                    it.member.user &&
+                                    typeof it.member.user.id === "string"
+                                        ? it.member.user.id
+                                        : null;
+                                if (uid) ids.push(uid);
+                            }
+                        }
+                    }
+                }
+                if (ids.length === 0) return [];
+                // Pathological frame — skip whole thing, leave cache
+                // intact rather than risk jank.
+                if (ids.length > caps.maxIngest) return [];
+
+                const g =
+                    guildCache && guildCache[guildId] ? guildCache[guildId] : null;
+                const channelIds =
+                    g && Array.isArray(g.channel_ids) ? g.channel_ids : [];
+                if (channelIds.length === 0) {
+                    // We can't map guild members to channels until
+                    // GUILD_CREATE has cached this guild's channel
+                    // inventory. Drop silently — a later frame (or the
+                    // GUILD_CREATE permissive over-set) covers it.
+                    return [];
+                }
+
+                const touched = [];
+                for (const cid of channelIds) {
+                    if (typeof cid !== "string") continue;
+                    const prior = cache.get(cid);
+                    const set = new Set(Array.isArray(prior) ? prior : []);
+                    for (const id of ids) set.add(id);
+                    let merged = Array.from(set);
+                    if (merged.length > caps.maxPerChannel) {
+                        merged = merged.slice(0, caps.maxPerChannel);
+                    }
+                    // Oldest-channel eviction on a NEW key over cap.
+                    if (!cache.has(cid) && cache.size >= caps.maxChannels) {
+                        const oldest = cache.keys().next().value;
+                        if (oldest !== undefined) cache.delete(oldest);
+                    }
+                    cache.set(cid, merged);
+                    touched.push(cid);
+                }
+                return touched;
+            } catch (_) {
+                // Never throw out of the observe path.
+                return [];
+            }
+        }
+        // __OSL_TEST_EXTRACT_END oslIngestRosterFrame
+
         function ingestFrame(data) {
             let payload;
             try {
@@ -8921,17 +9009,40 @@
                     }
                     break;
                 }
+                case "GUILD_MEMBERS_CHUNK":
+                case "GUILD_MEMBER_LIST_UPDATE": {
+                    // Bug B (whitelist repair): OBSERVE-ONLY guild
+                    // roster capture. These fire when the user opens
+                    // / scrolls the member list (and on explicit
+                    // guild-members requests). Merge the carried ids
+                    // into the per-channel cache (union, capped) and
+                    // propagate each touched channel through the
+                    // existing throttled `oslChannelMembersUpdate`
+                    // (which also pushes to Rust). The frame itself
+                    // is NOT touched — passthrough is unchanged.
+                    const touched = oslIngestRosterFrame(
+                        channelMemberCache,
+                        window.__OSL_GUILD_CACHE__ || {},
+                        t,
+                        d,
+                        OSL_ROSTER_CAPS
+                    );
+                    for (const cid of touched) {
+                        oslChannelMembersUpdate(
+                            cid,
+                            channelMemberCache.get(cid) || []
+                        );
+                    }
+                    break;
+                }
                 case "GUILD_MEMBER_ADD":
                 case "GUILD_MEMBER_REMOVE":
                 case "GUILD_MEMBER_UPDATE": {
-                    // We don't track per-channel guild rosters
-                    // precisely here — the GUILD_MEMBERS_CHUNK and
-                    // GUILD_MEMBER_LIST_UPDATE flows would be more
-                    // accurate, but they fire only when the user
-                    // opens the member list. Stage 3 keeps this
-                    // permissive — boot.js consumers fall back to
-                    // the "unknown" tri-state when the cache is
-                    // empty for a channel.
+                    // Single-member deltas. The CHUNK /
+                    // LIST_UPDATE cases above carry the bulk roster;
+                    // these fine-grained deltas stay no-ops (the
+                    // permissive over-set tolerates minor staleness
+                    // until the next list scroll / chunk).
                     break;
                 }
                 default:

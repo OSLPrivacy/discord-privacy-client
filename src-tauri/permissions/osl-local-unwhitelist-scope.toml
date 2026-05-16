@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Whitelist repair (Bug C): settings-side LOCAL-ONLY unwhitelist.
+[[permission]]
+identifier = "allow-osl-local-unwhitelist-scope"
+description = "Permits the trusted local settings window to invoke `osl_local_unwhitelist_scope` (remove a peer's whitelist entry for a scope using the SAME local-state mutation as osl_unwhitelist_scope, but emitting NO burn-marker wire). Used by the Whitelist Manager 'Remove' button, which has no channel-roster/self-id context; operator-accepted 'removed locally' semantics."
+commands.allow = ["osl_local_unwhitelist_scope"]

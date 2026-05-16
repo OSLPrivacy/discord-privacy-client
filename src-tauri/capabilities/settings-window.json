@@ -8,6 +8,7 @@
     "allow-osl-get-identity-info",
     "allow-osl-list-all-whitelists",
     "allow-osl-unwhitelist-scope",
+    "allow-osl-local-unwhitelist-scope",
     "allow-osl-toggle-scope-encryption",
     "allow-osl-set-scope-encrypt",
     "allow-osl-send-burn-marker",

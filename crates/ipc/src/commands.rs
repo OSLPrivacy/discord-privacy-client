@@ -4004,9 +4004,78 @@ pub fn cmd_osl_unwhitelist_scope(
     self_discord_id: String,
     revoke_broadened: bool,
 ) -> Result<String, String> {
-    // 1. Build the burn marker wire BEFORE mutating state.
+    // 1. Build the burn marker wire BEFORE mutating state. This is
+    //    the ONLY in-Discord-specific step; the local mutation that
+    //    follows is shared verbatim with the settings-side
+    //    `cmd_osl_local_unwhitelist_scope` via
+    //    `local_unwhitelist_apply` so the two paths cannot drift.
     let wire =
         cmd_osl_send_burn_marker(state, scope_input.clone(), channel_members, self_discord_id)?;
+    // in-Discord burn path: WITH the wrapped-keys wipe — byte-
+    // identical to pre-repair behaviour. Do not change.
+    local_unwhitelist_apply(
+        state,
+        peer_discord_id,
+        scope_input,
+        revoke_broadened,
+        /* wipe_local_decrypt */ true,
+    )?;
+    Ok(wire)
+}
+
+/// Bug C (whitelist repair): settings-side LOCAL-ONLY unwhitelist.
+///
+/// Identical local state mutation to [`cmd_osl_unwhitelist_scope`]
+/// (same `local_unwhitelist_apply` helper — no drift) but emits NO
+/// burn-marker wire and never calls `cmd_osl_send_burn_marker`.
+///
+/// Operator-accepted semantics: a peer removed from a scope here is
+/// removed from OUR outgoing whitelist; we send nothing, so the
+/// removed peer can still decrypt ciphertext we sent BEFORE the
+/// removal. This is intended "removed locally" behaviour for the
+/// out-of-Discord Whitelist Manager, which has no channel roster /
+/// self-id context to address a burn marker to anyway.
+///
+/// Adjustment (operator decision): this path also does NOT wipe OUR
+/// local wrapped keys — after "Remove" the operator can still read
+/// previously-exchanged messages in that scope; they just stop
+/// encrypting to that peer going forward. Pure whitelist removal.
+pub fn cmd_osl_local_unwhitelist_scope(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    revoke_broadened: bool,
+) -> Result<(), String> {
+    local_unwhitelist_apply(
+        state,
+        peer_discord_id,
+        scope_input,
+        revoke_broadened,
+        /* wipe_local_decrypt */ false,
+    )
+}
+
+/// Shared local-state half of un-whitelisting. Owns every mutation
+/// `cmd_osl_unwhitelist_scope` performs AFTER the wire is built —
+/// peer_map retain-filter + BurnedScope marker + revoke_broadened,
+/// the whitelist_state encrypt_toggle/scope-row-drop invariant,
+/// (conditionally) the wrapped-keys wipe, and the atomic persist of
+/// both files. Keeping this in one place is the "cannot drift"
+/// guarantee: the two callers run byte-identical local effects and
+/// differ in EXACTLY two orthogonal axes —
+///   1. wire emission: only `cmd_osl_unwhitelist_scope` builds one
+///      (its step 1, before this helper);
+///   2. `wipe_local_decrypt`: `true` for the in-Discord burn path
+///      (preserves today's behaviour exactly), `false` for the
+///      settings local path (operator keeps local read history).
+/// Everything else is shared and cannot diverge.
+fn local_unwhitelist_apply(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    revoke_broadened: bool,
+    wipe_local_decrypt: bool,
+) -> Result<(), String> {
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -4076,14 +4145,28 @@ pub fn cmd_osl_unwhitelist_scope(
         }
     }
 
-    // 4. Wipe wrapped_keys.
-    let _ = cmd_osl_apply_burn(state, (&scope).into());
+    // 4. Wipe wrapped_keys — ONLY when the caller is the in-Discord
+    //    burn path. This is the SOLE behavioural difference between
+    //    the two callers. `cmd_osl_apply_burn` calls
+    //    `store.wipe_wrapped_keys_in_scope`, which NULLs the local
+    //    `wrapped_key` rows for the scope — that is precisely what
+    //    destroys OUR ability to re-decrypt the scope's old
+    //    messages. Local decrypt is gated solely by wrapped-key
+    //    presence (see `cmd_osl_apply_burn` docs); the `BurnedScope`
+    //    marker pushed above is OUTBOUND-only bookkeeping — the
+    //    decrypt path never consults `peer_map.burned_scopes` — so
+    //    it stays in BOTH paths and the two cannot drift on it.
+    //    settings "Remove" passes `false`: pure whitelist removal,
+    //    local read history preserved.
+    if wipe_local_decrypt {
+        let _ = cmd_osl_apply_burn(state, (&scope).into());
+    }
 
     // 7d-FIX1: persist peer_map + whitelist_state.
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
 
-    Ok(wire)
+    Ok(())
 }
 
 fn whitelist_entry_matches(w: &crate::peer_map::WhitelistEntry, s: &crate::scope::Scope) -> bool {
@@ -4105,32 +4188,32 @@ fn whitelist_entry_matches(w: &crate::peer_map::WhitelistEntry, s: &crate::scope
     }
 }
 
-/// Set a whitelist for `peer_discord_id` in `scope`. Returns the
-/// wire-format invitation the caller must send through Discord's
-/// API so the peer can accept/decline.
+/// Set a whitelist for `peer_discord_id` in `scope`. Local-only:
+/// it mutates client state and returns `()`. There is NO wire and
+/// NO invitation (the 9-C1 handshake was removed; decrypt is
+/// permissive). The peer needs no acceptance — once they have our
+/// keys their recv path simply decrypts.
 ///
 /// Behaviour:
-/// - Mutate peer_map: append/replace `WhitelistEntry` for the
-///   scope. For DM scope, the `broadened` flag carries through.
+/// - Mutate peer_map: append/replace the per-peer `WhitelistEntry`
+///   for the scope. For DM scope, the `broadened` flag carries
+///   through; any prior `BurnedScope` for the same scope is evicted
+///   (re-whitelisting after a burn is allowed).
 /// - Mutate whitelist_state: ensure the scope has a `ScopeState`
-///   entry with `encrypt_toggle = true; auto_enabled = true`
-///   (§2.3 auto-enable). For Dm, no member list needed; for
-///   GC/server-channel/server-full, add the peer to
-///   `whitelisted_users` and set `full_whitelist = false` (the
-///   default for newly-created per-user whitelists; the UI can
-///   promote later).
-/// - Call `cmd_osl_send_whitelist_invitation` to build the wire.
+///   with `encrypt_toggle = true; auto_enabled = true` (§2.3
+///   auto-enable). 9-C1: membership lives per-peer on PeerEntry;
+///   ScopeState carries only the encrypt-toggle pair.
+/// - Persist peer_map + whitelist_state atomically.
 pub fn cmd_osl_set_whitelist(
     state: &AppState,
     peer_discord_id: String,
     scope_input: crate::scope::ScopeInput,
     broadened: bool,
-    from_discord_id: String,
 ) -> Result<(), String> {
-    // 9-C1: `from_discord_id` is unused now that the handshake is
-    // gone. Kept in the signature for binding compatibility with the
-    // Tauri command surface; will be dropped in a follow-up.
-    let _ = from_discord_id;
+    // Whitelist repair (Bug A cleanup): the dead `from_discord_id`
+    // param (9-C1 handshake leftover, "kept for binding
+    // compatibility") is now removed end-to-end — Rust signature,
+    // main.rs wrapper, and the boot.js caller.
     let scope: crate::scope::Scope = scope_input
         .clone()
         .try_into()
@@ -5048,10 +5131,19 @@ pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowD
     peers.sort_by(|a, b| a.0.cmp(b.0));
     let mut out: Vec<WhitelistRowDto> = Vec::new();
     for (discord_id, entry) in peers {
+        // Bug D (whitelist repair): never display the bare string
+        // "Unknown". Resolution order: keyserver osl_user_id if
+        // known → else the Discord snowflake (the map key). The
+        // snowflake is always present and unambiguous. (A
+        // human-readable Discord username would require plumbing the
+        // Discord-origin webview's gateway username cache
+        // cross-window into this pure-Rust command + the settings
+        // window, which has no Discord context — deferred; the
+        // snowflake fallback fully satisfies "never Unknown".)
         let username = entry
             .osl_user_id
             .clone()
-            .unwrap_or_else(|| "Unknown".to_string());
+            .unwrap_or_else(|| discord_id.clone());
         for w in &entry.outgoing_whitelists {
             let (scope_kind, scope_id, server_id, channel_id, broadened, storage_key) = match w {
                 crate::peer_map::WhitelistEntry::Dm { broadened, .. } => (

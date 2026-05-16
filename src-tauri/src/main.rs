@@ -686,24 +686,47 @@ async fn osl_unwhitelist_scope(
 /// Layer 10 / Phase 7b: set a whitelist for a peer + scope.
 /// 9-C1: per-peer whitelist set. Permissive decrypt means there's
 /// no wire invitation to ship — the peer's recv path will simply
-/// decrypt our messages once it has the keys.
+/// decrypt our messages once it has the keys. (Whitelist repair:
+/// the dead `from_discord_id` 9-C1 handshake leftover was dropped
+/// from the signature end-to-end.)
 #[tauri::command]
 async fn osl_set_whitelist(
     app: tauri::AppHandle,
     peer_discord_id: String,
     scope_input: ScopeInput,
     broadened: bool,
-    from_discord_id: String,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_set_whitelist(
+        cmd_osl_set_whitelist(state.inner(), peer_discord_id, scope_input, broadened)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Whitelist repair (Bug C): settings-side LOCAL-ONLY unwhitelist.
+/// Same local state mutation as `osl_unwhitelist_scope` (shared
+/// `local_unwhitelist_apply` helper — no drift) but emits NO burn
+/// wire. The Whitelist Manager has no channel-roster/self-id
+/// context to address a burn marker to; operator-accepted
+/// "removed locally" semantics (the removed peer can still decrypt
+/// ciphertext sent before removal).
+#[tauri::command]
+async fn osl_local_unwhitelist_scope(
+    app: tauri::AppHandle,
+    peer_discord_id: String,
+    scope_input: ScopeInput,
+    revoke_broadened: bool,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_local_unwhitelist_scope(
             state.inner(),
             peer_discord_id,
             scope_input,
-            broadened,
-            from_discord_id,
+            revoke_broadened,
         )
     })
     .await
@@ -2388,6 +2411,7 @@ fn main() {
             // 9-C1: invitation/response/accept/decline/list_pending all retired.
             osl_apply_burn,
             osl_unwhitelist_scope,
+            osl_local_unwhitelist_scope,
             osl_set_whitelist,
             osl_get_scope_encryption_state,
             osl_get_scope_whitelist_summary,
