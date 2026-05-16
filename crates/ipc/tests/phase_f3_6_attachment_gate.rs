@@ -23,7 +23,10 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use ipc::commands::{cmd_osl_seal_attachment_with_cover_v3, OSL_TIER_BLOCKED_PREFIX};
+use ipc::commands::{
+    cmd_osl_seal_attachment_with_cover_v2, cmd_osl_seal_attachment_with_cover_v3,
+    OSL_TIER_BLOCKED_PREFIX,
+};
 use ipc::scope::{ScopeInput, ScopeKind};
 use ipc::AppState;
 use keystore::{LicenseState, LicenseStateDto};
@@ -73,6 +76,24 @@ fn call_seal_v3(state: &AppState) -> Result<ipc::commands::SealedAttachmentV2, S
         original_b64,
         "photo.png".to_string(),
         "random.mp4".to_string(),
+    )
+}
+
+/// F3.6-DEFENSE: same as `call_seal_v3` but hits the legacy v2
+/// entry. The v2 gate was added in F3.6-DEFENSE as a
+/// defense-in-depth measure (v2 is reachable via documented
+/// boot.js fallbacks).
+fn call_seal_v2(state: &AppState) -> Result<ipc::commands::SealedAttachmentV2, String> {
+    let png_bytes = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    let original_b64 = STANDARD.encode(&png_bytes);
+    cmd_osl_seal_attachment_with_cover_v2(
+        state,
+        dm_scope(),
+        vec!["1234567890123456".to_string()],
+        "1234567890123456".to_string(),
+        original_b64,
+        "photo.png".to_string(),
+        "random.png".to_string(),
     )
 }
 
@@ -174,5 +195,60 @@ fn expired_license_attachment_send_blocked() {
         parsed.get("raw_license_state").and_then(|v| v.as_str()),
         Some("EXPIRED"),
         "raw_license_state surfaces the cache status for diagnostics: {parsed:?}"
+    );
+}
+
+// ============================================================
+// F3.6-DEFENSE: the legacy v2 seal path is gated identically.
+// Mirrors the v3 matrix. If any of these regress, a free user
+// could bypass the attachment paywall via the legacy command.
+// ============================================================
+
+#[test]
+fn v2_paid_user_attachment_send_not_blocked() {
+    let state = AppState::new();
+    install_license(&state, LicenseState::Paid, "ACTIVE");
+    let r = call_seal_v2(&state);
+    assert_gate_did_not_block(&r);
+}
+
+#[test]
+fn v2_paid_offline_grace_attachment_send_not_blocked() {
+    let state = AppState::new();
+    install_license(&state, LicenseState::PaidOfflineGrace, "ACTIVE");
+    let r = call_seal_v2(&state);
+    assert_gate_did_not_block(&r);
+}
+
+#[test]
+fn v2_free_user_attachment_send_blocked_with_typed_err() {
+    let state = AppState::new();
+    install_license(&state, LicenseState::Free, "Unconfigured");
+    let r = call_seal_v2(&state);
+    let parsed = assert_gate_blocked_and_parse(r);
+    assert_eq!(
+        parsed.get("kind").and_then(|v| v.as_str()),
+        Some("paid_feature_required")
+    );
+    assert_eq!(
+        parsed.get("feature").and_then(|v| v.as_str()),
+        Some("encrypted attachments")
+    );
+    assert_eq!(
+        parsed.get("raw_license_state").and_then(|v| v.as_str()),
+        Some("Unconfigured")
+    );
+}
+
+#[test]
+fn v2_unconfigured_user_default_appstate_attachment_send_blocked() {
+    // Default AppState (no license) — the legacy v2 path must
+    // block just like v3.
+    let state = AppState::new();
+    let r = call_seal_v2(&state);
+    let parsed = assert_gate_blocked_and_parse(r);
+    assert_eq!(
+        parsed.get("kind").and_then(|v| v.as_str()),
+        Some("paid_feature_required")
     );
 }
