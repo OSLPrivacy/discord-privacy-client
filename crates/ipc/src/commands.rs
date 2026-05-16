@@ -2692,6 +2692,16 @@ pub fn cmd_osl_seal_attachment_with_cover_v2(
     original_filename: String,
     random_filename: String,
 ) -> Result<SealedAttachmentV2, String> {
+    // F3.6-DEFENSE: gate the legacy v2 seal path identically to
+    // v3. F3.6 only gated v3 (the production step-2 upload path);
+    // v2 is reachable via documented boot.js fallbacks (older
+    // v1Send + non-Tauri error fallback), so leaving it ungated
+    // would let a free user bypass the attachment paywall by
+    // routing through the legacy command. Same
+    // `OSL-TIER-BLOCKED:{json}` wire shape — boot.js's existing
+    // modal handler parses it identically.
+    enforce_attachment_tier_gate(state)?;
+
     let mime = crate::attachment_wire::mime_for_filename(&original_filename)
         .ok_or_else(|| "OSL: unsupported file extension".to_string())?;
     let original_bytes = STANDARD
@@ -6222,5 +6232,100 @@ mod test_deep_link_parser {
         let input = "osl://complex?token=AAA&other=BBB".to_string();
         let result = cmd_osl_test_deep_link(input.clone()).unwrap();
         assert_eq!(result.url, input);
+    }
+}
+
+// =====================================================================
+// G3.1: update-check command surface.
+//
+// `crates/ipc` deliberately carries no Tauri dependency (see lib.rs
+// docs — keeps these tests portable, no gtk/webkit2gtk tree). The
+// actual `tauri-plugin-updater` `check()` call therefore lives in
+// the `#[tauri::command] osl_check_for_updates` wrapper in
+// `src-tauri/src/main.rs`; that wrapper extracts primitives from the
+// plugin's `Update` and feeds them here. This pure mapper owns the
+// "which of the three JS-facing states" decision so it unit-tests
+// without a webview runtime (same split as `cmd_osl_test_deep_link`).
+//
+// G3.1 is check-only: no download, no install, no signature check
+// (G3.2), no UI / channel selection (G3.3).
+// =====================================================================
+
+/// Primitive view of a `tauri-plugin-updater` `Update`, extracted by
+/// the Tauri wrapper so this crate stays Tauri-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateInfo {
+    /// Version offered by the manifest (e.g. `"0.0.2"`).
+    pub version: String,
+    /// Release notes from the manifest, if any.
+    pub notes: Option<String>,
+    /// Installer URL from the manifest's platform entry.
+    pub url: String,
+}
+
+/// JS-facing result of an update check. `status` is the discriminant
+/// so the G3.3 UI can `switch` on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UpdateCheckResult {
+    /// Running version is current — nothing to do.
+    UpToDate { current: String },
+    /// A newer build is available (not downloaded/installed in G3.1).
+    UpdateAvailable {
+        current: String,
+        next: String,
+        notes: String,
+        url: String,
+    },
+    /// The check itself failed (network, manifest, plugin, etc.).
+    Error { message: String },
+}
+
+/// Pure mapper: turn a `tauri-plugin-updater` check outcome into the
+/// JS-facing [`UpdateCheckResult`].
+///
+/// - `Err(msg)`              → `Error { message }`
+/// - `Ok(None)`              → `UpToDate { current }`
+/// - `Ok(Some(info))`        → `UpdateAvailable { .. }`
+///
+/// `current` is the running app version (from Tauri's package info).
+/// This function intentionally performs **no** download or install —
+/// it only classifies the result for the UI (G3.3).
+pub fn cmd_osl_check_for_updates(
+    current: String,
+    outcome: Result<Option<UpdateInfo>, String>,
+) -> UpdateCheckResult {
+    match outcome {
+        Err(message) => {
+            tracing::warn!(
+                target: "osl::updater",
+                %current,
+                %message,
+                "[OSL updater] check failed"
+            );
+            UpdateCheckResult::Error { message }
+        }
+        Ok(None) => {
+            tracing::info!(
+                target: "osl::updater",
+                %current,
+                "[OSL updater] up to date"
+            );
+            UpdateCheckResult::UpToDate { current }
+        }
+        Ok(Some(info)) => {
+            tracing::info!(
+                target: "osl::updater",
+                %current,
+                next = %info.version,
+                "[OSL updater] update available"
+            );
+            UpdateCheckResult::UpdateAvailable {
+                current,
+                next: info.version,
+                notes: info.notes.unwrap_or_default(),
+                url: info.url,
+            }
+        }
     }
 }

@@ -29,6 +29,13 @@
       "desktop": {
         "schemes": ["osl"]
       }
+    },
+    "updater": {
+      "endpoints": [
+        "https://keyserver.oslprivacy.com/v1/update-manifest/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "dialog": false,
+      "pubkey": ""
     }
   }
 }

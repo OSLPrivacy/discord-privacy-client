@@ -1781,6 +1781,39 @@ async fn osl_test_deep_link(url: String) -> Result<ipc::commands::OslTestDeepLin
         .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// G3.1: ask the keyserver manifest whether a newer build exists.
+///
+/// Check-only. We call `tauri-plugin-updater`'s `check()` (which
+/// fetches + semver-compares against the configured endpoint) but
+/// deliberately do NOT `download_and_install()` — download/install
+/// gating + UI land in G3.2/G3.3. The Tauri-coupled bits (AppHandle,
+/// plugin) stay here; the pure result classification lives in
+/// `ipc::commands::cmd_osl_check_for_updates` so it unit-tests
+/// without a webview runtime.
+#[tauri::command]
+async fn osl_check_for_updates(
+    app: tauri::AppHandle,
+) -> Result<ipc::commands::UpdateCheckResult, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let current = app.package_info().version.to_string();
+
+    let outcome: Result<Option<ipc::commands::UpdateInfo>, String> = match app.updater() {
+        Ok(updater) => match updater.check().await {
+            Ok(Some(update)) => Ok(Some(ipc::commands::UpdateInfo {
+                version: update.version.clone(),
+                notes: update.body.clone(),
+                url: update.download_url.to_string(),
+            })),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        },
+        Err(e) => Err(e.to_string()),
+    };
+
+    Ok(ipc::commands::cmd_osl_check_for_updates(current, outcome))
+}
+
 fn main() {
     tauri::Builder::default()
         // Phase F0: single-instance plugin MUST be initialized before
@@ -1809,6 +1842,15 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
+        // G3.1: auto-updater. Check-only this phase — `dialog:false`
+        // and an empty `pubkey` in tauri.conf.json mean Tauri's
+        // built-in update dialog is suppressed and signature
+        // verification isn't wired yet (G3.2 generates the key;
+        // G3.3 builds the UI + license-state channel). No auto
+        // download/install is configured, so registering the
+        // plugin only enables `osl_check_for_updates` to query
+        // the keyserver manifest.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new())
         // Phase 7d-B1 / 7d-C: serve bundled local HTML pages on the
         // `osl-gate://` custom URI scheme. WebView2 routes requests
@@ -2200,6 +2242,8 @@ fn main() {
             osl_close_settings_window_if_open,
             // Phase F0: deep-link smoke-test parser. Removed in F2.
             osl_test_deep_link,
+            // G3.1: updater check (no download/install this phase).
+            osl_check_for_updates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

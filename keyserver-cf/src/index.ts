@@ -41,12 +41,13 @@ import { handlePubkeys } from "./endpoints/pubkeys.js";
 import { handleRegister } from "./endpoints/register.js";
 import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
+import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import {
   handleWrappedKeysDelete,
   handleWrappedKeysGet,
   handleWrappedKeysPost,
 } from "./endpoints/wrapped-keys.js";
-import { error, notFound, serverError } from "./lib/http.js";
+import { corsPreflight, error, notFound, serverError, withCors } from "./lib/http.js";
 import { sweepExpired } from "./lib/subscriptions.js";
 import { runDailyPriceSnapshot } from "./lib/crypto-prices.js";
 
@@ -93,6 +94,21 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   const path = url.pathname;
   const method = request.method;
 
+  // CORS preflight — only the two browser-callable Stripe
+  // endpoints. Everything else falls through to 405.
+  if (method === "OPTIONS") {
+    if (
+      path === "/v1/checkout-session" ||
+      path === "/v1/billing-portal-session"
+    ) {
+      return corsPreflight();
+    }
+    if (/^\/v1\/update-manifest\//.test(path)) {
+      return corsPreflight("GET, OPTIONS");
+    }
+    return error(405, `method not allowed: ${method}`);
+  }
+
   if (method === "GET") {
     if (path === "/v1/healthz") return handleHealthz();
     if (path === "/v1/selector-manifest") return handleSelectorManifest(env);
@@ -104,6 +120,20 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     }
     const bundleUserId = matchParam(path, /^\/v1\/prekey-bundle\/([^/]+)$/);
     if (bundleUserId !== null) return await handlePrekeyBundleGet(env, bundleUserId);
+    const um = path.match(
+      /^\/v1\/update-manifest\/([^/]+)\/([^/]+)\/([^/]+)$/,
+    );
+    if (um) {
+      return withCors(
+        await handleUpdateManifest(
+          request,
+          env,
+          decodeURIComponent(um[1]!),
+          decodeURIComponent(um[2]!),
+          decodeURIComponent(um[3]!),
+        ),
+      );
+    }
     return notFound("not found");
   }
 
@@ -113,10 +143,14 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);
     }
-    if (path === "/v1/checkout-session") return await handleCheckout(request, env);
+    if (path === "/v1/checkout-session") {
+      return withCors(await handleCheckout(request, env));
+    }
     if (path === "/v1/stripe/webhook") return await handleStripeWebhook(request, env);
     if (path === "/v1/license/validate") return await handleLicenseValidate(request, env);
-    if (path === "/v1/billing-portal-session") return await handleBillingPortal(request, env);
+    if (path === "/v1/billing-portal-session") {
+      return withCors(await handleBillingPortal(request, env));
+    }
     if (path === "/v1/crypto/quote") return await handleCryptoQuote(request, env);
     if (path === "/v1/crypto/submit") return await handleCryptoSubmit(request, env);
     if (path === "/v1/admin/crypto/confirm") return await handleCryptoConfirm(request, env);

@@ -61,6 +61,13 @@ tauri-build = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+# G3.1: auto-updater plugin. Tauri v2 → plugin v2 line (caret,
+# concrete patch pinned by Cargo.lock — see ship report). G3.1
+# wires only the *check* path: no signing key yet (pubkey is an
+# empty placeholder in tauri.conf.json until G3.2), no auto
+# download/install, no UI (G3.3).
+tauri-plugin-updater = "2"
+
 # Keystore
 keyring = "3"
 # Windows TPM access via TBS lives in the windows crate. tss-esapi is

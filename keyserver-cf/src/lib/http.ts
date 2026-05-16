@@ -56,3 +56,31 @@ export function serverError(message: string): Response {
 export function serviceUnavailable(message: string): Response {
   return error(503, message);
 }
+
+/// CORS — applied ONLY to the two browser-callable endpoints
+/// (/v1/checkout-session, /v1/billing-portal-session). The OSL
+/// client and the Stripe webhook are never called from a browser
+/// and deliberately get no CORS headers.
+const CORS_ORIGIN = "https://oslprivacy.com";
+
+export function corsPreflight(methods = "POST, OPTIONS"): Response {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": CORS_ORIGIN,
+      "Access-Control-Allow-Methods": methods,
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Max-Age": "86400",
+    },
+  });
+}
+
+export function withCors(res: Response): Response {
+  const out = new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: new Headers(res.headers),
+  });
+  out.headers.set("Access-Control-Allow-Origin", CORS_ORIGIN);
+  return out;
+}

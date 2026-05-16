@@ -25,6 +25,9 @@ tauri = { workspace = true }
 tauri-plugin-deep-link = { workspace = true }
 tauri-plugin-single-instance = { workspace = true }
 
+# G3.1: auto-updater (check-only this phase; see workspace Cargo.toml).
+tauri-plugin-updater = { workspace = true }
+
 serde = { workspace = true }
 # Layer 10 / Phase 3: `osl_encrypt_message` accepts an opaque
 # `options: serde_json::Value` so the JS-side hook can pass through
