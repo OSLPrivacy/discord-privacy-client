@@ -56,9 +56,7 @@
 
 use ipc::peer_map::{load_peer_map_from_path, PeerMapError};
 use ipc::AppState;
-use keystore::{
-    generate_identity, load_identity, save_identity, select_best_sealer, KeyServerClient,
-};
+use keystore::{generate_identity, load_identity, save_identity, select_best_sealer};
 use serde::Deserialize;
 use std::path::PathBuf;
 use store::MessageStore;
@@ -575,64 +573,25 @@ fn load_or_generate_identity(
     true
 }
 
-/// Init [`KeyServerClient`] and call `register`. Both steps log
-/// and continue on failure — `register` failure leaves the
-/// keyserver client populated, so subsequent `fetch_pubkeys`
-/// calls can still succeed (in case the failure was transient).
+/// Init the keyserver client and call `register`.
+///
+/// REGISTER-FIX: this is now a thin delegate to
+/// [`ipc::commands::ensure_keyserver_registered`] — the single
+/// shared implementation that both this boot-time path and the
+/// runtime post-unlock / post-snowflake paths go through, so they
+/// cannot drift. Behaviour for the boot case is unchanged: at cold
+/// boot `state.keyserver` is empty and (because the caller already
+/// gated on `identity_loaded`) `state.identity` is populated, so the
+/// shared helper builds the client, attempts `register`, and installs
+/// the client — exactly as before. Both steps log and continue on
+/// failure; a `register` failure still leaves the client installed so
+/// subsequent `fetch_pubkeys` calls can succeed.
 fn init_keyserver_and_register(
     state: &AppState,
     base_url: &str,
     admin_token: Option<String>,
 ) {
-    let client = match KeyServerClient::new(base_url) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                base_url = %base_url,
-                "OSL bootstrap: KeyServerClient::new failed; skipping register"
-            );
-            return;
-        }
-    };
-    // Attach admin token if configured. `with_admin_token` normalises
-    // empty strings to `None` so a `"admin_token": ""` in
-    // keyserver.json doesn't end up sending a bad header.
-    let client = client.with_admin_token(admin_token.clone());
-    tracing::info!(
-        base_url = %base_url,
-        admin_token = if admin_token.as_deref().unwrap_or("").is_empty() {
-            "absent (dev mode or local keyserver)"
-        } else {
-            "present"
-        },
-        "OSL bootstrap: KeyServerClient initialised"
-    );
-
-    {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
-        let id = id_guard
-            .as_ref()
-            .expect("load_or_generate_identity returned true");
-        match client.register(id) {
-            Ok(resp) => tracing::info!(
-                user_id = %resp.user_id,
-                initial = resp.registered_at.is_some(),
-                "OSL bootstrap: registered with key-server"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "OSL bootstrap: key-server register failed; \
-                 fetch_pubkeys may still work if peers are already registered"
-            ),
-        }
-    }
-
-    // Install the client AFTER attempting register, so that even
-    // if register fails the client is available for fetch_pubkeys
-    // calls (the prototype keyserver doesn't strictly require us
-    // to be registered to read other users' pubkeys).
-    *state.keyserver.lock().expect("keyserver mutex poisoned") = Some(client);
+    ipc::commands::ensure_keyserver_registered(state, base_url, admin_token);
 }
 
 /// Convenience: ensure the parent directory of `path` exists

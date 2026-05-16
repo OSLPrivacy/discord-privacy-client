@@ -220,6 +220,18 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
 
         *state.identity.lock().expect("identity mutex poisoned") = Some(snapshot);
         eprintln!("[OSL][f0-fix2] generated + saved fresh identity (user_id={snowflake})");
+        // REGISTER-FIX: this is the V2 clean-install moment the
+        // identity first comes into existence. Bootstrap could not
+        // register at boot (no identity.json yet) and the password
+        // gate fired before this (so its post-unlock hook saw no
+        // identity). Without registering HERE, the machine never
+        // reaches POST /v1/register until a *second* relaunch. The
+        // call is idempotent (upsert) and non-fatal.
+        ensure_keyserver_registered(
+            state,
+            &resolve_keyserver_base_url(dir),
+            read_keyserver_admin_token(dir),
+        );
         return run_verify(state);
     }
 
@@ -260,7 +272,18 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     };
 
     let to_save = match step {
-        Step::AlreadySet => return run_verify(state),
+        Step::AlreadySet => {
+            // Identity already bound to this snowflake (a relaunch
+            // re-calling register_self_snowflake, or recovery after
+            // the keyserver row was purged). Re-assert our presence
+            // on the keyserver — idempotent upsert, non-fatal.
+            ensure_keyserver_registered(
+                state,
+                &resolve_keyserver_base_url(dir),
+                read_keyserver_admin_token(dir),
+            );
+            return run_verify(state);
+        }
         Step::Save(snapshot) => snapshot,
     };
 
@@ -278,6 +301,14 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         ));
     }
     eprintln!("[OSL][bootstrap] self snowflake registered: {snowflake}");
+    // REGISTER-FIX: snowflake just attached to a pre-existing
+    // identity and persisted — register against the keyserver now
+    // rather than waiting for the next relaunch. Idempotent, non-fatal.
+    ensure_keyserver_registered(
+        state,
+        &resolve_keyserver_base_url(dir),
+        read_keyserver_admin_token(dir),
+    );
     run_verify(state)
 }
 
@@ -5085,6 +5116,132 @@ pub fn resolve_keyserver_base_url(dir: &std::path::Path) -> String {
     read_keyserver_base_url(dir).unwrap_or_else(|| DEFAULT_KEYSERVER_BASE_URL.to_string())
 }
 
+/// Best-effort read of `<config_dir>/keyserver.json` → `admin_token`.
+/// `keyserver.json` is an OVERRIDE only (dev/staging); a fresh
+/// production install has no such file and registers against an
+/// unsecured-route prod keyserver with no token. Empty string is
+/// treated as absent (mirrors `KeyServerClient::with_admin_token`).
+fn read_keyserver_admin_token(dir: &std::path::Path) -> Option<String> {
+    let path = dir.join("keyserver.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("admin_token")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// REGISTER-FIX: the single shared implementation of "install the
+/// keyserver client into `AppState` and POST our identity pubkeys to
+/// `/v1/register`". Both the boot-time path
+/// (`bootstrap::init_keyserver_and_register`, which now delegates
+/// here) and the post-unlock / post-snowflake runtime paths call
+/// THIS function, so the two can never drift.
+///
+/// Why a runtime caller is needed at all: `run_autostart` executes at
+/// cold boot. On a V2 clean install there is no `identity.json` yet
+/// (bootstrap no longer auto-creates it), so the boot-time register
+/// is skipped and never retried — the machine stays absent from
+/// `/v1/pubkeys` and no peer can encrypt to it. The runtime callers
+/// close that gap the moment an identity actually exists in state
+/// (first ever: the Discord-snowflake registration; every relaunch:
+/// the password-gate unlock).
+///
+/// Idempotency contract (this WILL run on every unlock):
+/// - `/v1/register` is a server-side upsert keyed by `user_id`
+///   (`keyserver-cf` `upsertUser`: SELECT then UPDATE-or-INSERT).
+///   `registered_at` is stamped once on first INSERT and never
+///   rewritten; the UPDATE branch writes back the *same* stable
+///   public keys the loaded identity always derives
+///   (`build_register_request` reads the on-disk identity), so
+///   re-registering rotates nothing and is a no-op beyond bumping a
+///   `last_rotated_at` metadata timestamp.
+/// - No identity in state → no-op (logged), so an early unlock
+///   before the snowflake exists doesn't error.
+/// - If a keyserver client is already installed, we do NOT
+///   re-install or overwrite it (no double-install); we still
+///   re-attempt `register` through a freshly-built client so a
+///   prior transient failure self-heals on the next unlock.
+///
+/// Failure posture is identical to the boot path: every failure is a
+/// `tracing` event, never a panic, never an `Err` — the app keeps
+/// running and the next unlock / next launch retries (chosen over an
+/// in-call retry loop so we neither block the unlock UI nor spam the
+/// keyserver).
+pub fn ensure_keyserver_registered(
+    state: &AppState,
+    base_url: &str,
+    admin_token: Option<String>,
+) {
+    // Identity gate — nothing to register until one exists.
+    {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        if id_guard.is_none() {
+            tracing::info!(
+                "OSL: ensure_keyserver_registered: no identity in state; \
+                 skipping register (will retry on next unlock once the \
+                 Discord-snowflake identity exists)"
+            );
+            return;
+        }
+    }
+
+    // Pure construction (no IO) — safe to build even when a client is
+    // already installed; we use it for the register attempt and only
+    // conditionally adopt it as the installed client below.
+    let client = match KeyServerClient::new(base_url) {
+        Ok(c) => c.with_admin_token(admin_token.clone()),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                base_url = %base_url,
+                "OSL: ensure_keyserver_registered: KeyServerClient::new \
+                 failed; skipping register"
+            );
+            return;
+        }
+    };
+
+    // Register while holding only the identity lock (mirrors the
+    // boot path's lock discipline — identity scope, then keyserver
+    // scope, never nested — so there is no lock-order deadlock with
+    // any other subsystem).
+    {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let Some(id) = id_guard.as_ref() else {
+            // Cleared between the gate check and here (e.g. a
+            // concurrent burn). Nothing to do.
+            return;
+        };
+        match client.register(id) {
+            Ok(resp) => tracing::info!(
+                user_id = %resp.user_id,
+                initial = resp.registered_at.is_some(),
+                "OSL: ensure_keyserver_registered: registered with key-server"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "OSL: ensure_keyserver_registered: key-server register \
+                 failed (non-fatal; retried on next unlock / launch)"
+            ),
+        }
+    }
+
+    // Install the client only if the slot is empty. Re-running on a
+    // later unlock must not stomp the client bootstrap (or an earlier
+    // unlock) already installed.
+    {
+        let mut ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        if ks_guard.is_none() {
+            *ks_guard = Some(client);
+            tracing::info!(
+                "OSL: ensure_keyserver_registered: keyserver client installed \
+                 (was absent — boot-time install had been skipped)"
+            );
+        }
+    }
+}
+
 /// 7d-A: one row in the Whitelist Manager's flat table. The
 /// Tauri shell exposes a `Vec<WhitelistRowDto>` via
 /// `osl_list_all_whitelists`.
@@ -5409,6 +5566,25 @@ pub fn cmd_osl_verify_gate_password(
                     "OSL: post-gate state reload failed"
                 ),
             }
+            // REGISTER-FIX: the boot-time keyserver register runs at
+            // cold boot and is skipped whenever no identity was
+            // loadable then (the V2 clean-install case, and any boot
+            // where the sealed identity could not be read). It is
+            // never retried — so a machine that booted without a
+            // loadable identity stays absent from /v1/pubkeys and no
+            // peer can encrypt to it. This is the post-unlock retry:
+            // by the time the main password verifies, bootstrap has
+            // already run and (on a relaunch) loaded identity.json,
+            // so state.identity is populated here. Idempotent — see
+            // `ensure_keyserver_registered`'s upsert contract; it is
+            // a no-op if no identity exists yet (first install, where
+            // the identity is born later in the Discord-snowflake
+            // path, which carries its own hook).
+            ensure_keyserver_registered(
+                state,
+                &resolve_keyserver_base_url(&dir),
+                read_keyserver_admin_token(&dir),
+            );
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
