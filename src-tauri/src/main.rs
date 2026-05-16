@@ -1842,14 +1842,27 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
-        // G3.1: auto-updater. Check-only this phase — `dialog:false`
-        // and an empty `pubkey` in tauri.conf.json mean Tauri's
-        // built-in update dialog is suppressed and signature
-        // verification isn't wired yet (G3.2 generates the key;
-        // G3.3 builds the UI + license-state channel). No auto
-        // download/install is configured, so registering the
-        // plugin only enables `osl_check_for_updates` to query
-        // the keyserver manifest.
+        // G3.1/G3.2: auto-updater. `dialog:false` suppresses Tauri's
+        // built-in update dialog (custom UI lands in G3.3 alongside
+        // license-state channel selection). No auto download/install
+        // is configured, so the plugin only enables
+        // `osl_check_for_updates` to query the keyserver manifest.
+        //
+        // G3.2 — update signing:
+        //   * Public key (in `tauri.conf.json` -> plugins.updater.pubkey,
+        //     shipped to every client in the manifest):
+        //     minisign identifier 44AD89E36BC119F8.
+        //   * Private key: NEVER in the repo. The build picks it up
+        //     from the operator-only OS env var
+        //     TAURI_SIGNING_PRIVATE_KEY_PATH (+ ..._PASSWORD); Tauri
+        //     auto-signs the .msi at `cargo tauri build` time when
+        //     those are set. No code/config references the path.
+        //   * Key rotation: ship an update *signed with the OLD key*
+        //     whose `tauri.conf.json` flips `pubkey` to the NEW key.
+        //     Clients only trust a new key once they've installed an
+        //     update verified by the old one. Do NOT rotate without a
+        //     written rollover plan — a botched rotation bricks the
+        //     update channel for every existing install.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new())
         // Phase 7d-B1 / 7d-C: serve bundled local HTML pages on the

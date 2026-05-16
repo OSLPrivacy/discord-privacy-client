@@ -26,6 +26,47 @@ const INSTALLER_URL =
   "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi";
 const RELEASE_NOTES = "OSL Privacy 0.0.1 — beta build.";
 
+/**
+ * Per-version update signatures.
+ *
+ * Each entry is the contents of the .sig file produced by
+ * `cargo tauri build` when TAURI_SIGNING_PRIVATE_KEY_PATH and
+ * TAURI_SIGNING_PRIVATE_KEY_PASSWORD env vars are set.
+ *
+ * AFTER A NEW SIGNED BUILD, the operator workflow is:
+ *   1. cargo tauri build (produces .msi + .msi.sig)
+ *   2. Get-Content the .msi.sig file
+ *   3. Paste the contents here as the value for the new
+ *      version key
+ *   4. git commit + npx wrangler deploy
+ *   5. Upload the signed .msi to R2:
+ *      npx wrangler r2 object put osl-installers/osl-privacy-X.Y.Z.msi
+ *        --file="target/release/bundle/msi/OSL Privacy_X.Y.Z_x64_en-US.msi"
+ *        --remote
+ */
+export const RELEASE_SIGNATURES: Record<string, string> = {
+  "0.0.1": "<G3.2-PENDING-FIRST-SIGNED-BUILD>",
+};
+
+/// Look up the update signature for a given version. A missing entry
+/// must NOT crash the endpoint: we warn and return "" so the manifest
+/// still serves, and the client-side updater then fails signature
+/// verification — the safe outcome (an unverifiable build is never
+/// installed) rather than a hard 5xx that would also block legitimate
+/// "no update" traffic. Exported so the fallback/warning path is
+/// unit-testable (the handler itself only ever asks for the hardcoded
+/// latest PRODUCTION_VERSION, whose key is always present).
+export function signatureFor(version: string): string {
+  const sig = RELEASE_SIGNATURES[version];
+  if (sig === undefined) {
+    console.warn(
+      `[update-manifest] MISSING signature for version=${version} — returning empty (client will reject)`,
+    );
+    return "";
+  }
+  return sig;
+}
+
 interface Semver {
   major: number;
   minor: number;
@@ -88,6 +129,12 @@ export async function handleUpdateManifest(
   // (`platforms["windows-x86_64"]`); OSL is Windows-only today but
   // we echo whatever the client asked for rather than hardcoding.
   const platformKey = `${target}-${arch}`;
+
+  // Signature is keyed by the version we're offering (the latest /
+  // PRODUCTION_VERSION). signatureFor() warns + falls back to "" if
+  // absent so a missing entry degrades safely instead of 5xx-ing.
+  const signature = signatureFor(PRODUCTION_VERSION);
+
   console.log(
     `[update-manifest] offer ip=${ip} platform=${platformKey} current=${currentVersion} -> ${PRODUCTION_VERSION}`,
   );
@@ -97,8 +144,7 @@ export async function handleUpdateManifest(
     pub_date: new Date().toISOString(),
     platforms: {
       [platformKey]: {
-        // G3.2 fills this with a real minisign/ed25519 signature.
-        signature: "",
+        signature,
         url: INSTALLER_URL,
       },
     },

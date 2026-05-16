@@ -35,7 +35,7 @@
         "https://keyserver.oslprivacy.com/v1/update-manifest/{{target}}/{{arch}}/{{current_version}}"
       ],
       "dialog": false,
-      "pubkey": ""
+      "pubkey": "RWT4GcFr44mtRHYdm9PuFnk6hPzKAzDfnPWzsW5dlTRKd/hQYWcUgo22"
     }
   }
 }

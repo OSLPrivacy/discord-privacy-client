@@ -1,5 +1,9 @@
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+  RELEASE_SIGNATURES,
+  signatureFor,
+} from "../../src/endpoints/update-manifest.js";
 
 const BASE = "http://test/v1/update-manifest";
 
@@ -21,8 +25,28 @@ describe("GET /v1/update-manifest", () => {
     expect(platform!.url).toBe(
       "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi",
     );
-    // G3.2 fills the signature; empty placeholder for now.
-    expect(platform!.signature).toBe("");
+    // G3.2: signature tracks RELEASE_SIGNATURES — auto-updates to the
+    // real value once the operator pastes the .msi.sig contents.
+    expect(platform!.signature).toBe(RELEASE_SIGNATURES["0.0.1"]);
+  });
+
+  it("manifest signature equals the current RELEASE_SIGNATURES[0.0.1] (auto-tracks operator update)", async () => {
+    const res = await SELF.fetch(`${BASE}/windows/x86_64/0.0.0`);
+    const body = (await res.json()) as {
+      platforms: Record<string, { signature: string }>;
+    };
+    expect(body.platforms["windows-x86_64"]!.signature).toBe(
+      RELEASE_SIGNATURES["0.0.1"],
+    );
+  });
+
+  it("unknown version → warning path, signature falls back to empty string", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const sig = signatureFor("999.0.0");
+    expect(sig).toBe("");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]![0]).toContain("MISSING signature");
+    warn.mockRestore();
   });
 
   it("up-to-date client (0.0.1) → 204 No Content", async () => {
