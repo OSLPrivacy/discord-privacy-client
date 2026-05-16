@@ -46,6 +46,34 @@ pub struct TourState {
     pub last_slide: u8,
 }
 
+/// G3.3: auto-updater channel. `Stable` = everyone; `Beta` = a paid
+/// perk (early access to newer builds). Default = `Stable`; legacy
+/// `app_preferences.json` files without this key load as `Stable`.
+///
+/// NOTE: channel is a UX affordance, NOT a security boundary. The
+/// worst case of a free user forcing `Beta` is a slightly-newer
+/// *build* — never a paywalled capability (real paid features are
+/// gated in the seal commands / server-side). The UI hides Beta for
+/// non-paid users to set expectations; do not "harden" this into a
+/// fake server-side eligibility check.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+impl UpdateChannel {
+    /// Query-param value sent to the keyserver manifest endpoint.
+    pub fn as_query_value(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "stable",
+            UpdateChannel::Beta => "beta",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -56,6 +84,8 @@ pub struct AppPreferences {
     pub tour: TourState,
     #[serde(default)]
     pub vpn_warning_dismissed_forever: bool,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

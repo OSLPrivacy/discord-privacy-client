@@ -310,6 +310,41 @@ async function oslEmit(eventName, payload) {
   }
 }
 
+// G3.3: subscribe to a Tauri event (settings-window capability grants
+// core:event:allow-listen). Returns an unlisten fn (or a no-op if the
+// event API isn't available — progress UI degrades gracefully).
+async function oslListen(eventName, cb) {
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === "function") {
+      return await window.__TAURI__.event.listen(eventName, cb);
+    }
+  } catch (e) {
+    console.warn("[OSL settings] listen failed:", eventName, e);
+  }
+  return () => {};
+}
+
+// G3.3: passive "update available" badge on the Updates sidebar item.
+// Set by the startup background check (osl:update-available); cleared
+// when the user opens the Updates page (they've seen it).
+function setUpdatesBadge(on) {
+  const items = document.querySelectorAll('.osl-sidebar-item[data-osl-page="updates"]');
+  for (const it of items) {
+    let dot = it.querySelector(".osl-update-dot");
+    if (on && !dot) {
+      dot = document.createElement("span");
+      dot.className = "osl-update-dot";
+      dot.style.cssText =
+        "display:inline-block;width:8px;height:8px;border-radius:50%;" +
+        "background:#3ba55d;margin-left:8px;vertical-align:middle;";
+      dot.title = "Update available";
+      it.appendChild(dot);
+    } else if (!on && dot) {
+      dot.remove();
+    }
+  }
+}
+
 // ============================================================
 // Toast.
 // ============================================================
@@ -526,6 +561,7 @@ const LIVE_ITEMS = [
   { id: "whitelist", label: "Whitelist Manager" },
   { id: "passwords", label: "Passwords" },
   { id: "account", label: "Account" },
+  { id: "updates", label: "Updates" },
   { id: "stego", label: "Stego Mode" },
   { id: "keybinds", label: "Keybinds" },
   { id: "about", label: "About" },
@@ -554,6 +590,7 @@ function switchPage(pageId) {
   else if (pageId === "whitelist") renderWhitelist();
   else if (pageId === "passwords") renderPasswords();
   else if (pageId === "account") renderAccount();
+  else if (pageId === "updates") renderUpdates();
   else if (pageId === "stego") renderStego();
   else if (pageId === "keybinds") renderKeybinds();
   else if (pageId === "about") renderAbout();
@@ -642,6 +679,237 @@ async function renderStego() {
     else oslToast("Save failed: " + r.error);
   });
   pane.appendChild(save);
+}
+
+// ============================================================
+// G3.3: Updates page (check / channel / install).
+// ============================================================
+let _updateAvailable = null; // last update_available result, for Install
+
+async function renderUpdates() {
+  setUpdatesBadge(false); // user is looking at it now
+  const pane = getPane();
+  pane.innerHTML = "";
+
+  const h = document.createElement("h2");
+  h.className = "osl-h2";
+  h.textContent = "Updates";
+  pane.appendChild(h);
+
+  const desc = document.createElement("p");
+  desc.style.cssText = "margin:0 0 16px 0;font-size:13px;color:#b5bac1;line-height:1.55;";
+  desc.textContent =
+    "OSL checks for updates automatically once shortly after launch, and " +
+    "whenever you press Check below. Updates are cryptographically signed; " +
+    "an update that fails signature verification is never installed.";
+  pane.appendChild(desc);
+
+  // --- Current version ---
+  const verField = document.createElement("div");
+  verField.className = "osl-field";
+  const verLab = document.createElement("div");
+  verLab.className = "osl-field-label";
+  verLab.textContent = "Installed version";
+  const verVal = document.createElement("div");
+  verVal.className = "osl-field-value";
+  const verSpan = document.createElement("span");
+  verSpan.textContent = "—";
+  verVal.appendChild(verSpan);
+  verField.appendChild(verLab);
+  verField.appendChild(verVal);
+  pane.appendChild(verField);
+
+  // --- Channel selector ---
+  const chanH = document.createElement("div");
+  chanH.style.cssText = "font-size:14px;font-weight:600;margin:20px 0 6px 0;color:#dbdee1;";
+  chanH.textContent = "Update channel";
+  pane.appendChild(chanH);
+
+  const tier = await oslInvoke("osl_get_tier_gate_status", {});
+  const isPaid = !!(tier.ok && tier.value && tier.value.is_paid);
+
+  const chanState = await oslInvoke("osl_get_update_channel", {});
+  let channel = (chanState.ok && chanState.value) ? chanState.value : "stable";
+  // A non-paid user can't be on beta — coerce the display to stable.
+  if (!isPaid) channel = "stable";
+
+  function chanRadio(value, label, opts) {
+    opts = opts || {};
+    const wrap = document.createElement("label");
+    wrap.style.cssText =
+      "display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0;" +
+      (opts.disabled ? "opacity:0.5;cursor:not-allowed;" : "cursor:pointer;");
+    const r = document.createElement("input");
+    r.type = "radio";
+    r.name = "osl_update_channel";
+    r.value = value;
+    if (opts.checked) r.checked = true;
+    if (opts.disabled) r.disabled = true;
+    wrap.appendChild(r);
+    wrap.appendChild(document.createTextNode(label));
+    if (opts.badge) {
+      const tag = document.createElement("span");
+      tag.className = "osl-sidebar-tag";
+      tag.style.cssText = "margin-left:6px;";
+      tag.textContent = opts.badge;
+      wrap.appendChild(tag);
+    }
+    return { wrap, input: r };
+  }
+
+  const stable = chanRadio("stable", "Stable — recommended for everyone", {
+    checked: channel === "stable",
+  });
+  // Beta is a paid perk. Disabling it for non-paid users is purely a
+  // UX affordance (sets expectations) — NOT a security control. The
+  // worst case of a free user forcing beta is a slightly-newer build;
+  // real paid features are gated server-side / in the seal commands.
+  // Do not turn this into a fake eligibility check.
+  const beta = chanRadio(
+    "beta",
+    "Beta — early access to newer builds",
+    isPaid
+      ? { checked: channel === "beta" }
+      : { disabled: true, badge: "Paid feature" }
+  );
+  pane.appendChild(stable.wrap);
+  pane.appendChild(beta.wrap);
+
+  if (!isPaid) {
+    const hint = document.createElement("p");
+    hint.style.cssText = "margin:4px 0 0 0;font-size:12px;color:#949ba4;";
+    hint.textContent =
+      "The beta channel is included with a paid license. Free users stay on the stable channel.";
+    pane.appendChild(hint);
+  }
+
+  async function onChannelChange(next) {
+    const r = await oslInvoke("osl_set_update_channel", { channel: next });
+    if (!r.ok) {
+      oslToast("Couldn't save channel: " + r.error);
+      return;
+    }
+    oslToast("Update channel set to " + next + ".");
+    // Channel changed → previous check result is stale; re-check.
+    _updateAvailable = null;
+    installBtn.style.display = "none";
+    await doCheck();
+  }
+  stable.input.addEventListener("change", (e) => {
+    if (e.target.checked) onChannelChange("stable");
+  });
+  if (isPaid) {
+    beta.input.addEventListener("change", (e) => {
+      if (e.target.checked) onChannelChange("beta");
+    });
+  }
+
+  // --- Status line ---
+  const status = document.createElement("p");
+  status.style.cssText = "margin:20px 0 12px 0;font-size:14px;color:#dbdee1;min-height:20px;";
+  status.textContent = "Checking…";
+  pane.appendChild(status);
+
+  // --- Buttons ---
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;";
+  const checkBtn = document.createElement("button");
+  checkBtn.className = "osl-row-btn osl-row-btn-remove";
+  checkBtn.style.cssText = "padding:8px 16px;";
+  checkBtn.textContent = "Check for updates";
+  const installBtn = document.createElement("button");
+  installBtn.className = "osl-row-btn osl-row-btn-remove";
+  installBtn.style.cssText =
+    "padding:8px 16px;background:#3ba55d;color:#fff;border:none;border-radius:4px;display:none;";
+  installBtn.textContent = "Download & install";
+  btnRow.appendChild(checkBtn);
+  btnRow.appendChild(installBtn);
+  pane.appendChild(btnRow);
+
+  async function doCheck() {
+    status.textContent = "Checking…";
+    installBtn.style.display = "none";
+    _updateAvailable = null;
+    const res = await oslInvoke("osl_check_for_updates", {});
+    if (!res.ok) {
+      status.textContent = "Couldn't check for updates: " + res.error;
+      return;
+    }
+    const v = res.value || {};
+    if (v.current) verSpan.textContent = v.current;
+    if (v.status === "up_to_date") {
+      status.textContent = "You're up to date.";
+    } else if (v.status === "update_available") {
+      _updateAvailable = v;
+      let line = "Update available: " + v.next;
+      if (v.notes) line += " — " + v.notes;
+      status.textContent = line;
+      installBtn.style.display = "";
+    } else {
+      // status === "error"
+      status.textContent =
+        "Couldn't check for updates" + (v.message ? ": " + v.message : ".");
+    }
+  }
+
+  checkBtn.addEventListener("click", (e) => { e.stopPropagation(); doCheck(); });
+
+  installBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!_updateAvailable) return;
+    const ok = await oslConfirm({
+      title: "Install update " + _updateAvailable.next + "?",
+      body:
+        "OSL will download and verify the update, then restart to apply it. " +
+        "Unsaved state in the current session is lost on restart.",
+      confirmText: "Download & restart",
+    });
+    if (!ok) return; // user declined → keep running current version
+
+    installBtn.disabled = true;
+    checkBtn.disabled = true;
+    status.textContent = "Starting download…";
+
+    let unlistenP = await oslListen("osl:update-progress", (ev) => {
+      const p = ev && ev.payload ? ev.payload : {};
+      if (p.total) {
+        const pct = Math.floor((p.downloaded / p.total) * 100);
+        status.textContent = "Downloading… " + pct + "%";
+      } else if (p.downloaded) {
+        status.textContent =
+          "Downloading… " + Math.floor(p.downloaded / 1024) + " KB";
+      }
+    });
+    let unlistenF = await oslListen("osl:update-finished", () => {
+      status.textContent = "Verifying & installing…";
+    });
+
+    const r = await oslInvoke("osl_install_update", {});
+    // If install + relaunch succeeded the process is already gone and
+    // this code never runs. Reaching here means it returned normally.
+    if (typeof unlistenP === "function") unlistenP();
+    if (typeof unlistenF === "function") unlistenF();
+    installBtn.disabled = false;
+    checkBtn.disabled = false;
+
+    if (!r.ok) {
+      status.textContent = "Update failed: " + r.error;
+      return;
+    }
+    const out = r.value || {};
+    if (out.status === "no_update") {
+      status.textContent = "You're up to date.";
+      installBtn.style.display = "none";
+    } else if (out.status === "error") {
+      // SECURITY-CRITICAL surface: signature failure lands here.
+      // Nothing was installed.
+      status.textContent = "⚠ " + (out.message || "Update could not be installed.");
+    }
+  });
+
+  // Initial check on page open (user-initiated by opening Updates;
+  // this is not background polling).
+  await doCheck();
 }
 
 function getPane() { return document.getElementById("osl-content"); }
@@ -2994,6 +3262,14 @@ buildSidebar();
 switchPage("identity");
 oslSettingsWireTourEvents();
 oslSettingsBootTourIfActive();
+
+// G3.3 T-G3.3.5: the startup background check (Rust, ~8s post-launch)
+// emits osl:update-available app-wide on a hit. If the settings
+// window is open when it fires, badge the Updates sidebar item —
+// passive, no modal. Opening the Updates page clears it.
+oslListen("osl:update-available", () => {
+  if (currentPage !== "updates") setUpdatesBadge(true);
+});
 </script>
 </body>
 </html>

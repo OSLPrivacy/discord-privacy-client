@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# G3.1/G3.3: query the keyserver manifest for a newer build on the
+# user's selected channel. Check-only — no download/install.
+[[permission]]
+identifier = "allow-osl-check-for-updates"
+description = "Permits the trusted local settings window to invoke `osl_check_for_updates` (channel-aware manifest check; returns up_to_date / update_available / error). Drives the Updates page status line and the manual 'Check for updates' button."
+commands.allow = ["osl_check_for_updates"]

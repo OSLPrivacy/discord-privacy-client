@@ -1,0 +1,11 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# G3.3: download + signature-verify + install the available update,
+# then relaunch. The plugin verifies the minisign signature against
+# the configured pubkey; a bad signature hard-fails and nothing is
+# installed. User consent for the restart is obtained in the UI
+# (confirm dialog) before this is invoked.
+[[permission]]
+identifier = "allow-osl-install-update"
+description = "Permits the trusted local settings window to invoke `osl_install_update` (download, verify, install, relaunch). Invoked only after the user confirms the restart prompt on the Updates page."
+commands.allow = ["osl_install_update"]

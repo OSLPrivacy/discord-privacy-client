@@ -5843,6 +5843,54 @@ pub fn cmd_osl_set_app_preferences(
     Ok(())
 }
 
+// ---- G3.3: auto-updater channel ----
+//
+// Channel persists in the SAME app_preferences.json as every other
+// client setting (reuses the existing mechanism — no new persistence
+// layer). These are dedicated get/set commands rather than going
+// through `AppPreferencesDto` because that DTO's set path overwrites
+// the whole struct; a focused mutation here can't clobber stego_mode
+// / tour state, and the stego settings page can't clobber the channel.
+//
+// SECURITY NOTE: channel is a UX affordance, NOT a security boundary
+// (see `app_preferences::UpdateChannel`). Free users forcing Beta
+// only get a slightly-newer build; real paid features are gated
+// elsewhere. Don't add server-side channel enforcement.
+
+pub fn cmd_osl_get_update_channel(
+    state: &AppState,
+) -> Result<crate::app_preferences::UpdateChannel, String> {
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.update_channel)
+}
+
+pub fn cmd_osl_set_update_channel(
+    state: &AppState,
+    channel: crate::app_preferences::UpdateChannel,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.update_channel = channel;
+    }
+    if let Some(dir) = config_dir {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let path = dir.join("app_preferences.json");
+        crate::app_preferences::write_app_preferences(&path, &g)?;
+    }
+    Ok(())
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`] plus the
@@ -6328,4 +6376,20 @@ pub fn cmd_osl_check_for_updates(
             }
         }
     }
+}
+
+/// G3.3: JS-facing result of an install attempt. The *success* path
+/// is not represented here — a successful `download_and_install`
+/// relaunches the process, so JS never receives a value in that
+/// case. This enum only covers the cases where the command returns
+/// normally without restarting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UpdateInstallResult {
+    /// `check()` came back empty — nothing to install (the normal
+    /// 204 "no update" case; benign).
+    NoUpdate,
+    /// Download / signature-verify / install failed. `message` is
+    /// safe to show; on signature failure NOTHING was installed.
+    Error { message: String },
 }

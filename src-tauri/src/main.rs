@@ -1781,37 +1781,182 @@ async fn osl_test_deep_link(url: String) -> Result<ipc::commands::OslTestDeepLin
         .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// G3.1: ask the keyserver manifest whether a newer build exists.
+/// G3.3: build a `tauri-plugin-updater` `Updater` whose manifest
+/// endpoint carries the user's selected channel as `?channel=`.
 ///
-/// Check-only. We call `tauri-plugin-updater`'s `check()` (which
-/// fetches + semver-compares against the configured endpoint) but
-/// deliberately do NOT `download_and_install()` — download/install
-/// gating + UI land in G3.2/G3.3. The Tauri-coupled bits (AppHandle,
-/// plugin) stay here; the pure result classification lives in
-/// `ipc::commands::cmd_osl_check_for_updates` so it unit-tests
-/// without a webview runtime.
+/// v2.9.0 has no built-in "channel" concept; the clean supported
+/// mechanism is a runtime endpoint override via
+/// `updater_builder().endpoints(..)`. The `{{target}}/{{arch}}/
+/// {{current_version}}` placeholders are still interpolated by the
+/// plugin at fetch time (it `.replace()`s them on whatever endpoints
+/// are set), and the query param survives that substitution.
+///
+/// The channel is read from the SAME persisted app_preferences as
+/// every other client setting (no new persistence layer).
+fn osl_build_channel_updater(
+    app: &tauri::AppHandle,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let channel = {
+        let state = app.state::<AppState>();
+        ipc::commands::cmd_osl_get_update_channel(state.inner())?
+    };
+
+    // Doubled braces escape the format! placeholders so the literal
+    // `{{target}}` etc. reach the plugin for its own interpolation.
+    let endpoint = format!(
+        "https://keyserver.oslprivacy.com/v1/update-manifest/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}?channel={}",
+        channel.as_query_value()
+    );
+    let url = tauri::Url::parse(&endpoint)
+        .map_err(|e| format!("OSL: bad updater endpoint: {e}"))?;
+
+    app.updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// G3.1/G3.3: ask the keyserver manifest whether a newer build
+/// exists on the user's channel. Check-only — no download/install.
+/// The Tauri-coupled bits stay here; the pure result classification
+/// lives in `ipc::commands::cmd_osl_check_for_updates` so it
+/// unit-tests without a webview runtime.
 #[tauri::command]
 async fn osl_check_for_updates(
     app: tauri::AppHandle,
 ) -> Result<ipc::commands::UpdateCheckResult, String> {
-    use tauri_plugin_updater::UpdaterExt;
-
     let current = app.package_info().version.to_string();
 
-    let outcome: Result<Option<ipc::commands::UpdateInfo>, String> = match app.updater() {
-        Ok(updater) => match updater.check().await {
-            Ok(Some(update)) => Ok(Some(ipc::commands::UpdateInfo {
-                version: update.version.clone(),
-                notes: update.body.clone(),
-                url: update.download_url.to_string(),
-            })),
-            Ok(None) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        },
-        Err(e) => Err(e.to_string()),
-    };
+    let outcome: Result<Option<ipc::commands::UpdateInfo>, String> =
+        match osl_build_channel_updater(&app) {
+            Ok(updater) => match updater.check().await {
+                Ok(Some(update)) => Ok(Some(ipc::commands::UpdateInfo {
+                    version: update.version.clone(),
+                    notes: update.body.clone(),
+                    url: update.download_url.to_string(),
+                })),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e),
+        };
 
     Ok(ipc::commands::cmd_osl_check_for_updates(current, outcome))
+}
+
+/// G3.3: download + signature-verify + install the available update,
+/// then relaunch. The plugin verifies the minisign signature against
+/// the configured pubkey inside `download_and_install`; a bad/missing
+/// signature returns `Err` and NOTHING is installed (security-
+/// critical — we surface an explicit error, never a silent skip).
+///
+/// User consent for the restart is obtained in the UI *before* this
+/// command is invoked (a confirm dialog). v2.9.0's
+/// `download_and_install` is atomic (download+verify+install in one
+/// call) — there is no clean "verify, pause, then apply" seam — so
+/// consent-before-call is the supported shape; we never auto-apply.
+///
+/// Progress is streamed via the `osl:update-progress` event
+/// (`{ downloaded, total }`); `osl:update-finished` fires when the
+/// byte stream completes (just before install + relaunch).
+#[tauri::command]
+async fn osl_install_update(
+    app: tauri::AppHandle,
+) -> Result<ipc::commands::UpdateInstallResult, String> {
+    let updater = match osl_build_channel_updater(&app) {
+        Ok(u) => u,
+        Err(e) => {
+            return Ok(ipc::commands::UpdateInstallResult::Error { message: e })
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        Ok(None) => return Ok(ipc::commands::UpdateInstallResult::NoUpdate),
+        Err(e) => {
+            return Ok(ipc::commands::UpdateInstallResult::Error {
+                message: format!("Couldn't check for the update: {e}"),
+            })
+        }
+    };
+
+    let app_for_progress = app.clone();
+    let mut downloaded: u64 = 0;
+    let on_chunk = move |chunk_len: usize, content_length: Option<u64>| {
+        downloaded += chunk_len as u64;
+        let _ = app_for_progress.emit(
+            "osl:update-progress",
+            serde_json::json!({ "downloaded": downloaded, "total": content_length }),
+        );
+    };
+    let app_for_finish = app.clone();
+    let on_finish = move || {
+        let _ = app_for_finish.emit("osl:update-finished", ());
+    };
+
+    match update.download_and_install(on_chunk, on_finish).await {
+        Ok(()) => {
+            // Verified + installed. Relaunch into the new version.
+            // `restart()` diverges, so JS never gets a return value
+            // on success (handled UI-side: the confirm dialog already
+            // told the user OSL would restart).
+            tracing::info!(
+                target: "osl::updater",
+                "[OSL updater] update installed; relaunching"
+            );
+            app.restart();
+        }
+        Err(e) => {
+            // Includes signature-verification failure. Nothing was
+            // installed. Surface an explicit, unambiguous error.
+            let msg = e.to_string();
+            tracing::error!(
+                target: "osl::updater",
+                error = %msg,
+                "[OSL updater] download/verify/install FAILED — not installed"
+            );
+            Ok(ipc::commands::UpdateInstallResult::Error {
+                message: format!(
+                    "Update could not be verified and was NOT installed: {msg}"
+                ),
+            })
+        }
+    }
+}
+
+/// G3.3: read the persisted update channel (stable/beta).
+#[tauri::command]
+async fn osl_get_update_channel(
+    app: tauri::AppHandle,
+) -> Result<ipc::app_preferences::UpdateChannel, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_update_channel(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// G3.3: persist the update channel. Channel eligibility is a UX
+/// affordance, not a security boundary (see `UpdateChannel` docs) —
+/// this command does not and must not verify the caller is paid.
+#[tauri::command]
+async fn osl_set_update_channel(
+    app: tauri::AppHandle,
+    channel: ipc::app_preferences::UpdateChannel,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_set_update_channel(state.inner(), channel, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
 fn main() {
@@ -2160,6 +2305,56 @@ fn main() {
                 }
             });
 
+            // G3.3 T-G3.3.5: one silent background update check a few
+            // seconds after launch. Non-blocking, non-intrusive: it
+            // never opens a modal — on a hit it just emits
+            // `osl:update-available` so the UI can show a passive
+            // badge on the settings icon. No polling; the only other
+            // automatic trigger is the manual "Check for updates"
+            // button. Failures are swallowed (a missed silent check
+            // is not worth bothering the user about).
+            {
+                let app_for_check = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    match osl_build_channel_updater(&app_for_check) {
+                        Ok(updater) => match updater.check().await {
+                            Ok(Some(update)) => {
+                                tracing::info!(
+                                    target: "osl::updater",
+                                    next = %update.version,
+                                    "[OSL updater] startup check: update available"
+                                );
+                                let _ = app_for_check.emit(
+                                    "osl:update-available",
+                                    serde_json::json!({ "next": update.version }),
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::info!(
+                                    target: "osl::updater",
+                                    "[OSL updater] startup check: up to date"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "osl::updater",
+                                    error = %e,
+                                    "[OSL updater] startup check failed (ignored)"
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "osl::updater",
+                                error = %e,
+                                "[OSL updater] startup check: updater build failed (ignored)"
+                            );
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2255,8 +2450,11 @@ fn main() {
             osl_close_settings_window_if_open,
             // Phase F0: deep-link smoke-test parser. Removed in F2.
             osl_test_deep_link,
-            // G3.1: updater check (no download/install this phase).
+            // G3.1/G3.3: updater check + channel-aware install.
             osl_check_for_updates,
+            osl_install_update,
+            osl_get_update_channel,
+            osl_set_update_channel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

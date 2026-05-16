@@ -49,6 +49,46 @@ export const RELEASE_SIGNATURES: Record<string, string> = {
     "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNEdjRnI0NG10UkRyMS9MY0VYMmhIOUFvOUNYeXI4dnhuUTZNeWF6d29DeGpMd1BlV2NidTRNWnBJZE8vWDNHNmlGbHhkRHBHSUFiVU9tN3BBUjBFZzlCSHFKeFE0N1FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc4OTAyOTAwCWZpbGU6T1NMIFByaXZhY3lfMC4wLjFfeDY0X2VuLVVTLm1zaQpoQXNoRi9xWlc5ZUFBeUxkYjZvcy9UeGdjOHVhcEZiSHAyc04wais0M0w0SGIveWkzaGszcjdrWG02VTEzVjl3V2puUGZtb08yYXpyc2pTQW9HL1FCUT09Cg==",
 };
 
+/// Update channels. `stable` = everyone; `beta` = a paid perk
+/// (early access). There is exactly ONE real build today (0.0.1),
+/// so both channels point at the same release — when a separate
+/// beta build exists this is a one-line change (bump `beta.version`
+/// + add its installer URL + add its signature to RELEASE_SIGNATURES).
+///
+/// Channel eligibility is NOT enforced here: a free user forcing
+/// `?channel=beta` only ever gets a slightly-newer *build*, never a
+/// paywalled capability (the actual paid features are gated in the
+/// seal commands / server-side). Channel is a UX affordance, not a
+/// security boundary — do not "harden" this into a fake auth check.
+type Channel = "stable" | "beta";
+
+interface ChannelRelease {
+  version: string;
+  url: string;
+  notes: string;
+}
+
+const RELEASE_CHANNELS: Record<Channel, ChannelRelease> = {
+  stable: {
+    version: PRODUCTION_VERSION,
+    url: INSTALLER_URL,
+    notes: RELEASE_NOTES,
+  },
+  // No separate beta build yet — beta serves the same 0.0.1 as
+  // stable. One-line swap when a real beta build ships.
+  beta: {
+    version: PRODUCTION_VERSION,
+    url: INSTALLER_URL,
+    notes: RELEASE_NOTES,
+  },
+};
+
+/// Anything that isn't exactly "beta" (absent, "stable", garbage,
+/// mixed case, ...) resolves to stable — the safe default.
+export function parseChannel(raw: string | null): Channel {
+  return raw === "beta" ? "beta" : "stable";
+}
+
 /// Look up the update signature for a given version. A missing entry
 /// must NOT crash the endpoint: we warn and return "" so the manifest
 /// still serves, and the client-side updater then fails signature
@@ -107,46 +147,49 @@ export async function handleUpdateManifest(
   const rl = await checkRateLimit(env, ip, 10);
   if (!rl.ok) return tooMany(rl.retryAfter);
 
+  const channel = parseChannel(new URL(request.url).searchParams.get("channel"));
+  const release = RELEASE_CHANNELS[channel];
+
   const current = parseSemver(currentVersion);
   if (!current) {
     console.log(
-      `[update-manifest] reject malformed version ip=${ip} target=${target} arch=${arch} current=${currentVersion}`,
+      `[update-manifest] reject malformed version ip=${ip} target=${target} arch=${arch} channel=${channel} current=${currentVersion}`,
     );
     return badRequest("current_version must be semver MAJOR.MINOR.PATCH");
   }
 
-  const production = parseSemver(PRODUCTION_VERSION)!;
+  const offered = parseSemver(release.version)!;
 
-  // current >= production → nothing newer to offer.
-  if (compareSemver(current, production) >= 0) {
+  // current >= offered → nothing newer to offer on this channel.
+  if (compareSemver(current, offered) >= 0) {
     console.log(
-      `[update-manifest] up-to-date ip=${ip} target=${target} arch=${arch} current=${currentVersion} production=${PRODUCTION_VERSION}`,
+      `[update-manifest] up-to-date ip=${ip} target=${target} arch=${arch} channel=${channel} current=${currentVersion} offered=${release.version}`,
     );
     return new Response(null, { status: 204 });
   }
 
-  // current < production → offer the production build. Platform key
-  // is "<target>-<arch>" to match Tauri's client-side lookup
+  // current < offered → offer the channel's build. Platform key is
+  // "<target>-<arch>" to match Tauri's client-side lookup
   // (`platforms["windows-x86_64"]`); OSL is Windows-only today but
   // we echo whatever the client asked for rather than hardcoding.
   const platformKey = `${target}-${arch}`;
 
-  // Signature is keyed by the version we're offering (the latest /
-  // PRODUCTION_VERSION). signatureFor() warns + falls back to "" if
-  // absent so a missing entry degrades safely instead of 5xx-ing.
-  const signature = signatureFor(PRODUCTION_VERSION);
+  // Signature is keyed by the version we're offering. signatureFor()
+  // warns + falls back to "" if absent so a missing entry degrades
+  // safely instead of 5xx-ing.
+  const signature = signatureFor(release.version);
 
   console.log(
-    `[update-manifest] offer ip=${ip} platform=${platformKey} current=${currentVersion} -> ${PRODUCTION_VERSION}`,
+    `[update-manifest] offer ip=${ip} platform=${platformKey} channel=${channel} current=${currentVersion} -> ${release.version}`,
   );
   return json({
-    version: PRODUCTION_VERSION,
-    notes: RELEASE_NOTES,
+    version: release.version,
+    notes: release.notes,
     pub_date: new Date().toISOString(),
     platforms: {
       [platformKey]: {
         signature,
-        url: INSTALLER_URL,
+        url: release.url,
       },
     },
   });

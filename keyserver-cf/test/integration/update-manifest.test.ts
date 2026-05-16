@@ -82,3 +82,51 @@ describe("GET /v1/update-manifest", () => {
     );
   });
 });
+
+describe("GET /v1/update-manifest — channels (G3.3)", () => {
+  it("?channel=beta returns a 200 manifest for 0.0.0", async () => {
+    const res = await SELF.fetch(`${BASE}/windows/x86_64/0.0.0?channel=beta`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      version: string;
+      platforms: Record<string, { url: string }>;
+    };
+    expect(body.version).toBe("0.0.1");
+    expect(body.platforms["windows-x86_64"]!.url).toBe(
+      "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi",
+    );
+  });
+
+  it("?channel=stable returns a 200 manifest for 0.0.0", async () => {
+    const res = await SELF.fetch(`${BASE}/windows/x86_64/0.0.0?channel=stable`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { version: string }).version).toBe("0.0.1");
+  });
+
+  it("?channel=garbage falls back to stable, still 200", async () => {
+    const res = await SELF.fetch(
+      `${BASE}/windows/x86_64/0.0.0?channel=please-give-me-secret-builds`,
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { version: string }).version).toBe("0.0.1");
+  });
+
+  it("no channel param behaves as stable (back-compat)", async () => {
+    type M = { version: string; platforms: Record<string, { url: string }> };
+    const withParam = (await (
+      await SELF.fetch(`${BASE}/windows/x86_64/0.0.0?channel=stable`)
+    ).json()) as M;
+    const without = (await (
+      await SELF.fetch(`${BASE}/windows/x86_64/0.0.0`)
+    ).json()) as M;
+    expect(without.version).toBe(withParam.version);
+    expect(without.platforms["windows-x86_64"]!.url).toBe(
+      withParam.platforms["windows-x86_64"]!.url,
+    );
+  });
+
+  it("beta channel: up-to-date client (0.0.1) still 204", async () => {
+    const res = await SELF.fetch(`${BASE}/windows/x86_64/0.0.1?channel=beta`);
+    expect(res.status).toBe(204);
+  });
+});
