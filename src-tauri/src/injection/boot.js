@@ -3803,6 +3803,88 @@
     }
 
     /**
+     * REGISTER-FIX: surface the two security signals that must NOT
+     * be warn-swallowed:
+     *   1. registration conflict (our user_id is held by a DIFFERENT
+     *      key — squat or lost key): one-shot, read+cleared server-
+     *      slot; shown as a strong banner.
+     *   2. peer TOFU key-change: a peer's identity key differs from
+     *      the trusted first-seen baseline. Shown as a banner with
+     *      the new safety number + Accept / Dismiss actions
+     *      (Accept adopts the new key as baseline; Dismiss keeps the
+     *      old one and the alert re-raises next fetch). Decryption is
+     *      never blocked — the user decides.
+     *
+     * Fire-and-forget, fully defensive (mirrors oslCheckPersistError).
+     * `oslShownKeyChange` de-dupes so a still-changed key doesn't
+     * re-banner on every opportunistic poll within a session.
+     */
+    var oslShownKeyChange = oslShownKeyChange || {};
+    function oslCheckSecurityAlerts() {
+        try {
+            const invoke = getTauriInvoke();
+            if (typeof invoke !== "function") return;
+
+            invoke("osl_take_registration_alert", {})
+                .then(function (msg) {
+                    if (typeof msg === "string" && msg.length > 0 &&
+                        typeof oslBanner === "function") {
+                        oslBanner({
+                            message:
+                                "⚠ OSL SECURITY: " + msg +
+                                "\n\nUntil resolved, peers may be unable to " +
+                                "message you securely. Open OSL Settings for details.",
+                        });
+                    }
+                })
+                .catch(function () {});
+
+            invoke("osl_list_key_change_alerts", {})
+                .then(function (list) {
+                    if (!Array.isArray(list)) return;
+                    for (const a of list) {
+                        if (!a || !a.discord_id) continue;
+                        const seen = oslShownKeyChange[a.discord_id];
+                        if (seen === a.new_ed25519_pub) continue;
+                        oslShownKeyChange[a.discord_id] = a.new_ed25519_pub;
+                        const who = a.osl_user_id || a.discord_id;
+                        if (typeof oslBanner !== "function") continue;
+                        oslBanner({
+                            message:
+                                "⚠ OSL SECURITY: " + who +
+                                "'s security key CHANGED. This can be a new " +
+                                "device — or someone intercepting your messages. " +
+                                "Verify this safety number with them out-of-band " +
+                                "before continuing:\n\n" + a.new_safety_number,
+                            actions: [
+                                {
+                                    label: "I verified — Accept",
+                                    onClick: function () {
+                                        invoke("osl_accept_key_change", {
+                                            discordId: a.discord_id,
+                                        }).catch(function () {});
+                                    },
+                                },
+                                {
+                                    label: "Dismiss",
+                                    secondary: true,
+                                    onClick: function () {
+                                        invoke("osl_decline_key_change", {
+                                            discordId: a.discord_id,
+                                        }).catch(function () {});
+                                        // allow re-alert later if still changed
+                                        delete oslShownKeyChange[a.discord_id];
+                                    },
+                                },
+                            ],
+                        });
+                    }
+                })
+                .catch(function () {});
+        } catch (_) {}
+    }
+
+    /**
      * Phase 7c: invoke a Tauri command with a uniform error
      * shape. Returns `{ ok: true, value }` or `{ ok: false, error }`.
      *
@@ -3823,6 +3905,15 @@
             const value = await invoke(name, args || {});
             if (name !== "osl_take_last_persist_error") {
                 oslCheckPersistError();
+            }
+            // REGISTER-FIX: opportunistically surface security
+            // alerts too. Exclude the security commands themselves
+            // (avoid recursion / self-clear races).
+            if (name !== "osl_take_registration_alert" &&
+                name !== "osl_list_key_change_alerts" &&
+                name !== "osl_accept_key_change" &&
+                name !== "osl_decline_key_change") {
+                oslCheckSecurityAlerts();
             }
             return { ok: true, value: value };
         } catch (err) {

@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# REGISTER-FIX: open signed registration + TOFU key-change surface.
+[[permission]]
+identifier = "allow-osl-accept-key-change"
+description = "Permits invoking `osl_accept_key_change` (adopt a peer's new Ed25519 key as the trusted TOFU baseline)."
+commands.allow = ["osl_accept_key_change"]

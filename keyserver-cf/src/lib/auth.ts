@@ -45,19 +45,8 @@ export async function checkAdminToken(
   return null;
 }
 
-/**
- * Allowlist check for /v1/register. Returns true when the user_id
- * is permitted (or when no allowlist is configured). Returns false
- * (caller responds 403) when an allowlist is set and user_id is
- * absent from it.
- */
-export function isUserAllowed(env: Env, userId: string): boolean {
-  const raw = env.OSL_KEYSERVER_ALLOWED_USERS;
-  if (!raw || raw.length === 0) return true;
-  const allowed = raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (allowed.length === 0) return true;
-  return allowed.includes(userId);
-}
+// REGISTER-FIX: `isUserAllowed` / `OSL_KEYSERVER_ALLOWED_USERS` were
+// retired with the move to open signed registration. `/v1/register`
+// was the allowlist's only consumer; key-control + first-write-wins
+// (see endpoints/register.ts) replace it. No allowlist gate remains
+// anywhere in the keyserver.

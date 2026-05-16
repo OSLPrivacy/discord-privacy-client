@@ -1,10 +1,10 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
-  ADMIN_HEADERS,
+  generateEd25519Pair,
+  signedRegisterBody,
   STUB_MLKEM_PUB_B64,
   STUB_RATCHET_PUB_B64,
-  STUB_SIGNATURE_B64,
   STUB_X25519_PUB_B64,
 } from "./helpers.js";
 
@@ -15,24 +15,20 @@ describe("GET /v1/pubkeys/:user_id", () => {
   });
 
   it("returns the registered pubkey shape (no admin token required)", async () => {
-    await SELF.fetch("http://test/v1/register", {
+    // REGISTER-FIX: open + signed registration (no admin header).
+    const pair = await generateEd25519Pair();
+    const reg = await SELF.fetch("http://test/v1/register", {
       method: "POST",
-      headers: ADMIN_HEADERS,
-      body: JSON.stringify({
-        user_id: "alice-pubkeys",
-        ik_x25519_pub: STUB_X25519_PUB_B64,
-        ik_ed25519_pub: STUB_X25519_PUB_B64,
-        ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
-        ik_x25519_signature: STUB_SIGNATURE_B64,
-        ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
-      }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(await signedRegisterBody("alice-pubkeys", pair)),
     });
+    expect(reg.status).toBe(201);
     const res = await SELF.fetch("http://test/v1/pubkeys/alice-pubkeys");
     expect(res.status).toBe(200);
     const j = (await res.json()) as Record<string, unknown>;
     expect(j.user_id).toBe("alice-pubkeys");
     expect(j.ik_x25519_pub).toBe(STUB_X25519_PUB_B64);
-    expect(j.ik_ed25519_pub).toBe(STUB_X25519_PUB_B64);
+    expect(j.ik_ed25519_pub).toBe(pair.publicKeyB64);
     expect(j.ik_mlkem768_pub).toBe(STUB_MLKEM_PUB_B64);
     expect(j.ik_ratchet_initial_pub).toBe(STUB_RATCHET_PUB_B64);
     expect(typeof j.registered_at).toBe("string");

@@ -31,20 +31,43 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Rotation proof for an authenticated key change (register
+/// state-machine Case C). Present only when rotating an existing
+/// `user_id` onto a new Ed25519 identity key.
+#[derive(Serialize)]
+pub struct RotationProof {
+    /// The CURRENTLY-registered Ed25519 pub (base64). Must byte-equal
+    /// the server's stored key or the rotation is rejected (replay
+    /// defence — see `ROT_MSG`).
+    pub prev_ik_ed25519_pub: String,
+    /// `Ed25519(ROT_MSG, OLD identity secret)` (base64, 64 bytes) —
+    /// authorises the change with the key being replaced.
+    pub prev_sig: String,
+}
+
 /// Body of `POST /v1/register`.
+///
+/// REGISTER-FIX: `/v1/register` is now open + Ed25519-self-signed.
+/// `registration_sig` is load-bearing: the server verifies it over
+/// the reconstructed `REG_MSG` against `ik_ed25519_pub` (Case A/B)
+/// or against the NEW key during a rotation (Case C). The legacy
+/// `ik_x25519_signature` placeholder field is gone.
 #[derive(Serialize)]
 pub struct RegisterRequest {
     pub user_id: String,
     pub ik_x25519_pub: String,
-    /// Ed25519 identity-signing key (B4). Server uses it to verify
-    /// `POST /v1/prekey-bundle/replenish` batch signatures.
+    /// Ed25519 identity-signing key. The server verifies
+    /// `registration_sig` against this (and reuses it for
+    /// `prekey-bundle/replenish` batch signatures).
     pub ik_ed25519_pub: String,
     pub ik_mlkem768_pub: String,
-    /// Self-signature binding `user_id` to the keys.
-    /// **Not verified by the prototype server**; field included for
-    /// forward-compatibility with v1 stable, where it becomes
-    /// load-bearing.
-    pub ik_x25519_signature: String,
+    /// `Ed25519(REG_MSG, identity.ed25519_secret)` (base64, 64 bytes).
+    /// In a rotation this is signed by the NEW key (proof of
+    /// possession of the key being rotated to).
+    pub registration_sig: String,
+    /// Present only for an authenticated key rotation (Case C).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<RotationProof>,
     /// Phase 9-A2: base64-encoded X25519 public key used by peers
     /// as the initial Double Ratchet bootstrap pub. Skipped on the
     /// wire when the local build hasn't generated one (legacy
@@ -62,6 +85,62 @@ pub struct RegisterResponse {
     pub registered_at: Option<String>,
     pub key_rotation_recorded: Option<bool>,
     pub last_rotated_at: Option<String>,
+    /// REGISTER-FIX: `"noop"` (Case B — already ours, write-free) or
+    /// `"rotated"` (Case C — authenticated rotation applied). Absent
+    /// on a Case A 201 (which carries `registered_at` instead).
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// Domain-separation + version tag for first/refresh registration.
+/// MUST byte-match `keyserver-cf/src/lib/signed-request.ts`
+/// `REG_DOMAIN` (a mirrored vector covers this in tests).
+pub const REG_DOMAIN: &str = "OSL-REGISTER-v1";
+/// Domain-separation + version tag for authenticated rotation.
+pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
+
+/// REG_MSG bytes — byte-identical to the server's `buildRegMsg`:
+///
+///   "OSL-REGISTER-v1\n" || user_id "\n" || ik_x25519_pub_b64 "\n"
+///   || ik_ed25519_pub_b64 "\n" || ik_mlkem768_pub_b64 "\n"
+///   || ik_ratchet_initial_pub_b64_or_empty
+///
+/// The b64 args are the EXACT strings placed in the JSON body
+/// (never re-encoded). A `None` ratchet contributes the empty
+/// string with no trailing newline.
+pub fn reg_msg(
+    user_id: &str,
+    ik_x25519_pub_b64: &str,
+    ik_ed25519_pub_b64: &str,
+    ik_mlkem768_pub_b64: &str,
+    ik_ratchet_initial_pub_b64: Option<&str>,
+) -> Vec<u8> {
+    format!(
+        "{REG_DOMAIN}\n{user_id}\n{ik_x25519_pub_b64}\n{ik_ed25519_pub_b64}\n{ik_mlkem768_pub_b64}\n{}",
+        ik_ratchet_initial_pub_b64.unwrap_or("")
+    )
+    .into_bytes()
+}
+
+/// ROT_MSG bytes — byte-identical to the server's `buildRotMsg`:
+///
+///   "OSL-ROTATE-v1\n" || user_id "\n" || prev_ik_ed25519_pub_b64
+///   "\n" || new_ik_x25519_pub_b64 "\n" || new_ik_ed25519_pub_b64
+///   "\n" || new_ik_mlkem768_pub_b64 "\n"
+///   || new_ik_ratchet_initial_pub_b64_or_empty
+pub fn rot_msg(
+    user_id: &str,
+    prev_ik_ed25519_pub_b64: &str,
+    new_ik_x25519_pub_b64: &str,
+    new_ik_ed25519_pub_b64: &str,
+    new_ik_mlkem768_pub_b64: &str,
+    new_ik_ratchet_initial_pub_b64: Option<&str>,
+) -> Vec<u8> {
+    format!(
+        "{ROT_DOMAIN}\n{user_id}\n{prev_ik_ed25519_pub_b64}\n{new_ik_x25519_pub_b64}\n{new_ik_ed25519_pub_b64}\n{new_ik_mlkem768_pub_b64}\n{}",
+        new_ik_ratchet_initial_pub_b64.unwrap_or("")
+    )
+    .into_bytes()
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,18 +350,94 @@ impl KeyServerClient {
         self
     }
 
-    /// Build the registration request body for `identity`.
+    /// Build the registration request body for `identity`, signed
+    /// with `identity.ed25519_secret` over `REG_MSG`.
     pub fn build_register_request(identity: &Identity) -> RegisterRequest {
+        let ik_x25519_pub = STANDARD.encode(identity.x25519_public.as_bytes());
+        let ik_ed25519_pub = STANDARD.encode(identity.ed25519_public.as_bytes());
+        let ik_mlkem768_pub = STANDARD.encode(identity.mlkem_public_bytes);
+        let ik_ratchet_initial_pub = identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|p| STANDARD.encode(p.as_bytes()));
+        let msg = reg_msg(
+            &identity.user_id,
+            &ik_x25519_pub,
+            &ik_ed25519_pub,
+            &ik_mlkem768_pub,
+            ik_ratchet_initial_pub.as_deref(),
+        );
+        let sig = crypto::ed25519::sign(&identity.ed25519_secret, &msg);
         RegisterRequest {
             user_id: identity.user_id.clone(),
-            ik_x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
-            ik_ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
-            ik_mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
-            ik_x25519_signature: STANDARD.encode(b"PROTOTYPE_NO_SIG"),
-            ik_ratchet_initial_pub: identity
-                .ratchet_initial_pub
-                .as_ref()
-                .map(|p| STANDARD.encode(p.as_bytes())),
+            ik_x25519_pub,
+            ik_ed25519_pub,
+            ik_mlkem768_pub,
+            registration_sig: STANDARD.encode(sig.as_bytes()),
+            rotation: None,
+            ik_ratchet_initial_pub,
+        }
+    }
+
+    /// Build a Case-C rotation request: move `user_id` from
+    /// `old_identity`'s Ed25519 key onto `new_identity`'s keys.
+    /// `registration_sig` is signed by the NEW key (proof of
+    /// possession); `rotation.prev_sig` is signed by the OLD key
+    /// (authorises the change). `user_id` is taken from
+    /// `old_identity` (the registered identifier is immutable across
+    /// a key rotation).
+    ///
+    /// PRESENT-BUT-UNEXERCISED: no current caller. The beta
+    /// first-launch flow only ever produces Case A/B requests; this
+    /// exists so the wire shape is ready and tested before any
+    /// rotation UX lands. (It also requires the caller to still hold
+    /// the OLD identity secret, which the current app does not
+    /// retain after a key change — wiring that is out of scope here.)
+    pub fn build_rotation_request(
+        old_identity: &Identity,
+        new_identity: &Identity,
+    ) -> RegisterRequest {
+        let user_id = old_identity.user_id.clone();
+        let new_x = STANDARD.encode(new_identity.x25519_public.as_bytes());
+        let new_ed = STANDARD.encode(new_identity.ed25519_public.as_bytes());
+        let new_mlkem = STANDARD.encode(new_identity.mlkem_public_bytes);
+        let new_ratchet = new_identity
+            .ratchet_initial_pub
+            .as_ref()
+            .map(|p| STANDARD.encode(p.as_bytes()));
+        let prev_ed = STANDARD.encode(old_identity.ed25519_public.as_bytes());
+
+        // new key proves possession over REG_MSG (Case-A/B shape).
+        let reg = reg_msg(
+            &user_id,
+            &new_x,
+            &new_ed,
+            &new_mlkem,
+            new_ratchet.as_deref(),
+        );
+        let reg_sig = crypto::ed25519::sign(&new_identity.ed25519_secret, &reg);
+        // old key authorises the change over ROT_MSG.
+        let rot = rot_msg(
+            &user_id,
+            &prev_ed,
+            &new_x,
+            &new_ed,
+            &new_mlkem,
+            new_ratchet.as_deref(),
+        );
+        let prev_sig = crypto::ed25519::sign(&old_identity.ed25519_secret, &rot);
+
+        RegisterRequest {
+            user_id,
+            ik_x25519_pub: new_x,
+            ik_ed25519_pub: new_ed,
+            ik_mlkem768_pub: new_mlkem,
+            registration_sig: STANDARD.encode(reg_sig.as_bytes()),
+            rotation: Some(RotationProof {
+                prev_ik_ed25519_pub: prev_ed,
+                prev_sig: STANDARD.encode(prev_sig.as_bytes()),
+            }),
+            ik_ratchet_initial_pub: new_ratchet,
         }
     }
 

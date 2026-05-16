@@ -25,8 +25,109 @@ fn register_request_carries_correct_base64_keys() {
     let mlkem_decoded = STANDARD.decode(&req.ik_mlkem768_pub).unwrap();
     assert_eq!(mlkem_decoded.as_slice(), &id.mlkem_public_bytes[..]);
 
-    let sig_decoded = STANDARD.decode(&req.ik_x25519_signature).unwrap();
-    assert_eq!(sig_decoded, b"PROTOTYPE_NO_SIG");
+    // REGISTER-FIX: registration_sig is now a real Ed25519 signature
+    // over REG_MSG, verifiable against the submitted ik_ed25519_pub.
+    let sig_decoded = STANDARD.decode(&req.registration_sig).unwrap();
+    assert_eq!(sig_decoded.len(), 64, "Ed25519 signature is 64 bytes");
+    let msg = keystore::client::reg_msg(
+        &req.user_id,
+        &req.ik_x25519_pub,
+        &req.ik_ed25519_pub,
+        &req.ik_mlkem768_pub,
+        req.ik_ratchet_initial_pub.as_deref(),
+    );
+    let mut sig_arr = [0u8; 64];
+    sig_arr.copy_from_slice(&sig_decoded);
+    let ok = crypto::ed25519::verify(
+        &id.ed25519_public,
+        &msg,
+        &crypto::ed25519::Signature::from_bytes(sig_arr),
+    )
+    .unwrap();
+    assert!(ok, "registration_sig must verify against ik_ed25519_pub");
+    assert!(req.rotation.is_none(), "Case A/B carries no rotation proof");
+}
+
+/// GATE: REG_MSG byte format. This exact vector is mirrored in
+/// `keyserver-cf/test/unit/signed-request.test.ts`. If these two
+/// disagree by one byte, EVERY registration fails — so both sides
+/// pin the identical expected string here.
+#[test]
+fn reg_msg_byte_format_is_pinned_and_mirrored() {
+    let msg = keystore::client::reg_msg(
+        "1502770642930634812",
+        "WdsAAA==",
+        "ZWQyNTUx",
+        "bWxrZW0=",
+        Some("cmF0Y2g="),
+    );
+    let expected =
+        "OSL-REGISTER-v1\n1502770642930634812\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=";
+    assert_eq!(String::from_utf8(msg).unwrap(), expected);
+
+    // ratchet absent → empty last component, no trailing newline.
+    let msg_no_ratchet = keystore::client::reg_msg(
+        "u", "x", "e", "m", None,
+    );
+    assert_eq!(
+        String::from_utf8(msg_no_ratchet).unwrap(),
+        "OSL-REGISTER-v1\nu\nx\ne\nm\n"
+    );
+}
+
+/// GATE: a rotation request is signed correctly by BOTH keys.
+#[test]
+fn rotation_request_dual_signs_old_and_new() {
+    let old = generate_identity("alice".to_string());
+    let new = generate_identity("alice".to_string());
+    let req = KeyServerClient::build_rotation_request(&old, &new);
+    let rot = req.rotation.as_ref().expect("rotation proof present");
+
+    // user_id is immutable across rotation; new keys on top level.
+    assert_eq!(req.user_id, "alice");
+    assert_eq!(
+        STANDARD.decode(&req.ik_ed25519_pub).unwrap(),
+        new.ed25519_public.as_bytes()
+    );
+    assert_eq!(
+        STANDARD.decode(&rot.prev_ik_ed25519_pub).unwrap(),
+        old.ed25519_public.as_bytes()
+    );
+
+    // registration_sig verifies under the NEW key over REG_MSG.
+    let reg = keystore::client::reg_msg(
+        &req.user_id,
+        &req.ik_x25519_pub,
+        &req.ik_ed25519_pub,
+        &req.ik_mlkem768_pub,
+        req.ik_ratchet_initial_pub.as_deref(),
+    );
+    let mut s = [0u8; 64];
+    s.copy_from_slice(&STANDARD.decode(&req.registration_sig).unwrap());
+    assert!(crypto::ed25519::verify(
+        &new.ed25519_public,
+        &reg,
+        &crypto::ed25519::Signature::from_bytes(s)
+    )
+    .unwrap());
+
+    // prev_sig verifies under the OLD key over ROT_MSG.
+    let rotm = keystore::client::rot_msg(
+        &req.user_id,
+        &rot.prev_ik_ed25519_pub,
+        &req.ik_x25519_pub,
+        &req.ik_ed25519_pub,
+        &req.ik_mlkem768_pub,
+        req.ik_ratchet_initial_pub.as_deref(),
+    );
+    let mut p = [0u8; 64];
+    p.copy_from_slice(&STANDARD.decode(&rot.prev_sig).unwrap());
+    assert!(crypto::ed25519::verify(
+        &old.ed25519_public,
+        &rotm,
+        &crypto::ed25519::Signature::from_bytes(p)
+    )
+    .unwrap());
 }
 
 #[test]

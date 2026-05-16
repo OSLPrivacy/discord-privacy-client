@@ -18,12 +18,12 @@ export default defineWorkersConfig(async () => {
             d1Databases: ["DB"],
             kvNamespaces: ["RATE_LIMIT_KV"],
             bindings: {
+              // Kept set: gates the still-protected mutation routes
+              // AND enables checkRateLimit. /v1/register is now open
+              // + Ed25519-signed and ignores it.
               OSL_KEYSERVER_ADMIN_TOKEN: "test-admin-token-do-not-ship",
-              // Empty allowlist = no allowlist enforcement (matches
-              // the Railway dev-mode behaviour). The allowlist code
-              // path is exercised by a dedicated unit test in
-              // test/unit/auth.test.ts.
-              OSL_KEYSERVER_ALLOWED_USERS: "",
+              // OSL_KEYSERVER_ALLOWED_USERS retired (open signed
+              // register; allowlist removed).
               SELECTOR_MANIFEST_JSON: "",
               // F1.2 — Stripe webhook secret is the only Stripe
               // binding tests need; outbound checkout / portal /

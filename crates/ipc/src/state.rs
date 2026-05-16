@@ -123,10 +123,42 @@ impl SenderPubkeyCache {
     }
 }
 
+/// REGISTER-FIX (TOFU): one peer key-change the user must
+/// acknowledge. Raised when a peer's `ik_ed25519_pub` returned by
+/// `fetch_pubkeys` differs from the trusted first-seen baseline in
+/// `peer_map`. Surfaced (NOT warn-swallowed) and held until the user
+/// explicitly accepts (baseline → new) or declines (baseline kept).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KeyChangeAlert {
+    pub discord_id: String,
+    pub osl_user_id: Option<String>,
+    /// base64 Ed25519 pub previously trusted (the TOFU baseline).
+    pub old_ed25519_pub: String,
+    /// base64 Ed25519 pub the keyserver just returned.
+    pub new_ed25519_pub: String,
+    /// Safety number of the NEW key (for out-of-band comparison).
+    pub new_safety_number: String,
+    /// First time this change was observed (ISO-8601).
+    pub first_observed: String,
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub identity: Mutex<Option<Identity>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
+
+    /// REGISTER-FIX: a security-relevant registration outcome the
+    /// user MUST see (NOT warn-swallowed) — set when `/v1/register`
+    /// returns 403 "user_id registered to a different key" (our
+    /// snowflake is held by another key: squat or lost key). Read +
+    /// cleared by `cmd_osl_take_registration_alert`.
+    pub registration_alert: Mutex<Option<String>>,
+
+    /// REGISTER-FIX (TOFU): pending peer key-change alerts, keyed by
+    /// peer Discord id. Populated by the `fetch_pubkeys` TOFU check;
+    /// drained/resolved via the key-change IPC commands. In-memory:
+    /// a relaunch re-derives them on the next fetch if still changed.
+    pub key_change_alerts: Mutex<HashMap<String, KeyChangeAlert>>,
     pub sender_pubkey_cache: SenderPubkeyCache,
     /// Discord-id → OSL-user-id translation for receive-side
     /// decryption. Populated at bootstrap from

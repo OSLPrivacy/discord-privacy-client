@@ -142,6 +142,19 @@ pub struct PeerEntry {
     /// envelope covers the ratchet too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratchet_state: Option<crypto::ratchet::RatchetStateOnDisk>,
+
+    /// REGISTER-FIX (TOFU): the peer's trusted Ed25519 identity pub
+    /// (base64), recorded the FIRST time we ever saw this peer's keys
+    /// via `fetch_pubkeys`. Trust-on-first-use baseline: every later
+    /// fetch compares the keyserver's `ik_ed25519_pub` against this.
+    /// A mismatch raises a `KeyChangeAlert` (Signal-style "safety
+    /// number changed") and does NOT silently update this value —
+    /// only an explicit user-accept does. `None` for peers seen
+    /// before this field existed (back-compatible: serde default;
+    /// the next fetch sets the baseline). Decrypt is NEVER blocked
+    /// on this — warn, don't break.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tofu_ed25519_pub: Option<String>,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to

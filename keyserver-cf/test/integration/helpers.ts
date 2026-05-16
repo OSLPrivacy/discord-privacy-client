@@ -2,8 +2,12 @@
 /// keypairs (matching the real client's IK_Ed25519), b64-encodes
 /// pubkeys, signs canonical byte strings.
 ///
-/// All tests register against this admin token (set in
-/// vitest.config.ts `bindings`).
+/// REGISTER-FIX: /v1/register is now OPEN + Ed25519-signed (no admin
+/// token). `TEST_ADMIN_TOKEN` remains for the still-gated routes
+/// (wrapped-keys, prekey-bundle/replenish, crypto-admin) and to keep
+/// checkRateLimit enabled in tests.
+
+import { buildRegMsg } from "../../src/lib/signed-request.js";
 
 export const TEST_ADMIN_TOKEN = "test-admin-token-do-not-ship";
 
@@ -57,9 +61,31 @@ export async function signEd25519(
   return base64Encode(new Uint8Array(sigBuf));
 }
 
-/** Register a user against `SELF` with stub keys but a real Ed25519
- *  pub. Returns the keypair so subsequent burn / replenish requests
- *  can sign. */
+/**
+ * REGISTER-FIX: build a fully-signed, valid open-register body
+ * (Case A) for `userId` using `pair`. Stub keys are correct length
+ * (32 / 1184 / 32) so length-validation passes; registration_sig is
+ * a real Ed25519 signature over the reconstructed REG_MSG.
+ */
+export async function signedRegisterBody(
+  userId: string,
+  pair: { publicKeyB64: string; signingKey: CryptoKey },
+): Promise<Record<string, unknown>> {
+  const fields = {
+    user_id: userId,
+    ik_x25519_pub: STUB_X25519_PUB_B64,
+    ik_ed25519_pub: pair.publicKeyB64,
+    ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
+    ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
+  };
+  const msg = buildRegMsg(fields);
+  const registration_sig = await signEd25519(pair.signingKey, msg);
+  return { ...fields, registration_sig };
+}
+
+/** Register a user against `SELF` — now OPEN + signed (no admin
+ *  token). Returns the keypair so subsequent burn / replenish
+ *  requests (still admin-gated) can sign. */
 export async function registerTestUser(
   self: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
   userId: string,
@@ -67,18 +93,8 @@ export async function registerTestUser(
   const pair = await generateEd25519Pair();
   const res = await self.fetch("http://test/v1/register", {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${TEST_ADMIN_TOKEN}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      user_id: userId,
-      ik_x25519_pub: STUB_X25519_PUB_B64,
-      ik_ed25519_pub: pair.publicKeyB64,
-      ik_mlkem768_pub: STUB_MLKEM_PUB_B64,
-      ik_x25519_signature: STUB_SIGNATURE_B64,
-      ik_ratchet_initial_pub: STUB_RATCHET_PUB_B64,
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(await signedRegisterBody(userId, pair)),
   });
   if (res.status !== 201 && res.status !== 200) {
     throw new Error(

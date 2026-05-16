@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# REGISTER-FIX: open signed registration + TOFU key-change surface.
+[[permission]]
+identifier = "allow-osl-list-key-change-alerts"
+description = "Permits invoking `osl_list_key_change_alerts` (list pending TOFU peer identity-key-change alerts)."
+commands.allow = ["osl_list_key_change_alerts"]

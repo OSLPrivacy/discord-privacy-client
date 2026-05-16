@@ -87,6 +87,75 @@ export async function upsertUser(
   return { isNew: true, registered_at: now };
 }
 
+/**
+ * REGISTER-FIX (open signed register): explicit INSERT for a brand
+ * new user_id (state-machine Case A). Separated from `upsertUser`'s
+ * blind overwrite so register's first-write-wins / authenticated-
+ * rotation logic is the *only* path that can mutate an existing row.
+ * `registered_at = now`, `last_rotated_at = NULL`.
+ */
+export async function insertUser(
+  db: D1Database,
+  input: RegisterInput,
+): Promise<{ registered_at: string }> {
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO users
+         (user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
+          ik_x25519_signature, ik_ratchet_initial_pub,
+          registered_at, last_rotated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)`,
+    )
+    .bind(
+      input.user_id,
+      input.ik_x25519_pub,
+      input.ik_ed25519_pub,
+      input.ik_mlkem768_pub,
+      input.ik_x25519_signature,
+      input.ik_ratchet_initial_pub ?? null,
+      now,
+    )
+    .run();
+  return { registered_at: now };
+}
+
+/**
+ * REGISTER-FIX: authenticated key rotation (state-machine Case C).
+ * Overwrites the key columns + bumps `last_rotated_at`; `registered_at`
+ * is intentionally left untouched (it records first-ever registration).
+ * The caller MUST have already verified the rotation is authorised by
+ * the *currently-stored* ik_ed25519_pub before invoking this.
+ */
+export async function rotateUserKeys(
+  db: D1Database,
+  input: RegisterInput,
+): Promise<{ last_rotated_at: string }> {
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `UPDATE users
+          SET ik_x25519_pub = ?2,
+              ik_ed25519_pub = ?3,
+              ik_mlkem768_pub = ?4,
+              ik_x25519_signature = ?5,
+              ik_ratchet_initial_pub = ?6,
+              last_rotated_at = ?7
+        WHERE user_id = ?1`,
+    )
+    .bind(
+      input.user_id,
+      input.ik_x25519_pub,
+      input.ik_ed25519_pub,
+      input.ik_mlkem768_pub,
+      input.ik_x25519_signature,
+      input.ik_ratchet_initial_pub ?? null,
+      now,
+    )
+    .run();
+  return { last_rotated_at: now };
+}
+
 export interface PubkeysRow {
   user_id: string;
   ik_x25519_pub: string;

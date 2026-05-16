@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# REGISTER-FIX: open signed registration + TOFU key-change surface.
+[[permission]]
+identifier = "allow-osl-peer-safety-number"
+description = "Permits invoking `osl_peer_safety_number` (derive a peer's out-of-band safety number from the trusted baseline key)."
+commands.allow = ["osl_peer_safety_number"]

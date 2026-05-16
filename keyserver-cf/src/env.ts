@@ -6,10 +6,18 @@
 export interface Env {
   DB: D1Database;
   RATE_LIMIT_KV: KVNamespace;
-  /** Pre-shared bearer token for mutation routes. Unset = open dev mode. */
+  /**
+   * Pre-shared bearer token for the still-gated mutation routes
+   * (wrapped-keys, prekey-bundle/replenish, crypto-admin). Unset =
+   * open dev mode. NOTE: also the on/off switch for `checkRateLimit`
+   * — `/v1/register` is now open + signed (no token check) but MUST
+   * stay rate-limited, so this secret MUST remain set in production
+   * even though register no longer reads it.
+   */
   OSL_KEYSERVER_ADMIN_TOKEN?: string;
-  /** Comma-separated user_id allowlist for /v1/register. Unset = no allowlist. */
-  OSL_KEYSERVER_ALLOWED_USERS?: string;
+  // REGISTER-FIX: OSL_KEYSERVER_ALLOWED_USERS retired — open signed
+  // registration replaced the allowlist (register was its sole
+  // consumer). Intentionally absent from the Env surface.
   /** Optional signed selector-manifest envelope JSON. */
   SELECTOR_MANIFEST_JSON?: string;
 

@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# REGISTER-FIX: open signed registration + TOFU key-change surface.
+[[permission]]
+identifier = "allow-osl-decline-key-change"
+description = "Permits invoking `osl_decline_key_change` (dismiss a peer key-change alert, keep the old trusted baseline)."
+commands.allow = ["osl_decline_key_change"]

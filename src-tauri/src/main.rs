@@ -1445,6 +1445,98 @@ async fn osl_take_last_persist_error(app: tauri::AppHandle) -> Result<Option<Str
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+// ---- REGISTER-FIX: TOFU + registration-conflict surface ----
+
+/// Read + clear the one-shot registration-conflict alert (set when
+/// open `/v1/register` returned 403 — our user_id is held by a
+/// different key). Boot.js polls this and shows a BLOCKING warning;
+/// it is deliberately NOT warn-swallowed.
+#[tauri::command]
+async fn osl_take_registration_alert(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_take_registration_alert(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// List pending peer key-change (TOFU) alerts. Boot.js polls to show
+/// the blocking "peer's security key changed" banner; the settings
+/// window lists them for accept/decline.
+#[tauri::command]
+async fn osl_list_key_change_alerts(
+    app: tauri::AppHandle,
+) -> Result<Vec<ipc::state::KeyChangeAlert>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_list_key_change_alerts(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// User accepted a peer's new identity key → adopt as new baseline.
+#[tauri::command]
+async fn osl_accept_key_change(
+    app: tauri::AppHandle,
+    discord_id: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_accept_key_change(state.inner(), discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// User declined a peer's new identity key → keep old baseline.
+#[tauri::command]
+async fn osl_decline_key_change(
+    app: tauri::AppHandle,
+    discord_id: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_decline_key_change(state.inner(), discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Safety number for a peer's current trusted Ed25519 baseline.
+#[tauri::command]
+async fn osl_peer_safety_number(
+    app: tauri::AppHandle,
+    discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_peer_safety_number(state.inner(), discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Safety number for our own Ed25519 identity pub (read out OOB).
+#[tauri::command]
+async fn osl_self_safety_number(app: tauri::AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_self_safety_number(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 #[tauri::command]
 async fn osl_tour_get_state(app: tauri::AppHandle) -> Result<ipc::commands::TourStateDto, String> {
     let app_handle = app.clone();
@@ -2470,6 +2562,13 @@ fn main() {
             osl_vpn_warning_reset,
             osl_check_vpn,
             osl_take_last_persist_error,
+            // REGISTER-FIX: TOFU + registration-conflict surface.
+            osl_take_registration_alert,
+            osl_list_key_change_alerts,
+            osl_accept_key_change,
+            osl_decline_key_change,
+            osl_peer_safety_number,
+            osl_self_safety_number,
             osl_open_settings_window,
             osl_close_settings_window_if_open,
             // Phase F0: deep-link smoke-test parser. Removed in F2.

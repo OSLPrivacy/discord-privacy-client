@@ -4,9 +4,14 @@ compatibility_date = "2024-12-30"
 compatibility_flags = ["nodejs_compat"]
 
 # Production secrets (set via `wrangler secret put`):
-#   OSL_KEYSERVER_ADMIN_TOKEN     — pre-shared bearer token for mutation routes
-#   OSL_KEYSERVER_ALLOWED_USERS   — CSV of user_ids permitted to register
+#   OSL_KEYSERVER_ADMIN_TOKEN     — bearer token for the STILL-gated
+#       mutation routes (wrapped-keys, prekey-bundle/replenish,
+#       crypto-admin). MUST remain set: it is also the enable switch
+#       for checkRateLimit, and /v1/register is now open + Ed25519-
+#       signed (no token) but must stay rate-limited.
 #   SELECTOR_MANIFEST_JSON        — optional signed selector-manifest envelope
+# RETIRED: OSL_KEYSERVER_ALLOWED_USERS (register is now open + signed;
+#   the allowlist was its only consumer — delete the secret).
 # Stripe / Resend secrets land here in F1.2.
 
 [observability]

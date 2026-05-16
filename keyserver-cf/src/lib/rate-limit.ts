@@ -30,15 +30,24 @@ export async function checkRateLimit(
   env: Env,
   ip: string,
   max: number,
+  bucket = "rl",
 ): Promise<RateLimitDecision> {
   // No-op when there's no token configured. Mirrors the Railway
   // server: rate-limit plugin only registers when ADMIN_TOKEN is set.
+  //
+  // LOAD-BEARING COUPLING: open `/v1/register` (no admin token sent
+  // by the V2 client) relies on this throttle. `OSL_KEYSERVER_ADMIN_TOKEN`
+  // MUST stay set as a deployed secret — even though register no
+  // longer *checks* it — or open registration becomes unthrottled.
   if (!env.OSL_KEYSERVER_ADMIN_TOKEN) {
     return { ok: true, retryAfter: 0 };
   }
   const now = Math.floor(Date.now() / 1000);
   const windowStart = now - (now % WINDOW_SEC);
-  const key = `rl:${ip}:${windowStart}`;
+  // `bucket` lets one route enforce multiple independent dimensions
+  // (e.g. register: per-IP "rl" AND per-user_id "rlreg") without the
+  // counters colliding. Existing callers keep the default "rl".
+  const key = `${bucket}:${ip}:${windowStart}`;
   const raw = await env.RATE_LIMIT_KV.get(key);
   const current = raw ? Number.parseInt(raw, 10) : 0;
   if (current >= max) {

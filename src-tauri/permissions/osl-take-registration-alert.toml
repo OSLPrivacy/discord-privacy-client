@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# REGISTER-FIX: open signed registration + TOFU key-change surface.
+[[permission]]
+identifier = "allow-osl-take-registration-alert"
+description = "Permits invoking `osl_take_registration_alert` (read+clear the 403 'user_id held by a different key' registration-conflict alert). Drives a BLOCKING security warning; never warn-swallowed."
+commands.allow = ["osl_take_registration_alert"]

@@ -66,3 +66,8 @@ windows = { version = "=0.56.0", features = [
 # tempfile 3.27 pulls in getrandom 0.4.2 which needs edition-2024
 # (rustc 1.85+); pin to a 3.x that pre-dates that bump.
 tempfile = "=3.13"
+# REGISTER-FIX: integration tests verify the Ed25519 registration
+# signature directly. `crypto` is a normal dependency above; the
+# separate integration-test crate needs it listed here to call
+# `crypto::ed25519::verify`.
+crypto = { path = "../crypto" }

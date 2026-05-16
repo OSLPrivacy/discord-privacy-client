@@ -3812,7 +3812,200 @@ pub fn populate_peer_from_fetch_response(
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
     }
+
+    // REGISTER-FIX (TOFU): compare the peer's Ed25519 identity key
+    // against the trusted first-seen baseline. NEVER blocks this
+    // function (messaging keys above are already refreshed) — it only
+    // records the baseline (first use) or raises a blocking,
+    // user-visible KeyChangeAlert (NOT warn-swallowed) on a change.
+    tofu_observe_peer(state, discord_id, &resp.ik_ed25519_pub);
+
     Ok(mlkem_added)
+}
+
+/// REGISTER-FIX (TOFU): apply [`crate::tofu::classify`] to a peer's
+/// freshly-fetched Ed25519 pub. On first use, record + persist the
+/// baseline. On a change, raise a `KeyChangeAlert` (held until the
+/// user accepts/declines) and clear it again once the key matches.
+/// Pure decision logic lives in `crate::tofu`; this is the AppState
+/// + peer_map + persistence wiring.
+fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &str) {
+    use crate::tofu::{classify, safety_number, TofuOutcome};
+
+    let (outcome, osl_user_id) = {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm.entry(discord_id.to_string()).or_default();
+        let outcome = classify(entry.tofu_ed25519_pub.as_deref(), fetched_ed25519_b64);
+        if matches!(outcome, TofuOutcome::FirstUse) {
+            // Trust-on-FIRST-use: record the baseline. A change is
+            // only ever adopted later by an explicit user accept.
+            entry.tofu_ed25519_pub = Some(fetched_ed25519_b64.to_string());
+        }
+        (outcome, entry.osl_user_id.clone())
+    };
+
+    match outcome {
+        TofuOutcome::FirstUse => {
+            // Make the new baseline durable so the next launch
+            // compares against it instead of re-seeding.
+            persist_peer_map_now(state);
+            // Clear any stale alert (e.g. a prior changed→accepted
+            // cycle that left a dangling entry).
+            state
+                .key_change_alerts
+                .lock()
+                .expect("key_change_alerts mutex poisoned")
+                .remove(discord_id);
+        }
+        TofuOutcome::Unchanged => {
+            state
+                .key_change_alerts
+                .lock()
+                .expect("key_change_alerts mutex poisoned")
+                .remove(discord_id);
+        }
+        TofuOutcome::Changed { old } => {
+            let alert = crate::state::KeyChangeAlert {
+                discord_id: discord_id.to_string(),
+                osl_user_id,
+                old_ed25519_pub: old,
+                new_ed25519_pub: fetched_ed25519_b64.to_string(),
+                new_safety_number: safety_number(fetched_ed25519_b64),
+                first_observed: keystore::iso_8601_from_unix_seconds(
+                    now_unix_secs().max(0) as u64,
+                ),
+            };
+            tracing::error!(
+                discord_id = %discord_id,
+                "OSL: TOFU — peer Ed25519 identity key CHANGED; raising \
+                 blocking key-change alert (NOT swallowed). Messaging \
+                 continues; user must verify + accept or decline."
+            );
+            state
+                .key_change_alerts
+                .lock()
+                .expect("key_change_alerts mutex poisoned")
+                .insert(discord_id.to_string(), alert);
+        }
+    }
+}
+
+// =====================================================================
+// REGISTER-FIX: TOFU + registration-conflict IPC surface. These are
+// the user-visible, non-warn-swallowed security signals: a peer's
+// identity key changed, or our own registration was refused because
+// the user_id is held by a different key.
+// =====================================================================
+
+/// Read + clear the one-shot registration-conflict alert (set when
+/// `/v1/register` returned 403). `Some` means the user MUST be shown
+/// a blocking warning; the JS layer surfaces it then it's consumed.
+pub fn cmd_osl_take_registration_alert(state: &AppState) -> Result<Option<String>, String> {
+    Ok(state
+        .registration_alert
+        .lock()
+        .expect("registration_alert mutex poisoned")
+        .take())
+}
+
+/// All pending peer key-change alerts (TOFU). Stable order by
+/// Discord id so the settings UI list doesn't jump.
+pub fn cmd_osl_list_key_change_alerts(
+    state: &AppState,
+) -> Result<Vec<crate::state::KeyChangeAlert>, String> {
+    let g = state
+        .key_change_alerts
+        .lock()
+        .expect("key_change_alerts mutex poisoned");
+    let mut v: Vec<crate::state::KeyChangeAlert> = g.values().cloned().collect();
+    v.sort_by(|a, b| a.discord_id.cmp(&b.discord_id));
+    Ok(v)
+}
+
+/// User ACCEPTED a peer's new identity key: adopt it as the new
+/// trusted TOFU baseline, persist, and clear the alert. (User did
+/// the out-of-band safety-number check, or accepts the risk.)
+pub fn cmd_osl_accept_key_change(
+    state: &AppState,
+    discord_id: String,
+) -> Result<(), String> {
+    let new_key = {
+        let g = state
+            .key_change_alerts
+            .lock()
+            .expect("key_change_alerts mutex poisoned");
+        match g.get(&discord_id) {
+            Some(a) => a.new_ed25519_pub.clone(),
+            None => return Err(format!("OSL: no pending key-change for {discord_id}")),
+        }
+    };
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm.entry(discord_id.clone()).or_default();
+        entry.tofu_ed25519_pub = Some(new_key);
+    }
+    persist_peer_map_now(state);
+    state
+        .key_change_alerts
+        .lock()
+        .expect("key_change_alerts mutex poisoned")
+        .remove(&discord_id);
+    tracing::warn!(
+        discord_id = %discord_id,
+        "OSL: TOFU — user ACCEPTED peer key change; baseline updated"
+    );
+    Ok(())
+}
+
+/// User DECLINED a peer's new identity key: clear the alert but keep
+/// the OLD trusted baseline. The alert re-raises on the next fetch
+/// while the key stays changed (so it can't be silently forgotten).
+pub fn cmd_osl_decline_key_change(
+    state: &AppState,
+    discord_id: String,
+) -> Result<(), String> {
+    let removed = state
+        .key_change_alerts
+        .lock()
+        .expect("key_change_alerts mutex poisoned")
+        .remove(&discord_id)
+        .is_some();
+    if !removed {
+        return Err(format!("OSL: no pending key-change for {discord_id}"));
+    }
+    tracing::warn!(
+        discord_id = %discord_id,
+        "OSL: TOFU — user DECLINED peer key change; old baseline kept \
+         (alert re-raises on next fetch while the key differs)"
+    );
+    Ok(())
+}
+
+/// Safety number for a peer's CURRENT trusted Ed25519 baseline
+/// (peer_map `tofu_ed25519_pub`). For out-of-band verification in
+/// the whitelist/peer UI. Errors if the peer has no recorded key.
+pub fn cmd_osl_peer_safety_number(
+    state: &AppState,
+    discord_id: String,
+) -> Result<String, String> {
+    let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+    let entry = pm
+        .get(&discord_id)
+        .ok_or_else(|| format!("OSL: unknown peer {discord_id}"))?;
+    let key = entry
+        .tofu_ed25519_pub
+        .as_deref()
+        .ok_or_else(|| format!("OSL: no trusted key for {discord_id} yet"))?;
+    Ok(crate::tofu::safety_number(key))
+}
+
+/// Safety number for OUR OWN Ed25519 identity pub, so the user can
+/// read it out to a peer for mutual out-of-band verification.
+pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
+    let g = state.identity.lock().expect("identity mutex poisoned");
+    let id = g.as_ref().ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let b64 = STANDARD.encode(id.ed25519_public.as_bytes());
+    Ok(crate::tofu::safety_number(&b64))
 }
 
 /// Phase 9-A1b: keyserver-refresh helper. Looks up the peer's
@@ -5217,8 +5410,36 @@ pub fn ensure_keyserver_registered(
             Ok(resp) => tracing::info!(
                 user_id = %resp.user_id,
                 initial = resp.registered_at.is_some(),
+                status = resp.status.as_deref().unwrap_or(
+                    if resp.registered_at.is_some() { "registered" } else { "ok" }
+                ),
                 "OSL: ensure_keyserver_registered: registered with key-server"
             ),
+            // REGISTER-FIX: the ONE response we must NOT warn-swallow.
+            // 403 = our user_id is held by a DIFFERENT Ed25519 key
+            // (someone squatted our snowflake, or we lost our key).
+            // Peers will fetch the other key and be unable to talk to
+            // us / could be MITM'd. Raise a blocking, user-visible
+            // alert + log at error, not warn.
+            Err(keystore::Error::HttpStatus { status: 403, body }) => {
+                let msg = format!(
+                    "Your OSL identity could not be registered: the keyserver \
+                     reports this account is already registered with a DIFFERENT \
+                     security key. This can mean someone else claimed your \
+                     identity, or you lost your previous key. Encrypted messaging \
+                     to you may be unsafe until resolved. (server: {body})"
+                );
+                tracing::error!(
+                    detail = %body,
+                    "OSL: ensure_keyserver_registered: REGISTRATION CONFLICT \
+                     (403) — user_id held by a different key; surfacing blocking \
+                     alert (NOT swallowed)"
+                );
+                *state
+                    .registration_alert
+                    .lock()
+                    .expect("registration_alert mutex poisoned") = Some(msg);
+            }
             Err(e) => tracing::warn!(
                 error = %e,
                 "OSL: ensure_keyserver_registered: key-server register \
