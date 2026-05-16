@@ -5,3 +5,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# Generated beta-key mint/revoke SQL (contains prod license hashes +
+# synthetic ids; raw keys are never written here, only to stdout).
+scripts/out/

@@ -4659,21 +4659,13 @@ pub fn cmd_osl_get_identity_info(state: &AppState) -> Result<IdentityInfoDto, St
         }
         found.unwrap_or_else(|| "Unknown".to_string())
     };
-    // Keyserver URL: best-effort read of <config_dir>/keyserver.json.
-    // Mirrors the bootstrap loader shape but tolerant of any error.
+    // Keyserver URL: the override-or-default the client actually
+    // uses (keyserver.json `base_url` if present+valid → else the
+    // built-in production default). Same single resolver every other
+    // consumer uses, so this display value can't disagree with what
+    // license/bootstrap actually talk to.
     let keyserver_url = match keystore::osl_config_dir() {
-        Ok(dir) => {
-            let path = dir.join("keyserver.json");
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-                .and_then(|v| {
-                    v.get("base_url")
-                        .and_then(|b| b.as_str())
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_else(|| "Unknown".to_string())
-        }
+        Ok(dir) => resolve_keyserver_base_url(&dir),
         Err(_) => "Unknown".to_string(),
     };
     Ok(IdentityInfoDto {
@@ -4720,8 +4712,10 @@ pub fn cmd_osl_validate_license(
 ) -> Result<keystore::LicenseValidateResponse, String> {
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    let base_url = read_keyserver_base_url(&dir)
-        .ok_or_else(|| "OSL: keyserver not configured (no keyserver.json)".to_string())?;
+    // Fresh installs have no keyserver.json — fall back to the
+    // built-in production URL. The file is now an OVERRIDE only
+    // (dev/staging), not a hard requirement.
+    let base_url = resolve_keyserver_base_url(&dir);
     cmd_osl_validate_license_with_dir_and_url(state, license_key, &dir, &base_url)
 }
 
@@ -4981,6 +4975,13 @@ pub struct TierGateStatusDto {
     pub raw_license_state: String,
 }
 
+/// Built-in production keyserver. Used when `keyserver.json` is
+/// absent or carries no `base_url` (the fresh-install case — the
+/// installer/onboarding never writes that file). `keyserver.json`
+/// remains an OVERRIDE for dev/staging; it is no longer required
+/// for the client to function.
+pub const DEFAULT_KEYSERVER_BASE_URL: &str = "https://keyserver.oslprivacy.com";
+
 /// Best-effort read of `<config_dir>/keyserver.json` → `base_url`.
 /// Mirrors the inline helper in `cmd_osl_get_identity_info`; returns
 /// `None` on any failure (file missing, malformed JSON, no
@@ -4990,6 +4991,15 @@ fn read_keyserver_base_url(dir: &std::path::Path) -> Option<String> {
     let raw = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     v.get("base_url")?.as_str().map(|s| s.to_string())
+}
+
+/// Resolve the keyserver base URL: the `keyserver.json` override
+/// when present and well-formed, otherwise the built-in production
+/// default. This is the function the license paths use so a fresh
+/// install (no `keyserver.json`) still reaches prod instead of
+/// failing closed with "keyserver not configured".
+pub fn resolve_keyserver_base_url(dir: &std::path::Path) -> String {
+    read_keyserver_base_url(dir).unwrap_or_else(|| DEFAULT_KEYSERVER_BASE_URL.to_string())
 }
 
 /// 7d-A: one row in the Whitelist Manager's flat table. The

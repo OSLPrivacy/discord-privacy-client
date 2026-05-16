@@ -55,16 +55,6 @@ fn unix_seconds_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Best-effort `keyserver.json` → `base_url` read. Returns `None`
-/// on any error (file missing, malformed JSON, no field) so the
-/// caller can fall back gracefully.
-fn read_keyserver_base_url(dir: &Path) -> Option<String> {
-    let path = dir.join("keyserver.json");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    v.get("base_url")?.as_str().map(|s| s.to_string())
-}
-
 /// Synchronous, cache-only classify. Stamps
 /// [`AppState::license_state`] without touching the network.
 ///
@@ -107,22 +97,22 @@ pub fn refresh_license_state(state: &AppState, dir: &Path) -> LicenseStateDto {
     // still need to load the cache first to know what to return.
     let sealer = select_best_sealer();
     let cache_path = dir.join("license.json");
-    let cache = match load_license_cache(&cache_path, sealer.as_ref()) {
-        Ok(inner) => inner,
-        Err(_) => {
-            let dto = LicenseStateDto::unconfigured();
-            stamp(state, &dto);
-            return dto;
-        }
-    };
-    let base_url = match read_keyserver_base_url(dir) {
-        Some(u) => u,
-        None => {
-            let dto = LicenseStateDto::from_cache(&cache);
-            stamp(state, &dto);
-            return dto;
-        }
-    };
+    // No cache yet (fresh install pre-activation) → Unconfigured;
+    // there's no paid state to refresh until the user activates via
+    // `cmd_osl_validate_license` (which writes license.json).
+    if load_license_cache(&cache_path, sealer.as_ref()).is_err() {
+        let dto = LicenseStateDto::unconfigured();
+        stamp(state, &dto);
+        return dto;
+    }
+    // Cache exists. Fresh installs have no keyserver.json; fall back
+    // to the built-in production URL so periodic re-validation still
+    // reaches prod. keyserver.json stays an override (dev/staging).
+    // The F2.4 outcome handling in `refresh_license_state_with_url`
+    // (Transport→grace, HttpStatus/Json→stale) is unchanged; only
+    // the URL source changed (previously: no keyserver.json →
+    // returned the cached classification without any network call).
+    let base_url = crate::commands::resolve_keyserver_base_url(dir);
     refresh_license_state_with_url(state, dir, &base_url)
 }
 

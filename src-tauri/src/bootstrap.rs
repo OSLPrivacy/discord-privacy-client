@@ -124,16 +124,26 @@ pub fn run_autostart(state: &AppState) {
 
     let keyserver_cfg = read_keyserver_config(&dir);
     let identity_loaded = load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
-    if let Some(cfg) = keyserver_cfg {
-        if identity_loaded {
-            init_keyserver_and_register(state, &cfg);
-        } else {
-            tracing::info!(
-                base_url = %cfg.base_url,
-                "OSL bootstrap: keyserver.json present but no identity loaded; \
-                 skipping init_keyserver + register"
-            );
-        }
+    // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
+    // resolves (keyserver.json `base_url` if present+valid → else the
+    // built-in production default, via the single shared resolver),
+    // so a fresh install with NO keyserver.json still builds +
+    // installs the KeyServerClient and registers its identity
+    // pubkeys. Previously this whole block was skipped when
+    // keyserver.json was absent, leaving the machine absent from
+    // /v1/pubkeys so no peer could encrypt to it. `admin_token`
+    // (and identity seeding) still come from keyserver.json when
+    // present. Identity lifecycle is unchanged — register still
+    // requires a loaded identity.
+    if identity_loaded {
+        let base_url = ipc::commands::resolve_keyserver_base_url(&dir);
+        let admin_token = keyserver_cfg.as_ref().and_then(|c| c.admin_token.clone());
+        init_keyserver_and_register(state, &base_url, admin_token);
+    } else {
+        tracing::info!(
+            "OSL bootstrap: no identity loaded; skipping init_keyserver \
+             + register (keyserver client installs once an identity exists)"
+        );
     }
 
     if identity_loaded {
@@ -428,9 +438,10 @@ fn read_keyserver_config(dir: &std::path::Path) -> Option<KeyserverConfig> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::info!(
                 path = %path.display(),
-                "OSL bootstrap: no keyserver.json; skipping keyserver init \
-                 (populate {{\"base_url\":\"http://host:port\",\"user_id\":\"name\"}} \
-                 to enable)"
+                "OSL bootstrap: no keyserver.json; using built-in production \
+                 keyserver default (the file is an OVERRIDE only — populate \
+                 {{\"base_url\":\"http://host:port\",\"user_id\":\"name\"}} for \
+                 dev/staging)"
             );
             return None;
         }
@@ -438,7 +449,8 @@ fn read_keyserver_config(dir: &std::path::Path) -> Option<KeyserverConfig> {
             tracing::warn!(
                 error = %e,
                 path = %path.display(),
-                "OSL bootstrap: keyserver.json read failed; skipping"
+                "OSL bootstrap: keyserver.json read failed; falling back to \
+                 the built-in production keyserver default"
             );
             return None;
         }
@@ -456,7 +468,8 @@ fn read_keyserver_config(dir: &std::path::Path) -> Option<KeyserverConfig> {
             tracing::warn!(
                 error = %e,
                 path = %path.display(),
-                "OSL bootstrap: keyserver.json malformed; skipping keyserver init"
+                "OSL bootstrap: keyserver.json malformed; falling back to the \
+                 built-in production keyserver default"
             );
             None
         }
@@ -566,13 +579,17 @@ fn load_or_generate_identity(
 /// and continue on failure — `register` failure leaves the
 /// keyserver client populated, so subsequent `fetch_pubkeys`
 /// calls can still succeed (in case the failure was transient).
-fn init_keyserver_and_register(state: &AppState, cfg: &KeyserverConfig) {
-    let client = match KeyServerClient::new(&cfg.base_url) {
+fn init_keyserver_and_register(
+    state: &AppState,
+    base_url: &str,
+    admin_token: Option<String>,
+) {
+    let client = match KeyServerClient::new(base_url) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                base_url = %cfg.base_url,
+                base_url = %base_url,
                 "OSL bootstrap: KeyServerClient::new failed; skipping register"
             );
             return;
@@ -581,10 +598,10 @@ fn init_keyserver_and_register(state: &AppState, cfg: &KeyserverConfig) {
     // Attach admin token if configured. `with_admin_token` normalises
     // empty strings to `None` so a `"admin_token": ""` in
     // keyserver.json doesn't end up sending a bad header.
-    let client = client.with_admin_token(cfg.admin_token.clone());
+    let client = client.with_admin_token(admin_token.clone());
     tracing::info!(
-        base_url = %cfg.base_url,
-        admin_token = if cfg.admin_token.as_deref().unwrap_or("").is_empty() {
+        base_url = %base_url,
+        admin_token = if admin_token.as_deref().unwrap_or("").is_empty() {
             "absent (dev mode or local keyserver)"
         } else {
             "present"
