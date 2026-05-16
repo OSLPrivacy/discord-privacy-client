@@ -45,7 +45,8 @@ const RELEASE_NOTES = "OSL Privacy 0.0.1 — beta build.";
  *        --remote
  */
 export const RELEASE_SIGNATURES: Record<string, string> = {
-  "0.0.1": "<G3.2-PENDING-FIRST-SIGNED-BUILD>",
+  "0.0.1":
+    "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNEdjRnI0NG10UkRyMS9MY0VYMmhIOUFvOUNYeXI4dnhuUTZNeWF6d29DeGpMd1BlV2NidTRNWnBJZE8vWDNHNmlGbHhkRHBHSUFiVU9tN3BBUjBFZzlCSHFKeFE0N1FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc4OTAyOTAwCWZpbGU6T1NMIFByaXZhY3lfMC4wLjFfeDY0X2VuLVVTLm1zaQpoQXNoRi9xWlc5ZUFBeUxkYjZvcy9UeGdjOHVhcEZiSHAyc04wais0M0w0SGIveWkzaGszcjdrWG02VTEzVjl3V2puUGZtb08yYXpyc2pTQW9HL1FCUT09Cg==",
 };
 
 /// Look up the update signature for a given version. A missing entry
