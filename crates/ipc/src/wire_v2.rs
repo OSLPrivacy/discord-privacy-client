@@ -281,8 +281,11 @@ pub enum V2Error {
     },
 
     /// We are not a recipient of this message — no slot's pubkey
-    /// hash matched our own derived hash.
-    #[error("not a recipient of this v=2 message")]
+    /// hash matched our own derived hash. Shared verbatim by the
+    /// v=2 / v=3 / v=4 decoders, so the wording must stay
+    /// version-agnostic (the caller prefixes the actual version,
+    /// e.g. "OSL: v=4 decode: <this>").
+    #[error("not a recipient of this message")]
     NoMatchingSlot,
 
     /// A slot matched our hash but the wrap-leg AEAD failed under
