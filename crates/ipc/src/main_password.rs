@@ -1248,6 +1248,16 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         "lockout_state.json",
         // 7d-FIX1: also wipe burned-scopes ledger.
         "burned_scopes.json",
+        // BURN-CLEANSLATE: app_preferences.json and
+        // sender_key_state.json are sealed under file_storage_key
+        // (the main password) just like peer_map/whitelist_state,
+        // but were never wiped here and are NOT covered by the
+        // set/rotate re-encrypt sweep — so post-burn they stayed
+        // readable only by the OLD password's key forever. Wipe
+        // them so a burn truly leaves zero file sealed by the old
+        // identity/password.
+        "app_preferences.json",
+        "sender_key_state.json",
     ];
     for name in top {
         let path = dir.join(name);
@@ -1255,16 +1265,15 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
             let _ = std::fs::remove_file(&path);
         }
     }
+    // BURN-CLEANSLATE: nuke the entire `store/` directory rather
+    // than three named sqlite files. The message DB is sealed by
+    // identity.x25519_secret; stray WAL/SHM variants or a future
+    // second DB file would otherwise survive the burn sealed by
+    // the old identity. remove_dir_all is best-effort (same as the
+    // per-file removes); a missing dir is success.
     let store = dir.join("store");
-    for name in [
-        "messages.sqlite",
-        "messages.sqlite-wal",
-        "messages.sqlite-shm",
-    ] {
-        let path = store.join(name);
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
-        }
+    if store.exists() {
+        let _ = std::fs::remove_dir_all(&store);
     }
     Ok(())
 }
