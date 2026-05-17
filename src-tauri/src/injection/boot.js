@@ -11195,6 +11195,80 @@
             }
         }
 
+        // React-fiber fallback. On Discord build 545032 every DOM
+        // source above can return null (data-author-id is no longer
+        // emitted, the avatar img is virtualized away, and the cozy
+        // group has no id-bearing sibling). The message row's React
+        // fiber still carries the author, so walk the fiber `.return`
+        // chain the same build-resilient way oslCurrentChannelContext
+        // does (commit 29249df). Used ONLY after every DOM source
+        // failed, before the dispatch retries exhaust.
+        const viaFiber = recvAuthorIdViaFiber(el, root);
+        if (viaFiber) return viaFiber;
+
+        return null;
+    }
+
+    /**
+     * Build-resilient last-resort author-id resolver: walk the React
+     * fiber tree upward from the message element looking for the
+     * author/user id Discord threads through message-row props.
+     * Mirrors the fiber approach in oslResolveChannelViaFiber /
+     * oslExtractUserFromProfile (verified live on build 545032).
+     *
+     * Anchors tried in order: the message-content element passed in
+     * (closest to the message model), then the resolved list-item.
+     * Prop shapes checked per fiber, in order of specificity:
+     *   message.author.id  →  author.id  →  user.id  →  userId
+     *
+     * No self-guard: parity with the DOM sources above, which return
+     * whatever author id is present (own-sent is already handled by
+     * the selfSentAuthors cache at the top of recvExtractAuthorId).
+     * Defensive: never throws; returns a snowflake string or null.
+     */
+    function recvAuthorIdViaFiber(el, root) {
+        const isSnowflake = function (s) {
+            return typeof s === "string" && /^\d{15,22}$/.test(s);
+        };
+        const anchors = [el, root];
+        for (let a = 0; a < anchors.length; a++) {
+            const node = anchors[a];
+            if (!node) continue;
+            let key = null;
+            try {
+                key = Object.keys(node).find(function (k) {
+                    return k.indexOf("__reactFiber") === 0;
+                });
+            } catch (_) {
+                key = null;
+            }
+            if (!key) continue;
+            let f = node[key];
+            for (let depth = 0; f && depth < 40; depth++) {
+                try {
+                    const p = f.memoizedProps;
+                    if (p && typeof p === "object") {
+                        const cand =
+                            (p.message &&
+                                p.message.author &&
+                                typeof p.message.author.id === "string" &&
+                                p.message.author.id) ||
+                            (p.author &&
+                                typeof p.author.id === "string" &&
+                                p.author.id) ||
+                            (p.user &&
+                                typeof p.user.id === "string" &&
+                                p.user.id) ||
+                            (typeof p.userId === "string" && p.userId) ||
+                            null;
+                        if (isSnowflake(cand)) return cand;
+                    }
+                } catch (_) {
+                    // keep walking
+                }
+                f = f.return;
+            }
+        }
         return null;
     }
 
