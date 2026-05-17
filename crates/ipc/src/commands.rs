@@ -3964,6 +3964,25 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
                 .remove(discord_id);
         }
         TofuOutcome::Changed { old } => {
+            // v=4 desync fix: the peer's identity key changed (burn /
+            // re-registration / regen). Any existing Double Ratchet
+            // for this peer was derived from the OLD SessionContext
+            // (which binds both parties' identity pubs), so its
+            // header keys (HKr/NHKr) can no longer open this peer's
+            // wire. Drop ratchet_state so the next v=4 send/recv
+            // re-bootstraps a fresh session from the current keys
+            // (ik_ratchet_initial_pub was just refreshed by
+            // populate_peer_from_fetch_response). This does NOT
+            // bypass the blocking KeyChangeAlert below — verification
+            // is still required; we only prevent a permanently
+            // undecryptable, desynced ratchet.
+            {
+                let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+                if let Some(entry) = pm.get_mut(discord_id) {
+                    entry.ratchet_state = None;
+                }
+            }
+            persist_peer_map_now(state);
             let alert = crate::state::KeyChangeAlert {
                 discord_id: discord_id.to_string(),
                 osl_user_id,
@@ -4042,6 +4061,13 @@ pub fn cmd_osl_accept_key_change(
         let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm.entry(discord_id.clone()).or_default();
         entry.tofu_ed25519_pub = Some(new_key);
+        // v=4 desync fix (defensive): an accepted key change is an
+        // identity rotation — any ratchet_state was derived from the
+        // pre-rotation SessionContext and is undecryptable. Drop it
+        // so the next v=4 re-handshakes. (tofu_observe_peer's Changed
+        // branch already clears this on observation; this covers the
+        // path where the entry was rebuilt between observe and accept.)
+        entry.ratchet_state = None;
     }
     persist_peer_map_now(state);
     state
