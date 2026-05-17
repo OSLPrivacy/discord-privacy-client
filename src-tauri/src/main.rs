@@ -2075,6 +2075,17 @@ async fn osl_set_update_channel(
 }
 
 fn main() {
+    // Without a subscriber, every `tracing::info!/warn!/error!`
+    // across the workspace is silently discarded — three diagnosis
+    // reports stalled because the actual send-vs-receive failure was
+    // invisible. Install one before anything else runs. Verbosity is
+    // RUST_LOG-controlled; with RUST_LOG unset EnvFilter defaults to
+    // ERROR only, so the v=4 send/recv triage lines REQUIRE
+    // `RUST_LOG=osl::v4=info` (or broader, e.g. `RUST_LOG=info`).
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     tauri::Builder::default()
         // Phase F0: single-instance plugin MUST be initialized before
         // tauri-plugin-deep-link. Windows spawns a new process when

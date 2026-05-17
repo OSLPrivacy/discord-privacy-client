@@ -37,6 +37,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 
 # Phase 8d-FIX5: Discord's CSP blocks browser-side fetch to

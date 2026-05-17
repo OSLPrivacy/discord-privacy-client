@@ -532,8 +532,10 @@ pub fn decrypt_v2(
 /// First 8 bytes of SHA-256(`pk` bytes) — the per-recipient slot
 /// prefix used to find our wrap entry in a multi-recipient v=2
 /// blob. Public information (sender writes it in the clear); leaks
-/// no secret data.
-fn pubkey_hash_prefix(pk: &x25519::PublicKey) -> [u8; RECIPIENT_HASH_PREFIX_LEN] {
+/// no secret data. `pub` so the v=4 send/receive diagnostic logs
+/// can print the exact value the wire carries / the slot scan
+/// compares (send-vs-receive stale-key triage).
+pub fn pubkey_hash_prefix(pk: &x25519::PublicKey) -> [u8; RECIPIENT_HASH_PREFIX_LEN] {
     let digest = Sha256::digest(pk.as_bytes());
     let mut out = [0u8; RECIPIENT_HASH_PREFIX_LEN];
     out.copy_from_slice(&digest[..RECIPIENT_HASH_PREFIX_LEN]);

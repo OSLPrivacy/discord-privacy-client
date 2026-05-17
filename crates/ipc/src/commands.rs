@@ -2044,10 +2044,20 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                 // wrap to a key the peer no longer holds → the peer
                 // sees "not a recipient of this message". Force a
                 // keyserver refresh for THIS recipient and re-resolve
-                // so we encrypt to the current X25519. Best-effort: a
-                // refresh failure (offline / keyserver down) must not
-                // block the send — fall back to the keys on file.
-                let _ = refresh_peer_pubkeys_from_keyserver(state, &peer_did);
+                // so we encrypt to the current X25519. FAIL-CLOSED: a
+                // refresh failure used to be swallowed (`let _ = …`),
+                // silently encrypting to a possibly-stale key. We now
+                // surface the error and refuse to send — a stale-key
+                // mis-encrypt is undiagnosable from the peer side; a
+                // surfaced send error is not.
+                if let Err(e) = refresh_peer_pubkeys_from_keyserver(state, &peer_did) {
+                    return Err(format!(
+                        "OSL: v=4 send: keyserver refresh for recipient \
+                         {peer_did} failed: {e} — refusing to encrypt with \
+                         a possibly-stale X25519 key (fail-closed; message \
+                         NOT sent)"
+                    ));
+                }
                 let fresh_recipients = resolve_recipients()
                     .map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
                 let fresh_peer = fresh_recipients.get(1).ok_or_else(|| {
@@ -2500,6 +2510,21 @@ fn encrypt_v4_send(
 ) -> Result<String, String> {
     use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
     let _ = scope; // reserved for non-DM scopes in a future phase
+
+    // Send-vs-receive stale-key triage: log the EXACT recipient
+    // X25519 (and its slot-hash prefix — the value written into the
+    // wire and compared by the peer's decrypt_v4 slot scan) that
+    // this message is wrapped to. Compare side-by-side with the
+    // receiver's `decrypt_v4_recv` log: equal ⇒ keys aligned;
+    // different ⇒ pinpoints which machine holds the stale key.
+    tracing::info!(
+        target: "osl::v4",
+        peer_did = %peer_did,
+        recipient_x25519_b64 = %STANDARD.encode(recipient.x25519_pub.as_bytes()),
+        recipient_slot_hash =
+            %STANDARD.encode(crate::wire_v2::pubkey_hash_prefix(&recipient.x25519_pub)),
+        "OSL: v=4 send — wrapping to recipient X25519"
+    );
 
     // Snapshot self ML-KEM pubkey for the SessionContext binding.
     let self_mlkem_pub_bytes: Vec<u8> = {
@@ -3441,6 +3466,21 @@ fn decrypt_v4_recv(
             identity.mlkem_public_bytes.to_vec(),
         )
     };
+
+    // Send-vs-receive stale-key triage: log the receiver's OWN
+    // identity X25519 slot-hash that decrypt_v4's slot scan compares
+    // each wire slot against. If this differs from the sender's
+    // `recipient_slot_hash` log line, the sender wrapped to a key
+    // this machine's current identity no longer holds (NoMatchingSlot
+    // = "not a recipient of this message"). Logged BEFORE decrypt_v4
+    // so it is visible even when the slot scan fails.
+    tracing::info!(
+        target: "osl::v4",
+        sender_did = %sender_discord_id,
+        our_x25519_b64 = %STANDARD.encode(our_pk.as_bytes()),
+        our_slot_hash = %STANDARD.encode(crate::wire_v2::pubkey_hash_prefix(&our_pk)),
+        "OSL: v=4 recv — slot scan will match against our identity X25519"
+    );
 
     let parsed = crate::wire_v2::decrypt_v4(&content, &our_sk, &our_mlkem_sk)
         .map_err(|e| format!("OSL: v=4 decode: {e}"))?;
