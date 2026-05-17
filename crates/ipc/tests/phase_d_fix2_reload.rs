@@ -245,9 +245,12 @@ fn reload_handles_decrypt_failure_gracefully() {
     map.insert("11111".to_string(), legacy_entry("henry"));
     write_peer_map(&dir.path().join("peer_map.json"), &map).unwrap();
 
-    // Now switch to key B — reading the encrypted file will fail
-    // AEAD verification. The reload helper should record the failure
-    // in `report.errors` and leave state.peer_map at default.
+    // Now switch to key B. Commit 3 contract: a key IS installed
+    // (post-gate) and peer_map.json won't decrypt under it ⇒
+    // sealed by a different key ⇒ quarantine-by-rename, NOT a
+    // permanent surfaced error. The loader then sees no file and
+    // leaves state at default; a fresh one is recreated under key B
+    // by the downstream self-entry/re-encrypt path.
     let key_b = [0xBBu8; 32];
     set_file_storage_key(Some(key_b));
     let state = AppState::new();
@@ -257,14 +260,37 @@ fn reload_handles_decrypt_failure_gracefully() {
         "decrypt under wrong key must not 'succeed'"
     );
     assert!(
-        report.errors.iter().any(|e| e.starts_with("peer_map:")),
-        "peer_map failure should surface in report.errors; got {:?}",
+        !report.errors.iter().any(|e| e.starts_with("peer_map:")),
+        "wrong-key peer_map must be quarantined, not surfaced as a \
+         permanent error; got {:?}",
         report.errors
+    );
+    // The original file was renamed aside (non-destructive), not
+    // deleted: peer_map.json is gone and exactly one
+    // `peer_map.json.quarantine-*` sibling exists.
+    let pm = dir.path().join("peer_map.json");
+    assert!(
+        !pm.exists(),
+        "wrong-key peer_map.json must have been renamed aside"
+    );
+    let quarantined: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("peer_map.json.quarantine-")
+        })
+        .collect();
+    assert_eq!(
+        quarantined.len(),
+        1,
+        "exactly one quarantined peer_map blob must exist (rename, not delete)"
     );
     assert_eq!(
         state.peer_map.lock().unwrap().len(),
         0,
-        "failed reload must leave state at default, not partial"
+        "post-quarantine reload must leave state at default, not partial"
     );
 
     set_file_storage_key(None);

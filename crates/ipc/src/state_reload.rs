@@ -67,6 +67,43 @@ pub fn reload_encrypted_state_after_unlock(
 ) -> Result<ReloadReport, String> {
     let mut report = ReloadReport::default();
 
+    // Commit 3 — wrong-key quarantine for the file_storage_key JSON
+    // files. This runs POST-GATE: the caller installs
+    // file_storage_key before calling us, so a key IS in the slot
+    // here. If a sealed file still won't decrypt with that key it
+    // was sealed under a DIFFERENT key (e.g. the pre-burn / pre-
+    // password-change file_storage_key, or a non-burn identity regen
+    // that orphaned it) and would otherwise make the loader below
+    // silently fall back to Default forever. Quarantine it aside
+    // (rename, never delete — same non-destructive contract as
+    // bootstrap's store self-heal) so the loader recreates a fresh
+    // one under the current key. The pre-key path (no key in slot)
+    // is left UNTOUCHED — that is bootstrap's expected pre-gate
+    // state, not a wrong-key failure.
+    for name in [
+        "peer_map.json",
+        "whitelist_state.json",
+        "app_preferences.json",
+        "sender_key_state.json",
+    ] {
+        let path = config_dir.join(name);
+        match quarantine_if_wrong_key(&path) {
+            Ok(Some(q)) => {
+                tracing::warn!(
+                    file = name,
+                    quarantined_to = %q.display(),
+                    "OSL: state_reload — {name} sealed by a different key; \
+                     quarantined (rename, not delete), recreating under \
+                     current key"
+                );
+            }
+            Ok(None) => {}
+            Err(e) => report
+                .errors
+                .push(format!("{name} quarantine: {e}")),
+        }
+    }
+
     // peer_map.json — explicit error variants distinguish missing
     // (fresh install, normal) from decrypt/parse failure.
     let pm_path = config_dir.join("peer_map.json");
@@ -191,4 +228,54 @@ pub fn reload_encrypted_state_after_unlock(
     }
 
     Ok(report)
+}
+
+/// Wrong-key discrimination for one file_storage_key-sealed JSON
+/// file. Returns `Ok(Some(quarantine_path))` if the file was sealed
+/// under a key the currently-installed `file_storage_key` can't
+/// reproduce and was renamed aside; `Ok(None)` if there is nothing
+/// to do (missing / plaintext / decrypts fine / no key in slot —
+/// the expected pre-gate path); `Err` only on a rename I/O failure.
+fn quarantine_if_wrong_key(path: &Path) -> Result<Option<std::path::PathBuf>, String> {
+    let blob = match std::fs::read(path) {
+        Ok(b) => b,
+        // Missing/unreadable: not our concern — the loader handles
+        // absence as the normal fresh-install case.
+        Err(_) => return Ok(None),
+    };
+    // Plaintext (no OSL-ENC1 magic) decrypts fine by definition.
+    if !crate::main_password::has_enc_magic(&blob) {
+        return Ok(None);
+    }
+    // No key in the slot ⇒ expected pre-gate path. Leave UNTOUCHED;
+    // never quarantine on the not-unlocked case.
+    let key = match crate::main_password::get_file_storage_key() {
+        Some(k) => k,
+        None => return Ok(None),
+    };
+    // Key installed AND the blob still won't decrypt ⇒ sealed under
+    // a different key. Quarantine.
+    if crate::main_password::decrypt_at_rest(&blob, &key).is_ok() {
+        return Ok(None);
+    }
+    quarantine_aside(path).map(Some).map_err(|e| e.to_string())
+}
+
+/// Self-heal primitive (mirrors bootstrap's `quarantine_aside`):
+/// rename `path` aside to `<name>.quarantine-<unix-secs>` so the
+/// normal writer can create a fresh one. NON-destructive (rename,
+/// never delete) and reversible — the user can still recover the
+/// blob out-of-band if they recover the old key.
+fn quarantine_aside(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let fname = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "osl-state".to_string());
+    let qpath = path.with_file_name(format!("{fname}.quarantine-{ts}"));
+    std::fs::rename(path, &qpath)?;
+    Ok(qpath)
 }
