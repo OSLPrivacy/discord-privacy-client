@@ -1386,6 +1386,16 @@ pub fn cmd_osl_decrypt_message_with_id(
     // common (every non-peer in a channel triggers it) and is
     // handled silently by the JS hook — surface a typed
     // UnknownSender so the hook can dedupe its log.
+    //
+    // RECEIVE-PATH GUARANTEE (deliberate): an unmapped sender
+    // returns UnknownSender and does NOT consult the keyserver.
+    // This is a privacy property — we never emit a keyserver
+    // lookup ("received an OSL message from snowflake X") for a
+    // sender we have no mapping for, and it's attacker-pokable via
+    // junk DPC0:: strings otherwise. The cross-machine fix is
+    // send-side + v3/v4 (sender key in-wire / local ratchet), so
+    // receive never needs a keyserver sender lookup; do NOT default
+    // osl_user_id to the snowflake here.
     let osl_user_id = {
         let map_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         match map_guard
@@ -1963,26 +1973,27 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     };
     let recipients = match resolve_recipients() {
         Ok(r) => r,
-        Err(crate::whitelist::RecipientsV3Error::PeerMissingMlkemPubkey { discord_id }) => {
-            // One-shot keyserver refresh attempt.
+        // REGISTER-FIX: BOTH "peer missing ML-KEM" and the new
+        // "peer missing all keys" (wiped + re-whitelisted entry)
+        // are recoverable via a one-shot inline keyserver fetch
+        // keyed by the peer's Discord snowflake (4(a) — it just
+        // works; no manual peer_map editing).
+        Err(crate::whitelist::RecipientsV3Error::PeerMissingMlkemPubkey { discord_id })
+        | Err(crate::whitelist::RecipientsV3Error::PeerMissingKeys { discord_id }) => {
             match refresh_peer_pubkeys_from_keyserver(state, &discord_id) {
-                Ok(true) => {
-                    // ML-KEM newly added; retry the capability check.
+                Ok(_) => {
+                    // Keys (x25519 + ML-KEM [+ ratchet]) populated
+                    // from the keyserver; retry the capability check.
                     resolve_recipients().map_err(|e| {
                         format!("OSL: v=3 capability check (after keyserver refresh): {e}")
                     })?
                 }
-                Ok(false) => {
-                    return Err(format!(
-                        "OSL: v=3 capability check: peer {discord_id} has no \
-                         ML-KEM-768 pubkey on file and keyserver refresh added \
-                         none (peer may need to regenerate identity)"
-                    ));
-                }
                 Err(refresh_err) => {
                     return Err(format!(
-                        "OSL: v=3 capability check: peer {discord_id} missing \
-                         ML-KEM-768 pubkey; keyserver refresh failed: {refresh_err}"
+                        "OSL: can't encrypt to peer {discord_id}: keys \
+                         unavailable and keyserver refresh failed: \
+                         {refresh_err} (fail-closed; message NOT sent \
+                         plaintext or self-only)"
                     ));
                 }
             }
@@ -3721,6 +3732,12 @@ fn resolve_sender_pubkey(
             .get(sender_discord_id)
             .and_then(|e| e.osl_user_id.clone())
     };
+    // RECEIVE-PATH GUARANTEE (deliberate): an unmapped sender
+    // returns UnknownSender and does NOT consult the keyserver
+    // (privacy: no metadata leak of "received an OSL message from
+    // snowflake X"; attacker-pokable via junk DPC0:: otherwise).
+    // The cross-machine fix is send-side + v3/v4, so receive never
+    // needs a keyserver sender lookup — do NOT default to snowflake.
     let osl_user_id = osl_user_id_for_lookup.ok_or_else(|| {
         format!(
             "OSL: {}",
@@ -3802,6 +3819,17 @@ pub fn populate_peer_from_fetch_response(
         entry
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
+        // REGISTER-FIX: leave a fully-consistent entry. osl_user_id
+        // (== the keyserver user_id == the Discord snowflake in V2)
+        // and the ratchet bootstrap pub were never written here,
+        // which is why a keyless entry could never self-heal and
+        // v=4 DM sends never became eligible.
+        entry
+            .osl_user_id
+            .get_or_insert_with(|| discord_id.to_string());
+        if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
+            entry.ik_ratchet_initial_pub = Some(ratchet);
+        }
         mlkem_added = !had_mlkem;
     } else {
         // X25519 only; still refresh that side.
@@ -3811,6 +3839,12 @@ pub fn populate_peer_from_fetch_response(
         entry
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
+        entry
+            .osl_user_id
+            .get_or_insert_with(|| discord_id.to_string());
+        if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
+            entry.ik_ratchet_initial_pub = Some(ratchet);
+        }
     }
 
     // REGISTER-FIX (TOFU): compare the peer's Ed25519 identity key
@@ -4020,19 +4054,16 @@ pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
 ///   the keyserver returned no ML-KEM,
 /// - `Err(msg)` if the keyserver request itself errored.
 fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Result<bool, String> {
+    // REGISTER-FIX: in V2 a peer's osl_user_id IS their Discord
+    // snowflake (the keyserver is keyed by snowflake). A wiped /
+    // re-whitelisted entry has osl_user_id=None — default to the
+    // snowflake so a keyless entry self-heals instead of failing
+    // forever (the old `return Ok(false)` here was the dead end).
     let osl_user_id = {
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        pm.get(discord_id).and_then(|e| e.osl_user_id.clone())
-    };
-    let osl_user_id = match osl_user_id {
-        Some(s) => s,
-        None => {
-            tracing::info!(
-                discord_id = %discord_id,
-                "OSL: keyserver pubkey refresh: peer has no osl_user_id, can't fetch"
-            );
-            return Ok(false);
-        }
+        pm.get(discord_id)
+            .and_then(|e| e.osl_user_id.clone())
+            .unwrap_or_else(|| discord_id.to_string())
     };
     let resp = {
         let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
@@ -4474,6 +4505,14 @@ pub fn cmd_osl_set_whitelist(
             },
         };
         pe.outgoing_whitelists.push(new_entry);
+        // REGISTER-FIX: seed osl_user_id (== the peer's Discord
+        // snowflake == their keyserver user_id in V2) so the
+        // keyserver fetch below — and every later send/receive —
+        // can resolve this peer. Without this, a whitelisted peer
+        // stayed permanently keyless (encrypt-to-self-only on send,
+        // UnknownSender on receive).
+        pe.osl_user_id
+            .get_or_insert_with(|| peer_discord_id.clone());
         // Also evict any prior burned-scope entry for the same
         // scope shape — re-whitelisting after a burn is allowed
         // and the §3.5 semantics say "fresh keys → new messages
@@ -4501,6 +4540,28 @@ pub fn cmd_osl_set_whitelist(
     // `maybe_encrypt` when a main password is set.
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
+
+    // REGISTER-FIX: pull the peer's real keys (x25519 + ML-KEM
+    // [+ ratchet]) from the keyserver NOW so whitelisting yields a
+    // key-complete entry — the user shouldn't have to send/receive
+    // first to trigger a lazy fetch. Best-effort: if the keyserver
+    // is unreachable / not yet installed at this moment, the
+    // entry's seeded osl_user_id lets the send-path's
+    // PeerMissingKeys → refresh retry self-heal later. A failure
+    // here must NOT fail the whitelist op.
+    match refresh_peer_pubkeys_from_keyserver(state, &peer_discord_id) {
+        Ok(_) => {
+            persist_peer_map_now(state);
+        }
+        Err(e) => {
+            tracing::info!(
+                peer = %peer_discord_id,
+                error = %e,
+                "OSL: whitelist-time keyserver key fetch deferred \
+                 (will self-heal on next send/receive)"
+            );
+        }
+    }
 
     // 7d-FIX1 decision-B: re-whitelisting a scope removes it from
     // the global burned-scopes ledger so the receive observer
@@ -4544,6 +4605,10 @@ pub fn cmd_osl_bulk_set_whitelist(
             if pe.discord_id.is_none() {
                 pe.discord_id = Some(did.clone());
             }
+            // REGISTER-FIX: seed osl_user_id (== snowflake in V2) so
+            // the post-loop keyserver refresh + later send/receive
+            // can resolve each bulk-whitelisted peer.
+            pe.osl_user_id.get_or_insert_with(|| did.clone());
             let already = pe
                 .outgoing_whitelists
                 .iter()
@@ -4592,6 +4657,21 @@ pub fn cmd_osl_bulk_set_whitelist(
     }
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
+
+    // REGISTER-FIX: best-effort keyserver key fetch for every
+    // bulk-whitelisted peer so the entries are key-complete (same
+    // rationale as cmd_osl_set_whitelist). Per-peer failures are
+    // non-fatal — the seeded osl_user_id lets the send-path
+    // PeerMissingKeys → refresh retry self-heal later.
+    let mut any_fetched = false;
+    for did in &member_dids {
+        if refresh_peer_pubkeys_from_keyserver(state, did).is_ok() {
+            any_fetched = true;
+        }
+    }
+    if any_fetched {
+        persist_peer_map_now(state);
+    }
     Ok(affected)
 }
 

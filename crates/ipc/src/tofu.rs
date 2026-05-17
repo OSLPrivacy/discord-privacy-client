@@ -41,7 +41,15 @@ pub fn classify(baseline: Option<&str>, fetched: &str) -> TofuOutcome {
         return TofuOutcome::Unchanged;
     }
     match baseline {
+        // REGISTER-FIX: a None *or* empty baseline is "never seen a
+        // real key for this peer yet" — populating it for the FIRST
+        // time (e.g. keyserver fetch right after whitelisting, or a
+        // keyless wiped entry self-healing) is FirstUse, NOT a
+        // key-change. Without the empty-string guard, a peer entry
+        // that ever carried `Some("")` would raise a false
+        // "security key changed" alert on its very first real key.
         None => TofuOutcome::FirstUse,
+        Some(b) if b.is_empty() => TofuOutcome::FirstUse,
         Some(b) if b == fetched => TofuOutcome::Unchanged,
         Some(b) => TofuOutcome::Changed { old: b.to_string() },
     }
@@ -91,6 +99,14 @@ mod tests {
     #[test]
     fn unchanged_when_equal() {
         assert_eq!(classify(Some("KEY1"), "KEY1"), TofuOutcome::Unchanged);
+    }
+
+    #[test]
+    fn empty_baseline_is_first_use_not_a_change() {
+        // REGISTER-FIX: a keyless entry that ever held Some("")
+        // must treat its first real key as FirstUse (no false
+        // "key changed" alert).
+        assert_eq!(classify(Some(""), "REALKEY"), TofuOutcome::FirstUse);
     }
 
     #[test]

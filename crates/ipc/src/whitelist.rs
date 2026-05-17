@@ -147,12 +147,22 @@ pub fn recipients_for_scope_v3(
             Some(e) => e,
             None => continue,
         };
-        // Mirror recipients_for_scope's silent-skip on missing
-        // X25519 (legacy v=1 entries) — they wouldn't be valid
-        // recipients in any wire format.
+        // REGISTER-FIX (cross-machine decrypt): a whitelisted peer
+        // with no X25519 pubkey on file used to be SILENTLY skipped
+        // (`continue`), which made the whole send collapse to
+        // encrypt-to-self-only (the peer was never a recipient slot)
+        // — the message then arrived as raw ciphertext on the peer.
+        // That is now a recoverable, surfaced error so the caller
+        // (`cmd_osl_encrypt_message_v2_wire`) can do an inline
+        // keyserver fetch for this peer and retry — option 4(a),
+        // "it just works". NEVER silently drop a whitelisted peer.
         let x25519_pub = match peer_pubkey(peer_map, member) {
             Some(pk) => pk,
-            None => continue,
+            None => {
+                return Err(RecipientsV3Error::PeerMissingKeys {
+                    discord_id: member.clone(),
+                })
+            }
         };
         // ML-KEM is REQUIRED for v=3 recipients; missing is a
         // hard fail surfaced to the caller (not a silent skip)
@@ -202,6 +212,12 @@ pub enum RecipientsV3Error {
     PeerMissingMlkemPubkey { discord_id: String },
     #[error("peer {discord_id} ML-KEM pubkey decode failed: {reason}")]
     PeerMlkemPubkeyDecode { discord_id: String, reason: String },
+    /// REGISTER-FIX: whitelisted peer has no X25519 pubkey on file
+    /// yet (e.g. peer_map was wiped + re-whitelisted; keys never
+    /// fetched). Recoverable — the caller does an inline keyserver
+    /// fetch keyed by the peer's Discord snowflake and retries.
+    #[error("peer {discord_id} has no keys on file yet (will fetch from keyserver)")]
+    PeerMissingKeys { discord_id: String },
 }
 
 // 9-C1: `should_decrypt_from` removed. Decrypt is permissive — if
