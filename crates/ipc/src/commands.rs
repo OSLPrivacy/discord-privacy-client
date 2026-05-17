@@ -2036,12 +2036,32 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                 }
             }
             if eligible {
+                // Cross-machine decrypt fix: v=4 is single-recipient
+                // and unforgiving. When the peer entry already has a
+                // ratchet pub the `!eligible` refresh above is skipped,
+                // so a stale `peer_map.pubkey` (e.g. the peer's
+                // pre-burn X25519, never re-fetched) survives and we
+                // wrap to a key the peer no longer holds → the peer
+                // sees "not a recipient of this message". Force a
+                // keyserver refresh for THIS recipient and re-resolve
+                // so we encrypt to the current X25519. Best-effort: a
+                // refresh failure (offline / keyserver down) must not
+                // block the send — fall back to the keys on file.
+                let _ = refresh_peer_pubkeys_from_keyserver(state, &peer_did);
+                let fresh_recipients = resolve_recipients()
+                    .map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
+                let fresh_peer = fresh_recipients.get(1).ok_or_else(|| {
+                    format!(
+                        "OSL: v=4 send: recipient {peer_did} vanished \
+                         from peer_map after keyserver refresh"
+                    )
+                })?;
                 return encrypt_v4_send(
                     state,
                     &sender_sk,
                     &self_pk,
                     &peer_did,
-                    non_self_peers[0],
+                    fresh_peer,
                     &scope,
                     plaintext.as_bytes(),
                     &self_discord_id,
