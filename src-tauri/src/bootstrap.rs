@@ -324,15 +324,84 @@ fn open_message_store(state: &AppState, dir: &std::path::Path) {
                 .expect("message_store mutex poisoned") = Some(store);
         }
         Err(e) => {
+            // Self-heal. The store is sealed by
+            // identity.x25519_secret and this fn is only called with
+            // an identity loaded (caller gates on `identity_loaded`),
+            // so a failed open is the WRONG-IDENTITY case — e.g. a
+            // non-burn identity regen (see finding 3b) left a store/
+            // DB sealed by the old secret. There is NO "password not
+            // entered yet" ambiguity for the store: it has no
+            // password-gate dependency, so quarantine here cannot
+            // race a transient not-unlocked state. Rename the stale
+            // dir aside (reversible — the old DB is only decryptable
+            // by the old identity anyway) and recreate a fresh store
+            // under the current identity so persistence comes back
+            // instead of staying permanently disabled.
             tracing::warn!(
                 error = %e,
                 path = %store_dir.display(),
-                "OSL bootstrap: message_store open failed; persistence disabled \
-                 for this session (decrypt path still works, history won't \
-                 rehydrate after restart)"
+                "OSL bootstrap: message_store open failed (wrong identity); \
+                 quarantining stale store and recreating"
             );
+            match quarantine_aside(&store_dir) {
+                Ok(q) => {
+                    tracing::warn!(
+                        quarantined_to = %q.display(),
+                        "OSL bootstrap: stale store quarantined (rename, not delete)"
+                    );
+                    match MessageStore::open(&store_dir, &secret_bytes) {
+                        Ok(store) => {
+                            tracing::info!(
+                                path = %store_dir.display(),
+                                "OSL bootstrap: message_store recreated under current identity"
+                            );
+                            *state
+                                .message_store
+                                .lock()
+                                .expect("message_store mutex poisoned") = Some(store);
+                        }
+                        Err(e2) => {
+                            tracing::warn!(
+                                error = %e2,
+                                path = %store_dir.display(),
+                                "OSL bootstrap: message_store still failed after \
+                                 quarantine; persistence disabled this session"
+                            );
+                        }
+                    }
+                }
+                Err(qe) => {
+                    tracing::warn!(
+                        error = %qe,
+                        path = %store_dir.display(),
+                        "OSL bootstrap: could not quarantine stale store; \
+                         persistence disabled this session"
+                    );
+                }
+            }
         }
     }
+}
+
+/// Self-heal primitive: rename `path` aside to
+/// `<name>.quarantine-<unix-secs>` so the normal writer can create a
+/// fresh one. NON-destructive (rename, never delete) and reversible
+/// — the caller is reconciling state sealed by a key the current
+/// identity/password can no longer produce; the user can still
+/// recover the quarantined blob out-of-band if they recover the old
+/// key. Works for both files and directories.
+fn quarantine_aside(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let fname = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "osl-state".to_string());
+    let qpath = path.with_file_name(format!("{fname}.quarantine-{ts}"));
+    std::fs::rename(path, &qpath)?;
+    Ok(qpath)
 }
 
 /// Read `<dir>/peer_map.json` into `AppState::peer_map`. Every
@@ -543,6 +612,12 @@ fn load_or_generate_identity(
         }
     };
 
+    // Finding 3b: this regenerates an identity WITHOUT calling
+    // burn_wipe_all, so a surviving store/ DB (sealed by the old
+    // x25519_secret) is now orphaned. That is deliberately left to
+    // open_message_store's quarantine self-heal to reconcile — do
+    // NOT "fix" this by adding a wipe here without raising it as a
+    // separate proposal first.
     let id = generate_identity(cfg.user_id.clone());
     tracing::info!(
         user_id = %id.user_id,

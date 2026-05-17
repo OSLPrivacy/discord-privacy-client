@@ -181,6 +181,11 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     };
     if needs_generation {
         osl_trace!("[F0-FIX3-TRACE] F0-FIX2 auto-gen path entered (state.identity was None)");
+        // Finding 3b: regenerates an identity WITHOUT burn_wipe_all,
+        // orphaning any store/ DB sealed by the old x25519_secret;
+        // reconciliation deliberately relies on bootstrap's
+        // open_message_store quarantine self-heal — do NOT add a
+        // wipe here without flagging it as a separate proposal.
         let identity = keystore::generate_identity(snowflake.clone());
         let mut snapshot = keystore::Identity::from_bytes(
             identity.user_id.clone(),
