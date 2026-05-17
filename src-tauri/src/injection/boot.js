@@ -3653,99 +3653,260 @@
     // ---- Section 2: current-channel-context helper ----
 
     /**
-     * Phase 7c: walk the React fiber from the channel header (or
-     * any rendered message div) to recover:
+     * Private to oslCurrentChannelContext: resolve Discord's
+     * ChannelStore + SelectedChannelStore via the webpack chunk.
+     * Cached only on SUCCESS (a null result is not cached, so a
+     * call made before webpack is ready retries on the next click).
+     * Returns `{ ChannelStore, SelectedChannelStore }` or `null`.
+     */
+    function oslDiscordStores() {
+        if (oslDiscordStores._c) return oslDiscordStores._c;
+        let result = null;
+        try {
+            const chunk = window.webpackChunkdiscord_app;
+            if (Array.isArray(chunk) && typeof chunk.push === "function") {
+                let req;
+                const id = "osl_ctx_" + Math.random().toString(36).slice(2);
+                chunk.push([
+                    [id],
+                    {},
+                    function (r) {
+                        req = r;
+                    },
+                ]);
+                if (req && req.c) {
+                    let CS = null;
+                    let SCS = null;
+                    for (const k in req.c) {
+                        const m = req.c[k] && req.c[k].exports;
+                        if (!m) continue;
+                        const cands = [m, m.default, m.Z, m.ZP];
+                        for (const e of cands) {
+                            if (!e || typeof e !== "object") continue;
+                            if (
+                                !CS &&
+                                typeof e.getChannel === "function" &&
+                                typeof e.hasChannel === "function"
+                            ) {
+                                CS = e;
+                            }
+                            if (
+                                !SCS &&
+                                typeof e.getChannelId === "function" &&
+                                (typeof e.getCurrentlySelectedChannelId ===
+                                    "function" ||
+                                    typeof e.getLastSelectedChannelId ===
+                                        "function")
+                            ) {
+                                SCS = e;
+                            }
+                        }
+                        if (CS && SCS) break;
+                    }
+                    if (CS && SCS) {
+                        result = {
+                            ChannelStore: CS,
+                            SelectedChannelStore: SCS,
+                        };
+                    }
+                }
+            }
+        } catch (_) {
+            result = null;
+        }
+        if (result) oslDiscordStores._c = result;
+        return result;
+    }
+
+    /** Private to oslCurrentChannelContext: best-effort selfId from
+     *  the anchor fiber (unchanged source — orthogonal to the
+     *  channel facts; callers that truly need self use the Rust
+     *  osl_get_self_user_id path). */
+    function oslWalkSelfId(fiber) {
+        let f = fiber;
+        for (let depth = 0; depth < 30 && f; depth++) {
+            try {
+                const p = f.memoizedProps;
+                if (
+                    p &&
+                    typeof p === "object" &&
+                    p.currentUser &&
+                    typeof p.currentUser.id === "string"
+                ) {
+                    return p.currentUser.id;
+                }
+            } catch (_) {
+                // keep walking
+            }
+            f = f.return;
+        }
+        return null;
+    }
+
+    /** Normalize a recipients array to snowflake strings. */
+    function oslNormalizeRecipients(rec) {
+        if (!Array.isArray(rec)) return [];
+        return rec
+            .map(function (r) {
+                return typeof r === "string"
+                    ? r
+                    : (r && (r.id || r.user_id)) || null;
+            })
+            .filter(function (s) {
+                return typeof s === "string" && s.length > 0;
+            });
+    }
+
+    /**
+     * Recover the open channel's context:
      *   - channelId   : the Discord channel snowflake
      *   - channelType : 0 server text, 1 DM, 3 GC
-     *   - guildId     : populated for server channels, null otherwise
-     *   - members     : array of Discord user_ids in this channel
-     *                   (DM/GC: from channel.recipients; server: empty
-     *                    for 7c since we don't enumerate the members
-     *                    panel here — Task 4 send path skips v=2 for
-     *                    server channels until members are populated)
-     *   - selfId      : the current user's Discord id (walked from
-     *                   the same anchor; usually surfaces a few
-     *                   frames up in a session / authentication
-     *                   provider)
+     *   - guildId     : the guild snowflake for server channels;
+     *                   ALWAYS null for DMs/GCs (type 1/3)
+     *   - members     : DM/GC → recipient snowflake strings;
+     *                   server (type 0) → [] (the gateway-roster
+     *                   path in oslCtxMemberIds fills this)
+     *   - selfId      : best-effort local user id (anchor fiber)
      *
-     * Returns `null` if no anchor is mounted (e.g. settings open).
+     * Returns `null` when no channel UI is mounted (settings open),
+     * preserving the prior lifecycle contract.
+     *
+     * PRIMARY source = Discord's ChannelStore (one authoritative
+     * channel object — `.type`/`.recipients`/`.guild_id` can never
+     * disagree across fibers). FALLBACK (webpack stores unavailable)
+     * = tolerant header selector + atomic per-channel-object fiber
+     * bind. Both guarantee guildId === null for DMs so a DM can
+     * never take oslScopeForCurrentContext's server-channel branch.
      */
     function oslCurrentChannelContext() {
+        // Lifecycle gate (unchanged contract): no channel UI → null.
+        // Tolerant header selector — matches the form already used
+        // by the whitelist-button injector (boot.js ~4397) so the
+        // single-vs-double-underscore `container_`/`container__`
+        // build rotation can't desync this from the button.
         const anchor =
             document.querySelector(
                 'section[class*="title_"][class*="container__"]'
-            ) || document.querySelector('[id^="message-content-"]');
+            ) ||
+            document.querySelector(
+                'section[class*="title_"][class*="container_"]'
+            ) ||
+            document.querySelector('[id^="message-content-"]');
         if (!anchor) return null;
 
-        let fiber;
+        let fiber = null;
         try {
             const key = Object.keys(anchor).find(function (k) {
                 return k.indexOf("__reactFiber") === 0;
             });
             fiber = key ? anchor[key] : null;
-        } catch (e) {
-            return null;
+        } catch (_) {
+            fiber = null;
         }
-        if (!fiber) return null;
 
+        // ---- PRIMARY: authoritative ChannelStore lookup ----
+        const stores = oslDiscordStores();
+        if (stores) {
+            try {
+                const cid = stores.SelectedChannelStore.getChannelId();
+                if (typeof cid === "string" && cid) {
+                    const ch = stores.ChannelStore.getChannel(cid);
+                    if (
+                        ch &&
+                        typeof ch === "object" &&
+                        typeof ch.type === "number"
+                    ) {
+                        const type = ch.type;
+                        const isPrivate = type === 1 || type === 3;
+                        return {
+                            channelId: cid,
+                            channelType: type,
+                            // guild_id ONLY for server text (0); a DM
+                            // / GC MUST be null so the server-channel
+                            // branch is unreachable for them.
+                            guildId:
+                                type === 0
+                                    ? typeof ch.guild_id === "string"
+                                        ? ch.guild_id
+                                        : null
+                                    : null,
+                            members: isPrivate
+                                ? oslNormalizeRecipients(
+                                      Array.isArray(ch.recipients)
+                                          ? ch.recipients
+                                          : ch.recipientIds
+                                  )
+                                : [],
+                            selfId: oslWalkSelfId(fiber),
+                        };
+                    }
+                }
+            } catch (_) {
+                // fall through to the selector fallback
+            }
+        }
+
+        // ---- FALLBACK: tolerant selector + atomic per-object bind --
+        if (!fiber) return null;
         let channelId = null;
         let channelType = null;
         let guildId = null;
-        let members = null;
-        let selfId = null;
+        let members = [];
         let f = fiber;
         for (let depth = 0; depth < 30 && f; depth++) {
             try {
                 const p = f.memoizedProps;
                 if (p && typeof p === "object") {
-                    if (channelId == null && typeof p.channelId === "string") {
+                    if (
+                        channelId == null &&
+                        typeof p.channelId === "string"
+                    ) {
                         channelId = p.channelId;
                     }
-                    if (p.channel && typeof p.channel === "object") {
-                        if (channelId == null && typeof p.channel.id === "string") {
-                            channelId = p.channel.id;
-                        }
-                        if (
-                            channelType == null &&
-                            typeof p.channel.type === "number"
-                        ) {
-                            channelType = p.channel.type;
-                        }
-                        if (guildId == null && typeof p.channel.guild_id === "string") {
-                            guildId = p.channel.guild_id;
-                        }
-                        if (
-                            members == null &&
-                            Array.isArray(p.channel.recipients)
-                        ) {
-                            members = p.channel.recipients.slice();
-                        }
-                    }
-                    if (guildId == null && typeof p.guildId === "string") {
-                        guildId = p.guildId;
-                    }
+                    const c =
+                        p.channel && typeof p.channel === "object"
+                            ? p.channel
+                            : null;
+                    // Bind type + guild_id + recipients ATOMICALLY to
+                    // the ONE channel object that is the rendered
+                    // channel (id matches, or first concrete channel
+                    // seen if id still unknown). No cross-fiber merge,
+                    // no stray p.guildId leak.
                     if (
-                        selfId == null &&
-                        p.currentUser &&
-                        typeof p.currentUser.id === "string"
+                        channelType == null &&
+                        c &&
+                        typeof c.id === "string" &&
+                        typeof c.type === "number" &&
+                        (channelId == null || c.id === channelId)
                     ) {
-                        selfId = p.currentUser.id;
+                        channelId = channelId || c.id;
+                        channelType = c.type;
+                        guildId =
+                            c.type === 0 &&
+                            typeof c.guild_id === "string"
+                                ? c.guild_id
+                                : null;
+                        members =
+                            c.type === 1 || c.type === 3
+                                ? oslNormalizeRecipients(c.recipients)
+                                : [];
                     }
                 }
-            } catch (e) {
+            } catch (_) {
                 // keep walking
             }
             f = f.return;
         }
-        // Fallback: pull selfId from any rendered self-attribute on
-        // the user area at the bottom-left. We never block on this —
-        // commands that need selfDiscordId surface a clear error.
+        // If we never positively identified the channel object, do
+        // NOT infer "server channel" from a stray guildId — leave
+        // type null so oslScopeForCurrentContext returns null
+        // ("cannot determine scope") rather than misrouting a DM.
         return {
             channelId: channelId,
             channelType: channelType,
-            guildId: guildId,
-            members: members || [],
-            selfId: selfId,
+            guildId: channelType === 0 ? guildId : null,
+            members: members,
+            selfId: oslWalkSelfId(fiber),
         };
     }
 
