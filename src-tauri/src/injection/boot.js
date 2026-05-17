@@ -3997,7 +3997,52 @@
         );
     }
 
+    /**
+     * Resolve the PROFILE SUBJECT (the peer whose profile this is) —
+     * NOT the first `user` fiber found. On a DM `user-profile-sidebar`
+     * the nearest user-object ancestor is the SELF user; returning
+     * that is the Symptom-2 bug (whitelisting stored self).
+     *
+     * Resolution order:
+     *   1. If we're in a DM, the conversation peer IS the subject —
+     *      take it from the ONE canonical resolver (recipients[0]),
+     *      so the sidebar agrees with the header/scope paths.
+     *   2. Otherwise walk the fiber for the subject id Discord passes
+     *      to profile cards: `memoizedProps.userId` first (the
+     *      explicit subject id), then `memoizedProps.user.id`.
+     *
+     * HARD SELF-GUARD: never return the local user's snowflake. Any
+     * candidate equal to the cached self id is skipped; if the only
+     * resolvable id is self, return null so the caller surfaces
+     * "could not resolve user id from profile" instead of silently
+     * whitelisting self. (`oslSelfDiscordIdCache` is the synchronous
+     * session cache; null only before the first self-id resolve.)
+     */
     function oslExtractUserFromProfile(surfaceEl) {
+        const selfId =
+            typeof oslSelfDiscordIdCache === "string"
+                ? oslSelfDiscordIdCache
+                : null;
+        const isSnowflake = function (s) {
+            return typeof s === "string" && /^\d{17,20}$/.test(s);
+        };
+
+        // 1. DM context → the peer is the subject (canonical resolver).
+        try {
+            const ctx = oslCurrentChannelContext();
+            if (ctx && ctx.channelType === 1) {
+                const ids = oslCtxMemberIds(ctx).filter(function (m) {
+                    return m !== selfId;
+                });
+                if (ids.length > 0 && isSnowflake(ids[0])) {
+                    return { id: ids[0], username: ids[0] };
+                }
+            }
+        } catch (_) {
+            // fall through to the fiber walk
+        }
+
+        // 2. Fiber walk for the profile subject id, self-guarded.
         try {
             const key = Object.keys(surfaceEl).find(function (k) {
                 return k.indexOf("__reactFiber") === 0;
@@ -4005,21 +4050,29 @@
             let fiber = key ? surfaceEl[key] : null;
             for (let d = 0; d < 30 && fiber; d++) {
                 const p = fiber.memoizedProps;
-                if (p && p.user && typeof p.user.id === "string") {
-                    return {
-                        id: p.user.id,
-                        username:
-                            typeof p.user.username === "string"
-                                ? p.user.username
-                                : p.user.global_name ||
-                                  p.user.id,
-                    };
+                if (p && typeof p === "object") {
+                    const cand =
+                        (typeof p.userId === "string" && p.userId) ||
+                        (p.user &&
+                            typeof p.user.id === "string" &&
+                            p.user.id) ||
+                        null;
+                    if (cand && cand !== selfId && isSnowflake(cand)) {
+                        const uname =
+                            (p.user &&
+                                (typeof p.user.username === "string"
+                                    ? p.user.username
+                                    : p.user.global_name)) ||
+                            cand;
+                        return { id: cand, username: uname };
+                    }
                 }
                 fiber = fiber.return;
             }
         } catch (e) {
             // fall through
         }
+        // Nothing resolvable that isn't self → caller toasts.
         return null;
     }
 
@@ -5027,17 +5080,37 @@
     // handler doesn't have to round-trip again.
     let oslHeaderLastSummary = null;
 
-    function oslHeaderChannelMembers(ctx) {
-        // For DM/GC the React fiber walk has the recipients directly.
-        // For server channels, we use the gateway tap's per-channel
-        // cache (populated by GUILD_CREATE / CHANNEL_CREATE frames
-        // in Stage 3). Returns an array of discord IDs; empty array
-        // means "roster unknown" → tri-state will render "unknown".
+    /**
+     * THE canonical channel-member / peer resolver. Every whitelist
+     * entry point (header control, bulk path, DM-sidebar profile
+     * button, scope derivation) routes through this so they can
+     * never again disagree on the element shape.
+     *
+     * CONTRACT (docs/phase-7c-selectors.md:414): in current Discord
+     * builds `memoizedProps.channel.recipients` — the source of
+     * `ctx.members` — is an array of Discord snowflake STRINGS.
+     * Older/other shapes (user objects `{id}` / `{user_id}`) are
+     * normalized defensively here using the EXACT pattern already
+     * proven in the encrypt/attachment send paths, so there is one
+     * normalization, used everywhere.
+     *
+     * Returns: snowflake `string[]` (possibly empty = roster unknown
+     * → tri-state renders "unknown"). For server channels with no
+     * fiber recipients, falls back to the gateway-tap per-channel
+     * cache (already snowflake strings).
+     */
+    function oslCtxMemberIds(ctx) {
         if (!ctx) return [];
         if (Array.isArray(ctx.members) && ctx.members.length > 0) {
             return ctx.members
-                .map((m) => (m && typeof m.id === "string" ? m.id : null))
-                .filter((s) => !!s);
+                .map(function (m) {
+                    return typeof m === "string"
+                        ? m
+                        : (m && (m.id || m.user_id)) || null;
+                })
+                .filter(function (s) {
+                    return typeof s === "string" && s.length > 0;
+                });
         }
         try {
             const cache = window.__OSL_CHANNEL_MEMBERS__;
@@ -5047,6 +5120,14 @@
             }
         } catch (_) {}
         return [];
+    }
+
+    function oslHeaderChannelMembers(ctx) {
+        // Single source of truth — see oslCtxMemberIds. (Previously
+        // this did `m.id` over what is actually a string array, so
+        // it returned [] for every DM/GC → the header control
+        // silently no-opped. That object-shaped read is deleted.)
+        return oslCtxMemberIds(ctx);
     }
 
     async function oslRefreshHeaderState(opts) {
@@ -5175,11 +5256,11 @@
     function oslScopeForCurrentContext(ctx) {
         if (!ctx) return null;
         if (ctx.channelType === 1) {
-            // DM: peer is members[0].
-            const peer =
-                Array.isArray(ctx.members) && ctx.members.length > 0
-                    ? ctx.members[0]
-                    : null;
+            // DM: peer is the (single) recipient — resolved through
+            // the ONE canonical resolver so the shape contract is
+            // identical to the header / sidebar paths.
+            const ids = oslCtxMemberIds(ctx);
+            const peer = ids.length > 0 ? ids[0] : null;
             if (!peer) return null;
             return { kind: "dm", id: peer, channel_id: ctx.channelId };
         }

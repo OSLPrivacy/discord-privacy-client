@@ -4443,6 +4443,35 @@ fn whitelist_entry_matches(w: &crate::peer_map::WhitelistEntry, s: &crate::scope
     }
 }
 
+/// Defense-in-depth self-guard for the whitelist write commands.
+///
+/// Rejects `peer_discord_id` when it equals the loaded identity's
+/// own Discord snowflake. A correct UI never whitelists self; this
+/// exists so a future peer-resolution regression in the injection
+/// layer (the Symptom-2 bug class — boot.js handing back the local
+/// user's snowflake) can never again silently key `peer_map` by
+/// self, fetch self's keyserver keys, and collapse sends to
+/// encrypt-to-self. If the identity carries no snowflake yet there
+/// is nothing to compare against, so the guard is a no-op (the
+/// normal pre-snowflake state is unaffected).
+fn guard_not_self(state: &AppState, peer_discord_id: &str) -> Result<(), String> {
+    let g = state.identity.lock().expect("identity mutex poisoned");
+    if let Some(id) = g.as_ref() {
+        if let Some(self_sf) = id.discord_snowflake.as_deref() {
+            if self_sf == peer_discord_id {
+                return Err(format!(
+                    "OSL: refusing to whitelist yourself — peer id {peer_discord_id} \
+                     is this client's own identity snowflake. This indicates a \
+                     peer-resolution bug in the UI (it handed back your own id \
+                     instead of the conversation peer's); the whitelist was NOT \
+                     written. Please report this."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Set a whitelist for `peer_discord_id` in `scope`. Local-only:
 /// it mutates client state and returns `()`. There is NO wire and
 /// NO invitation (the 9-C1 handshake was removed; decrypt is
@@ -4469,6 +4498,13 @@ pub fn cmd_osl_set_whitelist(
     // param (9-C1 handshake leftover, "kept for binding
     // compatibility") is now removed end-to-end — Rust signature,
     // main.rs wrapper, and the boot.js caller.
+    //
+    // SELF-GUARD (defense-in-depth): never whitelist the local
+    // identity as a "peer". A correct UI never does this; if it
+    // happens, a peer-resolution regression is feeding us our own
+    // snowflake (the Symptom-2 bug class). Fail closed + loud so it
+    // can never silently key peer_map by self again.
+    guard_not_self(state, &peer_discord_id)?;
     let scope: crate::scope::Scope = scope_input
         .clone()
         .try_into()
@@ -4593,6 +4629,13 @@ pub fn cmd_osl_bulk_set_whitelist(
     scope_input: crate::scope::ScopeInput,
     member_dids: Vec<String>,
 ) -> Result<usize, String> {
+    // SELF-GUARD (defense-in-depth): a correct caller filters self
+    // out of the member list before bulk-whitelisting. If self is
+    // present, a peer-resolution regression produced the roster —
+    // fail closed + loud rather than key peer_map by self.
+    for did in &member_dids {
+        guard_not_self(state, did)?;
+    }
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
