@@ -127,6 +127,37 @@ pub fn verify_and_persist_peer_map_self_entry(state: &AppState) -> Result<(Strin
     Ok(result)
 }
 
+/// v=4 desync fix (finding 3b companion): drop every peer's
+/// `ratchet_state` when the LOCAL identity is regenerated outside a
+/// burn. The Double Ratchet `SessionContext` binds our own identity
+/// X25519/ML-KEM pubs, so a new local identity invalidates *every*
+/// peer session — not just one peer's (that case is the TOFU-Changed
+/// path). Leaves `ik_ratchet_initial_pub` intact so the next v=4 send
+/// re-bootstraps cleanly. Persists only if something actually
+/// changed (avoids a needless write / plaintext-clobber attempt when
+/// no sessions existed). NOT called from the burn path — burn already
+/// wipes the whole peer_map.
+pub fn clear_all_peer_ratchet_state(state: &AppState) {
+    let mut changed = 0usize;
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        for entry in pm.values_mut() {
+            if entry.ratchet_state.is_some() {
+                entry.ratchet_state = None;
+                changed += 1;
+            }
+        }
+    }
+    if changed > 0 {
+        tracing::warn!(
+            cleared = changed,
+            "OSL: local identity regenerated (non-burn); dropped stale \
+             ratchet_state for all peers — next v=4 will re-handshake"
+        );
+        persist_peer_map_now(state);
+    }
+}
+
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
 /// repair the peer_map self-entry to match. Called from boot.js
 /// the first time the runtime exposes the local user's snowflake.
@@ -225,6 +256,13 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
 
         *state.identity.lock().expect("identity mutex poisoned") = Some(snapshot);
         eprintln!("[OSL][f0-fix2] generated + saved fresh identity (user_id={snowflake})");
+        // Finding 3b companion: this is a non-burn local identity
+        // regen. Any ratchet_state in peer_map was derived from the
+        // OLD local identity's SessionContext and is now
+        // undecryptable for every peer — drop them all so the next
+        // v=4 re-handshakes (burn would have wiped peer_map entirely;
+        // this path doesn't).
+        clear_all_peer_ratchet_state(state);
         // REGISTER-FIX: this is the V2 clean-install moment the
         // identity first comes into existence. Bootstrap could not
         // register at boot (no identity.json yet) and the password

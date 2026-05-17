@@ -121,7 +121,8 @@ pub fn run_autostart(state: &AppState) {
     tracing::info!(config_dir = %dir.display(), "OSL bootstrap: starting");
 
     let keyserver_cfg = read_keyserver_config(&dir);
-    let identity_loaded = load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
+    let (identity_loaded, identity_regenerated) =
+        load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
     // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
     // resolves (keyserver.json `base_url` if present+valid → else the
     // built-in production default, via the single shared resolver),
@@ -154,6 +155,24 @@ pub fn run_autostart(state: &AppState) {
     }
 
     load_peer_map(state, &dir);
+
+    // Finding 3b companion: if this launch regenerated the local
+    // identity outside a burn, every peer's ratchet_state in the
+    // just-loaded peer_map was derived from the OLD local identity's
+    // SessionContext and is undecryptable. Drop them all so the next
+    // v=4 re-handshakes. Done AFTER load_peer_map so it operates on
+    // the real map. NOTE: pre-gate the file_storage_key slot is
+    // empty, so for a password user with an encrypted peer_map.json
+    // the persist inside this helper is refused by write_peer_map's
+    // clobber guard and post-gate state_reload reloads the stale
+    // on-disk ratchet — the in-memory clear still protects THIS
+    // session (no v=4 send happens before the gate anyway). Fully
+    // closing that residual means also clearing post-gate in
+    // state_reload, which is a separate concern, deliberately not
+    // bundled here.
+    if identity_regenerated {
+        ipc::commands::clear_all_peer_ratchet_state(state);
+    }
 
     // 7d-PIVOT: load whitelist_state.json from disk, then run
     // migration. Pre-PIVOT, encrypt_toggle was coupled to whitelist
@@ -557,11 +576,15 @@ fn read_keyserver_config(dir: &std::path::Path) -> Option<KeyserverConfig> {
 /// Mismatch case: if both files exist but
 /// `identity.user_id != keyserver.user_id`, the loaded identity
 /// wins (it's already been registered) and we log a warning.
+/// Returns `(identity_loaded, regenerated)`. `regenerated` is true
+/// only when this call generated a brand-new identity (non-burn
+/// regen path) — the caller uses it to drop now-orphaned per-peer
+/// ratchet_state (finding 3b companion).
 fn load_or_generate_identity(
     state: &AppState,
     dir: &std::path::Path,
     keyserver_cfg: Option<&KeyserverConfig>,
-) -> bool {
+) -> (bool, bool) {
     let path = dir.join("identity.json");
     let sealer = select_best_sealer();
 
@@ -586,7 +609,7 @@ fn load_or_generate_identity(
                     "OSL bootstrap: identity loaded"
                 );
                 *state.identity.lock().expect("identity mutex poisoned") = Some(id);
-                return true;
+                return (true, false);
             }
             Err(e) => {
                 tracing::warn!(
@@ -594,7 +617,7 @@ fn load_or_generate_identity(
                     path = %path.display(),
                     "OSL bootstrap: identity load failed; continuing without identity"
                 );
-                return false;
+                return (false, false);
             }
         }
     }
@@ -608,7 +631,7 @@ fn load_or_generate_identity(
                  skipping identity bootstrap (populate keyserver.json to seed \
                  first-boot identity generation)"
             );
-            return false;
+            return (false, false);
         }
     };
 
@@ -645,7 +668,7 @@ fn load_or_generate_identity(
         ),
     }
     *state.identity.lock().expect("identity mutex poisoned") = Some(id);
-    true
+    (true, true)
 }
 
 /// Init the keyserver client and call `register`.
