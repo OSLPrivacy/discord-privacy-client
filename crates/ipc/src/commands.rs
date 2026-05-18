@@ -5697,14 +5697,29 @@ pub fn ensure_keyserver_registered(
             return;
         };
         match client.register(id) {
-            Ok(resp) => tracing::info!(
-                user_id = %resp.user_id,
-                initial = resp.registered_at.is_some(),
-                status = resp.status.as_deref().unwrap_or(
-                    if resp.registered_at.is_some() { "registered" } else { "ok" }
-                ),
-                "OSL: ensure_keyserver_registered: registered with key-server"
-            ),
+            Ok(resp) => {
+                tracing::info!(
+                    user_id = %resp.user_id,
+                    initial = resp.registered_at.is_some(),
+                    status = resp.status.as_deref().unwrap_or(
+                        if resp.registered_at.is_some() { "registered" } else { "ok" }
+                    ),
+                    "OSL: ensure_keyserver_registered: registered with key-server"
+                );
+                // B: a successful register (registered / noop, no 403)
+                // is authoritative proof there is NO key conflict.
+                // Clear any stale 403 alert so a successfully-
+                // registered client shows no alarm — symmetric to
+                // tofu_observe_peer clearing key_change_alerts on
+                // Unchanged/FirstUse. (Known follow-up, deliberately
+                // not done here: a banner already painted in THIS
+                // session from a 403 polled before this success is
+                // not retracted — needs the JS auto-dismiss change.)
+                *state
+                    .registration_alert
+                    .lock()
+                    .expect("registration_alert mutex poisoned") = None;
+            }
             // REGISTER-FIX: the ONE response we must NOT warn-swallow.
             // 403 = our user_id is held by a DIFFERENT Ed25519 key
             // (someone squatted our snowflake, or we lost our key).
