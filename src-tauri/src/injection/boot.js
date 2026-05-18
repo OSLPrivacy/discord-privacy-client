@@ -6893,31 +6893,12 @@
             } else {
                 li.appendChild(media);
             }
-            // 8e-FIX7: locate + hide Discord's broken-video / file
-            // card so it doesn't sit alongside our decrypted image.
-            // Runs only on the fallback_content path; the found_url
-            // path already hides its wrapper.
-            try {
-                oslHideBrokenVideoCard(li, msgIdLog, media);
-            } catch (e) {
-                console.warn(
-                    "[OSL] hid broken-video card threw:",
-                    e
-                );
-            }
-            // 9-A1b FIX9: the cube text ("Image failed to load.")
-            // often renders AFTER our injection finishes. The
-            // synchronous hide above misses it; this scheduler
-            // re-attempts via MutationObserver + 1500ms backstop,
-            // capped at 5s.
-            try {
-                oslScheduleBrokenCardRetry(li, msgIdLog, media);
-            } catch (e) {
-                console.warn(
-                    "[OSL] schedule broken-card retry threw:",
-                    e
-                );
-            }
+            // 8e-FIX7 / 9-A1b FIX9: locate + hide Discord's
+            // broken-video / file card (incl. the late-rendered
+            // "Image failed to load." cube text) so it doesn't sit
+            // alongside our decrypted image. Same cleanup the
+            // DOM-target swap branches now use (Item 1).
+            oslStripBrokenCardChrome(li, media, msgIdLog);
         }
         console.log(
             "[OSL] attachment swap: msg=" +
@@ -6927,6 +6908,34 @@
                 " injected=" +
                 media.tagName.toLowerCase()
         );
+    }
+
+    /**
+     * Item 1: strip Discord's broken-.mp4 card chrome (the error
+     * cube / loadingOverlay and the trailing filename+download "+"
+     * bar) that otherwise sits around/below a swapped-in decrypted
+     * image. Previously this cleanup ran ONLY on the cache
+     * `fallback_content` path; the DOM-target swap branches
+     * (img/video/anchor/wrapper) swapped the media but left the card
+     * shell behind. Reuses the proven detector (Pass 0 structural
+     * imageErrorWrapper/loadingOverlay + text/class/aria + ancestor
+     * walk) and the FIX9 late-text retry; both are defensive,
+     * idempotent (data-osl-hidden), and never hide the injected
+     * media or an ancestor of it, so calling them on every swap
+     * strictly improves and cannot regress a clean swap.
+     */
+    function oslStripBrokenCardChrome(li, media, msgIdHint) {
+        if (!li) return;
+        try {
+            oslHideBrokenVideoCard(li, msgIdHint || "?", media);
+        } catch (e) {
+            console.warn("[OSL] strip broken-card chrome threw:", e);
+        }
+        try {
+            oslScheduleBrokenCardRetry(li, msgIdHint || "?", media);
+        } catch (e) {
+            console.warn("[OSL] schedule broken-card retry threw:", e);
+        }
     }
 
     /**
@@ -6972,6 +6981,17 @@
                 return;
             }
 
+            // Item 1: the enclosing message <li> + a msg-id hint so
+            // every swap branch can strip the broken-.mp4 card chrome
+            // that otherwise remains around the swapped-in image.
+            const li =
+                (el.closest &&
+                    el.closest('li[id^="chat-messages-"]')) ||
+                target.li ||
+                null;
+            const msgIdHint =
+                target.msgId || (li && li.id) || "?";
+
             if (kind === "img") {
                 el.setAttribute("src", blobUrl);
                 el.removeAttribute("srcset");
@@ -6979,6 +6999,7 @@
                 console.log(
                     "[OSL] attachment swap: target=img method=src-replace"
                 );
+                oslStripBrokenCardChrome(li, el, msgIdHint);
                 return;
             }
             if (kind === "video") {
@@ -6988,6 +7009,7 @@
                 console.log(
                     "[OSL] attachment swap: target=video method=src-replace"
                 );
+                oslStripBrokenCardChrome(li, el, msgIdHint);
                 return;
             }
             if (kind === "anchor") {
@@ -6999,6 +7021,7 @@
                     "[OSL] attachment swap: target=a method=replace-with-" +
                         replacement.tagName.toLowerCase()
                 );
+                oslStripBrokenCardChrome(li, replacement, msgIdHint);
                 return;
             }
 
@@ -7039,6 +7062,10 @@
                         " method=wrapper-child-append (parent missing)"
                 );
             }
+            // wrapper hides its own card, but Discord's failed-.mp4
+            // accessory frequently has a sibling footer bar / "+"
+            // OUTSIDE that wrapper; strip it too.
+            oslStripBrokenCardChrome(li, replacement, msgIdHint);
             return;
         } catch (e) {
             console.warn(
