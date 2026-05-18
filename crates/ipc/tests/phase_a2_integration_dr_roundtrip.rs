@@ -16,7 +16,10 @@ use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
-use keystore::{generate_identity, Identity};
+use keystore::{generate_identity, Identity, KeyServerClient};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread;
 
 const ALICE_DID: &str = "1477008451799482419";
 const BOB_DID: &str = "1502770642930634812";
@@ -81,7 +84,120 @@ fn setup_alice_bob_dm_dr_ready() -> (AppState, AppState) {
     mark_sender_accepted(&alice_state, BOB_DID, &alice_dm_scope);
     mark_sender_accepted(&bob_state, ALICE_DID, &bob_dm_scope);
 
+    // Commit 0889049 made the v=4 send path fail-closed: it forces a
+    // refresh_peer_pubkeys_from_keyserver before encrypting and
+    // returns Err if no keyserver is installed. This harness has the
+    // peer keys wired directly, so we serve those SAME keys back from
+    // a loopback fake keyserver — the forced refresh succeeds,
+    // populate_peer_from_fetch_response is idempotent (identical
+    // keys), and the production fail-closed guard stays fully intact
+    // (it genuinely succeeds against a real HTTP round-trip). The
+    // ik_ed25519_pub returned is each identity's REAL key, so the
+    // refresh's TOFU classify is FirstUse→Unchanged (NOT Changed —
+    // a different ed25519 would trip 4033e82 and clear ratchet_state
+    // mid-suite, masking the DR behavior under test).
+    let alice_json = pubkeys_json_for(&alice_state, ALICE_DID);
+    let bob_json = pubkeys_json_for(&bob_state, BOB_DID);
+    let addr = spawn_fake_keyserver(vec![
+        (ALICE_DID.to_string(), alice_json),
+        (BOB_DID.to_string(), bob_json),
+    ]);
+    let base = format!("http://{addr}");
+    *alice_state.keyserver.lock().unwrap() =
+        Some(KeyServerClient::new(&base).expect("fake keyserver client (alice)"));
+    *bob_state.keyserver.lock().unwrap() =
+        Some(KeyServerClient::new(&base).expect("fake keyserver client (bob)"));
+
     (alice_state, bob_state)
+}
+
+/// Build the `GET /v1/pubkeys/:id` JSON body (the
+/// `keystore::client::PubkeysResponse` shape) from a state's loaded
+/// identity. ed25519 is the identity's REAL key (TOFU stays
+/// FirstUse→Unchanged).
+fn pubkeys_json_for(state: &AppState, user_id: &str) -> String {
+    let g = state.identity.lock().unwrap();
+    let id = g.as_ref().expect("identity loaded");
+    let x = STANDARD.encode(id.x25519_public.as_bytes());
+    let ed = STANDARD.encode(id.ed25519_public.as_bytes());
+    let mlkem = STANDARD.encode(id.mlkem_public_bytes);
+    let ratchet = STANDARD.encode(
+        id.ratchet_initial_pub
+            .expect("fresh identity has ratchet pub")
+            .as_bytes(),
+    );
+    format!(
+        "{{\"user_id\":\"{user_id}\",\"ik_x25519_pub\":\"{x}\",\
+         \"ik_ed25519_pub\":\"{ed}\",\"ik_mlkem768_pub\":\"{mlkem}\",\
+         \"registered_at\":\"2026-01-01T00:00:00Z\",\
+         \"last_rotated_at\":null,\
+         \"ik_ratchet_initial_pub\":\"{ratchet}\"}}"
+    )
+}
+
+/// Hand-rolled loopback HTTP server (no dependency). Serves
+/// `GET /v1/pubkeys/<user_id>` from `routes` and `POST /v1/register`
+/// with a minimal RegisterResponse. Sequential, Connection: close,
+/// one daemon thread. Returns the bound `127.0.0.1:PORT`.
+fn spawn_fake_keyserver(routes: Vec<(String, String)>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local_addr").to_string();
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            let mut stream = match conn {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            // Read until end of headers.
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+                if buf.len() > 64 * 1024 {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&buf);
+            let req_line = head.lines().next().unwrap_or("");
+            let mut parts = req_line.split_whitespace();
+            let method = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("");
+
+            let (status, body): (&str, String) = if method == "GET"
+                && path.starts_with("/v1/pubkeys/")
+            {
+                let id = path.trim_start_matches("/v1/pubkeys/");
+                match routes.iter().find(|(u, _)| u == id) {
+                    Some((_, json)) => ("200 OK", json.clone()),
+                    None => ("404 Not Found", String::new()),
+                }
+            } else if method == "POST" && path == "/v1/register" {
+                (
+                    "200 OK",
+                    "{\"user_id\":\"test\",\"status\":\"noop\"}".to_string(),
+                )
+            } else {
+                ("404 Not Found", String::new())
+            };
+
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    addr
 }
 
 struct Pubkeys {
