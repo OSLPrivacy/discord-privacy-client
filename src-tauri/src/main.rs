@@ -1510,6 +1510,23 @@ async fn osl_decline_key_change(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// A(a): operator-driven single-peer v=4 session reset. Drops the
+/// peer's `ratchet_state` so the next v=4 message re-handshakes.
+/// Run on BOTH ends to recover a desynced ratchet.
+#[tauri::command]
+async fn osl_reset_v4_session(
+    app: tauri::AppHandle,
+    discord_id: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_reset_v4_session(state.inner(), discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Safety number for a peer's current trusted Ed25519 baseline.
 #[tauri::command]
 async fn osl_peer_safety_number(
@@ -2578,6 +2595,7 @@ fn main() {
             osl_list_key_change_alerts,
             osl_accept_key_change,
             osl_decline_key_change,
+            osl_reset_v4_session,
             osl_peer_safety_number,
             osl_self_safety_number,
             osl_open_settings_window,

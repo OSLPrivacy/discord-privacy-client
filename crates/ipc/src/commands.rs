@@ -158,6 +158,44 @@ pub fn clear_all_peer_ratchet_state(state: &AppState) {
     }
 }
 
+/// A(a): operator-driven single-peer v=4 session reset. Nulls
+/// `ratchet_state` for ONE peer so the next v=4 send re-bootstraps a
+/// fresh Double Ratchet via `new_initiator` (and the peer, once it
+/// also runs this, hits `new_responder`). Used to recover a desynced
+/// ratchet left over from earlier burns / re-registrations when the
+/// TOFU-Changed trigger no longer fires (baseline already current).
+/// Console-invokable on BOTH ends:
+///   window.__TAURI__.core.invoke("osl_reset_v4_session",
+///     { discordId: "<peer snowflake>" })
+/// Leaves `ik_ratchet_initial_pub` / `pubkey` / `ik_mlkem768_pub`
+/// intact (only the live session is dropped). Unknown peer → Err so
+/// a console typo is visible. Persists only if something changed.
+pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<(), String> {
+    let changed = {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        match pm.get_mut(&discord_id) {
+            Some(entry) => {
+                if entry.ratchet_state.is_some() {
+                    entry.ratchet_state = None;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => return Err(format!("OSL: no peer {discord_id} in peer_map")),
+        }
+    };
+    if changed {
+        tracing::warn!(
+            discord_id = %discord_id,
+            "OSL: v=4 session reset (operator) — dropped ratchet_state; \
+             next v=4 will re-handshake"
+        );
+        persist_peer_map_now(state);
+    }
+    Ok(())
+}
+
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
 /// repair the peer_map self-entry to match. Called from boot.js
 /// the first time the runtime exposes the local user's snowflake.
