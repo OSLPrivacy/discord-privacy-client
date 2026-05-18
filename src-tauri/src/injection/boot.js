@@ -12857,6 +12857,31 @@
                 reject(new Error(RECV_TIMEOUT_SENTINEL));
             }, RECV_IPC_TIMEOUT_MS);
         });
+        // Bug 1: v=5 (GC sender-keys) decrypt needs the gc:<id>
+        // scope to look up the sender's sender-key chain
+        // (decrypt_v5_recv errors "scope required for sender-keys
+        // lookup" without it). The receive invoke never passed
+        // scope, so every GC message failed. Derive it the same way
+        // the send path does — oslScopeForCurrentContext over the
+        // current channel context. The rendered message is in the
+        // current channel, so this scope matches what the sender
+        // used (gc:<channelId>). null for unknown context is fine:
+        // v=2/3/4 ignore scope, only v=5 requires it. The Rust
+        // `osl_decrypt_message` command already accepts
+        // scope_input: Option<ScopeInput> and threads it to
+        // cmd_osl_decrypt_message_v2 → decrypt_v5_recv.
+        let recvScopeInput = null;
+        try {
+            const recvCtx =
+                typeof oslCurrentChannelContext === "function"
+                    ? oslCurrentChannelContext()
+                    : null;
+            recvScopeInput = recvCtx
+                ? oslScopeForCurrentContext(recvCtx)
+                : null;
+        } catch (_) {
+            recvScopeInput = null;
+        }
         const ipcPromise = invoke("osl_decrypt_message", {
             channelId: channelId,
             senderDiscordId: senderDiscordId,
@@ -12865,6 +12890,7 @@
             // backend treats this as `Option<String>` (`None`
             // skips the store, `Some` writes the row).
             discordMessageId: messageId,
+            scopeInput: recvScopeInput,
         });
 
         Promise.race([ipcPromise, timeoutPromise])
@@ -13060,7 +13086,18 @@
                 const priorCover = recvCovers.get(messageId);
                 const isPendingEdit =
                     priorCover !== undefined && priorCover !== coverText;
-                if (!isPendingEdit) {
+                // Bug 1: a v=5 (GC sender-keys) message that fails
+                // purely because scope wasn't supplied for the
+                // sender-key lookup must NOT be terminalized — the
+                // fix below now threads gc:<id> scope into the
+                // invoke, so a re-dispatch will succeed. Leave
+                // recvDone unset (still bounded by recvRetries /
+                // RECV_MAX_RETRIES via the top-of-fn guard).
+                const isV5MissingScope =
+                    msg.indexOf(
+                        "v=5 decode: scope required for sender-keys lookup"
+                    ) !== -1;
+                if (!isPendingEdit && !isV5MissingScope) {
                     recvDone.add(messageId);
                 }
             });
