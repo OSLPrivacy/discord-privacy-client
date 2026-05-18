@@ -12600,7 +12600,19 @@
             recvPlaintext.delete(messageId);
             loadedHistory.delete(messageId);
             recvDone.delete(messageId);
-            recvCovers.delete(messageId);
+            // Item 2 fix: DO NOT delete recvCovers here. Keeping the
+            // old cover means this detector keeps firing on every
+            // observer/sweep tick (lastCover !== new wire) until a
+            // *successful* decrypt overwrites recvCovers[id] with the
+            // edited wire. Previously the delete made lastCover
+            // undefined, so a first failed decrypt of the edited v=4
+            // wire (expected when intervening traffic rotated the
+            // ratchet) disarmed the detector permanently and the
+            // .catch's recvDone.add stuck DPC0:: forever. Reset the
+            // retry budget so the edited wire gets a fresh
+            // RECV_MAX_RETRIES window of re-dispatches.
+            recvRetries.delete(messageId);
+            recvAuthorRetryCount.delete(messageId);
         }
 
         const cached = recvPlaintext.get(messageId);
@@ -13003,7 +13015,25 @@
                         );
                     }
                 }
-                recvDone.add(messageId);
+                // Item 2 fix: a PENDING EDIT is recvCovers[id] defined
+                // (we previously decrypted a *different* cover) AND it
+                // differs from the wire we just failed on. Such a
+                // failure is expected for an edited v=4 message when
+                // intervening traffic rotated the ratchet; do NOT
+                // terminalize it — leave recvDone unset so the next
+                // observer/sweep tick re-dispatches the edited wire.
+                // recvRetries was incremented above, so the top-of-fn
+                // `tries >= RECV_MAX_RETRIES` guard still bounds this
+                // (it terminalizes after the normal retry budget). A
+                // brand-new message (recvCovers undefined) or a stale
+                // re-decrypt of the same cover keeps the original
+                // terminal behavior.
+                const priorCover = recvCovers.get(messageId);
+                const isPendingEdit =
+                    priorCover !== undefined && priorCover !== coverText;
+                if (!isPendingEdit) {
+                    recvDone.add(messageId);
+                }
             });
     }
 
