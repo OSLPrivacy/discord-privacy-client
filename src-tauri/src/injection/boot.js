@@ -1124,6 +1124,20 @@
                     // mode1SendPipeline branch below.
                     if (out.messages.length === 1) {
                         parsed.content = out.messages[0];
+                        // Item 1: remember plaintext for self-view.
+                        // Keyed by the exact wire string; the
+                        // /messages XHR `load` listener maps it to
+                        // the assigned Discord message id.
+                        try {
+                            oslSentWireToPlaintext.set(
+                                out.messages[0],
+                                plaintext
+                            );
+                            oslFifoEvict(
+                                oslSentWireToPlaintext,
+                                OSL_SELF_SENT_PLAINTEXT_MAX
+                            );
+                        } catch (_) {}
                         let newBody;
                         try {
                             newBody = JSON.stringify(parsed);
@@ -10392,6 +10406,30 @@
                                 " author=" +
                                 parsed.author.id
                         );
+                        // Item 1: Discord echoes the created
+                        // message's `content` (the DPC0:: wire we
+                        // sent). Map the now-known message id to the
+                        // send-time plaintext so recvDispatchDecrypt
+                        // renders it instead of failing decrypt.
+                        if (
+                            typeof parsed.content === "string" &&
+                            oslSentWireToPlaintext.has(parsed.content)
+                        ) {
+                            const pt = oslSentWireToPlaintext.get(
+                                parsed.content
+                            );
+                            selfSentPlaintext.set(parsed.id, pt);
+                            oslFifoEvict(
+                                selfSentPlaintext,
+                                OSL_SELF_SENT_PLAINTEXT_MAX
+                            );
+                            console.log(
+                                "[OSL] selfSent plaintext mapped msg=" +
+                                    parsed.id +
+                                    " len=" +
+                                    pt.length
+                            );
+                        }
                     } catch (e) {
                         // Swallowed â€” listener never throws.
                     }
@@ -11027,6 +11065,32 @@
     // always the first key from `.keys()`.
     const selfSentAuthors = new Map();
     const SELF_SENT_AUTHORS_MAX = 500;
+
+    // Item 1 (self-view): the local user's own encrypted v=4 DM
+    // bounces back as a DPC0:: wire string that the decrypt path
+    // cannot open (v=4 wraps ONLY to the peer's slot — "not a
+    // recipient" is expected for self). Carry the send-time
+    // plaintext to the render path instead of decrypting.
+    //
+    //   oslSentWireToPlaintext: wire string -> plaintext, populated
+    //     in interceptBody at the moment the cover is produced (we
+    //     have both there). Keyed by wire because the Discord
+    //     message id doesn't exist until the POST response.
+    //   selfSentPlaintext: Discord message id -> plaintext,
+    //     populated in the /messages XHR `load` listener by matching
+    //     the echoed `content` against oslSentWireToPlaintext.
+    //
+    // Both FIFO-evicted like selfSentAuthors (insertion order).
+    const oslSentWireToPlaintext = new Map();
+    const selfSentPlaintext = new Map();
+    const OSL_SELF_SENT_PLAINTEXT_MAX = 500;
+    function oslFifoEvict(map, max) {
+        while (map.size > max) {
+            const oldest = map.keys().next().value;
+            if (oldest === undefined) break;
+            map.delete(oldest);
+        }
+    }
 
     /** Sentinel error returned by the timeout race. */
     const RECV_TIMEOUT_SENTINEL = "__OSL_IPC_TIMEOUT__";
@@ -12424,6 +12488,25 @@
                 "[OSL] decrypt cache hit msg=" +
                     messageId +
                     " (from history)"
+            );
+            return;
+        }
+
+        // Item 1 (self-view): our own encrypted v=4 DM cannot be
+        // decrypted locally (v=4 wraps only to the peer's slot).
+        // Render the send-time plaintext we stashed instead of
+        // dispatching a decrypt that will correctly fail and leave
+        // the DPC0:: wire on screen.
+        const fromSelfSent = selfSentPlaintext.get(messageId);
+        if (typeof fromSelfSent === "string") {
+            recvApplyPlaintext(div, fromSelfSent);
+            recvPlaintext.set(messageId, fromSelfSent);
+            recvCovers.set(messageId, coverText);
+            recvDone.add(messageId);
+            console.log(
+                "[OSL] self-view render msg=" +
+                    messageId +
+                    " (send-time plaintext, no decrypt)"
             );
             return;
         }
