@@ -19,6 +19,10 @@ export interface SubscriptionRow {
   cancel_at_period_end: number;
   created_at: number;
   updated_at: number;
+  /** 0 = Stripe-originated / crypto-paid; 1 = comped / manually
+   *  minted (scripts/mint-beta-keys.ts). The sweep only expires
+   *  ACTIVE rows when this is 1 — see `sweepExpired`. */
+  is_comp: number;
 }
 
 export interface LicenseRow {
@@ -33,9 +37,16 @@ export interface LicenseRow {
 
 export async function upsertSubscription(
   db: D1Database,
-  row: Omit<SubscriptionRow, "created_at" | "updated_at"> & {
+  row: Omit<SubscriptionRow, "created_at" | "updated_at" | "is_comp"> & {
     created_at?: number;
     updated_at?: number;
+    /** Omit for Stripe / crypto subs (defaults to 0). Only
+     *  scripts/mint-beta-keys.ts passes 1. Deliberately NOT in the
+     *  ON CONFLICT DO UPDATE SET: an existing row's is_comp is
+     *  immutable via upsert, so a later Stripe-shaped upsert can
+     *  never clear a comp flag and nothing can flip a Stripe row
+     *  to comped. */
+    is_comp?: number;
   },
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
@@ -43,8 +54,9 @@ export async function upsertSubscription(
     .prepare(
       `INSERT INTO subscriptions (
          subscription_id, customer_id, customer_email, status,
-         current_period_end, cancel_at_period_end, created_at, updated_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         current_period_end, cancel_at_period_end, created_at, updated_at,
+         is_comp
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT(subscription_id) DO UPDATE SET
          customer_id = excluded.customer_id,
          customer_email = excluded.customer_email,
@@ -62,6 +74,7 @@ export async function upsertSubscription(
       row.cancel_at_period_end,
       row.created_at ?? now,
       row.updated_at ?? now,
+      row.is_comp ?? 0,
     )
     .run();
 }
@@ -125,11 +138,25 @@ export async function updateSubscriptionStatus(
     .run();
 }
 
-/** Hourly cron: promote CANCELLED/GRACE rows past their period
- *  end to EXPIRED. Idempotent — re-running is a no-op. */
+/** Hourly cron: promote past-period-end rows to EXPIRED.
+ *  Idempotent — re-running is a no-op.
+ *
+ *  Two independent sweeps:
+ *
+ *   (1) CANCELLED/GRACE (Stripe lifecycle) — unchanged. A Stripe
+ *       sub reaches these only via webhook; once its period ends
+ *       it's genuinely dead.
+ *
+ *   (2) ACTIVE *and* is_comp=1 (comped / mint-beta-keys). These
+ *       never get a Stripe webhook, so without this they would
+ *       stay ACTIVE forever past current_period_end. The is_comp=1
+ *       guard is mandatory: a Stripe-paid ACTIVE row can briefly
+ *       hold a past current_period_end during normal renewal lag
+ *       and MUST NEVER be swept — that path's expiry is owned by
+ *       the Stripe webhook, not this cron. */
 export async function sweepExpired(db: D1Database): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
-  const res = await db
+  const stripe = await db
     .prepare(
       `UPDATE subscriptions
           SET status = 'EXPIRED', updated_at = ?
@@ -139,7 +166,18 @@ export async function sweepExpired(db: D1Database): Promise<number> {
     )
     .bind(now, now)
     .run();
-  return res.meta?.changes ?? 0;
+  const comped = await db
+    .prepare(
+      `UPDATE subscriptions
+          SET status = 'EXPIRED', updated_at = ?
+        WHERE status = 'ACTIVE'
+          AND is_comp = 1
+          AND current_period_end IS NOT NULL
+          AND current_period_end < ?`,
+    )
+    .bind(now, now)
+    .run();
+  return (stripe.meta?.changes ?? 0) + (comped.meta?.changes ?? 0);
 }
 
 // ---- licenses ----

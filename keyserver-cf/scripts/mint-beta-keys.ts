@@ -244,6 +244,12 @@ async function main() {
       status: "ACTIVE",
       current_period_end: periodEnd,
       cancel_at_period_end: 0,
+      // Every minted key (--days N AND --permanent) is comped: no
+      // Stripe webhook will ever transition it, so the sweepExpired
+      // cron's is_comp=1 branch is what makes --days keys actually
+      // expire at current_period_end. (--permanent uses the 2100
+      // sentinel period end, so it simply never trips the sweep.)
+      is_comp: 1,
     });
     await insertLicense(db, {
       license_hash: license.hash,
