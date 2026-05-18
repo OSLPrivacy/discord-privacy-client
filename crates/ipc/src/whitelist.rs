@@ -136,6 +136,14 @@ pub fn recipients_for_scope_v3(
         x25519_pub: *self_x25519_pub,
         mlkem_pub: self_mlkem_pub.clone(),
     });
+    // GC Step 1 (decision (a)): a group DM encrypts only to the
+    // members who are OSL/keyserver-resolvable; non-OSL members
+    // seeing raw DPC0:: is acceptable. So for `gc:` scopes a
+    // whitelisted member that lacks usable keys is SKIPPED, not a
+    // hard error. DM and server-channel scopes keep the strict
+    // fail-closed behavior (a single keyless recipient there is a
+    // surfaced error so the caller can keyserver-refresh + retry).
+    let gc_best_effort = matches!(scope.kind, ScopeKind::Gc);
     for member in channel_members {
         if member == self_discord_id {
             continue;
@@ -159,27 +167,45 @@ pub fn recipients_for_scope_v3(
         let x25519_pub = match peer_pubkey(peer_map, member) {
             Some(pk) => pk,
             None => {
+                if gc_best_effort {
+                    continue;
+                }
                 return Err(RecipientsV3Error::PeerMissingKeys {
                     discord_id: member.clone(),
-                })
+                });
             }
         };
         // ML-KEM is REQUIRED for v=3 recipients; missing is a
         // hard fail surfaced to the caller (not a silent skip)
-        // so the user is told to ask the peer to regen.
-        let mlkem_b64 = entry.ik_mlkem768_pub.as_ref().ok_or_else(|| {
-            RecipientsV3Error::PeerMissingMlkemPubkey {
-                discord_id: member.clone(),
+        // so the user is told to ask the peer to regen — EXCEPT
+        // for gc: scopes (decision (a): skip non-OSL members).
+        let mlkem_b64 = match entry.ik_mlkem768_pub.as_ref() {
+            Some(b) => b,
+            None => {
+                if gc_best_effort {
+                    continue;
+                }
+                return Err(RecipientsV3Error::PeerMissingMlkemPubkey {
+                    discord_id: member.clone(),
+                });
             }
-        })?;
-        let mlkem_bytes =
-            STANDARD
-                .decode(mlkem_b64)
-                .map_err(|e| RecipientsV3Error::PeerMlkemPubkeyDecode {
+        };
+        let mlkem_bytes = match STANDARD.decode(mlkem_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                if gc_best_effort {
+                    continue;
+                }
+                return Err(RecipientsV3Error::PeerMlkemPubkeyDecode {
                     discord_id: member.clone(),
                     reason: e.to_string(),
-                })?;
+                });
+            }
+        };
         if mlkem_bytes.len() != ml_kem_768::ENCAPSULATION_KEY_SIZE {
+            if gc_best_effort {
+                continue;
+            }
             return Err(RecipientsV3Error::PeerMlkemPubkeyDecode {
                 discord_id: member.clone(),
                 reason: format!(
