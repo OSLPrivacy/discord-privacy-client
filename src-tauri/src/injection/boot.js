@@ -10485,6 +10485,39 @@
                                     " len=" +
                                     pt.length
                             );
+                            // Fix A: the bounced-back own message
+                            // almost always reaches recvDispatchDecrypt
+                            // BEFORE this REST `load` populates
+                            // selfSentPlaintext, so the first decrypt
+                            // fails (v=4 "not a recipient") and the
+                            // .catch marks it recvDone — terminal. The
+                            // self-view short-circuit then never runs
+                            // again (every re-dispatch path is gated on
+                            // !recvDone). Now that the plaintext is
+                            // known, clear the terminal/retry gates and
+                            // render immediately if the div is mounted;
+                            // otherwise the cleared gates let the next
+                            // sweep/observer tick re-dispatch and hit
+                            // the short-circuit.
+                            try {
+                                recvDone.delete(parsed.id);
+                                recvInFlight.delete(parsed.id);
+                                recvRetries.delete(parsed.id);
+                                recvAuthorRetryCount.delete(parsed.id);
+                                const liveDiv = document.getElementById(
+                                    RECV_MESSAGE_ID_PREFIX + parsed.id
+                                );
+                                if (liveDiv) {
+                                    recvApplyPlaintext(liveDiv, pt);
+                                    recvPlaintext.set(parsed.id, pt);
+                                    recvDone.add(parsed.id);
+                                    console.log(
+                                        "[OSL] self-view render msg=" +
+                                            parsed.id +
+                                            " (post-load, send-time plaintext)"
+                                    );
+                                }
+                            } catch (_) {}
                         }
                     } catch (e) {
                         // Swallowed â€” listener never throws.
