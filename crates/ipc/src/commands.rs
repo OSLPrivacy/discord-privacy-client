@@ -2086,11 +2086,19 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     // when the peer is ratchet-eligible. `recipients[0]` is always
     // self; non-self recipients are the actual peers. v=4 fires
     // exactly when there's one non-self recipient.
+    //
+    // GC Step 2: a group scope must NEVER take the v=4 single-peer
+    // DM branch — even a gc:/server scope that currently resolves
+    // to exactly one OSL peer is a group and belongs on v=5
+    // sender-keys (the v4 branch's fail-closed keyserver refresh
+    // also doesn't fit the "skip non-OSL members" group model).
+    // Gate the single-peer branch on a non-group scope; group
+    // scopes fall through to the v=5 router below.
     let non_self_peers: Vec<&crate::wire_v2::RecipientV3> = recipients
         .iter()
         .skip(1) // recipients[0] is self per recipients_for_scope_v3
         .collect();
-    if non_self_peers.len() == 1 {
+    if non_self_peers.len() == 1 && !scope_is_group_or_server(&scope) {
         let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
         if let Some(peer_did) = peer_did_opt {
             // Probe peer_map for v=4 eligibility. Eligible iff (a)
@@ -2161,10 +2169,15 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         }
     }
 
-    // Phase 9-A3: groups + server channels route to v=5 (sender-keys).
-    // DM-shape (handled above) routes to v=4. Anything else falls
-    // through to v=3.
-    if non_self_peers.len() >= 2 && scope_is_group_or_server(&scope) {
+    // Phase 9-A3 / GC Step 2: groups + server channels route to v=5
+    // (sender-keys). DM-shape (handled above) routes to v=4.
+    // Threshold lowered from >=2 to >=1: a gc:/server scope with at
+    // least one OSL-resolvable peer is still a group and must use
+    // sender-keys, not v=4 (the single-peer DM path is now gated
+    // off for group scopes above). With 0 resolvable OSL peers it
+    // falls through to v=3 self-only (non-OSL members see DPC0::,
+    // per decision (a)). Anything else falls through to v=3.
+    if !non_self_peers.is_empty() && scope_is_group_or_server(&scope) {
         return encrypt_v5_send(
             state,
             &sender_sk,
