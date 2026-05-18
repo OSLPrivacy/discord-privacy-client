@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# A(a): operator-driven single-peer v=4 ratchet session reset.
+[[permission]]
+identifier = "allow-osl-reset-v4-session"
+description = "Permits invoking `osl_reset_v4_session` (drop one peer's v=4 ratchet_state so the next v=4 message re-handshakes)."
+commands.allow = ["osl_reset_v4_session"]
