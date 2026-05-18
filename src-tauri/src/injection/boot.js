@@ -9637,6 +9637,35 @@
                     // until the next list scroll / chunk).
                     break;
                 }
+                case "MESSAGE_CREATE":
+                case "MESSAGE_UPDATE": {
+                    // Slow-image fix: live (gateway-delivered)
+                    // messages never pass through the fetch
+                    // interceptor that fills __oslAttachmentUrlCache
+                    // (only POST-send / PATCH-edit / GET-history
+                    // do). Without a cache entry the receiver's
+                    // attachment scan can't find the CDN URL for
+                    // Discord's unrenderable encrypted-.mp4 card
+                    // (URL lives in React state, not the DOM), so
+                    // live decrypt stalled until a restart loaded
+                    // the channel via history. Feed the same
+                    // canonical attachments[] the history path uses
+                    // into the existing cache helper here, so the
+                    // first sweep re-scan hits the cache instead of
+                    // a futile DOM walk. (The 8eacb87 fiber fallback
+                    // stays as the in-DOM safety net.)
+                    try {
+                        if (
+                            d &&
+                            typeof d.id === "string" &&
+                            Array.isArray(d.attachments) &&
+                            d.attachments.length > 0
+                        ) {
+                            oslCacheAttachmentUrls(d.id, d.attachments);
+                        }
+                    } catch (_) {}
+                    break;
+                }
                 default:
                     break;
             }
