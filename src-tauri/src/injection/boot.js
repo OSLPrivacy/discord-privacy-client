@@ -6674,6 +6674,112 @@
             }
         }
 
+        // Bug 2 — Pass 0a (attachment-card frame). Pass 0 only
+        // collapses the error cube / loadingOverlay slot; Passes
+        // 1-3 are failure-text/placeholder-class oriented. But the
+        // common case is the img/video src-replace fast path on a
+        // card Discord DID render: there is NO error chrome, yet
+        // Discord still draws the attachment-card FOOTER strip
+        // (filename + download + the "+"/add affordance) as a
+        // sibling of the media slot inside the attachment box. No
+        // pass targets it, and its class carries buttons/toolbar
+        // tokens that EXCLUDE_CLASS_RE actively skips — so the
+        // trailing bar survives below the swapped image. Fix
+        // structurally (no hash-class guessing): climb from the
+        // injected media to the OUTERMOST attachment-ish ancestor
+        // (matching the stable attachment|messageattachment|embed|
+        // mediaplaceholder|mosaic|nonmediaattachment prefixes), then
+        // hide every child subtree of that box that is neither our
+        // media nor an ancestor of it — i.e. the original media slot
+        // and the footer/+ strip — leaving the image visible. The
+        // climb stops at the <li>, the message-content div, or an
+        // excluded ancestor, so username / reactions / timestamp /
+        // message text (all outside the attachment box) are never
+        // touched; the injected-media containment guard keeps the
+        // image itself safe.
+        if (injectedMedia) {
+            try {
+                const CARD_PREFIX_RE =
+                    /(attachment|messageattachment|embed|mediaplaceholder|mosaic|nonmediaattachment)/i;
+                // Climb to the OUTERMOST attachment-ish container
+                // (the footer/+ strip is typically a sibling of the
+                // inner media wrapper but still inside this outer
+                // box). Bounded; stop at the <li>, the message-
+                // content div, or an excluded ancestor.
+                let outer = null;
+                let node = injectedMedia.parentNode;
+                for (let i = 0; i < 8 && node && node.nodeType === 1; i++) {
+                    if (node.tagName === "LI") break;
+                    if (
+                        node.id &&
+                        node.id.indexOf("message-content-") === 0
+                    ) {
+                        break;
+                    }
+                    const ncls =
+                        node.className &&
+                        typeof node.className === "string"
+                            ? node.className
+                            : "";
+                    if (ncls && EXCLUDE_CLASS_RE.test(ncls)) break;
+                    if (ncls && CARD_PREFIX_RE.test(ncls)) {
+                        outer = node;
+                    }
+                    node = node.parentNode;
+                }
+                if (
+                    outer &&
+                    outer !== injectedMedia &&
+                    outer.contains(injectedMedia) &&
+                    isVisible(outer)
+                ) {
+                    // `outer` contains our media. Collapse every
+                    // child subtree that is neither our injected
+                    // media nor an ancestor of it — that is the
+                    // original media slot + the trailing footer/+
+                    // controls bar. The image (inside the kept
+                    // ancestor child) stays visible.
+                    let hidAny = false;
+                    const kids = Array.prototype.slice.call(
+                        outer.children
+                    );
+                    for (const kid of kids) {
+                        if (kid.nodeType !== 1) continue;
+                        if (
+                            kid === injectedMedia ||
+                            kid.contains(injectedMedia)
+                        ) {
+                            continue;
+                        }
+                        if (
+                            kid.getAttribute("data-osl-hidden") ===
+                                "1" ||
+                            kid.getAttribute("data-osl-injected") ===
+                                "1"
+                        ) {
+                            continue;
+                        }
+                        kid.style.display = "none";
+                        kid.setAttribute("data-osl-hidden", "1");
+                        hidAny = true;
+                    }
+                    if (hidAny) {
+                        console.log(
+                            "[OSL] cube hidden: msg=" +
+                                msgIdHint +
+                                " method=pass0a_card_frame_children"
+                        );
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn(
+                    "[OSL] pass0a card-frame strip threw:",
+                    e
+                );
+            }
+        }
+
         // Pass 1: text match.
         for (const el of all) {
             if (skipEl(el)) continue;
