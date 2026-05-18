@@ -2262,6 +2262,29 @@ fn encrypt_v5_send(
     };
     let now: u64 = now_unix_secs().max(0) as u64;
 
+    // Bug 3 (a): server-channel sends are roster-independent. The
+    // SKDM fan-out + sender-key rotation membership for a
+    // ServerChannel scope is enumerated from peer_map (every peer
+    // whitelisted for this exact server_channel:<guild>:<channel>
+    // scope, via the same `can_encrypt_to` gate recipient
+    // resolution uses), NOT the gateway/React roster caches, which
+    // are empty for server channels. Self excluded by discord_id
+    // AND the `is_self` marker. Gc / Dm keep the
+    // gateway-snapshot-then-caller-list preference unchanged.
+    let server_channel_members: Vec<String> =
+        if scope.kind == crate::scope::ScopeKind::ServerChannel {
+            let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm.iter()
+                .filter(|(did, entry)| {
+                    did.as_str() != self_discord_id
+                        && entry.is_self != Some(true)
+                        && crate::whitelist::can_encrypt_to(&pm, scope, did.as_str())
+                })
+                .map(|(did, _)| did.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
     // Prefer the boot.js-pushed gateway snapshot of current channel
     // members (state.channel_members) over the caller's
     // `channel_members` list, which is built from React fiber props
@@ -2279,11 +2302,14 @@ fn encrypt_v5_send(
         let cache_key = scope.channel_id.clone().unwrap_or_else(|| scope.id.clone());
         cm.get(&cache_key).cloned().unwrap_or_default()
     };
-    let effective_members: &[String] = if live_members.is_empty() {
-        channel_members
-    } else {
-        &live_members
-    };
+    let effective_members: &[String] =
+        if scope.kind == crate::scope::ScopeKind::ServerChannel {
+            &server_channel_members
+        } else if live_members.is_empty() {
+            channel_members
+        } else {
+            &live_members
+        };
 
     // Load (or initialize) the per-scope SenderKeyState. We work on
     // a clone to keep the lock window short; persist back after.

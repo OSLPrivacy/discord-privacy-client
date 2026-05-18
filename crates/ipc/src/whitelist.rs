@@ -140,11 +140,44 @@ pub fn recipients_for_scope_v3(
     // members who are OSL/keyserver-resolvable; non-OSL members
     // seeing raw DPC0:: is acceptable. So for `gc:` scopes a
     // whitelisted member that lacks usable keys is SKIPPED, not a
-    // hard error. DM and server-channel scopes keep the strict
-    // fail-closed behavior (a single keyless recipient there is a
-    // surfaced error so the caller can keyserver-refresh + retry).
-    let gc_best_effort = matches!(scope.kind, ScopeKind::Gc);
-    for member in channel_members {
+    // hard error. Bug 3 (c): ServerChannel now shares this
+    // best-effort behavior — server-channel sends are
+    // roster-independent and may include non-OSL members, who see
+    // DPC0::. DM stays strict fail-closed (a single keyless
+    // recipient is a surfaced error so the caller can
+    // keyserver-refresh + retry); ServerFull untouched.
+    let gc_best_effort =
+        matches!(scope.kind, ScopeKind::Gc | ScopeKind::ServerChannel);
+
+    // Bug 3 (a): server-channel recipients are NOT derived from the
+    // client-supplied `channel_members` roster — Discord lazy-loads
+    // the server member list, so it is empty at send time. Instead
+    // enumerate peer_map directly for every peer whitelisted for
+    // this exact server_channel:<guild>:<channel> scope (the same
+    // `can_encrypt_to` gate the roster walk uses, so burn-override
+    // and broadened-DM cross-grant still apply). Self is excluded
+    // both by discord_id and by the `is_self` marker. Gc / Dm /
+    // ServerFull keep the `channel_members` walk byte-for-byte.
+    let server_channel_members: Vec<String> =
+        if scope.kind == ScopeKind::ServerChannel {
+            peer_map
+                .iter()
+                .filter(|(did, entry)| {
+                    did.as_str() != self_discord_id
+                        && entry.is_self != Some(true)
+                        && can_encrypt_to(peer_map, scope, did.as_str())
+                })
+                .map(|(did, _)| did.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+    let members: &[String] = if scope.kind == ScopeKind::ServerChannel {
+        &server_channel_members
+    } else {
+        channel_members
+    };
+    for member in members {
         if member == self_discord_id {
             continue;
         }
