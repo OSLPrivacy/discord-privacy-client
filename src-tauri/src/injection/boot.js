@@ -7412,6 +7412,34 @@
                 ")"
         );
         if (candidates.length === 0) {
+            // Fix B: last resort before giving up — the receive-side
+            // failed-media card may hold the CDN URL only in React
+            // state. Walk the <li> fiber for message.attachments.
+            try {
+                const fiberAtts = oslAttachmentUrlsViaFiber(li);
+                for (const fa of fiberAtts) {
+                    const path = fa.url.split("?")[0];
+                    const last = path.split("/").pop() || "";
+                    if (!NAME_RE.test(last)) continue;
+                    if (seenUrls.has(fa.url)) continue;
+                    seenUrls.add(fa.url);
+                    candidates.push({
+                        el: null,
+                        url: fa.url,
+                        name: last,
+                    });
+                    console.log(
+                        "[OSL] scan fiber-url fallback: msg=" +
+                            msgId +
+                            " url=" +
+                            fa.url.substring(0, 100) +
+                            " filename=" +
+                            last
+                    );
+                }
+            } catch (_) {}
+        }
+        if (candidates.length === 0) {
             // Three distinct "nothing to scan" reasons now:
             // - no_cdn_url_in_subtree: DOM had no CDN URLs anywhere
             //   AND the cache had no entry (or empty) for this msg.
@@ -11426,6 +11454,65 @@
     }
 
     /**
+     * Fix B: React-fiber fallback for attachment URLs. On the
+     * receive side an encrypted upload is an unrenderable .mp4;
+     * Discord's failed-media/file card often keeps the CDN URL only
+     * in React state and never emits it to a DOM attribute, so the
+     * scanner's attribute walk finds nothing (the sender only worked
+     * because its URL cache was pre-populated from its own POST
+     * response — a gateway-delivered receiver has neither). Walk the
+     * <li>'s fiber `.return` chain (same proven shape as
+     * recvAuthorIdViaFiber) for `message.attachments` and return
+     * [{url, filename}]. Defensive: never throws; [] on miss.
+     */
+    function oslAttachmentUrlsViaFiber(li) {
+        const out = [];
+        if (!li) return out;
+        let key = null;
+        try {
+            key = Object.keys(li).find(function (k) {
+                return k.indexOf("__reactFiber") === 0;
+            });
+        } catch (_) {
+            key = null;
+        }
+        if (!key) return out;
+        let f = li[key];
+        const pushAtts = function (atts) {
+            if (!Array.isArray(atts)) return;
+            for (const a of atts) {
+                if (!a || typeof a !== "object") continue;
+                const url =
+                    (typeof a.url === "string" && a.url) ||
+                    (typeof a.proxy_url === "string" && a.proxy_url) ||
+                    null;
+                if (!url) continue;
+                const filename =
+                    (typeof a.filename === "string" && a.filename) || "";
+                out.push({ url: url, filename: filename });
+            }
+        };
+        for (let depth = 0; f && depth < 40; depth++) {
+            try {
+                const p = f.memoizedProps;
+                if (p && typeof p === "object") {
+                    if (p.message && Array.isArray(p.message.attachments)) {
+                        pushAtts(p.message.attachments);
+                    }
+                    if (Array.isArray(p.attachments)) {
+                        pushAtts(p.attachments);
+                    }
+                    if (out.length > 0) return out;
+                }
+            } catch (_) {
+                // keep walking
+            }
+            f = f.return;
+        }
+        return out;
+    }
+
+    /**
      * Read channel_id from the current URL. Discord routes are
      * `/channels/<guild_id|@me>/<channel_id>[/<message_id>]`.
      * Returns null when the user isn't on a channel route.
@@ -13111,6 +13198,46 @@
                 recvDispatchDecrypt(div, messageId, text);
                 dispatchedCount++;
             }
+
+            // Fix B: attachment scanning was mutation-observer-only,
+            // with NO sweep fallback (the text loop above `continue`s
+            // on empty-text attachment messages). The single scan
+            // fired before Discord rendered the card and was never
+            // retried; gateway-delivered messages also have no URL
+            // cache. Give attachments the same mutation-independent
+            // retry the text path has: re-scan every chat-messages
+            // <li> that hasn't been decrypted yet. oslScanLiAttachmentsV2
+            // is idempotent (cache-replay when decrypted, cheap early
+            // return when no candidates), so re-running per tick is
+            // safe; the count is bounded by visible messages.
+            let attachScanned = 0;
+            try {
+                const lis = document.querySelectorAll(
+                    'li[id^="chat-messages-"]'
+                );
+                for (const li of lis) {
+                    const lm = /chat-messages-(?:\d{15,22})-(\d{15,22})/.exec(
+                        li.id || ""
+                    );
+                    if (!lm) continue;
+                    const amid = lm[1];
+                    if (
+                        window.__oslAttachmentDecrypted &&
+                        window.__oslAttachmentDecrypted.has(amid)
+                    ) {
+                        // Already decrypted; the scanner's own
+                        // cache-replay path re-applies the blob if
+                        // React swapped the element. Still call it so
+                        // a re-mounted element is re-swapped, but
+                        // don't count it as a fresh scan.
+                        oslScanLiAttachmentsV2(li).catch(function () {});
+                        continue;
+                    }
+                    oslScanLiAttachmentsV2(li).catch(function () {});
+                    attachScanned++;
+                }
+            } catch (_) {}
+
             if (OSL_DEBUG_SWEEP) {
                 console.log(
                     "[OSL] periodic sweep tick (msgs=" +
@@ -13119,6 +13246,8 @@
                         cachedCount +
                         ", dispatched=" +
                         dispatchedCount +
+                        ", attach_scanned=" +
+                        attachScanned +
                         ")"
                 );
             }
