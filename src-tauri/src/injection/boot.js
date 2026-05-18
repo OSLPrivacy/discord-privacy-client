@@ -11045,6 +11045,23 @@
             text.indexOf(RECV_PREFIX_MODE1) === 0
         );
     }
+    // Single source of truth for peeking the wire-format version
+    // byte out of a DPC0:: cover. The version is the first decoded
+    // byte of the base64 payload that follows the 6-char "DPC0::"
+    // prefix (slice(6,10) is one base64 quantum -> 3 bytes; byte 0
+    // is the version). Returns -1 for non-DPC0:: text, DPC1:: Mode 1
+    // covers, or any decode failure. The wire format must be decoded
+    // in exactly ONE place — both the recv-result logger and the
+    // SKDM-revive v=5 filter call this rather than re-rolling atob().
+    function oslCoverWireVersion(text) {
+        if (typeof text !== "string") return -1;
+        if (text.indexOf(RECV_PREFIX) !== 0) return -1;
+        try {
+            return atob(text.slice(6, 10)).charCodeAt(0);
+        } catch (_) {
+            return -1;
+        }
+    }
     // Discord wraps each rendered message body in a div with a
     // stable id `message-content-<discord_message_id>`. The
     // **inner** `<span>` that holds the actual text is replaced
@@ -13003,20 +13020,81 @@
             .then(function (plaintext) {
                 nativeClearTimeout(timeoutHandle);
                 recvInFlight.delete(messageId);
+
+                // Bug 1 part (b): an SKDM just installed the sender's
+                // ReceiverChain for its scope (apply_skdm_recv ->
+                // OSL_RESULT_SKDM_APPLIED). This is a CONTROL sentinel,
+                // not user content — must not be cached or rendered.
+                // Part (a) keeps an awaiting-SKDM failure non-terminal,
+                // but a v=5 message that exhausted RECV_MAX_RETRIES
+                // before the SKDM landed is already in recvDone. Revive
+                // every v=5 cover still rendered (DPC0:: + wire byte 5)
+                // that hasn't resolved yet by clearing its terminal +
+                // retry state, so the next sweep re-dispatches it now
+                // that the chain exists.
+                //
+                // Bounded blast radius: only live-DOM messages whose
+                // cover decodes to wire v=5 and are NOT already in
+                // recvPlaintext are touched — non-OSL / v=2-4 /
+                // already-decrypted messages are untouched.
+                //
+                // Retry budget still ultimately bounds re-dispatch:
+                // each revived message gets at most RECV_MAX_RETRIES
+                // fresh attempts (recvDispatchDecrypt top-of-fn guard
+                // re-adds recvDone on exhaustion), and any post-SKDM
+                // failure that is NOT awaiting-SKDM terminalizes
+                // immediately via the .catch guard. SKDMs are finite
+                // inbound messages, so the revive itself can't spin —
+                // a message that keeps failing for another reason
+                // cannot loop forever.
+                if (plaintext === OSL_RESULT_SKDM_APPLIED) {
+                    console.log(
+                        "[OSL] v=4 SKDM applied msg=" +
+                            messageId +
+                            " — reviving stuck v=5 covers"
+                    );
+                    recvDone.delete(messageId);
+                    recvRetries.delete(messageId);
+                    recvAuthorRetryCount.delete(messageId);
+                    try {
+                        const _divs = document.querySelectorAll(
+                            RECV_MESSAGE_DIV_SELECTOR
+                        );
+                        let _revived = 0;
+                        for (const _d of _divs) {
+                            if (
+                                oslCoverWireVersion(
+                                    _d.textContent || ""
+                                ) !== 5
+                            ) {
+                                continue;
+                            }
+                            const _mid = recvMessageIdOf(_d);
+                            if (!_mid) continue;
+                            if (recvPlaintext.has(_mid)) continue;
+                            recvDone.delete(_mid);
+                            recvRetries.delete(_mid);
+                            recvAuthorRetryCount.delete(_mid);
+                            _revived++;
+                        }
+                        console.log(
+                            "[OSL] SKDM revive: cleared terminal/retry " +
+                                "state for " +
+                                _revived +
+                                " stuck v=5 message(s)"
+                        );
+                    } catch (_) {}
+                    return;
+                }
+
                 if (DEBUG) {
                     // Phase 9-A1: also surface which wire version
                     // we received. The version byte lives inside
                     // the base64-decoded payload (one byte past the
                     // DPC0:: prefix); peek it locally so this log
                     // doesn't require a Rust round-trip.
-                    let wireVersion = "?";
-                    try {
-                        if (coverText.indexOf("DPC0::") === 0) {
-                            const first =
-                                atob(coverText.slice(6, 10)).charCodeAt(0);
-                            wireVersion = "v" + first;
-                        }
-                    } catch (_) {}
+                    const _cwv = oslCoverWireVersion(coverText);
+                    const wireVersion = _cwv >= 0 ? "v" + _cwv : "?";
                     console.log(
                         "[OSL] decrypt result for msg=" +
                             messageId +
@@ -13203,7 +13281,28 @@
                     msg.indexOf(
                         "v=5 decode: scope required for sender-keys lookup"
                     ) !== -1;
-                if (!isPendingEdit && !isV5MissingScope) {
+                // Bug 1 part (a): a v=5 message that fails purely
+                // because the sender's ReceiverChain / SenderKeyState
+                // isn't installed yet ("… no installed sender-key
+                // state for peer … — awaiting SKDM", commands.rs
+                // decrypt_v5_recv) is a normal first-contact /
+                // message-ordering condition, NOT a permanent
+                // failure: the SKDM arrives as a separate v=4 message
+                // and `apply_skdm_recv` installs the chain. Do NOT
+                // terminalize — leave recvDone unset so the periodic
+                // sweep re-dispatches once the chain lands. Still
+                // bounded by recvRetries / RECV_MAX_RETRIES via the
+                // recvDispatchDecrypt top-of-fn guard (part (b) resets
+                // that budget when the SKDM is actually applied).
+                const isV5AwaitingSkdm =
+                    msg.indexOf(
+                        "no installed sender-key state for peer"
+                    ) !== -1 || msg.indexOf("awaiting SKDM") !== -1;
+                if (
+                    !isPendingEdit &&
+                    !isV5MissingScope &&
+                    !isV5AwaitingSkdm
+                ) {
                     recvDone.add(messageId);
                 }
             });
