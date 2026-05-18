@@ -6409,7 +6409,63 @@
      * base64 (same shape as the old `btoa(arrayBuffer)` path) and
      * enforces a URL allowlist server-side.
      */
-    async function oslFetchAttachmentBase64(url) {
+    /**
+     * Item 2 fix — encrypted-attachment receive was broken because
+     * the fetched URL was Discord's media.discordapp.net transcoding
+     * PROXY (the `<img>/<video>` src + `proxy_url`), often with
+     * `?...&format=webp&width=&height=`. That proxy re-encodes the
+     * file: it strips everything past the container's logical end
+     * (our OSL-ATT3 magic + cover + AEAD payload), and refuses
+     * unknown transcodes with `415 Unsupported Media Type`
+     * (`...688d0739.mp4?...format=webp 415`). The ~351KB blob then
+     * "decrypts" to a 520-byte garbage/placeholder (or fails),
+     * never the real image.
+     *
+     * Only the cdn.discordapp.com ORIGIN serves the bytes verbatim.
+     * Canonicalize before fetching: rewrite the host
+     * media.discordapp.net -> cdn.discordapp.com and drop the
+     * transcode-only query params, while PRESERVING Discord's signed
+     * attachment params (`ex`,`is`,`hm`) which cdn.discordapp.com
+     * now requires. Both hosts are already in the Rust
+     * `osl_fetch_attachment_bytes` allowlist, so the rewritten URL
+     * still passes. Defensive: any parse failure returns the URL
+     * unchanged.
+     */
+    function oslCanonicalAttachmentUrl(url) {
+        try {
+            const u = new URL(url);
+            if (u.hostname === "media.discordapp.net") {
+                u.hostname = "cdn.discordapp.com";
+            }
+            // Transcode-only params understood by the media proxy;
+            // cdn.discordapp.com ignores them and they are what
+            // trigger the re-encode/415. ex/is/hm (signed auth) and
+            // anything else are kept.
+            const drop = [
+                "format",
+                "width",
+                "height",
+                "quality",
+                "passthrough",
+                "animated",
+            ];
+            for (const p of drop) u.searchParams.delete(p);
+            return u.toString();
+        } catch (_) {
+            return url;
+        }
+    }
+
+    async function oslFetchAttachmentBase64(rawUrl) {
+        const url = oslCanonicalAttachmentUrl(rawUrl);
+        if (url !== rawUrl) {
+            console.log(
+                "[OSL] attachment fetch canonicalized: " +
+                    rawUrl.substring(0, 80) +
+                    " -> " +
+                    url.substring(0, 80)
+            );
+        }
         const result = await oslInvoke("osl_fetch_attachment_bytes", { url });
         if (!result.ok) {
             const errMsg = result.error || "unknown";
