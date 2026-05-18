@@ -147,6 +147,14 @@ pub struct AppState {
     pub identity: Mutex<Option<Identity>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
 
+    /// D: set true by `run_autostart` when THIS launch regenerated
+    /// the local identity outside a burn. `state_reload`'s post-gate
+    /// reload consumes it to durably clear every peer's stale
+    /// `ratchet_state` (the bootstrap pre-gate clear can't persist
+    /// when the peer_map is encrypt-at-rest and the key isn't
+    /// installed yet). Launch-scoped; never persisted.
+    pub identity_regenerated_this_launch: std::sync::atomic::AtomicBool,
+
     /// REGISTER-FIX: a security-relevant registration outcome the
     /// user MUST see (NOT warn-swallowed) — set when `/v1/register`
     /// returns 403 "user_id registered to a different key" (our

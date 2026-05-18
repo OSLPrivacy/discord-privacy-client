@@ -117,6 +117,25 @@ pub fn reload_encrypted_state_after_unlock(
         Err(e) => report.errors.push(format!("peer_map: {e}")),
     }
 
+    // D: close the bootstrap-regen + encrypted-peer_map residual.
+    // If THIS launch regenerated the local identity outside a burn,
+    // the bootstrap in-memory ratchet clear could not persist (the
+    // file_storage_key wasn't installed pre-gate, so write_peer_map
+    // refused to clobber the encrypted file) — and the reload above
+    // just pulled the stale on-disk ratchet_state back into memory.
+    // Now we ARE post-gate (the key is installed before this fn is
+    // called), so re-run the clear: it persists durably this time.
+    // Gated SOLELY on regenerated-this-launch so a normal unlock
+    // never clears anything; consume the flag so a second
+    // same-session reload doesn't repeat it (the helper is already
+    // idempotent, this is just hygiene).
+    if state
+        .identity_regenerated_this_launch
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        crate::commands::clear_all_peer_ratchet_state(state);
+    }
+
     // whitelist_state.json — `migrate_whitelist_state_in_place`
     // owns the load path (it also touches peer_map for the C1
     // projection). Idempotent after first migration: a file with

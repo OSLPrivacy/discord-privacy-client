@@ -161,17 +161,19 @@ pub fn run_autostart(state: &AppState) {
     // just-loaded peer_map was derived from the OLD local identity's
     // SessionContext and is undecryptable. Drop them all so the next
     // v=4 re-handshakes. Done AFTER load_peer_map so it operates on
-    // the real map. NOTE: pre-gate the file_storage_key slot is
-    // empty, so for a password user with an encrypted peer_map.json
-    // the persist inside this helper is refused by write_peer_map's
-    // clobber guard and post-gate state_reload reloads the stale
-    // on-disk ratchet — the in-memory clear still protects THIS
-    // session (no v=4 send happens before the gate anyway). Fully
-    // closing that residual means also clearing post-gate in
-    // state_reload, which is a separate concern, deliberately not
-    // bundled here.
+    // the real map. The in-memory clear protects THIS pre-gate
+    // session; but for a password user with an encrypted
+    // peer_map.json the persist inside the helper is refused by
+    // write_peer_map's clobber guard (file_storage_key not installed
+    // pre-gate), so the stale on-disk ratchet survives. D: also raise
+    // the launch-scoped flag so state_reload re-runs the clear
+    // POST-gate (key installed → persist durable), closing that
+    // residual.
     if identity_regenerated {
         ipc::commands::clear_all_peer_ratchet_state(state);
+        state
+            .identity_regenerated_this_launch
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     // 7d-PIVOT: load whitelist_state.json from disk, then run
