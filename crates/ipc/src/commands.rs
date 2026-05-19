@@ -218,13 +218,16 @@ pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<
 /// NOTE: a peer's `ratchet_state` is shared with that peer's v=4 DM
 /// session, so resetting it here also re-handshakes the DM (same
 /// collateral as `cmd_osl_reset_v4_session`; acceptable for an
-/// operator recovery tool). Console-invokable:
+/// operator recovery tool). Returns one [`SessionResetNotice`] per
+/// peer whose v=4 ratchet was collaterally nulled — boot.js POSTs
+/// each to that peer's DM so they auto-re-handshake instead of
+/// silently desyncing (the footgun guardrail). Console-invokable:
 ///   window.__TAURI__.core.invoke("osl_reset_v5_sender_key",
 ///     { scopeInput: { kind: "gc", id: "<gc channel id>" } })
 pub fn cmd_osl_reset_v5_sender_key(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
-) -> Result<(), String> {
+) -> Result<Vec<SessionResetNotice>, String> {
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -276,14 +279,42 @@ pub fn cmd_osl_reset_v5_sender_key(
         persist_peer_map_now(state);
     }
 
+    // 3. Footgun guardrail: nulling a peer's ratchet here ALSO
+    //    desyncs that peer's v=4 DM (the ratchet is shared). Pre-fix,
+    //    the other side only discovered this by failing to decrypt.
+    //    Now proactively announce a SESSION_RESET per affected peer so
+    //    they auto-re-handshake. Best-effort: a peer we can't build a
+    //    wire for (missing pubkey / identity) is logged and skipped —
+    //    the local reset already happened and must not be undone by a
+    //    notification failure. NOT throttled (deliberate operator
+    //    action); the recv-side guards still rate-limit honoring.
+    let now = now_unix_secs();
+    let mut notices: Vec<SessionResetNotice> = Vec::new();
+    for peer in &peers_reset {
+        match build_session_reset_wire(state, peer, now) {
+            Ok(wire) => notices.push(SessionResetNotice {
+                peer_discord_id: peer.clone(),
+                wire,
+            }),
+            Err(e) => tracing::warn!(
+                peer = %peer,
+                error = %e,
+                "OSL: v=5 reset — could not build SESSION_RESET notice \
+                 (peer will recover on first failed decrypt instead)"
+            ),
+        }
+    }
+
     tracing::warn!(
         scope = %scope_key,
         v5_cleared = v5_cleared,
         peers_reset = peers_reset.len(),
+        notices = notices.len(),
         "OSL: v=5 sender-key reset (operator) — dropped sender-key \
-         state + paired v=4 ratchet; next v=5 send re-emits SKDM"
+         state + paired v=4 ratchet; next v=5 send re-emits SKDM; \
+         SESSION_RESET notices queued for affected DM peers"
     );
-    Ok(())
+    Ok(notices)
 }
 
 /// Random 16-byte recovery-request nonce (replay-dedupe id; carries
@@ -293,6 +324,51 @@ fn recovery_nonce() -> [u8; 16] {
     let mut n = [0u8; 16];
     n.copy_from_slice(&b);
     n
+}
+
+/// Build a v=2-wrapped SESSION_RESET wire addressed to one peer. Pure
+/// construction — no throttle, no ratchet mutation. Callers decide
+/// when/whether to drop the local ratchet and whether to throttle.
+fn build_session_reset_wire(
+    state: &AppState,
+    peer_discord_id: &str,
+    now: i64,
+) -> Result<String, String> {
+    let rst = crate::control_messages::SessionReset {
+        requested_at: now,
+        nonce: recovery_nonce(),
+    };
+    let body = crate::control_messages::serialize_session_reset(&rst)
+        .map_err(|e| format!("OSL: SESSION_RESET: serialize: {e}"))?;
+    let sender_sk = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+            .x25519_secret
+            .clone()
+    };
+    let peer_pk = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        lookup_peer_pubkey(&pm, peer_discord_id)?
+    };
+    crate::wire_v2::encrypt_v2(
+        &body,
+        &[peer_pk],
+        crate::wire_v2::MSG_TYPE_SESSION_RESET,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: SESSION_RESET: encrypt_v2: {e}"))
+}
+
+/// One collateral SESSION_RESET notice produced by
+/// [`cmd_osl_reset_v5_sender_key`]: `wire` is a DPC0:: v=2 message
+/// boot.js POSTs to its DM channel with `peer_discord_id` so that
+/// peer auto-re-handshakes instead of silently desyncing.
+#[derive(Debug, Serialize)]
+pub struct SessionResetNotice {
+    pub peer_discord_id: String,
+    pub wire: String,
 }
 
 /// Auto-recovery (build side): construct a v=2-wrapped SKDM_REQUEST
@@ -393,31 +469,7 @@ pub fn cmd_osl_build_session_reset(
     if changed {
         persist_peer_map_now(state);
     }
-    let rst = crate::control_messages::SessionReset {
-        requested_at: now,
-        nonce: recovery_nonce(),
-    };
-    let body = crate::control_messages::serialize_session_reset(&rst)
-        .map_err(|e| format!("OSL: SESSION_RESET: serialize: {e}"))?;
-    let sender_sk = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
-        id_guard
-            .as_ref()
-            .ok_or_else(|| "OSL: identity not loaded".to_string())?
-            .x25519_secret
-            .clone()
-    };
-    let peer_pk = {
-        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        lookup_peer_pubkey(&pm, &peer_discord_id)?
-    };
-    crate::wire_v2::encrypt_v2(
-        &body,
-        &[peer_pk],
-        crate::wire_v2::MSG_TYPE_SESSION_RESET,
-        &sender_sk,
-    )
-    .map_err(|e| format!("OSL: SESSION_RESET: encrypt_v2: {e}"))
+    build_session_reset_wire(state, &peer_discord_id, now)
 }
 
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
