@@ -472,6 +472,39 @@ pub fn cmd_osl_build_session_reset(
     build_session_reset_wire(state, &peer_discord_id, now)
 }
 
+/// Auto-recovery (stale-identity, RECEIVE side): re-fetch
+/// `discord_id`'s published bundle from the keyserver. The fetch goes
+/// through `refresh_peer_pubkeys_from_keyserver` → `tofu_observe_peer`,
+/// so a CHANGED identity raises the existing loud, human-accept
+/// key-change (TOFU) alert and is NOT auto-trusted; a first-use /
+/// unchanged result updates silently exactly as before. Security
+/// posture is therefore unchanged — this only makes the *existing*
+/// TOFU prompt actually appear.
+///
+/// boot.js calls this when an inbound message from the peer fails as
+/// "not a recipient of this message": the peer almost certainly
+/// reinstalled / re-registered (new identity) and a pure receiver
+/// never re-fetched them — only the SEND path force-refreshes, so a
+/// passive receiver was stranded forever. Returns whether the local
+/// entry changed. A keyserver error is surfaced (boot.js cooldown-
+/// logs it); a stale identity is never silently accepted.
+pub fn cmd_osl_recover_peer_identity(
+    state: &AppState,
+    discord_id: String,
+) -> Result<bool, String> {
+    let changed = refresh_peer_pubkeys_from_keyserver(state, &discord_id)?;
+    if changed {
+        persist_peer_map_now(state);
+        tracing::warn!(
+            peer = %discord_id,
+            "OSL: stale-identity recovery — re-fetched peer bundle from \
+             keyserver; a CHANGED identity is now a pending TOFU alert \
+             (loud, one-tap accept), NOT auto-trusted"
+        );
+    }
+    Ok(changed)
+}
+
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
 /// repair the peer_map self-entry to match. Called from boot.js
 /// the first time the runtime exposes the local user's snowflake.
@@ -4341,12 +4374,29 @@ fn apply_skdm_request_recv(
 
 /// Auto-recovery inbound handler for `MSG_TYPE_SESSION_RESET` (0x07):
 /// the sender says our shared v=4 ratchet is desynced and they have
-/// dropped their side. Honor it ONLY when (a) it passes the
-/// throttle/replay/staleness guards AND (b) we have independently
-/// observed a real v=4 decrypt failure from this peer recently
-/// (act-on-symptom — a forged reset with no corroborating local
-/// failure is ignored). On honor, drop our `ratchet_state` for the
-/// peer so the next v=4 send re-handshakes.
+/// dropped their side. Honor it when it passes the
+/// staleness/replay/honor-throttle guards.
+///
+/// Act-on-symptom DOWNGRADE (one-directional-desync fix): a
+/// SESSION_RESET only reaches this function after it has been
+/// successfully `wire_v2`-decrypted — i.e. it was PQ-hybrid wrapped to
+/// our identity using the peer's identity secret. A third party who
+/// can merely post into the channel cannot forge one that decrypts, so
+/// the original "could be spammed by anyone" threat is already closed
+/// by that authentication for SESSION_RESET specifically. Requiring an
+/// *additional* local decrypt failure before honoring it broke the
+/// common real case: a one-directional ratchet desync (peer→us fails,
+/// us→peer still works) leaves the side that must reset with no local
+/// symptom, so the reset was ignored forever and the session never
+/// healed without two console commands. We now honor an authenticated,
+/// non-replayed, non-throttled reset regardless of corroboration; the
+/// symptom is still recorded and logged (`corroborated`) for forensics
+/// but is no longer a gate. Residual risk: a peer holding valid keys
+/// can induce at most one (idempotent, cheap) re-handshake per
+/// `RECOVERY_MIN_INTERVAL_SECS` — a throttled self-inflicted nuisance,
+/// not a third-party DoS, no secret exposure, no MITM gain. On honor,
+/// drop our `ratchet_state` for the peer so the next v=4 send
+/// re-handshakes.
 fn apply_session_reset_recv(
     state: &AppState,
     sender_discord_id: &str,
@@ -4356,6 +4406,7 @@ fn apply_session_reset_recv(
         .map_err(|e| format!("OSL: SESSION_RESET: deserialize: {e}"))?;
     let now = now_unix_secs();
 
+    let corroborated;
     {
         let mut g = state
             .recovery_guard
@@ -4368,11 +4419,15 @@ fn apply_session_reset_recv(
             rst.requested_at,
             now,
         );
-        // Act-on-symptom: never re-handshake purely because a wire
-        // told us to. Require corroborating local evidence.
-        if !passes_guards || !g.had_recent_v4_failure(sender_discord_id, now) {
+        // Staleness / replay / honor-throttle still hard-gate. The
+        // act-on-symptom check is now an observability signal only
+        // (see fn doc): authenticated + fresh + un-throttled resets
+        // are honored even with no corroborating local failure so a
+        // one-directional desync self-heals in a single round.
+        if !passes_guards {
             return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
         }
+        corroborated = g.had_recent_v4_failure(sender_discord_id, now);
     }
 
     let changed = {
@@ -4389,7 +4444,10 @@ fn apply_session_reset_recv(
         persist_peer_map_now(state);
         tracing::warn!(
             peer = %sender_discord_id,
-            "OSL: SESSION_RESET honored — dropped v=4 ratchet; next v=4 re-handshakes"
+            corroborated = corroborated,
+            "OSL: SESSION_RESET honored — dropped v=4 ratchet; next v=4 \
+             re-handshakes (corroborated=false means a one-directional \
+             desync healed off the authenticated reset alone)"
         );
     }
     Ok(OSL_RESULT_SESSION_RESET_APPLIED.to_string())

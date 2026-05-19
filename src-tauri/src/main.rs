@@ -1650,6 +1650,24 @@ async fn osl_build_session_reset(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Auto-recovery (stale-identity): re-fetch a peer's keyserver bundle
+/// so a changed identity surfaces the existing loud TOFU alert instead
+/// of stranding a passive receiver on "not a recipient". Never
+/// auto-accepts a changed key.
+#[tauri::command]
+async fn osl_recover_peer_identity(
+    app: tauri::AppHandle,
+    discord_id: String,
+) -> Result<bool, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_recover_peer_identity(state.inner(), discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Safety number for a peer's current trusted Ed25519 baseline.
 #[tauri::command]
 async fn osl_peer_safety_number(
@@ -2605,6 +2623,7 @@ fn main() {
             osl_reset_v5_sender_key,
             osl_build_skdm_request,
             osl_build_session_reset,
+            osl_recover_peer_identity,
             osl_peer_safety_number,
             osl_self_safety_number,
             osl_open_settings_window,

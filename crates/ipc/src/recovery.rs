@@ -9,7 +9,7 @@
 //! is intentionally NOT persisted — a relaunch resets it, whose worst
 //! case is one extra (idempotent, self-correcting) recovery round.
 //!
-//! Four defenses, applied by the recv handlers in `commands.rs`:
+//! Defenses, applied by the recv handlers in `commands.rs`:
 //!
 //! 1. **Staleness** — a request whose `requested_at` is outside
 //!    [`RECOVERY_FRESHNESS_SECS`] of now (past OR future) is dropped.
@@ -18,10 +18,18 @@
 //! 3. **Honor throttle** — at most one honored request per
 //!    (peer, kind) per [`RECOVERY_MIN_INTERVAL_SECS`], symmetric with
 //!    the outbound emit throttle so a peer pair can't ping-pong.
-//! 4. **Act-on-symptom** (SESSION_RESET only) — honored only if we
-//!    have independently observed a real v=4 decrypt failure from that
-//!    peer within [`RECOVERY_FAILURE_SYMPTOM_SECS`]. A forged reset
-//!    with no corresponding local failure is ignored entirely.
+//! 4. **Act-on-symptom** (SESSION_RESET) — DOWNGRADED to an
+//!    observability signal, no longer a hard gate. A SESSION_RESET is
+//!    only dispatched here after it has been `wire_v2`-decrypted (PQ-
+//!    hybrid wrapped to our identity using the peer's identity secret),
+//!    so a channel-poster who cannot produce a decryptable wire cannot
+//!    forge one — that authentication, plus defenses 1–3, closes the
+//!    spam surface for resets. Requiring an additional local failure
+//!    deadlocked the common one-directional desync (the side that must
+//!    reset has no symptom), so [`Self::had_recent_v4_failure`] is now
+//!    logged (`corroborated`) for forensics but does not gate honoring.
+//!    [`Self::note_v4_failure`] still records the symptom for that log.
+//!    (SKDM_REQUEST is unaffected — it keeps its own handling.)
 
 use std::collections::HashMap;
 

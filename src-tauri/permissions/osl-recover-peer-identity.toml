@@ -1,0 +1,9 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Auto-recovery (stale-identity, RECEIVE side): re-fetch a peer's
+# keyserver bundle so a CHANGED identity surfaces the existing loud,
+# human-accept TOFU key-change alert. Never auto-accepts a changed key.
+[[permission]]
+identifier = "allow-osl-recover-peer-identity"
+description = "Permits invoking `osl_recover_peer_identity` (re-fetch a peer's published bundle from the keyserver; a changed identity routes through the existing TOFU key-change alert, never auto-trusted). boot.js calls this when an inbound message from the peer fails as \"not a recipient of this message\" so a passive receiver of a peer who reinstalled/re-registered is no longer stranded."
+commands.allow = ["osl_recover_peer_identity"]

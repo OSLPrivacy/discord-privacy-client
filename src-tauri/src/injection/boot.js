@@ -10732,7 +10732,20 @@
                 break;
             }
         }
-        if (!invite) return null;
+        // Fallback (no "Create Invite" affordance — the common case:
+        // the user lacks the permission for it to render, or it's a
+        // DM/GC row). Inject as the <a>'s next sibling inside the link
+        // wrapper: still OUTSIDE the <a> (so clicks never navigate),
+        // just without the invite anchor / color match. Without this
+        // the button silently disappeared on every such row.
+        if (!invite) {
+            if (!a.parentElement) return null;
+            return {
+                container: a.parentElement,
+                before: a.nextSibling,
+                styleRef: null,
+            };
+        }
         // Climb until parentElement is an ancestor of the <a>: that
         // parent is the row's link wrapper and `node` is the actions
         // container (the sibling branch that holds the hover icons).
@@ -10746,12 +10759,17 @@
         }
         const container = node.parentElement;
         if (!container || container.contains(a) === false) {
-            // Fallback: insert just before the invite control itself.
-            return { container: invite.parentElement, before: invite };
+            // Invite found but its container isn't a clean sibling of
+            // the <a>; insert just before the invite control itself.
+            return {
+                container: invite.parentElement,
+                before: invite,
+                styleRef: invite,
+            };
         }
         // `node` is the direct child of `container` that holds invite;
         // place our button immediately before it (i.e. to its left).
-        return { container: container, before: node };
+        return { container: container, before: node, styleRef: node };
     }
 
     function oslChanWlInject() {
@@ -10765,9 +10783,9 @@
             const ids = oslChanWlParseHref(a.getAttribute("href") || "");
             if (!ids) continue;
             const place = oslChanWlFindInvitePlacement(a);
-            // No invite control (e.g. no permission / not a text row):
-            // skip rather than fall back into the <a> (the old bug).
-            if (!place || !place.container || !place.before) continue;
+            // Only skip if there is no container at all. `before` may
+            // legitimately be null (fallback = append after the <a>).
+            if (!place || !place.container) continue;
             if (
                 place.container.querySelector(
                     "[" + OSL_CHANWL_ATTR + "='1']"
@@ -10782,9 +10800,11 @@
             btn.setAttribute("aria-label", "OSL channel whitelist");
             // Mimic the invite action item exactly (sizing, layout,
             // color, hover transition) by reusing its Discord class.
+            // styleRef is null in the no-invite fallback — then our
+            // own inline styles + currentColor lock carry it.
             try {
-                if (place.before.className) {
-                    btn.className = place.before.className;
+                if (place.styleRef && place.styleRef.className) {
+                    btn.className = place.styleRef.className;
                 }
             } catch (_) {}
             btn.style.display = "flex";
@@ -14142,6 +14162,18 @@
                     const isV4Desync =
                         msg.indexOf("v=4 dr.decrypt") !== -1 ||
                         msg.indexOf("(desync)") !== -1;
+                    // Stale-identity: "not a recipient" means the
+                    // sender wrapped to an identity we no longer hold
+                    // (they reinstalled/re-registered). A session
+                    // reset can't fix that — only re-fetching THEIR
+                    // bundle can, which then routes a real key change
+                    // through the loud TOFU accept prompt. The pure
+                    // receive path never re-fetched, so this was a
+                    // permanent dead end. Not "(desync)" / not
+                    // "v=4 dr.decrypt", so it can't collide above.
+                    const isNotRecipient =
+                        msg.indexOf("not a recipient of this message") !==
+                        -1;
                     if (isV5AwaitingSkdm && recvScopeInput) {
                         oslMaybeEmitRecovery(
                             "skdm",
@@ -14152,6 +14184,13 @@
                     } else if (isV4Desync) {
                         oslMaybeEmitRecovery(
                             "session",
+                            senderDiscordId,
+                            channelId,
+                            null
+                        );
+                    } else if (isNotRecipient) {
+                        oslMaybeEmitRecovery(
+                            "identity",
                             senderDiscordId,
                             channelId,
                             null
@@ -14181,6 +14220,46 @@
                 return;
             }
             recvRecoveryCooldown.set(cdKey, nowMs);
+            // Stale-identity kind: no wire to POST — just re-fetch the
+            // peer's keyserver bundle. A genuine key change becomes a
+            // pending TOFU alert (never auto-trusted); oslCheckSecurity
+            // Alerts then surfaces the loud one-tap accept banner.
+            if (kind === "identity") {
+                console.log(
+                    "[OSL] auto-recovery: re-fetching identity for peer=" +
+                        peer +
+                        " (stale-identity / 'not a recipient')"
+                );
+                Promise.resolve(
+                    invoke("osl_recover_peer_identity", { discordId: peer })
+                )
+                    .then(function (changed) {
+                        console.log(
+                            "[OSL] auto-recovery: identity re-fetch peer=" +
+                                peer +
+                                " changed=" +
+                                changed +
+                                (changed
+                                    ? " — TOFU alert will surface if the key changed"
+                                    : "")
+                        );
+                        try {
+                            if (
+                                typeof oslCheckSecurityAlerts === "function"
+                            ) {
+                                oslCheckSecurityAlerts();
+                            }
+                        } catch (_) {}
+                    })
+                    .catch(function (e) {
+                        console.log(
+                            "[OSL] auto-recovery: identity re-fetch not done (" +
+                                (e && e.message ? e.message : e) +
+                                ")"
+                        );
+                    });
+                return;
+            }
             const cmd =
                 kind === "skdm"
                     ? "osl_build_skdm_request"
