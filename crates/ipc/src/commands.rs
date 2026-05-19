@@ -2243,9 +2243,9 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     // also doesn't fit the "skip non-OSL members" group model).
     // Gate the single-peer branch on a non-group scope; group
     // scopes fall through to the v=5 router below.
-    let non_self_peers: Vec<&crate::wire_v2::RecipientV3> = recipients
+    let non_self_peers: Vec<&(String, crate::wire_v2::RecipientV3)> = recipients
         .iter()
-        .skip(1) // recipients[0] is self per recipients_for_scope_v3
+        .skip(1) // recipients[0] is (self_discord_id, self) per recipients_for_scope_v3
         .collect();
     if non_self_peers.len() == 1 && !scope_is_group_or_server(&scope) {
         let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
@@ -2298,12 +2298,17 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                 }
                 let fresh_recipients = resolve_recipients()
                     .map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
-                let fresh_peer = fresh_recipients.get(1).ok_or_else(|| {
-                    format!(
-                        "OSL: v=4 send: recipient {peer_did} vanished \
-                         from peer_map after keyserver refresh"
-                    )
-                })?;
+                // v=4 keeps its own peer_did (derive_v4_peer_discord_id,
+                // untouched); only the keys are extracted from the pair.
+                let fresh_peer = &fresh_recipients
+                    .get(1)
+                    .ok_or_else(|| {
+                        format!(
+                            "OSL: v=4 send: recipient {peer_did} vanished \
+                             from peer_map after keyserver refresh"
+                        )
+                    })?
+                    .1;
                 return encrypt_v4_send(
                     state,
                     &sender_sk,
@@ -2344,10 +2349,14 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     // peer whitelist. recipients_for_scope_v3 always returns at
     // least self (len >= 1); encrypt-to-self is a valid send
     // result.
+    // encrypt_v3 wants keys only; drop the paired discord_ids. Same
+    // set, same order — wire output is byte-identical to pre-change.
+    let key_recipients: Vec<crate::wire_v2::RecipientV3> =
+        recipients.iter().map(|(_, r)| r.clone()).collect();
     crate::wire_v2::encrypt_v3(
         &sender_sk,
         &self_pk,
-        &recipients,
+        &key_recipients,
         crate::wire_v2::MSG_TYPE_CONTENT,
         plaintext.as_bytes(),
     )
@@ -2398,7 +2407,7 @@ fn encrypt_v5_send(
     scope: &crate::scope::Scope,
     self_discord_id: &str,
     channel_members: &[String],
-    non_self_peers: &[&crate::wire_v2::RecipientV3],
+    non_self_peers: &[&(String, crate::wire_v2::RecipientV3)],
     plaintext: &[u8],
 ) -> Result<EncryptWire, String> {
     use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
@@ -2563,27 +2572,24 @@ fn encrypt_v5_send(
     let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
     if send_skdm {
         let _ = send_skdm; // mark used
-        for (idx, peer) in non_self_peers.iter().enumerate() {
-            let peer_did = match channel_members
-                .iter()
-                .find(|m| m.as_str() != self_discord_id)
-                .map(|s| s.to_string())
-            {
-                Some(_) => match channel_members
-                    .iter()
-                    .filter(|m| m.as_str() != self_discord_id)
-                    .nth(idx)
-                {
-                    Some(d) => d.clone(),
-                    None => continue,
-                },
-                None => continue,
-            };
+        // Iterate the FILTERED (discord_id, keys) pairs directly:
+        // each SKDM is addressed to its own peer's id. The old code
+        // reconstructed peer_did by positionally indexing the
+        // UNFILTERED channel_members, which misaligned the moment a
+        // non-OSL member was filtered out of non_self_peers — sending
+        // the SKDM to the wrong id and skipping the real OSL peer.
+        // non_self_peers is the gc_best_effort-filtered OSL-only set,
+        // so non-OSL members are inherently absent here (no spurious
+        // ok:false notice for them). channel_members is untouched and
+        // still drives effective_members / rotation above.
+        for pair in non_self_peers.iter() {
+            let peer_did: &str = pair.0.as_str();
+            let peer: &crate::wire_v2::RecipientV3 = &pair.1;
             match send_skdm_via_v4(
                 state,
                 sender_sk,
                 self_pk,
-                &peer_did,
+                peer_did,
                 peer,
                 &scope_key,
                 chain_id,
@@ -2597,7 +2603,7 @@ fn encrypt_v5_send(
                     // posts each as its own Discord message.
                     skdm_wires.push(skdm_wire);
                     skdm_peer_status.push(SkdmPeerStatus {
-                        peer_discord_id: peer_did.clone(),
+                        peer_discord_id: peer_did.to_string(),
                         ok: true,
                         error: None,
                     });
@@ -2613,7 +2619,7 @@ fn encrypt_v5_send(
                         "[OSL] v=5 SKDM dispatch failed (best-effort; peer may need to retry)"
                     );
                     skdm_peer_status.push(SkdmPeerStatus {
-                        peer_discord_id: peer_did.clone(),
+                        peer_discord_id: peer_did.to_string(),
                         ok: false,
                         error: Some(e),
                     });

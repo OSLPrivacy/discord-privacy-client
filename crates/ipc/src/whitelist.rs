@@ -130,12 +130,21 @@ pub fn recipients_for_scope_v3(
     self_discord_id: &str,
     self_x25519_pub: &x25519::PublicKey,
     self_mlkem_pub: &ml_kem_768::EncapsulationKey,
-) -> Result<Vec<RecipientV3>, RecipientsV3Error> {
-    let mut out: Vec<RecipientV3> = Vec::new();
-    out.push(RecipientV3 {
-        x25519_pub: *self_x25519_pub,
-        mlkem_pub: self_mlkem_pub.clone(),
-    });
+) -> Result<Vec<(String, RecipientV3)>, RecipientsV3Error> {
+    // Each entry is (discord_id, keys). Pairing the id WITH the keys
+    // here — atomically, at resolution time — is what lets the v=5
+    // SKDM loop address each SKDM to the right peer. The previous
+    // keys-only Vec forced the SKDM loop to reconstruct ids by
+    // positional indexing into the UNFILTERED roster, which
+    // misaligned the moment any non-OSL member was filtered out.
+    let mut out: Vec<(String, RecipientV3)> = Vec::new();
+    out.push((
+        self_discord_id.to_string(),
+        RecipientV3 {
+            x25519_pub: *self_x25519_pub,
+            mlkem_pub: self_mlkem_pub.clone(),
+        },
+    ));
     // GC Step 1 (decision (a)): a group DM encrypts only to the
     // members who are OSL/keyserver-resolvable; non-OSL members
     // seeing raw DPC0:: is acceptable. So for `gc:` scopes a
@@ -251,10 +260,13 @@ pub fn recipients_for_scope_v3(
         let mut mlkem_arr = [0u8; ml_kem_768::ENCAPSULATION_KEY_SIZE];
         mlkem_arr.copy_from_slice(&mlkem_bytes);
         let mlkem_pub = ml_kem_768::EncapsulationKey::from_bytes(&mlkem_arr);
-        out.push(RecipientV3 {
-            x25519_pub,
-            mlkem_pub,
-        });
+        out.push((
+            member.clone(),
+            RecipientV3 {
+                x25519_pub,
+                mlkem_pub,
+            },
+        ));
     }
     Ok(out)
 }
