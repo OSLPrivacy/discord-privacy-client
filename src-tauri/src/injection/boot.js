@@ -3910,26 +3910,45 @@
      * section, a rendered message element. Defensive: never throws;
      * returns the raw channel object or `null`.
      */
+    /** The open channel's id from Discord's URL routing contract:
+     *  `/channels/@me/<id>` (DM/GC) or `/channels/<guild>/<id>`
+     *  (server). This is stable across class re-hashes and fiber
+     *  re-shapes — it is what we bind every resolver to so a nearby
+     *  stale `memoizedProps.channel` (a DM list row, recents, a call
+     *  tile) can never be mistaken for the open channel (the GC→DM
+     *  misclassification that made GCs send as v=4 single-peer). */
+    function oslSelectedChannelIdFromUrl() {
+        try {
+            var m = /^\/channels\/(?:@me|\d{15,21})\/(\d{15,21})/.exec(
+                location.pathname || ""
+            );
+            return m ? m[1] : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function oslResolveChannelViaFiber() {
+        const want = oslSelectedChannelIdFromUrl();
         const anchors = [];
+        try {
+            anchors.push(oslAnchorResolve("composer"));
+        } catch (_) {}
         try {
             anchors.push(document.querySelector('[role="textbox"]'));
         } catch (_) {}
         try {
-            anchors.push(
-                document.querySelector(
-                    'section[class*="title_"][class*="container__"]'
-                ) ||
-                    document.querySelector(
-                        'section[class*="title_"][class*="container_"]'
-                    )
-            );
+            anchors.push(oslAnchorResolve("channelHeader"));
         } catch (_) {}
         try {
             anchors.push(
                 document.querySelector('[id^="message-content-"]')
             );
         } catch (_) {}
+        // Best id-matched channel found; only used as a fallback when
+        // the URL id is unknown (e.g. odd route) so we never regress
+        // to "no channel" — but an id match always wins immediately.
+        let loose = null;
         for (let i = 0; i < anchors.length; i++) {
             const el = anchors[i];
             if (!el) continue;
@@ -3953,7 +3972,14 @@
                         typeof p.channel.id === "string" &&
                         typeof p.channel.type === "number"
                     ) {
-                        return p.channel;
+                        if (want == null) {
+                            if (!loose) loose = p.channel;
+                        } else if (p.channel.id === want) {
+                            // Bound to the open channel — authoritative.
+                            return p.channel;
+                        }
+                        // id mismatch → a nearby/stale channel prop;
+                        // keep walking instead of mis-resolving.
                     }
                 } catch (_) {
                     // keep walking
@@ -3961,7 +3987,7 @@
                 f = f.return;
             }
         }
-        return null;
+        return want == null ? loose : null;
     }
 
     /** Private: FALLBACK (b) — Discord's webpack ChannelStore /
@@ -4120,10 +4146,29 @@
             selfId = null;
         }
 
-        let facts =
-            oslChannelFacts(oslResolveChannelViaFiber(), "fiber") ||
-            oslChannelFacts(oslResolveChannelViaStore(), "store") ||
-            oslChannelFacts(oslResolveChannelViaDom(), "dom");
+        // Prefer whichever resolver yields the channel whose id ==
+        // the URL's open-channel id (Discord's stable routing
+        // contract). Only if none match (odd route / URL parse miss)
+        // do we fall back to first-non-null, preserving the old
+        // lifecycle contract without ever mis-resolving a GC as a DM.
+        const want = oslSelectedChannelIdFromUrl();
+        const candidates = [
+            oslChannelFacts(oslResolveChannelViaFiber(), "fiber"),
+            oslChannelFacts(oslResolveChannelViaStore(), "store"),
+            oslChannelFacts(oslResolveChannelViaDom(), "dom"),
+        ];
+        let facts = null;
+        if (want != null) {
+            for (let ci = 0; ci < candidates.length; ci++) {
+                if (candidates[ci] && candidates[ci].channelId === want) {
+                    facts = candidates[ci];
+                    break;
+                }
+            }
+        }
+        if (!facts) {
+            facts = candidates[0] || candidates[1] || candidates[2];
+        }
 
         if (!facts) {
             oslCurrentChannelContext._dbg = {
