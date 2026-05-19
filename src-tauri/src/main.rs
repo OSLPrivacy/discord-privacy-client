@@ -1736,140 +1736,11 @@ async fn osl_tour_reset(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-#[tauri::command]
-async fn osl_vpn_warning_dismiss_forever(app: tauri::AppHandle) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        let dir = keystore::osl_config_dir().ok();
-        ipc::commands::cmd_osl_vpn_warning_dismiss_forever(state.inner(), dir)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-#[tauri::command]
-async fn osl_vpn_warning_reset(app: tauri::AppHandle) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        let dir = keystore::osl_config_dir().ok();
-        ipc::commands::cmd_osl_vpn_warning_reset(state.inner(), dir)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-/// Phase 9-D: one-shot VPN/proxy check.
-///
-/// Compares the system locale country (resolved via `sys-locale`)
-/// against the country reported by an IP geolocation lookup at
-/// `https://ipapi.co/json/`. If both resolve and differ, return
-/// `ok = false` — the boot.js banner uses that signal to surface
-/// "VPN active" to the user. Any other outcome (network failure,
-/// missing locale, unparseable response) returns `ok = true` with
-/// a diagnostic `error` field — the banner never false-positives on
-/// offline users.
-///
-/// Outbound host is hard-allowlisted here (consistent with
-/// `osl_fetch_attachment_bytes` at L584). 5s timeout. Single-shot —
-/// no caching, no retries; boot.js fires this once per launch.
-#[tauri::command]
-async fn osl_check_vpn() -> Result<ipc::commands::VpnCheckResult, String> {
-    const VPN_PROVIDER_URL: &str = "https://ipapi.co/json/";
-    const VPN_PROVIDER_NAME: &str = "ipapi.co";
-
-    let system_country = sys_locale::get_locale()
-        .and_then(|loc| extract_country_from_locale(&loc))
-        .map(|c| c.to_uppercase());
-
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return Ok(ipc::commands::VpnCheckResult {
-                ok: true,
-                system_country,
-                ip_country: None,
-                provider: Some(VPN_PROVIDER_NAME.to_string()),
-                error: Some(format!("client build: {e}")),
-            });
-        }
-    };
-
-    let resp = match client.get(VPN_PROVIDER_URL).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(ipc::commands::VpnCheckResult {
-                ok: true,
-                system_country,
-                ip_country: None,
-                provider: Some(VPN_PROVIDER_NAME.to_string()),
-                error: Some(format!("network failure: {e}")),
-            });
-        }
-    };
-    if !resp.status().is_success() {
-        return Ok(ipc::commands::VpnCheckResult {
-            ok: true,
-            system_country,
-            ip_country: None,
-            provider: Some(VPN_PROVIDER_NAME.to_string()),
-            error: Some(format!("HTTP {}", resp.status())),
-        });
-    }
-    let body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            return Ok(ipc::commands::VpnCheckResult {
-                ok: true,
-                system_country,
-                ip_country: None,
-                provider: Some(VPN_PROVIDER_NAME.to_string()),
-                error: Some(format!("parse failure: {e}")),
-            });
-        }
-    };
-    let ip_country = body
-        .get("country_code")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_uppercase());
-
-    let ok = match (&system_country, &ip_country) {
-        (Some(s), Some(i)) => s == i,
-        // Either side missing → silent skip. Banner stays quiet.
-        _ => true,
-    };
-
-    Ok(ipc::commands::VpnCheckResult {
-        ok,
-        system_country,
-        ip_country,
-        provider: Some(VPN_PROVIDER_NAME.to_string()),
-        error: None,
-    })
-}
-
-/// Phase 9-D: pull the 2-letter ISO country code out of a locale
-/// string. `sys_locale::get_locale` returns BCP-47-ish values like
-/// `"en-US"`, `"en_US.UTF-8"`, or just `"en"`. We accept both `-`
-/// and `_` separators, strip any trailing `.encoding`, and require
-/// the region segment to be exactly two ASCII letters before
-/// returning it.
-fn extract_country_from_locale(locale: &str) -> Option<String> {
-    let after_sep = locale
-        .split(|c: char| c == '-' || c == '_')
-        .nth(1)?
-        .split('.')
-        .next()?;
-    if after_sep.len() == 2 && after_sep.chars().all(|c| c.is_ascii_alphabetic()) {
-        Some(after_sep.to_string())
-    } else {
-        None
-    }
-}
+// W4: osl_vpn_warning_dismiss_forever / osl_vpn_warning_reset /
+// osl_check_vpn and the extract_country_from_locale helper were
+// removed with the VPN feature. The check leaked the user IP to
+// ipapi.co every launch and the locale-vs-geo heuristic never
+// warned correctly; see project memory for the decision.
 
 /// Phase 7d-C: open the trusted local settings window.
 ///
@@ -1956,6 +1827,17 @@ async fn osl_open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
                         "OSL settings: set_enabled(true) on main window failed; \
                          Discord may remain non-interactive — relaunch the app"
                     );
+                }
+                // W6: closing an owned + always-on-top child while the
+                // owner was EnableWindow(FALSE)'d makes Windows drop
+                // the owner (it minimizes / falls behind) unless focus
+                // is explicitly restored. Re-raise the Discord window
+                // so closing settings just closes settings.
+                if let Err(e) = main.unminimize() {
+                    tracing::debug!(?e, "OSL settings: unminimize(main) on close");
+                }
+                if let Err(e) = main.set_focus() {
+                    tracing::debug!(?e, "OSL settings: set_focus(main) on close");
                 }
             }
             if let Err(e) = app_for_close.emit("osl:settings_window_closed", ()) {
@@ -2713,9 +2595,6 @@ fn main() {
             osl_tour_complete,
             osl_tour_skip,
             osl_tour_reset,
-            osl_vpn_warning_dismiss_forever,
-            osl_vpn_warning_reset,
-            osl_check_vpn,
             osl_take_last_persist_error,
             // REGISTER-FIX: TOFU + registration-conflict surface.
             osl_take_registration_alert,

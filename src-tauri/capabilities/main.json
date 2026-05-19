@@ -56,8 +56,6 @@
     "allow-osl-tour-complete",
     "allow-osl-tour-skip",
     "allow-osl-set-main-password",
-    "allow-osl-check-vpn",
-    "allow-osl-vpn-warning-dismiss-forever",
     "allow-osl-take-last-persist-error",
     "allow-osl-take-registration-alert",
     "allow-osl-list-key-change-alerts",

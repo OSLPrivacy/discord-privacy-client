@@ -6200,19 +6200,25 @@
     // Phase 9-B4: Global keybinds.
     //
     //   Ctrl+Shift+O           → open settings window
-    //   E (bare letter)        → flip the composer encrypt pill
-    //   B (bare letter)        → burn the current scope (confirms)
+    //   Ctrl+Alt+E             → flip the composer encrypt pill
+    //   Ctrl+Alt+B             → burn the current scope (confirms)
     //   Ctrl+Shift+Backspace   → account-burn chord (arm/execute,
     //                            reuses oslAccountBurnOnActivate)
     //
-    // Dispatch gates (in this order; any tripping gate exits):
-    //   a. focused INPUT / TEXTAREA element → typing, not a keybind
-    //   b. focused contenteditable (composer, edit overlay, search) → same
-    //   c. an OSL modal is up (any element with [data-osl-modal='1']) →
-    //      don't compete with the modal's own input handling
+    // W5: encrypt/burn are Ctrl+Alt chords (was bare E/B, which
+    // required a fragile text-entry bypass and fired mid-typing).
+    // All OSL keybinds are now modifier chords: none collide with
+    // Discord's editor (Ctrl+B bold / Ctrl+E) and all are safe to
+    // fire even while the composer is focused, so the text-entry
+    // gate no longer guards any OSL accelerator.
     //
-    // The bare-letter check is case-insensitive: pressing capslock-E
-    // is the same as e.
+    // Dispatch gates (in this order; any tripping gate exits):
+    //   a. an OSL modal is up (any element with [data-osl-modal='1']) →
+    //      don't compete with the modal's own input handling
+    //   b. the text-entry gate (focused INPUT / TEXTAREA /
+    //      contenteditable) now only affects future bare-key binds, if
+    //      any are ever re-added; the chord binds run before it.
+    // Key matching is case-insensitive (capslock-E == e).
     // ============================================================
 
     function oslKeybindActiveIsTextEntry() {
@@ -6298,14 +6304,18 @@
 
         const k = event.key;
         const kLower = typeof k === "string" ? k.toLowerCase() : "";
-        const noMods = !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey;
         const ctrlShift = event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey;
-        // Text-entry gate applies only to BARE-letter keybinds (e/b).
-        // Modifier-chord keybinds (Ctrl+Shift+O, Ctrl+Shift+Backspace)
-        // are intentional accelerators that should fire even while
-        // the composer is focused — that's the whole point of the
-        // chord, and Discord's text fields don't claim Ctrl+Shift+O
-        // or Ctrl+Shift+Backspace for anything.
+        // W5: encrypt/burn moved off bare E/B (which fired mid-typing
+        // via the text-entry bypass) to Ctrl+Alt+E / Ctrl+Alt+B —
+        // intentional chords that don't collide with Discord's Ctrl+B
+        // (bold) / Ctrl+E and are safe to fire even in the composer.
+        const ctrlAlt = event.ctrlKey && event.altKey && !event.shiftKey && !event.metaKey;
+        // W5: every OSL keybind is now a modifier chord (Ctrl+Shift+O,
+        // Ctrl+Alt+E, Ctrl+Alt+B, Ctrl+Shift+Backspace) — all
+        // intentional accelerators that fire even while the composer
+        // is focused, and none claimed by Discord's text fields. The
+        // text-entry gate is computed but no longer guards any active
+        // bind (kept for any future bare-key bind).
         const inTextEntry = oslKeybindActiveIsTextEntry();
 
         if (ctrlShift && kLower === "o") {
@@ -6318,17 +6328,19 @@
             oslKeybindAccountBurnChord();
             return;
         }
-        if (inTextEntry) return;
-        if (noMods && kLower === "e") {
+        // W5: Ctrl+Alt+E / Ctrl+Alt+B — chords, fire even in the
+        // composer (intentional accelerator), not gated by text entry.
+        if (ctrlAlt && kLower === "e") {
             event.preventDefault();
             oslKeybindEncryptToggle();
             return;
         }
-        if (noMods && kLower === "b") {
+        if (ctrlAlt && kLower === "b") {
             event.preventDefault();
             oslKeybindBurnScope();
             return;
         }
+        if (inTextEntry) return;
     }
 
     function oslInstallKeybinds() {
@@ -14832,47 +14844,9 @@
         }
     }
 
-    // ============================================================
-    // 9-D: VPN warning banner installer.
-    // ============================================================
-    async function oslInstallVpnWarning() {
-        // 5s settle delay — give Discord time to mount and avoid
-        // banner-during-loading-screen visual clash.
-        await new Promise(function (r) {
-            nativeSetTimeout(r, 5000);
-        });
-        const state = await oslInvoke("osl_tour_get_state", {});
-        if (!state.ok) return;
-        if (state.value && state.value.vpn_warning_dismissed_forever) {
-            return;
-        }
-        const result = await oslInvoke("osl_check_vpn", {});
-        if (!result.ok) {
-            console.warn("[OSL] VPN check failed:", result.error);
-            return;
-        }
-        const v = result.value;
-        if (!v || v.ok) {
-            return;
-        }
-        const sys = v.system_country || "?";
-        const ip = v.ip_country || "?";
-        oslBanner({
-            message:
-                "VPN not active — your IP is visible.\n" +
-                "System region: " + sys + "  IP region: " + ip,
-            actions: [
-                { label: "Dismiss" },
-                {
-                    label: "Don't show again",
-                    secondary: true,
-                    onClick: function () {
-                        oslInvoke("osl_vpn_warning_dismiss_forever", {});
-                    },
-                },
-            ],
-        });
-    }
+    // W4: oslInstallVpnWarning removed with the VPN feature (broken
+    // heuristic + per-launch IP leak to ipapi.co). oslBanner stays —
+    // it's the generic banner used by the canary below.
 
     // ============================================================
     // 9-TD1.3: Discord-update canary.
@@ -15125,7 +15099,6 @@
         document.addEventListener("DOMContentLoaded", oslInstallKeybinds);
         document.addEventListener("DOMContentLoaded", oslInstallTour);
         document.addEventListener("DOMContentLoaded", oslTourWireCrossWindowReturn);
-        document.addEventListener("DOMContentLoaded", oslInstallVpnWarning);
         document.addEventListener("DOMContentLoaded", oslScheduleDomCanary);
     } else {
         recvInstallObserver();
@@ -15135,7 +15108,6 @@
         oslInstallKeybinds();
         oslInstallTour();
         oslTourWireCrossWindowReturn();
-        oslInstallVpnWarning();
         oslScheduleDomCanary();
     }
 })();

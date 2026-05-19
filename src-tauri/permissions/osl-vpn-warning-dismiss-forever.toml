@@ -1,9 +1,0 @@
-"$schema" = "../gen/schemas/desktop-schema.json"
-
-# Phase 9-D: persist the user's "Don't show again" choice on the
-# VPN-warning banner. Boot.js (banner origin) invokes this; the
-# banner lives in the discord.com main webview.
-[[permission]]
-identifier = "allow-osl-vpn-warning-dismiss-forever"
-description = "Permits invoking `osl_vpn_warning_dismiss_forever`. Sets vpn_warning_dismissed_forever=true so the banner stops auto-firing on launch."
-commands.allow = ["osl_vpn_warning_dismiss_forever"]

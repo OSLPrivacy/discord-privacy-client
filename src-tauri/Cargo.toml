@@ -50,11 +50,6 @@ thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 base64 = "0.22"
 
-# Phase 9-D: system-locale lookup for VPN-warning country comparison.
-# Tiny crate, pure Rust, cross-platform (Windows GetUserDefaultLocaleName +
-# Mac CFLocale + Linux LC_* env). Used only inside `osl_check_vpn`.
-sys-locale = "0.3"
-
 # Local crates
 crypto = { path = "../crates/crypto" }
 stego = { path = "../crates/stego" }

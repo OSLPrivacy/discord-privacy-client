@@ -14,9 +14,9 @@
 //! that still carry those fields load fine — serde silently drops
 //! unknown JSON keys.
 //!
-//! 9-D added `tour` (onboarding tour resume/complete state) and
-//! `vpn_warning_dismissed_forever` (per-launch banner suppression).
-//! Both fields are additive — legacy v1 files load with serde defaults.
+//! 9-D added `tour` (onboarding tour resume/complete state). The
+//! W4 removal dropped the old `vpn_warning_dismissed_forever` field;
+//! legacy files carrying it still load (unknown keys are ignored).
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -82,8 +82,6 @@ pub struct AppPreferences {
     pub stego_mode: StegoMode,
     #[serde(default)]
     pub tour: TourState,
-    #[serde(default)]
-    pub vpn_warning_dismissed_forever: bool,
     #[serde(default)]
     pub update_channel: UpdateChannel,
 }

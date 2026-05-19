@@ -2496,57 +2496,10 @@ function renderAbout() {
   });
   pane.appendChild(replayBtn);
 
-  // 9-D: Privacy — VPN warning toggle.
-  const privacyH = document.createElement("h2");
-  privacyH.className = "osl-h2";
-  privacyH.style.marginTop = "24px";
-  privacyH.textContent = "Privacy";
-  pane.appendChild(privacyH);
-
-  const vpnRow = document.createElement("div");
-  vpnRow.className = "osl-field";
-  vpnRow.style.alignItems = "center";
-  const vpnLab = document.createElement("div");
-  vpnLab.className = "osl-field-label";
-  vpnLab.textContent = "Show VPN warning on launch";
-  const vpnVal = document.createElement("div");
-  vpnVal.className = "osl-field-value";
-  const vpnToggle = document.createElement("button");
-  vpnToggle.className = "osl-row-btn";
-  vpnToggle.textContent = "Loading…";
-  vpnToggle.disabled = true;
-  vpnVal.appendChild(vpnToggle);
-  vpnRow.appendChild(vpnLab);
-  vpnRow.appendChild(vpnVal);
-  pane.appendChild(vpnRow);
-
-  // Load current state then wire the toggle.
-  (async () => {
-    const state = await oslInvoke("osl_tour_get_state", {});
-    if (!state.ok || !state.value) {
-      vpnToggle.textContent = "Unavailable";
-      return;
-    }
-    let enabled = !state.value.vpn_warning_dismissed_forever;
-    function paint() {
-      vpnToggle.textContent = enabled ? "Enabled" : "Disabled";
-      vpnToggle.disabled = false;
-    }
-    paint();
-    vpnToggle.addEventListener("click", async () => {
-      vpnToggle.disabled = true;
-      const next = !enabled;
-      const cmd = next ? "osl_vpn_warning_reset" : "osl_vpn_warning_dismiss_forever";
-      const r = await oslInvoke(cmd, {});
-      if (!r.ok) {
-        oslToast("Toggle failed: " + r.error);
-        vpnToggle.disabled = false;
-        return;
-      }
-      enabled = next;
-      paint();
-    });
-  })();
+  // W4: the Privacy "Show VPN warning on launch" row was removed
+  // with the VPN feature (the toggle was permanently stuck "Enabled"
+  // because the never-firing warning meant it was never dismissed;
+  // and the underlying check leaked the IP to ipapi.co every launch).
 }
 
 // ============================================================

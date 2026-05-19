@@ -7558,29 +7558,15 @@ pub fn cmd_osl_set_update_channel(
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
-/// DTO mirroring [`crate::app_preferences::TourState`] plus the
-/// VPN-warning suppression flag. One round-trip lets boot.js +
-/// settings query everything they need from app_preferences.
+/// DTO mirroring [`crate::app_preferences::TourState`]. One
+/// round-trip lets boot.js + settings query the onboarding state.
+/// W4 removed the VPN-warning suppression flag that used to ride
+/// here alongside the tour fields.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TourStateDto {
     pub completed: bool,
     pub skipped: bool,
     pub last_slide: u8,
-    pub vpn_warning_dismissed_forever: bool,
-}
-
-/// Result of [`cmd_osl_check_vpn`]. `ok = false` means the system
-/// locale country differs from the IP geolocation country — likely
-/// a VPN or geo-proxy. Network failures return `ok = true` with
-/// `error = Some(...)` so the banner never false-positives on
-/// offline users.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct VpnCheckResult {
-    pub ok: bool,
-    pub system_country: Option<String>,
-    pub ip_country: Option<String>,
-    pub provider: Option<String>,
-    pub error: Option<String>,
 }
 
 pub fn cmd_osl_tour_get_state(state: &AppState) -> Result<TourStateDto, String> {
@@ -7592,7 +7578,6 @@ pub fn cmd_osl_tour_get_state(state: &AppState) -> Result<TourStateDto, String> 
         completed: g.tour.completed,
         skipped: g.tour.skipped,
         last_slide: g.tour.last_slide,
-        vpn_warning_dismissed_forever: g.vpn_warning_dismissed_forever,
     })
 }
 
@@ -7678,37 +7663,10 @@ pub fn cmd_osl_tour_reset(
     Ok(())
 }
 
-pub fn cmd_osl_vpn_warning_dismiss_forever(
-    state: &AppState,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<(), String> {
-    {
-        let mut g = state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned");
-        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        g.vpn_warning_dismissed_forever = true;
-    }
-    persist_app_preferences_now(state, config_dir);
-    Ok(())
-}
-
-pub fn cmd_osl_vpn_warning_reset(
-    state: &AppState,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<(), String> {
-    {
-        let mut g = state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned");
-        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        g.vpn_warning_dismissed_forever = false;
-    }
-    persist_app_preferences_now(state, config_dir);
-    Ok(())
-}
+// W4: cmd_osl_vpn_warning_dismiss_forever / cmd_osl_vpn_warning_reset
+// removed with the rest of the VPN feature (broken heuristic +
+// IP-leaking external call; see project memory). The Tauri wrappers,
+// boot.js installer, settings row, and ACL entries went too.
 
 pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto>, String> {
     let g = state
