@@ -164,7 +164,25 @@ pub fn should_encrypt_to(
                 }
             }
         }
-        ScopeKind::Dm | ScopeKind::Gc => {}
+        ScopeKind::Gc => {
+            // GC follow-up: a "GC header" whitelist is the same
+            // scope-flag model as a server channel — `channel_whitelisted`
+            // on the `gc:<id>` ScopeState means "encrypt to every OSL
+            // member of this GC, current + future". Membership is fed
+            // dynamically (group-DM ingest), so newly-joined OSL members
+            // are picked up automatically. Per-peer explicit Gc entries
+            // are still honored by clause 2 above, so legacy GC
+            // whitelists keep working unchanged.
+            let gc_header_on = ctx
+                .whitelist_state
+                .get(&scope.storage_key())
+                .map(|s| s.channel_whitelisted)
+                .unwrap_or(false);
+            if gc_header_on && ctx.membership.is_gc_member(&scope.id, recipient_discord_id) {
+                return true;
+            }
+        }
+        ScopeKind::Dm => {}
     }
     // 4. DM bleed — broadened DM peer reads any NON-DM scope they are
     //    actually a member of (decision #2: member-gated).
@@ -310,8 +328,42 @@ pub fn recipients_for_scope_v3(
     } else {
         Vec::new()
     };
+    // GC follow-up: when the GC-header flag is on, the GC is
+    // roster-independent like a server channel — dynamically include
+    // every observed OSL member (so new joiners are picked up) ∪
+    // legacy explicit / broadened peers. When the flag is OFF, GC
+    // behavior is byte-for-byte unchanged (the caller-supplied
+    // `channel_members` walk), so legacy per-peer GC whitelists are
+    // unaffected.
+    let gc_dynamic_members: Vec<String> = if scope.kind == ScopeKind::Gc
+        && ctx
+            .whitelist_state
+            .get(&scope.storage_key())
+            .map(|s| s.channel_whitelisted)
+            .unwrap_or(false)
+    {
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for did in ctx.membership.members_for_key(&crate::membership::gc_key(&scope.id)) {
+            set.insert(did);
+        }
+        for (did, entry) in peer_map.iter() {
+            if did.as_str() == self_discord_id || entry.is_self == Some(true) {
+                continue;
+            }
+            if has_explicit_whitelist_entry(peer_map, scope, did)
+                || has_broadened_dm_access(peer_map, did)
+            {
+                set.insert(did.clone());
+            }
+        }
+        set.into_iter().collect()
+    } else {
+        Vec::new()
+    };
     let members: &[String] = if scope.kind == ScopeKind::ServerChannel {
         &server_channel_members
+    } else if scope.kind == ScopeKind::Gc && !gc_dynamic_members.is_empty() {
+        &gc_dynamic_members
     } else {
         channel_members
     };
@@ -794,6 +846,120 @@ mod should_encrypt_to_tests {
             &p,
             &ctx(&b),
             &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
+    // ---- GC follow-up: scope-flag + dynamic membership for GCs ----
+
+    const GCID: &str = "900000000000000077";
+
+    /// GC ctx: optional gc-header flag + GC members.
+    struct GcBuilt {
+        ws: WhitelistState,
+        sd: HashMap<String, ServerDefaults>,
+        mem: ScopeMembership,
+    }
+    fn gc_build(flag: bool, gc_members: &[&str]) -> GcBuilt {
+        let mut ws = WhitelistState::new();
+        if flag {
+            ws.insert(
+                Scope::gc(GCID).storage_key(),
+                ScopeState {
+                    channel_whitelisted: true,
+                    ..ScopeState::default()
+                },
+            );
+        }
+        let mut mem = ScopeMembership::new();
+        for m in gc_members {
+            mem.note_gc_member(GCID, m);
+        }
+        GcBuilt {
+            ws,
+            sd: HashMap::new(),
+            mem,
+        }
+    }
+    fn gc_ctx(b: &GcBuilt) -> ScopeAuthCtx<'_> {
+        ScopeAuthCtx {
+            whitelist_state: &b.ws,
+            server_defaults: &b.sd,
+            membership: &b.mem,
+        }
+    }
+
+    #[test]
+    fn gc_header_on_member_granted() {
+        let p = pm(peer(vec![], vec![]));
+        let b = gc_build(true, &[PEER]);
+        assert!(should_encrypt_to(
+            &p,
+            &gc_ctx(&b),
+            &Scope::gc(GCID),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn gc_header_on_non_member_denied() {
+        let p = pm(peer(vec![], vec![]));
+        let b = gc_build(true, &[]); // PEER never observed in the GC
+        assert!(!should_encrypt_to(
+            &p,
+            &gc_ctx(&b),
+            &Scope::gc(GCID),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn gc_header_off_no_explicit_denied() {
+        // Flag off, no per-peer entry → deny (legacy behavior).
+        let p = pm(peer(vec![], vec![]));
+        let b = gc_build(false, &[PEER]);
+        assert!(!should_encrypt_to(
+            &p,
+            &gc_ctx(&b),
+            &Scope::gc(GCID),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn gc_legacy_explicit_entry_still_works_without_flag() {
+        // Clause 2 (per-peer explicit Gc entry) is preserved — legacy
+        // GC whitelists keep working with the flag OFF.
+        let p = pm(peer(
+            vec![WhitelistEntry::Gc {
+                id: GCID.to_string(),
+                user_specific: false,
+            }],
+            vec![],
+        ));
+        let b = gc_build(false, &[]);
+        assert!(should_encrypt_to(
+            &p,
+            &gc_ctx(&b),
+            &Scope::gc(GCID),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn gc_burn_overrides_header_flag() {
+        let p = pm(peer(
+            vec![],
+            vec![BurnedScope::Gc {
+                id: GCID.to_string(),
+                burned_at: "x".into(),
+            }],
+        ));
+        let b = gc_build(true, &[PEER]);
+        assert!(!should_encrypt_to(
+            &p,
+            &gc_ctx(&b),
+            &Scope::gc(GCID),
             PEER
         ));
     }

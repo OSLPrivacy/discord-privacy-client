@@ -7240,10 +7240,11 @@ pub fn cmd_osl_set_server_header_whitelist(
     Ok(())
 }
 
-/// W2: the per-channel sidebar whitelist button. ON also flips this
-/// channel's `encrypt_toggle` so messages actually encrypt (decision
-/// #2). OFF clears only the whitelist flag. `scope_input` must be a
-/// `server_channel` scope.
+/// W2 + GC follow-up: the per-channel sidebar / GC-header whitelist
+/// button. Sets `ScopeState.channel_whitelisted` for a `server_channel`
+/// OR a `gc` scope (both use the same scope-flag + dynamic-membership
+/// model). ON also flips `encrypt_toggle` so messages actually
+/// encrypt (decision #2). OFF clears only the whitelist flag.
 pub fn cmd_osl_set_channel_whitelist(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
@@ -7252,8 +7253,13 @@ pub fn cmd_osl_set_channel_whitelist(
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    if scope.kind != crate::scope::ScopeKind::ServerChannel {
-        return Err("OSL: set_channel_whitelist requires a server_channel scope".to_string());
+    if !matches!(
+        scope.kind,
+        crate::scope::ScopeKind::ServerChannel | crate::scope::ScopeKind::Gc
+    ) {
+        return Err(
+            "OSL: set_channel_whitelist requires a server_channel or gc scope".to_string(),
+        );
     }
     {
         let mut ws = state

@@ -5743,6 +5743,54 @@
             return;
         }
 
+        // GC follow-up: GCs use the same scope-flag + dynamic-
+        // membership model as server channels (the GC header
+        // whitelists all OSL members, current + future). Reuse the
+        // server-state command with an empty serverId so server_header
+        // is false and `channel` carries the gc:<id> flag. Legacy
+        // per-peer GC whitelists still decrypt (handled in Rust); this
+        // only changes what the header button controls. DM still falls
+        // through to the unchanged summary path below.
+        if (scopeInput.kind === "gc") {
+            const gw = await oslInvoke("osl_get_server_whitelist_state", {
+                serverId: "",
+                channelScopeInput: scopeInput,
+            });
+            if (!gw.ok) {
+                encryptBtn.innerHTML = oslLockSvg("unknown");
+                encryptBtn.style.color = "var(--text-muted, #87898c)";
+                encryptBtn.setAttribute(
+                    "aria-label",
+                    "OSL whitelist: unknown (gc state fetch failed)"
+                );
+                encryptBtn.title =
+                    "GC whitelist state unknown: " + (gw.error || "?");
+                oslHeaderStateLastScopeKey = null;
+                return;
+            }
+            const on = !!(gw.value && gw.value.channel);
+            encryptBtn.innerHTML = oslLockSvg(on ? "closed" : "open");
+            encryptBtn.setAttribute(
+                "aria-label",
+                "OSL GC whitelist: " + (on ? "on" : "off")
+            );
+            encryptBtn.style.opacity = "1";
+            encryptBtn.style.pointerEvents = "auto";
+            encryptBtn.style.color = on
+                ? "var(--status-positive, #23a559)"
+                : "var(--text-muted, #87898c)";
+            encryptBtn.title = on
+                ? "GC whitelist ON — encrypting to every OSL member of " +
+                  "this group chat (current + future). Click to turn OFF."
+                : "Not whitelisted. Click to whitelist this group chat " +
+                  "(all OSL members, current + future).";
+            if (burnBtn) {
+                burnBtn.title =
+                    "Burn your messages in " + oslScopeLabel(scopeInput);
+            }
+            return;
+        }
+
         const selfId = await oslSelfDiscordId();
         const members = oslHeaderChannelMembers(ctx);
         const result = await oslInvoke("osl_get_scope_whitelist_summary", {
@@ -5952,6 +6000,43 @@
                     ? "Server-wide whitelist ON — encrypting to all OSL " +
                           "members of this server."
                     : "Server-wide whitelist OFF."
+            );
+            try {
+                await oslRefreshHeaderState({ force: true });
+            } catch (_) {}
+            return;
+        }
+
+        // GC follow-up: the GC header toggles the GC-wide whitelist
+        // flag (all OSL members, current + future) — same scope-flag
+        // model as a server channel. osl_set_channel_whitelist now
+        // accepts a gc scope and flips encrypt_toggle when ON.
+        // Returns before the legacy per-peer GC roster flow (kept for
+        // DM); legacy per-peer GC whitelists still decrypt in Rust.
+        if (scopeInput.kind === "gc") {
+            const cur = await oslInvoke("osl_get_server_whitelist_state", {
+                serverId: "",
+                channelScopeInput: scopeInput,
+            });
+            if (!cur.ok) {
+                oslToast("OSL: " + cur.error);
+                return;
+            }
+            const wasOn = !!(cur.value && cur.value.channel);
+            const next = !wasOn;
+            const setRes = await oslInvoke("osl_set_channel_whitelist", {
+                scopeInput: scopeInput,
+                on: next,
+            });
+            if (!setRes.ok) {
+                oslToast("OSL: " + setRes.error);
+                return;
+            }
+            oslToast(
+                next
+                    ? "GC whitelist ON — encrypting to all OSL members of " +
+                          "this group chat."
+                    : "GC whitelist OFF."
             );
             try {
                 await oslRefreshHeaderState({ force: true });
