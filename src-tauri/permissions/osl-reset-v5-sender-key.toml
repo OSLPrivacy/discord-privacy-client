@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# SKDM-fix (3/3): operator-driven v=5 sender-key + paired v=4 ratchet reset.
+[[permission]]
+identifier = "allow-osl-reset-v5-sender-key"
+description = "Permits invoking `osl_reset_v5_sender_key` (drop a scope's v=5 sender-key chain + the paired v=4 ratchet for its non-self peers so the next v=5 send re-emits a fresh SKDM; remedy for a scope poisoned by the pre-fix discarded-SKDM bug)."
+commands.allow = ["osl_reset_v5_sender_key"]

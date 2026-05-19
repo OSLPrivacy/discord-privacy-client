@@ -63,6 +63,7 @@
     "allow-osl-list-key-change-alerts",
     "allow-osl-accept-key-change",
     "allow-osl-reset-v4-session",
+    "allow-osl-reset-v5-sender-key",
     "allow-osl-decline-key-change",
     "allow-osl-test-deep-link",
     "allow-osl-get-license-state",

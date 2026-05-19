@@ -196,6 +196,96 @@ pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<
     Ok(())
 }
 
+/// SKDM-fix (3/3): operator/programmatic reset of the v=5 sender-key
+/// state for ONE scope, PLUS the paired v=4 Double Ratchet for that
+/// scope's non-self peers. Clearing only one desyncs the ratchet:
+/// `send_skdm_via_v4` advances the per-peer DR every time it builds
+/// an SKDM, so a scope whose sender-key state is dropped but whose
+/// peer ratchets are not would re-emit an SKDM on an already-advanced
+/// ratchet the receiver has never seen — still undecryptable.
+///
+/// This is the remedy for a scope poisoned by the pre-fix bug
+/// (sender persisted sender-key state while the SKDM wire was
+/// discarded, so `needs_install` stays false forever and no SKDM is
+/// ever re-emitted). After this, the next v=5 send in `scope`
+/// re-enters `needs_install == true` → emits a fresh SKDM (now
+/// actually posted to Discord by boot.js, commit 2/3),
+/// re-bootstrapping each peer's DR (`new_initiator` ↔ peer
+/// `new_responder`).
+///
+/// Peer set = every non-self peer the scope can encrypt to
+/// (`can_encrypt_to`) — exactly whom `send_skdm_via_v4` targets.
+/// NOTE: a peer's `ratchet_state` is shared with that peer's v=4 DM
+/// session, so resetting it here also re-handshakes the DM (same
+/// collateral as `cmd_osl_reset_v4_session`; acceptable for an
+/// operator recovery tool). Console-invokable:
+///   window.__TAURI__.core.invoke("osl_reset_v5_sender_key",
+///     { scopeInput: { kind: "gc", id: "<gc channel id>" } })
+pub fn cmd_osl_reset_v5_sender_key(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<(), String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_key = scope.storage_key();
+
+    // 1. Drop the v=5 sender-key chain for this scope. Lock is
+    //    released before persist (persist_sender_key_state_now
+    //    re-locks; std Mutex is non-reentrant).
+    let v5_cleared = {
+        let mut g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        g.states.remove(&scope_key).is_some()
+    };
+    if v5_cleared {
+        persist_sender_key_state_now(state);
+    }
+
+    // 2. Reset the PAIRED v=4 ratchet for every non-self peer the
+    //    scope can encrypt to. Two-phase under one guard: collect
+    //    targets (ends the shared can_encrypt_to borrow) THEN
+    //    get_mut. Lock released before persist_peer_map_now.
+    let mut peers_reset: Vec<String> = Vec::new();
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let targets: Vec<String> = pm
+            .iter()
+            .filter(|(did, entry)| {
+                entry.is_self != Some(true)
+                    && crate::whitelist::can_encrypt_to(
+                        &pm,
+                        &scope,
+                        did.as_str(),
+                    )
+            })
+            .map(|(did, _)| did.clone())
+            .collect();
+        for did in targets {
+            if let Some(entry) = pm.get_mut(&did) {
+                if entry.ratchet_state.is_some() {
+                    entry.ratchet_state = None;
+                    peers_reset.push(did);
+                }
+            }
+        }
+    }
+    if !peers_reset.is_empty() {
+        persist_peer_map_now(state);
+    }
+
+    tracing::warn!(
+        scope = %scope_key,
+        v5_cleared = v5_cleared,
+        peers_reset = peers_reset.len(),
+        "OSL: v=5 sender-key reset (operator) — dropped sender-key \
+         state + paired v=4 ratchet; next v=5 send re-emits SKDM"
+    );
+    Ok(())
+}
+
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
 /// repair the peer_map self-entry to match. Called from boot.js
 /// the first time the runtime exposes the local user's snowflake.

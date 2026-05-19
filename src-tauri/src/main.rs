@@ -1527,6 +1527,24 @@ async fn osl_reset_v4_session(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// SKDM-fix (3/3): operator-driven v=5 sender-key reset for a scope.
+/// Drops the scope's sender-key chain AND the paired v=4 ratchet for
+/// its non-self peers so the next v=5 send re-emits a fresh SKDM.
+/// Remedy for a scope poisoned by the pre-fix discarded-SKDM bug.
+#[tauri::command]
+async fn osl_reset_v5_sender_key(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_reset_v5_sender_key(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Safety number for a peer's current trusted Ed25519 baseline.
 #[tauri::command]
 async fn osl_peer_safety_number(
@@ -2596,6 +2614,7 @@ fn main() {
             osl_accept_key_change,
             osl_decline_key_change,
             osl_reset_v4_session,
+            osl_reset_v5_sender_key,
             osl_peer_safety_number,
             osl_self_safety_number,
             osl_open_settings_window,
