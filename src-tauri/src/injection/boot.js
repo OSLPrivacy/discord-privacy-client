@@ -10208,10 +10208,30 @@
                         OSL_ROSTER_CAPS
                     );
                     for (const cid of touched) {
-                        oslChannelMembersUpdate(
-                            cid,
-                            channelMemberCache.get(cid) || []
-                        );
+                        const ms = channelMemberCache.get(cid) || [];
+                        oslChannelMembersUpdate(cid, ms);
+                        // W1 fix: GUILD_CREATE.d.members is near-empty
+                        // (Discord lazy-loads the roster), so the
+                        // durable ScopeMembership store — which
+                        // server-header recipient resolution depends
+                        // on — was only ever seeded with self. The
+                        // REAL roster arrives here, via the lazy
+                        // CHUNK / LIST_UPDATE frames; durably accrue it
+                        // as a server_channel scope so a header
+                        // whitelist actually encrypts to the server's
+                        // OSL members (else: sender keys to {self} →
+                        // every other user gets "not a recipient").
+                        if (d && typeof d.guild_id === "string") {
+                            oslNoteScope(
+                                {
+                                    kind: "server_channel",
+                                    id: d.guild_id + ":" + cid,
+                                    server_id: d.guild_id,
+                                    channel_id: cid,
+                                },
+                                ms
+                            );
+                        }
                     }
                     break;
                 }
@@ -10581,11 +10601,38 @@
         };
     }
 
+    // Lock glyph for the per-channel button. OFF/"server" use
+    // `currentColor` so the icon inherits Discord's interactive color
+    // from the copied action-item class (i.e. exactly the same color
+    // as the adjacent "Create Invite" button, including its hover
+    // transition). ON is forced green so whitelist state is still
+    // visible at a glance.
+    function oslChanWlSvg(on) {
+        if (on) {
+            return (
+                '<svg width="16" height="16" viewBox="0 0 24 24" ' +
+                'fill="#23a559" aria-hidden="true">' +
+                '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
+                '<path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="#23a559" ' +
+                'stroke-width="2" fill="none" stroke-linecap="round"/>' +
+                "</svg>"
+            );
+        }
+        return (
+            '<svg width="16" height="16" viewBox="0 0 24 24" ' +
+            'fill="currentColor" aria-hidden="true">' +
+            '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
+            '<path d="M8 11V7a4 4 0 0 1 8 0" stroke="currentColor" ' +
+            'stroke-width="2" fill="none" stroke-linecap="round"/>' +
+            "</svg>"
+        );
+    }
+
     // state: "on" (channel whitelisted), "off", "server" (server-wide
     // whitelist on → per-channel overridden / inert).
     function oslChanWlPaint(btn, state) {
         const on = state === "on";
-        btn.innerHTML = oslC3LockSvg(on ? "closed" : "open");
+        btn.innerHTML = oslChanWlSvg(on);
         btn.setAttribute("data-osl-chanwl-state", state);
         if (state === "server") {
             btn.style.opacity = "0.4";
@@ -10660,6 +10707,53 @@
         }
     }
 
+    // Locate the channel-row "Create Invite" hover action and return
+    // the actions container plus the exact child to insert before so
+    // our button lands directly to its LEFT — and, crucially, OUTSIDE
+    // the channel <a> (the previous bug: a child of the <a> made every
+    // click hit Discord's SPA router and navigate instead of toggle).
+    function oslChanWlFindInvitePlacement(a) {
+        const row =
+            (a.closest && a.closest("li")) ||
+            (a.closest && a.closest('[class*="containerDefault"]')) ||
+            a.parentElement;
+        if (!row) return null;
+        let invite = null;
+        let labelled;
+        try {
+            labelled = row.querySelectorAll("[aria-label]");
+        } catch (_) {
+            return null;
+        }
+        for (const c of labelled) {
+            const lbl = (c.getAttribute("aria-label") || "").toLowerCase();
+            if (lbl.indexOf("invite") !== -1 && !a.contains(c)) {
+                invite = c;
+                break;
+            }
+        }
+        if (!invite) return null;
+        // Climb until parentElement is an ancestor of the <a>: that
+        // parent is the row's link wrapper and `node` is the actions
+        // container (the sibling branch that holds the hover icons).
+        let node = invite;
+        while (
+            node.parentElement &&
+            !node.parentElement.contains(a) &&
+            node.parentElement !== row
+        ) {
+            node = node.parentElement;
+        }
+        const container = node.parentElement;
+        if (!container || container.contains(a) === false) {
+            // Fallback: insert just before the invite control itself.
+            return { container: invite.parentElement, before: invite };
+        }
+        // `node` is the direct child of `container` that holds invite;
+        // place our button immediately before it (i.e. to its left).
+        return { container: container, before: node };
+    }
+
     function oslChanWlInject() {
         let links;
         try {
@@ -10670,30 +10764,53 @@
         for (const a of links) {
             const ids = oslChanWlParseHref(a.getAttribute("href") || "");
             if (!ids) continue;
-            // Row container: nearest list item, else the link itself.
-            const row =
-                (a.closest && a.closest('[class*="containerDefault_"]')) ||
-                (a.closest && a.closest("li")) ||
-                a.parentElement ||
-                a;
-            if (!row || row.querySelector("[" + OSL_CHANWL_ATTR + "='1']")) {
+            const place = oslChanWlFindInvitePlacement(a);
+            // No invite control (e.g. no permission / not a text row):
+            // skip rather than fall back into the <a> (the old bug).
+            if (!place || !place.container || !place.before) continue;
+            if (
+                place.container.querySelector(
+                    "[" + OSL_CHANWL_ATTR + "='1']"
+                )
+            ) {
                 continue;
             }
             const scopeInput = oslChanWlScope(ids);
-            const btn = document.createElement("span");
+            const btn = document.createElement("div");
             btn.setAttribute(OSL_CHANWL_ATTR, "1");
             btn.setAttribute("role", "button");
             btn.setAttribute("aria-label", "OSL channel whitelist");
-            btn.style.cssText =
-                "display:inline-flex;align-items:center;justify-content:center;" +
-                "width:16px;height:16px;margin-left:4px;flex:0 0 auto;" +
-                "cursor:pointer;vertical-align:middle;";
-            oslChanWlPaint(btn, "off");
-            btn.addEventListener("click", (ev) =>
-                oslChanWlOnClick(ev, scopeInput, btn)
-            );
+            // Mimic the invite action item exactly (sizing, layout,
+            // color, hover transition) by reusing its Discord class.
             try {
-                a.appendChild(btn);
+                if (place.before.className) {
+                    btn.className = place.before.className;
+                }
+            } catch (_) {}
+            btn.style.display = "flex";
+            btn.style.alignItems = "center";
+            btn.style.justifyContent = "center";
+            btn.style.cursor = "pointer";
+            oslChanWlPaint(btn, "off");
+            // Capture-phase + immediate stop so neither the channel
+            // navigation nor Discord's row handlers ever see the click.
+            btn.addEventListener(
+                "click",
+                (ev) => {
+                    try {
+                        ev.stopImmediatePropagation();
+                    } catch (_) {}
+                    oslChanWlOnClick(ev, scopeInput, btn);
+                },
+                true
+            );
+            btn.addEventListener("mousedown", (ev) => {
+                try {
+                    ev.stopPropagation();
+                } catch (_) {}
+            });
+            try {
+                place.container.insertBefore(btn, place.before);
             } catch (_) {
                 continue;
             }
