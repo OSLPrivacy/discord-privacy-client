@@ -10458,6 +10458,177 @@
     } catch (_) {}
 
     // ============================================================
+    // W2b-ii: per-text-channel whitelist button in the channel
+    // sidebar. PURELY ADDITIVE — a new isolated injected affordance
+    // (its own data attr), mirroring the C3 guild-rail badge system
+    // above. Nothing existing is modified. The server-header button
+    // (W2b-i) whitelists the whole server and OVERRIDES per-channel;
+    // when it's on, this button is shown inert with an explanatory
+    // tooltip (matches the locked precedence).
+    // ============================================================
+    const OSL_CHANWL_ATTR = "data-osl-channel-wl";
+
+    function oslChanWlParseHref(href) {
+        if (typeof href !== "string") return null;
+        const m = /^\/channels\/(\d{15,21})\/(\d{15,21})/.exec(href);
+        if (!m) return null; // excludes /channels/@me/... (non-numeric)
+        return { guildId: m[1], channelId: m[2] };
+    }
+
+    function oslChanWlScope(ids) {
+        return {
+            kind: "server_channel",
+            id: ids.guildId + ":" + ids.channelId,
+            server_id: ids.guildId,
+            channel_id: ids.channelId,
+        };
+    }
+
+    // state: "on" (channel whitelisted), "off", "server" (server-wide
+    // whitelist on → per-channel overridden / inert).
+    function oslChanWlPaint(btn, state) {
+        const on = state === "on";
+        btn.innerHTML = oslC3LockSvg(on ? "closed" : "open");
+        btn.setAttribute("data-osl-chanwl-state", state);
+        if (state === "server") {
+            btn.style.opacity = "0.4";
+            btn.style.cursor = "not-allowed";
+            btn.title =
+                "Server-wide whitelist is ON (overrides channels). " +
+                "Turn it off from the channel header to whitelist " +
+                "individual channels.";
+        } else {
+            btn.style.opacity = "1";
+            btn.style.cursor = "pointer";
+            btn.title = on
+                ? "OSL: this channel is whitelisted (click to remove)"
+                : "OSL: whitelist this channel (encrypt to its OSL members)";
+        }
+    }
+
+    async function oslChanWlRefresh(btn, scopeInput) {
+        try {
+            const sw = await oslInvoke("osl_get_server_whitelist_state", {
+                serverId: scopeInput.server_id,
+                channelScopeInput: scopeInput,
+            });
+            if (!sw.ok || !sw.value) {
+                oslChanWlPaint(btn, "off");
+                return;
+            }
+            if (sw.value.server_header) {
+                oslChanWlPaint(btn, "server");
+            } else {
+                oslChanWlPaint(btn, sw.value.channel ? "on" : "off");
+            }
+        } catch (_) {
+            oslChanWlPaint(btn, "off");
+        }
+    }
+
+    async function oslChanWlOnClick(e, scopeInput, btn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const state = btn.getAttribute("data-osl-chanwl-state");
+        if (state === "server") {
+            oslToast(
+                "Server-wide whitelist is ON — it overrides per-channel. " +
+                    "Turn it off (channel header lock) to control " +
+                    "channels individually."
+            );
+            return;
+        }
+        const next = state !== "on";
+        oslChanWlPaint(btn, next ? "on" : "off"); // optimistic
+        try {
+            const r = await oslInvoke("osl_set_channel_whitelist", {
+                scopeInput: scopeInput,
+                on: next,
+            });
+            if (!r.ok) {
+                oslToast("OSL: " + r.error);
+                await oslChanWlRefresh(btn, scopeInput);
+                return;
+            }
+            oslToast(
+                next
+                    ? "Channel whitelisted — encrypting to its OSL members."
+                    : "Channel whitelist removed."
+            );
+        } catch (err) {
+            oslToast(
+                "OSL: " + (err && err.message ? err.message : String(err))
+            );
+            await oslChanWlRefresh(btn, scopeInput);
+        }
+    }
+
+    function oslChanWlInject() {
+        let links;
+        try {
+            links = document.querySelectorAll('a[href^="/channels/"]');
+        } catch (_) {
+            return;
+        }
+        for (const a of links) {
+            const ids = oslChanWlParseHref(a.getAttribute("href") || "");
+            if (!ids) continue;
+            // Row container: nearest list item, else the link itself.
+            const row =
+                (a.closest && a.closest('[class*="containerDefault_"]')) ||
+                (a.closest && a.closest("li")) ||
+                a.parentElement ||
+                a;
+            if (!row || row.querySelector("[" + OSL_CHANWL_ATTR + "='1']")) {
+                continue;
+            }
+            const scopeInput = oslChanWlScope(ids);
+            const btn = document.createElement("span");
+            btn.setAttribute(OSL_CHANWL_ATTR, "1");
+            btn.setAttribute("role", "button");
+            btn.setAttribute("aria-label", "OSL channel whitelist");
+            btn.style.cssText =
+                "display:inline-flex;align-items:center;justify-content:center;" +
+                "width:16px;height:16px;margin-left:4px;flex:0 0 auto;" +
+                "cursor:pointer;vertical-align:middle;";
+            oslChanWlPaint(btn, "off");
+            btn.addEventListener("click", (ev) =>
+                oslChanWlOnClick(ev, scopeInput, btn)
+            );
+            try {
+                a.appendChild(btn);
+            } catch (_) {
+                continue;
+            }
+            // Resolve real state asynchronously (fire-and-forget).
+            oslChanWlRefresh(btn, scopeInput);
+        }
+    }
+
+    try {
+        // Periodic backstop (primary, like the C3 badge system) +
+        // a body observer best-effort. Initial pass after Tauri ready.
+        nativeSetInterval(() => {
+            try {
+                oslChanWlInject();
+            } catch (_) {}
+        }, 5000);
+        nativeSetTimeout(() => {
+            try {
+                oslChanWlInject();
+            } catch (_) {}
+        }, 1200);
+        try {
+            const obs = new MutationObserver(() => {
+                try {
+                    oslChanWlInject();
+                } catch (_) {}
+            });
+            obs.observe(document.body, { childList: true, subtree: true });
+        } catch (_) {}
+    } catch (_) {}
+
+    // ============================================================
     // Capture originals BEFORE any wrapping. These references are
     // closed over by the proxy handlers below; once
     // `window.fetch` / `XMLHttpRequest.prototype.{open,send}` /
