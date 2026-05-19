@@ -32,6 +32,7 @@
 use crate::scope::{Scope, ScopeKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// Roll-up key for "seen anywhere in this server".
 pub fn server_key(server_id: &str) -> String {
@@ -192,6 +193,68 @@ impl ScopeMembership {
     }
 }
 
+// ---- Persistence (membership.json) ----
+//
+// Mirrors the whitelist_state writer: atomic tempfile+rename, at-rest
+// encryption via `maybe_encrypt` when a main password is set. A
+// missing file is non-fatal (NotFound) — the store just starts empty
+// and re-accrues from gateway events.
+
+#[derive(Debug, thiserror::Error)]
+pub enum ScopeMembershipError {
+    #[error("membership.json not found at {0}")]
+    NotFound(String),
+    #[error("membership.json read failed at {path}: {source}")]
+    ReadFailed {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("membership.json parse failed at {path}: {reason}")]
+    ParseFailed { path: String, reason: String },
+}
+
+/// Load `ScopeMembership` from `path`. `NotFound` on a fresh install
+/// is the common, non-fatal case.
+pub fn load_scope_membership_from_path(
+    path: &Path,
+) -> Result<ScopeMembership, ScopeMembershipError> {
+    let blob = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ScopeMembershipError::NotFound(path.display().to_string()));
+        }
+        Err(source) => {
+            return Err(ScopeMembershipError::ReadFailed {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    let plain = crate::main_password::maybe_decrypt(&blob).map_err(|e| {
+        ScopeMembershipError::ParseFailed {
+            path: path.display().to_string(),
+            reason: e,
+        }
+    })?;
+    serde_json::from_slice(&plain).map_err(|e| ScopeMembershipError::ParseFailed {
+        path: path.display().to_string(),
+        reason: e.to_string(),
+    })
+}
+
+/// Serialize + atomically write `m` to `path` (tempfile + rename;
+/// at-rest-encrypted when a main password key is in the slot).
+pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Result<()> {
+    let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
+    let out_bytes = crate::main_password::maybe_encrypt(&body)
+        .map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &out_bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +347,29 @@ mod tests {
         assert_eq!(m, back);
         assert!(back.is_channel_member(SRV, CH1, A));
         assert!(back.is_gc_member(GC, B));
+    }
+
+    #[test]
+    fn file_round_trip_and_missing_is_notfound() {
+        let dir = std::env::temp_dir().join(format!(
+            "osl_mem_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("membership.json");
+        let _ = std::fs::remove_file(&path);
+        // Missing → NotFound (non-fatal).
+        assert!(matches!(
+            load_scope_membership_from_path(&path),
+            Err(ScopeMembershipError::NotFound(_))
+        ));
+        let mut m = ScopeMembership::new();
+        m.note_server_channel_member(SRV, CH1, A);
+        m.note_gc_member(GC, B);
+        write_scope_membership(&path, &m).unwrap();
+        let back = load_scope_membership_from_path(&path).unwrap();
+        assert_eq!(m, back);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

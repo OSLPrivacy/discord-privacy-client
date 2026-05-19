@@ -812,6 +812,29 @@ pub fn persist_whitelist_state_now(state: &AppState) {
     }
 }
 
+/// W2: mirror `AppState::scope_membership` to `membership.json`.
+/// Best-effort like the other persisters — a failure records a
+/// surfaced persist error but never aborts the caller (membership
+/// re-accrues from gateway events, so a lost write is recoverable).
+pub fn persist_scope_membership_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "membership dir resolve", e);
+            return;
+        }
+    };
+    let path = dir.join("membership.json");
+    let snapshot = state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned")
+        .clone();
+    if let Err(e) = crate::membership::write_scope_membership(&path, &snapshot) {
+        record_persist_error(state, "membership.json", e);
+    }
+}
+
 // ---- DTOs ----
 
 #[derive(Debug, Serialize)]
@@ -7093,6 +7116,161 @@ pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Ve
         .lock()
         .expect("channel_members mutex poisoned");
     Ok(g.get(&channel_id).cloned().unwrap_or_default())
+}
+
+/// W2: durable membership accrual. boot.js gateway taps call this
+/// with the scope they observed members in. ServerChannel rolls up
+/// into the server key (server-header enumeration); Gc records the
+/// GC. Dm / ServerFull are no-ops (DM membership is trivial; server-
+/// wide accrues from its channels). Persists `membership.json`.
+pub fn cmd_osl_note_scope_membership(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    member_ids: Vec<String>,
+) -> Result<(), String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let changed = {
+        let mut m = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        match scope.kind {
+            crate::scope::ScopeKind::ServerChannel => {
+                match (&scope.server_id, &scope.channel_id) {
+                    (Some(srv), Some(chan)) => {
+                        m.note_server_channel_members(srv, chan, &member_ids);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            crate::scope::ScopeKind::Gc => {
+                m.note_gc_members(&scope.id, &member_ids);
+                true
+            }
+            // Dm: the peer IS the scope (no accrual needed).
+            // ServerFull: accrues via its channels' observations.
+            crate::scope::ScopeKind::Dm | crate::scope::ScopeKind::ServerFull => false,
+        }
+    };
+    if changed {
+        persist_scope_membership_now(state);
+    }
+    Ok(())
+}
+
+/// W2: one server's whitelist + encryption flags, for the header
+/// button + sidebar UI to render tri-state.
+#[derive(Debug, Serialize)]
+pub struct ServerWhitelistStateDto {
+    /// `ServerDefaults.server_header_whitelisted` for the server.
+    pub server_header: bool,
+    /// `ScopeState.channel_whitelisted` for the queried channel
+    /// (false when no channel scope was supplied).
+    pub channel: bool,
+    /// `ScopeState.encrypt_toggle` for the queried channel.
+    pub channel_encrypt: bool,
+}
+
+/// W2: read the server-header flag (per server) + the per-channel
+/// whitelist/encrypt flags for `channel_scope_input` (a
+/// `server_channel` ScopeInput; pass the current channel). Drives
+/// the header button + the new sidebar per-channel button.
+pub fn cmd_osl_get_server_whitelist_state(
+    state: &AppState,
+    server_id: String,
+    channel_scope_input: Option<crate::scope::ScopeInput>,
+) -> Result<ServerWhitelistStateDto, String> {
+    let server_header = state
+        .server_defaults
+        .lock()
+        .expect("server_defaults mutex poisoned")
+        .get(&server_id)
+        .map(|d| d.server_header_whitelisted)
+        .unwrap_or(false);
+    let (channel, channel_encrypt) = match channel_scope_input {
+        Some(si) => {
+            let scope: crate::scope::Scope = si
+                .try_into()
+                .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+            let ws = state
+                .whitelist_state
+                .lock()
+                .expect("whitelist_state mutex poisoned");
+            ws.get(&scope.storage_key())
+                .map(|s| (s.channel_whitelisted, s.encrypt_toggle))
+                .unwrap_or((false, false))
+        }
+        None => (false, false),
+    };
+    Ok(ServerWhitelistStateDto {
+        server_header,
+        channel,
+        channel_encrypt,
+    })
+}
+
+/// W2: the server-header whitelist button. When turned ON it also
+/// enables encryption server-wide (confirmed decision #2): sets
+/// `encrypt_by_default` so existing+future channels encrypt, and the
+/// caller (boot.js) additionally flips the visible channel's
+/// encrypt_toggle via the existing scope-encrypt command. Turning it
+/// OFF clears only the whitelist flag (encryption is left as the
+/// user set it — disabling whitelist shouldn't silently also stop
+/// encrypting and leak nothing, it just narrows recipients).
+pub fn cmd_osl_set_server_header_whitelist(
+    state: &AppState,
+    server_id: String,
+    on: bool,
+) -> Result<(), String> {
+    {
+        let mut sd = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let entry = sd.entry(server_id.clone()).or_default();
+        entry.server_header_whitelisted = on;
+        if on {
+            entry.encrypt_by_default = true;
+        }
+    }
+    persist_whitelist_state_now(state);
+    Ok(())
+}
+
+/// W2: the per-channel sidebar whitelist button. ON also flips this
+/// channel's `encrypt_toggle` so messages actually encrypt (decision
+/// #2). OFF clears only the whitelist flag. `scope_input` must be a
+/// `server_channel` scope.
+pub fn cmd_osl_set_channel_whitelist(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    on: bool,
+) -> Result<(), String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    if scope.kind != crate::scope::ScopeKind::ServerChannel {
+        return Err("OSL: set_channel_whitelist requires a server_channel scope".to_string());
+    }
+    {
+        let mut ws = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let entry = ws
+            .entry(scope.storage_key())
+            .or_insert_with(crate::whitelist_state::ScopeState::default);
+        entry.channel_whitelisted = on;
+        if on {
+            entry.encrypt_toggle = true;
+            entry.auto_enabled = true;
+        }
+    }
+    persist_whitelist_state_now(state);
+    Ok(())
 }
 
 // ---- Phase 9-C2: friend list + guild list (ephemeral gateway snapshots) ----

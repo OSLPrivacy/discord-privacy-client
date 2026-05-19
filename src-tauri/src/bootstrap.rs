@@ -189,6 +189,9 @@ pub fn run_autostart(state: &AppState) {
     // behaviour preserved across the upgrade).
     load_and_migrate_whitelist_state(state, &dir);
 
+    // W2: load durable scope-membership accrual (membership.json).
+    load_scope_membership(state, &dir);
+
     // 7d-FIX3b: verify peer_map has a self-entry that matches the
     // loaded identity. If the identity has a snowflake but
     // peer_map doesn't (e.g. after a backup restore, or after a
@@ -511,6 +514,40 @@ fn load_and_migrate_whitelist_state(state: &AppState, dir: &std::path::Path) {
                 error = %e,
                 path = %path.display(),
                 "OSL bootstrap: whitelist_state migration failed; skipping"
+            );
+        }
+    }
+}
+
+/// W2: read `<dir>/membership.json` into `AppState::scope_membership`.
+/// Missing file is the fresh-install common case (non-fatal — the
+/// store starts empty and re-accrues from gateway events).
+fn load_scope_membership(state: &AppState, dir: &std::path::Path) {
+    let path = dir.join("membership.json");
+    match ipc::membership::load_scope_membership_from_path(&path) {
+        Ok(m) => {
+            *state
+                .scope_membership
+                .lock()
+                .expect("scope_membership mutex poisoned") = m;
+            tracing::info!(
+                path = %path.display(),
+                "OSL bootstrap: scope-membership loaded"
+            );
+        }
+        Err(ipc::membership::ScopeMembershipError::NotFound(_)) => {
+            tracing::info!(
+                path = %path.display(),
+                "OSL bootstrap: membership.json not found (fresh install)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "OSL bootstrap: membership.json could not be loaded; \
+                 server/channel recipient resolution starts empty and \
+                 re-accrues from gateway events"
             );
         }
     }
