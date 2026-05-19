@@ -4768,6 +4768,69 @@ pub fn populate_peer_from_fetch_response(
 /// user accepts/declines) and clear it again once the key matches.
 /// Pure decision logic lives in `crate::tofu`; this is the AppState
 /// + peer_map + persistence wiring.
+/// On a TOFU `Changed`, the peer's `ratchet_state` must be dropped
+/// EXACTLY ONCE — on first detection of a given new key. This fn
+/// decides "is this a newly-observed change?":
+/// - no pending alert            → yes (first detection: drop once)
+/// - pending alert, SAME new key → no  (already handled: keep ratchet
+///                                       so a re-bootstrapped session
+///                                       can survive and deliver while
+///                                       the user verifies)
+/// - pending alert, DIFFERENT key→ yes (the key changed AGAIN: the
+///                                       old session is invalid; drop)
+/// Pure so it is unit-tested without an `AppState`.
+fn tofu_change_is_newly_observed(
+    pending_alert_new_key: Option<&str>,
+    fetched: &str,
+) -> bool {
+    match pending_alert_new_key {
+        Some(k) => k != fetched,
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tofu_change_idempotency_tests {
+    use super::tofu_change_is_newly_observed as f;
+
+    #[test]
+    fn first_detection_no_pending_alert_is_newly_observed() {
+        // No alert yet → first detection → drop ratchet once.
+        assert!(f(None, "NEWKEY"));
+    }
+
+    #[test]
+    fn same_pending_change_is_not_newly_observed() {
+        // The exact scenario that bricked DMs: every v=4 send
+        // re-fetches and re-observes the SAME changed key. Must NOT
+        // be treated as new (so the ratchet is not nuked every send).
+        assert!(!f(Some("NEWKEY"), "NEWKEY"));
+    }
+
+    #[test]
+    fn key_changed_again_is_newly_observed() {
+        // Pending alert was for KEY_A but the peer rotated AGAIN to
+        // KEY_B → the bootstrapped session is invalid → drop again.
+        assert!(f(Some("KEY_A"), "KEY_B"));
+    }
+
+    #[test]
+    fn repeated_calls_drop_exactly_once() {
+        // Simulate the per-send refresh loop: first call drops, all
+        // subsequent identical calls do not.
+        let fetched = "ROTATED";
+        let mut pending: Option<String> = None;
+        let mut drops = 0;
+        for _ in 0..50 {
+            if f(pending.as_deref(), fetched) {
+                drops += 1;
+                pending = Some(fetched.to_string()); // alert now raised
+            }
+        }
+        assert_eq!(drops, 1, "ratchet must be dropped exactly once");
+    }
+}
+
 fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &str) {
     use crate::tofu::{classify, safety_number, TofuOutcome};
 
@@ -4804,18 +4867,53 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
                 .remove(discord_id);
         }
         TofuOutcome::Changed { old } => {
-            // v=4 desync fix: the peer's identity key changed (burn /
-            // re-registration / regen). Any existing Double Ratchet
-            // for this peer was derived from the OLD SessionContext
-            // (which binds both parties' identity pubs), so its
-            // header keys (HKr/NHKr) can no longer open this peer's
-            // wire. Drop ratchet_state so the next v=4 send/recv
-            // re-bootstraps a fresh session from the current keys
-            // (ik_ratchet_initial_pub was just refreshed by
-            // populate_peer_from_fetch_response). This does NOT
-            // bypass the blocking KeyChangeAlert below — verification
-            // is still required; we only prevent a permanently
-            // undecryptable, desynced ratchet.
+            // The peer's identity key changed (burn / re-registration
+            // / regen). Any existing Double Ratchet was derived from
+            // the OLD SessionContext, so it can no longer open this
+            // peer's wire — it must be dropped so the next v=4
+            // send/recv re-bootstraps a fresh session.
+            //
+            // BUT: this fn runs on EVERY keyserver refresh, and the
+            // v=4 send path force-refreshes before EVERY send. The
+            // baseline only advances on an explicit user accept, so a
+            // real, un-accepted change stays `Changed` forever. The
+            // old code nulled `ratchet_state` on every call → every
+            // send re-bootstrapped (huge handshake wire each time),
+            // the session could NEVER establish, and the peer saw a
+            // permanent `not a recipient` / `header AEAD failed`,
+            // with the accept banner the only escape — which itself
+            // was invisible until the anchor-resolver fix. So drop
+            // EXACTLY ONCE, on first detection of a given new key;
+            // re-observing the SAME pending change must leave a
+            // freshly bootstrapped ratchet intact so messaging can
+            // actually proceed while the user verifies. Security is
+            // unchanged: the drop still happens on detection, the
+            // blocking alert is still raised, and the baseline still
+            // only moves on an explicit accept.
+            let pending_same = {
+                let g = state
+                    .key_change_alerts
+                    .lock()
+                    .expect("key_change_alerts mutex poisoned");
+                g.get(discord_id)
+                    .map(|a| a.new_ed25519_pub.clone())
+            };
+            let newly_observed = tofu_change_is_newly_observed(
+                pending_same.as_deref(),
+                fetched_ed25519_b64,
+            );
+            if !newly_observed {
+                // Same change we already alerted on — do NOT re-nuke
+                // a (possibly freshly re-bootstrapped) ratchet, do
+                // not reset the alert's first_observed. Idempotent.
+                tracing::debug!(
+                    discord_id = %discord_id,
+                    "OSL: TOFU — peer key change re-observed (alert \
+                     already pending); ratchet left intact so the \
+                     session can establish pending user accept"
+                );
+                return;
+            }
             {
                 let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
                 if let Some(entry) = pm.get_mut(discord_id) {
