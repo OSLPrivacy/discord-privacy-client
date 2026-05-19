@@ -1,0 +1,61 @@
+-- TEMPLATE: reset a keyserver identity bricked by a pre-a4dfc44 burn.
+--
+-- This is the committed, snowflake-free runbook. The live filled-in
+-- copy is generated into the gitignored scripts/out/ (production
+-- Discord user IDs + a destructive prod-DB script must NOT enter
+-- version history — same convention as the mint/revoke scripts).
+--
+-- WHY THIS IS NEEDED
+-- A burn / fresh-start performed BEFORE commit a4dfc44 regenerated
+-- the identity and destroyed the old Ed25519 secret while the
+-- keyserver still held the old key. /v1/register Case-C rotation
+-- needs a prev_sig from that destroyed key, so the new key can never
+-- publish (403) -> peers keep encrypting to the dead key ->
+-- permanent mutual "not a recipient of this message". a4dfc44
+-- prevents this going forward (it pre-signs the rotation at burn
+-- time), but it cannot repair an account whose old key is already
+-- gone — that needs this one-time keyserver-side row reset.
+--
+-- WHY IT IS SAFE
+-- Deleting the users row makes the NEXT /v1/register for that
+-- user_id hit Case A (brand-new) -> clean insert with the client's
+-- CURRENT key. The register is still Ed25519 self-signed
+-- proof-of-key-control, and the old key is already destroyed, so
+-- there is no key being hijacked — only the legitimate owner can
+-- re-register. Run ONLY for snowflakes the account owner controls
+-- and has confirmed are bricked. A bricked row has
+-- last_rotated_at = NULL together with the owner reporting they
+-- burned (every rotation attempt 403'd).
+--
+-- D1 runs the applied file as ONE atomic batch — do NOT add
+-- BEGIN/COMMIT/SAVEPOINT (wrangler d1 execute rejects them). Child
+-- tables are deleted before `users` so this works whether or not D1
+-- enforces the foreign keys.
+--
+-- ============================================================
+-- PROCEDURE
+--
+-- 1. List registered identities and pick the bricked snowflake(s):
+--      npx wrangler d1 execute osl-keyserver-prod --remote \
+--        --command "SELECT user_id, registered_at, last_rotated_at FROM users ORDER BY registered_at DESC;"
+--
+-- 2. Copy this file into scripts/out/ (gitignored), replace every
+--    <SNOWFLAKE> with a real Discord user id (duplicate the block
+--    per account), then apply:
+--      npx wrangler d1 execute osl-keyserver-prod --remote \
+--        --file=<absolute path to the scripts/out/ copy>
+--
+-- 3. Verify the rows are gone (expect zero rows):
+--      npx wrangler d1 execute osl-keyserver-prod --remote \
+--        --command "SELECT user_id FROM users WHERE user_id = '<SNOWFLAKE>';"
+--
+-- 4. Rebuild the client (must contain a4dfc44) on the owner's
+--    machine(s); next launch hits Case A and re-publishes the
+--    current key. Future burns no longer brick (a4dfc44).
+-- ============================================================
+
+-- ---- one block PER bricked account; replace <SNOWFLAKE> ----
+DELETE FROM prekey_bundles WHERE user_id = '<SNOWFLAKE>';
+DELETE FROM opk_pool       WHERE user_id = '<SNOWFLAKE>';
+DELETE FROM wrapped_keys   WHERE sender_id = '<SNOWFLAKE>' OR recipient_id = '<SNOWFLAKE>';
+DELETE FROM users          WHERE user_id = '<SNOWFLAKE>';
