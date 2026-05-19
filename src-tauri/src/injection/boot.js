@@ -4439,41 +4439,85 @@
     function oslAnchorRegistry() {
         if (window.__oslAnchorReg) return window.__oslAnchorReg;
         var reg = {
+            // Strategy order is semantics-first: Discord re-hashes
+            // CSS class names frequently but its ARIA labels, role
+            // attributes, `data-list-id`s and the `message-content-`
+            // / `chat-messages-` id prefixes have been stable for
+            // years. Lead with those so a class re-hash does NOT
+            // break us; keep the old `[class*=]` selectors only as
+            // last-ditch hints (harmless if they never match).
             channelHeader: [
-                'section[class*="title_"][class*="container__"]',
-                'section[class*="title_"][class*="container_"]',
-                'section[class*="title_"]',
-                'header[class*="title_"]',
-                'section[class*="chat_"] > section',
-                // resilient: the labelled top region of the chat area.
+                // The channel header is the bar carrying the toolbar
+                // buttons. These aria-labels are user-facing and
+                // stable across class re-hashes; the bar is their
+                // nearest section/header ancestor.
                 function () {
-                    var chat = document.querySelector(
-                        'div[class*="chat_"], main[class*="chatContent_"]'
+                    var lbls = [
+                        "Pinned Messages",
+                        "Threads",
+                        "Notification Settings",
+                        "Hide Member List",
+                        "Show Member List",
+                        "Start Voice Call",
+                    ];
+                    for (var i = 0; i < lbls.length; i++) {
+                        var b = document.querySelector(
+                            '[aria-label="' + lbls[i] + '" i]'
+                        );
+                        if (b) {
+                            var sec = b.closest("section, header");
+                            if (sec) return sec;
+                        }
+                    }
+                    return null;
+                },
+                // Structural: the first labelled region inside the
+                // chat content main (the messages list is below it).
+                function () {
+                    var m = document.querySelector(
+                        'main[class*="chatContent"], main'
                     );
-                    if (!chat) return null;
+                    if (!m) return null;
                     return (
-                        chat.querySelector(
+                        m.querySelector(
                             'section[aria-label], header[aria-label]'
                         ) || null
                     );
                 },
+                'section[class*="title_"]',
+                'header[class*="title_"]',
             ],
             userPanel: [
-                'section[class*="panels__"]',
-                'section[class*="panels_"]',
-                // resilient: the section that holds the User Settings
-                // / Mute affordances is the bottom-left user panel.
+                // The bottom-left account panel: a control with one
+                // of these stable aria-labels, climbed to the small
+                // container that also holds the avatar.
                 function () {
-                    var s = document.querySelector(
-                        'button[aria-label*="User Settings" i]'
+                    var ctl = document.querySelector(
+                        '[aria-label="Mute" i],' +
+                            '[aria-label="Deafen" i],' +
+                            '[aria-label="User Settings" i],' +
+                            '[aria-label="Settings" i]'
                     );
-                    return s ? s.closest("section") : null;
+                    if (!ctl) return null;
+                    var n = ctl;
+                    for (var i = 0; i < 6 && n; i++) {
+                        n = n.parentElement;
+                        if (
+                            n &&
+                            n.querySelector(
+                                'img[class*="avatar" i], [class*="avatar" i]'
+                            )
+                        ) {
+                            return n;
+                        }
+                    }
+                    return ctl.closest("section") || ctl.parentElement;
                 },
+                'section[class*="panels_"]',
             ],
             composer: [
-                '[class*="channelTextArea__"]',
-                '[class*="channelTextArea_"]',
-                // resilient: the form/region wrapping the message box.
+                // Stable: the message box is the editable textbox;
+                // its enclosing form is the composer region.
                 function () {
                     var box = document.querySelector(
                         '[role="textbox"][contenteditable="true"]'
@@ -4481,13 +4525,14 @@
                     if (!box) return null;
                     return box.closest("form") || box.parentElement || null;
                 },
+                '[class*="channelTextArea_"]',
             ],
             guildsRail: [
-                'nav[class*="guilds_"] [class*="scroller_"]',
-                'nav[class*="guilds_"]',
-                '[class*="guildsList_"]',
-                '[class*="guildsList__"]',
-                // resilient: a nav containing the @me / server links.
+                // Discord tags the server rail list with a stable
+                // data-list-id; this survives every class re-hash.
+                '[data-list-id="guildsnav"]',
+                // The nav element that actually contains server /
+                // @me channel links.
                 function () {
                     var navs = document.querySelectorAll("nav");
                     for (var i = 0; i < navs.length; i++) {
@@ -4501,6 +4546,8 @@
                     }
                     return null;
                 },
+                'nav[class*="guilds_"]',
+                '[class*="guildsList_"]',
             ],
             profileSurface: [
                 '[class*="user-profile-sidebar"], [class*="user-profile-popout"]',
