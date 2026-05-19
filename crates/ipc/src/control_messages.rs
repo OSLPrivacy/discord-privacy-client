@@ -21,6 +21,8 @@
 //! | `0x03`     | (removed in 9-C1: legacy whitelist resp)  |
 //! | `0x04`     | CBOR-encoded [`AttachmentEnvelope`]       |
 //! | `0x05`     | CBOR-encoded [`SenderKeyDistribution`]    |
+//! | `0x06`     | CBOR-encoded [`SkdmRequest`]              |
+//! | `0x07`     | CBOR-encoded [`SessionReset`]             |
 //!
 //! ## Serialization choice: CBOR
 //!
@@ -132,6 +134,52 @@ pub struct SenderKeyDistribution {
     pub sent_at: i64,
 }
 
+/// Auto-recovery type=0x06: "I have been unable to decrypt your v=5
+/// messages in this scope because I never received (or lost) your
+/// sender-key — please re-emit the SKDM for this scope to me." Sent
+/// inside a **v=2** message (ratchet-independent: the requester may
+/// have no usable v=4 session to the sender). The receiving sender
+/// force-re-emits one SKDM for `scope_storage_key` to the requester,
+/// bypassing its "already installed" short-circuit.
+///
+/// `nonce` + `requested_at` exist for the recv-side replay/staleness
+/// and rate-limit guards (a forged or replayed request must not be
+/// able to amplify SKDM traffic). They carry no secret material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkdmRequest {
+    /// `scope.storage_key()` of the scope whose SKDM is missing.
+    pub scope_storage_key: String,
+    /// Unix seconds; recv side drops requests outside its freshness
+    /// window.
+    pub requested_at: i64,
+    /// Random per-request id; recv side dedupes replays within the
+    /// freshness window.
+    pub nonce: [u8; 16],
+}
+
+/// Auto-recovery type=0x07: "our v=4 Double Ratchet is desynced — I
+/// have already dropped my ratchet_state for you; drop yours too so
+/// the next v=4 send re-handshakes (`new_initiator` ↔ `new_responder`)."
+/// Sent inside a **v=2** message because the v=4 ratchet itself is the
+/// broken thing. Peer-scoped: the peer is the v=2 message sender, so
+/// no scope field is needed — it targets that peer's whole v=4 DM
+/// session (the same state shared by every group SKDM to that peer).
+///
+/// `nonce` + `requested_at` back the recv-side replay/staleness and
+/// rate-limit guards: honoring a SESSION_RESET costs one re-handshake,
+/// so an unthrottled forge/replay would be a decrypt-denial DoS. The
+/// recv handler additionally requires an independent local decrypt
+/// failure from the same peer before acting (act-on-symptom).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionReset {
+    /// Unix seconds; recv side drops resets outside its freshness
+    /// window.
+    pub requested_at: i64,
+    /// Random per-request id; recv side dedupes replays within the
+    /// freshness window.
+    pub nonce: [u8; 16],
+}
+
 // ---- CBOR wire reps ----
 //
 // We could derive Serialize/Deserialize directly on the structs
@@ -169,6 +217,19 @@ struct SenderKeyDistributionWire {
     chain_id: u32,
     rotation_root: [u8; 32],
     sent_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SkdmRequestWire {
+    scope_storage_key: String,
+    requested_at: i64,
+    nonce: [u8; 16],
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionResetWire {
+    requested_at: i64,
+    nonce: [u8; 16],
 }
 
 // ---- Serialize ----
@@ -257,6 +318,38 @@ pub fn deserialize_sender_key_distribution(
     })
 }
 
+pub fn serialize_skdm_request(m: &SkdmRequest) -> Result<Vec<u8>, ControlError> {
+    cbor_encode(&SkdmRequestWire {
+        scope_storage_key: m.scope_storage_key.clone(),
+        requested_at: m.requested_at,
+        nonce: m.nonce,
+    })
+}
+
+pub fn deserialize_skdm_request(bytes: &[u8]) -> Result<SkdmRequest, ControlError> {
+    let wire: SkdmRequestWire = cbor_decode(bytes)?;
+    Ok(SkdmRequest {
+        scope_storage_key: wire.scope_storage_key,
+        requested_at: wire.requested_at,
+        nonce: wire.nonce,
+    })
+}
+
+pub fn serialize_session_reset(m: &SessionReset) -> Result<Vec<u8>, ControlError> {
+    cbor_encode(&SessionResetWire {
+        requested_at: m.requested_at,
+        nonce: m.nonce,
+    })
+}
+
+pub fn deserialize_session_reset(bytes: &[u8]) -> Result<SessionReset, ControlError> {
+    let wire: SessionResetWire = cbor_decode(bytes)?;
+    Ok(SessionReset {
+        requested_at: wire.requested_at,
+        nonce: wire.nonce,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,4 +367,27 @@ mod tests {
 
     // 9-C1: invitation/response inline round-trip tests removed
     // alongside the wire types they exercised.
+
+    #[test]
+    fn skdm_request_round_trip_inline() {
+        let m = SkdmRequest {
+            scope_storage_key: "gc:1502771310428819569".to_string(),
+            requested_at: 1_700_000_000,
+            nonce: [7u8; 16],
+        };
+        let bytes = serialize_skdm_request(&m).unwrap();
+        let back = deserialize_skdm_request(&bytes).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn session_reset_round_trip_inline() {
+        let m = SessionReset {
+            requested_at: 1_700_000_001,
+            nonce: [9u8; 16],
+        };
+        let bytes = serialize_session_reset(&m).unwrap();
+        let back = deserialize_session_reset(&bytes).unwrap();
+        assert_eq!(back, m);
+    }
 }

@@ -138,6 +138,26 @@ pub const MSG_TYPE_ATTACHMENT: u8 = 0x04;
 /// `decrypt_v4_recv` rather than surfacing as user-visible content.
 pub const MSG_TYPE_SENDER_KEY_DISTRIBUTION: u8 = 0x05;
 
+/// Auto-recovery message-type byte: "I am awaiting your sender-key
+/// for this scope and it never arrived — please re-emit it." Body is
+/// a CBOR-encoded [`crate::control_messages::SkdmRequest`]. Ships as a
+/// v=2 message (NOT v=4): the requester may have no working v=4
+/// ratchet to the sender yet, so the request must use the ratchet-
+/// independent PQ-hybrid transport. Still bound to the sender's
+/// identity keys, so a network attacker cannot forge one. The sender
+/// routes this to a one-shot forced SKDM re-emit for the named scope.
+pub const MSG_TYPE_SKDM_REQUEST: u8 = 0x06;
+
+/// Auto-recovery message-type byte: "our v=4 Double Ratchet is
+/// desynced — I have reset my side; reset yours so we re-handshake."
+/// Body is a CBOR-encoded [`crate::control_messages::SessionReset`].
+/// Ships as a v=2 message for the same reason as `MSG_TYPE_SKDM_REQUEST`
+/// (the v=4 ratchet is precisely what is broken). Peer-scoped: the
+/// peer identity is the v=2 sender; resets that peer's whole v=4 DM
+/// ratchet. Honored only under the act-on-symptom + rate-limit guards
+/// in the recv handler (see `decrypt_v2_recv` SESSION_RESET arm).
+pub const MSG_TYPE_SESSION_RESET: u8 = 0x07;
+
 /// Length of the per-recipient pubkey-hash prefix on the wire
 /// (8 bytes = leading bytes of SHA-256(recipient_pubkey)). 8 bytes
 /// = 1/2^64 ≈ 5.4e-20 collision probability for the small N this
