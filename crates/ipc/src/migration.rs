@@ -119,6 +119,7 @@ pub fn migrate_whitelist_state_in_place(
             ScopeState {
                 encrypt_toggle,
                 auto_enabled,
+                ..ScopeState::default()
             },
         );
 

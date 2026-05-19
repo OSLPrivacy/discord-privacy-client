@@ -44,6 +44,16 @@ pub struct ScopeState {
     /// for the composer tooltip.
     #[serde(default)]
     pub auto_enabled: bool,
+
+    /// W1 (Option B): per-channel whitelist flag. When `true`,
+    /// outgoing messages in THIS `server_channel:<srv>:<chan>` scope
+    /// encrypt to every OSL member of the channel (resolved
+    /// dynamically from `ScopeMembership`). Inert while the parent
+    /// server's `server_header_whitelisted` is on — the server header
+    /// REPLACES per-channel (locked precedence). Only meaningful on
+    /// ServerChannel scope entries; ignored for dm:/gc:/server_full:.
+    #[serde(default)]
+    pub channel_whitelisted: bool,
 }
 
 /// Top-level shape: scope string → [`ScopeState`]. The optional
@@ -67,6 +77,16 @@ pub struct ServerDefaults {
     /// Users can override per-channel via the tri-state header icon.
     #[serde(default)]
     pub encrypt_by_default: bool,
+
+    /// W1 (Option B): the server-header whitelist. When `true`,
+    /// EVERY text channel in this server encrypts to every OSL member
+    /// of the whole server (the `server:<id>` membership roll-up),
+    /// and per-channel `channel_whitelisted` flags are IGNORED for
+    /// this server (header REPLACE semantics — locked precedence
+    /// DM > server-header > channel). Set/cleared by the channel-
+    /// header button (W2).
+    #[serde(default)]
+    pub server_header_whitelisted: bool,
 }
 
 /// 9-C1: on-disk envelope around [`WhitelistState`] carrying the

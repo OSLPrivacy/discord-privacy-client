@@ -2378,8 +2378,26 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     // re-run the capability check before surfacing the error.
     let resolve_recipients = || {
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let sd_guard = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let mem_guard = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        let auth_ctx = crate::whitelist::ScopeAuthCtx {
+            whitelist_state: &ws_guard,
+            server_defaults: &sd_guard,
+            membership: &mem_guard,
+        };
         crate::whitelist::recipients_for_scope_v3(
             &pm_guard,
+            &auth_ctx,
             &scope,
             &channel_members,
             &self_discord_id,
@@ -4243,8 +4261,26 @@ fn apply_skdm_request_recv(
     };
     let recipients = {
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let sd_guard = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let mem_guard = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        let auth_ctx = crate::whitelist::ScopeAuthCtx {
+            whitelist_state: &ws_guard,
+            server_defaults: &sd_guard,
+            membership: &mem_guard,
+        };
         crate::whitelist::recipients_for_scope_v3(
             &pm,
+            &auth_ctx,
             &scope,
             &channel_members,
             &self_discord_id,
