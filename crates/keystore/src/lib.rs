@@ -36,6 +36,7 @@ pub mod duress;
 pub mod identity;
 pub mod license_cache;
 pub mod password;
+pub mod pending_rotation;
 pub mod prekeys;
 pub mod recipients;
 pub mod sealer;
@@ -61,6 +62,10 @@ pub use password::{
     verify_against_record, Argon2Params, InactivityTimer, PasswordError, PasswordHash,
     PasswordRecord, VerifyOutcome, DEFAULT_FAILED_ATTEMPT_THRESHOLD, DEFAULT_INACTIVITY_SECONDS,
     MIN_PASSWORD_LENGTH,
+};
+pub use pending_rotation::{
+    delete_pending_rotation, load_pending_rotation, pending_rotation_from, save_pending_rotation,
+    PendingRotation,
 };
 pub use prekeys::{
     canonical_replenish_bytes, iso_8601_from_unix_seconds, load_prekey_state, save_prekey_state,

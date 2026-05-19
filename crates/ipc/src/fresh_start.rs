@@ -35,7 +35,10 @@
 
 use crate::peer_map::write_peer_map;
 use crate::whitelist_state::write_whitelist_state;
-use keystore::{generate_identity, save_identity, select_best_sealer, Identity};
+use keystore::{
+    generate_identity, load_identity, pending_rotation_from, save_identity,
+    save_pending_rotation, select_best_sealer, Identity,
+};
 use std::path::{Path, PathBuf};
 
 /// Errors that can surface during a fresh-start operation. Each
@@ -93,7 +96,46 @@ pub fn cmd_osl_fresh_start(
         })?;
     }
 
-    // 1. Wipe top-level JSON state.
+    // 0. SECURITY FORWARD-FIX: while the OLD identity still exists on
+    // disk, pre-sign a Case-C rotation authorizing the NEW identity
+    // and persist it (sealed) as `pending_rotation.json`. After the
+    // burn the old Ed25519 secret is destroyed, so this is the only
+    // moment the client can ever produce the keyserver's required
+    // `prev_sig`. Best-effort: a first-ever install has no old
+    // identity to rotate from, and any failure here must NOT fail the
+    // burn (the wipe + fresh identity still proceed; the register
+    // path simply falls back to a plain register as before).
+    //
+    // The sealer is selected once and reused for the new identity
+    // save below so both files seal under the same method tag.
+    let sealer = select_best_sealer();
+    let old_identity: Option<Identity> = {
+        let old_path = config_dir.join("identity.json");
+        match load_identity(&old_path, sealer.as_ref()) {
+            Ok(id) if !id.user_id.is_empty() => Some(id),
+            Ok(_) => {
+                tracing::info!(
+                    "OSL: fresh_start: existing identity has empty user_id; \
+                     nothing to rotate from (skipping pending-rotation mint)"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::info!(
+                    error = %e,
+                    "OSL: fresh_start: no readable existing identity; \
+                     skipping pending-rotation mint (first-ever install \
+                     or unreadable blob — nothing to rotate from)"
+                );
+                None
+            }
+        }
+    };
+
+    // 1. Wipe top-level JSON state. NOTE: `pending_rotation.json` is
+    // intentionally NOT in this list — the pre-signed proof minted in
+    // step 0 (written in step 3b, AFTER this purge) must survive a
+    // fresh start so the post-burn register can present it.
     for name in [
         "identity.json",
         "peer_map.json",
@@ -116,16 +158,43 @@ pub fn cmd_osl_fresh_start(
         remove_if_present(&path)?;
     }
 
-    // 3. Generate + persist a fresh identity.
+    // 3. Generate + persist a fresh identity (sealed under the same
+    // sealer used for the pending-rotation mint in step 0).
     let identity = generate_identity(user_id);
     let identity_path = config_dir.join("identity.json");
-    let sealer = select_best_sealer();
     save_identity(&identity_path, &identity, sealer.as_ref()).map_err(|source| {
         FreshStartError::IdentitySaveFailed {
             path: identity_path.clone(),
             source,
         }
     })?;
+
+    // 3b. SECURITY FORWARD-FIX: now that the NEW identity exists,
+    // persist the pre-signed Case-C rotation proof — but only if we
+    // had a real old identity to rotate from. Written AFTER the
+    // step-1 purge and AFTER the new identity save so it deterministi-
+    // cally survives the wipe on the happy path. Failure here is
+    // logged and swallowed: the burn must still succeed (the register
+    // path then falls back to a plain register, exactly as before
+    // this fix).
+    if let Some(ref old) = old_identity {
+        let pending = pending_rotation_from(old, &identity);
+        let pending_path = config_dir.join("pending_rotation.json");
+        match save_pending_rotation(&pending_path, &pending, sealer.as_ref()) {
+            Ok(()) => tracing::info!(
+                "OSL: fresh_start: persisted pre-signed Case-C rotation \
+                 proof (pending_rotation.json) — post-burn register will \
+                 present it so the new key publishes despite the destroyed \
+                 old key"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "OSL: fresh_start: failed to persist pending_rotation.json \
+                 (non-fatal; burn proceeds, register falls back to plain \
+                 register)"
+            ),
+        }
+    }
 
     // 4. Write fresh empty schemas.
     let peer_map_path = config_dir.join("peer_map.json");

@@ -6547,6 +6547,44 @@ pub fn ensure_keyserver_registered(
         }
     };
 
+    // SECURITY FORWARD-FIX: load any pre-signed Case-C rotation proof
+    // minted at the last burn. The config dir + sealer are derived
+    // the same way every other caller in this file does
+    // (`keystore::osl_config_dir()` + `keystore::select_best_sealer()`).
+    // A missing/unreadable proof is the common case (no burn pending)
+    // and must never fail or panic — fall through to plain register.
+    let pending_rotation_path = match keystore::osl_config_dir() {
+        Ok(dir) => Some(dir.join("pending_rotation.json")),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "OSL: ensure_keyserver_registered: cannot resolve config \
+                 dir for pending_rotation.json; proceeding without rotation \
+                 proof"
+            );
+            None
+        }
+    };
+    let pending_rotation: Option<keystore::PendingRotation> =
+        match pending_rotation_path.as_ref() {
+            Some(path) => {
+                let sealer = keystore::select_best_sealer();
+                match keystore::load_pending_rotation(path, sealer.as_ref()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "OSL: ensure_keyserver_registered: failed to load \
+                             pending_rotation.json (proceeding without it; \
+                             plain register fallback)"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
     // Register while holding only the identity lock (mirrors the
     // boot path's lock discipline — identity scope, then keyserver
     // scope, never nested — so there is no lock-order deadlock with
@@ -6558,6 +6596,124 @@ pub fn ensure_keyserver_registered(
             // concurrent burn). Nothing to do.
             return;
         };
+
+        // Decide whether the stored proof actually authorizes the
+        // CURRENT in-state identity. A stale proof (from an older
+        // burn whose new identity was itself later burned) must NOT
+        // be presented — delete it and behave as plain register.
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        let cur_ed_b64 = B64.encode(id.ed25519_public.as_bytes());
+        let usable_proof: Option<keystore::PendingRotation> = match pending_rotation {
+            Some(ref p) if p.new_ik_ed25519_pub == cur_ed_b64 => Some(p.clone()),
+            Some(_) => {
+                tracing::warn!(
+                    "OSL: ensure_keyserver_registered: stored \
+                     pending_rotation.json does not authorize the current \
+                     identity (stale); deleting it and registering plainly"
+                );
+                if let Some(path) = pending_rotation_path.as_ref() {
+                    if let Err(e) = keystore::delete_pending_rotation(path) {
+                        tracing::warn!(
+                            error = %e,
+                            "OSL: ensure_keyserver_registered: failed to \
+                             delete stale pending_rotation.json (non-fatal)"
+                        );
+                    }
+                }
+                None
+            }
+            None => None,
+        };
+
+        // Helper closures share the alert-clearing + proof-clearing
+        // success path so the Case-C and Case-C→fallback branches
+        // can't drift.
+        let clear_success = |resp: &keystore::RegisterResponse| {
+            tracing::info!(
+                user_id = %resp.user_id,
+                initial = resp.registered_at.is_some(),
+                status = resp.status.as_deref().unwrap_or(
+                    if resp.registered_at.is_some() { "registered" } else { "ok" }
+                ),
+                "OSL: ensure_keyserver_registered: registered with \
+                 key-server (rotation proof path)"
+            );
+            if let Some(path) = pending_rotation_path.as_ref() {
+                if let Err(e) = keystore::delete_pending_rotation(path) {
+                    tracing::warn!(
+                        error = %e,
+                        "OSL: ensure_keyserver_registered: failed to delete \
+                         consumed pending_rotation.json (non-fatal; the \
+                         new_ed binding check prevents a stale re-present)"
+                    );
+                }
+            }
+            *state
+                .registration_alert
+                .lock()
+                .expect("registration_alert mutex poisoned") = None;
+        };
+
+        if let Some(proof) = usable_proof {
+            match client.register_with_rotation(id, &proof) {
+                // Case C accepted ("rotated"), or "noop" / Case-A
+                // `registered_at` — any 2xx means the server now
+                // holds our CURRENT key. Consume the proof.
+                Ok(resp) => clear_success(&resp),
+                // The pre-signed rotation was rejected. One-shot
+                // fallback: a prior attempt may already have rotated
+                // the server onto this key, in which case a plain
+                // register is a Case-B noop. If THAT succeeds the
+                // server is already on the new key — consume the
+                // proof + clear the alert. Otherwise keep the proof
+                // (a later launch retries) and raise the 403 alert
+                // exactly as the no-proof path does.
+                Err(keystore::Error::HttpStatus { status: 403, .. }) => {
+                    tracing::warn!(
+                        "OSL: ensure_keyserver_registered: pre-signed \
+                         rotation rejected (403); trying one-shot plain \
+                         register fallback (server may already be on the \
+                         new key from a prior attempt)"
+                    );
+                    match client.register(id) {
+                        Ok(resp) => clear_success(&resp),
+                        Err(keystore::Error::HttpStatus { status: 403, body }) => {
+                            let msg = format!(
+                                "Your OSL identity could not be registered: the keyserver \
+                                 reports this account is already registered with a DIFFERENT \
+                                 security key. This can mean someone else claimed your \
+                                 identity, or you lost your previous key. Encrypted messaging \
+                                 to you may be unsafe until resolved. (server: {body})"
+                            );
+                            tracing::error!(
+                                detail = %body,
+                                "OSL: ensure_keyserver_registered: REGISTRATION \
+                                 CONFLICT (403) after rotation proof + plain \
+                                 fallback both rejected; keeping proof for a \
+                                 later retry, surfacing blocking alert"
+                            );
+                            *state
+                                .registration_alert
+                                .lock()
+                                .expect("registration_alert mutex poisoned") = Some(msg);
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "OSL: ensure_keyserver_registered: plain register \
+                             fallback failed (non-fatal; proof kept, retried \
+                             on next unlock / launch)"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "OSL: ensure_keyserver_registered: register_with_rotation \
+                     failed (non-fatal; proof kept, retried on next unlock / \
+                     launch)"
+                ),
+            }
+        } else {
         match client.register(id) {
             Ok(resp) => {
                 tracing::info!(
@@ -6612,6 +6768,7 @@ pub fn ensure_keyserver_registered(
                 "OSL: ensure_keyserver_registered: key-server register \
                  failed (non-fatal; retried on next unlock / launch)"
             ),
+        }
         }
     }
 

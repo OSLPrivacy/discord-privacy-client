@@ -454,6 +454,40 @@ impl KeyServerClient {
         Ok(serde_json::from_slice(&resp.body)?)
     }
 
+    /// `POST /v1/register` presenting a pre-signed Case-C rotation
+    /// proof.
+    ///
+    /// The body is the Case-A/B request for the CURRENT identity
+    /// (`registration_sig` = current key over `REG_MSG`, proving
+    /// possession of the key being rotated to), with `rotation` set
+    /// to the persisted [`crate::PendingRotation`] (`prev_sig` =
+    /// the OLD key's authorization over `ROT_MSG`, minted at burn
+    /// time while the old identity still existed). This is what lets
+    /// a burn re-publish onto a `user_id` the server already holds
+    /// under the destroyed old key.
+    ///
+    /// `register` is intentionally left unchanged; callers without a
+    /// pending proof keep using it.
+    pub fn register_with_rotation(
+        &self,
+        identity: &Identity,
+        proof: &crate::pending_rotation::PendingRotation,
+    ) -> Result<RegisterResponse> {
+        let mut body = Self::build_register_request(identity);
+        body.rotation = Some(RotationProof {
+            prev_ik_ed25519_pub: proof.prev_ik_ed25519_pub.clone(),
+            prev_sig: proof.prev_sig.clone(),
+        });
+        let body_json = serde_json::to_vec(&body)?;
+        let resp = self.send_request(
+            "POST",
+            "/v1/register",
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&resp)?;
+        Ok(serde_json::from_slice(&resp.body)?)
+    }
+
     /// `GET /v1/pubkeys/:user_id`.
     pub fn fetch_pubkeys(&self, user_id: &str) -> Result<PubkeysResponse> {
         let path = format!("/v1/pubkeys/{}", urlencode_segment(user_id));
