@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# W2: server/channel whitelist + membership feed.
+[[permission]]
+identifier = "allow-osl-note-scope-membership"
+description = "Permits invoking `osl_note_scope_membership` (W2 server/channel whitelist + dynamic membership)."
+commands.allow = ["osl_note_scope_membership"]

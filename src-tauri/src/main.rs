@@ -1267,6 +1267,74 @@ async fn osl_membership_get(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// W2: durable scope-membership accrual fed by the gateway taps.
+#[tauri::command]
+async fn osl_note_scope_membership(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    member_ids: Vec<String>,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_note_scope_membership(state.inner(), scope_input, member_ids)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// W2: server-header + per-channel whitelist/encrypt flags for UI.
+#[tauri::command]
+async fn osl_get_server_whitelist_state(
+    app: tauri::AppHandle,
+    server_id: String,
+    channel_scope_input: Option<ScopeInput>,
+) -> Result<ipc::commands::ServerWhitelistStateDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_server_whitelist_state(
+            state.inner(),
+            server_id,
+            channel_scope_input,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// W2: the server-header whitelist button (whole-server, OSL members).
+#[tauri::command]
+async fn osl_set_server_header_whitelist(
+    app: tauri::AppHandle,
+    server_id: String,
+    on: bool,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_server_header_whitelist(state.inner(), server_id, on)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// W2: the per-channel sidebar whitelist button.
+#[tauri::command]
+async fn osl_set_channel_whitelist(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    on: bool,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_channel_whitelist(state.inner(), scope_input, on)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 // ---- Phase 9-C2: friend list + guild list + bulk-DM whitelist ----
 
 /// 9-C2: boot.js gateway tap pushes the user's friend-id list here
@@ -2626,6 +2694,10 @@ fn main() {
             osl_list_burned_scopes,
             osl_membership_update,
             osl_membership_get,
+            osl_note_scope_membership,
+            osl_get_server_whitelist_state,
+            osl_set_server_header_whitelist,
+            osl_set_channel_whitelist,
             osl_set_friend_ids,
             osl_get_friend_ids,
             osl_set_guild_list,

@@ -5682,6 +5682,67 @@
         }
         oslHeaderStateLastScopeKey = key;
 
+        // W2b: server text channels use the scope-flag model, NOT the
+        // roster-summary path (Discord never loads a server roster —
+        // that was the "Channel roster not loaded" dead-end). Render
+        // from the server-header / channel flags instead. DM / GC fall
+        // through to the unchanged summary path below.
+        if (scopeInput.kind === "server_channel") {
+            const sw = await oslInvoke("osl_get_server_whitelist_state", {
+                serverId: scopeInput.server_id,
+                channelScopeInput: scopeInput,
+            });
+            if (!sw.ok) {
+                encryptBtn.innerHTML = oslLockSvg("unknown");
+                encryptBtn.style.color = "var(--text-muted, #87898c)";
+                encryptBtn.setAttribute(
+                    "aria-label",
+                    "OSL whitelist: unknown (server state fetch failed)"
+                );
+                encryptBtn.title =
+                    "Server whitelist state unknown: " + (sw.error || "?");
+                oslHeaderStateLastScopeKey = null;
+                return;
+            }
+            const st = sw.value || {};
+            let lockState, color, label;
+            if (st.server_header) {
+                lockState = "closed";
+                color = "var(--status-positive, #23a559)";
+                label =
+                    "Server-wide OSL whitelist ON — encrypting to every " +
+                    "OSL member of this server. Click to turn the " +
+                    "server-wide whitelist OFF.";
+            } else if (st.channel) {
+                lockState = "partial";
+                color = "var(--status-warning, #f0b132)";
+                label =
+                    "This channel is whitelisted (server-wide OFF). " +
+                    "Click to whitelist the WHOLE server instead.";
+            } else {
+                lockState = "open";
+                color = "var(--text-muted, #87898c)";
+                label =
+                    "Not whitelisted. Click to whitelist this whole " +
+                    "server (all OSL members, current + future).";
+            }
+            encryptBtn.innerHTML = oslLockSvg(lockState);
+            encryptBtn.setAttribute(
+                "aria-label",
+                "OSL server whitelist: " +
+                    (st.server_header ? "server" : st.channel ? "channel" : "off")
+            );
+            encryptBtn.style.opacity = "1";
+            encryptBtn.style.pointerEvents = "auto";
+            encryptBtn.style.color = color;
+            encryptBtn.title = label;
+            if (burnBtn) {
+                burnBtn.title =
+                    "Burn your messages in " + oslScopeLabel(scopeInput);
+            }
+            return;
+        }
+
         const selfId = await oslSelfDiscordId();
         const members = oslHeaderChannelMembers(ctx);
         const result = await oslInvoke("osl_get_scope_whitelist_summary", {
@@ -5850,6 +5911,54 @@
             oslToast("OSL: cannot determine current scope");
             return;
         }
+
+        // W2b: server text channel — the header button toggles the
+        // SERVER-WIDE whitelist (all OSL members, current + future).
+        // No roster needed; recipients resolve dynamically from the
+        // accrued membership. Turning ON also enables encryption for
+        // this channel now (decision #2). Returns before the DM/GC
+        // roster flow, which is left entirely unchanged.
+        if (scopeInput.kind === "server_channel") {
+            const cur = await oslInvoke("osl_get_server_whitelist_state", {
+                serverId: scopeInput.server_id,
+                channelScopeInput: scopeInput,
+            });
+            if (!cur.ok) {
+                oslToast("OSL: " + cur.error);
+                return;
+            }
+            const wasOn = !!(cur.value && cur.value.server_header);
+            const next = !wasOn;
+            const setRes = await oslInvoke("osl_set_server_header_whitelist", {
+                serverId: scopeInput.server_id,
+                on: next,
+            });
+            if (!setRes.ok) {
+                oslToast("OSL: " + setRes.error);
+                return;
+            }
+            if (next) {
+                // Make THIS channel encrypt immediately (other/future
+                // channels via the server encrypt-by-default path).
+                try {
+                    await oslInvoke("osl_set_scope_encrypt", {
+                        scopeInput: scopeInput,
+                        enabled: true,
+                    });
+                } catch (_) {}
+            }
+            oslToast(
+                next
+                    ? "Server-wide whitelist ON — encrypting to all OSL " +
+                          "members of this server."
+                    : "Server-wide whitelist OFF."
+            );
+            try {
+                await oslRefreshHeaderState({ force: true });
+            } catch (_) {}
+            return;
+        }
+
         const selfId = await oslSelfDiscordId();
         const members = oslHeaderChannelMembers(ctx).filter(
             (m) => m !== selfId
@@ -9671,6 +9780,37 @@
         window.__OSL_CHANNEL_MEMBERS__ = channelMemberCache;
         window.__OSL_MEMBERS_UPDATE__ = oslChannelMembersUpdate;
 
+        // W2b: durable scope-membership feed. Additive — independent
+        // of the osl_membership_update path above. Per-scope throttle
+        // (same window) so chunk bursts don't hammer the persister.
+        // Best-effort: never throws, fire-and-forget; Rust accrues +
+        // persists, decision #3 (lurkers heal via auto-recovery).
+        const noteScopeLastMs = new Map();
+        function oslNoteScope(scopeInput, members) {
+            if (!scopeInput || !Array.isArray(members) || members.length === 0) {
+                return;
+            }
+            const key = scopeInput.kind + ":" + scopeInput.id;
+            const now = Date.now();
+            if (now - (noteScopeLastMs.get(key) || 0) < MEMBER_UPDATE_THROTTLE_MS) {
+                return;
+            }
+            noteScopeLastMs.set(key, now);
+            const uniq = Array.from(
+                new Set(members.filter((m) => typeof m === "string"))
+            );
+            if (uniq.length === 0) return;
+            try {
+                if (typeof oslInvoke === "function") {
+                    oslInvoke("osl_note_scope_membership", {
+                        scopeInput: scopeInput,
+                        memberIds: uniq,
+                    });
+                }
+            } catch (_) {}
+        }
+        window.__OSL_NOTE_SCOPE__ = oslNoteScope;
+
         function ingestPrivateChannel(ch) {
             if (!ch || typeof ch.id !== "string" || !Array.isArray(ch.recipients)) {
                 return;
@@ -9679,6 +9819,14 @@
                 .map((r) => (r && typeof r.id === "string" ? r.id : null))
                 .filter((s) => !!s);
             oslChannelMembersUpdate(ch.id, members);
+            // W2b: a group DM (type 3) is a gc: scope — accrue its
+            // members durably. type 1 (1:1 DM) needs no accrual.
+            if (ch.type === 3) {
+                oslNoteScope(
+                    { kind: "gc", id: ch.id, channel_id: ch.id },
+                    members
+                );
+            }
         }
 
         // Bug B (whitelist repair): caps so __OSL_CHANNEL_MEMBERS__
@@ -9887,6 +10035,22 @@
                         for (const ch of d.channels) {
                             if (ch && typeof ch.id === "string") {
                                 oslChannelMembersUpdate(ch.id, memberIds);
+                                // W2b: text channels (type 0) are
+                                // server_channel scopes — durably
+                                // accrue the guild roster into each so
+                                // the header-whitelist recipient
+                                // resolution has a member set.
+                                if (ch.type === 0 && typeof d.id === "string") {
+                                    oslNoteScope(
+                                        {
+                                            kind: "server_channel",
+                                            id: d.id + ":" + ch.id,
+                                            server_id: d.id,
+                                            channel_id: ch.id,
+                                        },
+                                        memberIds
+                                    );
+                                }
                             }
                         }
                     }
