@@ -264,6 +264,7 @@ fn alice_sends(alice_state: &AppState, plaintext: &str) -> Result<String, String
         vec![ALICE_DID.to_string(), BOB_DID.to_string()],
         ALICE_DID.to_string(),
     )
+    .map(|w| w.content)
 }
 
 fn bob_sends(bob_state: &AppState, plaintext: &str) -> Result<String, String> {
@@ -274,6 +275,7 @@ fn bob_sends(bob_state: &AppState, plaintext: &str) -> Result<String, String> {
         vec![ALICE_DID.to_string(), BOB_DID.to_string()],
         BOB_DID.to_string(),
     )
+    .map(|w| w.content)
 }
 
 fn bob_decrypts(bob_state: &AppState, wire: &str) -> Result<String, String> {

@@ -145,7 +145,8 @@ fn test_osl_encrypt_message_v2_command() {
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
     )
-    .expect("encrypt v=3");
+    .expect("encrypt v=3")
+    .content;
     assert!(
         wire.starts_with("DPC0::"),
         "v=3 still uses DPC0:: prefix; version byte is inside payload"
@@ -178,7 +179,8 @@ fn test_osl_encrypt_no_whitelist_encrypts_to_self() {
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
     )
-    .expect("encrypt-to-self must succeed under 7d-PIVOT");
+    .expect("encrypt-to-self must succeed under 7d-PIVOT")
+    .content;
     assert!(
         wire.starts_with("DPC0::"),
         "expected DPC0 wire prefix, got: {wire}"

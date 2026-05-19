@@ -1900,6 +1900,57 @@ fn now_unix_secs() -> i64 {
 pub struct EncryptOutput {
     pub messages: Vec<String>,
     pub session_id: Option<u32>,
+    /// Phase 9-A3 SKDM-delivery fix: v=5 group sends produce one
+    /// SKDM (Sender Key Distribution Message) v=4 wire per non-self
+    /// peer that boot.js must post as its OWN Discord message(s) —
+    /// distinct from `messages` (which boot.js treats as Mode-0/1
+    /// CONTENT and would reject if >1). Empty for v=3 / v=4-DM
+    /// sends. `#[serde(default)]` so old shapes deserialize and the
+    /// single-message Mode-0 path is unaffected; always serialized
+    /// (possibly `[]`) so boot.js can iterate unconditionally.
+    #[serde(default)]
+    pub control_messages: Vec<String>,
+    /// Per-peer SKDM dispatch outcome (fail-closed policy: a failed
+    /// SKDM does NOT abort the content send; boot.js surfaces a
+    /// user-visible notice naming the affected peer(s)). Empty for
+    /// non-v=5 sends.
+    #[serde(default)]
+    pub skdm_peer_status: Vec<SkdmPeerStatus>,
+}
+
+/// Per-peer outcome of a v=5 SKDM dispatch attempt. Surfaced all
+/// the way to boot.js so a failed SKDM names the affected peer in a
+/// user-visible notice rather than failing silently (the bug this
+/// fixes: the SKDM wire used to be discarded entirely).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkdmPeerStatus {
+    pub peer_discord_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Internal return of [`cmd_osl_encrypt_message_v2_wire`]: the
+/// CONTENT wire plus any v=5 SKDM control wires that must be posted
+/// as their own Discord messages, and the per-peer dispatch status.
+/// `control_messages` / `skdm_peer_status` are empty for v=3 and
+/// v=4-DM sends (only v=5 group sends emit SKDMs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptWire {
+    pub content: String,
+    pub control_messages: Vec<String>,
+    pub skdm_peer_status: Vec<SkdmPeerStatus>,
+}
+
+impl EncryptWire {
+    /// v=3 / v=4-DM helper: a content wire with no SKDM fan-out.
+    fn content_only(content: String) -> Self {
+        EncryptWire {
+            content,
+            control_messages: Vec::new(),
+            skdm_peer_status: Vec::new(),
+        }
+    }
 }
 
 /// Layer 10 / Phase 7b IPC entry point: encrypt a v=2 content
@@ -1934,7 +1985,11 @@ pub fn cmd_osl_encrypt_message_v2(
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
 
-    let wire = cmd_osl_encrypt_message_v2_wire(
+    let EncryptWire {
+        content: wire,
+        control_messages,
+        skdm_peer_status,
+    } = cmd_osl_encrypt_message_v2_wire(
         state,
         plaintext,
         scope_input,
@@ -1968,6 +2023,8 @@ pub fn cmd_osl_encrypt_message_v2(
         StegoMode::Mode0 => Ok(EncryptOutput {
             messages: vec![wire],
             session_id: None,
+            control_messages,
+            skdm_peer_status,
         }),
         StegoMode::Mode1 => {
             // Strip the DPC0:: prefix and recover the raw wire bytes
@@ -2003,6 +2060,8 @@ pub fn cmd_osl_encrypt_message_v2(
             Ok(EncryptOutput {
                 messages,
                 session_id: Some(session_id),
+                control_messages,
+                skdm_peer_status,
             })
         }
     }
@@ -2017,7 +2076,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     scope_input: crate::scope::ScopeInput,
     channel_members: Vec<String>,
     self_discord_id: String,
-) -> Result<String, String> {
+) -> Result<EncryptWire, String> {
     // F3.6 pivot: text encryption is unconditional. The F3.2
     // gate here is retired; see the matching note at
     // `cmd_osl_encrypt_message_v2`.
@@ -2164,7 +2223,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                     &scope,
                     plaintext.as_bytes(),
                     &self_discord_id,
-                );
+                )
+                .map(EncryptWire::content_only);
             }
         }
     }
@@ -2202,6 +2262,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         plaintext.as_bytes(),
     )
     .map_err(|e| format!("OSL: encrypt_v3: {e}"))
+    .map(EncryptWire::content_only)
 }
 
 /// Phase 9-A3: group/server scopes are eligible for v=5 sender-keys.
@@ -2249,7 +2310,7 @@ fn encrypt_v5_send(
     channel_members: &[String],
     non_self_peers: &[&crate::wire_v2::RecipientV3],
     plaintext: &[u8],
-) -> Result<String, String> {
+) -> Result<EncryptWire, String> {
     use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
 
     let scope_key = scope.storage_key();
@@ -2408,6 +2469,8 @@ fn encrypt_v5_send(
     // Dispatch SKDMs via v=4 to each non-self peer. Best-effort: a
     // missing peer ratchet pub causes one keyserver refresh attempt
     // before erroring. Each SKDM is one v=4 send.
+    let mut skdm_wires: Vec<String> = Vec::new();
+    let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
     if send_skdm {
         let _ = send_skdm; // mark used
         for (idx, peer) in non_self_peers.iter().enumerate() {
@@ -2426,7 +2489,7 @@ fn encrypt_v5_send(
                 },
                 None => continue,
             };
-            if let Err(e) = send_skdm_via_v4(
+            match send_skdm_via_v4(
                 state,
                 sender_sk,
                 self_pk,
@@ -2436,16 +2499,44 @@ fn encrypt_v5_send(
                 chain_id,
                 &rotation_root,
             ) {
-                tracing::warn!(
-                    peer = %peer_did,
-                    error = %e,
-                    "[OSL] v=5 SKDM dispatch failed (best-effort; peer may need to retry)"
-                );
+                Ok(skdm_wire) => {
+                    // Previously this wire was DISCARDED — the SKDM
+                    // was never posted to Discord, so the peer's
+                    // sender-key chain never installed and v=5
+                    // content never decrypted. Collect it; boot.js
+                    // posts each as its own Discord message.
+                    skdm_wires.push(skdm_wire);
+                    skdm_peer_status.push(SkdmPeerStatus {
+                        peer_discord_id: peer_did.clone(),
+                        ok: true,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    // Fail-closed policy (locked decision): do NOT
+                    // abort the content send. Record the per-peer
+                    // failure so boot.js can surface a user-visible
+                    // notice naming this peer.
+                    tracing::warn!(
+                        peer = %peer_did,
+                        error = %e,
+                        "[OSL] v=5 SKDM dispatch failed (best-effort; peer may need to retry)"
+                    );
+                    skdm_peer_status.push(SkdmPeerStatus {
+                        peer_discord_id: peer_did.clone(),
+                        ok: false,
+                        error: Some(e),
+                    });
+                }
             }
         }
     }
 
-    Ok(wire)
+    Ok(EncryptWire {
+        content: wire,
+        control_messages: skdm_wires,
+        skdm_peer_status,
+    })
 }
 
 /// Phase 9-A3: ship a SenderKeyDistribution payload to one peer via

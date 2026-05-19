@@ -166,7 +166,8 @@ fn send_from(sender_state: &AppState, sender_did: &str, plaintext: &str) -> Vec<
         ],
         sender_did.to_string(),
     )
-    .expect("encrypt");
+    .expect("encrypt")
+    .content;
     vec![wire]
 }
 

@@ -203,7 +203,8 @@ fn decrypt_blocked_for_message_in_burn_kill_list() {
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
     )
-    .expect("encrypt");
+    .expect("encrypt")
+    .content;
 
     let henry_state = AppState::new();
     *henry_state.identity.lock().unwrap() = Some(identity_from_keypairs(
@@ -277,7 +278,8 @@ fn decrypt_allowed_for_message_not_in_kill_list() {
         vec![HENRY_DID.to_string()],
         LIAM_DID.to_string(),
     )
-    .expect("encrypt");
+    .expect("encrypt")
+    .content;
 
     let henry_state = AppState::new();
     *henry_state.identity.lock().unwrap() = Some(identity_from_keypairs(
