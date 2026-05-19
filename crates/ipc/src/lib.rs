@@ -46,6 +46,7 @@ pub mod license_lifecycle;
 pub mod main_password;
 pub mod migration;
 pub mod peer_map;
+pub mod recovery;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.

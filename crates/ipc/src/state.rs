@@ -301,6 +301,12 @@ pub struct AppState {
     /// `AppState` (or one whose launch hook hasn't run yet)
     /// reads as Free, not as a crashed unwrap.
     pub license_state: Mutex<keystore::LicenseStateDto>,
+
+    /// Auto-recovery throttle + replay + act-on-symptom guard for the
+    /// SKDM_REQUEST / SESSION_RESET control messages. In-memory only
+    /// (see [`crate::recovery::RecoveryGuard`]); a relaunch resets it,
+    /// whose worst case is one extra idempotent recovery round.
+    pub recovery_guard: Mutex<crate::recovery::RecoveryGuard>,
     // F3.6 pivot: `launch_time` and `free_tier_unlocked_until`
     // (added in F3.1 for the 60-min launch-window + ad-unlock
     // model) are removed. The new model has unlimited free text

@@ -286,6 +286,140 @@ pub fn cmd_osl_reset_v5_sender_key(
     Ok(())
 }
 
+/// Random 16-byte recovery-request nonce (replay-dedupe id; carries
+/// no secret material).
+fn recovery_nonce() -> [u8; 16] {
+    let b = crypto::random::random_bytes(16);
+    let mut n = [0u8; 16];
+    n.copy_from_slice(&b);
+    n
+}
+
+/// Auto-recovery (build side): construct a v=2-wrapped SKDM_REQUEST
+/// addressed to `peer_discord_id` for `scope_input`. Called by boot.js
+/// when a v=5 message stays "awaiting SKDM" past its retry budget.
+/// Ships v=2 (NOT v=4): the requester may have no usable v=4 session
+/// to the peer yet. Outbound-throttled per (peer, kind); a throttled
+/// call returns a stable Err so boot.js skips the POST without spam.
+/// Returns the DPC0:: wire string for boot.js to POST to the channel.
+pub fn cmd_osl_build_skdm_request(
+    state: &AppState,
+    scope_input: crate::scope::ScopeInput,
+    peer_discord_id: String,
+) -> Result<String, String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let now = now_unix_secs();
+    {
+        let mut g = state
+            .recovery_guard
+            .lock()
+            .expect("recovery_guard mutex poisoned");
+        if !g.should_emit(
+            &peer_discord_id,
+            crate::recovery::RecoveryKind::SkdmRequest,
+            now,
+        ) {
+            return Err("OSL: SKDM_REQUEST throttled (recently emitted)".to_string());
+        }
+    }
+    let req = crate::control_messages::SkdmRequest {
+        scope_storage_key: scope.storage_key(),
+        requested_at: now,
+        nonce: recovery_nonce(),
+    };
+    let body = crate::control_messages::serialize_skdm_request(&req)
+        .map_err(|e| format!("OSL: SKDM_REQUEST: serialize: {e}"))?;
+    let sender_sk = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+            .x25519_secret
+            .clone()
+    };
+    let peer_pk = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        lookup_peer_pubkey(&pm, &peer_discord_id)?
+    };
+    crate::wire_v2::encrypt_v2(
+        &body,
+        &[peer_pk],
+        crate::wire_v2::MSG_TYPE_SKDM_REQUEST,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: SKDM_REQUEST: encrypt_v2: {e}"))
+}
+
+/// Auto-recovery (build side): drop our own v=4 ratchet for
+/// `peer_discord_id` AND construct a v=2-wrapped SESSION_RESET telling
+/// that peer to do the same, so the next v=4 send re-handshakes. The
+/// local drop + the announcement are atomic from the caller's view
+/// (we reset first, then hand boot.js the wire to POST). Called by
+/// boot.js when a v=4 message from the peer keeps failing to decrypt
+/// (ratchet desync). Outbound-throttled; throttled call returns Err.
+pub fn cmd_osl_build_session_reset(
+    state: &AppState,
+    peer_discord_id: String,
+) -> Result<String, String> {
+    let now = now_unix_secs();
+    {
+        let mut g = state
+            .recovery_guard
+            .lock()
+            .expect("recovery_guard mutex poisoned");
+        if !g.should_emit(
+            &peer_discord_id,
+            crate::recovery::RecoveryKind::SessionReset,
+            now,
+        ) {
+            return Err("OSL: SESSION_RESET throttled (recently emitted)".to_string());
+        }
+    }
+    // Reset our side first — same collateral as cmd_osl_reset_v4_session
+    // (the v=4 ratchet is shared with this peer's group SKDM path).
+    let changed = {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        match pm.get_mut(&peer_discord_id) {
+            Some(entry) if entry.ratchet_state.is_some() => {
+                entry.ratchet_state = None;
+                true
+            }
+            Some(_) => false,
+            None => return Err(format!("OSL: no peer {peer_discord_id} in peer_map")),
+        }
+    };
+    if changed {
+        persist_peer_map_now(state);
+    }
+    let rst = crate::control_messages::SessionReset {
+        requested_at: now,
+        nonce: recovery_nonce(),
+    };
+    let body = crate::control_messages::serialize_session_reset(&rst)
+        .map_err(|e| format!("OSL: SESSION_RESET: serialize: {e}"))?;
+    let sender_sk = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+            .x25519_secret
+            .clone()
+    };
+    let peer_pk = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        lookup_peer_pubkey(&pm, &peer_discord_id)?
+    };
+    crate::wire_v2::encrypt_v2(
+        &body,
+        &[peer_pk],
+        crate::wire_v2::MSG_TYPE_SESSION_RESET,
+        &sender_sk,
+    )
+    .map_err(|e| format!("OSL: SESSION_RESET: encrypt_v2: {e}"))
+}
+
 /// 7d-FIX3b: persist a Discord snowflake on the loaded identity and
 /// repair the peer_map self-entry to match. Called from boot.js
 /// the first time the runtime exposes the local user's snowflake.
@@ -3735,6 +3869,14 @@ pub fn cmd_osl_decrypt_message_v2(
             let json = serde_json::json!({ "attachments": attachments_json });
             Ok(format!("{}{}", OSL_RESULT_ATTACHMENT_PREFIX, json))
         }
+        crate::wire_v2::MSG_TYPE_SKDM_REQUEST => {
+            let _ = scope_opt;
+            apply_skdm_request_recv(state, &sender_discord_id, &recovered.plaintext)
+        }
+        crate::wire_v2::MSG_TYPE_SESSION_RESET => {
+            let _ = scope_opt;
+            apply_session_reset_recv(state, &sender_discord_id, &recovered.plaintext)
+        }
         other => Err(format!(
             "OSL: v=2 msg_type 0x{other:02x} not supported by this client"
         )),
@@ -3863,6 +4005,13 @@ fn decrypt_v4_recv(
                 .map_err(|e| format!("OSL: v=4 bootstrap: new_responder: {e}"))?
         }
         (None, false) => {
+            // Act-on-symptom evidence: a real desync from this peer.
+            // Authorizes honoring a later SESSION_RESET from them.
+            state
+                .recovery_guard
+                .lock()
+                .expect("recovery_guard mutex poisoned")
+                .note_v4_failure(&sender_discord_id, now_unix_secs());
             return Err(format!(
                 "OSL: v=4 continuation: peer {sender_discord_id} has no ratchet_state \
                  — bootstrap flag was false but local state is None (desync)"
@@ -3876,9 +4025,21 @@ fn decrypt_v4_recv(
         message_nonce: parsed.body_nonce,
         ciphertext: parsed.body_ct,
     };
-    let plaintext_bytes = dr
-        .decrypt(&em)
-        .map_err(|e| format!("OSL: v=4 dr.decrypt: {e}"))?;
+    let plaintext_bytes = match dr.decrypt(&em) {
+        Ok(pt) => pt,
+        Err(e) => {
+            // Act-on-symptom evidence: this peer's v=4 traffic failed
+            // to decrypt (e.g. "header AEAD failed" ratchet desync).
+            // Recorded so a subsequent SESSION_RESET from this peer is
+            // honored only when backed by a real local failure.
+            state
+                .recovery_guard
+                .lock()
+                .expect("recovery_guard mutex poisoned")
+                .note_v4_failure(&sender_discord_id, now_unix_secs());
+            return Err(format!("OSL: v=4 dr.decrypt: {e}"));
+        }
+    };
 
     // Persist updated DR state.
     {
@@ -3914,6 +4075,214 @@ fn decrypt_v4_recv(
 /// Phase 9-A3: SKDM control sentinel — boot.js ignores messages
 /// that decode to this string instead of rendering them.
 pub const OSL_RESULT_SKDM_APPLIED: &str = "__OSL_CONTROL_SKDM_APPLIED__";
+
+/// Auto-recovery: an inbound SKDM_REQUEST was honored and produced a
+/// fresh SKDM wire for the requester. Full result is this prefix +
+/// the DPC0:: wire string; boot.js POSTs that wire back to the
+/// originating channel (the requester's recv path then applies it).
+pub const OSL_RESULT_SKDM_REREQUEST_PREFIX: &str = "__OSL_CONTROL_SKDM_REREQUEST__|";
+
+/// Auto-recovery: an inbound SESSION_RESET was honored — we dropped
+/// our v=4 ratchet for the sender; the next v=4 send re-handshakes.
+/// Control sentinel; boot.js suppresses render (no user content).
+pub const OSL_RESULT_SESSION_RESET_APPLIED: &str = "__OSL_CONTROL_SESSION_RESET_APPLIED__";
+
+/// Auto-recovery: an inbound recovery request was dropped by a guard
+/// (stale / replayed / throttled / no corroborating local symptom).
+/// Control sentinel; boot.js suppresses render. Distinct from
+/// "applied" so logs can tell a no-op from an action.
+pub const OSL_RESULT_RECOVERY_IGNORED: &str = "__OSL_CONTROL_RECOVERY_IGNORED__";
+
+/// Auto-recovery inbound handler for `MSG_TYPE_SKDM_REQUEST` (0x06):
+/// a peer says it never received our sender-key for `scope`. If we
+/// genuinely have a sender chain for that scope and the request
+/// passes the throttle/replay/staleness guards, re-emit ONE SKDM
+/// (v=4-wrapped) addressed to that requester only, bypassing the
+/// normal "already installed" short-circuit. Returns the SKDM wire
+/// behind [`OSL_RESULT_SKDM_REREQUEST_PREFIX`] for boot.js to POST,
+/// or [`OSL_RESULT_RECOVERY_IGNORED`] for any no-op path.
+fn apply_skdm_request_recv(
+    state: &AppState,
+    requester_discord_id: &str,
+    payload_bytes: &[u8],
+) -> Result<String, String> {
+    let req = crate::control_messages::deserialize_skdm_request(payload_bytes)
+        .map_err(|e| format!("OSL: SKDM_REQUEST: deserialize: {e}"))?;
+    let now = now_unix_secs();
+
+    {
+        let mut g = state
+            .recovery_guard
+            .lock()
+            .expect("recovery_guard mutex poisoned");
+        if !g.accept_inbound(
+            requester_discord_id,
+            crate::recovery::RecoveryKind::SkdmRequest,
+            &req.nonce,
+            req.requested_at,
+            now,
+        ) {
+            return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+        }
+    }
+
+    let scope = match crate::scope::Scope::parse(&req.scope_storage_key) {
+        Some(s) => s,
+        None => return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string()),
+    };
+    let scope_key = scope.storage_key();
+
+    // We can only redistribute a chain we actually own. If there is
+    // no sender chain for this scope we are not a v=5 sender here —
+    // benign no-op (the requester is asking the wrong peer, or the
+    // scope was never keyed).
+    let (chain_id, rotation_root) = {
+        use crypto::sender_keys::SenderKeyState;
+        let g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        let Some(disk) = g.states.get(&scope_key) else {
+            return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+        };
+        let sks: SenderKeyState = disk
+            .clone()
+            .try_into()
+            .map_err(|e| format!("OSL: SKDM_REQUEST: load sender_key_state: {e}"))?;
+        match sks.sender_chain() {
+            Some(c) => (c.current_chain_id(), c.rotation_root_bytes()),
+            None => return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string()),
+        }
+    };
+
+    // Self identity material for the v=4 wrap.
+    let (sender_sk, self_pk, self_mlkem_pub, self_discord_id) = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: SKDM_REQUEST: identity not loaded".to_string())?;
+        let self_did = {
+            let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm.iter()
+                .find_map(|(did, pe)| (pe.is_self == Some(true)).then(|| did.clone()))
+        };
+        (
+            identity.x25519_secret.clone(),
+            identity.x25519_public,
+            identity.mlkem_encapsulation_key(),
+            self_did,
+        )
+    };
+    let Some(self_discord_id) = self_discord_id else {
+        return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+    };
+
+    // Resolve the requester's RecipientV3 via the same vetted path
+    // the send loop uses (handles key resolution consistently). The
+    // channel-member list for resolution is the gateway snapshot for
+    // this scope's channel (DM/GC: scope.id; server: scope.channel_id).
+    let channel_members: Vec<String> = {
+        let cm = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        let cache_key = scope.channel_id.clone().unwrap_or_else(|| scope.id.clone());
+        cm.get(&cache_key).cloned().unwrap_or_default()
+    };
+    let recipients = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        crate::whitelist::recipients_for_scope_v3(
+            &pm,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+            &self_mlkem_pub,
+        )
+        .map_err(|e| format!("OSL: SKDM_REQUEST: resolve recipients: {e}"))?
+    };
+    let Some((_, peer_recipient)) = recipients
+        .iter()
+        .find(|(did, _)| did.as_str() == requester_discord_id)
+    else {
+        // Requester isn't a resolvable recipient of this scope —
+        // nothing we can (or should) send them.
+        return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+    };
+
+    let wire = send_skdm_via_v4(
+        state,
+        &sender_sk,
+        &self_pk,
+        requester_discord_id,
+        peer_recipient,
+        &scope_key,
+        chain_id,
+        &rotation_root,
+    )?;
+    tracing::info!(
+        requester = %requester_discord_id,
+        scope = %scope_key,
+        "OSL: SKDM_REQUEST honored — re-emitting SKDM"
+    );
+    Ok(format!("{OSL_RESULT_SKDM_REREQUEST_PREFIX}{wire}"))
+}
+
+/// Auto-recovery inbound handler for `MSG_TYPE_SESSION_RESET` (0x07):
+/// the sender says our shared v=4 ratchet is desynced and they have
+/// dropped their side. Honor it ONLY when (a) it passes the
+/// throttle/replay/staleness guards AND (b) we have independently
+/// observed a real v=4 decrypt failure from this peer recently
+/// (act-on-symptom — a forged reset with no corroborating local
+/// failure is ignored). On honor, drop our `ratchet_state` for the
+/// peer so the next v=4 send re-handshakes.
+fn apply_session_reset_recv(
+    state: &AppState,
+    sender_discord_id: &str,
+    payload_bytes: &[u8],
+) -> Result<String, String> {
+    let rst = crate::control_messages::deserialize_session_reset(payload_bytes)
+        .map_err(|e| format!("OSL: SESSION_RESET: deserialize: {e}"))?;
+    let now = now_unix_secs();
+
+    {
+        let mut g = state
+            .recovery_guard
+            .lock()
+            .expect("recovery_guard mutex poisoned");
+        let passes_guards = g.accept_inbound(
+            sender_discord_id,
+            crate::recovery::RecoveryKind::SessionReset,
+            &rst.nonce,
+            rst.requested_at,
+            now,
+        );
+        // Act-on-symptom: never re-handshake purely because a wire
+        // told us to. Require corroborating local evidence.
+        if !passes_guards || !g.had_recent_v4_failure(sender_discord_id, now) {
+            return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+        }
+    }
+
+    let changed = {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        match pm.get_mut(sender_discord_id) {
+            Some(entry) if entry.ratchet_state.is_some() => {
+                entry.ratchet_state = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        persist_peer_map_now(state);
+        tracing::warn!(
+            peer = %sender_discord_id,
+            "OSL: SESSION_RESET honored — dropped v=4 ratchet; next v=4 re-handshakes"
+        );
+    }
+    Ok(OSL_RESULT_SESSION_RESET_APPLIED.to_string())
+}
 
 /// Phase 9-A3: install or rotate a peer's `ReceiverChain` for the
 /// scope named in the SKDM payload. Persists `sender_key_state.json`
