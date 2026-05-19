@@ -1348,6 +1348,15 @@
     // applies it to sender_key_state.json and returns this sentinel.
     // boot.js must NOT render this as user-visible text.
     const OSL_RESULT_SKDM_APPLIED = "__OSL_CONTROL_SKDM_APPLIED__";
+    // Auto-recovery (4/4) sentinels. SKDM_REREQUEST is a `<prefix>|<wire>`
+    // shape (like ATTACHMENT): an inbound SKDM_REQUEST was honored and
+    // the trailing DPC0:: wire must be POSTed back to the channel.
+    // SESSION_RESET_APPLIED / RECOVERY_IGNORED are exact-string control
+    // sentinels — never rendered as user text.
+    const OSL_RESULT_SKDM_REREQUEST_PREFIX = "__OSL_CONTROL_SKDM_REREQUEST__|";
+    const OSL_RESULT_SESSION_RESET_APPLIED =
+        "__OSL_CONTROL_SESSION_RESET_APPLIED__";
+    const OSL_RESULT_RECOVERY_IGNORED = "__OSL_CONTROL_RECOVERY_IGNORED__";
     // Phase 9-B1: Mode 1 chunk reassembly sentinels. Boot.js renders
     // a placeholder badge when the receive side is still waiting on
     // chunks, treats a conflict as a dropped session, and surfaces
@@ -1666,7 +1675,27 @@
             );
             return true;
         }
+        // Auto-recovery: an honored inbound SKDM_REQUEST. Classify as
+        // control here so no path renders it; the recv `.then` does
+        // the actual POST-back (it has channelId in scope).
+        if (result.indexOf(OSL_RESULT_SKDM_REREQUEST_PREFIX) === 0) {
+            console.log(
+                "[OSL] SKDM re-request honored; wire queued msg=" + msgId
+            );
+            return true;
+        }
         switch (result) {
+            case OSL_RESULT_SESSION_RESET_APPLIED:
+                console.log(
+                    "[OSL] v=4 session reset applied (peer-requested) msg=" +
+                        msgId
+                );
+                return true;
+            case OSL_RESULT_RECOVERY_IGNORED:
+                console.log(
+                    "[OSL] recovery request ignored (guarded) msg=" + msgId
+                );
+                return true;
             case OSL_RESULT_BURN_APPLIED:
                 console.log("[OSL] v=2 burn applied msg=" + msgId);
                 return true;
@@ -11190,6 +11219,13 @@
     // through the budget while the IPC layer is wedged.
     const recvRetries = new Map();
     const RECV_MAX_RETRIES = 3;
+    // Auto-recovery (4/4): JS-side cooldown so a stuck message can't
+    // re-fire a recovery request on every 1s sweep. This is only an
+    // invoke-spam damper — the ipc layer's RecoveryGuard is the hard
+    // throttle/replay/act-on-symptom guarantee. Keyed
+    // `kind|peer|scopeKey` → last-attempt epoch ms.
+    const recvRecoveryCooldown = new Map();
+    const RECV_RECOVERY_COOLDOWN_MS = 120000;
     // IPC timeout. Tuned to be longer than a typical keyserver
     // round-trip (cache-miss fetch_pubkeys is the slowest path,
     // ~1â€“2s on a healthy connection) but short enough that a
@@ -13183,6 +13219,54 @@
                     return;
                 }
 
+                // Auto-recovery: an inbound SKDM_REQUEST we honored
+                // produced a fresh SKDM wire. POST it back to this
+                // channel so the requester's recv path applies it.
+                // Control sentinel — never cache/render.
+                if (
+                    typeof plaintext === "string" &&
+                    plaintext.indexOf(OSL_RESULT_SKDM_REREQUEST_PREFIX) === 0
+                ) {
+                    const _skdmWire = plaintext.slice(
+                        OSL_RESULT_SKDM_REREQUEST_PREFIX.length
+                    );
+                    recvDone.add(messageId);
+                    try {
+                        oslSendControlMessage(channelId, _skdmWire);
+                        console.log(
+                            "[OSL] SKDM re-request: posted SKDM wire to " +
+                                "channel=" +
+                                channelId +
+                                " (msg=" +
+                                messageId +
+                                ")"
+                        );
+                    } catch (e) {
+                        console.log(
+                            "[OSL] SKDM re-request POST threw: " +
+                                (e && e.message ? e.message : e)
+                        );
+                    }
+                    return;
+                }
+                // Auto-recovery: a peer-requested v=4 session reset was
+                // applied locally, or a recovery request was guarded
+                // away. Either way: control sentinel, suppress render.
+                if (
+                    plaintext === OSL_RESULT_SESSION_RESET_APPLIED ||
+                    plaintext === OSL_RESULT_RECOVERY_IGNORED
+                ) {
+                    console.log(
+                        "[OSL] recovery control msg=" +
+                            messageId +
+                            " (" +
+                            plaintext +
+                            ")"
+                    );
+                    recvDone.add(messageId);
+                    return;
+                }
+
                 if (DEBUG) {
                     // Phase 9-A1: also surface which wire version
                     // we received. The version byte lives inside
@@ -13401,7 +13485,115 @@
                 ) {
                     recvDone.add(messageId);
                 }
+
+                // Auto-recovery (4/4): this attempt exhausted the
+                // retry budget. If the failure class is self-healable,
+                // ask the peer to fix it. SKDM-awaiting → SKDM_REQUEST
+                // (needs the v=5 scope). v=4 ratchet desync ("v=4
+                // dr.decrypt" / "(desync)") → SESSION_RESET (peer-
+                // scoped, no scope). Cooldown-gated to avoid per-sweep
+                // invoke spam; ipc RecoveryGuard is the hard guard.
+                if ((tries + 1) >= RECV_MAX_RETRIES && senderDiscordId) {
+                    const isV4Desync =
+                        msg.indexOf("v=4 dr.decrypt") !== -1 ||
+                        msg.indexOf("(desync)") !== -1;
+                    if (isV5AwaitingSkdm && recvScopeInput) {
+                        oslMaybeEmitRecovery(
+                            "skdm",
+                            senderDiscordId,
+                            channelId,
+                            recvScopeInput
+                        );
+                    } else if (isV4Desync) {
+                        oslMaybeEmitRecovery(
+                            "session",
+                            senderDiscordId,
+                            channelId,
+                            null
+                        );
+                    }
+                }
             });
+    }
+
+    /**
+     * Auto-recovery (4/4): build + POST a recovery request to `peer`.
+     * `kind` is "skdm" (needs `scopeInput`) or "session" (peer-scoped).
+     * JS cooldown only damps sweep re-fires — the ipc RecoveryGuard is
+     * the authoritative throttle/replay/act-on-symptom guarantee, and
+     * a throttled build returns a stable Err we treat as a benign
+     * no-op. Fire-and-forget; never blocks the recv pipeline.
+     */
+    function oslMaybeEmitRecovery(kind, peer, channelId, scopeInput) {
+        try {
+            const scopeKey = scopeInput
+                ? scopeInput.kind + ":" + scopeInput.id
+                : "dm";
+            const cdKey = kind + "|" + peer + "|" + scopeKey;
+            const last = recvRecoveryCooldown.get(cdKey) || 0;
+            const nowMs = Date.now();
+            if (nowMs - last < RECV_RECOVERY_COOLDOWN_MS) {
+                return;
+            }
+            recvRecoveryCooldown.set(cdKey, nowMs);
+            const cmd =
+                kind === "skdm"
+                    ? "osl_build_skdm_request"
+                    : "osl_build_session_reset";
+            const args =
+                kind === "skdm"
+                    ? { scopeInput: scopeInput, peerDiscordId: peer }
+                    : { peerDiscordId: peer };
+            console.log(
+                "[OSL] auto-recovery: requesting " +
+                    kind +
+                    " recovery from peer=" +
+                    peer +
+                    " scope=" +
+                    scopeKey
+            );
+            Promise.resolve(invoke(cmd, args))
+                .then(function (wire) {
+                    if (typeof wire !== "string" || wire.indexOf("DPC0::") !== 0) {
+                        console.log(
+                            "[OSL] auto-recovery: " +
+                                kind +
+                                " build returned no wire (skipped)"
+                        );
+                        return;
+                    }
+                    return oslSendControlMessage(channelId, wire);
+                })
+                .then(function (posted) {
+                    if (posted) {
+                        console.log(
+                            "[OSL] auto-recovery: " +
+                                kind +
+                                " request posted to channel=" +
+                                channelId +
+                                " peer=" +
+                                peer
+                        );
+                    }
+                })
+                .catch(function (e) {
+                    // Throttled / no-pubkey / not-loaded all land here;
+                    // benign — recv stays non-terminal and the next
+                    // window retries.
+                    console.log(
+                        "[OSL] auto-recovery: " +
+                            kind +
+                            " request not sent (" +
+                            (e && e.message ? e.message : e) +
+                            ")"
+                    );
+                });
+        } catch (e) {
+            console.log(
+                "[OSL] auto-recovery: emit threw " +
+                    (e && e.message ? e.message : e)
+            );
+        }
     }
 
     /**

@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Auto-recovery (4/4): build a v=2-wrapped SKDM_REQUEST.
+[[permission]]
+identifier = "allow-osl-build-skdm-request"
+description = "Permits invoking `osl_build_skdm_request` (construct a v=2-wrapped SKDM_REQUEST asking a peer to re-emit a missing v=5 sender-key for a scope; outbound-throttled in the ipc layer). boot.js posts the returned wire when a v=5 message stays awaiting-SKDM past its retry budget."
+commands.allow = ["osl_build_skdm_request"]

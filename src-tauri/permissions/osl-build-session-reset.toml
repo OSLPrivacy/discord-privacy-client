@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Auto-recovery (4/4): drop our v=4 ratchet for a peer + build a
+# v=2-wrapped SESSION_RESET telling that peer to do the same.
+[[permission]]
+identifier = "allow-osl-build-session-reset"
+description = "Permits invoking `osl_build_session_reset` (drop the local v=4 ratchet for a peer and construct a v=2-wrapped SESSION_RESET so both ends re-handshake; outbound-throttled in the ipc layer). boot.js posts the returned wire when a v=4 message from the peer keeps failing to decrypt (ratchet desync)."
+commands.allow = ["osl_build_session_reset"]

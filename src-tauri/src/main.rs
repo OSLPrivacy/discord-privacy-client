@@ -1535,11 +1535,48 @@ async fn osl_reset_v4_session(
 async fn osl_reset_v5_sender_key(
     app: tauri::AppHandle,
     scope_input: ScopeInput,
-) -> Result<(), String> {
+) -> Result<Vec<ipc::commands::SessionResetNotice>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
         ipc::commands::cmd_osl_reset_v5_sender_key(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Auto-recovery: build a v=2-wrapped SKDM_REQUEST for `peer_discord_id`
+/// in `scope_input`. Called by boot.js when a v=5 message stays
+/// "awaiting SKDM" past its retry budget. Returns the DPC0:: wire for
+/// boot.js to POST; a stable Err on outbound throttle (boot.js skips).
+#[tauri::command]
+async fn osl_build_skdm_request(
+    app: tauri::AppHandle,
+    scope_input: ScopeInput,
+    peer_discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_build_skdm_request(state.inner(), scope_input, peer_discord_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Auto-recovery: drop our v=4 ratchet for `peer_discord_id` and build
+/// a v=2-wrapped SESSION_RESET telling that peer to do the same.
+/// Called by boot.js when a v=4 message from the peer keeps failing
+/// (ratchet desync). Returns the DPC0:: wire to POST; Err on throttle.
+#[tauri::command]
+async fn osl_build_session_reset(
+    app: tauri::AppHandle,
+    peer_discord_id: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_build_session_reset(state.inner(), peer_discord_id)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -2615,6 +2652,8 @@ fn main() {
             osl_decline_key_change,
             osl_reset_v4_session,
             osl_reset_v5_sender_key,
+            osl_build_skdm_request,
+            osl_build_session_reset,
             osl_peer_safety_number,
             osl_self_safety_number,
             osl_open_settings_window,
