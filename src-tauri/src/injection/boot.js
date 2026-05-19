@@ -1161,7 +1161,103 @@
                                     ":" +
                                     v7cScope.id
                             );
-                        return onMutated(newBody);
+                        // SKDM delivery fix: a v=5 group send returns
+                        // its per-peer SKDM v=4 wires on
+                        // out.control_messages — a field SEPARATE from
+                        // `messages` (which Discord's own send posts).
+                        // Post each SKDM as its OWN Discord message
+                        // BEFORE releasing the content send so the
+                        // receiver can install the sender-key chain
+                        // around content arrival (1(b)'s revive is the
+                        // real safety net; this just shrinks the race).
+                        // Fail-closed (locked decision): an SKDM POST
+                        // failure — or a Rust-side per-peer build
+                        // failure (ok:false in skdm_peer_status, whose
+                        // wire is absent from control_messages by
+                        // construction) — does NOT abort the content;
+                        // proceed and show a user-visible notice
+                        // naming the affected peer(s). control_messages
+                        // [i] corresponds to the i-th ok:true
+                        // skdm_peer_status entry (both pushed together
+                        // per peer in encrypt_v5_send).
+                        const __oslCtrl =
+                            out && Array.isArray(out.control_messages)
+                                ? out.control_messages
+                                : [];
+                        const __oslSk =
+                            out && Array.isArray(out.skdm_peer_status)
+                                ? out.skdm_peer_status
+                                : [];
+                        if (
+                            __oslCtrl.length === 0 &&
+                            __oslSk.length === 0
+                        ) {
+                            return onMutated(newBody);
+                        }
+                        return (async function () {
+                            const okStatuses = __oslSk.filter(
+                                function (s) {
+                                    return s && s.ok;
+                                }
+                            );
+                            const affected = __oslSk
+                                .filter(function (s) {
+                                    return s && s.ok === false;
+                                })
+                                .map(function (s) {
+                                    return s && s.peer_discord_id;
+                                })
+                                .filter(Boolean);
+                            for (
+                                let i = 0;
+                                i < __oslCtrl.length;
+                                i++
+                            ) {
+                                let posted = false;
+                                try {
+                                    posted = !!(await oslSendControlMessage(
+                                        channelId,
+                                        __oslCtrl[i]
+                                    ));
+                                } catch (_) {
+                                    posted = false;
+                                }
+                                if (!posted) {
+                                    const st = okStatuses[i];
+                                    affected.push(
+                                        (st &&
+                                            st.peer_discord_id) ||
+                                            "#" + i
+                                    );
+                                }
+                            }
+                            if (affected.length > 0) {
+                                const uniq = Array.from(
+                                    new Set(affected)
+                                );
+                                oslToast(
+                                    "OSL: encrypted-key delivery " +
+                                        "failed for " +
+                                        uniq.join(", ") +
+                                        " — they won't be able to " +
+                                        "read this message until you " +
+                                        "resend it. (Message was sent.)",
+                                    { durationMs: 10000 }
+                                );
+                                console.log(
+                                    "[OSL] SKDM delivery incomplete affected=" +
+                                        uniq.join(",")
+                                );
+                            } else if (__oslCtrl.length > 0) {
+                                console.log(
+                                    "[OSL] SKDM posted count=" +
+                                        __oslCtrl.length +
+                                        " channel=" +
+                                        channelId
+                                );
+                            }
+                            return onMutated(newBody);
+                        })();
                     }
                     // 9-MODE1-RETIRE: Mode 1 dispatch suppressed for
                     // V2. Rust coerces stego_mode=mode1 → Mode 0 at
