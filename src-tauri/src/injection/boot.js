@@ -4425,10 +4425,117 @@
         );
     }
 
+    // === W3: central anchor resolver ===========================
+    // One chokepoint for every fragile Discord-DOM lookup. Each
+    // anchor lists ordered strategies; the FIRST strategies are the
+    // exact selectors used before this refactor (strictly behavior-
+    // preserving), followed by resilient ARIA/structure fallbacks
+    // that are only reached when ALL prior strategies already failed
+    // — i.e. they can only ADD coverage, never regress. A strategy
+    // is a CSS string (querySelector on the root) or a
+    // `(root) => Element|null` function. Resolver-by-name keeps the
+    // ~40 hashed-class call sites fixable in one place and is the
+    // seam a future signed remote selector-map plugs into.
+    function oslAnchorRegistry() {
+        if (window.__oslAnchorReg) return window.__oslAnchorReg;
+        var reg = {
+            channelHeader: [
+                'section[class*="title_"][class*="container__"]',
+                'section[class*="title_"][class*="container_"]',
+                'section[class*="title_"]',
+                'header[class*="title_"]',
+                'section[class*="chat_"] > section',
+                // resilient: the labelled top region of the chat area.
+                function () {
+                    var chat = document.querySelector(
+                        'div[class*="chat_"], main[class*="chatContent_"]'
+                    );
+                    if (!chat) return null;
+                    return (
+                        chat.querySelector(
+                            'section[aria-label], header[aria-label]'
+                        ) || null
+                    );
+                },
+            ],
+            userPanel: [
+                'section[class*="panels__"]',
+                'section[class*="panels_"]',
+                // resilient: the section that holds the User Settings
+                // / Mute affordances is the bottom-left user panel.
+                function () {
+                    var s = document.querySelector(
+                        'button[aria-label*="User Settings" i]'
+                    );
+                    return s ? s.closest("section") : null;
+                },
+            ],
+            composer: [
+                '[class*="channelTextArea__"]',
+                '[class*="channelTextArea_"]',
+                // resilient: the form/region wrapping the message box.
+                function () {
+                    var box = document.querySelector(
+                        '[role="textbox"][contenteditable="true"]'
+                    );
+                    if (!box) return null;
+                    return box.closest("form") || box.parentElement || null;
+                },
+            ],
+            guildsRail: [
+                'nav[class*="guilds_"] [class*="scroller_"]',
+                'nav[class*="guilds_"]',
+                '[class*="guildsList_"]',
+                '[class*="guildsList__"]',
+                // resilient: a nav containing the @me / server links.
+                function () {
+                    var navs = document.querySelectorAll("nav");
+                    for (var i = 0; i < navs.length; i++) {
+                        if (
+                            navs[i].querySelector(
+                                'a[href^="/channels/@me"], a[href^="/channels/"]'
+                            )
+                        ) {
+                            return navs[i];
+                        }
+                    }
+                    return null;
+                },
+            ],
+            profileSurface: [
+                '[class*="user-profile-sidebar"], [class*="user-profile-popout"]',
+                '[class*="userProfileOuter"], [class*="userProfile_"]',
+            ],
+        };
+        window.__oslAnchorReg = reg;
+        return reg;
+    }
+
+    /**
+     * Resolve a registered anchor to its first matching Element, or
+     * null. `root` defaults to document. Never throws (each strategy
+     * is guarded). Exposed as `window.__oslAnchorResolve` for live
+     * diagnosis after a Discord update.
+     */
+    function oslAnchorResolve(name, root) {
+        var scope = root || document;
+        var strategies = oslAnchorRegistry()[name];
+        if (!strategies) return null;
+        for (var i = 0; i < strategies.length; i++) {
+            var s = strategies[i];
+            try {
+                var el =
+                    typeof s === "function" ? s(scope) : scope.querySelector(s);
+                if (el) return el;
+            } catch (_) {}
+        }
+        return null;
+    }
+    window.__oslAnchorResolve = oslAnchorResolve;
+    // === end W3 anchor resolver ================================
+
     function oslFindProfileSurface() {
-        return document.querySelector(
-            '[class*="user-profile-sidebar"], [class*="user-profile-popout"]'
-        );
+        return oslAnchorResolve("profileSurface");
     }
 
     /**
@@ -4827,22 +4934,11 @@
      * `oslFindHeaderIconContainer`.
      */
     function oslFindChannelHeader() {
-        const candidates = [
-            'section[class*="title_"][class*="container__"]',
-            'section[class*="title_"][class*="container_"]',
-            'section[class*="title_"]',
-            'header[class*="title_"]',
-            // Fallback: the chat area's <section> wrapper. Discord
-            // renders the channel topbar as a direct child.
-            'section[class*="chat_"] > section',
-        ];
-        for (const sel of candidates) {
-            try {
-                const el = document.querySelector(sel);
-                if (el) return el;
-            } catch (_) {}
-        }
-        return null;
+        // W3: delegate to the central resolver. The "channelHeader"
+        // registry entry leads with the exact selector sequence that
+        // lived here (behavior-preserving) and appends a resilient
+        // labelled-region fallback.
+        return oslAnchorResolve("channelHeader");
     }
 
     /**
@@ -14473,21 +14569,21 @@
             name: "user_panel",
             critical: true,
             probe: function () {
-                return document.querySelector('section[class*="panels__"]');
+                return oslAnchorResolve("userPanel");
             },
         },
         {
             name: "composer",
             critical: true,
             probe: function () {
-                return document.querySelector('[class*="channelTextArea__"]');
+                return oslAnchorResolve("composer");
             },
         },
         {
             name: "guilds_rail",
             critical: true,
             probe: function () {
-                return document.querySelector('nav[class*="guilds_"]');
+                return oslAnchorResolve("guildsRail");
             },
         },
         // Message content is keyed on per-message ids; if no channel
@@ -14523,14 +14619,17 @@
     ];
 
     let oslCanaryRan = false;
-    // TD3-1.1: retry-before-escalate schedule (10s, 20s, 40s). Pre-fix,
-    // a single 10s probe escalated to "fail" if Discord hadn't finished
-    // rendering — common on cold-start under WSL2 / slower disks — and
-    // popped the "OSL UI broken" banner on every launch. Now we probe
-    // three times with widening gaps; only a probe whose criticalMissing
-    // remains > 0 on the FINAL attempt counts as a real fail. Any earlier
-    // pass short-circuits cleanly (no banner, log "pass on retry N").
-    const OSL_CANARY_RETRY_DELAYS_MS = [10000, 10000, 20000];
+    // TD3-1.1 + W3: retry-before-escalate schedule. A single early
+    // probe escalated to "fail" if Discord hadn't finished rendering
+    // — common on cold-start under WSL2 / slower disks — and popped
+    // the "OSL UI broken" banner on a perfectly healthy launch. The
+    // probes now go through the resilient anchor resolver AND the
+    // schedule gained a long final tail: only criticalMissing > 0 on
+    // the FINAL attempt (~2 min total) counts as a real, persistent
+    // break worth surfacing. Any earlier pass short-circuits silently
+    // (no banner; "pass on retry N"). This is the #7 ask — the popup
+    // appears only on genuine, sustained breakage.
+    const OSL_CANARY_RETRY_DELAYS_MS = [10000, 15000, 30000, 60000];
 
     // Returns { level, criticalMissing, totalMissing, results } without
     // any logging or banner side-effects — the orchestrator decides
