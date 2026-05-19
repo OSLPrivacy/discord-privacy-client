@@ -307,6 +307,12 @@ pub struct AppState {
     /// (see [`crate::recovery::RecoveryGuard`]); a relaunch resets it,
     /// whose worst case is one extra idempotent recovery round.
     pub recovery_guard: Mutex<crate::recovery::RecoveryGuard>,
+
+    /// W1: durable scope-membership accrual (server/channel/GC →
+    /// observed peers), fed by the gateway taps. The oracle the
+    /// Option-B whitelist precedence + dynamic recipient resolution
+    /// consult. Mirrors `membership.json`; safe to lose (re-accrues).
+    pub scope_membership: Mutex<crate::membership::ScopeMembership>,
     // F3.6 pivot: `launch_time` and `free_tier_unlocked_until`
     // (added in F3.1 for the 60-min launch-window + ad-unlock
     // model) are removed. The new model has unlimited free text

@@ -44,6 +44,7 @@ pub mod decoy_mp4;
 pub mod fresh_start;
 pub mod license_lifecycle;
 pub mod main_password;
+pub mod membership;
 pub mod migration;
 pub mod peer_map;
 pub mod recovery;
