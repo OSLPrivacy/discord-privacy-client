@@ -8598,6 +8598,21 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
         .map(|id| id.user_id.clone())
         .unwrap_or_default();
 
+    // Release the SQLite connection BEFORE fresh_start tries to
+    // delete messages.sqlite. Without this, Windows returns
+    // ERROR_SHARING_VIOLATION (os error 32) on every burn because
+    // `MessageStore` is still open inside `state.message_store`.
+    // Dropping the Option's contents closes the connection (rusqlite
+    // Connection::drop releases the file handle + WAL/SHM siblings).
+    {
+        let taken = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned")
+            .take();
+        drop(taken);
+    }
+
     // Route through the canonical fresh-start path so the pre-signed
     // Case-C rotation proof is minted+persisted while the old Ed25519
     // secret still exists in memory. This is the WHOLE POINT of the
