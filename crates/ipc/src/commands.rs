@@ -4496,13 +4496,71 @@ fn apply_skdm_request_recv(
         )
         .map_err(|e| format!("OSL: SKDM_REQUEST: resolve recipients: {e}"))?
     };
-    let Some((_, peer_recipient)) = recipients
+    // Probe-3 follow-up: after a relaunch the `channel_members`
+    // cache is empty until the gateway feed populates it, and
+    // Discord doesn't always re-ship CHANNEL_CREATE/UPDATE for
+    // every GC on reconnect. That left both sides stuck in a
+    // mutual-IGNORED loop: each one's SKDM_REQUEST arrived at the
+    // other, but `recipients_for_scope_v3` returned only `[self]`
+    // (no members in the cache), so the requester wasn't found
+    // and we IGNORED. Fall back to a direct peer_map lookup when
+    // the whitelist resolver doesn't surface the requester. Safe:
+    // the requester already proved themselves by getting their
+    // v=2-wrapped request through our v=2 decrypt (mutual ECDH
+    // auth), and providing them with the sender key only lets
+    // them decode messages they were already able to receive —
+    // no new content is exposed.
+    let direct_recipient_owned: Option<crate::wire_v2::RecipientV3> = if recipients
+        .iter()
+        .any(|(did, _)| did.as_str() == requester_discord_id)
+    {
+        None
+    } else {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(requester_discord_id).and_then(|entry| {
+            let x_b64 = entry.pubkey.as_ref()?;
+            let mlkem_b64 = entry.ik_mlkem768_pub.as_ref()?;
+            let x_bytes = STANDARD.decode(x_b64).ok()?;
+            if x_bytes.len() != crypto::x25519::PUBLIC_KEY_SIZE {
+                return None;
+            }
+            let mlkem_bytes = STANDARD.decode(mlkem_b64).ok()?;
+            if mlkem_bytes.len() != crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE {
+                return None;
+            }
+            let mut x_arr = [0u8; crypto::x25519::PUBLIC_KEY_SIZE];
+            x_arr.copy_from_slice(&x_bytes);
+            let mut mlkem_arr = [0u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE];
+            mlkem_arr.copy_from_slice(&mlkem_bytes);
+            Some(crate::wire_v2::RecipientV3 {
+                x25519_pub: crypto::x25519::PublicKey::from_bytes(x_arr),
+                mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&mlkem_arr),
+            })
+        })
+    };
+    let peer_recipient: &crate::wire_v2::RecipientV3 = match recipients
         .iter()
         .find(|(did, _)| did.as_str() == requester_discord_id)
-    else {
-        // Requester isn't a resolvable recipient of this scope —
-        // nothing we can (or should) send them.
-        return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+    {
+        Some((_, r)) => r,
+        None => match direct_recipient_owned.as_ref() {
+            Some(r) => {
+                tracing::info!(
+                    requester = %requester_discord_id,
+                    scope = %scope_key,
+                    "OSL: SKDM_REQUEST: requester not in channel_members \
+                     (gateway cache cold); falling back to direct peer_map \
+                     RecipientV3 lookup so the request doesn't IGNORE-loop"
+                );
+                r
+            }
+            None => {
+                // Requester not whitelisted-resolvable AND not
+                // directly known by peer_map — genuinely nothing
+                // we can send them.
+                return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+            }
+        },
     };
 
     let wire = send_skdm_via_v4(
