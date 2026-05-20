@@ -12696,12 +12696,10 @@
             div.style.removeProperty("user-select");
             div.removeAttribute("data-osl-cipher-hidden");
         } catch (_) {}
-        // Probe-5 follow-up: also undo the bubble-wrapper walk-up
-        // collapse applied by oslAutoHideCiphertext so the parent
-        // padding/margin chrome re-expands and the plaintext is
-        // visible. The walk includes the <li> itself because the
-        // auto-hide collapses the <li> for compact continuations
-        // that have no avatar/header inside.
+        // Probe-5 final: undo the <li>-level hide applied by
+        // oslAutoHideCiphertext so the bubble re-appears with the
+        // freshly-applied plaintext. Also walks ancestors for
+        // backward compat with the older multi-level walk-up.
         try {
             let p = div.parentElement;
             while (p && p !== document.body) {
@@ -12739,55 +12737,31 @@
             div.style.fontSize = "0";
             div.style.lineHeight = "0";
             div.style.opacity = "0";
-            // Prevents the still-present textContent from being
-            // selectable / copyable; the user can't accidentally
-            // copy ciphertext while it's "hidden".
             div.style.userSelect = "none";
             div.setAttribute("data-osl-cipher-hidden", "1");
         } catch (_) {}
-        // Probe-5 follow-up: collapse the surrounding bubble
-        // wrapper(s) so the empty "bar" disappears entirely. Walk
-        // UP from this message-content div, hiding each ancestor
-        // that has NO avatar/header/other-content inside (i.e., it's
-        // a pure body wrapper for THIS message). Walks through the
-        // <li> too if the <li> itself has no avatar/header (typical
-        // for compact-style continuations -- and after the Probe-5
-        // send-order flip, this applies to every SKDM bundle). If
-        // the <li> IS the group leader (has avatar inside), stop at
-        // the wrapper just below. Marked with
-        // data-osl-cipher-hidden-wrap so recvApplyPlaintext can
-        // undo on successful decrypt.
+        // Probe-5 final: HIDE THE ENTIRE <li> unconditionally so
+        // even cozy (group-leader) messages -- which carry the
+        // avatar+header chrome -- fully collapse with no bar.
+        // Trade-off: ~50ms flicker between auto-hide-on-observation
+        // and recvApplyPlaintext-on-decrypt-success (avatar briefly
+        // gone, then reappears with plaintext). For SKDMs and
+        // permanently-failed decrypts the <li> stays fully gone,
+        // which is what the user asked for.
+        //
+        // Send-order flip (content posted before SKDM) keeps the
+        // content message as the group-leader, so SKDMs being
+        // compact-style means hiding them never loses an avatar
+        // a real message depends on. Decrypt-pending content gets a
+        // brief hide, then unhide; visual jump is small.
         try {
-            let p = div.parentElement;
-            while (p && p !== document.body) {
-                if (p.getAttribute("data-osl-cipher-hidden-wrap") === "1") {
-                    // Already hidden; stop walking (its ancestors
-                    // were processed last time).
-                    break;
-                }
-                // Probe-5 fix: chrome check tightened to ONLY
-                // `img[class*='avatar']` + non-hidden sibling
-                // message-content. The earlier `h3, [class*='header'],
-                // [class*='username']` matchers false-positived on
-                // Discord's compact-message wrappers (which include
-                // classes like "messageHeaderCompact" even though
-                // they don't visually show an author header) --
-                // walk-up stopped too early, the bar stayed visible.
-                const hasGroupChrome =
-                    p.querySelector("img[class*='avatar']") ||
-                    p.querySelector(
-                        "[id^='" +
-                            RECV_MESSAGE_ID_PREFIX +
-                            "']:not([data-osl-cipher-hidden='1'])"
-                    );
-                if (hasGroupChrome) break;
-                p.style.display = "none";
-                p.setAttribute("data-osl-cipher-hidden-wrap", "1");
-                // Stop after hiding the <li> itself; ancestors
-                // beyond it (chat-messages <ol> etc.) are shared
-                // with every other message and must not be touched.
-                if (p.tagName === "LI") break;
-                p = p.parentElement;
+            const li =
+                typeof div.closest === "function"
+                    ? div.closest("li[id^='chat-messages-']")
+                    : null;
+            if (li && li.style.display !== "none") {
+                li.style.display = "none";
+                li.setAttribute("data-osl-cipher-hidden-wrap", "1");
             }
         } catch (_) {}
     }
