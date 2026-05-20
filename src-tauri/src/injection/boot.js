@@ -14212,12 +14212,20 @@
                     recvDone.add(messageId);
                     recvRetries.delete(messageId);
                     recvAuthorRetryCount.delete(messageId);
-                    // Probe-3 fix: track this msg id so the sweep can
-                    // re-hide its <li> when Discord re-mounts it on
-                    // channel switch (display:none alone gets lost
-                    // when Discord rebuilds the message list, leaving
-                    // the SKDM ciphertext blob visible again on
-                    // re-entry).
+                    // Probe-3 follow-up: hide the SKDM ciphertext by
+                    // emptying its `message-content-X` div, NOT by
+                    // applying display:none to the parent <li>.
+                    // Discord groups consecutive messages from the
+                    // same author into a SHARED <li> wrapper (avatar
+                    // + header + multiple message bodies). Hiding the
+                    // <li> nuked the next unrelated message's avatar
+                    // and header along with the SKDM. Clearing only
+                    // the message-content div leaves Discord's
+                    // grouping + UI chrome intact; the SKDM's row
+                    // shows as an empty message bubble. Tracked in
+                    // `oslSkdmHiddenMsgIds` so the sweep re-clears
+                    // it when Discord re-mounts the div on channel
+                    // re-entry.
                     oslSkdmHiddenMsgIds.add(messageId);
                     try {
                         const _skdmDivs = document.querySelectorAll(
@@ -14227,15 +14235,32 @@
                                 "']"
                         );
                         for (const _d of _skdmDivs) {
+                            // Replace child nodes with an empty span;
+                            // this both clears the visible ciphertext
+                            // and gives recvApplyPlaintext/the React
+                            // diff something to overwrite cleanly if
+                            // anything else tries to dispatch later.
+                            const _blank = document.createElement("span");
+                            _blank.textContent = "";
+                            _d.replaceChildren(_blank);
+                            _d.setAttribute("data-osl-skdm-hidden", "1");
+                            // Defensively undo any prior <li> hide
+                            // (from the earlier display:none version)
+                            // so users with cached state don't see
+                            // avatar regressions.
                             const _li =
                                 typeof _d.closest === "function"
                                     ? _d.closest("li[id^='chat-messages-']")
                                     : null;
-                            if (_li) {
-                                _li.style.display = "none";
-                                _li.setAttribute(
-                                    "data-osl-skdm-hidden",
-                                    "1"
+                            if (
+                                _li &&
+                                _li.getAttribute(
+                                    "data-osl-skdm-hidden"
+                                ) === "1"
+                            ) {
+                                _li.style.removeProperty("display");
+                                _li.removeAttribute(
+                                    "data-osl-skdm-hidden"
                                 );
                             }
                         }
@@ -15015,15 +15040,14 @@
                 );
             }
 
-            // Probe-3 fix: re-hide SKDM bundle <li>s that Discord
-            // re-mounted on channel switch. The display:none we set
-            // when the bundle was first applied is lost when Discord
-            // unmounts + remounts the <li> on enter/leave, so the
-            // user sees the ciphertext blob reappear above plaintext
-            // messages every time they re-open the channel. Walking
-            // the persistent id set + re-applying display:none here
-            // is O(N) in known-SKDM ids per tick, bounded by how
-            // many messages each user has sent in this session.
+            // Probe-3 follow-up: re-clear SKDM bundle message-content
+            // divs that Discord re-mounted on channel re-entry. We
+            // touch only `message-content-X` (NOT the parent <li>)
+            // because Discord groups consecutive same-author messages
+            // into a shared <li> wrapper -- hiding the <li> nuked the
+            // avatar/header of unrelated messages sharing that
+            // wrapper. Defensively also undo any leftover <li>
+            // display:none from the prior version of this fix.
             if (oslSkdmHiddenMsgIds.size > 0) {
                 for (const _mid of oslSkdmHiddenMsgIds) {
                     try {
@@ -15035,9 +15059,27 @@
                                 typeof _d.closest === "function"
                                     ? _d.closest("li[id^='chat-messages-']")
                                     : null;
-                            if (_li && _li.style.display !== "none") {
-                                _li.style.display = "none";
-                                _li.setAttribute(
+                            if (
+                                _li &&
+                                _li.getAttribute(
+                                    "data-osl-skdm-hidden"
+                                ) === "1"
+                            ) {
+                                _li.style.removeProperty("display");
+                                _li.removeAttribute(
+                                    "data-osl-skdm-hidden"
+                                );
+                            }
+                            const _txt = (_d.textContent || "").trim();
+                            // Only re-clear when something has been
+                            // re-inserted (e.g. Discord re-mounted the
+                            // div + repopulated from cache). An
+                            // already-empty div is left alone.
+                            if (_txt.length > 0) {
+                                const _blank = document.createElement("span");
+                                _blank.textContent = "";
+                                _d.replaceChildren(_blank);
+                                _d.setAttribute(
                                     "data-osl-skdm-hidden",
                                     "1"
                                 );
