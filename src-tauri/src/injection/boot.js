@@ -12163,6 +12163,14 @@
     // net for renders that don't fire useful mutations.
     const RECV_MESSAGE_DIV_SELECTOR = '[id^="message-content-"]';
     const RECV_MESSAGE_ID_PREFIX = "message-content-";
+    // Probe-3 fix: persistent set of message ids known to be v=3
+    // SKDM bundle wires. The bundle is a control message with no
+    // user-visible content; once apply_skdm_recv runs we hide its
+    // <li> via display:none, but Discord re-mounts <li>s fresh when
+    // you leave + re-enter a channel, so we have to re-hide on every
+    // sweep tick. This set persists for the session; entries are
+    // added in the SKDM_APPLIED handler.
+    const oslSkdmHiddenMsgIds = new Set();
     // Permanent disposition (decrypt completed â€” success OR
     // unrecoverable Rust-side rejection). Keyed by message_id
     // so the marker survives React replacing the inner span.
@@ -14204,6 +14212,13 @@
                     recvDone.add(messageId);
                     recvRetries.delete(messageId);
                     recvAuthorRetryCount.delete(messageId);
+                    // Probe-3 fix: track this msg id so the sweep can
+                    // re-hide its <li> when Discord re-mounts it on
+                    // channel switch (display:none alone gets lost
+                    // when Discord rebuilds the message list, leaving
+                    // the SKDM ciphertext blob visible again on
+                    // re-entry).
+                    oslSkdmHiddenMsgIds.add(messageId);
                     try {
                         const _skdmDivs = document.querySelectorAll(
                             "[id='" +
@@ -14998,6 +15013,38 @@
                     "[OSL] history channel-switch threw: " +
                         (e && e.message ? e.message : e)
                 );
+            }
+
+            // Probe-3 fix: re-hide SKDM bundle <li>s that Discord
+            // re-mounted on channel switch. The display:none we set
+            // when the bundle was first applied is lost when Discord
+            // unmounts + remounts the <li> on enter/leave, so the
+            // user sees the ciphertext blob reappear above plaintext
+            // messages every time they re-open the channel. Walking
+            // the persistent id set + re-applying display:none here
+            // is O(N) in known-SKDM ids per tick, bounded by how
+            // many messages each user has sent in this session.
+            if (oslSkdmHiddenMsgIds.size > 0) {
+                for (const _mid of oslSkdmHiddenMsgIds) {
+                    try {
+                        const _skdmDivs = document.querySelectorAll(
+                            "[id='" + RECV_MESSAGE_ID_PREFIX + _mid + "']"
+                        );
+                        for (const _d of _skdmDivs) {
+                            const _li =
+                                typeof _d.closest === "function"
+                                    ? _d.closest("li[id^='chat-messages-']")
+                                    : null;
+                            if (_li && _li.style.display !== "none") {
+                                _li.style.display = "none";
+                                _li.setAttribute(
+                                    "data-osl-skdm-hidden",
+                                    "1"
+                                );
+                            }
+                        }
+                    } catch (_) {}
+                }
             }
 
             const divs = document.querySelectorAll(RECV_MESSAGE_DIV_SELECTOR);
