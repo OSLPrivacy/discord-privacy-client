@@ -14629,6 +14629,23 @@
      */
     function oslMaybeEmitRecovery(kind, peer, channelId, scopeInput) {
         try {
+            // Probe-3 fix: `invoke` was a bare reference here, which
+            // threw "invoke is not defined" the moment recovery
+            // actually fired (the trigger was previously dead code
+            // so the latent bug never surfaced). Resolve through
+            // `getTauriInvoke()` like every other invoke site does;
+            // bail if Tauri isn't reachable.
+            const invoke = getTauriInvoke();
+            if (typeof invoke !== "function") {
+                console.log(
+                    "[OSL] auto-recovery: Tauri invoke not available; " +
+                        "skipping " +
+                        kind +
+                        " for peer=" +
+                        peer
+                );
+                return;
+            }
             const scopeKey = scopeInput
                 ? scopeInput.kind + ":" + scopeInput.id
                 : "dm";
