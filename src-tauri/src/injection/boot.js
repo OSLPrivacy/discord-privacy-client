@@ -14184,15 +14184,47 @@
                 // cannot loop forever.
                 if (plaintext === OSL_RESULT_SKDM_APPLIED) {
                     console.log(
-                        "[OSL] v=4 SKDM applied msg=" +
+                        "[OSL] SKDM applied msg=" +
                             messageId +
                             " — reviving stuck v=5 covers (sender=" +
                             senderDiscordId +
                             ")"
                     );
-                    recvDone.delete(messageId);
+                    // Probe-3 fix: mark the SKDM message itself DONE
+                    // and hide its <li>. The original code DELETED
+                    // recvDone for the SKDM, causing the next sweep
+                    // to re-dispatch it, which re-applied idempotent-
+                    // ly, which re-fired the revive -- an infinite
+                    // log-spam loop (visible as the same msg IDs
+                    // re-appearing on every sweep tick). Marking it
+                    // done + hiding the <li> also fixes the "giant
+                    // ciphertext blob" Discord message the user was
+                    // seeing for every send: the bundled SKDM has no
+                    // user-facing content, so it shouldn't render.
+                    recvDone.add(messageId);
                     recvRetries.delete(messageId);
                     recvAuthorRetryCount.delete(messageId);
+                    try {
+                        const _skdmDivs = document.querySelectorAll(
+                            "[id='" +
+                                RECV_MESSAGE_ID_PREFIX +
+                                messageId +
+                                "']"
+                        );
+                        for (const _d of _skdmDivs) {
+                            const _li =
+                                typeof _d.closest === "function"
+                                    ? _d.closest("li[id^='chat-messages-']")
+                                    : null;
+                            if (_li) {
+                                _li.style.display = "none";
+                                _li.setAttribute(
+                                    "data-osl-skdm-hidden",
+                                    "1"
+                                );
+                            }
+                        }
+                    } catch (_) {}
                     try {
                         // Probe-2 Boot Bug 7: was reviving EVERY v=5
                         // cover in the current view regardless of
