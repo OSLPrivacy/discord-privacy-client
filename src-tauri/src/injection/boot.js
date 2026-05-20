@@ -14835,6 +14835,25 @@
                     !isV5AwaitingSkdm
                 ) {
                     recvDone.add(messageId);
+                    // Probe-5 follow-up: terminal failure -- leave a
+                    // placeholder instead of a permanently-blank
+                    // bubble. User reported "tons of blanks" because
+                    // failed decrypts kept the auto-hide CSS but
+                    // never had any plaintext applied. Show a small
+                    // ciphered-lock indicator so the bubble has
+                    // content; recvApplyPlaintext also undoes the
+                    // auto-hide styles.
+                    try {
+                        const _liveDivs = document.querySelectorAll(
+                            "[id='" +
+                                RECV_MESSAGE_ID_PREFIX +
+                                messageId +
+                                "']"
+                        );
+                        for (const _d of _liveDivs) {
+                            recvApplyPlaintext(_d, "🔒");
+                        }
+                    } catch (_) {}
                 }
 
                 // Auto-recovery: fire on the FIRST failure that matches
