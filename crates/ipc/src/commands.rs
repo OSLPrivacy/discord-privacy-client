@@ -3784,17 +3784,67 @@ pub fn cmd_osl_send_burn_marker(
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
     let sender_sk = identity.x25519_secret.clone();
     let self_pk = identity.x25519_public;
+    let self_mlkem_pub = identity.mlkem_encapsulation_key();
     drop(id_guard);
 
+    // Probe-2 Rust Bug 8: previously this used the legacy
+    // `recipients_for_scope` which honours per-peer
+    // `outgoing_whitelists` entries but NOT the scope-flag model
+    // (server_header_on / channel_on / DM-bleed via
+    // ScopeAuthCtx + scope_membership). Peers who became
+    // whitelisted via the server-header flag alone — i.e. have
+    // no explicit per-peer entry — were excluded from the
+    // burn-marker recipient list and never received the burn
+    // notice. Re-derive the recipient set with `recipients_for_scope_v3`
+    // (same gate the send path uses), then extract the X25519 keys
+    // so the burn marker can still ride the v=2 wire encrypt path.
     let recipients = {
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        crate::whitelist::recipients_for_scope(
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let sd_guard = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let mem_guard = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        let auth_ctx = crate::whitelist::ScopeAuthCtx {
+            whitelist_state: &ws_guard,
+            server_defaults: &sd_guard,
+            membership: &mem_guard,
+        };
+        match crate::whitelist::recipients_for_scope_v3(
             &pm_guard,
+            &auth_ctx,
             &scope,
             &channel_members,
             &self_discord_id,
             &self_pk,
-        )
+            &self_mlkem_pub,
+        ) {
+            Ok(v3) => v3
+                .into_iter()
+                .map(|(_did, rcp)| rcp.x25519_pub)
+                .collect::<Vec<_>>(),
+            // Recoverable / not-recoverable errors here are both
+            // converted to the legacy "no recipients" outcome — a
+            // burn marker is best-effort fan-out; if nobody is
+            // resolvable, the caller surfaces the same string the
+            // historical path did, and the local burn still applies.
+            Err(e) => {
+                tracing::warn!(
+                    scope = %scope.storage_key(),
+                    error = %e,
+                    "OSL: burn_marker recipient resolution failed; \
+                     emitting no_whitelisted_recipients"
+                );
+                Vec::new()
+            }
+        }
     };
     if recipients.len() <= 1 {
         return Err("no_whitelisted_recipients".to_string());
@@ -8073,8 +8123,22 @@ pub fn cmd_osl_tour_get_state(state: &AppState) -> Result<TourStateDto, String> 
 }
 
 fn persist_app_preferences_now(state: &AppState, config_dir: Option<std::path::PathBuf>) {
-    let Some(dir) = config_dir else {
-        return;
+    // Probe-2 Rust Bug 7: previously this returned silently when
+    // `config_dir` was None. Every boot.js caller of cmd_osl_tour_*
+    // omits config_dir (the IPC argument doesn't exist on the JS
+    // side), so the tour state mutations never actually persisted
+    // — the user re-saw the tour intro every launch. Default to
+    // `keystore::osl_config_dir()` so the no-arg path is functional;
+    // an explicit `config_dir` (test path) still wins.
+    let dir = match config_dir {
+        Some(d) => d,
+        None => match keystore::osl_config_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                record_persist_error(state, "app_preferences.json", e);
+                return;
+            }
+        },
     };
     let g = state
         .app_preferences

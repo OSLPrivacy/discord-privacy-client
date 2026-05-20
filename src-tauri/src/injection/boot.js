@@ -1327,6 +1327,40 @@
                         ": " +
                         (err && err.message ? err.message : String(err))
                 );
+                // Probe-2 Boot Bug 10: don't swallow silently. The
+                // edit landed on Discord but our local store still
+                // has the OLD plaintext — next session reload would
+                // re-decrypt to the old text. Force-invalidate the
+                // session caches so a future sweep re-decrypts the
+                // bounced-back wire, and toast the user so they
+                // know something went sideways.
+                try {
+                    if (
+                        recvPlaintext &&
+                        typeof recvPlaintext.delete === "function"
+                    ) {
+                        recvPlaintext.delete(messageId);
+                    }
+                    if (
+                        loadedHistory &&
+                        typeof loadedHistory.delete === "function"
+                    ) {
+                        loadedHistory.delete(messageId);
+                    }
+                    if (
+                        selfSentPlaintext &&
+                        typeof selfSentPlaintext.delete === "function"
+                    ) {
+                        selfSentPlaintext.delete(messageId);
+                    }
+                } catch (_) {}
+                try {
+                    if (typeof oslToast === "function") {
+                        oslToast(
+                            "OSL: edit reached Discord but local persist failed — reopen the channel if the message reverts to ciphertext."
+                        );
+                    }
+                } catch (_) {}
             });
     }
 
@@ -8630,10 +8664,44 @@
                 // need to evict the in-memory caches and repaint
                 // the visible message divs so the user actually
                 // sees the burn effect instead of stale plaintext.
+                //
+                // Probe-2 Boot Bug 6: previously this used
+                // oslCurrentChannelContext() (= the channel the user
+                // is VIEWING). If the burn marker arrives via gateway
+                // while the user is in a different channel, that
+                // repainted the wrong channel and left the actually-
+                // burned one stale. Derive the burned channel from
+                // the marker's DOM position instead — the chat-
+                // messages <li> id encodes the channel: `chat-
+                // messages-<channelId>-<msgId>`.
                 try {
-                    const burnCtx = oslCurrentChannelContext();
-                    if (burnCtx && burnCtx.channelId) {
-                        oslBurnAftermath(burnCtx.channelId);
+                    let burnedChannelId = null;
+                    const contentEl = document.getElementById(
+                        "message-content-" + msgId
+                    );
+                    if (contentEl && typeof contentEl.closest === "function") {
+                        const li = contentEl.closest(
+                            "li[id^='chat-messages-']"
+                        );
+                        if (li && li.id) {
+                            const mm = /chat-messages-(\d{15,22})-\d{15,22}/.exec(
+                                li.id
+                            );
+                            if (mm) burnedChannelId = mm[1];
+                        }
+                    }
+                    // Fall back to the viewed-channel context only
+                    // when the marker's <li> isn't in the DOM (the
+                    // user has scrolled past it / it's not rendered).
+                    if (!burnedChannelId) {
+                        const burnCtx = oslCurrentChannelContext();
+                        burnedChannelId =
+                            burnCtx && burnCtx.channelId
+                                ? burnCtx.channelId
+                                : null;
+                    }
+                    if (burnedChannelId) {
+                        oslBurnAftermath(burnedChannelId);
                     }
                 } catch (e) {
                     console.log(
@@ -14118,12 +14186,22 @@
                     console.log(
                         "[OSL] v=4 SKDM applied msg=" +
                             messageId +
-                            " — reviving stuck v=5 covers"
+                            " — reviving stuck v=5 covers (sender=" +
+                            senderDiscordId +
+                            ")"
                     );
                     recvDone.delete(messageId);
                     recvRetries.delete(messageId);
                     recvAuthorRetryCount.delete(messageId);
                     try {
+                        // Probe-2 Boot Bug 7: was reviving EVERY v=5
+                        // cover in the current view regardless of
+                        // sender. SKDMs are scoped per
+                        // (peer, scope_id), so clearing state for
+                        // messages from OTHER senders just burned
+                        // their retry budgets a second time without
+                        // unlocking anything. Narrow to covers whose
+                        // author matches the SKDM sender.
                         const _divs = document.querySelectorAll(
                             RECV_MESSAGE_DIV_SELECTOR
                         );
@@ -14139,6 +14217,16 @@
                             const _mid = recvMessageIdOf(_d);
                             if (!_mid) continue;
                             if (recvPlaintext.has(_mid)) continue;
+                            const _author = recvExtractAuthorId(_d);
+                            if (
+                                senderDiscordId &&
+                                _author &&
+                                _author !== senderDiscordId
+                            ) {
+                                // Different sender — unrelated v=5
+                                // chain. Skip.
+                                continue;
+                            }
                             recvDone.delete(_mid);
                             recvRetries.delete(_mid);
                             recvAuthorRetryCount.delete(_mid);
@@ -14148,7 +14236,8 @@
                             "[OSL] SKDM revive: cleared terminal/retry " +
                                 "state for " +
                                 _revived +
-                                " stuck v=5 message(s)"
+                                " stuck v=5 message(s) from sender=" +
+                                senderDiscordId
                         );
                     } catch (_) {}
                     return;
@@ -14846,6 +14935,17 @@
                 const text = div.textContent;
                 if (!text || !oslMessageIsStego(text)) continue;
                 const messageId = recvMessageIdOf(div);
+                // Probe-2 Boot Bug 2: in the 5s editOverlayLocallyApplied
+                // window after a successful self-edit, the sweep used to
+                // happily re-dispatch a decrypt on the bounced-back NEW
+                // ciphertext if Discord's MESSAGE_UPDATE swapped the
+                // textContent — causing a visible flash + double-
+                // dispatch. recvHandleDiv (mutation observer) honoured
+                // the flag; the sweep didn't. Skip dispatch here too;
+                // the 5s flag is short enough that legitimate stale
+                // covers still get picked up by the next tick after
+                // it clears.
+                if (editOverlayLocallyApplied.has(messageId)) continue;
                 const cached = recvPlaintext.get(messageId);
                 if (cached) {
                     recvApplyPlaintext(div, cached);
