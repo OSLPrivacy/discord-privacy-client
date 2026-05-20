@@ -1950,6 +1950,55 @@ fn persist_decrypted(
     }
 }
 
+/// Probe-3 fix: gated wrapper around `persist_decrypted` for use by
+/// the v=2 / v=3 / v=4 / v=5 receive paths. Skips persistence when
+/// the "plaintext" is actually a control sentinel (BURN_APPLIED,
+/// SKDM_APPLIED, RECOVERY_IGNORED, SESSION_RESET_APPLIED,
+/// ATTACHMENT envelope, LEGACY_HANDSHAKE_IGNORED, MODE1 sentinels,
+/// SKDM_REREQUEST prefix) or when the caller didn't supply a
+/// message id (history backfill / debug invocations).
+///
+/// Without this wrapper, the only persist call site was the v=1
+/// legacy path (line ~1893), so v=2 / v=3 / v=4 / v=5 inbound
+/// messages decrypted successfully but were NEVER written to the
+/// durable MessageStore -- on relaunch, `recvLoadHistory` returned
+/// an empty list for the channel, every visible message had to
+/// re-decrypt from scratch, and any message whose receiver chain or
+/// ratchet state had since rotated was unrecoverable. This was the
+/// "doesn't save on reopen" symptom.
+fn persist_user_plaintext(
+    state: &AppState,
+    discord_message_id: Option<&str>,
+    channel_id: &str,
+    sender_discord_id: &str,
+    plaintext: &str,
+) {
+    // Sentinel strings all start with `__OSL_CONTROL_`; the attachment
+    // sentinel uses the same prefix via OSL_RESULT_ATTACHMENT_PREFIX,
+    // so one starts-with check covers every non-content return path.
+    if plaintext.starts_with("__OSL_CONTROL_") {
+        return;
+    }
+    let Some(id) = discord_message_id else {
+        return;
+    };
+    let sender_osl_user_id = state
+        .peer_map
+        .lock()
+        .expect("peer_map mutex poisoned")
+        .get(sender_discord_id)
+        .and_then(|e| e.osl_user_id.clone())
+        .unwrap_or_else(|| sender_discord_id.to_string());
+    persist_decrypted(
+        state,
+        id.to_string(),
+        channel_id.to_string(),
+        sender_discord_id.to_string(),
+        sender_osl_user_id,
+        plaintext,
+    );
+}
+
 /// Probe-2 fix: persist a freshly-sent outbound message so it
 /// survives a session restart.
 ///
@@ -4032,18 +4081,40 @@ pub fn cmd_osl_decrypt_message_v2(
             // dr.decrypt(...), persists the updated state, and
             // returns the recovered plaintext.
             tracing::debug!(wire_version = "v4", "v=4 decode dispatched");
-            return decrypt_v4_recv(
+            let sender_did_for_persist = sender_discord_id.clone();
+            let result = decrypt_v4_recv(
                 state,
                 sender_discord_id,
                 content,
                 scope_opt,
                 config_dir.as_deref(),
+            )?;
+            // Probe-3 fix: persist user-visible plaintext into the
+            // durable MessageStore so a relaunch's recvLoadHistory
+            // rehydrates the channel. Sentinel results (control
+            // messages, attachments) are skipped by the helper.
+            persist_user_plaintext(
+                state,
+                discord_message_id.as_deref(),
+                &channel_id,
+                &sender_did_for_persist,
+                &result,
             );
+            return Ok(result);
         }
         Some(crate::wire_v2::WIRE_VERSION_V5) => {
             // Phase 9-A3: v=5 sender-keys group decode.
             tracing::debug!(wire_version = "v5", "v=5 decode dispatched");
-            return decrypt_v5_recv(state, sender_discord_id, content, scope_opt);
+            let sender_did_for_persist = sender_discord_id.clone();
+            let result = decrypt_v5_recv(state, sender_discord_id, content, scope_opt)?;
+            persist_user_plaintext(
+                state,
+                discord_message_id.as_deref(),
+                &channel_id,
+                &sender_did_for_persist,
+                &result,
+            );
+            return Ok(result);
         }
         _ => {
             // v=1 or unknown: preserve the existing Phase 5 path.
@@ -4064,8 +4135,21 @@ pub fn cmd_osl_decrypt_message_v2(
             // trust boundary, not an OSL-internal per-scope accept
             // gate. The prior `should_decrypt_from` check is gone.
             let _ = scope_opt;
-            String::from_utf8(recovered.plaintext)
-                .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())
+            let plaintext = String::from_utf8(recovered.plaintext)
+                .map_err(|_| "OSL: decrypted plaintext is not valid UTF-8".to_string())?;
+            // Probe-3 fix: persist user-visible plaintext into the
+            // durable MessageStore so a relaunch's recvLoadHistory
+            // rehydrates the channel. v=2 / v=3 content paths share
+            // this; sentinel/control paths return their own strings
+            // and do not reach here.
+            persist_user_plaintext(
+                state,
+                discord_message_id.as_deref(),
+                &channel_id,
+                &sender_discord_id,
+                &plaintext,
+            );
+            Ok(plaintext)
         }
         crate::wire_v2::MSG_TYPE_BURN => {
             let marker = crate::control_messages::deserialize_burn_marker(&recovered.plaintext)
