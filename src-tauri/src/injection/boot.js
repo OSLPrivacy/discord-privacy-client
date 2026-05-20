@@ -12267,21 +12267,23 @@
             // (those are the group-leader chrome and must stay).
             try {
                 let p = d.parentElement;
-                while (
-                    p &&
-                    p.tagName !== "LI" &&
-                    p !== document.body
-                ) {
+                while (p && p !== document.body) {
+                    // Probe-5 fix: same chrome-check tightening as
+                    // oslAutoHideCiphertext (avatar img only, not
+                    // h3/header/username which false-positive on
+                    // Discord's compact-message wrapper classes).
+                    // Also walk through the <li> itself when it
+                    // contains no avatar, so the SKDM row collapses
+                    // completely instead of leaving a bar.
                     const hasGroupChrome =
-                        p.querySelector(
-                            "img[class*='avatar'], h3, [class*='header'], [class*='username']"
-                        ) ||
+                        p.querySelector("img[class*='avatar']") ||
                         p.querySelector(
                             "[id^='" + RECV_MESSAGE_ID_PREFIX + "']:not([data-osl-skdm-hidden='1'])"
                         );
                     if (hasGroupChrome) break;
                     p.style.display = "none";
                     p.setAttribute("data-osl-skdm-hidden-wrap", "1");
+                    if (p.tagName === "LI") break;
                     p = p.parentElement;
                 }
             } catch (_) {}
@@ -12763,10 +12765,16 @@
                     // were processed last time).
                     break;
                 }
+                // Probe-5 fix: chrome check tightened to ONLY
+                // `img[class*='avatar']` + non-hidden sibling
+                // message-content. The earlier `h3, [class*='header'],
+                // [class*='username']` matchers false-positived on
+                // Discord's compact-message wrappers (which include
+                // classes like "messageHeaderCompact" even though
+                // they don't visually show an author header) --
+                // walk-up stopped too early, the bar stayed visible.
                 const hasGroupChrome =
-                    p.querySelector(
-                        "img[class*='avatar'], h3, [class*='header'], [class*='username']"
-                    ) ||
+                    p.querySelector("img[class*='avatar']") ||
                     p.querySelector(
                         "[id^='" +
                             RECV_MESSAGE_ID_PREFIX +
