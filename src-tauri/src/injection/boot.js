@@ -12668,6 +12668,22 @@
             div.style.removeProperty("user-select");
             div.removeAttribute("data-osl-cipher-hidden");
         } catch (_) {}
+        // Probe-5 follow-up: also undo the bubble-wrapper walk-up
+        // collapse applied by oslAutoHideCiphertext so the parent
+        // padding/margin chrome re-expands and the plaintext is
+        // visible.
+        try {
+            let p = div.parentElement;
+            while (p && p.tagName !== "LI" && p !== document.body) {
+                if (
+                    p.getAttribute("data-osl-cipher-hidden-wrap") === "1"
+                ) {
+                    p.style.removeProperty("display");
+                    p.removeAttribute("data-osl-cipher-hidden-wrap");
+                }
+                p = p.parentElement;
+            }
+        } catch (_) {}
     }
 
     /**
@@ -12697,6 +12713,38 @@
             // copy ciphertext while it's "hidden".
             div.style.userSelect = "none";
             div.setAttribute("data-osl-cipher-hidden", "1");
+        } catch (_) {}
+        // Probe-5 follow-up: also collapse the surrounding bubble
+        // wrapper(s) so the empty "bar" disappears entirely. Walk
+        // UP from this message-content div, hiding each ancestor
+        // that has NO avatar/header/other-content inside (i.e., it's
+        // a pure body wrapper for THIS message). Stop at the <li>
+        // (it may be the group leader holding the avatar) or at the
+        // first ancestor with group chrome. Marked with
+        // data-osl-cipher-hidden-wrap so recvApplyPlaintext can
+        // undo on successful decrypt.
+        try {
+            let p = div.parentElement;
+            while (p && p.tagName !== "LI" && p !== document.body) {
+                if (p.getAttribute("data-osl-cipher-hidden-wrap") === "1") {
+                    // Already hidden; stop walking (its ancestors
+                    // were processed last time).
+                    break;
+                }
+                const hasGroupChrome =
+                    p.querySelector(
+                        "img[class*='avatar'], h3, [class*='header'], [class*='username']"
+                    ) ||
+                    p.querySelector(
+                        "[id^='" +
+                            RECV_MESSAGE_ID_PREFIX +
+                            "']:not([data-osl-cipher-hidden='1'])"
+                    );
+                if (hasGroupChrome) break;
+                p.style.display = "none";
+                p.setAttribute("data-osl-cipher-hidden-wrap", "1");
+                p = p.parentElement;
+            }
         } catch (_) {}
     }
 
