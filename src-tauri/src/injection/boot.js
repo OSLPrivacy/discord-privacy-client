@@ -5278,6 +5278,60 @@
         hasWhitelist: false,
     };
 
+    // State-based blank-row sweep. Simple rule:
+    //   * <li> whose message-content has visible plaintext -> show.
+    //   * <li> whose message-content is empty / still cipher /
+    //     auto-hidden (font-size 0) -> collapse the <li>.
+    // No attribute tracking, no lifecycle assumptions -- just look
+    // at the DOM as it is and decide. Avoids "lock our hide on a
+    // <li> Discord re-mounts" type races since each tick re-evaluates.
+    // Skips messages that have attachments / embeds / images (they
+    // can legitimately have empty text but still need to render).
+    function oslSweepBlankRows() {
+        const lis = document.querySelectorAll(
+            "li[id^='chat-messages-']"
+        );
+        for (const li of lis) {
+            const content = li.querySelector("[id^='message-content-']");
+            if (!content) continue;
+            const text = (content.textContent || "").trim();
+            const looksLikeCipher =
+                text.indexOf("DPC0::") !== -1 ||
+                text.indexOf("DPC1::") !== -1;
+            const autoHidden =
+                content.style.fontSize === "0px" ||
+                content.hasAttribute("data-osl-cipher-hidden") ||
+                content.hasAttribute("data-osl-skdm-hidden");
+            const empty = text.length === 0;
+            let isBlank;
+            if (looksLikeCipher || autoHidden) {
+                isBlank = true;
+            } else if (empty) {
+                // Empty text might be an attachment-only message
+                // (image, video, file, embed). Skip hiding when the
+                // <li> carries any of those.
+                const hasMedia =
+                    li.querySelector(
+                        "img[src*='cdn.discord'], video[src*='cdn.discord'], a[href*='cdn.discord'], [class*='attachment'], [class*='embed']"
+                    ) !== null;
+                isBlank = !hasMedia;
+            } else {
+                isBlank = false;
+            }
+            if (isBlank) {
+                if (li.getAttribute("data-osl-blank-hidden") !== "1") {
+                    li.style.display = "none";
+                    li.setAttribute("data-osl-blank-hidden", "1");
+                }
+            } else if (li.getAttribute("data-osl-blank-hidden") === "1") {
+                // Was blank-hidden last tick, now has visible
+                // content -- restore.
+                li.style.removeProperty("display");
+                li.removeAttribute("data-osl-blank-hidden");
+            }
+        }
+    }
+
     /**
      * 9-C1-FIX1: locate the channel header across DM / GC / server-channel
      * contexts. The pre-FIX1 selector
@@ -15518,6 +15572,12 @@
             // refreshing.
             try {
                 oslSweepSidebarChannelLock();
+            } catch (_) {}
+            // State-based blank-row sweep. Each tick re-evaluates
+            // every <li>: visible plaintext -> show; cipher/empty/
+            // auto-hidden content -> collapse <li>.
+            try {
+                oslSweepBlankRows();
             } catch (_) {}
             // Phase 5b3 channel-switch detection. Cheap to read
             // each tick; only triggers a load on a real switch
