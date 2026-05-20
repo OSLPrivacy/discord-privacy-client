@@ -12737,18 +12737,48 @@
      *   they can identify by its empty footprint and surrounding
      *   author/timestamp chrome).
      */
-    // Probe-5 final revert: auto-hide of regular DPC0:: messages is
-    // a no-op now. Iteration cost (lag, scroll thrash, blank
-    // bubbles, missing avatars) wasn't worth the brief
-    // visible-cipher window. Only SKDM bundles still hide via
-    // oslHideSkdmDom (a small fixed set tracked in
-    // oslSkdmHiddenMsgIds). Regular DPC0:: messages will show the
-    // cipher text briefly until decrypt completes and
-    // recvApplyPlaintext replaces it with plaintext. Failed
-    // decrypts leave the cipher visible so the user can identify
-    // there's an encrypted message there.
-    function oslAutoHideCiphertext(_div) {
-        // no-op
+    // Probe-5 final v2: hide DPC0:: ciphertext by collapsing the
+    // <li> via CSS, AND disable Discord's scroll-anchor on the
+    // chat-messages container so our hides don't trigger scroll
+    // thrash. This combination gets no cipher + no bars + no lag.
+    //
+    // overflow-anchor: none tells the browser NOT to auto-adjust
+    // scroll position when content above shifts -- which is what
+    // Discord's scroll-anchor was doing whenever we hid an <li>,
+    // producing the "constantly scrolls up" lag.
+    //
+    // The CSS-based <li> hide (data-attribute + display:none rule)
+    // lets the browser batch all matching elements into ONE layout
+    // pass per microtask.
+    if (!window.__oslAutoHideStyleInstalled) {
+        try {
+            const _s = document.createElement("style");
+            _s.textContent =
+                // Disable scroll-anchor on the chat list so hides
+                // don't trigger Discord's scroll auto-adjust.
+                "ol[data-list-id='chat-messages']{overflow-anchor:none !important;}" +
+                // Hide <li> when we mark it.
+                "li[data-osl-cipher-hidden-li='1']{display:none !important;}";
+            (document.head || document.documentElement).appendChild(_s);
+            window.__oslAutoHideStyleInstalled = true;
+        } catch (_) {}
+    }
+    function oslAutoHideCiphertext(div) {
+        if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
+            return;
+        }
+        try {
+            div.setAttribute("data-osl-cipher-hidden", "1");
+        } catch (_) {}
+        try {
+            const li =
+                typeof div.closest === "function"
+                    ? div.closest("li[id^='chat-messages-']")
+                    : null;
+            if (li) {
+                li.setAttribute("data-osl-cipher-hidden-li", "1");
+            }
+        } catch (_) {}
     }
 
     /**
