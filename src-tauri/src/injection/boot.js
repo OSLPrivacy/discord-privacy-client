@@ -14547,30 +14547,46 @@
                     recvDone.add(messageId);
                 }
 
-                // Auto-recovery (4/4): this attempt exhausted the
-                // retry budget. If the failure class is self-healable,
-                // ask the peer to fix it. SKDM-awaiting → SKDM_REQUEST
-                // (needs the v=5 scope). v=4 ratchet desync ("v=4
-                // dr.decrypt" / "(desync)") → SESSION_RESET (peer-
-                // scoped, no scope). Cooldown-gated to avoid per-sweep
-                // invoke spam; ipc RecoveryGuard is the hard guard.
-                if ((tries + 1) >= RECV_MAX_RETRIES && senderDiscordId) {
+                // Auto-recovery: fire on the FIRST failure that matches
+                // a recoverable pattern (not gated on retry exhaustion).
+                // The OLD gate `(tries+1) >= RECV_MAX_RETRIES` was dead
+                // code: the catch terminalizes most error classes on try
+                // 1 via `recvDone.add`, so retries never accumulate, so
+                // the guard was never satisfied for v=4 desync / v=4
+                // not-a-recipient / v=5 not-a-recipient. The cooldown
+                // inside oslMaybeEmitRecovery (only armed on success)
+                // and the ipc-side RecoveryGuard are the real spam
+                // throttles. These failure classes can't self-heal by
+                // re-running the dispatch — we have to ask the peer to
+                // do something (re-handshake / re-distribute sender
+                // key / re-publish identity).
+                if (senderDiscordId) {
                     const isV4Desync =
                         msg.indexOf("v=4 dr.decrypt") !== -1 ||
                         msg.indexOf("(desync)") !== -1;
-                    // Stale-identity: "not a recipient" means the
-                    // sender wrapped to an identity we no longer hold
-                    // (they reinstalled/re-registered). A session
-                    // reset can't fix that — only re-fetching THEIR
-                    // bundle can, which then routes a real key change
-                    // through the loud TOFU accept prompt. The pure
-                    // receive path never re-fetched, so this was a
-                    // permanent dead end. Not "(desync)" / not
-                    // "v=4 dr.decrypt", so it can't collide above.
-                    const isNotRecipient =
+                    // v=4 path's "not a recipient" carries the version
+                    // prefix; v=5 path's does NOT. Differentiate so we
+                    // route to the correct recovery (identity vs SKDM).
+                    const isV4NotRecipient =
+                        msg.indexOf("v=4 decode: not a recipient") !== -1;
+                    const isV5NotRecipient =
+                        !isV4NotRecipient &&
                         msg.indexOf("not a recipient of this message") !==
-                        -1;
+                            -1;
                     if (isV5AwaitingSkdm && recvScopeInput) {
+                        // Sender key not yet installed for this peer +
+                        // scope. Ask peer to (re)distribute SKDM.
+                        oslMaybeEmitRecovery(
+                            "skdm",
+                            senderDiscordId,
+                            channelId,
+                            recvScopeInput
+                        );
+                    } else if (isV5NotRecipient && recvScopeInput) {
+                        // Probe-3 fix: GC v=5 receiver lacks the
+                        // sender's sender-key chain (formerly "the
+                        // known secondary gap, deferred"). Same fix
+                        // as awaiting-skdm: ask peer to redistribute.
                         oslMaybeEmitRecovery(
                             "skdm",
                             senderDiscordId,
@@ -14578,13 +14594,20 @@
                             recvScopeInput
                         );
                     } else if (isV4Desync) {
+                        // Ratchet desync: ask peer to drop their
+                        // ratchet so next v=4 re-handshakes both ways.
                         oslMaybeEmitRecovery(
                             "session",
                             senderDiscordId,
                             channelId,
                             null
                         );
-                    } else if (isNotRecipient) {
+                    } else if (isV4NotRecipient) {
+                        // Stale-identity: sender wrapped to an
+                        // identity we no longer hold (they
+                        // reinstalled/re-registered). Re-fetch their
+                        // keyserver bundle so a real key change
+                        // surfaces via the TOFU accept banner.
                         oslMaybeEmitRecovery(
                             "identity",
                             senderDiscordId,
