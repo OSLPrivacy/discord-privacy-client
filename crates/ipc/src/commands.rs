@@ -8588,16 +8588,82 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
 
-    // Preserve the user_id (Discord snowflake) across the burn so the
-    // post-burn re-registration ties the new key to the same account.
-    let preserved_user_id = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
+    // Sign the keyserver unregister request INSIDE the lock guard
+    // (Identity isn't Clone — but the resulting signature bytes are
+    // plain Vec<u8>, so we capture (user_id, sig_b64, timestamp_ms)
+    // and drop the lock before the blocking HTTP call). Must happen
+    // with the OLD ed25519_secret, which is destroyed once
+    // `fresh_start` overwrites identity.json.
+    let unregister_request: Option<(String, String, i64)> = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        match guard.as_ref() {
+            Some(id) => {
+                let timestamp_ms: i64 = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let sig = keystore::sign_unregister(id, timestamp_ms);
+                use base64::engine::general_purpose::STANDARD as B64;
+                use base64::Engine as _;
+                let sig_b64 = B64.encode(sig.as_bytes());
+                Some((id.user_id.clone(), sig_b64, timestamp_ms))
+            }
+            None => None,
+        }
+    };
+    let preserved_user_id = unregister_request
         .as_ref()
-        .map(|id| id.user_id.clone())
+        .map(|(uid, _, _)| uid.clone())
         .unwrap_or_default();
 
+    // Tell the keyserver to delete this user_id's row BEFORE we wipe
+    // local identity. Without this, the next register hits Case C
+    // ("different security key") and rejects forever. Best-effort:
+    // network failure logs + continues, since the burn still has
+    // local value (data wiped on this device) and the user can
+    // retry the keyserver part later.
+    if let Some((user_id, sig_b64, timestamp_ms)) = unregister_request {
+        let base_url = resolve_keyserver_base_url(&dir);
+        let admin_token = read_keyserver_admin_token(&dir);
+        match keystore::client::KeyServerClient::new(base_url) {
+            Ok(c) => {
+                let client = c.with_admin_token(admin_token);
+                match client.unregister_signed(&user_id, &sig_b64, timestamp_ms) {
+                    Ok(()) => {
+                        tracing::info!(
+                            user_id = %user_id,
+                            "OSL: burn_engage: keyserver unregister succeeded"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            user_id = %user_id,
+                            error = %e,
+                            "OSL: burn_engage: keyserver unregister failed; \
+                             local wipe still proceeds. If re-registration \
+                             fails post-burn, retry unregister manually."
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "OSL: burn_engage: KeyServerClient::new failed; \
+                     skipping keyserver unregister (local wipe still proceeds)"
+                );
+            }
+        }
+    }
+
+    cmd_osl_burn_engage_finish(state, &dir, preserved_user_id)
+}
+
+fn cmd_osl_burn_engage_finish(
+    state: &AppState,
+    dir: &std::path::Path,
+    preserved_user_id: String,
+) -> Result<(), String> {
     // Release the SQLite connection BEFORE fresh_start tries to
     // delete messages.sqlite. Without this, Windows returns
     // ERROR_SHARING_VIOLATION (os error 32) on every burn because

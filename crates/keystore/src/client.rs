@@ -22,6 +22,7 @@
 
 use crate::burn::{sign_burn, BurnScope};
 use crate::identity::Identity;
+use crate::unregister::sign_unregister;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
@@ -615,6 +616,59 @@ impl KeyServerClient {
         )?;
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// `DELETE /v1/pubkeys/:user_id` — account-burn unregister.
+    ///
+    /// Signs canonical `(domain || user_id || timestamp_ms)` with
+    /// the OLD identity's Ed25519 secret and POSTs the body. The
+    /// server cascades the delete across users / wrapped_keys /
+    /// prekey_bundles / opk_pool. Idempotent on the server side
+    /// (returns `noop` if the user was never registered or already
+    /// deleted), so re-running the burn after a partial failure is
+    /// safe.
+    ///
+    /// MUST be called BEFORE the local identity files are wiped —
+    /// the signing requires the OLD ed25519_secret, which is gone
+    /// after `cmd_osl_fresh_start`.
+    pub fn unregister(&self, identity: &Identity) -> Result<()> {
+        let timestamp_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let sig = sign_unregister(identity, timestamp_ms);
+        let sig_b64 = STANDARD.encode(sig.as_bytes());
+        self.unregister_signed(&identity.user_id, &sig_b64, timestamp_ms)
+    }
+
+    /// Pre-signed variant of [`Self::unregister`]. Used when the
+    /// identity lives behind a Mutex — caller signs inside the lock
+    /// guard (sign returns `Vec<u8>` which is Send) then drops the
+    /// lock before issuing the blocking HTTP request.
+    pub fn unregister_signed(
+        &self,
+        user_id: &str,
+        signature_b64: &str,
+        timestamp_ms: i64,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct UnregisterBody<'a> {
+            signature_b64: &'a str,
+            timestamp_ms: i64,
+        }
+        let body = UnregisterBody {
+            signature_b64,
+            timestamp_ms,
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let path = format!("/v1/pubkeys/{}", urlencode_segment(user_id));
+        let resp = self.send_request(
+            "DELETE",
+            &path,
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&resp)?;
+        Ok(())
     }
 
     /// `POST /v1/license/validate`. Public endpoint — no admin

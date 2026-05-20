@@ -41,8 +41,10 @@ pub mod prekeys;
 pub mod recipients;
 pub mod sealer;
 pub mod storage;
+pub mod unregister;
 
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
+pub use unregister::{canonical_unregister_bytes, sign_unregister, UNREGISTER_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
     BurnResponse, KeyServerClient, LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse,
