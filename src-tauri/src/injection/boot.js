@@ -12788,8 +12788,18 @@
                 // Disable scroll-anchor on the chat list so hides
                 // don't trigger Discord's scroll auto-adjust.
                 "ol[data-list-id='chat-messages']{overflow-anchor:none !important;}" +
-                // Hide <li> when we mark it.
-                "li[data-osl-cipher-hidden-li='1']{display:none !important;}";
+                // Hide <li> when we mark it directly.
+                "li[data-osl-cipher-hidden-li='1']{display:none !important;}" +
+                // Probe-5 v7: ALSO hide any chat-messages <li> that
+                // contains a div we've marked as auto-hidden. Catches
+                // cases where the <li>-attribute wasn't set (closest()
+                // returned null, message-content lives in an unusual
+                // parent, React-mount race). The :has() selector is
+                // declarative -- the CSS engine re-evaluates as the
+                // attribute is added/removed, no JS needed.
+                "li[id^='chat-messages-']:has([data-osl-cipher-hidden='1']){display:none !important;}" +
+                // Same for the legacy `data-osl-skdm-hidden` marker.
+                "li[id^='chat-messages-']:has([data-osl-skdm-hidden='1']){display:none !important;}";
             (document.head || document.documentElement).appendChild(_s);
             window.__oslAutoHideStyleInstalled = true;
         } catch (_) {}
