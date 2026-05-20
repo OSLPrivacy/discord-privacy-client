@@ -2942,9 +2942,23 @@ fn encrypt_v5_send(
     // resolves their slot, the v=2/v=3 dispatcher routes
     // MSG_TYPE_SENDER_KEY_DISTRIBUTION to `apply_skdm_recv` which
     // installs the receiver chain exactly as before.
+    // Probe-3 Option-2 step 1 follow-up: previously the bundle emit
+    // was gated on `send_skdm` (i.e. ONLY on first install / on
+    // rotation). That left the failure mode: if any receiver missed
+    // the very first SKDM (offline, app not yet running, broken v=4
+    // ratchet in the old design), every subsequent v=5 send produced
+    // NO bundle and the receiver stayed permanently locked out
+    // (`not a recipient` forever, no in-band recovery signal).
+    // Now: always emit on every send while there are peers. The cost
+    // is one extra ~2KB v=3 message per v=5 send; the win is that
+    // receivers self-heal from any v=5 message they observe, without
+    // needing the SKDM_REQUEST/recovery round-trip. apply_skdm_recv
+    // is idempotent (existing receiver chain → rotate_receiver to
+    // the same chain_id is a no-op; absent → install_receiver).
     let mut skdm_wires: Vec<String> = Vec::new();
     let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
-    if send_skdm && !non_self_peers.is_empty() {
+    let _ = send_skdm; // retained for self-receiver gate above; no longer gates bundle emit
+    if !non_self_peers.is_empty() {
         let recipients_v3: Vec<crate::wire_v2::RecipientV3> = non_self_peers
             .iter()
             .map(|(_, r)| r.clone())
