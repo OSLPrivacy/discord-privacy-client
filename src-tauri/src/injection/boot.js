@@ -14729,6 +14729,16 @@
                 const __osl_cachedWire =
                     window.__oslProseWireByMsgId.get(__osl_pre_msgId);
                 if (typeof __osl_cachedWire === "string") {
+                    // If the message has already been decrypted +
+                    // applied, bail. The existing cached-plaintext
+                    // branch below would otherwise re-apply plaintext
+                    // on every Discord mutation, which itself mutates
+                    // the div, which re-triggers the observer — an
+                    // infinite loop that buried the console in 50k
+                    // "scan no candidates" lines until the client died.
+                    if (recvDone.has(__osl_pre_msgId)) {
+                        return;
+                    }
                     text = __osl_cachedWire;
                 } else {
                     if (!window.__oslProseInFlight) {
