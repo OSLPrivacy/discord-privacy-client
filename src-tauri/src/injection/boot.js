@@ -1194,7 +1194,33 @@
                         ) {
                             return onMutated(newBody);
                         }
-                        return (async function () {
+                        // Probe-5 fix: POST CONTENT BEFORE SKDMs.
+                        // Previously SKDMs went first, which meant
+                        // they got the lower Discord msg_id and
+                        // became the GROUP LEADER (the message
+                        // Discord renders with avatar+header).
+                        // Subsequent same-author messages (the actual
+                        // user content) rendered as compact
+                        // continuations with no avatar. When we
+                        // hid the SKDM bubble the avatar went with
+                        // it, and the user's plaintext message looked
+                        // authorless -- mis-attributed to whoever
+                        // sent the previous visible message.
+                        // Posting content first means content is the
+                        // group leader (has avatar), SKDMs are
+                        // compact continuations (no chrome), and
+                        // hiding them collapses cleanly.
+                        // Receiver side: SKDM may arrive after
+                        // content (msg_id ordering). The v=5 decrypt
+                        // returns "no installed sender-key" /
+                        // "not a recipient", recvDispatchDecrypt
+                        // leaves recvDone unset for the isV5AwaitingSkdm
+                        // class, and the SKDM_APPLIED revive loop
+                        // re-dispatches when the SKDM finally lands.
+                        // Auto-hide keeps the ciphertext invisible
+                        // during the brief gap.
+                        const __oslSendResult = onMutated(newBody);
+                        (async function () {
                             const okStatuses = __oslSk.filter(
                                 function (s) {
                                     return s && s.ok;
@@ -1256,8 +1282,8 @@
                                         channelId
                                 );
                             }
-                            return onMutated(newBody);
                         })();
+                        return __oslSendResult;
                     }
                     // 9-MODE1-RETIRE: Mode 1 dispatch suppressed for
                     // V2. Rust coerces stego_mode=mode1 → Mode 0 at
@@ -12671,16 +12697,19 @@
         // Probe-5 follow-up: also undo the bubble-wrapper walk-up
         // collapse applied by oslAutoHideCiphertext so the parent
         // padding/margin chrome re-expands and the plaintext is
-        // visible.
+        // visible. The walk includes the <li> itself because the
+        // auto-hide collapses the <li> for compact continuations
+        // that have no avatar/header inside.
         try {
             let p = div.parentElement;
-            while (p && p.tagName !== "LI" && p !== document.body) {
+            while (p && p !== document.body) {
                 if (
                     p.getAttribute("data-osl-cipher-hidden-wrap") === "1"
                 ) {
                     p.style.removeProperty("display");
                     p.removeAttribute("data-osl-cipher-hidden-wrap");
                 }
+                if (p.tagName === "LI") break;
                 p = p.parentElement;
             }
         } catch (_) {}
@@ -12714,18 +12743,21 @@
             div.style.userSelect = "none";
             div.setAttribute("data-osl-cipher-hidden", "1");
         } catch (_) {}
-        // Probe-5 follow-up: also collapse the surrounding bubble
+        // Probe-5 follow-up: collapse the surrounding bubble
         // wrapper(s) so the empty "bar" disappears entirely. Walk
         // UP from this message-content div, hiding each ancestor
         // that has NO avatar/header/other-content inside (i.e., it's
-        // a pure body wrapper for THIS message). Stop at the <li>
-        // (it may be the group leader holding the avatar) or at the
-        // first ancestor with group chrome. Marked with
+        // a pure body wrapper for THIS message). Walks through the
+        // <li> too if the <li> itself has no avatar/header (typical
+        // for compact-style continuations -- and after the Probe-5
+        // send-order flip, this applies to every SKDM bundle). If
+        // the <li> IS the group leader (has avatar inside), stop at
+        // the wrapper just below. Marked with
         // data-osl-cipher-hidden-wrap so recvApplyPlaintext can
         // undo on successful decrypt.
         try {
             let p = div.parentElement;
-            while (p && p.tagName !== "LI" && p !== document.body) {
+            while (p && p !== document.body) {
                 if (p.getAttribute("data-osl-cipher-hidden-wrap") === "1") {
                     // Already hidden; stop walking (its ancestors
                     // were processed last time).
@@ -12743,6 +12775,10 @@
                 if (hasGroupChrome) break;
                 p.style.display = "none";
                 p.setAttribute("data-osl-cipher-hidden-wrap", "1");
+                // Stop after hiding the <li> itself; ancestors
+                // beyond it (chat-messages <ol> etc.) are shared
+                // with every other message and must not be touched.
+                if (p.tagName === "LI") break;
                 p = p.parentElement;
             }
         } catch (_) {}
