@@ -5165,11 +5165,14 @@
                 } catch (_) {}
                 return;
             }
-            // Match `[class*='icon__']` (double underscore -- exact
-            // pattern from the user's `.modeSelected__2ea32 .icon__2ea32`
-            // selector) so we don't accidentally pick up something
-            // else like a notification badge.
-            const iconEl = selected.querySelector("[class*='icon__']");
+            // The # icon is specifically an inline <svg> with class
+            // matching `icon__<hash>`. Narrowing to svg here so we
+            // don't grab a notification badge, mention indicator, or
+            // other icon-shaped element that happens to share an
+            // `icon__` class prefix.
+            const iconEl =
+                selected.querySelector("svg[class*='icon__']") ||
+                selected.querySelector("[class*='icon__']");
             if (!iconEl || !iconEl.parentElement) return;
             const lock = document.createElement("div");
             lock.setAttribute(SIDEBAR_LOCK_DATA_ATTR, "1");
