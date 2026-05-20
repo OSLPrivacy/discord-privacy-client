@@ -15,6 +15,7 @@
     "allow-osl-load-channel-history",
     "allow-osl-burn-message",
     "allow-osl-persist-edit",
+    "allow-osl-persist-outbound",
     "allow-osl-encrypt-message-v2",
     "allow-osl-seal-attachment",
     "allow-osl-open-attachment",

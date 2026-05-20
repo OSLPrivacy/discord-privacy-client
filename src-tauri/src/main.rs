@@ -351,11 +351,33 @@ async fn osl_persist_edit(
     app: tauri::AppHandle,
     discord_message_id: String,
     new_plaintext: String,
+    channel_id: Option<String>,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_persist_edit(state.inner(), discord_message_id, new_plaintext)
+        cmd_osl_persist_edit(state.inner(), discord_message_id, new_plaintext, channel_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Probe-2 fix: persist a freshly-sent outbound message so it survives
+/// session restart. Boot.js calls this immediately after a successful
+/// send, before any DOM swap, so the in-memory `selfSentPlaintext`
+/// cache and the durable store both hold the same plaintext. See
+/// [`ipc::commands::cmd_osl_persist_outbound`].
+#[tauri::command]
+async fn osl_persist_outbound(
+    app: tauri::AppHandle,
+    channel_id: String,
+    discord_message_id: String,
+    plaintext: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_persist_outbound(state.inner(), channel_id, discord_message_id, plaintext)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -2542,6 +2564,7 @@ fn main() {
             osl_load_channel_history,
             osl_burn_message,
             osl_persist_edit,
+            osl_persist_outbound,
             osl_encrypt_message_v2,
             osl_seal_attachment,
             osl_open_attachment,

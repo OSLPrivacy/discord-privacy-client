@@ -63,6 +63,7 @@ fn persist_edit_overwrites_existing_row() {
         &state,
         "msg-edit-1".to_string(),
         "after edit (fresh plaintext)".to_string(),
+        None,
     )
     .expect("persist_edit on known id");
 
@@ -89,14 +90,11 @@ fn persist_edit_overwrites_existing_row() {
 }
 
 #[test]
-fn persist_edit_for_unknown_id_is_idempotent_no_op() {
-    // Decision: with the 2-arg IPC signature we cannot construct
-    // a complete row (channel_id, sender_discord_id,
-    // sender_osl_user_id are all unrecoverable). Idempotent
-    // no-op is the conservative choice — the receive observer's
-    // normal decrypt-and-persist path handles edit-before-decrypt
-    // when (later) the bounced-back ciphertext arrives. See the
-    // fn-doc on `cmd_osl_persist_edit` for the full reasoning.
+fn persist_edit_for_unknown_id_without_channel_is_idempotent_no_op() {
+    // When `channel_id` is None we cannot construct a complete row
+    // (sender metadata is unrecoverable for arbitrary message ids),
+    // so the conservative no-op is preserved — matches the historical
+    // 2-arg behaviour exactly.
     let tmp = TempDir::new().unwrap();
     let state = fresh_state(tmp.path());
 
@@ -104,15 +102,16 @@ fn persist_edit_for_unknown_id_is_idempotent_no_op() {
         &state,
         "never-seen-this-id".to_string(),
         "some plaintext".to_string(),
+        None,
     )
-    .expect("persist_edit on unknown id is Ok");
+    .expect("persist_edit on unknown id (no channel) is Ok");
 
     // No row should have been synthesised.
     let history =
         cmd_osl_load_channel_history(&state, "any-channel".to_string(), None).expect("history");
     assert!(
         history.is_empty(),
-        "unknown-id persist_edit must not create rows (got {history:?})"
+        "unknown-id persist_edit (no channel) must not create rows (got {history:?})"
     );
 
     // Repeat the same call: still Ok (idempotent).
@@ -120,8 +119,43 @@ fn persist_edit_for_unknown_id_is_idempotent_no_op() {
         &state,
         "never-seen-this-id".to_string(),
         "different plaintext".to_string(),
+        None,
     )
     .expect("persist_edit unknown id second call still Ok");
+}
+
+#[test]
+fn persist_edit_for_unknown_id_with_channel_upserts_as_self() {
+    // Probe-2 fix: when boot.js passes channel_id (the common case
+    // after the outbound-persistence rollout), persist_edit upserts
+    // a fresh self-sender row so editing an old pre-fix message that
+    // was never persisted creates the row instead of silently dropping.
+    let tmp = TempDir::new().unwrap();
+    let state = fresh_state(tmp.path());
+    // Seed an identity so the self-upsert has a user_id to write.
+    {
+        let mut guard = state.identity.lock().unwrap();
+        *guard = Some(keystore::generate_identity("1111".to_string()));
+    }
+
+    cmd_osl_persist_edit(
+        &state,
+        "fresh-id-after-edit".to_string(),
+        "the typed plaintext".to_string(),
+        Some("ch-upsert".to_string()),
+    )
+    .expect("persist_edit upsert with channel_id is Ok");
+
+    let history =
+        cmd_osl_load_channel_history(&state, "ch-upsert".to_string(), None).expect("history");
+    assert_eq!(history.len(), 1, "exactly one row after upsert");
+    let row = &history[0];
+    assert_eq!(row.discord_message_id, "fresh-id-after-edit");
+    assert_eq!(row.plaintext, "the typed plaintext");
+    assert_eq!(row.channel_id, "ch-upsert");
+    assert_eq!(row.sender_discord_id, "1111");
+    assert_eq!(row.sender_osl_user_id, "1111");
+    assert!(!row.burned);
 }
 
 #[test]
@@ -132,8 +166,13 @@ fn persist_edit_with_store_disabled_is_ok() {
     // edit, which would be a worse UX than silently skipping
     // persistence.
     let state = AppState::new();
-    cmd_osl_persist_edit(&state, "any-id".to_string(), "any plaintext".to_string())
-        .expect("persist_edit on disabled store is Ok no-op");
+    cmd_osl_persist_edit(
+        &state,
+        "any-id".to_string(),
+        "any plaintext".to_string(),
+        None,
+    )
+    .expect("persist_edit on disabled store is Ok no-op");
 }
 
 #[test]
@@ -161,6 +200,7 @@ fn persist_edit_after_burn_is_no_op() {
         &state,
         "burn-then-edit".to_string(),
         "tried to edit after burn".to_string(),
+        None,
     )
     .expect("persist_edit on burned row is Ok no-op");
 

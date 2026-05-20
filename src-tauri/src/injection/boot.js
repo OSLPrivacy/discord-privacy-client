@@ -1296,13 +1296,22 @@
      * Failures log but never propagate; the receive observer's
      * normal decrypt-and-persist path provides a fallback.
      */
-    function runPersistEdit(messageId, plaintext) {
+    function runPersistEdit(messageId, plaintext, channelId) {
         const invoke = getTauriInvoke();
         if (typeof invoke !== "function") return;
-        invoke("osl_persist_edit", {
+        // Probe-2 fix: pass channelId so the Rust side can upsert as
+        // self when the row is missing (pre-outbound-persistence
+        // messages). Older boot-js builds didn't pass it; the Rust
+        // command treats `channelId: null` as the legacy no-op-on-miss
+        // behaviour, so this is forward/backward compatible.
+        const args = {
             discordMessageId: messageId,
             newPlaintext: plaintext,
-        })
+        };
+        if (typeof channelId === "string" && channelId.length > 0) {
+            args.channelId = channelId;
+        }
+        invoke("osl_persist_edit", args)
             .then(function () {
                 console.log(
                     "[OSL] selfEdit persist msg=" +
@@ -6588,6 +6597,20 @@
             loadedHistory.delete(messageId);
             recvPlaintext.delete(messageId);
             recvDone.delete(messageId);
+            // Probe-2 Boot Bug 5: aftermath used to leave selfSentPlaintext
+            // intact, so on any DOM re-mount the self-view short-circuit
+            // re-rendered the sender's own plaintext over a freshly-burned
+            // message — contradicting the locked "burn means burned for
+            // everyone, no special case for self" policy. Also clear the
+            // retry/inflight maps so a re-dispatch doesn't loop on a
+            // burned id.
+            selfSentPlaintext.delete(messageId);
+            recvCovers.delete(messageId);
+            recvRetries.delete(messageId);
+            recvInFlight.delete(messageId);
+            if (typeof recvAuthorRetryCount !== "undefined") {
+                recvAuthorRetryCount.delete(messageId);
+            }
             // 7d-PIVOT-FIX2 Bug G: prefer the DOM-persisted original
             // ciphertext over the in-memory `recvCovers` map. The
             // attribute survives across the cache wipes above and lets
@@ -9672,7 +9695,7 @@
                         function (resp) {
                             try {
                                 if (resp && resp.ok) {
-                                    runPersistEdit(messageId, origPlaintext);
+                                    runPersistEdit(messageId, origPlaintext, channelId);
                                 }
                             } catch (e) {
                                 console.error(
@@ -9790,7 +9813,7 @@
                     // Response missing / non-JSON â€” fine, just
                     // skip the defensive populate.
                 }
-                runPersistEdit(messageId, origPlaintext);
+                runPersistEdit(messageId, origPlaintext, channelId);
             } catch (e) {
                 // Listener never throws.
             }
@@ -10328,13 +10351,102 @@
                     break;
                 }
                 case "GUILD_MEMBER_ADD":
-                case "GUILD_MEMBER_REMOVE":
                 case "GUILD_MEMBER_UPDATE": {
-                    // Single-member deltas. The CHUNK /
+                    // Single-member ADD / UPDATE. The CHUNK /
                     // LIST_UPDATE cases above carry the bulk roster;
-                    // these fine-grained deltas stay no-ops (the
-                    // permissive over-set tolerates minor staleness
-                    // until the next list scroll / chunk).
+                    // these fine-grained deltas stay no-ops for adds
+                    // (the permissive over-set tolerates minor
+                    // staleness until the next list scroll / chunk).
+                    break;
+                }
+                case "GUILD_MEMBER_REMOVE": {
+                    // Probe-2 Boot Bug 3: previously no-op'd, so a
+                    // user who left a server (or was kicked) stayed
+                    // in the durable scope membership forever and
+                    // server-header sends kept wrapping SKDMs to a
+                    // peer who could no longer receive them. Walk
+                    // the guild's channels and re-emit the scope
+                    // with the leaver removed; the in-memory roster
+                    // cache is also pruned so the icon UI catches up.
+                    try {
+                        const guildId =
+                            d && typeof d.guild_id === "string" ? d.guild_id : null;
+                        const leaver =
+                            d && d.user && typeof d.user.id === "string"
+                                ? d.user.id
+                                : null;
+                        if (guildId && leaver) {
+                            const guildCache =
+                                window.__OSL_GUILD_CACHE__ &&
+                                window.__OSL_GUILD_CACHE__[guildId];
+                            const channelIds =
+                                guildCache && Array.isArray(guildCache.channel_ids)
+                                    ? guildCache.channel_ids
+                                    : [];
+                            for (const cid of channelIds) {
+                                const prev = channelMemberCache.get(cid);
+                                if (Array.isArray(prev)) {
+                                    const next = prev.filter((u) => u !== leaver);
+                                    if (next.length !== prev.length) {
+                                        channelMemberCache.set(cid, next);
+                                        oslChannelMembersUpdate(cid, next);
+                                        oslNoteScope(
+                                            {
+                                                kind: "server_channel",
+                                                id: guildId + ":" + cid,
+                                                server_id: guildId,
+                                                channel_id: cid,
+                                            },
+                                            next
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_) {}
+                    break;
+                }
+                case "CHANNEL_RECIPIENT_ADD":
+                case "CHANNEL_RECIPIENT_REMOVE": {
+                    // Probe-2 Boot Bug 3: GC roster changes mid-session
+                    // were previously invisible — adders/leavers stayed
+                    // in the durable membership forever (or never made
+                    // it in), so SKDMs were wrapped to the wrong set
+                    // and joiners hit "not a recipient" until restart.
+                    // We don't get a full updated recipients[] in this
+                    // event, only the delta — patch the in-memory
+                    // cache and re-emit the gc: scope.
+                    try {
+                        const channelId =
+                            d && typeof d.channel_id === "string"
+                                ? d.channel_id
+                                : null;
+                        const userId =
+                            d && d.user && typeof d.user.id === "string"
+                                ? d.user.id
+                                : null;
+                        if (channelId && userId) {
+                            let members =
+                                channelMemberCache.get(channelId) || [];
+                            if (t === "CHANNEL_RECIPIENT_ADD") {
+                                if (members.indexOf(userId) === -1) {
+                                    members = members.concat([userId]);
+                                }
+                            } else {
+                                members = members.filter((u) => u !== userId);
+                            }
+                            channelMemberCache.set(channelId, members);
+                            oslChannelMembersUpdate(channelId, members);
+                            oslNoteScope(
+                                {
+                                    kind: "gc",
+                                    id: channelId,
+                                    channel_id: channelId,
+                                },
+                                members
+                            );
+                        }
+                    } catch (_) {}
                     break;
                 }
                 case "MESSAGE_CREATE":
@@ -11557,6 +11669,30 @@
                                     " len=" +
                                     pt.length
                             );
+                            // Probe-2 fix: persist outbound to disk so
+                            // own messages survive close+reopen. Without
+                            // this the recv-side decrypt on next session
+                            // sees v=4 wire and returns "not a recipient"
+                            // (correct — own outbound is encrypted only
+                            // to peer's key) → ciphertext renders. The
+                            // companion `osl_persist_outbound` IPC is
+                            // best-effort and never blocks the send.
+                            try {
+                                window.__TAURI__.core
+                                    .invoke("osl_persist_outbound", {
+                                        channelId: channelId,
+                                        discordMessageId: parsed.id,
+                                        plaintext: pt,
+                                    })
+                                    .catch(function (e) {
+                                        console.log(
+                                            "[OSL] persist_outbound failed (non-fatal) msg=" +
+                                                parsed.id +
+                                                ": " +
+                                                (e && e.message ? e.message : e)
+                                        );
+                                    });
+                            } catch (_) {}
                             // Fix A: the bounced-back own message
                             // almost always reaches recvDispatchDecrypt
                             // BEFORE this REST `load` populates
@@ -12612,6 +12748,14 @@
         if (typeof fromSession === "string") {
             return { plaintext: fromSession, source: "recvPlaintext" };
         }
+        // Probe-2 fix: also consult the send-time cache so editing
+        // an own outbound message that was sent THIS session (before
+        // loadedHistory caught up via a channel switch) doesn't fall
+        // through to the EDIT_TAB_PLACEHOLDER.
+        const fromSelfSent = selfSentPlaintext.get(messageId);
+        if (typeof fromSelfSent === "string") {
+            return { plaintext: fromSelfSent, source: "selfSentPlaintext" };
+        }
         return null;
     }
 
@@ -13207,6 +13351,21 @@
                         loadedHistory.delete(messageId);
                         invalidated = true;
                     }
+                    // Probe-2 Boot Bug 1: this path used to leave the
+                    // PRE-edit plaintext in selfSentPlaintext, so the
+                    // self-view short-circuit at recvDispatchDecrypt
+                    // rendered the OLD text over the NEW ciphertext on
+                    // any DOM re-mount after the 5s editOverlayLocallyApplied
+                    // window. Updating the map (instead of just clearing
+                    // it) preserves the short-circuit's purpose — the
+                    // sender never needs to v=4-decrypt their own wire.
+                    try {
+                        selfSentPlaintext.set(messageId, newPlaintext);
+                        oslFifoEvict(
+                            selfSentPlaintext,
+                            OSL_SELF_SENT_PLAINTEXT_MAX
+                        );
+                    } catch (_) {}
                     if (invalidated) {
                         console.log(
                             "[OSL] editOverlay invalidated decrypt cache msg=" +
@@ -13360,9 +13519,16 @@
     function editOverlayHandleClick(e) {
         const target = e.target;
         if (!target || typeof target.closest !== "function") return;
-        const btn = target.closest(
-            '[role="button"][aria-label="Edit"]'
-        );
+        // Probe-2 Boot Bug 8: aria-label="Edit" is the English locale's
+        // literal; non-English clients use "Modifier" / "Editar" / etc.
+        // Match the OSL pencil button (we install our own `data-osl-edit`
+        // marker in the message-actions row) first, then fall back to
+        // Discord's native English-only label so existing flows are
+        // preserved on en-US.
+        const btn =
+            target.closest("[data-osl-edit='1']") ||
+            target.closest('[role="button"][aria-label="Edit"]') ||
+            target.closest('button[class*="messageActionsButton"]');
         if (!btn) return;
         const li = btn.closest("li[id^='chat-messages-']");
         if (!li) return;
@@ -13370,23 +13536,30 @@
         if (!m) return;
         const messageId = m[1];
 
-        // Resolve plaintext. Three sources, in order:
-        //   1. loadedHistory  — fastest, populated on channel switch
-        //   2. recvPlaintext  — populated by this session's decrypts
-        //   3. live DOM       — self-healing fallback for the
-        //      re-edit case: editOverlaySave invalidates both
-        //      caches on save, but the new plaintext is sitting
-        //      in the message-content textContent because we
-        //      wrote it there directly. Read it back rather than
-        //      give up and hand the user Discord's native edit
-        //      (which would show DPC0:: ciphertext).
+        // Resolve plaintext. Four sources, in order:
+        //   1. loadedHistory     — fastest, populated on channel switch
+        //   2. recvPlaintext     — populated by this session's decrypts
+        //   3. selfSentPlaintext — populated by this session's sends
+        //                          (Probe-2 fix; covers own outbound
+        //                          messages that haven't yet flowed
+        //                          through loadedHistory)
+        //   4. live DOM          — self-healing fallback for the
+        //      re-edit case: editOverlaySave invalidates the caches
+        //      on save, but the new plaintext is sitting in the
+        //      message-content textContent because we wrote it
+        //      there directly. Read it back rather than give up
+        //      and hand the user Discord's native edit (which would
+        //      show DPC0:: ciphertext).
         const fromHistory = loadedHistory.get(messageId);
         const fromSession = recvPlaintext.get(messageId);
+        const fromSelfSent = selfSentPlaintext.get(messageId);
         let plaintext =
             typeof fromHistory === "string"
                 ? fromHistory
                 : typeof fromSession === "string"
                 ? fromSession
+                : typeof fromSelfSent === "string"
+                ? fromSelfSent
                 : null;
         if (typeof plaintext !== "string") {
             const contentEl = document.getElementById(
@@ -13748,6 +13921,40 @@
             return;
         }
 
+        const channelId = recvExtractChannelId();
+        if (!channelId) {
+            console.log(
+                "[OSL] recvDispatchDecrypt SKIP msg=" +
+                    messageId +
+                    " reason=no_channelId (path=" +
+                    window.location.pathname +
+                    ")"
+            );
+            return;
+        }
+        // Probe-2 Boot Bug 9: burn-skip must run BEFORE the self-view
+        // short-circuit; otherwise the sender's own messages in a
+        // burned scope still render their stashed plaintext after any
+        // re-mount, contradicting the locked "burn means burned for
+        // everyone, no special case for self" policy.
+        // 7d-FIX1: skip dispatch for burned scopes. Applies to
+        // EVERY message regardless of sender — 7d-PIVOT-FIX
+        // reverted the self-bypass introduced in PIVOT Task 5a
+        // because in practice it was leaking plaintext for the
+        // local user's own old messages in burned scopes (the
+        // wrapped_keys hadn't always been wiped fully, and
+        // even when they had, the bypass meant the recv path
+        // still attempted decrypt + sometimes found a stale
+        // cache to fall back on). User decision: burn means
+        // burned for everyone, no special case for self.
+        try {
+            if (oslBurnedScopesShouldSkip(channelId)) {
+                oslBurnedScopesLogOnceForChannel(channelId);
+                recvDone.add(messageId);
+                return;
+            }
+        } catch (_) {}
+
         // Item 1 (self-view): our own encrypted v=4 DM cannot be
         // decrypted locally (v=4 wraps only to the peer's slot).
         // Render the send-time plaintext we stashed instead of
@@ -13766,35 +13973,6 @@
             );
             return;
         }
-
-        const channelId = recvExtractChannelId();
-        if (!channelId) {
-            console.log(
-                "[OSL] recvDispatchDecrypt SKIP msg=" +
-                    messageId +
-                    " reason=no_channelId (path=" +
-                    window.location.pathname +
-                    ")"
-            );
-            return;
-        }
-        // 7d-FIX1: skip dispatch for burned scopes. Applies to
-        // EVERY message regardless of sender — 7d-PIVOT-FIX
-        // reverted the self-bypass introduced in PIVOT Task 5a
-        // because in practice it was leaking plaintext for the
-        // local user's own old messages in burned scopes (the
-        // wrapped_keys hadn't always been wiped fully, and
-        // even when they had, the bypass meant the recv path
-        // still attempted decrypt + sometimes found a stale
-        // cache to fall back on). User decision: burn means
-        // burned for everyone, no special case for self.
-        try {
-            if (oslBurnedScopesShouldSkip(channelId)) {
-                oslBurnedScopesLogOnceForChannel(channelId);
-                recvDone.add(messageId);
-                return;
-            }
-        } catch (_) {}
         const senderDiscordId = recvExtractAuthorId(div);
         if (!senderDiscordId) {
             // Bounded retry rather than terminal skip. The author
@@ -14051,14 +14229,21 @@
                 recvCovers.set(messageId, coverText);
                 recvDone.add(messageId);
 
-                // Apply on the live messageContent div â€” look it
-                // up fresh by id, since `div` may have been
-                // detached and re-mounted between dispatch and
-                // resolve.
-                const liveDiv = document.getElementById(
-                    RECV_MESSAGE_ID_PREFIX + messageId
+                // Probe-2 Boot Bug 1: previously this used
+                // document.getElementById, which returns the FIRST
+                // matching node in document order. Discord's
+                // virtualised message list can transiently hold a
+                // detached/stale node with the same id while the
+                // visible re-mounted one trails behind, so the apply
+                // could land on the off-screen node — the 100ms
+                // delayed-check then re-read the same wrong node and
+                // logged STUCK while the user kept seeing ciphertext.
+                // Switch to querySelectorAll and apply to every match
+                // so duplicates can never strand us on the wrong one.
+                const liveDivs = document.querySelectorAll(
+                    "[id='" + RECV_MESSAGE_ID_PREFIX + messageId + "']"
                 );
-                if (!liveDiv) {
+                if (liveDivs.length === 0) {
                     if (DEBUG) {
                         console.log(
                             "[OSL] msg=" +
@@ -14068,7 +14253,19 @@
                     }
                     return;
                 }
-                const before = liveDiv.textContent || "";
+                if (DEBUG && liveDivs.length > 1) {
+                    console.log(
+                        "[OSL] msg=" +
+                            messageId +
+                            " duplicate-id defense: " +
+                            liveDivs.length +
+                            " matching nodes in DOM; applying to each"
+                    );
+                }
+                const before =
+                    liveDivs[0] && liveDivs[0].textContent
+                        ? liveDivs[0].textContent
+                        : "";
                 if (DEBUG) {
                     console.log(
                         "[OSL] msg=" +
@@ -14088,9 +14285,14 @@
                             plaintext.slice(0, 64)
                     );
                 }
-                recvApplyPlaintext(liveDiv, plaintext);
+                liveDivs.forEach(function (d) {
+                    recvApplyPlaintext(d, plaintext);
+                });
                 if (DEBUG) {
-                    const after = liveDiv.textContent;
+                    const after =
+                        liveDivs[0] && liveDivs[0].textContent
+                            ? liveDivs[0].textContent
+                            : "";
                     console.log(
                         "[OSL] msg=" +
                             messageId +
@@ -14101,10 +14303,10 @@
                             ")"
                     );
                     nativeSetTimeout(function () {
-                        const sweepDiv = document.getElementById(
-                            RECV_MESSAGE_ID_PREFIX + messageId
+                        const sweepDivs = document.querySelectorAll(
+                            "[id='" + RECV_MESSAGE_ID_PREFIX + messageId + "']"
                         );
-                        if (!sweepDiv) {
+                        if (sweepDivs.length === 0) {
                             console.log(
                                 "[OSL] msg=" +
                                     messageId +
@@ -14112,18 +14314,31 @@
                             );
                             return;
                         }
-                        const delayed = sweepDiv.textContent || "";
-                        const reverted = oslMessageIsStego(delayed);
+                        let anyReverted = false;
+                        sweepDivs.forEach(function (d) {
+                            if (oslMessageIsStego(d.textContent || "")) {
+                                anyReverted = true;
+                                // Re-apply opportunistically — duplicate
+                                // node may have been a fresh re-mount
+                                // that raced the dispatch.
+                                try {
+                                    recvApplyPlaintext(d, plaintext);
+                                } catch (_) {}
+                            }
+                        });
+                        const sample = sweepDivs[0].textContent || "";
                         console.log(
                             "[OSL] msg=" +
                                 messageId +
-                                " delayed-check (100ms): textContent=" +
-                                delayed.slice(0, 64) +
+                                " delayed-check (100ms, " +
+                                sweepDivs.length +
+                                " node(s)): textContent=" +
+                                sample.slice(0, 64) +
                                 " (len=" +
-                                delayed.length +
+                                sample.length +
                                 ")" +
-                                (reverted
-                                    ? " REVERTED â€” sweep will re-apply"
+                                (anyReverted
+                                    ? " REVERTED on at least one node — re-applied + sweep will reconverge"
                                     : " STUCK")
                         );
                     }, 100);
@@ -14311,7 +14526,13 @@
             if (nowMs - last < RECV_RECOVERY_COOLDOWN_MS) {
                 return;
             }
-            recvRecoveryCooldown.set(cdKey, nowMs);
+            // Probe-2 Boot Bug 4: previously we set the cooldown *here*,
+            // before issuing the request. Any transient failure
+            // (RecoveryGuard throttle, no peer pubkey, IPC blip) then
+            // wedged the auto-recovery for the full 2-minute window
+            // even though no recovery actually happened. Move the
+            // cooldown set into the success arms below so failures
+            // remain retryable on the next exhausted-retry tick.
             // Stale-identity kind: no wire to POST — just re-fetch the
             // peer's keyserver bundle. A genuine key change becomes a
             // pending TOFU alert (never auto-trusted); oslCheckSecurity
@@ -14326,6 +14547,7 @@
                     invoke("osl_recover_peer_identity", { discordId: peer })
                 )
                     .then(function (changed) {
+                        recvRecoveryCooldown.set(cdKey, Date.now());
                         console.log(
                             "[OSL] auto-recovery: identity re-fetch peer=" +
                                 peer +
@@ -14344,10 +14566,12 @@
                         } catch (_) {}
                     })
                     .catch(function (e) {
+                        // Don't set the cooldown — let the next
+                        // exhausted-retry tick try again.
                         console.log(
                             "[OSL] auto-recovery: identity re-fetch not done (" +
                                 (e && e.message ? e.message : e) +
-                                ")"
+                                ") — cooldown not armed, will retry"
                         );
                     });
                 return;
@@ -14376,12 +14600,16 @@
                                 kind +
                                 " build returned no wire (skipped)"
                         );
-                        return;
+                        return null;
                     }
                     return oslSendControlMessage(channelId, wire);
                 })
                 .then(function (posted) {
                     if (posted) {
+                        // Only arm the cooldown on a confirmed
+                        // successful POST so transient throttle /
+                        // no-pubkey / IPC failures remain retryable.
+                        recvRecoveryCooldown.set(cdKey, Date.now());
                         console.log(
                             "[OSL] auto-recovery: " +
                                 kind +
@@ -14393,15 +14621,14 @@
                     }
                 })
                 .catch(function (e) {
-                    // Throttled / no-pubkey / not-loaded all land here;
-                    // benign — recv stays non-terminal and the next
-                    // window retries.
+                    // Don't set the cooldown — recv stays non-terminal
+                    // and the next exhausted-retry window retries.
                     console.log(
                         "[OSL] auto-recovery: " +
                             kind +
                             " request not sent (" +
                             (e && e.message ? e.message : e) +
-                            ")"
+                            ") — cooldown not armed, will retry"
                     );
                 });
         } catch (e) {

@@ -1953,6 +1953,79 @@ fn persist_decrypted(
     }
 }
 
+/// Probe-2 fix: persist a freshly-sent outbound message so it
+/// survives a session restart.
+///
+/// Before this, outbound plaintext was held only in two in-memory
+/// JS Maps (`selfSentPlaintext`, `oslSentWireToPlaintext`). On app
+/// restart those were empty, the decrypt dispatcher ran on the user's
+/// own v=4 wire, and v=4 correctly returned "not a recipient" because
+/// a single-peer Double Ratchet message is encrypted only to the
+/// peer's key, never to the sender's. The sender's own messages
+/// therefore re-rendered as ciphertext after every restart. This IPC
+/// closes the loop by persisting outbound plaintext through the same
+/// `MessageStore` the decrypt path uses, so `recvLoadHistory`'s
+/// rehydration covers own messages too.
+///
+/// The row is written with `sender_discord_id` and `sender_osl_user_id`
+/// both set to the in-state identity's `user_id` (the Discord
+/// snowflake in normal use). Best-effort: persistence-disabled
+/// (`message_store == None`), missing identity, or store failures are
+/// logged and swallowed — the send itself already succeeded; failing
+/// to persist would only confuse the JS layer.
+pub fn cmd_osl_persist_outbound(
+    state: &AppState,
+    channel_id: String,
+    discord_message_id: String,
+    plaintext: String,
+) -> Result<(), String> {
+    let self_id = {
+        let guard = state.identity.lock().expect("identity mutex poisoned");
+        match guard.as_ref() {
+            Some(id) => id.user_id.clone(),
+            None => {
+                tracing::debug!(
+                    discord_message_id = %discord_message_id,
+                    "OSL: persist_outbound: identity not loaded; skipping"
+                );
+                return Ok(());
+            }
+        }
+    };
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        tracing::debug!(
+            discord_message_id = %discord_message_id,
+            "OSL: persist_outbound: message_store disabled; skipping"
+        );
+        return Ok(());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let msg = StoredMessage {
+        discord_message_id: discord_message_id.clone(),
+        channel_id,
+        sender_discord_id: self_id.clone(),
+        sender_osl_user_id: self_id,
+        plaintext,
+        decrypted_at: now,
+        burned: false,
+    };
+    if let Err(e) = store.put(&msg) {
+        tracing::warn!(
+            discord_message_id = %discord_message_id,
+            error = %e,
+            "OSL: persist_outbound: store.put failed (non-fatal)"
+        );
+    }
+    Ok(())
+}
+
 /// JS-facing DTO mirror of [`store::StoredMessage`]. The store
 /// crate intentionally does not depend on `serde` (it's a pure
 /// at-rest layer); this DTO crosses the IPC boundary and is the
@@ -2059,6 +2132,7 @@ pub fn cmd_osl_persist_edit(
     state: &AppState,
     discord_message_id: String,
     new_plaintext: String,
+    channel_id: Option<String>,
 ) -> Result<(), String> {
     let guard = state
         .message_store
@@ -2070,22 +2144,49 @@ pub fn cmd_osl_persist_edit(
     let existing = store
         .get(&discord_message_id)
         .map_err(|e| format!("OSL: persist_edit get: {e}"))?;
-    let Some(prior) = existing else {
-        // Edit-before-decrypt path — see fn-doc.
-        return Ok(());
-    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let updated = StoredMessage {
-        discord_message_id: prior.discord_message_id,
-        channel_id: prior.channel_id,
-        sender_discord_id: prior.sender_discord_id,
-        sender_osl_user_id: prior.sender_osl_user_id,
-        plaintext: new_plaintext,
-        decrypted_at: now,
-        burned: false,
+    let updated = match existing {
+        Some(prior) => StoredMessage {
+            discord_message_id: prior.discord_message_id,
+            channel_id: prior.channel_id,
+            sender_discord_id: prior.sender_discord_id,
+            sender_osl_user_id: prior.sender_osl_user_id,
+            plaintext: new_plaintext,
+            decrypted_at: now,
+            burned: false,
+        },
+        None => {
+            // Probe-2 fix: was a silent no-op when row missing, which
+            // bricked editing of any outbound message whose row had
+            // never been persisted (every outbound row pre-fix, since
+            // outbound persistence didn't exist). With `channel_id`
+            // supplied, treat the edit as the first persistence
+            // moment for an own outbound message and upsert as self.
+            // Without `channel_id` we lack a complete row — preserve
+            // the historical idempotent no-op.
+            let Some(channel_id) = channel_id else {
+                return Ok(());
+            };
+            let self_id = {
+                let id_guard = state.identity.lock().expect("identity mutex poisoned");
+                let Some(id) = id_guard.as_ref() else {
+                    return Ok(());
+                };
+                id.user_id.clone()
+            };
+            StoredMessage {
+                discord_message_id: discord_message_id.clone(),
+                channel_id,
+                sender_discord_id: self_id.clone(),
+                sender_osl_user_id: self_id,
+                plaintext: new_plaintext,
+                decrypted_at: now,
+                burned: false,
+            }
+        }
     };
     store
         .put(&updated)
@@ -4704,6 +4805,31 @@ pub fn populate_peer_from_fetch_response(
             x_vec.len()
         ));
     }
+    // Probe-2 Rust Bug 6 (security): peek the TOFU outcome before
+    // writing any live messaging keys. The OLD code unconditionally
+    // overwrote `entry.pubkey` (X25519) and `entry.ik_mlkem768_pub`
+    // BEFORE calling `tofu_observe_peer`. On an un-accepted key change
+    // (TOFU `Changed`), the Ed25519 baseline correctly stayed at the
+    // old key — but the live encryption keys for v=2 / v=3 / v=4
+    // were already pointing at the NEW (potentially attacker)
+    // X25519+ML-KEM, so the user thought they declined the change
+    // yet outbound sends silently encrypted to the new key. Now we
+    // gate the live-key write on the TOFU outcome: on `Changed`,
+    // skip the X25519/ML-KEM/ratchet update and let the existing
+    // alert path raise the blocking accept banner. Once the user
+    // accepts via `cmd_osl_accept_key_change`, the next fetch
+    // reclassifies as `Unchanged` and the live keys flow through.
+    let tofu_outcome_peek = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let baseline = pm
+            .get(discord_id)
+            .and_then(|e| e.tofu_ed25519_pub.clone());
+        crate::tofu::classify(baseline.as_deref(), &resp.ik_ed25519_pub)
+    };
+    let live_writable = !matches!(
+        tofu_outcome_peek,
+        crate::tofu::TofuOutcome::Changed { .. }
+    );
     let mut mlkem_added = false;
     if !resp.ik_mlkem768_pub.is_empty() {
         let mlkem_vec = STANDARD
@@ -4719,44 +4845,61 @@ pub fn populate_peer_from_fetch_response(
         let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm_guard.entry(discord_id.to_string()).or_default();
         let had_mlkem = entry.ik_mlkem768_pub.is_some();
-        entry.pubkey = Some(resp.ik_x25519_pub.clone());
-        entry.ik_mlkem768_pub = Some(resp.ik_mlkem768_pub.clone());
+        if live_writable {
+            entry.pubkey = Some(resp.ik_x25519_pub.clone());
+            entry.ik_mlkem768_pub = Some(resp.ik_mlkem768_pub.clone());
+            if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
+                entry.ik_ratchet_initial_pub = Some(ratchet);
+            }
+            mlkem_added = !had_mlkem;
+        }
         entry
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
         // REGISTER-FIX: leave a fully-consistent entry. osl_user_id
         // (== the keyserver user_id == the Discord snowflake in V2)
-        // and the ratchet bootstrap pub were never written here,
-        // which is why a keyless entry could never self-heal and
-        // v=4 DM sends never became eligible.
+        // was never written here, which is why a keyless entry could
+        // never self-heal and v=4 DM sends never became eligible.
+        // Safe to set even on Changed — it's an identifier, not a key.
         entry
             .osl_user_id
             .get_or_insert_with(|| discord_id.to_string());
-        if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
-            entry.ik_ratchet_initial_pub = Some(ratchet);
-        }
-        mlkem_added = !had_mlkem;
     } else {
-        // X25519 only; still refresh that side.
+        // X25519 only; same gating.
         let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm_guard.entry(discord_id.to_string()).or_default();
-        entry.pubkey = Some(resp.ik_x25519_pub.clone());
+        if live_writable {
+            entry.pubkey = Some(resp.ik_x25519_pub.clone());
+            if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
+                entry.ik_ratchet_initial_pub = Some(ratchet);
+            }
+        }
         entry
             .discord_id
             .get_or_insert_with(|| discord_id.to_string());
         entry
             .osl_user_id
             .get_or_insert_with(|| discord_id.to_string());
-        if let Some(ratchet) = resp.ik_ratchet_initial_pub.clone() {
-            entry.ik_ratchet_initial_pub = Some(ratchet);
-        }
+    }
+
+    if !live_writable {
+        tracing::warn!(
+            discord_id = %discord_id,
+            "OSL: TOFU peek: peer Ed25519 changed but NOT yet accepted; \
+             refusing to overwrite live X25519/ML-KEM/ratchet bootstrap \
+             keys so outbound sends cannot silently encrypt to the new \
+             (possibly attacker) key. The pending key-change alert will \
+             surface; on accept, the next fetch reclassifies as \
+             Unchanged and the live keys flow through."
+        );
     }
 
     // REGISTER-FIX (TOFU): compare the peer's Ed25519 identity key
     // against the trusted first-seen baseline. NEVER blocks this
-    // function (messaging keys above are already refreshed) — it only
-    // records the baseline (first use) or raises a blocking,
-    // user-visible KeyChangeAlert (NOT warn-swallowed) on a change.
+    // function — it records the baseline (first use) or raises a
+    // blocking, user-visible KeyChangeAlert (NOT warn-swallowed) on
+    // a change. On Changed we additionally drop the ratchet exactly
+    // once (see fn-doc on `tofu_change_is_newly_observed`).
     tofu_observe_peer(state, discord_id, &resp.ik_ed25519_pub);
 
     Ok(mlkem_added)
@@ -7665,6 +7808,21 @@ pub fn cmd_osl_bulk_set_dm_whitelist(
             if pe.discord_id.is_none() {
                 pe.discord_id = Some(did.clone());
             }
+            // Probe-2 Rust Bug 4: previously this path left
+            // `osl_user_id`/`pubkey`/`ik_mlkem768_pub`/
+            // `ik_ratchet_initial_pub` all None — every freshly
+            // bulk-whitelisted peer hit `PeerMissingKeys` on the
+            // first send. The v=3 path's refresh-on-error retry
+            // sometimes rescued it (only because
+            // `refresh_peer_pubkeys_from_keyserver` defaults
+            // `osl_user_id` to the snowflake), but if keyserver
+            // was unreachable at first send the entire bulk set
+            // was dead. Seed `osl_user_id` synchronously here so
+            // the resolver has a complete identifier; the keyserver
+            // refresh after the locks drop populates the rest.
+            if pe.osl_user_id.is_none() {
+                pe.osl_user_id = Some(did.clone());
+            }
             let already = pe
                 .outgoing_whitelists
                 .iter()
@@ -7687,6 +7845,20 @@ pub fn cmd_osl_bulk_set_dm_whitelist(
     }
     persist_peer_map_now(state);
     persist_whitelist_state_now(state);
+    // Probe-2 Rust Bug 4: best-effort proactive keyserver refresh so
+    // the first send to each peer has X25519 / ML-KEM / ratchet pubs
+    // already populated. Failures are logged + swallowed — the v=3
+    // send-side refresh-on-error path is still the safety net.
+    for did in &member_dids {
+        if let Err(e) = refresh_peer_pubkeys_from_keyserver(state, did) {
+            tracing::debug!(
+                discord_id = %did,
+                error = %e,
+                "OSL: bulk_set_dm_whitelist: proactive keyserver refresh \
+                 failed (non-fatal; first send will retry)"
+            );
+        }
+    }
     Ok(affected)
 }
 
@@ -8025,37 +8197,166 @@ fn persist_burned_scopes_now(state: &AppState) {
 
 /// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the
 /// current session doesn't surface previously-decrypted state.
+///
+/// SECURITY FORWARD-FIX (post-a4dfc44): routes through
+/// [`crate::fresh_start::cmd_osl_fresh_start`] so a pre-signed Case-C
+/// rotation proof is minted from the OLD identity while it still
+/// exists in memory. Without this routing, the burn destroys the old
+/// Ed25519 secret with NO proof minted -> keyserver Case-C requires a
+/// signature from the dead key -> register 403 -> permanent
+/// not-a-recipient. The `a4dfc44` fix only ever ran from
+/// `cmd_osl_fresh_start`, which had no Tauri binding; the user-facing
+/// burn went through this function and was still re-bricking.
+///
+/// Wipe coverage: `fresh_start` removes `identity.json`,
+/// `peer_map.json`, `channels.json`, `whitelist_state.json`,
+/// `pending_invitations.json`, and the entire `store/` dir; we
+/// inline-wipe the burn-only extras (password marker, lockout,
+/// burned-scopes ledger, app preferences, sender-key state, scope
+/// membership) so a burn truly leaves no file sealed by the old
+/// identity/password. `pending_rotation.json` is deliberately omitted
+/// from the wipe list — it must survive so the next register can
+/// present it (matching `fresh_start.rs`).
+///
+/// AppState clear (post-probe-2): every in-memory field that could
+/// surface pre-burn data is reset. The previous version only cleared
+/// 5 of the ~18 fields, letting sender-key chains, scope membership,
+/// server defaults, channel members, key-change alerts, friend ids,
+/// guild list, recovery guard, sender-pubkey cache, registration
+/// alert, recovery token, mode-1 reassembly buffers, and persist-error
+/// state survive until restart. `license_state` is intentionally
+/// preserved (license is independent of identity); `stealth_active`
+/// is intentionally preserved (a burn under stealth coercion must
+/// keep the vanilla-Discord facade for the rest of the session).
 pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    crate::main_password::burn_wipe_all(&dir)?;
+
+    // Preserve the user_id (Discord snowflake) across the burn so the
+    // post-burn re-registration ties the new key to the same account.
+    let preserved_user_id = state
+        .identity
+        .lock()
+        .expect("identity mutex poisoned")
+        .as_ref()
+        .map(|id| id.user_id.clone())
+        .unwrap_or_default();
+
+    // Route through the canonical fresh-start path so the pre-signed
+    // Case-C rotation proof is minted+persisted while the old Ed25519
+    // secret still exists in memory. This is the WHOLE POINT of the
+    // a4dfc44 forward fix; without this routing it never ran.
+    let new_identity = crate::fresh_start::cmd_osl_fresh_start(&dir, preserved_user_id)
+        .map_err(|e| format!("OSL: burn fresh-start failed: {e}"))?;
+
+    // Burn-only additional wipes that `fresh_start` does not cover.
+    // Deliberately do NOT call `burn_wipe_all` here — it would re-wipe
+    // `identity.json` (the new one `fresh_start` just saved) and would
+    // also wipe `pending_rotation.json` if it gets added to that list.
+    for name in [
+        "password_marker.json",
+        "lockout_state.json",
+        "burned_scopes.json",
+        "app_preferences.json",
+        "sender_key_state.json",
+        // Probe-2 Rust Bug 3: membership.json was leaking across burns
+        // (scope-membership accrual survived intact and fed the new
+        // identity's recipient resolution). Wipe it explicitly.
+        "membership.json",
+    ] {
+        let path = dir.join(name);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     crate::main_password::set_file_storage_key(None);
-    // Drop in-memory state. Identity goes to None, every state
-    // mutex is cleared. The webview will navigate away after this
-    // returns, but if anything still queries state in the
-    // intervening millisecond we want it empty.
-    *state.identity.lock().expect("identity mutex poisoned") = None;
+
+    // Drop in-memory state. Every mutex below is reset so any code that
+    // queries state between this function returning and the webview
+    // navigating away sees a fully-zeroed session — no pre-burn key
+    // material, recipient sets, or membership accrual remain visible.
+    *state.identity.lock().expect("identity mutex poisoned") = Some(new_identity);
+    *state.keyserver.lock().expect("keyserver mutex poisoned") = None;
+    *state
+        .registration_alert
+        .lock()
+        .expect("registration_alert mutex poisoned") = None;
+    state
+        .key_change_alerts
+        .lock()
+        .expect("key_change_alerts mutex poisoned")
+        .clear();
+    state.sender_pubkey_cache.clear();
     state
         .peer_map
         .lock()
         .expect("peer_map mutex poisoned")
         .clear();
+    *state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned") = None;
     state
         .whitelist_state
         .lock()
         .expect("whitelist_state mutex poisoned")
         .clear();
-    // 9-C1: pending_invitations field gone.
     *state
-        .message_store
+        .recovery_token
         .lock()
-        .expect("message_store mutex poisoned") = None;
-    // 7d-FIX1: also clear burned-scopes ledger.
+        .expect("recovery_token mutex poisoned") = None;
     *state
         .burned_scopes
         .lock()
         .expect("burned_scopes mutex poisoned") =
         crate::burned_scopes_file::BurnedScopesFile::default();
+    *state
+        .sender_key_state
+        .lock()
+        .expect("sender_key_state mutex poisoned") =
+        crate::sender_key_state::SenderKeyStateFile::default();
+    state
+        .channel_members
+        .lock()
+        .expect("channel_members mutex poisoned")
+        .clear();
+    *state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned") = crate::app_preferences::AppPreferences::default();
+    state
+        .mode1_reassembly
+        .lock()
+        .expect("mode1_reassembly mutex poisoned")
+        .clear();
+    state
+        .friend_ids
+        .lock()
+        .expect("friend_ids mutex poisoned")
+        .clear();
+    state
+        .guild_list
+        .lock()
+        .expect("guild_list mutex poisoned")
+        .clear();
+    state
+        .server_defaults
+        .lock()
+        .expect("server_defaults mutex poisoned")
+        .clear();
+    *state
+        .last_persist_error
+        .lock()
+        .expect("last_persist_error mutex poisoned") = None;
+    *state
+        .recovery_guard
+        .lock()
+        .expect("recovery_guard mutex poisoned") = crate::recovery::RecoveryGuard::default();
+    *state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned") = crate::membership::ScopeMembership::default();
     Ok(())
 }
 

@@ -85,6 +85,14 @@ pub fn reload_encrypted_state_after_unlock(
         "whitelist_state.json",
         "app_preferences.json",
         "sender_key_state.json",
+        // Probe-2 Rust Bug 5: these were sealed under file_storage_key
+        // too but were missing from the quarantine sweep. A stale-key
+        // blob would silently fall back to default — the burn kill-
+        // list and accrued scope-membership would disappear from view
+        // (file intact but unreachable) until the next persist
+        // overwrote it. Mirror the same non-destructive rename here.
+        "burned_scopes.json",
+        "membership.json",
     ] {
         let path = config_dir.join(name);
         match quarantine_if_wrong_key(&path) {

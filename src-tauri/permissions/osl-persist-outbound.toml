@@ -1,0 +1,15 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Probe-2 fix: outbound message persistence so own messages survive
+# session restart. Boot.js calls this right after a successful send,
+# before any DOM swap, so the in-memory selfSentPlaintext cache and
+# the durable at-rest MessageStore both hold the same plaintext.
+# Without this, v=4 DMs encrypted only to the peer's key re-rendered
+# as ciphertext on reopen (sender cannot decrypt their own outbound
+# wire). The IPC writes a StoredMessage row with sender_discord_id +
+# sender_osl_user_id both set to the in-state identity's user_id.
+
+[[permission]]
+identifier = "allow-osl-persist-outbound"
+description = "Permits the discord.com main webview to invoke `osl_persist_outbound` (write a freshly-sent outbound message into the durable MessageStore so reopen rehydrates it via the same path as inbound). Best-effort: missing identity / disabled store / put failures are logged and swallowed so the send itself is never blocked. Wiped by burn / fresh_start alongside the rest of `store/`."
+commands.allow = ["osl_persist_outbound"]
