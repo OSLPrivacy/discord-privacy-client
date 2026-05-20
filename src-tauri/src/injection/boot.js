@@ -12737,47 +12737,18 @@
      *   they can identify by its empty footprint and surrounding
      *   author/timestamp chrome).
      */
-    // Probe-5 final: inject a single global stylesheet rule once,
-    // then hide the <li> by simply toggling a data-attribute. The
-    // browser batches all matching elements into ONE layout pass
-    // per tick instead of the per-element style.display mutations
-    // that triggered Discord's scroll-anchor to thrash. Combined
-    // with NOT running auto-hide from the periodic sweep (only on
-    // initial mutation-observer observation), layout changes are
-    // confined to actual message-arrival rate -- no per-second
-    // churn.
-    if (!window.__oslAutoHideStyleInstalled) {
-        try {
-            const _s = document.createElement("style");
-            _s.textContent =
-                "li[data-osl-cipher-hidden-li='1']{display:none !important;}";
-            (document.head || document.documentElement).appendChild(_s);
-            window.__oslAutoHideStyleInstalled = true;
-        } catch (_) {}
-    }
-    function oslAutoHideCiphertext(div) {
-        if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
-            return;
-        }
-        try {
-            div.style.fontSize = "0";
-            div.style.lineHeight = "0";
-            div.style.opacity = "0";
-            div.style.userSelect = "none";
-            div.setAttribute("data-osl-cipher-hidden", "1");
-        } catch (_) {}
-        // Tag the parent <li> for CSS-based hiding. The CSS rule
-        // above batches the layout pass. recvApplyPlaintext removes
-        // the attribute on successful decrypt -> CSS un-hides.
-        try {
-            const li =
-                typeof div.closest === "function"
-                    ? div.closest("li[id^='chat-messages-']")
-                    : null;
-            if (li) {
-                li.setAttribute("data-osl-cipher-hidden-li", "1");
-            }
-        } catch (_) {}
+    // Probe-5 final revert: auto-hide of regular DPC0:: messages is
+    // a no-op now. Iteration cost (lag, scroll thrash, blank
+    // bubbles, missing avatars) wasn't worth the brief
+    // visible-cipher window. Only SKDM bundles still hide via
+    // oslHideSkdmDom (a small fixed set tracked in
+    // oslSkdmHiddenMsgIds). Regular DPC0:: messages will show the
+    // cipher text briefly until decrypt completes and
+    // recvApplyPlaintext replaces it with plaintext. Failed
+    // decrypts leave the cipher visible so the user can identify
+    // there's an encrypted message there.
+    function oslAutoHideCiphertext(_div) {
+        // no-op
     }
 
     /**
@@ -14858,25 +14829,6 @@
                     !isV5AwaitingSkdm
                 ) {
                     recvDone.add(messageId);
-                    // Probe-5 follow-up: terminal failure -- leave a
-                    // placeholder instead of a permanently-blank
-                    // bubble. User reported "tons of blanks" because
-                    // failed decrypts kept the auto-hide CSS but
-                    // never had any plaintext applied. Show a small
-                    // ciphered-lock indicator so the bubble has
-                    // content; recvApplyPlaintext also undoes the
-                    // auto-hide styles.
-                    try {
-                        const _liveDivs = document.querySelectorAll(
-                            "[id='" +
-                                RECV_MESSAGE_ID_PREFIX +
-                                messageId +
-                                "']"
-                        );
-                        for (const _d of _liveDivs) {
-                            recvApplyPlaintext(_d, "🔒");
-                        }
-                    } catch (_) {}
                 }
 
                 // Auto-recovery: fire on the FIRST failure that matches
