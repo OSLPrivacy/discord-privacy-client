@@ -12199,6 +12199,20 @@
             text.indexOf(RECV_PREFIX_MODE1) === 0
         );
     }
+    // Probe-5 v5: permissive "looks-like cipher anywhere in text"
+    // check used by the auto-hide path. Discord can prepend
+    // textContent with reply-quote or accessibility chrome, pushing
+    // the DPC0:: marker away from index 0; those messages still
+    // need to be hidden visually. The dispatch path uses the strict
+    // prefix check above because decrypt requires a clean cipher
+    // wire string at index 0.
+    function oslMessageContainsStego(text) {
+        if (typeof text !== "string") return false;
+        return (
+            text.indexOf(RECV_PREFIX) !== -1 ||
+            text.indexOf(RECV_PREFIX_MODE1) !== -1
+        );
+    }
     // Single source of truth for peeking the wire-format version
     // byte out of a DPC0:: cover. The version is the first decoded
     // byte of the base64 payload that follows the 6-char "DPC0::"
@@ -14055,6 +14069,17 @@
             return;
         }
         if (!oslMessageIsStego(text)) {
+            // Probe-5 v5: even if the DPC0:: prefix isn't at index
+            // 0 (Discord prepended a reply quote or accessibility
+            // chrome to textContent), still hide the <li> if it
+            // contains DPC0:: anywhere. Dispatch is gated on the
+            // strict prefix below so we don't mangle the cipher
+            // wire passed to Rust.
+            if (oslMessageContainsStego(text)) {
+                try {
+                    oslAutoHideCiphertext(div);
+                } catch (_) {}
+            }
             if (OSL_DEBUG_RECV) {
                 console.log(
                     "[OSL] recvHandleDiv SKIP id=" +
@@ -15316,7 +15341,17 @@
             let dispatchedCount = 0;
             for (const div of divs) {
                 const text = div.textContent;
-                if (!text || !oslMessageIsStego(text)) continue;
+                if (!text) continue;
+                // Probe-5 v5: hide-pass uses the permissive contains
+                // check so chrome-prefixed messages also collapse.
+                // The dispatch / cache path below still gates on the
+                // strict prefix to avoid mangling cipher wires.
+                if (oslMessageContainsStego(text)) {
+                    try {
+                        oslAutoHideCiphertext(div);
+                    } catch (_) {}
+                }
+                if (!oslMessageIsStego(text)) continue;
                 const messageId = recvMessageIdOf(div);
                 // Probe-5 perf-revert follow-up: check cached
                 // plaintext FIRST and re-apply immediately when
