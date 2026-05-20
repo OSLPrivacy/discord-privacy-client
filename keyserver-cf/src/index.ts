@@ -41,6 +41,7 @@ import { handlePubkeys } from "./endpoints/pubkeys.js";
 import { handleRegister } from "./endpoints/register.js";
 import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
+import { handleUnregister } from "./endpoints/unregister.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import {
   handleWrappedKeysDelete,
@@ -159,6 +160,8 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
 
   if (method === "DELETE") {
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysDelete(request, env);
+    const unregUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
+    if (unregUserId) return await handleUnregister(request, env, unregUserId);
     return notFound("not found");
   }
 

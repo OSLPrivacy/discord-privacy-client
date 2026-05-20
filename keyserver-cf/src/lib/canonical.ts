@@ -30,6 +30,7 @@
 
 const REPLENISH_DOMAIN = "discord-privacy-client/prekey-replenish/v1";
 const BURN_DOMAIN = "discord-privacy-client/burn/v1";
+const UNREGISTER_DOMAIN = "discord-privacy-client/unregister/v1";
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   let total = 0;
@@ -92,6 +93,34 @@ export function canonicalBurnBytes(args: {
     parts.push(u8(0));
   }
   return concatBytes(parts);
+}
+
+// ---- unregister ----
+//
+// Used by the account-burn flow to delete the user's keyserver row
+// so the next register call hits the empty-row path (Case A in
+// handleRegister) instead of being rejected as "user_id registered
+// to a different key". Signed by the CURRENT stored
+// `ik_ed25519_pub` — only the legitimate identity holder can issue.
+//
+// Wire:
+//   LP(domain) || LP(user_id) || LP(timestamp_ms_string)
+//
+// timestamp_ms is a freshness anchor; the server rejects requests
+// whose timestamp is more than UNREGISTER_FRESHNESS_WINDOW_MS away
+// from server clock. Prevents indefinite replay of an old signature.
+
+export const UNREGISTER_FRESHNESS_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+export function canonicalUnregisterBytes(args: {
+  user_id: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return concatBytes([
+    lpString(UNREGISTER_DOMAIN),
+    lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+  ]);
 }
 
 // ---- replenish ----
