@@ -14387,6 +14387,30 @@
                             ")"
                     );
                 }
+                // Probe-3 persistence diagnostic: always-on log line
+                // (NOT gated on DEBUG) so the user can grep the
+                // console for "persist-expected" against the
+                // "[OSL] history apply msg=X" lines emitted by
+                // recvLoadHistory on relaunch. If a message shows
+                // persist-expected here but no history-apply line
+                // on reopen, the write side failed; if it appears
+                // in history-apply but the DOM still shows
+                // ciphertext, the apply side failed.
+                if (
+                    typeof plaintext === "string" &&
+                    plaintext.indexOf("__OSL_CONTROL_") !== 0
+                ) {
+                    console.log(
+                        "[OSL] persist-expected msg=" +
+                            messageId +
+                            " channel=" +
+                            channelId +
+                            " sender=" +
+                            senderDiscordId +
+                            " plaintext_len=" +
+                            plaintext.length
+                    );
+                }
                 // Cache by message_id so React replacing the
                 // inner span (which it does on every re-render)
                 // doesn't lose the plaintext. The next observer
