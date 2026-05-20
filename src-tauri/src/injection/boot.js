@@ -5113,6 +5113,150 @@
     const HEADER_ENCRYPT_DATA_ATTR = "data-osl-encrypt-toggle";
     const HEADER_BURN_DATA_ATTR = "data-osl-burn-btn";
 
+    // Sidebar channel-lock: replace the # icon on the
+    // currently-selected server channel with the same tri-state OSL
+    // lock the channel header uses. Pure JS, NO global CSS -- if
+    // anything ever breaks we just remove the injection and the #
+    // icon snaps right back. Click goes through the existing
+    // oslOnWhitelistIconClick handler.
+    const SIDEBAR_LOCK_DATA_ATTR = "data-osl-sidebar-channel-lock";
+    const SIDEBAR_HIDDEN_ICON_ATTR = "data-osl-sidebar-hashtag-hidden";
+
+    function oslSweepSidebarChannelLock() {
+        try {
+            const selected = document.querySelector(
+                "li[class*='modeSelected__']"
+            );
+            const existingLock = document.querySelector(
+                "[" + SIDEBAR_LOCK_DATA_ATTR + "='1']"
+            );
+            const existingHiddenIcon = document.querySelector(
+                "[" + SIDEBAR_HIDDEN_ICON_ATTR + "='1']"
+            );
+            // If selection moved (our lock is in a non-current <li>),
+            // restore the previous # icon + remove the orphan lock.
+            if (existingLock) {
+                const lockLi = existingLock.closest(
+                    "li[class*='modeSelected__']"
+                );
+                if (!lockLi || (selected && lockLi !== selected)) {
+                    try {
+                        existingLock.remove();
+                    } catch (_) {}
+                    if (existingHiddenIcon) {
+                        try {
+                            existingHiddenIcon.style.removeProperty(
+                                "display"
+                            );
+                            existingHiddenIcon.removeAttribute(
+                                SIDEBAR_HIDDEN_ICON_ATTR
+                            );
+                        } catch (_) {}
+                    }
+                }
+            }
+            if (!selected) return;
+            const inSelectedLock = selected.querySelector(
+                "[" + SIDEBAR_LOCK_DATA_ATTR + "='1']"
+            );
+            if (inSelectedLock) {
+                try {
+                    oslRefreshSidebarLockState(inSelectedLock);
+                } catch (_) {}
+                return;
+            }
+            // Match `[class*='icon__']` (double underscore -- exact
+            // pattern from the user's `.modeSelected__2ea32 .icon__2ea32`
+            // selector) so we don't accidentally pick up something
+            // else like a notification badge.
+            const iconEl = selected.querySelector("[class*='icon__']");
+            if (!iconEl || !iconEl.parentElement) return;
+            const lock = document.createElement("div");
+            lock.setAttribute(SIDEBAR_LOCK_DATA_ATTR, "1");
+            lock.setAttribute("role", "button");
+            lock.setAttribute("tabindex", "0");
+            lock.style.display = "inline-flex";
+            lock.style.alignItems = "center";
+            lock.style.justifyContent = "center";
+            lock.style.cursor = "pointer";
+            lock.style.color = "var(--text-muted, #87898c)";
+            lock.style.width = (iconEl.offsetWidth || 16) + "px";
+            lock.style.height = (iconEl.offsetHeight || 16) + "px";
+            lock.innerHTML = oslLockSvg("unknown");
+            lock.title = "Server-channel whitelist (loading…)";
+            lock.addEventListener("click", function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                try {
+                    oslOnWhitelistIconClick(e);
+                } catch (err) {
+                    console.error(
+                        "[OSL] sidebar lock click handler threw",
+                        err
+                    );
+                }
+                nativeSetTimeout(function () {
+                    try {
+                        oslSweepSidebarChannelLock();
+                    } catch (_) {}
+                }, 50);
+            });
+            // Hide the original # via inline style only (NOT global
+            // CSS -- guarantees easy reversal if anything breaks).
+            try {
+                iconEl.style.display = "none";
+                iconEl.setAttribute(SIDEBAR_HIDDEN_ICON_ATTR, "1");
+            } catch (_) {}
+            iconEl.parentElement.insertBefore(lock, iconEl);
+            try {
+                oslRefreshSidebarLockState(lock);
+            } catch (_) {}
+        } catch (_) {}
+    }
+
+    async function oslRefreshSidebarLockState(lock) {
+        if (!lock) return;
+        const ctx = oslCurrentChannelContext();
+        if (!ctx || !ctx.channelId) return;
+        const scopeInput = oslScopeForCurrentContext(ctx);
+        if (!scopeInput || scopeInput.kind !== "server_channel") return;
+        try {
+            const sw = await oslInvoke("osl_get_server_whitelist_state", {
+                serverId: scopeInput.server_id,
+                channelScopeInput: scopeInput,
+            });
+            if (!sw.ok) {
+                lock.innerHTML = oslLockSvg("unknown");
+                lock.style.color = "var(--text-muted, #87898c)";
+                lock.title =
+                    "Server channel whitelist: unknown (" +
+                    (sw.error || "?") +
+                    ")";
+                return;
+            }
+            const st = sw.value || {};
+            let state, color, title;
+            if (st.server_header) {
+                state = "closed";
+                color = "var(--status-positive, #23a559)";
+                title = "Server-wide whitelist ON. Click to turn OFF.";
+            } else if (st.channel) {
+                state = "partial";
+                color = "var(--status-warning, #f0b132)";
+                title =
+                    "This channel is whitelisted. Click to whitelist the WHOLE server.";
+            } else {
+                state = "open";
+                color = "var(--text-muted, #87898c)";
+                title =
+                    "Not whitelisted. Click to whitelist the whole server.";
+            }
+            lock.innerHTML = oslLockSvg(state);
+            lock.style.color = color;
+            lock.title = title;
+        } catch (_) {}
+    }
+
     /** Last-known scope state for the header (so toggle clicks have
      *  current values without round-tripping every time). */
     let oslHeaderState = {
@@ -15356,6 +15500,12 @@
      */
     function recvPeriodicSweep() {
         try {
+            // Sidebar channel-lock sweep. Idempotent + cheap; only
+            // touches the DOM when selection changes or state needs
+            // refreshing.
+            try {
+                oslSweepSidebarChannelLock();
+            } catch (_) {}
             // Phase 5b3 channel-switch detection. Cheap to read
             // each tick; only triggers a load on a real switch
             // to a different valid channel. Wrapped in its own
