@@ -12165,12 +12165,53 @@
     const RECV_MESSAGE_ID_PREFIX = "message-content-";
     // Probe-3 fix: persistent set of message ids known to be v=3
     // SKDM bundle wires. The bundle is a control message with no
-    // user-visible content; once apply_skdm_recv runs we hide its
-    // <li> via display:none, but Discord re-mounts <li>s fresh when
-    // you leave + re-enter a channel, so we have to re-hide on every
-    // sweep tick. This set persists for the session; entries are
-    // added in the SKDM_APPLIED handler.
+    // user-visible content; once apply_skdm_recv runs we hide it,
+    // but Discord re-mounts the <li>/divs fresh when you leave +
+    // re-enter a channel, so we have to re-hide on every sweep
+    // tick. This set persists for the session; entries are added
+    // in the SKDM_APPLIED handler.
     const oslSkdmHiddenMsgIds = new Set();
+
+    // Probe-3 final: smart SKDM hide. Picks <li> hide (full collapse,
+    // no vertical gap) when the <li> is owned solely by this SKDM,
+    // or message-content-div hide (preserves avatar/header on other
+    // messages in the group) when Discord's same-author grouping put
+    // multiple messages inside the same <li> wrapper.
+    function oslHideSkdmDom(messageId) {
+        const skdmDivs = document.querySelectorAll(
+            "[id='" + RECV_MESSAGE_ID_PREFIX + messageId + "']"
+        );
+        for (const d of skdmDivs) {
+            const li =
+                typeof d.closest === "function"
+                    ? d.closest("li[id^='chat-messages-']")
+                    : null;
+            if (li) {
+                const contentDivsInLi = li.querySelectorAll(
+                    "[id^='" + RECV_MESSAGE_ID_PREFIX + "']"
+                );
+                if (contentDivsInLi.length <= 1) {
+                    // <li> contains only this message -> safe to
+                    // collapse the entire row.
+                    li.style.display = "none";
+                    li.setAttribute("data-osl-skdm-hidden", "1");
+                    continue;
+                }
+                // Grouped <li>: hide only this message-content div
+                // (and any reactions/embeds inside it) so the
+                // avatar/header on the group's first message stays
+                // visible. The remaining vertical gap inside the
+                // grouped wrapper is small; Discord collapses an
+                // empty-content row to near zero.
+                d.style.display = "none";
+                d.setAttribute("data-osl-skdm-hidden", "1");
+            } else {
+                // No <li> ancestor (unexpected) -> hide div directly.
+                d.style.display = "none";
+                d.setAttribute("data-osl-skdm-hidden", "1");
+            }
+        }
+    }
     // Permanent disposition (decrypt completed â€” success OR
     // unrecoverable Rust-side rejection). Keyed by message_id
     // so the marker survives React replacing the inner span.
@@ -14212,58 +14253,25 @@
                     recvDone.add(messageId);
                     recvRetries.delete(messageId);
                     recvAuthorRetryCount.delete(messageId);
-                    // Probe-3 follow-up: hide the SKDM ciphertext by
-                    // emptying its `message-content-X` div, NOT by
-                    // applying display:none to the parent <li>.
-                    // Discord groups consecutive messages from the
-                    // same author into a SHARED <li> wrapper (avatar
-                    // + header + multiple message bodies). Hiding the
-                    // <li> nuked the next unrelated message's avatar
-                    // and header along with the SKDM. Clearing only
-                    // the message-content div leaves Discord's
-                    // grouping + UI chrome intact; the SKDM's row
-                    // shows as an empty message bubble. Tracked in
-                    // `oslSkdmHiddenMsgIds` so the sweep re-clears
-                    // it when Discord re-mounts the div on channel
-                    // re-entry.
+                    // Probe-3 final SKDM hide:
+                    //   - if the closest <li> contains EXACTLY ONE
+                    //     `message-content-` div, the <li> is owned
+                    //     solely by this SKDM -> hide the <li>
+                    //     entirely so no vertical gap remains
+                    //   - if the <li> contains multiple message-
+                    //     content divs (Discord's same-author group
+                    //     wrapper, which also owns the avatar +
+                    //     header for the first message in the group),
+                    //     hide only the message-content div for this
+                    //     SKDM and let Discord's surrounding chrome
+                    //     stay so other messages in the group keep
+                    //     their avatar
+                    // This collapses cleanly to no visible row in
+                    // the common "one message per <li>" case while
+                    // protecting the avatar in the grouped case.
                     oslSkdmHiddenMsgIds.add(messageId);
                     try {
-                        const _skdmDivs = document.querySelectorAll(
-                            "[id='" +
-                                RECV_MESSAGE_ID_PREFIX +
-                                messageId +
-                                "']"
-                        );
-                        for (const _d of _skdmDivs) {
-                            // Replace child nodes with an empty span;
-                            // this both clears the visible ciphertext
-                            // and gives recvApplyPlaintext/the React
-                            // diff something to overwrite cleanly if
-                            // anything else tries to dispatch later.
-                            const _blank = document.createElement("span");
-                            _blank.textContent = "";
-                            _d.replaceChildren(_blank);
-                            _d.setAttribute("data-osl-skdm-hidden", "1");
-                            // Defensively undo any prior <li> hide
-                            // (from the earlier display:none version)
-                            // so users with cached state don't see
-                            // avatar regressions.
-                            const _li =
-                                typeof _d.closest === "function"
-                                    ? _d.closest("li[id^='chat-messages-']")
-                                    : null;
-                            if (
-                                _li &&
-                                _li.getAttribute(
-                                    "data-osl-skdm-hidden"
-                                ) === "1"
-                            ) {
-                                _li.style.removeProperty("display");
-                                _li.removeAttribute(
-                                    "data-osl-skdm-hidden"
-                                );
-                            }
-                        }
+                        oslHideSkdmDom(messageId);
                     } catch (_) {}
                     try {
                         // Probe-2 Boot Bug 7: was reviving EVERY v=5
@@ -15040,51 +15048,14 @@
                 );
             }
 
-            // Probe-3 follow-up: re-clear SKDM bundle message-content
-            // divs that Discord re-mounted on channel re-entry. We
-            // touch only `message-content-X` (NOT the parent <li>)
-            // because Discord groups consecutive same-author messages
-            // into a shared <li> wrapper -- hiding the <li> nuked the
-            // avatar/header of unrelated messages sharing that
-            // wrapper. Defensively also undo any leftover <li>
-            // display:none from the prior version of this fix.
+            // Probe-3 final: re-apply the smart SKDM hide on every
+            // tick so Discord's re-mount on channel re-entry doesn't
+            // restore the visible ciphertext blob. oslHideSkdmDom is
+            // idempotent — it skips elements already hidden.
             if (oslSkdmHiddenMsgIds.size > 0) {
                 for (const _mid of oslSkdmHiddenMsgIds) {
                     try {
-                        const _skdmDivs = document.querySelectorAll(
-                            "[id='" + RECV_MESSAGE_ID_PREFIX + _mid + "']"
-                        );
-                        for (const _d of _skdmDivs) {
-                            const _li =
-                                typeof _d.closest === "function"
-                                    ? _d.closest("li[id^='chat-messages-']")
-                                    : null;
-                            if (
-                                _li &&
-                                _li.getAttribute(
-                                    "data-osl-skdm-hidden"
-                                ) === "1"
-                            ) {
-                                _li.style.removeProperty("display");
-                                _li.removeAttribute(
-                                    "data-osl-skdm-hidden"
-                                );
-                            }
-                            const _txt = (_d.textContent || "").trim();
-                            // Only re-clear when something has been
-                            // re-inserted (e.g. Discord re-mounted the
-                            // div + repopulated from cache). An
-                            // already-empty div is left alone.
-                            if (_txt.length > 0) {
-                                const _blank = document.createElement("span");
-                                _blank.textContent = "";
-                                _d.replaceChildren(_blank);
-                                _d.setAttribute(
-                                    "data-osl-skdm-hidden",
-                                    "1"
-                                );
-                            }
-                        }
+                        oslHideSkdmDom(_mid);
                     } catch (_) {}
                 }
             }
