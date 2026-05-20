@@ -3706,17 +3706,15 @@ pub fn cmd_osl_send_burn_marker(
     let self_mlkem_pub = identity.mlkem_encapsulation_key();
     drop(id_guard);
 
-    // Probe-2 Rust Bug 8: previously this used the legacy
-    // `recipients_for_scope` which honours per-peer
-    // `outgoing_whitelists` entries but NOT the scope-flag model
-    // (server_header_on / channel_on / DM-bleed via
-    // ScopeAuthCtx + scope_membership). Peers who became
-    // whitelisted via the server-header flag alone — i.e. have
-    // no explicit per-peer entry — were excluded from the
-    // burn-marker recipient list and never received the burn
-    // notice. Re-derive the recipient set with `recipients_for_scope_v3`
-    // (same gate the send path uses), then extract the X25519 keys
-    // so the burn marker can still ride the v=2 wire encrypt path.
+    // Probe-2 Rust Bug 8 + Probe-3 follow-up: UNION the legacy
+    // per-peer resolver with the scope-flag-aware v=3 resolver so
+    // both whitelist models contribute. Legacy alone misses
+    // server-header / channel-flag whitelisted peers that have no
+    // per-peer outgoing_whitelists entry. v3 alone regresses peers
+    // missing ML-KEM keys (pre-9-A1 legacy entries) since v3 is
+    // strict about PQ-hybrid keys. Union covers both; the burn
+    // marker still rides v=2 (X25519-only) so we only collect
+    // X25519 pubs.
     let recipients = {
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         let ws_guard = state
@@ -3736,6 +3734,16 @@ pub fn cmd_osl_send_burn_marker(
             server_defaults: &sd_guard,
             membership: &mem_guard,
         };
+        let mut out: Vec<crypto::x25519::PublicKey> =
+            crate::whitelist::recipients_for_scope(
+                &pm_guard,
+                &scope,
+                &channel_members,
+                &self_discord_id,
+                &self_pk,
+            );
+        let mut seen: std::collections::HashSet<[u8; 32]> =
+            out.iter().map(|pk| *pk.as_bytes()).collect();
         match crate::whitelist::recipients_for_scope_v3(
             &pm_guard,
             &auth_ctx,
@@ -3745,25 +3753,23 @@ pub fn cmd_osl_send_burn_marker(
             &self_pk,
             &self_mlkem_pub,
         ) {
-            Ok(v3) => v3
-                .into_iter()
-                .map(|(_did, rcp)| rcp.x25519_pub)
-                .collect::<Vec<_>>(),
-            // Recoverable / not-recoverable errors here are both
-            // converted to the legacy "no recipients" outcome — a
-            // burn marker is best-effort fan-out; if nobody is
-            // resolvable, the caller surfaces the same string the
-            // historical path did, and the local burn still applies.
+            Ok(v3) => {
+                for (_did, rcp) in v3 {
+                    if seen.insert(*rcp.x25519_pub.as_bytes()) {
+                        out.push(rcp.x25519_pub);
+                    }
+                }
+            }
             Err(e) => {
-                tracing::warn!(
+                tracing::debug!(
                     scope = %scope.storage_key(),
                     error = %e,
-                    "OSL: burn_marker recipient resolution failed; \
-                     emitting no_whitelisted_recipients"
+                    "OSL: burn_marker v3 union failed; using legacy \
+                     recipients_for_scope result only"
                 );
-                Vec::new()
             }
         }
+        out
     };
     if recipients.len() <= 1 {
         return Err("no_whitelisted_recipients".to_string());
@@ -7139,6 +7145,108 @@ pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowD
             });
         }
     }
+
+    // Probe-3 follow-up: the channel-header / GC-header / server-header
+    // whitelist buttons (the Option-B scope-flag model) write into
+    // `whitelist_state.json` keyed by scope storage_key — NOT into any
+    // peer's `outgoing_whitelists`. The first pass above only walks
+    // outgoing_whitelists, so a GC / server whitelisted via the
+    // scope-flag button was invisible in the settings list ("isn't
+    // listed at all"). Add a second pass surfacing those entries as
+    // "(All OSL members)" rows so the user can see + toggle + remove
+    // them from settings. Skip scopes that already have at least one
+    // per-peer row (avoid duplicating rows that are already visible).
+    let already_listed: std::collections::HashSet<String> = out
+        .iter()
+        .map(|r| match r.scope_kind.as_str() {
+            "gc_full" | "gc_per_user" => format!("gc:{}", r.scope_id),
+            "server_channel_full" | "server_channel_per_user" => {
+                format!("server_channel:{}", r.scope_id)
+            }
+            "server_full" | "server_full_per_user" => format!("server_full:{}", r.scope_id),
+            "dm" => format!("dm:{}", r.scope_id),
+            _ => String::new(),
+        })
+        .collect();
+    // Pass 2a: per-scope channel/GC whitelist flag lives on ScopeState
+    // (whitelist_state.json).
+    for (storage_key, scope_state) in ws_guard.iter() {
+        if !scope_state.channel_whitelisted {
+            continue;
+        }
+        if already_listed.contains(storage_key) {
+            continue;
+        }
+        let scope = match crate::scope::Scope::parse(storage_key) {
+            Some(s) => s,
+            None => continue,
+        };
+        let (scope_kind, scope_id, server_id, channel_id) = match scope.kind {
+            crate::scope::ScopeKind::Gc => (
+                "gc_full".to_string(),
+                scope.id.clone(),
+                None,
+                Some(scope.id.clone()),
+            ),
+            crate::scope::ScopeKind::ServerChannel => {
+                let server = scope.server_id.clone().unwrap_or_default();
+                let channel = scope.channel_id.clone().unwrap_or_default();
+                (
+                    "server_channel_full".to_string(),
+                    format!("{server}:{channel}"),
+                    Some(server),
+                    Some(channel),
+                )
+            }
+            // channel_whitelisted is only meaningful on gc:/server_channel:
+            // scopes per its doc; skip anything else defensively.
+            _ => continue,
+        };
+        out.push(WhitelistRowDto {
+            peer_discord_id: String::new(),
+            peer_username: "(All OSL members)".to_string(),
+            scope_kind,
+            scope_id,
+            server_id,
+            channel_id,
+            encrypt_toggle: scope_state.encrypt_toggle,
+            broadened: false,
+        });
+    }
+    // Pass 2b: server-header whitelist flag lives on ServerDefaults,
+    // keyed per server_id. Surface each server-header-on server as a
+    // synthetic server_full row (consistent with how the existing
+    // settings UI handles whole-server whitelist entries).
+    let sd_guard = state
+        .server_defaults
+        .lock()
+        .expect("server_defaults mutex poisoned");
+    for (server_id, defaults) in sd_guard.iter() {
+        if !defaults.server_header_whitelisted {
+            continue;
+        }
+        let key = format!("server_full:{server_id}");
+        if already_listed.contains(&key) {
+            continue;
+        }
+        // ScopeState for server_full (if any) carries the encrypt
+        // toggle; default false when no entry exists.
+        let encrypt_toggle = ws_guard
+            .get(&key)
+            .map(|s| s.encrypt_toggle)
+            .unwrap_or(false);
+        out.push(WhitelistRowDto {
+            peer_discord_id: String::new(),
+            peer_username: "(All OSL members)".to_string(),
+            scope_kind: "server_full".to_string(),
+            scope_id: server_id.clone(),
+            server_id: Some(server_id.clone()),
+            channel_id: None,
+            encrypt_toggle,
+            broadened: false,
+        });
+    }
+    drop(sd_guard);
     Ok(out)
 }
 

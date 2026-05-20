@@ -56,6 +56,7 @@ fn install_gc_full(state: &AppState, gc_id: &str, members: &[&str], toggle: bool
             ScopeState {
                 encrypt_toggle: toggle,
                 auto_enabled: true,
+                ..ScopeState::default()
             },
         );
     }
@@ -235,7 +236,11 @@ fn local_unwhitelist_preserves_local_decrypt() {
         let mut ws = state.whitelist_state.lock().unwrap();
         ws.insert(
             Scope::dm(HENRY_DID).storage_key(),
-            ScopeState { encrypt_toggle: true, auto_enabled: true },
+            ScopeState {
+                encrypt_toggle: true,
+                auto_enabled: true,
+                ..ScopeState::default()
+            },
         );
     }
     {
