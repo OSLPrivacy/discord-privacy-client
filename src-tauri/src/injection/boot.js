@@ -5165,14 +5165,24 @@
                 } catch (_) {}
                 return;
             }
-            // The # icon is specifically an inline <svg> with class
-            // matching `icon__<hash>`. Narrowing to svg here so we
-            // don't grab a notification badge, mention indicator, or
-            // other icon-shaped element that happens to share an
-            // `icon__` class prefix.
+            // Discord's structure for a text channel:
+            //   <li class="modeSelected__... wrapper__...">
+            //     ...
+            //     <div class="iconContainer__..." role="img"
+            //          aria-label="Text icon">
+            //       <svg class="icon__..."> ... </svg>
+            //     </div>
+            //     <div class="channelName__...">general</div>
+            //     ...action buttons (mute, settings, etc.)
+            //   </li>
+            // Target the iconContainer directly -- it's the slot
+            // Discord reserves for the channel-type icon. We hide
+            // the whole container and inject our lock in its place.
+            // Falls back to the svg if no iconContainer wrapper
+            // exists (older Discord builds may differ).
             const iconEl =
-                selected.querySelector("svg[class*='icon__']") ||
-                selected.querySelector("[class*='icon__']");
+                selected.querySelector("[class*='iconContainer__']") ||
+                selected.querySelector("svg[class*='icon__']");
             if (!iconEl || !iconEl.parentElement) return;
             const lock = document.createElement("div");
             lock.setAttribute(SIDEBAR_LOCK_DATA_ATTR, "1");
