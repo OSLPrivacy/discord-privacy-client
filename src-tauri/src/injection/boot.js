@@ -12740,30 +12740,21 @@
             div.style.userSelect = "none";
             div.setAttribute("data-osl-cipher-hidden", "1");
         } catch (_) {}
-        // Probe-5 final: HIDE THE ENTIRE <li> unconditionally so
-        // even cozy (group-leader) messages -- which carry the
-        // avatar+header chrome -- fully collapse with no bar.
-        // Trade-off: ~50ms flicker between auto-hide-on-observation
-        // and recvApplyPlaintext-on-decrypt-success (avatar briefly
-        // gone, then reappears with plaintext). For SKDMs and
-        // permanently-failed decrypts the <li> stays fully gone,
-        // which is what the user asked for.
-        //
-        // Send-order flip (content posted before SKDM) keeps the
-        // content message as the group-leader, so SKDMs being
-        // compact-style means hiding them never loses an avatar
-        // a real message depends on. Decrypt-pending content gets a
-        // brief hide, then unhide; visual jump is small.
-        try {
-            const li =
-                typeof div.closest === "function"
-                    ? div.closest("li[id^='chat-messages-']")
-                    : null;
-            if (li && li.style.display !== "none") {
-                li.style.display = "none";
-                li.setAttribute("data-osl-cipher-hidden-wrap", "1");
-            }
-        } catch (_) {}
+        // Probe-5 perf-revert: do NOT touch the parent <li> on
+        // auto-hide. Hiding every DPC0:: message's <li> made
+        // Discord's virtualized chat list constantly re-anchor
+        // scroll position (each hide shifts subsequent messages up,
+        // Discord scroll-anchors to compensate, repeat), producing
+        // lag + constant auto-scroll-up in GCs/DMs. The <li> hide
+        // is now only done by oslHideSkdmDom for CONFIRMED SKDM
+        // bundles (where decrypt returned the sentinel and we know
+        // the message has no user-visible content).
+        // For regular DPC0:: messages: content text is invisible
+        // during the IPC roundtrip (no visible cipher), the
+        // surrounding bubble briefly shows as an empty bar, then
+        // recvApplyPlaintext on success fills it with plaintext.
+        // The ~50ms bar is the price of avoiding Discord's
+        // scroll-anchor thrash.
     }
 
     /**
