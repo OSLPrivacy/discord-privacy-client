@@ -12657,6 +12657,47 @@
         const span = document.createElement("span");
         span.textContent = safeText;
         div.replaceChildren(span);
+        // Probe-5 fix: undo the auto-hide CSS applied by
+        // oslAutoHideCiphertext when DPC0:: was first observed in
+        // this div. Without this, the parent div's font-size:0 etc.
+        // would also collapse the plaintext we just inserted.
+        try {
+            div.style.removeProperty("font-size");
+            div.style.removeProperty("line-height");
+            div.style.removeProperty("opacity");
+            div.style.removeProperty("user-select");
+            div.removeAttribute("data-osl-cipher-hidden");
+        } catch (_) {}
+    }
+
+    /**
+     * Probe-5 fix per user request: hide DPC0:: ciphertext visually
+     * the moment we observe it in a message-content div, BEFORE the
+     * IPC decrypt roundtrip resolves. The textContent stays intact
+     * (so oslMessageIsStego / the sweep / recvExtractChannelId logic
+     * keeps working), only the visual rendering collapses to zero.
+     *
+     * On successful decrypt -> recvApplyPlaintext undoes the CSS.
+     * On SKDM bundle -> oslHideSkdmDom collapses the whole bubble.
+     * On decryption failure -> div stays visually empty (better than
+     *   leaving a DPC0:: blob; the user sees an empty message bubble
+     *   they can identify by its empty footprint and surrounding
+     *   author/timestamp chrome).
+     */
+    function oslAutoHideCiphertext(div) {
+        if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
+            return;
+        }
+        try {
+            div.style.fontSize = "0";
+            div.style.lineHeight = "0";
+            div.style.opacity = "0";
+            // Prevents the still-present textContent from being
+            // selectable / copyable; the user can't accidentally
+            // copy ciphertext while it's "hidden".
+            div.style.userSelect = "none";
+            div.setAttribute("data-osl-cipher-hidden", "1");
+        } catch (_) {}
     }
 
     /**
@@ -13953,6 +13994,12 @@
         try {
             div.setAttribute("data-osl-orig-cipher", text);
         } catch (_) {}
+        // Probe-5 fix: immediately hide the DPC0:: ciphertext visually
+        // so the user never sees the cipher blob during the IPC
+        // decrypt roundtrip. textContent stays intact (sweep checks
+        // still work). recvApplyPlaintext undoes this on successful
+        // decrypt.
+        oslAutoHideCiphertext(div);
         const messageId = recvMessageIdOf(div);
 
         // Phase 6a edit-overlay: if we *just* wrote this message's
@@ -15168,6 +15215,12 @@
             for (const div of divs) {
                 const text = div.textContent;
                 if (!text || !oslMessageIsStego(text)) continue;
+                // Probe-5 fix: auto-hide visible ciphertext on every
+                // sweep tick so even Discord-re-mounted divs (channel
+                // switch, scroll, react re-render) hide their DPC0::
+                // text before the user sees it. Idempotent (skips
+                // already-marked divs).
+                oslAutoHideCiphertext(div);
                 const messageId = recvMessageIdOf(div);
                 // Probe-2 Boot Bug 2: in the 5s editOverlayLocallyApplied
                 // window after a successful self-edit, the sweep used to
