@@ -12717,19 +12717,29 @@
             div.style.removeProperty("margin");
             div.removeAttribute("data-osl-cipher-hidden");
         } catch (_) {}
-        // Probe-5 final: undo the CSS-driven <li> hide so the
-        // bubble re-appears with the freshly-applied plaintext.
-        // Also clears legacy data-osl-cipher-hidden-wrap markers
-        // from earlier walk-up versions of this fix so users
-        // carrying stale style state recover their visibility.
+        // Probe-5 v6: undo the CSS-driven <li> hide on ALL
+        // matching <li>s. Discord's virtualized list can mount
+        // multiple <li>s with the same id (stale + fresh re-mount
+        // during scroll), and a stale one carrying the
+        // data-osl-cipher-hidden-li attribute would keep its row
+        // collapsed even after we've successfully decrypted +
+        // applied. Use the div's id to derive the msg id, then
+        // querySelectorAll every matching <li>.
         try {
-            const li =
-                typeof div.closest === "function"
-                    ? div.closest("li[id^='chat-messages-']")
-                    : null;
-            if (li) {
-                li.removeAttribute("data-osl-cipher-hidden-li");
+            let msgId = null;
+            if (typeof div.id === "string") {
+                msgId = div.id.replace(RECV_MESSAGE_ID_PREFIX, "");
             }
+            if (typeof msgId === "string" && msgId.length > 0) {
+                const _lis = document.querySelectorAll(
+                    "li[id^='chat-messages-'][id$='-" + msgId + "']"
+                );
+                for (const _li of _lis) {
+                    _li.removeAttribute("data-osl-cipher-hidden-li");
+                }
+            }
+            // Also clear any legacy wrap markers from earlier
+            // walk-up versions of this fix.
             let p = div.parentElement;
             while (p && p !== document.body) {
                 if (
