@@ -2523,6 +2523,28 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     let self_mlkem_pub = identity.mlkem_encapsulation_key();
     drop(id_guard);
 
+    // Probe-3 follow-up: proactively seed scope_membership from the
+    // caller-supplied channel_members on every GC send. Without this,
+    // a cold post-relaunch scope_membership cache + a GC where the
+    // user just toggled `channel_whitelisted = true` produces an
+    // empty `gc_dynamic_members` in recipients_for_scope_v3 ->
+    // `should_encrypt_to` for each channel-member peer returns false
+    // (the GC arm requires `is_gc_member` against the durable store)
+    // -> only self resolves -> the send falls through to v=3
+    // self-only, and the peer's DOM correctly returns
+    // "not a recipient" because they're not in the slot list. Seeding
+    // the membership oracle from boot.js's React-derived
+    // channel_members closes that gap: the act of sending establishes
+    // the membership, so the very first send after a relaunch picks
+    // up every member already known to boot.js.
+    if scope.kind == crate::scope::ScopeKind::Gc && !channel_members.is_empty() {
+        let mut mem = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        mem.note_gc_members(&scope.id, channel_members.iter().cloned());
+    }
+
     // Phase 9-A1: text sends now use v=3 (PQ-hybrid). Capability
     // check happens in recipients_for_scope_v3 — any whitelisted
     // member missing an ML-KEM pubkey fails the send with a
