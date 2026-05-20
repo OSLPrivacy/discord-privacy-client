@@ -12214,21 +12214,18 @@
     // in the SKDM_APPLIED handler.
     const oslSkdmHiddenMsgIds = new Set();
 
-    // Probe-4 fix: NEVER touch the parent <li>. Even when the <li>
-    // contains exactly one `message-content` div, Discord uses that
-    // <li> as the *avatar holder* for the entire same-author group
-    // -- subsequent compact-style <li>s borrow the avatar/header
-    // above. If the SKDM is the first message in a same-author group
-    // (very common; v=5 sends emit SKDM immediately before content),
-    // hiding its <li> wipes the avatar for every following message
-    // in that group. Always hide just the message-content div; the
-    // empty row shrinks to near-zero height once the inner content
-    // is gone, so the vertical-gap micro-optimisation that motivated
-    // the <li>-collapse branch isn't worth the avatar risk.
+    // Probe-5 fix: hide the message-content div AND walk up the DOM
+    // collapsing each ancestor that contains NO avatar/header
+    // (i.e., is purely a wrapper around this message body), stopping
+    // at the <li> or at the first ancestor that DOES hold an avatar
+    // or header. Result: empty "bar" from prior fix disappears
+    // (Discord's per-message padding/margin wrapper collapses too)
+    // without nuking the avatar/header for following same-author
+    // messages in the group.
     //
-    // Also defensively undo any leftover `<li>` display:none from
-    // earlier versions of this fix so users carrying stale style
-    // state recover their avatars.
+    // Defensively undo any leftover `<li>` display:none from earlier
+    // fix passes so users carrying stale style state recover their
+    // avatars.
     function oslHideSkdmDom(messageId) {
         const skdmDivs = document.querySelectorAll(
             "[id='" + RECV_MESSAGE_ID_PREFIX + messageId + "']"
@@ -12236,6 +12233,33 @@
         for (const d of skdmDivs) {
             d.style.display = "none";
             d.setAttribute("data-osl-skdm-hidden", "1");
+            // Walk up: collapse each ancestor that has no avatar/
+            // header inside (i.e., it's a pure body wrapper for this
+            // specific message). Stop at the <li> (don't touch it --
+            // it may be the group leader holding the avatar) or at
+            // the first ancestor that DOES contain an avatar/header
+            // (those are the group-leader chrome and must stay).
+            try {
+                let p = d.parentElement;
+                while (
+                    p &&
+                    p.tagName !== "LI" &&
+                    p !== document.body
+                ) {
+                    const hasGroupChrome =
+                        p.querySelector(
+                            "img[class*='avatar'], h3, [class*='header'], [class*='username']"
+                        ) ||
+                        p.querySelector(
+                            "[id^='" + RECV_MESSAGE_ID_PREFIX + "']:not([data-osl-skdm-hidden='1'])"
+                        );
+                    if (hasGroupChrome) break;
+                    p.style.display = "none";
+                    p.setAttribute("data-osl-skdm-hidden-wrap", "1");
+                    p = p.parentElement;
+                }
+            } catch (_) {}
+            // Defensively undo any leftover <li> display:none.
             const li =
                 typeof d.closest === "function"
                     ? d.closest("li[id^='chat-messages-']")
@@ -15026,19 +15050,23 @@
                         }
                         const mid = dto.discord_message_id;
                         loadedHistory.set(mid, dto.plaintext);
-                        // Probe-4 fix: if a previous sweep tick
-                        // already terminalised this msg via a failed
-                        // live decrypt (recvDone added in the .catch
-                        // path), the periodic sweep won't ever
-                        // re-dispatch and the still-visible DPC0::
-                        // div would stay as ciphertext. Clearing
-                        // recvDone + recvRetries here gives the
-                        // next sweep tick one fresh dispatch attempt
-                        // -- which now short-circuits via loadedHistory
-                        // at the top of recvDispatchDecrypt and
-                        // applies the plaintext we just loaded.
-                        recvDone.delete(mid);
-                        recvRetries.delete(mid);
+                        // Probe-5 refinement: clear recvDone +
+                        // recvRetries ONLY when the live decrypt
+                        // didn't succeed in-session (recvPlaintext
+                        // not set). Previously this cleared
+                        // unconditionally, which caused successfully-
+                        // rendered messages to get re-dispatched on
+                        // every channel-switch -- the IPC roundtrip
+                        // would briefly show ciphertext in the DOM
+                        // before re-applying. Now: if live decrypt
+                        // already produced plaintext, leave recvDone
+                        // intact; if it failed, clear so the next
+                        // sweep tick re-tries via the loadedHistory
+                        // short-circuit.
+                        if (!recvPlaintext.has(mid)) {
+                            recvDone.delete(mid);
+                            recvRetries.delete(mid);
+                        }
                         const span = document.getElementById(
                             RECV_MESSAGE_ID_PREFIX + mid
                         );

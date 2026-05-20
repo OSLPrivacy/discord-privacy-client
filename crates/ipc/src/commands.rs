@@ -8582,7 +8582,24 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
     ] {
         let path = dir.join(name);
         if path.exists() {
-            let _ = std::fs::remove_file(&path);
+            // Probe-5 F2 fix: surface wipe failures instead of
+            // silently swallowing. Previously `let _ = remove_file`
+            // dropped any EBUSY / EACCES (Windows AV scanner holding
+            // the file, etc.); the user thought the burn succeeded
+            // but stale `sender_key_state.json` (containing the OLD
+            // identity's sender chains) survived on disk and would
+            // be reloaded post-gate at the next launch, defeating
+            // the "no pre-burn group state survives" guarantee.
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::error!(
+                    file = name,
+                    path = %path.display(),
+                    error = %e,
+                    "OSL: burn_engage: file wipe failed -- stale state \
+                     may survive into the next session"
+                );
+                record_persist_error(state, name, e);
+            }
         }
     }
 

@@ -72,6 +72,35 @@ pub enum FreshStartError {
         #[source]
         source: keystore::Error,
     },
+
+    /// Probe-5 F3 fix: pre-signed Case-C rotation proof could not be
+    /// persisted; aborting before any wipe so the old identity stays
+    /// intact and the user can retry. Without this, a disk-full or
+    /// sealer-error at the wrong moment would destroy the old
+    /// Ed25519 secret with no proof on disk -> permanent 403 on
+    /// every subsequent register attempt.
+    #[error("fresh_start: failed to persist pending_rotation.json at {path}: {source}")]
+    PendingRotationSaveFailed {
+        path: PathBuf,
+        #[source]
+        source: keystore::Error,
+    },
+
+    /// Probe-5 F1 fix: a previous burn already minted a pending
+    /// rotation proof that has NOT yet been consumed by a successful
+    /// keyserver register. A second burn would overwrite that proof
+    /// with one signed by the about-to-be-destroyed current key,
+    /// orphaning the older proof and leaving the keyserver row stuck
+    /// on a key no client can rotate from. Refuse; the user must
+    /// relaunch + reach the keyserver to consume the existing proof
+    /// before burning again.
+    #[error(
+        "fresh_start: a previous burn's rotation proof has not yet been \
+         registered with the keyserver. Relaunch + ensure network \
+         connectivity so the pending proof can be consumed before \
+         burning again."
+    )]
+    PreviousBurnNotRegistered,
 }
 
 /// Wipe local state under `config_dir` and write a fresh-install
@@ -101,13 +130,15 @@ pub fn cmd_osl_fresh_start(
     // and persist it (sealed) as `pending_rotation.json`. After the
     // burn the old Ed25519 secret is destroyed, so this is the only
     // moment the client can ever produce the keyserver's required
-    // `prev_sig`. Best-effort: a first-ever install has no old
-    // identity to rotate from, and any failure here must NOT fail the
-    // burn (the wipe + fresh identity still proceed; the register
-    // path simply falls back to a plain register as before).
+    // `prev_sig`.
     //
-    // The sealer is selected once and reused for the new identity
-    // save below so both files seal under the same method tag.
+    // Probe-5 F1 + F3 hardening: mint AND SAVE the proof BEFORE any
+    // wipe. If the save fails (disk full / sealer error), abort
+    // here -- old identity stays intact, user can retry. Also: if
+    // a pending_rotation.json already exists from a previous burn
+    // that never reached keyserver register, refuse the second burn
+    // entirely (overwriting would orphan the older proof + leave
+    // the keyserver row stuck on a key no client can rotate from).
     let sealer = select_best_sealer();
     let old_identity: Option<Identity> = {
         let old_path = config_dir.join("identity.json");
@@ -132,10 +163,60 @@ pub fn cmd_osl_fresh_start(
         }
     };
 
+    // Probe-5 F1: refuse double-burn if a prior unregistered proof
+    // exists. The unconsumed proof's new_ik_ed25519_pub equals the
+    // CURRENT identity's ed25519_public (because the prior burn made
+    // the current identity), which is exactly what we'd be replacing.
+    // The replacement proof's prev_sig would be signed by the about-
+    // to-be-destroyed current key, NOT by the keyserver's stored
+    // older key -- so the keyserver would 403 it. Better to bail.
+    if let Some(ref old) = old_identity {
+        let pending_path = config_dir.join("pending_rotation.json");
+        if let Ok(Some(existing)) =
+            keystore::load_pending_rotation(&pending_path, sealer.as_ref())
+        {
+            use base64::engine::general_purpose::STANDARD as B64;
+            use base64::Engine as _;
+            let current_ed = B64.encode(old.ed25519_public.as_bytes());
+            if existing.new_ik_ed25519_pub == current_ed {
+                tracing::warn!(
+                    "OSL: fresh_start: refusing double-burn — prior \
+                     pending_rotation.json still authorises the current \
+                     identity, which means the previous burn's proof has \
+                     not yet been consumed by a successful keyserver \
+                     register. Relaunch + ensure connectivity first."
+                );
+                return Err(FreshStartError::PreviousBurnNotRegistered);
+            }
+            // The existing proof was for an UNRELATED prior identity
+            // (stale across a config-dir copy, etc.). Safe to overwrite.
+        }
+    }
+
+    // Generate the new identity in memory + mint the proof + persist
+    // the proof BEFORE any wipe runs. If save_pending_rotation fails,
+    // we abort and the on-disk identity is still the OLD one --
+    // user retries when disk-pressure clears.
+    let identity = generate_identity(user_id);
+    if let Some(ref old) = old_identity {
+        let pending = pending_rotation_from(old, &identity);
+        let pending_path = config_dir.join("pending_rotation.json");
+        save_pending_rotation(&pending_path, &pending, sealer.as_ref())
+            .map_err(|source| FreshStartError::PendingRotationSaveFailed {
+                path: pending_path.clone(),
+                source,
+            })?;
+        tracing::info!(
+            "OSL: fresh_start: persisted pre-signed Case-C rotation \
+             proof BEFORE wipe — post-burn register will present it \
+             so the new key publishes despite the destroyed old key"
+        );
+    }
+
     // 1. Wipe top-level JSON state. NOTE: `pending_rotation.json` is
-    // intentionally NOT in this list — the pre-signed proof minted in
-    // step 0 (written in step 3b, AFTER this purge) must survive a
-    // fresh start so the post-burn register can present it.
+    // intentionally NOT in this list — the pre-signed proof minted
+    // above must survive the wipe so the post-burn register can
+    // present it.
     for name in [
         "identity.json",
         "peer_map.json",
@@ -158,9 +239,8 @@ pub fn cmd_osl_fresh_start(
         remove_if_present(&path)?;
     }
 
-    // 3. Generate + persist a fresh identity (sealed under the same
-    // sealer used for the pending-rotation mint in step 0).
-    let identity = generate_identity(user_id);
+    // 3. Persist the fresh identity (sealed under the same sealer
+    // used for the pending-rotation save above).
     let identity_path = config_dir.join("identity.json");
     save_identity(&identity_path, &identity, sealer.as_ref()).map_err(|source| {
         FreshStartError::IdentitySaveFailed {
@@ -168,33 +248,6 @@ pub fn cmd_osl_fresh_start(
             source,
         }
     })?;
-
-    // 3b. SECURITY FORWARD-FIX: now that the NEW identity exists,
-    // persist the pre-signed Case-C rotation proof — but only if we
-    // had a real old identity to rotate from. Written AFTER the
-    // step-1 purge and AFTER the new identity save so it deterministi-
-    // cally survives the wipe on the happy path. Failure here is
-    // logged and swallowed: the burn must still succeed (the register
-    // path then falls back to a plain register, exactly as before
-    // this fix).
-    if let Some(ref old) = old_identity {
-        let pending = pending_rotation_from(old, &identity);
-        let pending_path = config_dir.join("pending_rotation.json");
-        match save_pending_rotation(&pending_path, &pending, sealer.as_ref()) {
-            Ok(()) => tracing::info!(
-                "OSL: fresh_start: persisted pre-signed Case-C rotation \
-                 proof (pending_rotation.json) — post-burn register will \
-                 present it so the new key publishes despite the destroyed \
-                 old key"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "OSL: fresh_start: failed to persist pending_rotation.json \
-                 (non-fatal; burn proceeds, register falls back to plain \
-                 register)"
-            ),
-        }
-    }
 
     // 4. Write fresh empty schemas.
     let peer_map_path = config_dir.join("peer_map.json");
