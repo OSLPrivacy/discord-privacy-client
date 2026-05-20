@@ -12696,11 +12696,19 @@
             div.style.removeProperty("user-select");
             div.removeAttribute("data-osl-cipher-hidden");
         } catch (_) {}
-        // Probe-5 final: undo the <li>-level hide applied by
-        // oslAutoHideCiphertext so the bubble re-appears with the
-        // freshly-applied plaintext. Also walks ancestors for
-        // backward compat with the older multi-level walk-up.
+        // Probe-5 final: undo the CSS-driven <li> hide so the
+        // bubble re-appears with the freshly-applied plaintext.
+        // Also clears legacy data-osl-cipher-hidden-wrap markers
+        // from earlier walk-up versions of this fix so users
+        // carrying stale style state recover their visibility.
         try {
+            const li =
+                typeof div.closest === "function"
+                    ? div.closest("li[id^='chat-messages-']")
+                    : null;
+            if (li) {
+                li.removeAttribute("data-osl-cipher-hidden-li");
+            }
             let p = div.parentElement;
             while (p && p !== document.body) {
                 if (
@@ -12729,6 +12737,24 @@
      *   they can identify by its empty footprint and surrounding
      *   author/timestamp chrome).
      */
+    // Probe-5 final: inject a single global stylesheet rule once,
+    // then hide the <li> by simply toggling a data-attribute. The
+    // browser batches all matching elements into ONE layout pass
+    // per tick instead of the per-element style.display mutations
+    // that triggered Discord's scroll-anchor to thrash. Combined
+    // with NOT running auto-hide from the periodic sweep (only on
+    // initial mutation-observer observation), layout changes are
+    // confined to actual message-arrival rate -- no per-second
+    // churn.
+    if (!window.__oslAutoHideStyleInstalled) {
+        try {
+            const _s = document.createElement("style");
+            _s.textContent =
+                "li[data-osl-cipher-hidden-li='1']{display:none !important;}";
+            (document.head || document.documentElement).appendChild(_s);
+            window.__oslAutoHideStyleInstalled = true;
+        } catch (_) {}
+    }
     function oslAutoHideCiphertext(div) {
         if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
             return;
@@ -12740,21 +12766,18 @@
             div.style.userSelect = "none";
             div.setAttribute("data-osl-cipher-hidden", "1");
         } catch (_) {}
-        // Probe-5 perf-revert: do NOT touch the parent <li> on
-        // auto-hide. Hiding every DPC0:: message's <li> made
-        // Discord's virtualized chat list constantly re-anchor
-        // scroll position (each hide shifts subsequent messages up,
-        // Discord scroll-anchors to compensate, repeat), producing
-        // lag + constant auto-scroll-up in GCs/DMs. The <li> hide
-        // is now only done by oslHideSkdmDom for CONFIRMED SKDM
-        // bundles (where decrypt returned the sentinel and we know
-        // the message has no user-visible content).
-        // For regular DPC0:: messages: content text is invisible
-        // during the IPC roundtrip (no visible cipher), the
-        // surrounding bubble briefly shows as an empty bar, then
-        // recvApplyPlaintext on success fills it with plaintext.
-        // The ~50ms bar is the price of avoiding Discord's
-        // scroll-anchor thrash.
+        // Tag the parent <li> for CSS-based hiding. The CSS rule
+        // above batches the layout pass. recvApplyPlaintext removes
+        // the attribute on successful decrypt -> CSS un-hides.
+        try {
+            const li =
+                typeof div.closest === "function"
+                    ? div.closest("li[id^='chat-messages-']")
+                    : null;
+            if (li) {
+                li.setAttribute("data-osl-cipher-hidden-li", "1");
+            }
+        } catch (_) {}
     }
 
     /**
@@ -15342,9 +15365,14 @@
                 // covers still get picked up by the next tick after
                 // it clears.
                 if (editOverlayLocallyApplied.has(messageId)) continue;
-                // Probe-5: auto-hide only after the cache check, so
-                // it only fires for genuinely-pending decrypts.
-                oslAutoHideCiphertext(div);
+                // Probe-5 final: do NOT call oslAutoHideCiphertext
+                // from the periodic sweep. Re-running it every tick
+                // re-toggled the data-attribute on still-visible
+                // <li>s, triggering Discord's scroll-anchor to thrash
+                // (= the "constantly scrolls up" lag the user
+                // reported). recvHandleDiv (mutation observer) is
+                // the only place that should fire auto-hide; the
+                // sweep is for cached re-apply + dispatch.
                 if (recvDone.has(messageId)) continue;
                 if (recvInFlight.has(messageId)) continue;
                 recvDispatchDecrypt(div, messageId, text);
