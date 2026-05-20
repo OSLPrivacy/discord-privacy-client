@@ -2959,10 +2959,28 @@ fn encrypt_v5_send(
     let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
     let _ = send_skdm; // retained for self-receiver gate above; no longer gates bundle emit
     if !non_self_peers.is_empty() {
-        let recipients_v3: Vec<crate::wire_v2::RecipientV3> = non_self_peers
-            .iter()
-            .map(|(_, r)| r.clone())
-            .collect();
+        // Include self as a recipient so the sender's own DOM
+        // (which sees the SKDM bundle round-tripped through Discord
+        // like any other channel message) decodes it cleanly instead
+        // of raising "not a recipient" for every own send. The
+        // self-slot decode hits apply_skdm_recv which is idempotent
+        // for an already-installed receiver chain.
+        let self_mlkem = {
+            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            id_guard
+                .as_ref()
+                .ok_or_else(|| "OSL: identity not loaded".to_string())?
+                .mlkem_encapsulation_key()
+        };
+        let mut recipients_v3: Vec<crate::wire_v2::RecipientV3> =
+            Vec::with_capacity(non_self_peers.len() + 1);
+        recipients_v3.push(crate::wire_v2::RecipientV3 {
+            x25519_pub: *self_pk,
+            mlkem_pub: self_mlkem,
+        });
+        for (_, r) in non_self_peers.iter() {
+            recipients_v3.push(r.clone());
+        }
         match send_skdm_via_v3_bundle(
             sender_sk,
             self_pk,
