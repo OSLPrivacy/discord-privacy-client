@@ -61,6 +61,8 @@
     "allow-osl-install-update",
     "allow-osl-get-update-channel",
     "allow-osl-set-update-channel",
+    "allow-osl-get-encryption-marker",
+    "allow-osl-set-encryption-marker",
     "core:event:allow-emit",
     "core:event:allow-listen",
     "core:window:allow-close",

@@ -1,0 +1,11 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 2 prose-token pivot: attempt to decode a Discord message as
+# an OSL prose-token. Returns null fast on plain English (no HMAC
+# match), so safe to call on every incoming message in an OSL scope.
+# On a real token: fetches the cipher from the cipher-store and
+# returns a DPC0::<base64> wire for the existing decrypt path.
+[[permission]]
+identifier = "allow-osl-prose-token-recv"
+description = "Permits the discord.com main webview to invoke `osl_prose_token_recv` (decode a Discord message as an OSL prose-token + fetch its cipher from the cipher-store)."
+commands.allow = ["osl_prose_token_recv"]

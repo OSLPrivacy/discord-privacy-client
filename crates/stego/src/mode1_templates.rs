@@ -23,6 +23,12 @@
 //!   templates have the same fixed tokens at the same positions
 //!   when slot kinds differ — pattern match would be ambiguous).
 //! - No skeleton token may collide with any wordlist entry.
+//!
+//! Phase 2 (prose-token pivot): templates rewritten to read like
+//! short Discord chat ("lol such a cute dog .", "honestly work is
+//! rough .") instead of the prior story-narrative phrasing. Same
+//! 16-template / 2-slot / 20-bit-per-sentence budget; only the
+//! surface text changes.
 
 use crate::mode1_wordlists::{ADJECTIVES, NOUNS};
 
@@ -62,122 +68,85 @@ pub const SLOT_TOKEN: &str = "\x00";
 /// Each template has 2 slots → bit budget = 4 (template) + 16 (two
 /// 8-bit slot fills) = **20 bits per sentence**.
 pub static TEMPLATES: [Template; TEMPLATES_LEN] = [
+    // 0: [Adj, Noun]   "lol such a cute dog ."
     Template::new(
-        &["Today", SLOT_TOKEN, "saw", "a", SLOT_TOKEN, "."],
+        &["lol", "such", "a", SLOT_TOKEN, SLOT_TOKEN, "."],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
+    // 1: [Adj, Noun]   "ngl that's a wild idea ."
     Template::new(
-        &[
-            "Yesterday",
-            "the",
-            SLOT_TOKEN,
-            "found",
-            "a",
-            SLOT_TOKEN,
-            ".",
-        ],
+        &["ngl", "that's", "a", SLOT_TOKEN, SLOT_TOKEN, "."],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
+    // 2: [Adj, Noun]   "wow what a busy day today ."
     Template::new(
-        &[
-            "Maybe", "I", "should", "buy", "a", SLOT_TOKEN, SLOT_TOKEN, ".",
-        ],
+        &["wow", "what", "a", SLOT_TOKEN, SLOT_TOKEN, "today", "."],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
+    // 3: [Adj, Noun]   "i need a long break rn ."
     Template::new(
-        &["My", "neighbor", "owns", "a", SLOT_TOKEN, SLOT_TOKEN, "."],
+        &["i", "need", "a", SLOT_TOKEN, SLOT_TOKEN, "rn", "."],
         &[SlotKind::Adj, SlotKind::Noun],
     ),
+    // 4: [Noun, Adj]   "lol work is so busy ."
     Template::new(
-        &[
-            "She", "said", "the", SLOT_TOKEN, "was", "near", "the", SLOT_TOKEN, ".",
-        ],
+        &["lol", SLOT_TOKEN, "is", "so", SLOT_TOKEN, "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 5: [Noun, Adj]   "honestly homework is rough ."
+    Template::new(
+        &["honestly", SLOT_TOKEN, "is", SLOT_TOKEN, "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 6: [Noun, Adj]   "btw mom looks tired today ."
+    Template::new(
+        &["btw", SLOT_TOKEN, "looks", SLOT_TOKEN, "today", "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 7: [Noun, Adj]   "this song is super good ."
+    Template::new(
+        &["this", SLOT_TOKEN, "is", "super", SLOT_TOKEN, "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 8: [Noun, Adj]   "my brother has been weird lately ."
+    Template::new(
+        &["my", SLOT_TOKEN, "has", "been", SLOT_TOKEN, "lately", "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 9: [Noun, Adj]   "wait was the movie good ?"
+    Template::new(
+        &["wait", "was", "the", SLOT_TOKEN, SLOT_TOKEN, "?"],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 10: [Noun, Adj]  "ok so dinner is ready now ."
+    Template::new(
+        &["ok", "so", SLOT_TOKEN, "is", SLOT_TOKEN, "now", "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 11: [Noun, Adj]  "ngl work feels rough tho ."
+    Template::new(
+        &["ngl", SLOT_TOKEN, "feels", SLOT_TOKEN, "tho", "."],
+        &[SlotKind::Noun, SlotKind::Adj],
+    ),
+    // 12: [Noun, Noun] "from work to gym today ."
+    Template::new(
+        &["from", SLOT_TOKEN, "to", SLOT_TOKEN, "today", "."],
         &[SlotKind::Noun, SlotKind::Noun],
     ),
+    // 13: [Noun, Noun] "between work and school again ."
     Template::new(
-        &[
-            "He", "asked", "if", "the", SLOT_TOKEN, "had", "any", SLOT_TOKEN, ".",
-        ],
+        &["between", SLOT_TOKEN, "and", SLOT_TOKEN, "again", "."],
         &[SlotKind::Noun, SlotKind::Noun],
     ),
+    // 14: [Adj, Adj]   "feeling tired and hungry tonight ."
     Template::new(
-        &[
-            "Apparently",
-            SLOT_TOKEN,
-            "is",
-            "quite",
-            SLOT_TOKEN,
-            "today",
-            ".",
-        ],
-        &[SlotKind::Noun, SlotKind::Adj],
+        &["feeling", SLOT_TOKEN, "and", SLOT_TOKEN, "tonight", "."],
+        &[SlotKind::Adj, SlotKind::Adj],
     ),
+    // 15: [Adj, Adj]   "kinda tired but also hungry ."
     Template::new(
-        &[
-            "Honestly", "the", SLOT_TOKEN, "looked", "more", SLOT_TOKEN, "than", "usual", ".",
-        ],
-        &[SlotKind::Noun, SlotKind::Adj],
-    ),
-    Template::new(
-        &[
-            "Nobody", "noticed", "how", SLOT_TOKEN, "the", SLOT_TOKEN, "had", "become", ".",
-        ],
-        &[SlotKind::Adj, SlotKind::Noun],
-    ),
-    Template::new(
-        &[
-            "Everybody",
-            "wondered",
-            "where",
-            "the",
-            SLOT_TOKEN,
-            SLOT_TOKEN,
-            "went",
-            ".",
-        ],
-        &[SlotKind::Adj, SlotKind::Noun],
-    ),
-    Template::new(
-        &[
-            "Last", "week", "we", "rented", "a", SLOT_TOKEN, SLOT_TOKEN, ".",
-        ],
-        &[SlotKind::Adj, SlotKind::Noun],
-    ),
-    Template::new(
-        &[
-            "Every", "morning", "the", SLOT_TOKEN, "feels", SLOT_TOKEN, ".",
-        ],
-        &[SlotKind::Noun, SlotKind::Adj],
-    ),
-    Template::new(
-        &[
-            "Sometimes",
-            "I",
-            "miss",
-            "that",
-            SLOT_TOKEN,
-            SLOT_TOKEN,
-            ".",
-        ],
-        &[SlotKind::Adj, SlotKind::Noun],
-    ),
-    Template::new(
-        &[
-            "Without", "warning", "the", SLOT_TOKEN, "turned", SLOT_TOKEN, ".",
-        ],
-        &[SlotKind::Noun, SlotKind::Adj],
-    ),
-    Template::new(
-        &[
-            "Across", "the", "street", "a", SLOT_TOKEN, SLOT_TOKEN, "appeared", ".",
-        ],
-        &[SlotKind::Adj, SlotKind::Noun],
-    ),
-    Template::new(
-        &[
-            "Until", "tomorrow", "leave", "the", SLOT_TOKEN, "near", "the", SLOT_TOKEN, ".",
-        ],
-        &[SlotKind::Noun, SlotKind::Noun],
+        &["kinda", SLOT_TOKEN, "but", "also", SLOT_TOKEN, "."],
+        &[SlotKind::Adj, SlotKind::Adj],
     ),
 ];
 

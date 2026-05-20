@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 2 prose-token pivot: delete a single blob from the
+# cipher-store. The 8-byte blob ID is the capability — whoever has
+# it can burn. Idempotent server-side. Used by the scope-burn flow
+# to evict every blob produced inside the scope.
+[[permission]]
+identifier = "allow-osl-prose-token-burn"
+description = "Permits the discord.com main webview to invoke `osl_prose_token_burn` (DELETE a single cipher-store blob by ID)."
+commands.allow = ["osl_prose_token_burn"]

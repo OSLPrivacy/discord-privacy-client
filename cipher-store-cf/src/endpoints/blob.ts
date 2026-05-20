@@ -1,0 +1,142 @@
+/// Blob endpoints: upload / fetch / delete.
+///
+/// Validation rules:
+///   - Upload body: raw bytes (application/octet-stream).
+///   - Upload size: 1..=65536 bytes (64 KB cap).
+///   - TTL header `X-OSL-TTL-Seconds`: must be one of
+///       86400 (24h), 259200 (72h), 604800 (7d).
+///   - ID path param: 16 hex chars.
+
+import type { Env } from "../env.js";
+import { error, json, notFound } from "../lib/http.js";
+import { hexToId, idToHex, newBlobId } from "../lib/id.js";
+
+const MAX_BLOB_BYTES = 64 * 1024;
+const ALLOWED_TTL_SECONDS = new Set<number>([
+  86400, // 24h
+  259200, // 72h
+  604800, // 7d
+]);
+
+export async function handleUpload(request: Request, env: Env): Promise<Response> {
+  const ttlHeader = request.headers.get("x-osl-ttl-seconds");
+  const ttl = ttlHeader ? parseInt(ttlHeader, 10) : NaN;
+  if (!Number.isFinite(ttl) || !ALLOWED_TTL_SECONDS.has(ttl)) {
+    return error(
+      400,
+      "bad_ttl",
+      "X-OSL-TTL-Seconds must be 86400 (24h), 259200 (72h), or 604800 (7d)"
+    );
+  }
+
+  const body = await request.arrayBuffer();
+  const data = new Uint8Array(body);
+  if (data.length === 0) {
+    return error(400, "empty_body", "blob body required");
+  }
+  if (data.length > MAX_BLOB_BYTES) {
+    return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
+  }
+
+  // Generate ID + insert. On primary-key collision (vanishingly
+  // unlikely with 64-bit IDs but technically possible), retry up to
+  // a small bound.
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + ttl;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const id = newBlobId();
+    try {
+      await env.DB.prepare(
+        "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+        .bind(id, data, data.length, expiresAt, now)
+        .run();
+      return json({ id: idToHex(id), expires_at: expiresAt }, 201);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("UNIQUE") || msg.includes("PRIMARY")) {
+        // Collision — retry.
+        continue;
+      }
+      throw err;
+    }
+  }
+  return error(
+    500,
+    "id_collision_loop",
+    "could not allocate a fresh ID after retries"
+  );
+}
+
+export async function handleFetch(
+  env: Env,
+  hex: string
+): Promise<Response> {
+  const id = hexToId(hex);
+  if (!id) return error(400, "bad_id", "id must be 16 hex chars");
+  const row = await env.DB.prepare(
+    "SELECT data, expires_at FROM blobs WHERE id = ? LIMIT 1"
+  )
+    .bind(id)
+    .first<{ data: unknown; expires_at: number }>();
+  if (!row) return notFound();
+  const now = Math.floor(Date.now() / 1000);
+  if (row.expires_at < now) {
+    // Expired but the sweep hasn't run yet. Treat as gone.
+    return notFound();
+  }
+  // D1's BLOB return type is officially ArrayBuffer but in practice
+  // varies by runtime version (Uint8Array, plain string, or even an
+  // object with byteLength). Normalise to bytes regardless.
+  const bytes = blobToBytes(row.data);
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      "content-type": "application/octet-stream",
+      "cache-control": "no-store",
+      "content-length": String(bytes.byteLength),
+    },
+  });
+}
+
+function blobToBytes(v: unknown): Uint8Array {
+  if (v == null) return new Uint8Array(0);
+  if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (ArrayBuffer.isView(v)) {
+    const view = v as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+  if (Array.isArray(v)) {
+    return new Uint8Array(v as number[]);
+  }
+  if (typeof v === "string") {
+    // Some D1 surfaces return BLOB as base64. Try that first; fall
+    // through to UTF-8 bytes if it doesn't decode cleanly.
+    try {
+      const bin = atob(v);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return arr;
+    } catch {
+      return new TextEncoder().encode(v);
+    }
+  }
+  return new Uint8Array(0);
+}
+
+export async function handleDelete(
+  env: Env,
+  hex: string
+): Promise<Response> {
+  const id = hexToId(hex);
+  if (!id) return error(400, "bad_id", "id must be 16 hex chars");
+  // Phase 1 MVP: anyone can burn any ID they know. The 8-byte ID
+  // is the capability token; if you have it, you can delete. This
+  // is fine because (a) IDs are server-generated random 64-bit
+  // values, never enumerable, and (b) the legitimate sender is
+  // the only party with the ID besides the server. Phase 6 adds
+  // anonymous-credential gating for upload + delete.
+  await env.DB.prepare("DELETE FROM blobs WHERE id = ?").bind(id).run();
+  return new Response(null, { status: 204 });
+}

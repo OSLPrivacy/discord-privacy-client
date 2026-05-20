@@ -46,6 +46,16 @@ subtle = { workspace = true }
 # at-rest file_storage_key derivation. RustCrypto `hmac` paired
 # with the existing workspace `sha2`.
 hmac = "0.12"
+# Phase 2 prose-token pivot: HKDF-SHA256 to derive a per-conversation
+# MAC key from the existing per-peer shared secret so encode_token /
+# decode_token can authenticate prose-token messages without an extra
+# wire roundtrip.
+hkdf = { workspace = true }
+# Phase 2 prose-token pivot: blocking HTTP client to the cipher-store
+# Worker (POST /v1/blob, GET /v1/blob/:id, DELETE /v1/blob/:id).
+# `rustls-tls` matches the keystore crate to avoid pulling
+# openssl/native-tls on Windows + reproducible-build trees.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 # Phase 8 attachment decoy: a solid-color PNG is prepended to every
 # encrypted attachment so non-OSL viewers see a placeholder image
 # (rather than corrupt-binary garbage) when they open the file from

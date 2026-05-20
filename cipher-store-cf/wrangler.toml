@@ -1,0 +1,44 @@
+name = "oslprivacy-cipher-store"
+main = "src/index.ts"
+compatibility_date = "2026-05-13"
+
+# Subpoena-resistance is a core property of this Worker. Two
+# implications baked into this config:
+#
+#   1. observability is INTENTIONALLY DISABLED. Cloudflare's
+#      observability tab logs every request URL + status; even with
+#      no app-level logging, a leaked observability slice would
+#      reveal traffic patterns. Keep this commented OUT for prod.
+#      Re-enable temporarily ONLY for active debugging.
+#
+#   2. tail / live logging is operator-controlled via `wrangler
+#      tail`. Do not pipe `wrangler tail` to disk in production --
+#      that creates retained logs, which the bucket is meant to
+#      avoid.
+#
+# [observability]
+# enabled = false
+
+# D1 database — create with:
+#   wrangler d1 create osl-cipher-store-prod
+# then paste the database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "osl-cipher-store-prod"
+database_id = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2"
+migrations_dir = "migrations"
+
+# Workers KV for IP-based rate limiting. Phase 6 replaces this with
+# Privacy Pass anonymous credentials; for Phase 1 MVP, IP rate
+# limiting is the only anti-abuse defence. Create with:
+#   wrangler kv namespace create RATE_LIMIT
+# then paste the id below.
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "a65e8cc90cdc4cffa83b01fe12c6e47a"
+
+# Scheduled cron for the TTL sweep. Runs every 5 minutes -- deletes
+# rows where expires_at < unixepoch(). The cron handler logs ONLY
+# an aggregate "swept N rows" count, never individual IDs.
+[triggers]
+crons = ["*/5 * * * *"]

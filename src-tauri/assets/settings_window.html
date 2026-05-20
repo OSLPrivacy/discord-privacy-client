@@ -563,6 +563,7 @@ const LIVE_ITEMS = [
   { id: "account", label: "Account" },
   { id: "updates", label: "Updates" },
   { id: "stego", label: "Stego Mode" },
+  { id: "display", label: "Display" },
   { id: "keybinds", label: "Keybinds" },
   { id: "about", label: "About" },
 ];
@@ -592,8 +593,93 @@ function switchPage(pageId) {
   else if (pageId === "account") renderAccount();
   else if (pageId === "updates") renderUpdates();
   else if (pageId === "stego") renderStego();
+  else if (pageId === "display") renderDisplay();
   else if (pageId === "keybinds") renderKeybinds();
   else if (pageId === "about") renderAbout();
+}
+
+// ============================================================
+// Display: customise the placeholder text shown on cipher rows
+// that haven't been decrypted yet. Default = "[Encryption - Ignore]".
+// Empty value renders cipher rows blank.
+// ============================================================
+async function renderDisplay() {
+  const pane = getPane();
+  pane.innerHTML = "";
+  const h = document.createElement("h2");
+  h.className = "osl-h2";
+  h.textContent = "Display";
+  pane.appendChild(h);
+  const desc = document.createElement("p");
+  desc.style.cssText = "margin:0 0 16px 0;font-size:13px;color:#b5bac1;";
+  desc.innerHTML =
+    "Choose how undecrypted cipher messages render in chat.<br>" +
+    "Default: <code>[Encryption - Ignore]</code>. " +
+    "Leave blank to render cipher rows with no marker text.";
+  pane.appendChild(desc);
+
+  const status = await oslInvoke("osl_get_encryption_marker", {});
+  const current =
+    status && status.ok && typeof status.value === "string"
+      ? status.value
+      : "[Encryption - Ignore]";
+
+  const labelEl = document.createElement("label");
+  labelEl.style.cssText = "display:block;font-size:14px;margin:8px 0 4px 0;";
+  labelEl.textContent = "Marker text";
+  pane.appendChild(labelEl);
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = current;
+  input.maxLength = 120;
+  input.placeholder = "(blank — no marker text)";
+  input.style.cssText =
+    "width:100%;max-width:480px;padding:8px 10px;font-size:14px;" +
+    "border:1px solid #2b2d31;background:#1e1f22;color:#dbdee1;" +
+    "border-radius:4px;outline:none;";
+  pane.appendChild(input);
+
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;";
+  pane.appendChild(row);
+
+  const save = document.createElement("button");
+  save.className = "osl-row-btn osl-row-btn-remove";
+  save.style.cssText = "padding:8px 16px;";
+  save.textContent = "Save";
+  save.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const text = input.value;
+    const r = await oslInvoke("osl_set_encryption_marker", { text: text });
+    if (!r.ok) {
+      oslToast("Save failed: " + r.error);
+      return;
+    }
+    await oslEmit("osl:encryption-marker-changed", text);
+    oslToast("Display preference saved.");
+  });
+  row.appendChild(save);
+
+  const reset = document.createElement("button");
+  reset.className = "osl-row-btn";
+  reset.style.cssText = "padding:8px 16px;";
+  reset.textContent = "Reset to default";
+  reset.addEventListener("click", (e) => {
+    e.stopPropagation();
+    input.value = "[Encryption - Ignore]";
+  });
+  row.appendChild(reset);
+
+  const blank = document.createElement("button");
+  blank.className = "osl-row-btn";
+  blank.style.cssText = "padding:8px 16px;";
+  blank.textContent = "Use blank";
+  blank.addEventListener("click", (e) => {
+    e.stopPropagation();
+    input.value = "";
+  });
+  row.appendChild(blank);
 }
 
 // ============================================================

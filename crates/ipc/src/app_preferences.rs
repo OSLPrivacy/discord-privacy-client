@@ -74,7 +74,16 @@ impl UpdateChannel {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Default text rendered in place of un-decrypted DPC0::/DPC1::
+/// ciphertext on the receiver side. Empty string means "render the
+/// cipher row blank" (some users prefer no marker at all). Anything
+/// else is shown as-is in a muted/italic span so the row keeps a
+/// stable line height and the virtualised scroller doesn't snap.
+fn default_encryption_marker_text() -> String {
+    "[Encryption - Ignore]".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -84,6 +93,20 @@ pub struct AppPreferences {
     pub tour: TourState,
     #[serde(default)]
     pub update_channel: UpdateChannel,
+    #[serde(default = "default_encryption_marker_text")]
+    pub encryption_marker_text: String,
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            stego_mode: StegoMode::default(),
+            tour: TourState::default(),
+            update_channel: UpdateChannel::default(),
+            encryption_marker_text: default_encryption_marker_text(),
+        }
+    }
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

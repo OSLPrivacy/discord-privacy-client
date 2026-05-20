@@ -8349,6 +8349,46 @@ pub fn cmd_osl_set_update_channel(
     Ok(())
 }
 
+// ---- User-customisable encryption marker ----
+//
+// Focused get/set commands so the Display settings page can change
+// the marker text without going through the full AppPreferencesDto
+// (which clobbers all other fields). Same pattern as update_channel.
+// Empty string is a legitimate value -- means "render cipher rows
+// blank, no marker text".
+
+pub fn cmd_osl_get_encryption_marker(state: &AppState) -> Result<String, String> {
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.encryption_marker_text.clone())
+}
+
+pub fn cmd_osl_set_encryption_marker(
+    state: &AppState,
+    text: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.encryption_marker_text = text;
+    }
+    if let Some(dir) = config_dir {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let path = dir.join("app_preferences.json");
+        crate::app_preferences::write_app_preferences(&path, &g)?;
+    }
+    Ok(())
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One

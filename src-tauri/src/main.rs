@@ -2136,6 +2136,113 @@ async fn osl_set_update_channel(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 2 prose-token send. Takes a `DPC0::<base64>` wire string
+/// produced by the existing encrypt pipeline, uploads the underlying
+/// cipher bytes to the cipher-store with the chosen TTL, and encodes
+/// the returned blob ID as natural-English prose. The returned
+/// `cover_text` is what the client posts to Discord — no DPC0::
+/// marker, no high-entropy base64 blob visible on the wire.
+#[derive(serde::Serialize)]
+struct ProseTokenSendDto {
+    cover_text: String,
+    blob_id: String,
+    expires_at: i64,
+}
+
+#[tauri::command]
+async fn osl_prose_token_send(
+    app: tauri::AppHandle,
+    scope_input: ipc::scope::ScopeInput,
+    dpc0_wire: String,
+    ttl_seconds: u32,
+) -> Result<ProseTokenSendDto, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+        let r = ipc::prose_token::prose_token_send(&dir, &scope_input, &dpc0_wire, ttl_seconds)
+            .map_err(|e| e.to_string())?;
+        Ok(ProseTokenSendDto {
+            cover_text: r.cover_text,
+            blob_id: r.blob_id,
+            expires_at: r.expires_at,
+        })
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 2 prose-token receive. Attempts to decode a Discord message
+/// as an OSL prose-token. Returns `None` if the HMAC doesn't validate
+/// (normal chat — caller leaves the message alone). Returns
+/// `Some({ wire, blob_id })` on a successful decode + cipher fetch;
+/// the caller feeds `wire` (a `DPC0::<base64>` string) into the
+/// existing decrypt path to recover plaintext.
+#[derive(serde::Serialize)]
+struct ProseTokenRecvDto {
+    wire: String,
+    blob_id: String,
+}
+
+#[tauri::command]
+async fn osl_prose_token_recv(
+    app: tauri::AppHandle,
+    scope_input: ipc::scope::ScopeInput,
+    msg: String,
+) -> Result<Option<ProseTokenRecvDto>, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+        let r = ipc::prose_token::prose_token_recv(&dir, &scope_input, &msg)
+            .map_err(|e| e.to_string())?;
+        Ok(r.map(|x| ProseTokenRecvDto {
+            wire: x.wire,
+            blob_id: x.blob_id,
+        }))
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 2 prose-token burn. Deletes a single blob from the
+/// cipher-store. Idempotent on the server side.
+#[tauri::command]
+async fn osl_prose_token_burn(app: tauri::AppHandle, blob_id: String) -> Result<(), String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+        ipc::prose_token::prose_token_burn_id(&dir, &blob_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Read the user's customised encryption-marker text. Empty string
+/// means "render cipher rows blank". Default = "[Encryption - Ignore]".
+#[tauri::command]
+async fn osl_get_encryption_marker(app: tauri::AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_encryption_marker(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Persist the user's customised encryption-marker text. Any string
+/// allowed including empty (renders cipher rows blank).
+#[tauri::command]
+async fn osl_set_encryption_marker(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_set_encryption_marker(state.inner(), text, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 fn main() {
     // Without a subscriber, every `tracing::info!/warn!/error!`
     // across the workspace is silently discarded — three diagnosis
@@ -2658,6 +2765,11 @@ fn main() {
             osl_install_update,
             osl_get_update_channel,
             osl_set_update_channel,
+            osl_get_encryption_marker,
+            osl_set_encryption_marker,
+            osl_prose_token_send,
+            osl_prose_token_recv,
+            osl_prose_token_burn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");

@@ -1,0 +1,12 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 2 prose-token pivot: upload ciphertext to the cipher-store and
+# encode the returned blob ID as natural-English prose. Side effects:
+# (1) one HTTPS POST to the cipher-store, (2) HKDF-derives a
+# per-conversation MAC key from the scope salt. No identity material
+# leaves the client beyond the rate-limit IP (and Phase 6 wraps that
+# in Privacy Pass).
+[[permission]]
+identifier = "allow-osl-prose-token-send"
+description = "Permits the discord.com main webview to invoke `osl_prose_token_send` (upload cipher to the cipher-store and encode the blob ID as prose-token cover text)."
+commands.allow = ["osl_prose_token_send"]

@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Read the user's customised encryption-marker text from
+# app_preferences.json. Empty string means "render cipher rows blank".
+[[permission]]
+identifier = "allow-osl-get-encryption-marker"
+description = "Permits invoking `osl_get_encryption_marker` (read the user-customised encryption-marker text from app_preferences.json). Used by boot.js when applying [Encryption - Ignore] markers and by the Display settings page when rendering the current value."
+commands.allow = ["osl_get_encryption_marker"]

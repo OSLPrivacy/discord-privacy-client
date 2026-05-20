@@ -46,6 +46,7 @@ use crate::mode1_templates::{
 use crate::mode1_wordlists::{ADJECTIVES, ADJ_COUNT, NOUNS, NOUN_COUNT};
 use crate::{Error, Result};
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 /// Mode 1 magic prefix. `DPC1::` echoes the Mode 0 convention.
@@ -232,6 +233,169 @@ pub fn decode_mode1(cipher: &ConversationCipher, msg: &str) -> Result<Vec<u8>> {
         out.push(reader.read(8).expect("bits available") as u8);
     }
     Ok(out)
+}
+
+// ==========================================================================
+// Prose-token encoding (Phase 2 of the cipher-store pivot).
+//
+// Encodes an 8-byte cipher-store ID as natural-English prose with:
+//   * NO magic prefix (so Discord content scanners can't pattern-match);
+//   * a 4-byte HMAC-SHA256 tag appended to the ID so receivers can
+//     distinguish OSL tokens from coincidentally template-matching English
+//     (false-positive rate 1 in 2^32 — effectively zero across realistic
+//     volumes).
+//
+// Payload layout: [id (8 B)] [hmac_tag (4 B)] = 12 bytes = 96 bits.
+// At BITS_PER_SENTENCE = 20, encoded cover is ceil(96/20) = 5 sentences,
+// padded with 4 zero bits to land on a clean sentence boundary.
+// ==========================================================================
+
+/// ID bytes carried per prose token. 64 bits is collision-safe for the
+/// cipher-store's TTL window (max a few thousand active blobs).
+pub const TOKEN_ID_BYTES: usize = 8;
+
+/// HMAC tag bytes appended for receiver-side authentication.
+pub const TOKEN_MAC_BYTES: usize = 4;
+
+/// Total bits in the encoded payload (ID || tag).
+pub const TOKEN_PAYLOAD_BITS: u32 =
+    (TOKEN_ID_BYTES as u32 + TOKEN_MAC_BYTES as u32) * 8;
+
+/// Domain separator for the HMAC over the prose-token ID.
+pub const TOKEN_MAC_DOMAIN: &[u8] = b"discord-privacy-client/mode1-token/v1";
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn compute_token_tag(
+    mac_key: &[u8],
+    id: &[u8; TOKEN_ID_BYTES],
+) -> [u8; TOKEN_MAC_BYTES] {
+    let mut mac =
+        HmacSha256::new_from_slice(mac_key).expect("HMAC accepts any key length");
+    mac.update(TOKEN_MAC_DOMAIN);
+    mac.update(id);
+    let full = mac.finalize().into_bytes();
+    let mut tag = [0u8; TOKEN_MAC_BYTES];
+    tag.copy_from_slice(&full[..TOKEN_MAC_BYTES]);
+    tag
+}
+
+/// Encode an 8-byte cipher-store ID as natural-language prose. No
+/// magic prefix — the encoded output is just sentences, indistinguishable
+/// from any other Mode 1 cover text to a casual observer. The 4-byte HMAC
+/// tag appended to the ID is what lets the recipient distinguish "this
+/// is an OSL token" from "this is plain English that happened to parse
+/// as a Mode 1 sentence."
+pub fn encode_token(
+    cipher: &ConversationCipher,
+    mac_key: &[u8],
+    id: &[u8; TOKEN_ID_BYTES],
+) -> String {
+    let tag = compute_token_tag(mac_key, id);
+    let mut bits = BitWriter::new();
+    for &b in id {
+        bits.write(b as u32, 8);
+    }
+    for &b in &tag {
+        bits.write(b as u32, 8);
+    }
+    // Pad to a whole-sentence boundary with zeros so the decoder reads
+    // a complete final sentence (96 → 100 bits = 5 sentences).
+    let pad_to = ((TOKEN_PAYLOAD_BITS + BITS_PER_SENTENCE - 1)
+        / BITS_PER_SENTENCE)
+        * BITS_PER_SENTENCE;
+    let pad = pad_to - TOKEN_PAYLOAD_BITS;
+    if pad > 0 {
+        bits.write(0, pad);
+    }
+    let bit_buf = bits.finish();
+
+    let mut out = String::new();
+    let mut reader = BitReader::new(&bit_buf);
+    let mut first = true;
+    while reader.bits_remaining() >= BITS_PER_SENTENCE {
+        let t_raw = reader
+            .read(TEMPLATE_BITS)
+            .expect("just-checked remaining bits") as u8;
+        let t_idx = cipher.template_for_index(t_raw);
+        let template = &TEMPLATES[t_idx];
+        let mut slot_idxs: [u8; TOTAL_SLOTS] = [0u8; TOTAL_SLOTS];
+        for (i, _kind) in template.slots.iter().enumerate() {
+            let raw = reader
+                .read(SLOT_BITS)
+                .expect("just-checked remaining bits") as u8;
+            slot_idxs[i] = raw;
+        }
+        if !first {
+            out.push(' ');
+        }
+        render_sentence(&mut out, template, &slot_idxs, cipher);
+        first = false;
+    }
+    out
+}
+
+/// Try to decode a Discord message as an OSL prose-token. Returns the
+/// 8-byte ID iff (a) every word in the message participates in a
+/// Mode 1 template match under the given per-conversation cipher AND
+/// (b) the recovered HMAC tag verifies under `mac_key`. Returns None
+/// on any failure — safe to call on every incoming Discord message in
+/// an OSL-enabled scope.
+pub fn decode_token(
+    cipher: &ConversationCipher,
+    mac_key: &[u8],
+    msg: &str,
+) -> Option<[u8; TOKEN_ID_BYTES]> {
+    let body = msg.trim();
+    if body.is_empty() {
+        return None;
+    }
+    let tokens: Vec<&str> = body.split_whitespace().collect();
+    let mut t_cursor = 0usize;
+    let mut writer = BitWriter::new();
+    while t_cursor < tokens.len() {
+        let consumed = match match_one_sentence(
+            &tokens[t_cursor..],
+            cipher,
+            &mut writer,
+        ) {
+            Ok(n) => n,
+            Err(_) => return None,
+        };
+        if consumed == 0 {
+            return None;
+        }
+        t_cursor += consumed;
+    }
+    let bit_buf = writer.finish();
+    if bit_buf.bit_count < TOKEN_PAYLOAD_BITS {
+        return None;
+    }
+    let mut reader = BitReader::new(&bit_buf);
+    let mut id = [0u8; TOKEN_ID_BYTES];
+    for slot in id.iter_mut() {
+        *slot = reader.read(8)? as u8;
+    }
+    let mut tag = [0u8; TOKEN_MAC_BYTES];
+    for slot in tag.iter_mut() {
+        *slot = reader.read(8)? as u8;
+    }
+    let expected = compute_token_tag(mac_key, &id);
+    if !constant_time_eq_token(&tag, &expected) {
+        return None;
+    }
+    Some(id)
+}
+
+fn constant_time_eq_token(
+    a: &[u8; TOKEN_MAC_BYTES],
+    b: &[u8; TOKEN_MAC_BYTES],
+) -> bool {
+    let mut diff = 0u8;
+    for i in 0..TOKEN_MAC_BYTES {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
 }
 
 /// Try to match the next sentence against every template under the

@@ -1122,15 +1122,72 @@
                     // Mode 0 fast path: single cover, ship through
                     // Discord's own send. Mode 1 always lands on the
                     // mode1SendPipeline branch below.
+                    //
+                    // PHASE 2 prose-token pivot: the cipher itself
+                    // never appears on the wire — we upload it to
+                    // the ephemeral cipher-store, get back an 8-byte
+                    // blob ID, and encode that ID as ~5 sentences of
+                    // chat-style prose. The cover_text is what posts
+                    // to Discord. The receive-side hook in
+                    // recvHandleDiv recovers the wire from the cover
+                    // via `osl_prose_token_recv` before the existing
+                    // decrypt path runs.
                     if (out.messages.length === 1) {
-                        parsed.content = out.messages[0];
-                        // Item 1: remember plaintext for self-view.
-                        // Keyed by the exact wire string; the
-                        // /messages XHR `load` listener maps it to
-                        // the assigned Discord message id.
+                        const __osl_dpc0Wire = out.messages[0];
+                        return oslInvoke("osl_prose_token_send", {
+                            scopeInput: v7cScope,
+                            dpc0Wire: __osl_dpc0Wire,
+                            ttlSeconds: 259200,
+                        }).then(function (__osl_resp) {
+                            if (
+                                !__osl_resp ||
+                                !__osl_resp.ok ||
+                                !__osl_resp.value ||
+                                typeof __osl_resp.value.cover_text !==
+                                    "string" ||
+                                __osl_resp.value.cover_text.length === 0
+                            ) {
+                                console.error(
+                                    "[OSL] v=2 send gate (" +
+                                        source +
+                                        "): osl_prose_token_send failed " +
+                                        "(error=" +
+                                        (__osl_resp &&
+                                            __osl_resp.error) +
+                                        "); ABORT (fail-closed)"
+                                );
+                                return onAbort(
+                                    new Error("prose_token_send_failed")
+                                );
+                            }
+                            const __osl_coverText =
+                                __osl_resp.value.cover_text;
+                            const __osl_blobId =
+                                __osl_resp.value.blob_id;
+                            // Stash cover→blob_id for Phase 4 burn.
+                            try {
+                                if (!window.__oslCoverToBlobId) {
+                                    window.__oslCoverToBlobId = new Map();
+                                }
+                                window.__oslCoverToBlobId.set(
+                                    __osl_coverText,
+                                    {
+                                        blob_id: __osl_blobId,
+                                        scope: v7cScope,
+                                    }
+                                );
+                            } catch (_) {}
+                        parsed.content = __osl_coverText;
+                        // Self-view: key by the COVER, not the wire.
+                        // The /messages XHR `load` listener compares
+                        // the echoed `data.content` against this map
+                        // to derive msg_id→plaintext; Discord echoes
+                        // whatever we POSTed, which after Phase 2 is
+                        // the cover text. Keying by wire would miss
+                        // every self-view lookup.
                         try {
                             oslSentWireToPlaintext.set(
-                                out.messages[0],
+                                __osl_coverText,
                                 plaintext
                             );
                             oslFifoEvict(
@@ -1284,6 +1341,7 @@
                             }
                         })();
                         return __oslSendResult;
+                        }); // close osl_prose_token_send .then() body
                     }
                     // 9-MODE1-RETIRE: Mode 1 dispatch suppressed for
                     // V2. Rust coerces stego_mode=mode1 → Mode 0 at
@@ -5278,56 +5336,195 @@
         hasWhitelist: false,
     };
 
-    // State-based blank-row sweep. Simple rule:
-    //   * <li> whose message-content has visible plaintext -> show.
-    //   * <li> whose message-content is empty / still cipher /
-    //     auto-hidden (font-size 0) -> collapse the <li>.
-    // No attribute tracking, no lifecycle assumptions -- just look
-    // at the DOM as it is and decide. Avoids "lock our hide on a
-    // <li> Discord re-mounts" type races since each tick re-evaluates.
-    // Skips messages that have attachments / embeds / images (they
-    // can legitimately have empty text but still need to render).
+    // State-based blank-row sweep with a local cache + viewport
+    // filter, so the per-tick cost is O(visible-uncached) instead of
+    // O(all-visible-li). Cache lookup is O(1); cached entries skip
+    // the slow textContent read entirely. Hidden rows just get
+    // their display:none re-applied (no textContent read) so
+    // Discord re-mounting can't strand a blank.
+    //
+    // Decision is invalidated by recvApplyPlaintext when plaintext
+    // lands -- the next sweep tick re-evaluates that one row and
+    // shows it.
+    const oslBlankDecisions = new Map();
+
+    // Persist the hidden-row decisions across program restarts so
+    // re-opening a previously-viewed channel hides cipher rows on
+    // mount (mutation observer applies display:none synchronously
+    // before paint) instead of after the next sweep tick. Storage:
+    // localStorage (per-origin discord.com, survives close). Format:
+    // JSON array of msgId strings. Only "hidden" decisions persist
+    // -- "shown" is the cheap recomputed default.
+    const __OSL_BLANK_CACHE_KEY = "osl_blank_hidden_v1";
+    // Soft cap. msgId is ~18B; 50k entries ≈ 1MB serialised, well
+    // under the 5-10MB localStorage budget. Map insertion order is
+    // preservation-FIFO, so capping by tail keeps the most recent.
+    const __OSL_BLANK_CACHE_MAX = 50000;
+    let __oslBlankCacheDirty = false;
+    let __oslBlankCacheFlushTimer = null;
+
+    function oslLoadBlankCacheFromStorage() {
+        try {
+            const raw = localStorage.getItem(__OSL_BLANK_CACHE_KEY);
+            if (!raw) return;
+            const arr = JSON.parse(raw);
+            if (!Array.isArray(arr)) return;
+            for (const msgId of arr) {
+                if (typeof msgId === "string" && msgId.length > 0) {
+                    oslBlankDecisions.set(msgId, "marked");
+                }
+            }
+        } catch (_) {}
+    }
+
+    function oslMarkBlankCacheDirty() {
+        __oslBlankCacheDirty = true;
+        if (__oslBlankCacheFlushTimer !== null) return;
+        __oslBlankCacheFlushTimer = nativeSetTimeout(function () {
+            __oslBlankCacheFlushTimer = null;
+            oslFlushBlankCacheToStorage();
+        }, 5000);
+    }
+
+    let __oslBlankCachePurged = false;
+
+    function oslFlushBlankCacheToStorage() {
+        // After account burn, the cache is purged and writes are
+        // suppressed until next page navigation — otherwise the
+        // beforeunload flush would persist the in-memory Map back
+        // to localStorage immediately after we just wiped it.
+        if (__oslBlankCachePurged) return;
+        if (!__oslBlankCacheDirty) return;
+        try {
+            const hidden = [];
+            for (const [msgId, decision] of oslBlankDecisions) {
+                if (decision === "marked") hidden.push(msgId);
+            }
+            const capped =
+                hidden.length > __OSL_BLANK_CACHE_MAX
+                    ? hidden.slice(-__OSL_BLANK_CACHE_MAX)
+                    : hidden;
+            localStorage.setItem(
+                __OSL_BLANK_CACHE_KEY,
+                JSON.stringify(capped)
+            );
+            __oslBlankCacheDirty = false;
+        } catch (_) {}
+    }
+
+    // Called by the account-burn path. Clears the in-memory cache,
+    // removes the localStorage entry, and suppresses any pending
+    // flushes (including the beforeunload one) so post-burn state
+    // is genuinely vanilla.
+    function oslPurgeBlankCache() {
+        try {
+            oslBlankDecisions.clear();
+        } catch (_) {}
+        __oslBlankCachePurged = true;
+        __oslBlankCacheDirty = false;
+        if (__oslBlankCacheFlushTimer !== null) {
+            try {
+                clearTimeout(__oslBlankCacheFlushTimer);
+            } catch (_) {}
+            __oslBlankCacheFlushTimer = null;
+        }
+        try {
+            localStorage.removeItem(__OSL_BLANK_CACHE_KEY);
+        } catch (_) {}
+    }
+
+    // Pre-fill the in-memory cache from disk BEFORE the first
+    // sweep tick or mutation observer fires.
+    oslLoadBlankCacheFromStorage();
+
+    // Flush on unload so a rapid program close doesn't strand
+    // pending writes inside the 5s debounce window.
+    try {
+        window.addEventListener("beforeunload", function () {
+            oslFlushBlankCacheToStorage();
+        });
+        // pagehide fires even when beforeunload is suppressed
+        // (Discord sometimes blocks it). Belt-and-suspenders.
+        window.addEventListener("pagehide", function () {
+            oslFlushBlankCacheToStorage();
+        });
+    } catch (_) {}
+
+    // Synchronous mount-time marker. Called for each new <li> the
+    // mutation observer sees; if the cache says this msgId is
+    // cipher, find the message-content div and apply the
+    // [ENCRYPTED] marker IMMEDIATELY (mutation observer fires
+    // before paint, so the user never sees the cipher flash on
+    // channel re-open).
+    function oslApplyCachedHideToLi(li) {
+        const id = (li && li.id) || "";
+        if (!id.startsWith("chat-messages-")) return;
+        const dash = id.lastIndexOf("-");
+        const msgId = dash >= 0 ? id.slice(dash + 1) : id;
+        if (oslBlankDecisions.get(msgId) !== "marked") return;
+        const div = li.querySelector("[id^='message-content-']");
+        if (div) oslAutoHideCiphertext(div);
+    }
+
+    function oslDecideBlank(li) {
+        const content = li.querySelector("[id^='message-content-']");
+        if (!content) return null; // not a regular message; leave alone
+        if (content.hasAttribute("data-osl-cipher-hidden")) {
+            return "marked"; // already marked, just record the decision
+        }
+        const text = (content.textContent || "").trim();
+        const looksLikeCipher =
+            text.indexOf("DPC0::") !== -1 ||
+            text.indexOf("DPC1::") !== -1;
+        return looksLikeCipher ? "marked" : "shown";
+    }
+
+    // Walk all <li>s, mark any cipher rows with [ENCRYPTED],
+    // cache the decision. Replaces the old hide-the-<li> sweep --
+    // no more layout shrink, so no scroll preservation needed.
+    // Cache is checked first (O(1) Map.get) so steady-state cost
+    // is just the querySelectorAll + per-row Map lookup.
     function oslSweepBlankRows() {
         const lis = document.querySelectorAll(
             "li[id^='chat-messages-']"
         );
         for (const li of lis) {
-            const content = li.querySelector("[id^='message-content-']");
-            if (!content) continue;
-            const text = (content.textContent || "").trim();
-            const looksLikeCipher =
-                text.indexOf("DPC0::") !== -1 ||
-                text.indexOf("DPC1::") !== -1;
-            const autoHidden =
-                content.style.fontSize === "0px" ||
-                content.hasAttribute("data-osl-cipher-hidden") ||
-                content.hasAttribute("data-osl-skdm-hidden");
-            const empty = text.length === 0;
-            let isBlank;
-            if (looksLikeCipher || autoHidden) {
-                isBlank = true;
-            } else if (empty) {
-                // Empty text might be an attachment-only message
-                // (image, video, file, embed). Skip hiding when the
-                // <li> carries any of those.
-                const hasMedia =
-                    li.querySelector(
-                        "img[src*='cdn.discord'], video[src*='cdn.discord'], a[href*='cdn.discord'], [class*='attachment'], [class*='embed']"
-                    ) !== null;
-                isBlank = !hasMedia;
-            } else {
-                isBlank = false;
+            const id = li.id || "";
+            const dash = id.lastIndexOf("-");
+            const msgId = dash >= 0 ? id.slice(dash + 1) : id;
+            const cached = oslBlankDecisions.get(msgId);
+            if (cached === "marked") {
+                // Re-apply the marker in case Discord re-mounted the
+                // <li> with the original cipher text. oslAutoHideCiphertext
+                // is idempotent (checks data-osl-cipher-hidden), so
+                // already-marked divs early-return.
+                const div = li.querySelector(
+                    "[id^='message-content-']"
+                );
+                if (div) oslAutoHideCiphertext(div);
+                continue;
             }
-            if (isBlank) {
-                if (li.getAttribute("data-osl-blank-hidden") !== "1") {
-                    li.style.display = "none";
-                    li.setAttribute("data-osl-blank-hidden", "1");
-                }
-            } else if (li.getAttribute("data-osl-blank-hidden") === "1") {
-                // Was blank-hidden last tick, now has visible
-                // content -- restore.
-                li.style.removeProperty("display");
-                li.removeAttribute("data-osl-blank-hidden");
+            if (cached === "shown") continue;
+            const decision = oslDecideBlank(li);
+            if (decision === null) continue;
+            oslBlankDecisions.set(msgId, decision);
+            if (decision === "marked") {
+                const div = li.querySelector(
+                    "[id^='message-content-']"
+                );
+                if (div) oslAutoHideCiphertext(div);
+                oslMarkBlankCacheDirty();
+            }
+        }
+    }
+
+    // Invalidate the cached decision for a msg id so the next sweep
+    // tick re-evaluates it. Called by recvApplyPlaintext when a
+    // plaintext is applied (the row should now be "shown").
+    function oslInvalidateBlankDecision(msgId) {
+        if (typeof msgId === "string" && msgId.length > 0) {
+            if (oslBlankDecisions.delete(msgId)) {
+                oslMarkBlankCacheDirty();
             }
         }
     }
@@ -5532,6 +5729,12 @@
             oslToast("Burn failed: " + result.error);
             return;
         }
+        // Wipe any client-side caches that live OUTSIDE the OSL
+        // config dir (Rust-side wipes already cleared identity.json,
+        // peer_map, channels, whitelist, sqlite store). localStorage
+        // lives in the WebView2 user-data dir, so the Rust burn
+        // didn't touch it — purge here.
+        oslPurgeBlankCache();
         // Same post-burn navigation as the gate-side burn flow:
         // bounce to plain discord.com so the freshly-wiped on-disk
         // state has no UI re-attaching to it on this tick.
@@ -11258,12 +11461,64 @@
         }
     }
 
-    // Locate the channel-row "Create Invite" hover action and return
-    // the actions container plus the exact child to insert before so
-    // our button lands directly to its LEFT — and, crucially, OUTSIDE
-    // the channel <a> (the previous bug: a child of the <a> made every
-    // click hit Discord's SPA router and navigate instead of toggle).
+    // Locate the channel name slot inside the channel link and
+    // return the parent + insert-before reference so our button
+    // lands to the LEFT of the channel name "general", visually
+    // tucked between the `#` icon and the name. The button lives
+    // INSIDE the <a>, so the click handler MUST preventDefault to
+    // suppress the SPA router; that guard is wired in
+    // `oslChanWlInject` below.
+    //
+    // Falls back to the legacy "next to Create Invite" placement
+    // when the iconContainer isn't found (e.g. forum/voice channels
+    // with a different layout). Last resort: as a sibling of <a>,
+    // which is the current "underneath the row" position -- only
+    // hit when neither anchor works.
     function oslChanWlFindInvitePlacement(a) {
+        // REPLACE the `#` channel-type icon with our button so the
+        // button sits in the exact slot Discord already laid out
+        // for the icon (correct flex sizing, no vertical stacking).
+        // We:
+        //   1. Find the <svg class="icon__…"> inside the <a>.
+        //   2. Walk up to its wrapper div (whatever Discord uses
+        //      as the icon container — modern Discord uses a
+        //      generic wrapper, older builds use class iconContainer__).
+        //   3. Hide that wrapper via display:none + a marker attr
+        //      so we can identify-and-skip on the dedupe pass.
+        //   4. Insert our button as the wrapper's nextSibling so it
+        //      gets the same flex slot.
+        // The button lives INSIDE the <a>, so the click handler MUST
+        // preventDefault to suppress the SPA router (wired below).
+        const svg =
+            a.querySelector && a.querySelector("svg[class*='icon__']");
+        if (svg && svg.parentElement) {
+            // Hide ONLY the svg element itself, and inject our
+            // button as its immediate sibling. Earlier versions
+            // climbed up to "the first wrapper that is a direct
+            // child of <a>", but on modern Discord that ancestor
+            // is `iconContainer__` which ALSO wraps the channel
+            // name — hiding it killed "general" and let the button
+            // expand into the freed flex slot, taking the whole
+            // textbox. Hiding just the svg keeps every wrapper
+            // intact; the button slots into the icon's exact spot.
+            return {
+                container: svg.parentElement,
+                before: svg.nextSibling,
+                styleRef: null,
+                hideAfterInsert: svg,
+            };
+        }
+        // Fallback: no SVG icon visible (forum/voice channel, custom
+        // layout). Land just before the name/icon-container wrapper.
+        const iconContainer =
+            a.querySelector && a.querySelector("[class*='iconContainer__']");
+        if (iconContainer && iconContainer.parentElement) {
+            return {
+                container: iconContainer.parentElement,
+                before: iconContainer,
+                styleRef: null,
+            };
+        }
         const row =
             (a.closest && a.closest("li")) ||
             (a.closest && a.closest('[class*="containerDefault"]')) ||
@@ -11283,12 +11538,6 @@
                 break;
             }
         }
-        // Fallback (no "Create Invite" affordance — the common case:
-        // the user lacks the permission for it to render, or it's a
-        // DM/GC row). Inject as the <a>'s next sibling inside the link
-        // wrapper: still OUTSIDE the <a> (so clicks never navigate),
-        // just without the invite anchor / color match. Without this
-        // the button silently disappeared on every such row.
         if (!invite) {
             if (!a.parentElement) return null;
             return {
@@ -11297,9 +11546,6 @@
                 styleRef: null,
             };
         }
-        // Climb until parentElement is an ancestor of the <a>: that
-        // parent is the row's link wrapper and `node` is the actions
-        // container (the sibling branch that holds the hover icons).
         let node = invite;
         while (
             node.parentElement &&
@@ -11310,20 +11556,83 @@
         }
         const container = node.parentElement;
         if (!container || container.contains(a) === false) {
-            // Invite found but its container isn't a clean sibling of
-            // the <a>; insert just before the invite control itself.
             return {
                 container: invite.parentElement,
                 before: invite,
                 styleRef: invite,
             };
         }
-        // `node` is the direct child of `container` that holds invite;
-        // place our button immediately before it (i.e. to its left).
         return { container: container, before: node, styleRef: node };
     }
 
+    // Document-level capture handler. Capture phase walks
+    // document → ancestors → target, so a listener attached HERE
+    // fires before any Discord listener attached to <a> or row li.
+    // That ordering is what lets our `stopImmediatePropagation`
+    // suppress the SPA router entirely when the button is nested
+    // inside the channel link. Per-button listeners alone aren't
+    // sufficient because Discord's capture listeners on <a> fire
+    // BEFORE per-button capture listeners (closer-to-root wins
+    // in capture phase).
+    if (!window.__oslChanWlGlobalGuardInstalled) {
+        window.__oslChanWlGlobalGuardInstalled = true;
+        const globalGuard = function (ev) {
+            const t = ev.target;
+            const btn =
+                t && t.closest
+                    ? t.closest("[" + OSL_CHANWL_ATTR + "='1']")
+                    : null;
+            if (!btn) return;
+            try { ev.preventDefault(); } catch (_) {}
+            try { ev.stopImmediatePropagation(); } catch (_) {}
+            if (ev.type !== "click") return;
+            const a = btn.closest && btn.closest("a[href^='/channels/']");
+            if (!a) return;
+            const ids = oslChanWlParseHref(
+                a.getAttribute("href") || ""
+            );
+            if (!ids) return;
+            const scopeInput = oslChanWlScope(ids);
+            try {
+                oslChanWlOnClick(ev, scopeInput, btn);
+            } catch (err) {
+                console.error("[OSL] chanwl click handler threw", err);
+            }
+        };
+        for (const evt of [
+            "click",
+            "pointerdown",
+            "mousedown",
+            "mouseup",
+            "auxclick",
+            "contextmenu",
+        ]) {
+            document.addEventListener(evt, globalGuard, true);
+        }
+    }
+
+    // Remove OSL channel-WL buttons that ended up OUTSIDE any
+    // channel <a> (legacy placement). Idempotent. Called on every
+    // inject pass so a stale orphan from a prior build can't sit
+    // around eating clicks or visual space.
+    function oslChanWlCleanupOrphans() {
+        try {
+            const all = document.querySelectorAll(
+                "[" + OSL_CHANWL_ATTR + "='1']"
+            );
+            for (const btn of all) {
+                const a =
+                    btn.closest &&
+                    btn.closest("a[href^='/channels/']");
+                if (!a) {
+                    try { btn.remove(); } catch (_) {}
+                }
+            }
+        } catch (_) {}
+    }
+
     function oslChanWlInject() {
+        oslChanWlCleanupOrphans();
         let links;
         try {
             links = document.querySelectorAll('a[href^="/channels/"]');
@@ -11333,17 +11642,20 @@
         for (const a of links) {
             const ids = oslChanWlParseHref(a.getAttribute("href") || "");
             if (!ids) continue;
-            const place = oslChanWlFindInvitePlacement(a);
-            // Only skip if there is no container at all. `before` may
-            // legitimately be null (fallback = append after the <a>).
-            if (!place || !place.container) continue;
+            // Dedup BEFORE the placement work so we don't repeatedly
+            // hide-and-show the # icon on every scan tick. Check the
+            // entire <a> + its row (covers historical placements
+            // OUTSIDE the <a> from earlier builds — would otherwise
+            // double-inject).
+            const row =
+                (a.closest && a.closest("li")) || a.parentElement || a;
             if (
-                place.container.querySelector(
-                    "[" + OSL_CHANWL_ATTR + "='1']"
-                )
+                row.querySelector("[" + OSL_CHANWL_ATTR + "='1']")
             ) {
                 continue;
             }
+            const place = oslChanWlFindInvitePlacement(a);
+            if (!place || !place.container) continue;
             const scopeInput = oslChanWlScope(ids);
             const btn = document.createElement("div");
             btn.setAttribute(OSL_CHANWL_ATTR, "1");
@@ -11358,32 +11670,77 @@
                     btn.className = place.styleRef.className;
                 }
             } catch (_) {}
-            btn.style.display = "flex";
+            btn.style.display = "inline-flex";
             btn.style.alignItems = "center";
             btn.style.justifyContent = "center";
             btn.style.cursor = "pointer";
+            // Size the button. When we're replacing the # icon
+            // slot, mirror its measured width/height EXACTLY so the
+            // channel name doesn't shift. When there's no styleRef
+            // class AND no measurable icon (fallback paths), use
+            // 16px as a sane default.
+            if (place.hideAfterInsert) {
+                const w = place.hideAfterInsert.offsetWidth || 16;
+                const h = place.hideAfterInsert.offsetHeight || 16;
+                btn.style.width = w + "px";
+                btn.style.height = h + "px";
+                btn.style.flexShrink = "0";
+                // Nudge the lock glyph down a touch so it sits on
+                // the channel-name baseline instead of riding above it.
+                btn.style.transform = "translateY(3px)";
+            } else if (!place.styleRef) {
+                btn.style.width = "16px";
+                btn.style.height = "16px";
+                btn.style.flexShrink = "0";
+                btn.style.marginRight = "4px";
+            }
             oslChanWlPaint(btn, "off");
-            // Capture-phase + immediate stop so neither the channel
-            // navigation nor Discord's row handlers ever see the click.
+            // Inside-<a> click guard. Discord wires both
+            // `pointerdown` (focus/navigation prep) and the standard
+            // `click` (router transition); Chromium fires a synthetic
+            // `mouseup` between them. Suppressing all of those, in
+            // capture phase, plus preventDefault on every step is
+            // what reliably stops the row from navigating when the
+            // button lives inside the link.
+            //
+            // `oslChanWlOnClick` does NOT prevent/stop again — that
+            // would no-op here but matter if the function is called
+            // from a non-button context (none currently).
+            const swallow = function (ev) {
+                try { ev.preventDefault(); } catch (_) {}
+                try { ev.stopImmediatePropagation(); } catch (_) {}
+            };
             btn.addEventListener(
                 "click",
                 (ev) => {
-                    try {
-                        ev.stopImmediatePropagation();
-                    } catch (_) {}
+                    swallow(ev);
                     oslChanWlOnClick(ev, scopeInput, btn);
                 },
                 true
             );
-            btn.addEventListener("mousedown", (ev) => {
-                try {
-                    ev.stopPropagation();
-                } catch (_) {}
-            });
+            btn.addEventListener("pointerdown", swallow, true);
+            btn.addEventListener("mousedown", swallow, true);
+            btn.addEventListener("mouseup", swallow, true);
+            btn.addEventListener("auxclick", swallow, true);
+            // Right-click / middle-click on Discord channel rows
+            // sometimes also pops the channel context menu; absorb.
+            btn.addEventListener("contextmenu", swallow, true);
             try {
                 place.container.insertBefore(btn, place.before);
             } catch (_) {
                 continue;
+            }
+            // Hide the # icon AFTER inserting so the measurement
+            // above could read the natural dimensions. Mark with an
+            // attr in case future code wants to identify our hide.
+            if (place.hideAfterInsert) {
+                try {
+                    place.hideAfterInsert.style.display = "none";
+                    place.hideAfterInsert.setAttribute(
+                        "data-osl-chanwl-hid-icon",
+                        "1"
+                    );
+                } catch (_) {}
             }
             // Resolve real state asynchronously (fire-and-forget).
             oslChanWlRefresh(btn, scopeInput);
@@ -12910,57 +13267,24 @@
         const span = document.createElement("span");
         span.textContent = safeText;
         div.replaceChildren(span);
-        // Probe-5 fix: undo the auto-hide CSS applied by
-        // oslAutoHideCiphertext when DPC0:: was first observed in
-        // this div. Without this, the parent div's font-size:0 etc.
-        // would also collapse the plaintext we just inserted.
+        // Drop the cipher-hidden marker + the stashed cipher text so
+        // a subsequent observer firing doesn't re-mark this div as
+        // encrypted. The [ENCRYPTED] span we previously inserted is
+        // already gone (replaceChildren above overwrote it).
         try {
-            div.style.removeProperty("font-size");
-            div.style.removeProperty("line-height");
-            div.style.removeProperty("opacity");
-            div.style.removeProperty("user-select");
-            // Probe-5 v6: also undo the fallback collapse styles set
-            // by oslAutoHideCiphertext when no <li> ancestor was
-            // found.
-            div.style.removeProperty("height");
-            div.style.removeProperty("overflow");
-            div.style.removeProperty("padding");
-            div.style.removeProperty("margin");
             div.removeAttribute("data-osl-cipher-hidden");
+            div.removeAttribute("data-osl-cipher-text");
         } catch (_) {}
-        // Probe-5 v6: undo the CSS-driven <li> hide on ALL
-        // matching <li>s. Discord's virtualized list can mount
-        // multiple <li>s with the same id (stale + fresh re-mount
-        // during scroll), and a stale one carrying the
-        // data-osl-cipher-hidden-li attribute would keep its row
-        // collapsed even after we've successfully decrypted +
-        // applied. Use the div's id to derive the msg id, then
-        // querySelectorAll every matching <li>.
+        // Invalidate cached "marked" decision so the next sweep
+        // tick treats this msgId as shown. Same persistence path
+        // as the cache itself.
         try {
             let msgId = null;
             if (typeof div.id === "string") {
                 msgId = div.id.replace(RECV_MESSAGE_ID_PREFIX, "");
             }
             if (typeof msgId === "string" && msgId.length > 0) {
-                const _lis = document.querySelectorAll(
-                    "li[id^='chat-messages-'][id$='-" + msgId + "']"
-                );
-                for (const _li of _lis) {
-                    _li.removeAttribute("data-osl-cipher-hidden-li");
-                }
-            }
-            // Also clear any legacy wrap markers from earlier
-            // walk-up versions of this fix.
-            let p = div.parentElement;
-            while (p && p !== document.body) {
-                if (
-                    p.getAttribute("data-osl-cipher-hidden-wrap") === "1"
-                ) {
-                    p.style.removeProperty("display");
-                    p.removeAttribute("data-osl-cipher-hidden-wrap");
-                }
-                if (p.tagName === "LI") break;
-                p = p.parentElement;
+                oslInvalidateBlankDecision(msgId);
             }
         } catch (_) {}
     }
@@ -12979,82 +13303,99 @@
      *   they can identify by its empty footprint and surrounding
      *   author/timestamp chrome).
      */
-    // Probe-5 final v2: hide DPC0:: ciphertext by collapsing the
-    // <li> via CSS, AND disable Discord's scroll-anchor on the
-    // chat-messages container so our hides don't trigger scroll
-    // thrash. This combination gets no cipher + no bars + no lag.
-    //
-    // overflow-anchor: none tells the browser NOT to auto-adjust
-    // scroll position when content above shifts -- which is what
-    // Discord's scroll-anchor was doing whenever we hid an <li>,
-    // producing the "constantly scrolls up" lag.
-    //
-    // The CSS-based <li> hide (data-attribute + display:none rule)
-    // lets the browser batch all matching elements into ONE layout
-    // pass per microtask.
+    // Cipher rows are no longer hidden -- they're text-replaced
+    // with a `[ENCRYPTED]` marker by oslAutoHideCiphertext, which
+    // keeps row layout stable and avoids the virtualised-scroller
+    // snap-back. SKDM keysharing payloads are still hidden the old
+    // way (they're not user-visible content; full hide is correct
+    // for them).
     if (!window.__oslAutoHideStyleInstalled) {
         try {
             const _s = document.createElement("style");
             _s.textContent =
-                // Disable scroll-anchor on the chat list so hides
-                // don't trigger Discord's scroll auto-adjust.
-                "ol[data-list-id='chat-messages']{overflow-anchor:none !important;}" +
-                // Hide <li> when we mark it directly.
-                "li[data-osl-cipher-hidden-li='1']{display:none !important;}" +
-                // Probe-5 v7: ALSO hide any chat-messages <li> that
-                // contains a div we've marked as auto-hidden. Catches
-                // cases where the <li>-attribute wasn't set (closest()
-                // returned null, message-content lives in an unusual
-                // parent, React-mount race). The :has() selector is
-                // declarative -- the CSS engine re-evaluates as the
-                // attribute is added/removed, no JS needed.
-                "li[id^='chat-messages-']:has([data-osl-cipher-hidden='1']){display:none !important;}" +
-                // Same for the legacy `data-osl-skdm-hidden` marker.
                 "li[id^='chat-messages-']:has([data-osl-skdm-hidden='1']){display:none !important;}";
             (document.head || document.documentElement).appendChild(_s);
             window.__oslAutoHideStyleInstalled = true;
         } catch (_) {}
     }
+    // Replace DPC0::/DPC1:: cipher content with a stable marker.
+    // Critical property: the row keeps a normal text-line height --
+    // layout never shrinks, which means Discord's virtualised
+    // scroller doesn't get confused (no scroll snap-back, no
+    // "view creeps up" symptom). The original cipher is stashed
+    // on `data-osl-cipher-text` so any code that needs to re-read
+    // the wire (re-dispatch, debug) can still find it.
+    //
+    // The marker text is user-configurable via the Display
+    // settings page (osl_get_encryption_marker / osl_set_encryption_marker).
+    // Empty string == render blank, no text. Default applied
+    // until the IPC fetch completes, then `oslEncryptionMarkerText`
+    // is overwritten with the persisted value.
+    //
+    // Idempotent via `data-osl-cipher-hidden=1`. recvApplyPlaintext
+    // clears that attribute (along with `data-osl-cipher-text` and
+    // the inline marker styling) when real plaintext lands.
+    let oslEncryptionMarkerText = "[Encryption - Ignore]";
+
     function oslAutoHideCiphertext(div) {
         if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
             return;
         }
         try {
+            const cipher = div.textContent || "";
             div.setAttribute("data-osl-cipher-hidden", "1");
-            // Belt-and-suspenders: also collapse the inner text via
-            // inline style. This guarantees DPC0:: is invisible even
-            // if the <li>-level CSS hide fails (e.g. message-content
-            // is in an unusual parent that doesn't match
-            // li[id^='chat-messages-'] -- system messages, ephemeral
-            // / interaction messages, etc.). Discord can also
-            // override the <li> with higher-specificity styles; the
-            // inline style on the content div is harder to override.
-            div.style.fontSize = "0";
-            div.style.lineHeight = "0";
-            div.style.opacity = "0";
-            div.style.userSelect = "none";
-        } catch (_) {}
-        try {
-            const li =
-                typeof div.closest === "function"
-                    ? div.closest("li[id^='chat-messages-']")
-                    : null;
-            if (li) {
-                li.setAttribute("data-osl-cipher-hidden-li", "1");
-            } else {
-                // No matching <li> ancestor. Collapse this div's own
-                // height via inline style so the bubble shrinks even
-                // without the parent-row hide. Walk up one level to
-                // also collapse the immediate bubble wrapper.
-                try {
-                    div.style.height = "0";
-                    div.style.overflow = "hidden";
-                    div.style.padding = "0";
-                    div.style.margin = "0";
-                } catch (_) {}
-            }
+            div.setAttribute("data-osl-cipher-text", cipher);
+            const span = document.createElement("span");
+            span.textContent = oslEncryptionMarkerText;
+            span.style.color = "var(--text-muted, #888)";
+            span.style.fontStyle = "italic";
+            span.style.opacity = "0.75";
+            span.setAttribute("data-osl-encrypted-marker", "1");
+            div.replaceChildren(span);
         } catch (_) {}
     }
+
+    // Walk every currently-marked cipher row and update the marker
+    // text in-place. Called when the user changes the preference
+    // via the settings page (osl:encryption-marker-changed event).
+    function oslRefreshAllEncryptionMarkers() {
+        try {
+            const spans = document.querySelectorAll(
+                "span[data-osl-encrypted-marker='1']"
+            );
+            for (const s of spans) s.textContent = oslEncryptionMarkerText;
+        } catch (_) {}
+    }
+
+    // Fetch the persisted marker text once at boot, then listen for
+    // cross-window change events from the Display settings page.
+    (async function () {
+        try {
+            const r = await oslInvoke("osl_get_encryption_marker", {});
+            if (r && r.ok && typeof r.value === "string") {
+                oslEncryptionMarkerText = r.value;
+                oslRefreshAllEncryptionMarkers();
+            }
+        } catch (_) {}
+    })();
+    try {
+        if (
+            window.__TAURI__ &&
+            window.__TAURI__.event &&
+            typeof window.__TAURI__.event.listen === "function"
+        ) {
+            window.__TAURI__.event.listen(
+                "osl:encryption-marker-changed",
+                function (e) {
+                    const v = e && e.payload;
+                    if (typeof v === "string") {
+                        oslEncryptionMarkerText = v;
+                        oslRefreshAllEncryptionMarkers();
+                    }
+                }
+            );
+        }
+    } catch (_) {}
 
     /**
      * Pull the sender's Discord user_id (== OSL user_id in v1)
@@ -14295,7 +14636,7 @@
             );
             return;
         }
-        const text = div.textContent;
+        let text = div.textContent;
         if (!text) {
             // 8d-FIX3: an encrypted-attachment message has empty
             // text by design (cover envelope lives in the file
@@ -14328,6 +14669,107 @@
                     " reason=empty_textContent"
             );
             return;
+        }
+        // PHASE 2 prose-token pivot: every incoming message in an
+        // OSL-enabled scope first runs through `osl_prose_token_recv`.
+        // It returns null fast for plain chat (HMAC mismatch) and
+        // returns a `DPC0::<base64>` wire string for real OSL
+        // tokens. Cached by msg_id so the IPC + cipher-store fetch
+        // run at most once per message.
+        if (
+            text.indexOf("DPC0::") !== 0 &&
+            text.indexOf("DPC1::") !== 0
+        ) {
+            const __osl_pre_msgId = recvMessageIdOf(div);
+            if (__osl_pre_msgId) {
+                if (!window.__oslProseWireByMsgId) {
+                    window.__oslProseWireByMsgId = new Map();
+                }
+                const __osl_cachedWire =
+                    window.__oslProseWireByMsgId.get(__osl_pre_msgId);
+                if (typeof __osl_cachedWire === "string") {
+                    text = __osl_cachedWire;
+                } else {
+                    if (!window.__oslProseInFlight) {
+                        window.__oslProseInFlight = new Set();
+                    }
+                    if (!window.__oslProseInFlight.has(__osl_pre_msgId)) {
+                        let __osl_proseScope = null;
+                        try {
+                            const __osl_ctx =
+                                typeof oslCurrentChannelContext ===
+                                "function"
+                                    ? oslCurrentChannelContext()
+                                    : null;
+                            __osl_proseScope =
+                                __osl_ctx &&
+                                typeof oslScopeForCurrentContext ===
+                                    "function"
+                                    ? oslScopeForCurrentContext(
+                                          __osl_ctx
+                                      )
+                                    : null;
+                        } catch (_) {}
+                        if (__osl_proseScope) {
+                            window.__oslProseInFlight.add(
+                                __osl_pre_msgId
+                            );
+                            oslInvoke("osl_prose_token_recv", {
+                                scopeInput: __osl_proseScope,
+                                msg: text,
+                            })
+                                .then(function (__osl_resp) {
+                                    window.__oslProseInFlight.delete(
+                                        __osl_pre_msgId
+                                    );
+                                    if (
+                                        __osl_resp &&
+                                        __osl_resp.ok &&
+                                        __osl_resp.value &&
+                                        typeof __osl_resp.value.wire ===
+                                            "string"
+                                    ) {
+                                        window.__oslProseWireByMsgId.set(
+                                            __osl_pre_msgId,
+                                            __osl_resp.value.wire
+                                        );
+                                        try {
+                                            if (
+                                                !window.__oslMsgIdToBlobId
+                                            ) {
+                                                window.__oslMsgIdToBlobId =
+                                                    new Map();
+                                            }
+                                            window.__oslMsgIdToBlobId.set(
+                                                __osl_pre_msgId,
+                                                __osl_resp.value.blob_id
+                                            );
+                                        } catch (_) {}
+                                        // Re-invoke now that the wire
+                                        // is cached. The next pass
+                                        // reads `text` from
+                                        // __oslProseWireByMsgId.
+                                        try {
+                                            recvHandleDiv(div);
+                                        } catch (_) {}
+                                    }
+                                })
+                                .catch(function (e) {
+                                    window.__oslProseInFlight.delete(
+                                        __osl_pre_msgId
+                                    );
+                                    console.warn(
+                                        "[OSL] prose_token_recv threw:",
+                                        e
+                                    );
+                                });
+                            // No wire yet -- existing path is a no-op
+                            // until the async resolves + re-invokes.
+                            return;
+                        }
+                    }
+                }
+            }
         }
         if (!oslMessageIsStego(text)) {
             // Probe-5 v5: even if the DPC0:: prefix isn't at index
@@ -15411,6 +15853,11 @@
                     root.matches &&
                     root.matches('li[id^="chat-messages-"]')
                 ) {
+                    // Pre-paint hide for cached-hidden msgIds. Runs
+                    // BEFORE oslScanLiAttachmentsV2 so we suppress
+                    // visible flash even if attachment scan triggers
+                    // additional layout. Synchronous + cheap (Map.get).
+                    oslApplyCachedHideToLi(root);
                     oslScanLiAttachmentsV2(root).catch(function () {});
                 }
                 if (root.querySelectorAll) {
@@ -15418,6 +15865,7 @@
                         'li[id^="chat-messages-"]'
                     );
                     for (const li of lis) {
+                        oslApplyCachedHideToLi(li);
                         oslScanLiAttachmentsV2(li).catch(function () {});
                     }
                 }
@@ -15573,11 +16021,14 @@
             try {
                 oslSweepSidebarChannelLock();
             } catch (_) {}
-            // State-based blank-row sweep. Each tick re-evaluates
-            // every <li>: visible plaintext -> show; cipher/empty/
-            // auto-hidden content -> collapse <li>.
+            // Blank-row sweep. Cached + viewport-gated: cached
+            // rows skip the textContent read; uncached rows are
+            // only evaluated when in (or near) the viewport.
+            // recvApplyPlaintext invalidates the cache on decrypt.
+            // Wrapped in scroll preservation so hides don't pull
+            // the user up the chat history.
             try {
-                oslSweepBlankRows();
+                oslWithScrollPreservation(oslSweepBlankRows);
             } catch (_) {}
             // Phase 5b3 channel-switch detection. Cheap to read
             // each tick; only triggers a load on a real switch
@@ -15658,12 +16109,12 @@
                 // Probe-5 v4: re-enable sweep auto-hide so DPC0::
                 // messages that were in DOM at startup (scrollback
                 // on channel open, where the mutation observer
-                // didn't fire) also get hidden. With CSS-driven
-                // hide (just a data-attribute toggle) + the
-                // `overflow-anchor:none` rule on the chat list,
-                // the per-tick cost is just an attribute check and
-                // the layout pass is batched + scroll-anchor
-                // doesn't thrash. oslAutoHideCiphertext is
+                // didn't fire) also get hidden. CSS-driven hide is
+                // just a data-attribute toggle, so the per-tick
+                // cost is an attribute check + a batched layout
+                // pass; the browser's default scroll-anchor keeps
+                // visible content stable when rows above the
+                // viewport collapse. oslAutoHideCiphertext is
                 // idempotent (early-returns on already-marked divs)
                 // so subsequent ticks are no-ops.
                 oslAutoHideCiphertext(div);
@@ -15741,21 +16192,28 @@
         window.__OSL_RECV_INSTALLED__ = true;
 
         const obs = new MutationObserver(function (records) {
-            for (const r of records) {
-                if (r.type === "childList") {
-                    for (const n of r.addedNodes) {
-                        recvScanSubtree(n);
-                    }
-                } else if (r.type === "characterData") {
-                    // Walk up from the mutated text node to the
-                    // messageContent div; the cached-vs-dispatch
-                    // decision lives in `recvHandleDiv`.
-                    const div = recvFindMessageDiv(r.target);
-                    if (div) {
-                        recvHandleDiv(div);
+            // Wrap the entire batch in scroll preservation. Both
+            // `recvScanSubtree` (cached-hide on <li> mount) and
+            // `recvHandleDiv` (insertion-time DPC0:: hide) collapse
+            // rows; doing all of them inside one snapshot/restore
+            // keeps the visible viewport anchored.
+            oslWithScrollPreservation(function () {
+                for (const r of records) {
+                    if (r.type === "childList") {
+                        for (const n of r.addedNodes) {
+                            recvScanSubtree(n);
+                        }
+                    } else if (r.type === "characterData") {
+                        // Walk up from the mutated text node to the
+                        // messageContent div; the cached-vs-dispatch
+                        // decision lives in `recvHandleDiv`.
+                        const div = recvFindMessageDiv(r.target);
+                        if (div) {
+                            recvHandleDiv(div);
+                        }
                     }
                 }
-            }
+            });
         });
         obs.observe(document.body, {
             childList: true,

@@ -38,6 +38,7 @@
 pub mod app_preferences;
 pub mod attachment_wire;
 pub mod burned_scopes_file;
+pub mod cipher_store_client;
 pub mod commands;
 pub mod control_messages;
 pub mod decoy_mp4;
@@ -47,6 +48,7 @@ pub mod main_password;
 pub mod membership;
 pub mod migration;
 pub mod peer_map;
+pub mod prose_token;
 pub mod recovery;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
