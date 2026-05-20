@@ -5494,36 +5494,17 @@
         return null;
     }
 
+    // Phase 2 made this a no-op. The prose-token path doesn't hide
+    // <li>s anymore (only the inner content div gets marker text),
+    // so there's no layout shrink to compensate for. Earlier full
+    // implementation did querySelectorAll + getBoundingClientRect
+    // per <li> per mutation — fine on quiet channels, catastrophic
+    // during composer typing where Discord fires many mutations per
+    // keystroke and a busy channel might have 50+ rendered <li>s.
+    // The browser's default `overflow-anchor: auto` handles SKDM
+    // display:none shrinks without our help.
     function oslWithScrollPreservation(fn) {
-        const scroller = oslFindChatScroller();
-        if (!scroller) {
-            fn();
-            return;
-        }
-        const scrollerTop = scroller.getBoundingClientRect().top;
-        const scrollerBottom = scrollerTop + scroller.clientHeight;
-        const allLis = scroller.querySelectorAll(
-            "li[id^='chat-messages-']"
-        );
-        let anchor = null;
-        let anchorTopBefore = 0;
-        for (const li of allLis) {
-            if (li.style.display === "none") continue;
-            const r = li.getBoundingClientRect();
-            if (r.bottom <= scrollerTop) continue;
-            if (r.top >= scrollerBottom) break;
-            anchor = li;
-            anchorTopBefore = r.top;
-            break;
-        }
         fn();
-        if (!anchor || !anchor.isConnected) return;
-        if (anchor.style.display === "none") return;
-        const anchorTopAfter = anchor.getBoundingClientRect().top;
-        const delta = anchorTopAfter - anchorTopBefore;
-        if (Math.abs(delta) >= 0.5) {
-            scroller.scrollTop += delta;
-        }
     }
 
     function oslDecideBlank(li) {
