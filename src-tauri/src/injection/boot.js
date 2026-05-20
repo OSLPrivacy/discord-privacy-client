@@ -15347,14 +15347,18 @@
                 // covers still get picked up by the next tick after
                 // it clears.
                 if (editOverlayLocallyApplied.has(messageId)) continue;
-                // Probe-5 final: do NOT call oslAutoHideCiphertext
-                // from the periodic sweep. Re-running it every tick
-                // re-toggled the data-attribute on still-visible
-                // <li>s, triggering Discord's scroll-anchor to thrash
-                // (= the "constantly scrolls up" lag the user
-                // reported). recvHandleDiv (mutation observer) is
-                // the only place that should fire auto-hide; the
-                // sweep is for cached re-apply + dispatch.
+                // Probe-5 v4: re-enable sweep auto-hide so DPC0::
+                // messages that were in DOM at startup (scrollback
+                // on channel open, where the mutation observer
+                // didn't fire) also get hidden. With CSS-driven
+                // hide (just a data-attribute toggle) + the
+                // `overflow-anchor:none` rule on the chat list,
+                // the per-tick cost is just an attribute check and
+                // the layout pass is batched + scroll-anchor
+                // doesn't thrash. oslAutoHideCiphertext is
+                // idempotent (early-returns on already-marked divs)
+                // so subsequent ticks are no-ops.
+                oslAutoHideCiphertext(div);
                 if (recvDone.has(messageId)) continue;
                 if (recvInFlight.has(messageId)) continue;
                 recvDispatchDecrypt(div, messageId, text);
