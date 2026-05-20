@@ -12708,6 +12708,13 @@
             div.style.removeProperty("line-height");
             div.style.removeProperty("opacity");
             div.style.removeProperty("user-select");
+            // Probe-5 v6: also undo the fallback collapse styles set
+            // by oslAutoHideCiphertext when no <li> ancestor was
+            // found.
+            div.style.removeProperty("height");
+            div.style.removeProperty("overflow");
+            div.style.removeProperty("padding");
+            div.style.removeProperty("margin");
             div.removeAttribute("data-osl-cipher-hidden");
         } catch (_) {}
         // Probe-5 final: undo the CSS-driven <li> hide so the
@@ -12783,6 +12790,18 @@
         }
         try {
             div.setAttribute("data-osl-cipher-hidden", "1");
+            // Belt-and-suspenders: also collapse the inner text via
+            // inline style. This guarantees DPC0:: is invisible even
+            // if the <li>-level CSS hide fails (e.g. message-content
+            // is in an unusual parent that doesn't match
+            // li[id^='chat-messages-'] -- system messages, ephemeral
+            // / interaction messages, etc.). Discord can also
+            // override the <li> with higher-specificity styles; the
+            // inline style on the content div is harder to override.
+            div.style.fontSize = "0";
+            div.style.lineHeight = "0";
+            div.style.opacity = "0";
+            div.style.userSelect = "none";
         } catch (_) {}
         try {
             const li =
@@ -12791,6 +12810,17 @@
                     : null;
             if (li) {
                 li.setAttribute("data-osl-cipher-hidden-li", "1");
+            } else {
+                // No matching <li> ancestor. Collapse this div's own
+                // height via inline style so the bubble shrinks even
+                // without the parent-row hide. Walk up one level to
+                // also collapse the immediate bubble wrapper.
+                try {
+                    div.style.height = "0";
+                    div.style.overflow = "hidden";
+                    div.style.padding = "0";
+                    div.style.margin = "0";
+                } catch (_) {}
             }
         } catch (_) {}
     }
