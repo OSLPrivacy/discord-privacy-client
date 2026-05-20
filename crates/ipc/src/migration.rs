@@ -114,12 +114,22 @@ pub fn migrate_whitelist_state_in_place(
             .get("auto_enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Probe-4 fix: W1 / W2 per-channel whitelist flag. Previously
+        // dropped here via `..ScopeState::default()`, which meant the
+        // channel-header / GC-header whitelist toggle DID persist to
+        // whitelist_state.json on disk but was wiped on every load --
+        // user saw the toggle reset to OFF on every relaunch. Now
+        // read + populate the field round-trip.
+        let channel_whitelisted = obj
+            .get("channel_whitelisted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         simplified.insert(
             scope_key.clone(),
             ScopeState {
                 encrypt_toggle,
                 auto_enabled,
-                ..ScopeState::default()
+                channel_whitelisted,
             },
         );
 

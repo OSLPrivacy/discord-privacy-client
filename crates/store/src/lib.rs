@@ -136,6 +136,14 @@ impl MessageStore {
         // pragma_update returns the row count; we don't care
         // about the value, just that it doesn't fail.
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Probe-4 fix: WAL's default synchronous=NORMAL is fast but
+        // loses uncheckpointed writes on a hard kill (force-close,
+        // OS crash, power loss). User reports "saves some, reverts
+        // others" -- the reverted rows are the most recent before
+        // close. synchronous=FULL forces an fsync per WAL frame so
+        // every persisted message survives a hard kill. Cost is ~1
+        // extra fsync per put, which is cheap at chat-rate writes.
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
         schema::migrate(&conn)?;

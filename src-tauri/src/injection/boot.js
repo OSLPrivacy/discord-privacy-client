@@ -2100,6 +2100,48 @@
             ) {
                 urlsCached = 1;
             }
+            // Probe-4 fix: own outbound persistence on the FETCH
+            // transport. Previously persist_outbound was wired only
+            // into the XHR send path's load listener, so any send
+            // Discord routed via fetch was delivered to peers fine
+            // but the sender's own MessageStore row was never
+            // written -- on reopen, recvLoadHistory found nothing,
+            // v=4 own-message decrypt correctly failed
+            // "not a recipient" (only wrapped to peer's slot), and
+            // the DPC0:: cover stayed visible to the sender. This
+            // mirror of the XHR persist call closes that gap.
+            if (
+                method === "POST" &&
+                typeof data.content === "string" &&
+                typeof data.channel_id === "string" &&
+                oslSentWireToPlaintext.has(data.content)
+            ) {
+                const _pt = oslSentWireToPlaintext.get(data.content);
+                try {
+                    selfSentPlaintext.set(data.id, _pt);
+                    oslFifoEvict(
+                        selfSentPlaintext,
+                        OSL_SELF_SENT_PLAINTEXT_MAX
+                    );
+                } catch (_) {}
+                try {
+                    window.__TAURI__.core
+                        .invoke("osl_persist_outbound", {
+                            channelId: data.channel_id,
+                            discordMessageId: data.id,
+                            plaintext: _pt,
+                        })
+                        .catch(function (e) {
+                            console.log(
+                                "[OSL] persist_outbound (fetch) failed " +
+                                    "msg=" +
+                                    data.id +
+                                    ": " +
+                                    (e && e.message ? e.message : e)
+                            );
+                        });
+                } catch (_) {}
+            }
         }
         if (urlsCached > 0) {
             console.log(
@@ -12172,43 +12214,38 @@
     // in the SKDM_APPLIED handler.
     const oslSkdmHiddenMsgIds = new Set();
 
-    // Probe-3 final: smart SKDM hide. Picks <li> hide (full collapse,
-    // no vertical gap) when the <li> is owned solely by this SKDM,
-    // or message-content-div hide (preserves avatar/header on other
-    // messages in the group) when Discord's same-author grouping put
-    // multiple messages inside the same <li> wrapper.
+    // Probe-4 fix: NEVER touch the parent <li>. Even when the <li>
+    // contains exactly one `message-content` div, Discord uses that
+    // <li> as the *avatar holder* for the entire same-author group
+    // -- subsequent compact-style <li>s borrow the avatar/header
+    // above. If the SKDM is the first message in a same-author group
+    // (very common; v=5 sends emit SKDM immediately before content),
+    // hiding its <li> wipes the avatar for every following message
+    // in that group. Always hide just the message-content div; the
+    // empty row shrinks to near-zero height once the inner content
+    // is gone, so the vertical-gap micro-optimisation that motivated
+    // the <li>-collapse branch isn't worth the avatar risk.
+    //
+    // Also defensively undo any leftover `<li>` display:none from
+    // earlier versions of this fix so users carrying stale style
+    // state recover their avatars.
     function oslHideSkdmDom(messageId) {
         const skdmDivs = document.querySelectorAll(
             "[id='" + RECV_MESSAGE_ID_PREFIX + messageId + "']"
         );
         for (const d of skdmDivs) {
+            d.style.display = "none";
+            d.setAttribute("data-osl-skdm-hidden", "1");
             const li =
                 typeof d.closest === "function"
                     ? d.closest("li[id^='chat-messages-']")
                     : null;
-            if (li) {
-                const contentDivsInLi = li.querySelectorAll(
-                    "[id^='" + RECV_MESSAGE_ID_PREFIX + "']"
-                );
-                if (contentDivsInLi.length <= 1) {
-                    // <li> contains only this message -> safe to
-                    // collapse the entire row.
-                    li.style.display = "none";
-                    li.setAttribute("data-osl-skdm-hidden", "1");
-                    continue;
-                }
-                // Grouped <li>: hide only this message-content div
-                // (and any reactions/embeds inside it) so the
-                // avatar/header on the group's first message stays
-                // visible. The remaining vertical gap inside the
-                // grouped wrapper is small; Discord collapses an
-                // empty-content row to near zero.
-                d.style.display = "none";
-                d.setAttribute("data-osl-skdm-hidden", "1");
-            } else {
-                // No <li> ancestor (unexpected) -> hide div directly.
-                d.style.display = "none";
-                d.setAttribute("data-osl-skdm-hidden", "1");
+            if (
+                li &&
+                li.getAttribute("data-osl-skdm-hidden") === "1"
+            ) {
+                li.style.removeProperty("display");
+                li.removeAttribute("data-osl-skdm-hidden");
             }
         }
     }
@@ -14989,6 +15026,19 @@
                         }
                         const mid = dto.discord_message_id;
                         loadedHistory.set(mid, dto.plaintext);
+                        // Probe-4 fix: if a previous sweep tick
+                        // already terminalised this msg via a failed
+                        // live decrypt (recvDone added in the .catch
+                        // path), the periodic sweep won't ever
+                        // re-dispatch and the still-visible DPC0::
+                        // div would stay as ciphertext. Clearing
+                        // recvDone + recvRetries here gives the
+                        // next sweep tick one fresh dispatch attempt
+                        // -- which now short-circuits via loadedHistory
+                        // at the top of recvDispatchDecrypt and
+                        // applies the plaintext we just loaded.
+                        recvDone.delete(mid);
+                        recvRetries.delete(mid);
                         const span = document.getElementById(
                             RECV_MESSAGE_ID_PREFIX + mid
                         );
