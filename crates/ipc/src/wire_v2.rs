@@ -131,11 +131,16 @@ pub const MSG_TYPE_ATTACHMENT: u8 = 0x04;
 
 /// Phase 9-A3 message-type byte: sender-keys distribution. Body is a
 /// CBOR-encoded [`crate::control_messages::SenderKeyDistribution`]
-/// carrying `(scope_storage_key, chain_id, rotation_root)`. Ships
-/// inside a v=4 message (one v=4 per group member) so the wrap leg
-/// provides PQ identity binding for the rotation_root delivery.
-/// Recipients route this msg_type to the SKDM handler in
-/// `decrypt_v4_recv` rather than surfacing as user-visible content.
+/// carrying `(scope_storage_key, chain_id, rotation_root)`.
+///
+/// Probe-3 Option-2 step 1: transport switched from v=4 (one
+/// ratcheted message per group member, fragile when any pair's DR
+/// desynced) to **v=3 bundled** (one PQ-hybrid multi-recipient
+/// message addressed to every member at once). Receiver-side
+/// dispatch lives in BOTH `decrypt_v4_recv` (legacy peers still
+/// emitting v=4) and the v=2/v=3 `match recovered.msg_type` arm in
+/// `cmd_osl_decrypt_message_v2` (the new bundled transport). The
+/// SKDM handler `apply_skdm_recv` is shared.
 pub const MSG_TYPE_SENDER_KEY_DISTRIBUTION: u8 = 0x05;
 
 /// Auto-recovery message-type byte: "I am awaiting your sender-key

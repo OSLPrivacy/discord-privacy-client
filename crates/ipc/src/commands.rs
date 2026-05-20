@@ -197,31 +197,28 @@ pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<
 }
 
 /// SKDM-fix (3/3): operator/programmatic reset of the v=5 sender-key
-/// state for ONE scope, PLUS the paired v=4 Double Ratchet for that
-/// scope's non-self peers. Clearing only one desyncs the ratchet:
-/// `send_skdm_via_v4` advances the per-peer DR every time it builds
-/// an SKDM, so a scope whose sender-key state is dropped but whose
-/// peer ratchets are not would re-emit an SKDM on an already-advanced
-/// ratchet the receiver has never seen — still undecryptable.
+/// state for ONE scope.
 ///
-/// This is the remedy for a scope poisoned by the pre-fix bug
-/// (sender persisted sender-key state while the SKDM wire was
-/// discarded, so `needs_install` stays false forever and no SKDM is
-/// ever re-emitted). After this, the next v=5 send in `scope`
-/// re-enters `needs_install == true` → emits a fresh SKDM (now
-/// actually posted to Discord by boot.js, commit 2/3),
-/// re-bootstrapping each peer's DR (`new_initiator` ↔ peer
-/// `new_responder`).
+/// Probe-3 Option-2 step 1 update: SKDM transport now ships as a
+/// single v=3-bundled multi-recipient wire (no longer one v=4 per
+/// peer), so a sender-key reset no longer depends on touching any
+/// per-peer v=4 ratchet. This function still drops collateral v=4
+/// ratchet state for backward compat with peers running pre-Option-2
+/// builds — once both sides are on v=3-bundled SKDMs, the v=4 reset
+/// becomes a no-op safety net.
 ///
-/// Peer set = every non-self peer the scope can encrypt to
-/// (`can_encrypt_to`) — exactly whom `send_skdm_via_v4` targets.
-/// NOTE: a peer's `ratchet_state` is shared with that peer's v=4 DM
-/// session, so resetting it here also re-handshakes the DM (same
-/// collateral as `cmd_osl_reset_v4_session`; acceptable for an
-/// operator recovery tool). Returns one [`SessionResetNotice`] per
-/// peer whose v=4 ratchet was collaterally nulled — boot.js POSTs
-/// each to that peer's DM so they auto-re-handshake instead of
-/// silently desyncing (the footgun guardrail). Console-invokable:
+/// Remedy for a scope poisoned by the pre-fix bug (sender persisted
+/// sender-key state while the SKDM wire was discarded, so
+/// `needs_install` stays false forever and no SKDM is ever re-emitted).
+/// After this, the next v=5 send in `scope` re-enters
+/// `needs_install == true` → emits a fresh SKDM (now actually posted
+/// to Discord by boot.js, commit 2/3), and each peer's `apply_skdm_recv`
+/// installs their receiver chain from the bundled v=3 wire.
+///
+/// Returns one [`SessionResetNotice`] per peer whose v=4 ratchet was
+/// collaterally nulled — boot.js POSTs each to that peer's DM so they
+/// auto-re-handshake instead of silently desyncing (the footgun
+/// guardrail). Console-invokable:
 ///   window.__TAURI__.core.invoke("osl_reset_v5_sender_key",
 ///     { scopeInput: { kind: "gc", id: "<gc channel id>" } })
 pub fn cmd_osl_reset_v5_sender_key(
@@ -2926,63 +2923,63 @@ fn encrypt_v5_send(
     }
     persist_sender_key_state_now(state);
 
-    // Dispatch SKDMs via v=4 to each non-self peer. Best-effort: a
-    // missing peer ratchet pub causes one keyserver refresh attempt
-    // before erroring. Each SKDM is one v=4 send.
+    // Probe-3 Option-2 step 1: dispatch SKDMs as a SINGLE v=3-bundled
+    // PQ-hybrid multi-recipient message instead of N separate v=4
+    // ratcheted messages.
+    //
+    // Old design (v=4-per-peer): each SKDM was wrapped via
+    // `send_skdm_via_v4` which built a PQXDH bootstrap + advanced the
+    // per-peer Double Ratchet. That made SKDM delivery depend on
+    // healthy v=4 ratchet state — after any burn / identity rotation
+    // / out-of-order key the v=4 ratchet desynced, SKDMs failed to
+    // decrypt on the recipient, no receiver chain installed, every
+    // v=5 GC message returned "not a recipient", and recovery looped.
+    //
+    // New design: ONE v=3 wire carrying MSG_TYPE_SENDER_KEY_DISTRIBUTION
+    // bundled to all non-self peers via the existing PQ-hybrid
+    // multi-recipient wrap. No per-peer ratchet state involved.
+    // boot.js posts it as one message; each recipient's v=3 decrypt
+    // resolves their slot, the v=2/v=3 dispatcher routes
+    // MSG_TYPE_SENDER_KEY_DISTRIBUTION to `apply_skdm_recv` which
+    // installs the receiver chain exactly as before.
     let mut skdm_wires: Vec<String> = Vec::new();
     let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
-    if send_skdm {
-        let _ = send_skdm; // mark used
-        // Iterate the FILTERED (discord_id, keys) pairs directly:
-        // each SKDM is addressed to its own peer's id. The old code
-        // reconstructed peer_did by positionally indexing the
-        // UNFILTERED channel_members, which misaligned the moment a
-        // non-OSL member was filtered out of non_self_peers — sending
-        // the SKDM to the wrong id and skipping the real OSL peer.
-        // non_self_peers is the gc_best_effort-filtered OSL-only set,
-        // so non-OSL members are inherently absent here (no spurious
-        // ok:false notice for them). channel_members is untouched and
-        // still drives effective_members / rotation above.
-        for pair in non_self_peers.iter() {
-            let peer_did: &str = pair.0.as_str();
-            let peer: &crate::wire_v2::RecipientV3 = &pair.1;
-            match send_skdm_via_v4(
-                state,
-                sender_sk,
-                self_pk,
-                peer_did,
-                peer,
-                &scope_key,
-                chain_id,
-                &rotation_root,
-            ) {
-                Ok(skdm_wire) => {
-                    // Previously this wire was DISCARDED — the SKDM
-                    // was never posted to Discord, so the peer's
-                    // sender-key chain never installed and v=5
-                    // content never decrypted. Collect it; boot.js
-                    // posts each as its own Discord message.
-                    skdm_wires.push(skdm_wire);
+    if send_skdm && !non_self_peers.is_empty() {
+        let recipients_v3: Vec<crate::wire_v2::RecipientV3> = non_self_peers
+            .iter()
+            .map(|(_, r)| r.clone())
+            .collect();
+        match send_skdm_via_v3_bundle(
+            sender_sk,
+            self_pk,
+            &recipients_v3,
+            &scope_key,
+            chain_id,
+            &rotation_root,
+        ) {
+            Ok(skdm_wire) => {
+                skdm_wires.push(skdm_wire);
+                for pair in non_self_peers.iter() {
                     skdm_peer_status.push(SkdmPeerStatus {
-                        peer_discord_id: peer_did.to_string(),
+                        peer_discord_id: pair.0.clone(),
                         ok: true,
                         error: None,
                     });
                 }
-                Err(e) => {
-                    // Fail-closed policy (locked decision): do NOT
-                    // abort the content send. Record the per-peer
-                    // failure so boot.js can surface a user-visible
-                    // notice naming this peer.
-                    tracing::warn!(
-                        peer = %peer_did,
-                        error = %e,
-                        "[OSL] v=5 SKDM dispatch failed (best-effort; peer may need to retry)"
-                    );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    recipients = non_self_peers.len(),
+                    "[OSL] v=5 SKDM bundle dispatch failed (best-effort; \
+                     recipients will request via SKDM_REQUEST if they get \
+                     a v=5 message before they install)"
+                );
+                for pair in non_self_peers.iter() {
                     skdm_peer_status.push(SkdmPeerStatus {
-                        peer_discord_id: peer_did.to_string(),
+                        peer_discord_id: pair.0.clone(),
                         ok: false,
-                        error: Some(e),
+                        error: Some(e.clone()),
                     });
                 }
             }
@@ -2996,22 +2993,34 @@ fn encrypt_v5_send(
     })
 }
 
-/// Phase 9-A3: ship a SenderKeyDistribution payload to one peer via
-/// a v=4 control message. Wraps `serialize_sender_key_distribution`
-/// in a v=4 wire with `msg_type = MSG_TYPE_SENDER_KEY_DISTRIBUTION`.
-#[allow(clippy::too_many_arguments)]
-fn send_skdm_via_v4(
-    state: &AppState,
+/// Probe-3 Option-2 step 1: ship a SenderKeyDistribution payload to
+/// ALL non-self peers in ONE v=3-bundled PQ-hybrid multi-recipient
+/// wire (formerly: N separate v=4 ratcheted wires via the now-removed
+/// `send_skdm_via_v4`).
+///
+/// The body is the same `SenderKeyDistribution{scope_storage_key,
+/// chain_id, rotation_root, sent_at}` payload that the recipient-side
+/// `apply_skdm_recv` already understands. The transport switches from
+/// v=4 (ratcheted, single-peer, broke whenever the v=4 DR was
+/// desynced) to v=3 (PQXDH per slot + ML-KEM hybrid, no ratchet
+/// state). One wire instead of N; no dependency on per-peer ratchet
+/// liveness.
+///
+/// Receive: the existing v=3 decrypt dispatcher in
+/// `cmd_osl_decrypt_message_v2` recovers the `DecryptedV2` and the
+/// `match recovered.msg_type` block routes
+/// `MSG_TYPE_SENDER_KEY_DISTRIBUTION` to `apply_skdm_recv`. No JS
+/// changes; the existing boot.js code already POSTs every
+/// `control_messages[]` entry as its own Discord message and
+/// suppresses the `OSL_RESULT_SKDM_APPLIED` sentinel.
+fn send_skdm_via_v3_bundle(
     sender_sk: &crypto::x25519::SecretKey,
     self_pk: &crypto::x25519::PublicKey,
-    peer_did: &str,
-    peer_recipient: &crate::wire_v2::RecipientV3,
+    recipients: &[crate::wire_v2::RecipientV3],
     scope_storage_key: &str,
     chain_id: u32,
     rotation_root: &[u8; 32],
 ) -> Result<String, String> {
-    use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
-
     let payload = crate::control_messages::SenderKeyDistribution {
         scope_storage_key: scope_storage_key.to_string(),
         chain_id,
@@ -3019,119 +3028,15 @@ fn send_skdm_via_v4(
         sent_at: now_unix_secs(),
     };
     let body = crate::control_messages::serialize_sender_key_distribution(&payload)
-        .map_err(|e| format!("OSL: v=5 SKDM: serialize: {e}"))?;
-
-    let self_mlkem_pub_bytes: Vec<u8> = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
-        let identity = id_guard
-            .as_ref()
-            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-        identity.mlkem_public_bytes.to_vec()
-    };
-    let peer_mlkem_pub_bytes: Vec<u8> = {
-        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard
-            .get(peer_did)
-            .ok_or_else(|| format!("OSL: v=5 SKDM: peer {peer_did} not in peer_map"))?;
-        let b64 = pe
-            .ik_mlkem768_pub
-            .as_deref()
-            .ok_or_else(|| format!("OSL: v=5 SKDM: peer {peer_did} missing ik_mlkem768_pub"))?;
-        STANDARD
-            .decode(b64)
-            .map_err(|e| format!("OSL: v=5 SKDM: peer ik_mlkem768_pub b64: {e}"))?
-    };
-
-    let ctx = SessionContext {
-        local_ik_x25519_pub: *self_pk,
-        local_ik_mlkem_pub: self_mlkem_pub_bytes,
-        peer_ik_x25519_pub: peer_recipient.x25519_pub,
-        peer_ik_mlkem_pub: peer_mlkem_pub_bytes,
-        conversation_id: dm_conversation_id(
-            &state
-                .peer_map
-                .lock()
-                .unwrap()
-                .iter()
-                .find_map(|(did, pe)| {
-                    if pe.is_self == Some(true) {
-                        Some(did.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "self".to_string()),
-            peer_did,
-        ),
-        session_version: SESSION_VERSION_V1,
-    };
-
-    let (session_key, handshake) = crypto::pqxdh::initiate(
+        .map_err(|e| format!("OSL: v=5 SKDM bundle: serialize: {e}"))?;
+    crate::wire_v2::encrypt_v3(
         sender_sk,
-        &peer_recipient.x25519_pub,
-        &peer_recipient.x25519_pub,
-        None,
-        &peer_recipient.mlkem_pub,
-    )
-    .map_err(|e| format!("OSL: v=5 SKDM: pqxdh::initiate: {e}"))?;
-
-    let (mut dr, bootstrap) = {
-        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard
-            .get(peer_did)
-            .cloned()
-            .ok_or_else(|| format!("OSL: v=5 SKDM: peer {peer_did} not in peer_map"))?;
-        match pe.ratchet_state {
-            Some(disk) => {
-                let dr: DoubleRatchet = disk
-                    .try_into()
-                    .map_err(|e| format!("OSL: v=5 SKDM: load ratchet state: {e}"))?;
-                (dr, false)
-            }
-            None => {
-                let peer_ratchet_b64 = pe.ik_ratchet_initial_pub.as_deref().ok_or_else(|| {
-                    format!("OSL: v=5 SKDM: peer {peer_did} ratchet bootstrap pub missing")
-                })?;
-                let peer_ratchet_bytes = STANDARD
-                    .decode(peer_ratchet_b64)
-                    .map_err(|e| format!("OSL: v=5 SKDM: peer ratchet pub b64: {e}"))?;
-                if peer_ratchet_bytes.len() != 32 {
-                    return Err(format!(
-                        "OSL: v=5 SKDM: peer ratchet pub length {} != 32",
-                        peer_ratchet_bytes.len()
-                    ));
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&peer_ratchet_bytes);
-                let peer_ratchet_pub = crypto::x25519::PublicKey::from_bytes(arr);
-                let dr = DoubleRatchet::new_initiator(&session_key, &peer_ratchet_pub, ctx)
-                    .map_err(|e| format!("OSL: v=5 SKDM: new_initiator: {e}"))?;
-                (dr, true)
-            }
-        }
-    };
-
-    let em = dr
-        .encrypt(&body)
-        .map_err(|e| format!("OSL: v=5 SKDM: dr.encrypt: {e}"))?;
-    let wire = crate::wire_v2::encrypt_v4_from_ratchet(
         self_pk,
-        peer_recipient,
-        &session_key,
-        &handshake,
+        recipients,
         crate::wire_v2::MSG_TYPE_SENDER_KEY_DISTRIBUTION,
-        bootstrap,
-        &em,
+        &body,
     )
-    .map_err(|e| format!("OSL: v=5 SKDM: encrypt_v4: {e}"))?;
-
-    {
-        let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let pe = pm_guard.entry(peer_did.to_string()).or_default();
-        pe.ratchet_state = Some(RatchetStateOnDisk::from(&dr));
-    }
-    persist_peer_map_now(state);
-    Ok(wire)
+    .map_err(|e| format!("OSL: v=5 SKDM bundle: encrypt_v3: {e}"))
 }
 
 /// Phase 9-A2: pick out the peer discord_id from
@@ -4154,6 +4059,16 @@ pub fn cmd_osl_decrypt_message_v2(
             let _ = scope_opt;
             apply_session_reset_recv(state, &sender_discord_id, &recovered.plaintext)
         }
+        crate::wire_v2::MSG_TYPE_SENDER_KEY_DISTRIBUTION => {
+            // Probe-3 Option-2 step 1: SKDMs now ride v=3 (bundled
+            // multi-recipient PQ-hybrid) instead of v=4 (per-peer
+            // ratcheted). The v=4 path already routes this msg_type
+            // to apply_skdm_recv for backward compat with old peers
+            // still emitting v=4 SKDMs; this v=2/v=3 arm handles the
+            // new transport.
+            let _ = scope_opt;
+            apply_skdm_recv(state, &sender_discord_id, &recovered.plaintext)
+        }
         other => Err(format!(
             "OSL: v=2 msg_type 0x{other:02x} not supported by this client"
         )),
@@ -4399,13 +4314,28 @@ fn apply_skdm_request_recv(
             req.requested_at,
             now,
         ) {
+            tracing::warn!(
+                requester = %requester_discord_id,
+                reason = "recovery_guard_rejected",
+                requested_at = req.requested_at,
+                now = now,
+                "OSL: SKDM_REQUEST IGNORED — guard rejected (replay/staleness/throttle)"
+            );
             return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
         }
     }
 
     let scope = match crate::scope::Scope::parse(&req.scope_storage_key) {
         Some(s) => s,
-        None => return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string()),
+        None => {
+            tracing::warn!(
+                requester = %requester_discord_id,
+                scope_storage_key = %req.scope_storage_key,
+                reason = "invalid_scope",
+                "OSL: SKDM_REQUEST IGNORED — scope_storage_key didn't parse"
+            );
+            return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+        }
     };
     let scope_key = scope.storage_key();
 
@@ -4420,6 +4350,14 @@ fn apply_skdm_request_recv(
             .lock()
             .expect("sender_key_state mutex poisoned");
         let Some(disk) = g.states.get(&scope_key) else {
+            tracing::warn!(
+                requester = %requester_discord_id,
+                scope = %scope_key,
+                reason = "no_sender_key_state",
+                known_scopes = g.states.len(),
+                "OSL: SKDM_REQUEST IGNORED — no sender_key_state for scope \
+                 (we never sent a v=5 message here; nothing to redistribute)"
+            );
             return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
         };
         let sks: SenderKeyState = disk
@@ -4428,7 +4366,16 @@ fn apply_skdm_request_recv(
             .map_err(|e| format!("OSL: SKDM_REQUEST: load sender_key_state: {e}"))?;
         match sks.sender_chain() {
             Some(c) => (c.current_chain_id(), c.rotation_root_bytes()),
-            None => return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string()),
+            None => {
+                tracing::warn!(
+                    requester = %requester_discord_id,
+                    scope = %scope_key,
+                    reason = "no_sender_chain",
+                    "OSL: SKDM_REQUEST IGNORED — sender_key_state exists \
+                     but has no sender_chain (we never bootstrapped one)"
+                );
+                return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
+            }
         }
     };
 
@@ -4563,12 +4510,13 @@ fn apply_skdm_request_recv(
         },
     };
 
-    let wire = send_skdm_via_v4(
-        state,
+    // Probe-3 Option-2 step 1: emit the recovery SKDM through the
+    // same v=3 bundle path as the main send loop (single-recipient
+    // slice). Transport no longer depends on v=4 ratchet liveness.
+    let wire = send_skdm_via_v3_bundle(
         &sender_sk,
         &self_pk,
-        requester_discord_id,
-        peer_recipient,
+        std::slice::from_ref(peer_recipient),
         &scope_key,
         chain_id,
         &rotation_root,
@@ -4576,7 +4524,7 @@ fn apply_skdm_request_recv(
     tracing::info!(
         requester = %requester_discord_id,
         scope = %scope_key,
-        "OSL: SKDM_REQUEST honored — re-emitting SKDM"
+        "OSL: SKDM_REQUEST honored — re-emitting v=3-bundled SKDM"
     );
     Ok(format!("{OSL_RESULT_SKDM_REREQUEST_PREFIX}{wire}"))
 }

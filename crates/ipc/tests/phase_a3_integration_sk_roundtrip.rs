@@ -72,6 +72,7 @@ fn install_gc_full_whitelist(state: &AppState, gc_id: &str, members: &[&str]) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
+                ..ScopeState::default()
             },
         );
     }
