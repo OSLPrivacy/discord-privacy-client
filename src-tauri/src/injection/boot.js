@@ -14051,13 +14051,34 @@
         try {
             div.setAttribute("data-osl-orig-cipher", text);
         } catch (_) {}
-        // Probe-5 fix: immediately hide the DPC0:: ciphertext visually
-        // so the user never sees the cipher blob during the IPC
-        // decrypt roundtrip. textContent stays intact (sweep checks
-        // still work). recvApplyPlaintext undoes this on successful
-        // decrypt.
-        oslAutoHideCiphertext(div);
         const messageId = recvMessageIdOf(div);
+        // Probe-5 perf-revert follow-up: when Discord re-renders a
+        // previously-decrypted message (click, scroll, focus, etc.),
+        // it replaces our plaintext span with the original ciphertext
+        // span. The mutation observer fires here. If we have cached
+        // plaintext for this msg id, re-apply it IMMEDIATELY -- no
+        // auto-hide blank window, no waiting for the 1s sweep tick
+        // to re-apply. This was the cause of "way more messages
+        // blank" after the perf revert.
+        try {
+            const _cached =
+                typeof messageId === "string"
+                    ? recvPlaintext.get(messageId) ||
+                      loadedHistory.get(messageId) ||
+                      selfSentPlaintext.get(messageId)
+                    : null;
+            if (typeof _cached === "string") {
+                recvApplyPlaintext(div, _cached);
+                recvDone.add(messageId);
+                return;
+            }
+        } catch (_) {}
+        // No cached plaintext -- this is a genuinely-new DPC0::
+        // arrival. Hide the ciphertext visually so the user never
+        // sees the cipher blob during the IPC decrypt roundtrip.
+        // textContent stays intact (sweep checks still work).
+        // recvApplyPlaintext undoes this on successful decrypt.
+        oslAutoHideCiphertext(div);
 
         // Phase 6a edit-overlay: if we *just* wrote this message's
         // new plaintext directly to the DOM after a successful
@@ -15272,13 +15293,25 @@
             for (const div of divs) {
                 const text = div.textContent;
                 if (!text || !oslMessageIsStego(text)) continue;
-                // Probe-5 fix: auto-hide visible ciphertext on every
-                // sweep tick so even Discord-re-mounted divs (channel
-                // switch, scroll, react re-render) hide their DPC0::
-                // text before the user sees it. Idempotent (skips
-                // already-marked divs).
-                oslAutoHideCiphertext(div);
                 const messageId = recvMessageIdOf(div);
+                // Probe-5 perf-revert follow-up: check cached
+                // plaintext FIRST and re-apply immediately when
+                // present. Auto-hide is for genuinely-pending
+                // decrypts only; for messages we've already
+                // decrypted (Discord just re-rendered the cipher
+                // span), applying directly avoids the brief
+                // empty-bubble flicker between auto-hide and the
+                // next sweep re-apply.
+                const cached =
+                    recvPlaintext.get(messageId) ||
+                    loadedHistory.get(messageId) ||
+                    selfSentPlaintext.get(messageId);
+                if (cached) {
+                    recvApplyPlaintext(div, cached);
+                    recvDone.add(messageId);
+                    cachedCount++;
+                    continue;
+                }
                 // Probe-2 Boot Bug 2: in the 5s editOverlayLocallyApplied
                 // window after a successful self-edit, the sweep used to
                 // happily re-dispatch a decrypt on the bounced-back NEW
@@ -15290,12 +15323,9 @@
                 // covers still get picked up by the next tick after
                 // it clears.
                 if (editOverlayLocallyApplied.has(messageId)) continue;
-                const cached = recvPlaintext.get(messageId);
-                if (cached) {
-                    recvApplyPlaintext(div, cached);
-                    cachedCount++;
-                    continue;
-                }
+                // Probe-5: auto-hide only after the cache check, so
+                // it only fires for genuinely-pending decrypts.
+                oslAutoHideCiphertext(div);
                 if (recvDone.has(messageId)) continue;
                 if (recvInFlight.has(messageId)) continue;
                 recvDispatchDecrypt(div, messageId, text);
