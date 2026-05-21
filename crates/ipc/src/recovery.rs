@@ -39,7 +39,14 @@ pub const RECOVERY_FRESHNESS_SECS: i64 = 300;
 
 /// Minimum spacing (seconds) between two emitted — or two honored —
 /// recovery actions for the same (peer, kind). Bounds amplification.
-pub const RECOVERY_MIN_INTERVAL_SECS: i64 = 120;
+///
+/// Lowered from 120 → 30 so a desynced DM re-syncs promptly. The old
+/// 120s window meant a session-reset whose delivery failed (e.g. the
+/// keyserver inbox was down) couldn't be retried for two minutes,
+/// which is what left a desync stuck. 30s is still ample anti-
+/// amplification: the freshness window + replay-nonce dedupe +
+/// inbound honor-throttle all still apply.
+pub const RECOVERY_MIN_INTERVAL_SECS: i64 = 30;
 
 /// How long a recorded v=4 decrypt failure counts as a live "symptom"
 /// authorizing a SESSION_RESET to be honored (act-on-symptom gate).
@@ -179,7 +186,8 @@ mod tests {
         let mut g = RecoveryGuard::default();
         assert!(g.accept_inbound(P, RecoveryKind::SkdmRequest, &[1u8; 16], 1000, 1000));
         // Fresh nonce, within honor interval -> still throttled.
-        assert!(!g.accept_inbound(P, RecoveryKind::SkdmRequest, &[2u8; 16], 1050, 1050));
+        let within = 1000 + RECOVERY_MIN_INTERVAL_SECS - 1;
+        assert!(!g.accept_inbound(P, RecoveryKind::SkdmRequest, &[2u8; 16], within, within));
         // Past the interval, fresh nonce -> allowed.
         let t = 1000 + RECOVERY_MIN_INTERVAL_SECS + 1;
         assert!(g.accept_inbound(P, RecoveryKind::SkdmRequest, &[3u8; 16], t, t));

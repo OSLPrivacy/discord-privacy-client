@@ -13511,7 +13511,11 @@
     // throttle/replay/act-on-symptom guarantee. Keyed
     // `kind|peer|scopeKey` → last-attempt epoch ms.
     const recvRecoveryCooldown = new Map();
-    const RECV_RECOVERY_COOLDOWN_MS = 120000;
+    // Lowered 120000 -> 30000 to match the Rust recovery throttle so a
+    // desynced DM re-syncs within ~30s instead of being stuck for two
+    // minutes. Armed only on a CONFIRMED successful send, so failed
+    // delivery doesn't waste the window.
+    const RECV_RECOVERY_COOLDOWN_MS = 30000;
     // IPC timeout. Tuned to be longer than a typical keyserver
     // round-trip (cache-miss fetch_pubkeys is the slowest path,
     // ~1â€“2s on a healthy connection) but short enough that a
