@@ -1,0 +1,11 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 4b account-burn zero-presence backup check. Returns true when
+# decommissioned.flag exists in the OSL config dir. boot.js calls this
+# at IIFE startup when its localStorage flag is missing, then re-sets
+# localStorage + reloads if the file says yes (handles cases where
+# someone cleared localStorage independently of an account burn).
+[[permission]]
+identifier = "allow-osl-is-decommissioned"
+description = "Permits the discord.com main webview to invoke `osl_is_decommissioned` (read the post-account-burn decommissioned.flag sentinel)."
+commands.allow = ["osl_is_decommissioned"]

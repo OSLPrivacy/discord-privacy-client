@@ -79,6 +79,70 @@
     "use strict";
 
     // ============================================================
+    // Phase 4b: account-burn zero-presence guard.
+    //
+    // After osl_burn_engage wipes everything, oslAccountBurnExecute
+    // sets localStorage.__OSL_DECOMMISSIONED__ = "1" before
+    // navigating to discord.com/app. This sync check fires before
+    // any DOM injection, fetch/XHR hook, or observer installs, so
+    // the post-burn landing page is vanilla Discord.
+    //
+    // Different localStorage key than oslPurgeBlankCache's target so
+    // it survives the purge that fires alongside the burn.
+    //
+    // Backup: the Rust side also writes decommissioned.flag to the
+    // OSL config dir. If localStorage was cleared independently
+    // (DevTools clear, profile reset), the async IPC check below
+    // re-syncs localStorage and reloads. Subsequent boots short-
+    // circuit synchronously via this check.
+    //
+    // To bring OSL back: delete decommissioned.flag in the OSL
+    // config dir (or reinstall).
+    // ============================================================
+    try {
+        if (
+            typeof window !== "undefined" &&
+            window.localStorage &&
+            localStorage.getItem("__OSL_DECOMMISSIONED__") === "1"
+        ) {
+            try {
+                console.log(
+                    "[OSL] decommissioned (localStorage); boot script exiting"
+                );
+            } catch (_) {}
+            return;
+        }
+    } catch (_) {}
+
+    // Async backup: ask Rust if the file flag is set. If yes,
+    // re-sync localStorage and force a reload so this same script
+    // exits via the synchronous check on the next page load. Fire-
+    // and-forget; if the IPC fails we just behave as before.
+    try {
+        const _oslDecomInvoke =
+            (window.__TAURI_INTERNALS__ &&
+                window.__TAURI_INTERNALS__.invoke) ||
+            (window.__TAURI__ && window.__TAURI__.invoke);
+        if (typeof _oslDecomInvoke === "function") {
+            Promise.resolve(_oslDecomInvoke("osl_is_decommissioned", {}))
+                .then(function (yes) {
+                    if (yes === true) {
+                        try {
+                            localStorage.setItem(
+                                "__OSL_DECOMMISSIONED__",
+                                "1"
+                            );
+                        } catch (_) {}
+                        try {
+                            window.location.reload();
+                        } catch (_) {}
+                    }
+                })
+                .catch(function () {});
+        }
+    } catch (_) {}
+
+    // ============================================================
     // IIFE-level idempotency guard.
     //
     // The boot script has been observed running in two contexts
@@ -5906,6 +5970,16 @@
         // lives in the WebView2 user-data dir, so the Rust burn
         // didn't touch it — purge here.
         oslPurgeBlankCache();
+        // Phase 4b: set the decommission flag so the post-burn page
+        // load exits at the very top of boot.js (sync check). The
+        // Rust side already wrote decommissioned.flag during
+        // osl_burn_engage as the durable source of truth; this is
+        // the fast-path. Different localStorage key than
+        // oslPurgeBlankCache's target so the line above doesn't
+        // wipe it.
+        try {
+            localStorage.setItem("__OSL_DECOMMISSIONED__", "1");
+        } catch (_) {}
         // Same post-burn navigation as the gate-side burn flow:
         // bounce to plain discord.com so the freshly-wiped on-disk
         // state has no UI re-attaching to it on this tick.

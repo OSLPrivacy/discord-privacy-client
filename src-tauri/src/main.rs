@@ -1181,10 +1181,59 @@ async fn osl_burn_engage(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_burn_engage(state.inner())
+        cmd_osl_burn_engage(state.inner())?;
+        // Phase 4b: write the decommission sentinel AFTER the wipe so
+        // it lands in the (possibly recreated) config dir and is the
+        // last file standing. boot.js reads this via
+        // `osl_is_decommissioned` and exits before any injection;
+        // localStorage caches the result so subsequent boots short-
+        // circuit synchronously. The only way to bring OSL back is to
+        // manually delete this file (or reinstall).
+        if let Err(e) = write_decommissioned_flag() {
+            tracing::warn!(error = %e, "OSL: failed to write decommissioned.flag");
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 4b: persistent sentinel that disables every OSL UI/runtime
+/// injection. Written by `osl_burn_engage` (account burn), read by
+/// boot.js at IIFE-top. Living in the OSL config dir means a full
+/// reinstall (which the user does to bring OSL back) removes it
+/// alongside everything else.
+fn decommissioned_flag_path() -> Result<std::path::PathBuf, String> {
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+    Ok(dir.join("decommissioned.flag"))
+}
+
+fn write_decommissioned_flag() -> Result<(), String> {
+    let path = decommissioned_flag_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("OSL: mkdir: {e}"))?;
+    }
+    std::fs::write(&path, b"1").map_err(|e| format!("OSL: write {}: {e}", path.display()))
+}
+
+fn read_decommissioned_flag() -> bool {
+    match decommissioned_flag_path() {
+        Ok(path) => path.exists(),
+        Err(_) => false,
+    }
+}
+
+/// Phase 4b: boot.js's backup check. The synchronous localStorage
+/// check at IIFE-top catches the common case (immediately after burn,
+/// localStorage was set before nav). This IPC catches the edge case
+/// where localStorage was cleared independently — boot.js re-sets
+/// localStorage and reloads.
+#[tauri::command]
+async fn osl_is_decommissioned(app: tauri::AppHandle) -> Result<bool, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(read_decommissioned_flag)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))
 }
 
 // ===== Phase 7d-FIX1: scope-burn data destruction + burned-scope ledger. =====
@@ -2903,6 +2952,7 @@ fn main() {
             osl_get_scope_ttl,
             osl_set_scope_ttl,
             osl_scope_burn_blobs,
+            osl_is_decommissioned,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
