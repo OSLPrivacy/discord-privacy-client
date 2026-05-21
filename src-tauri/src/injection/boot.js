@@ -7702,6 +7702,16 @@
     // is a separate follow-up.
     const OSL_ATT_CACHE_CAP = 250;
 
+    // Negative cache: message ids that scanned with NO attachment
+    // candidates. The periodic sweep skips these instead of re-walking
+    // their DOM subtree every tick — a quiet channel was re-scanning
+    // every text message once a second, pegging the main thread and
+    // making sends feel sluggish. oslScanLiAttachmentsV2 clears a msg
+    // id from this set on entry (so a mutation-observer-triggered
+    // re-scan always re-evaluates, catching lazy-rendered media) and
+    // re-adds it when the scan finds nothing.
+    const oslAttScannedEmpty = new Set();
+
     function oslAttachmentCacheEvictIfFull() {
         const m = window.__oslAttachmentDecrypted;
         while (m.size > OSL_ATT_CACHE_CAP) {
@@ -8882,17 +8892,19 @@
     async function oslScanLiAttachmentsV2(li) {
         if (!li || !li.id) return;
         const __dbg_li_id = li.id;
-        console.log("[OSL] scan entry: li_id=" + __dbg_li_id);
+        if (OSL_DEBUG_SWEEP) {
+            console.log("[OSL] scan entry: li_id=" + __dbg_li_id);
+        }
         const m = /chat-messages-(?:\d{15,22})-(\d{15,22})/.exec(__dbg_li_id);
         if (!m) {
-            console.log(
-                "[OSL] scan no candidates: li_id=" +
-                    __dbg_li_id +
-                    " reason=li_id_shape_mismatch"
-            );
             return;
         }
         const msgId = m[1];
+        // Clear the negative-cache mark on entry: any direct call
+        // (mutation observer) re-evaluates, so lazy-rendered media is
+        // caught. The sweep, by contrast, skips set members without
+        // calling us at all.
+        oslAttScannedEmpty.delete(msgId);
 
         // 8d-FIX4: wrap remaining body so async rejections / unexpected
         // throws are surfaced. The caller (.catch(()=>{}) at the two
@@ -9051,21 +9063,23 @@
             }
         }
 
-        console.log(
-            "[OSL] scan candidates: count=" +
-                candidates.length +
-                " for li_id=" +
-                __dbg_li_id +
-                " (dom=" +
-                domCount +
-                ", cache=" +
-                cacheCount +
-                ", descendants=" +
-                allEls.length +
-                ", elements_with_cdn=" +
-                elementsWithCdn +
-                ")"
-        );
+        if (OSL_DEBUG_SWEEP) {
+            console.log(
+                "[OSL] scan candidates: count=" +
+                    candidates.length +
+                    " for li_id=" +
+                    __dbg_li_id +
+                    " (dom=" +
+                    domCount +
+                    ", cache=" +
+                    cacheCount +
+                    ", descendants=" +
+                    allEls.length +
+                    ", elements_with_cdn=" +
+                    elementsWithCdn +
+                    ")"
+            );
+        }
         if (candidates.length === 0) {
             // Fix B: last resort before giving up — the receive-side
             // failed-media card may hold the CDN URL only in React
@@ -9124,12 +9138,20 @@
             } else {
                 reason = "no_cdn_url_in_subtree";
             }
-            console.log(
-                "[OSL] scan no candidates: li_id=" +
-                    __dbg_li_id +
-                    " reason=" +
-                    reason
-            );
+            // Negative-cache this message so the periodic sweep stops
+            // re-walking it every tick. A real DOM change to the <li>
+            // fires the mutation observer, which calls this function
+            // directly and clears the mark on entry, so lazily-rendered
+            // media is still picked up.
+            oslAttScannedEmpty.add(msgId);
+            if (OSL_DEBUG_SWEEP) {
+                console.log(
+                    "[OSL] scan no candidates: li_id=" +
+                        __dbg_li_id +
+                        " reason=" +
+                        reason
+                );
+            }
             return;
         }
 
@@ -16919,6 +16941,14 @@
                     );
                     if (!lm) continue;
                     const amid = lm[1];
+                    // Skip messages already known to have no attachment.
+                    // The mutation observer still re-scans on a real DOM
+                    // change (it clears the mark on entry), so this only
+                    // suppresses the wasteful every-tick re-walk of plain
+                    // text messages that was pegging the main thread.
+                    if (oslAttScannedEmpty.has(amid)) {
+                        continue;
+                    }
                     if (
                         window.__oslAttachmentDecrypted &&
                         window.__oslAttachmentDecrypted.has(amid)
