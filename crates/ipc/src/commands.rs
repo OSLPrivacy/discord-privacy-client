@@ -625,6 +625,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     enum Step {
         Save(keystore::Identity),
         AlreadySet,
+        DiscordAccountSwitched(String), // carries the OLD snowflake for logging
     }
     let step = {
         let mut guard = state.identity.lock().expect("identity mutex poisoned");
@@ -633,15 +634,24 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             .ok_or_else(|| "OSL: register_self_snowflake: identity not loaded".to_string())?;
         if let Some(existing) = &id.discord_snowflake {
             if existing != &snowflake {
-                return Err(format!(
-                    "OSL: register_self_snowflake: snowflake mismatch \
-                     (identity already bound to {}, refusing to retag to {}) — \
-                     this could indicate a Discord account change or a \
-                     state-corruption bug. Burn account + re-register if intentional.",
-                    existing, snowflake
-                ));
+                // Discord account-switch detected. The user logged
+                // into a different Discord account on this machine,
+                // so the locally-stored OSL identity (bound to the
+                // OLD snowflake) is wrong for the NEW one. Trigger
+                // an auto-burn + fresh-register flow below — this
+                // matches what the user would otherwise have to do
+                // manually via Settings → Account → Account Burn.
+                //
+                // Trade-off: the OLD account's local OSL state
+                // (peer_map, channels, message store, etc.) is
+                // destroyed. If the user wanted to keep both
+                // accounts' state, they'd need per-user-id config
+                // dirs — that's a bigger structural change, not
+                // worth solving until someone actually asks for it.
+                Step::DiscordAccountSwitched(existing.clone())
+            } else {
+                Step::AlreadySet
             }
-            Step::AlreadySet
         } else {
             id.discord_snowflake = Some(snowflake.clone());
             let mut snapshot = keystore::Identity::from_bytes(
@@ -664,6 +674,94 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             // re-calling register_self_snowflake, or recovery after
             // the keyserver row was purged). Re-assert our presence
             // on the keyserver — idempotent upsert, non-fatal.
+            ensure_keyserver_registered(
+                state,
+                &resolve_keyserver_base_url(dir),
+                read_keyserver_admin_token(dir),
+            );
+            return run_verify(state);
+        }
+        Step::DiscordAccountSwitched(old_snowflake) => {
+            tracing::warn!(
+                old_snowflake = %old_snowflake,
+                new_snowflake = %snowflake,
+                "OSL: register_self_snowflake: Discord account switch \
+                 detected — auto-burning OLD identity and regenerating \
+                 under NEW snowflake. Old account's local state will be \
+                 destroyed; keyserver row for OLD will be unregistered."
+            );
+            // Sign + send unregister for the OLD identity (must use
+            // the OLD ed25519_secret; gone after fresh_start below).
+            let unregister_req: Option<(String, String, i64)> = {
+                let guard = state.identity.lock().expect("identity mutex poisoned");
+                guard.as_ref().map(|id| {
+                    let ts: i64 = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    let sig = keystore::sign_unregister(id, ts);
+                    use base64::engine::general_purpose::STANDARD as B64;
+                    use base64::Engine as _;
+                    (
+                        id.user_id.clone(),
+                        B64.encode(sig.as_bytes()),
+                        ts,
+                    )
+                })
+            };
+            if let Some((old_user_id, sig_b64, ts)) = unregister_req {
+                let base = resolve_keyserver_base_url(dir);
+                let admin = read_keyserver_admin_token(dir);
+                if let Ok(c) = keystore::client::KeyServerClient::new(base) {
+                    let client = c.with_admin_token(admin);
+                    if let Err(e) = client.unregister_signed(&old_user_id, &sig_b64, ts) {
+                        tracing::warn!(
+                            old_user_id = %old_user_id,
+                            error = %e,
+                            "OSL: account-switch: OLD keyserver unregister \
+                             failed; continuing with local switch anyway"
+                        );
+                    }
+                }
+            }
+            // Release SQLite handle so fresh_start can wipe it (same
+            // reason burn_engage does this; see commit message there).
+            {
+                let taken = state
+                    .message_store
+                    .lock()
+                    .expect("message_store mutex poisoned")
+                    .take();
+                drop(taken);
+            }
+            // fresh_start with the NEW snowflake as user_id —
+            // generates a new identity bound to the NEW Discord
+            // account.
+            let new_identity = crate::fresh_start::cmd_osl_fresh_start(
+                dir,
+                snowflake.clone(),
+            )
+            .map_err(|e| format!("OSL: account-switch fresh_start failed: {e}"))?;
+            // Place the new identity in AppState.
+            *state.identity.lock().expect("identity mutex poisoned") =
+                Some(new_identity);
+            // Clear peer ratchet state (old session keys are dead).
+            clear_all_peer_ratchet_state(state);
+            // Wipe auxiliary files (same set burn_engage_finish wipes).
+            for name in [
+                "password_marker.json",
+                "lockout_state.json",
+                "burned_scopes.json",
+                "app_preferences.json",
+                "sender_key_state.json",
+                "membership.json",
+            ] {
+                let path = dir.join(name);
+                if path.exists() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+            // Register the NEW identity on the keyserver.
             ensure_keyserver_registered(
                 state,
                 &resolve_keyserver_base_url(dir),
