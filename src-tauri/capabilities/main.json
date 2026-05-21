@@ -55,6 +55,7 @@
     "allow-osl-prose-token-burn",
     "allow-osl-get-scope-ttl",
     "allow-osl-set-scope-ttl",
+    "allow-osl-scope-burn-blobs",
     "allow-osl-open-settings-window",
     "allow-osl-close-settings-window-if-open",
     "allow-osl-register-self-snowflake",

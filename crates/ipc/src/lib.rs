@@ -54,6 +54,7 @@ pub mod recovery;
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
 pub mod scope;
+pub mod scope_blobs_file;
 pub mod scope_ttl_file;
 pub mod sender_key_state;
 pub mod state;

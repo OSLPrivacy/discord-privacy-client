@@ -1,0 +1,12 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 4 scope burn. Walks every cipher-store blob_id this client
+# recorded for the scope in scope_blobs.json, DELETEs each blob via
+# the cipher-store API, and clears the local list. boot.js invokes
+# this between the burn-marker send and osl_apply_burn so a burn
+# instantly makes the scope's covers un-decryptable for everyone --
+# including the burner -- not just locally wipes the wrapped_key.
+[[permission]]
+identifier = "allow-osl-scope-burn-blobs"
+description = "Permits the discord.com main webview to invoke `osl_scope_burn_blobs` (DELETE every cipher-store blob_id this client uploaded under the scope, then clear the local record)."
+commands.allow = ["osl_scope_burn_blobs"]

@@ -6974,6 +6974,31 @@
                 "[OSL] burn marker send failed: " + sendResult.error
             );
         }
+        // Phase 4: delete every cipher-store blob this client
+        // recorded under the scope BEFORE the local wipe. After this
+        // the covers are unrecoverable for anyone (other peers,
+        // forensic backup, the burner themselves). Best-effort —
+        // single-blob failures don't block the local burn since the
+        // worst case is "blob lingers until 72h TTL".
+        try {
+            const burnBlobsRes = await oslInvoke("osl_scope_burn_blobs", {
+                scopeInput: scopeInput,
+            });
+            if (burnBlobsRes && burnBlobsRes.ok && burnBlobsRes.value) {
+                console.log(
+                    "[OSL] scope_burn_blobs deleted=" +
+                        burnBlobsRes.value.deleted +
+                        " failed=" +
+                        burnBlobsRes.value.failed
+                );
+            } else if (burnBlobsRes && !burnBlobsRes.ok) {
+                console.warn(
+                    "[OSL] scope_burn_blobs failed: " + burnBlobsRes.error
+                );
+            }
+        } catch (e) {
+            console.warn("[OSL] scope_burn_blobs threw:", e);
+        }
         // Apply locally regardless of whether the wire shipped.
         const applyResult = await oslInvoke("osl_apply_burn", {
             scopeInput: scopeInput,

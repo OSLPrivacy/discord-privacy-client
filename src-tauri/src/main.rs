@@ -2161,11 +2161,87 @@ async fn osl_prose_token_send(
         let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
         let r = ipc::prose_token::prose_token_send(&dir, &scope_input, &dpc0_wire, ttl_seconds)
             .map_err(|e| e.to_string())?;
+        // Phase 4: track every blob_id under its scope so scope-burn
+        // can DELETE them server-side and instantly revert covers to
+        // un-decryptable junk. Best-effort: a persist failure here
+        // does NOT fail the send (worst case the blob lingers until
+        // its TTL expires naturally).
+        if let Ok(scope) = TryInto::<ipc::scope::Scope>::try_into(scope_input) {
+            let blobs_path = dir.join("scope_blobs.json");
+            let mut blobs = ipc::scope_blobs_file::load(&blobs_path);
+            ipc::scope_blobs_file::record_blob(
+                &mut blobs,
+                scope.storage_key(),
+                r.blob_id.clone(),
+            );
+            if let Err(e) = ipc::scope_blobs_file::write(&blobs_path, &blobs) {
+                tracing::warn!(error = %e, "OSL: scope_blobs persist failed (send still succeeded)");
+            }
+        }
         Ok(ProseTokenSendDto {
             cover_text: r.cover_text,
             blob_id: r.blob_id,
             expires_at: r.expires_at,
         })
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 4: scope-burn cipher delete. Walks every blob_id this
+/// client recorded under the scope in `scope_blobs.json` and DELETEs
+/// each from the cipher-store, clearing the local list afterwards.
+///
+/// Boot.js invokes this between the burn-marker send and the local
+/// `osl_apply_burn` so an apply-failure still leaves the blobs gone
+/// (the worst case there is "user thinks burn succeeded; in fact
+/// only the server-side covers were burned, not the local ratchet
+/// state" — apply_burn re-runs cleanly because the IPC is
+/// idempotent). Best-effort per-blob: a single DELETE failure
+/// (already 404, network blip) is logged and the iteration
+/// continues; the local list is cleared regardless because
+/// retrying on next launch isn't the right UX.
+#[derive(serde::Serialize)]
+struct ScopeBurnBlobsDto {
+    deleted: u32,
+    failed: u32,
+}
+
+#[tauri::command]
+async fn osl_scope_burn_blobs(
+    app: tauri::AppHandle,
+    scope_input: ipc::scope::ScopeInput,
+) -> Result<ScopeBurnBlobsDto, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope: ipc::scope::Scope = scope_input
+            .try_into()
+            .map_err(|e: ipc::scope::ScopeError| format!("OSL: {e}"))?;
+        let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+        let path = dir.join("scope_blobs.json");
+        let mut file = ipc::scope_blobs_file::load(&path);
+        let blob_ids = ipc::scope_blobs_file::take_blobs(&mut file, &scope.storage_key());
+        let mut deleted = 0u32;
+        let mut failed = 0u32;
+        for id in &blob_ids {
+            match ipc::prose_token::prose_token_burn_id(&dir, id) {
+                Ok(()) => deleted += 1,
+                Err(e) => {
+                    tracing::warn!(blob_id = %id, error = %e, "OSL: scope_burn_blobs delete failed");
+                    failed += 1;
+                }
+            }
+        }
+        if let Err(e) = ipc::scope_blobs_file::write(&path, &file) {
+            tracing::warn!(error = %e, "OSL: scope_blobs persist (post-burn clear) failed");
+        }
+        tracing::info!(
+            scope = %scope.storage_key(),
+            deleted,
+            failed,
+            "OSL: scope_burn_blobs"
+        );
+        Ok(ScopeBurnBlobsDto { deleted, failed })
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -2826,6 +2902,7 @@ fn main() {
             osl_prose_token_burn,
             osl_get_scope_ttl,
             osl_set_scope_ttl,
+            osl_scope_burn_blobs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
