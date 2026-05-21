@@ -1487,6 +1487,22 @@ async fn osl_set_server_header_whitelist(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Server-lock tri-state setter ("grey" | "yellow" | "green").
+#[tauri::command]
+async fn osl_set_server_lock(
+    app: tauri::AppHandle,
+    server_id: String,
+    lock_state: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_set_server_lock(state.inner(), server_id, lock_state)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// W2: the per-channel sidebar whitelist button.
 #[tauri::command]
 async fn osl_set_channel_whitelist(
@@ -2989,6 +3005,7 @@ fn main() {
             osl_note_scope_membership,
             osl_get_server_whitelist_state,
             osl_set_server_header_whitelist,
+            osl_set_server_lock,
             osl_set_channel_whitelist,
             osl_set_friend_ids,
             osl_get_friend_ids,

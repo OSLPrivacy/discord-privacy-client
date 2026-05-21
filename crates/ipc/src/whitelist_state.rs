@@ -78,15 +78,23 @@ pub struct ServerDefaults {
     #[serde(default)]
     pub encrypt_by_default: bool,
 
-    /// W1 (Option B): the server-header whitelist. When `true`,
-    /// EVERY text channel in this server encrypts to every OSL member
-    /// of the whole server (the `server:<id>` membership roll-up),
-    /// and per-channel `channel_whitelisted` flags are IGNORED for
-    /// this server (header REPLACE semantics — locked precedence
-    /// DM > server-header > channel). Set/cleared by the channel-
-    /// header button (W2).
+    /// W1 (Option B): the server-header whitelist = the "GREEN" tier of
+    /// the server lock. When `true`, EVERY text channel in this server
+    /// encrypts to every OSL member of the whole server. Outranks the
+    /// yellow tier and per-channel flags.
     #[serde(default)]
     pub server_header_whitelisted: bool,
+
+    /// Server-lock "YELLOW" tier. When `true` and GREEN
+    /// (`server_header_whitelisted`) is OFF, server-channel messages
+    /// encrypt to the user's DM-whitelisted peers who are members of
+    /// this server — NOT to every OSL server member. With both GREEN
+    /// and YELLOW off the server lock is "GREY": encrypt to nobody in
+    /// the server (self-only). A per-channel `channel_whitelisted`
+    /// flag still overrides for its own channel (everyone in it),
+    /// regardless of the yellow/grey server tier.
+    #[serde(default)]
+    pub server_dm_whitelisted: bool,
 }
 
 /// 9-C1: on-disk envelope around [`WhitelistState`] carrying the

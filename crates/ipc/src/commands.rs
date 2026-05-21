@@ -8469,8 +8469,13 @@ pub fn cmd_osl_note_scope_membership(
 /// button + sidebar UI to render tri-state.
 #[derive(Debug, Serialize)]
 pub struct ServerWhitelistStateDto {
-    /// `ServerDefaults.server_header_whitelisted` for the server.
+    /// `ServerDefaults.server_header_whitelisted` for the server = the
+    /// server-lock GREEN tier (all OSL server members).
     pub server_header: bool,
+    /// `ServerDefaults.server_dm_whitelisted` = the server-lock YELLOW
+    /// tier (DM-whitelisted peers who are server members). GREEN
+    /// outranks YELLOW; both false = GREY (nobody).
+    pub server_dm: bool,
     /// `ScopeState.channel_whitelisted` for the queried channel
     /// (false when no channel scope was supplied).
     pub channel: bool,
@@ -8487,13 +8492,15 @@ pub fn cmd_osl_get_server_whitelist_state(
     server_id: String,
     channel_scope_input: Option<crate::scope::ScopeInput>,
 ) -> Result<ServerWhitelistStateDto, String> {
-    let server_header = state
-        .server_defaults
-        .lock()
-        .expect("server_defaults mutex poisoned")
-        .get(&server_id)
-        .map(|d| d.server_header_whitelisted)
-        .unwrap_or(false);
+    let (server_header, server_dm) = {
+        let sd = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        sd.get(&server_id)
+            .map(|d| (d.server_header_whitelisted, d.server_dm_whitelisted))
+            .unwrap_or((false, false))
+    };
     let (channel, channel_encrypt) = match channel_scope_input {
         Some(si) => {
             let scope: crate::scope::Scope = si
@@ -8511,9 +8518,45 @@ pub fn cmd_osl_get_server_whitelist_state(
     };
     Ok(ServerWhitelistStateDto {
         server_header,
+        server_dm,
         channel,
         channel_encrypt,
     })
+}
+
+/// Server-lock tri-state setter. `state` is "grey" | "yellow" |
+/// "green". GREEN = encrypt to all OSL server members; YELLOW =
+/// encrypt to DM-whitelisted peers who are server members; GREY =
+/// nobody (self-only). The header button cycles grey→yellow→green and
+/// press-and-hold resets to grey. ON (yellow/green) also flips
+/// `encrypt_by_default` so the channels actually encrypt; GREY leaves
+/// `encrypt_by_default` as the user set it (clearing the lock narrows
+/// recipients, it doesn't silently stop encrypting).
+pub fn cmd_osl_set_server_lock(
+    state: &AppState,
+    server_id: String,
+    lock_state: String,
+) -> Result<(), String> {
+    let (green, yellow) = match lock_state.as_str() {
+        "green" => (true, false),
+        "yellow" => (false, true),
+        "grey" | "gray" | "off" => (false, false),
+        other => return Err(format!("OSL: set_server_lock: bad state '{other}'")),
+    };
+    {
+        let mut sd = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let entry = sd.entry(server_id.clone()).or_default();
+        entry.server_header_whitelisted = green;
+        entry.server_dm_whitelisted = yellow;
+        if green || yellow {
+            entry.encrypt_by_default = true;
+        }
+    }
+    persist_whitelist_state_now(state);
+    Ok(())
 }
 
 /// W2: the server-header whitelist button. When turned ON it also

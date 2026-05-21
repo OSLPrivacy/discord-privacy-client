@@ -127,29 +127,38 @@ pub fn should_encrypt_to(
     match scope.kind {
         ScopeKind::ServerChannel => {
             if let (Some(srv), Some(chan)) = (&scope.server_id, &scope.channel_id) {
-                let header_on = ctx
-                    .server_defaults
-                    .get(srv)
-                    .map(|d| d.server_header_whitelisted)
+                let defaults = ctx.server_defaults.get(srv);
+                let green = defaults.map(|d| d.server_header_whitelisted).unwrap_or(false);
+                let yellow = defaults.map(|d| d.server_dm_whitelisted).unwrap_or(false);
+                let chan_on = ctx
+                    .whitelist_state
+                    .get(&scope.storage_key())
+                    .map(|s| s.channel_whitelisted)
                     .unwrap_or(false);
-                if header_on {
-                    if ctx.membership.is_server_member(srv, recipient_discord_id) {
-                        return true;
-                    }
-                } else {
-                    let chan_on = ctx
-                        .whitelist_state
-                        .get(&scope.storage_key())
-                        .map(|s| s.channel_whitelisted)
-                        .unwrap_or(false);
-                    if chan_on
-                        && ctx
-                            .membership
-                            .is_channel_member(srv, chan, recipient_discord_id)
-                    {
-                        return true;
-                    }
+                // Per-channel GREEN override: everyone in THIS channel,
+                // regardless of the server tier (even grey/yellow).
+                if chan_on
+                    && ctx
+                        .membership
+                        .is_channel_member(srv, chan, recipient_discord_id)
+                {
+                    return true;
                 }
+                // Server GREEN: every OSL member of the whole server.
+                if green && ctx.membership.is_server_member(srv, recipient_discord_id) {
+                    return true;
+                }
+                // Server YELLOW: DM-whitelisted peers who are members of
+                // this server. (The lock is the server-wide switch, so
+                // every DM-whitelisted peer qualifies — no per-peer
+                // `broadened` opt-in required.)
+                if yellow
+                    && has_dm_whitelist(peer_map, recipient_discord_id)
+                    && ctx.membership.is_server_member(srv, recipient_discord_id)
+                {
+                    return true;
+                }
+                // GREY (both tiers off, no per-channel): nobody.
             }
         }
         ScopeKind::ServerFull => {
@@ -185,8 +194,14 @@ pub fn should_encrypt_to(
         ScopeKind::Dm => {}
     }
     // 4. DM bleed — broadened DM peer reads any NON-DM scope they are
-    //    actually a member of (decision #2: member-gated).
+    //    actually a member of (decision #2: member-gated). ServerChannel
+    //    is EXCLUDED here: its DM-peer access is now gated by the
+    //    server-lock yellow tier in clause 3, so an ungated bleed would
+    //    let DM peers read a grey channel. GC / ServerFull keep the
+    //    original unconditional bleed (only the server-channel button
+    //    was reworked).
     if scope.kind != ScopeKind::Dm
+        && scope.kind != ScopeKind::ServerChannel
         && has_broadened_dm_access(peer_map, recipient_discord_id)
         && ctx
             .membership
@@ -311,15 +326,17 @@ pub fn recipients_for_scope_v3(
                 set.insert(did);
             }
         }
-        // Fold in peers with a legacy explicit entry or a broadened
-        // DM so neither path is lost if membership hasn't observed
-        // them yet; should_encrypt_to still gates each one.
+        // Fold in peers with a legacy explicit entry, a broadened DM,
+        // or ANY DM whitelist (the yellow tier) so none is lost if
+        // membership hasn't observed them yet; should_encrypt_to still
+        // gates each one against the live server-lock tier.
         for (did, entry) in peer_map.iter() {
             if did.as_str() == self_discord_id || entry.is_self == Some(true) {
                 continue;
             }
             if has_explicit_whitelist_entry(peer_map, scope, did)
                 || has_broadened_dm_access(peer_map, did)
+                || has_dm_whitelist(peer_map, did)
             {
                 set.insert(did.clone());
             }
@@ -562,6 +579,21 @@ fn has_broadened_dm_access(peer_map: &PeerMap, recipient_discord_id: &str) -> bo
         .any(|w| matches!(w, WhitelistEntry::Dm { broadened, .. } if *broadened))
 }
 
+/// True iff this peer has ANY DM whitelist with us (broadened or not).
+/// Backs the server-lock YELLOW tier: turning the server lock yellow
+/// lets every DM-whitelisted peer who is a member of the server read
+/// the server's channels, without each peer needing a per-peer
+/// `broadened` opt-in (the lock IS the server-wide switch).
+fn has_dm_whitelist(peer_map: &PeerMap, recipient_discord_id: &str) -> bool {
+    let Some(entry) = peer_map.get(recipient_discord_id) else {
+        return false;
+    };
+    entry
+        .outgoing_whitelists
+        .iter()
+        .any(|w| matches!(w, WhitelistEntry::Dm { .. }))
+}
+
 /// Decode the on-disk base64 X25519 pubkey for a peer. None for
 /// unknown peers and for entries whose `pubkey` field is unset or
 /// malformed.
@@ -715,6 +747,84 @@ mod should_encrypt_to_tests {
         ));
     }
 
+    /// Set the YELLOW tier (server_dm_whitelisted) on top of `build`.
+    fn build_y(header: bool, yellow: bool, chan: bool, members: &[&str]) -> Built {
+        let mut b = build(header, chan, members);
+        if let Some(d) = b.sd.get_mut(SRV) {
+            d.server_dm_whitelisted = yellow;
+        }
+        b
+    }
+
+    #[test]
+    fn server_yellow_grants_dm_whitelisted_member() {
+        // YELLOW on, GREEN off: a DM-whitelisted peer who is a server
+        // member CAN read; a server member with no DM whitelist cannot.
+        let p = pm(peer(
+            vec![WhitelistEntry::Dm {
+                broadened: false,
+                enabled_at: None,
+            }],
+            vec![],
+        ));
+        let b = build_y(false, true, false, &[PEER]);
+        assert!(should_encrypt_to(
+            &p,
+            &ctx(&b),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn server_yellow_denies_non_dm_member() {
+        // YELLOW on, peer is a server member but has NO DM whitelist →
+        // denied (yellow is "my DM peers", not "everyone").
+        let p = pm(peer(vec![], vec![]));
+        let b = build_y(false, true, false, &[PEER]);
+        assert!(!should_encrypt_to(
+            &p,
+            &ctx(&b),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn server_grey_denies_dm_whitelisted_member() {
+        // GREY (both tiers off): even a DM-whitelisted server member is
+        // denied — nobody in the server reads. This is the key change:
+        // the old unconditional DM-bleed would have granted here.
+        let p = pm(peer(
+            vec![WhitelistEntry::Dm {
+                broadened: true,
+                enabled_at: None,
+            }],
+            vec![],
+        ));
+        let b = build_y(false, false, false, &[PEER]);
+        assert!(!should_encrypt_to(
+            &p,
+            &ctx(&b),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn per_channel_green_grants_everyone_even_when_server_grey() {
+        // Per-channel flag ON overrides the grey server tier: any
+        // channel member reads, DM whitelist irrelevant.
+        let p = pm(peer(vec![], vec![]));
+        let b = build_y(false, false, true, &[PEER]);
+        assert!(should_encrypt_to(
+            &p,
+            &ctx(&b),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
     #[test]
     fn header_off_channel_on_member_granted() {
         let p = pm(peer(vec![], vec![]));
@@ -755,9 +865,12 @@ mod should_encrypt_to_tests {
     }
 
     #[test]
-    fn dm_bleed_member_gated_grants_when_member() {
-        // Broadened DM, no server flags; peer IS a channel member →
-        // decision #2 bleed grants the server channel.
+    fn dm_bleed_server_channel_now_gated_by_yellow() {
+        // REWORK: a broadened DM peer who is a server-channel member is
+        // NO LONGER granted by an unconditional bleed — server-channel
+        // DM access is gated by the YELLOW server tier. Grey → denied;
+        // flip yellow on → granted. (GC/ServerFull bleed is unchanged;
+        // only the server-channel button was reworked.)
         let p = pm(peer(
             vec![WhitelistEntry::Dm {
                 broadened: true,
@@ -765,10 +878,17 @@ mod should_encrypt_to_tests {
             }],
             vec![],
         ));
-        let b = build(false, false, &[PEER]);
+        let grey = build(false, false, &[PEER]);
+        assert!(!should_encrypt_to(
+            &p,
+            &ctx(&grey),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+        let yellow = build_y(false, true, false, &[PEER]);
         assert!(should_encrypt_to(
             &p,
-            &ctx(&b),
+            &ctx(&yellow),
             &Scope::server_channel(SRV, CH),
             PEER
         ));
