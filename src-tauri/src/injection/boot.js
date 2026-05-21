@@ -10645,6 +10645,42 @@
             );
             return Reflect.apply(target, thisArg, args);
         }
+        // Beta 1.0 edit safety net: if the submitted content is still
+        // the PROSE COVER we recorded for this message (i.e. the
+        // plaintext swap into Discord's Slate editor never took, so the
+        // user is unknowingly submitting the cover unchanged), pass it
+        // through untouched. Re-encrypting the cover-as-plaintext would
+        // post garbage and corrupt the message. A no-op edit is the
+        // safe failure mode.
+        try {
+            const knownCover =
+                typeof recvCovers !== "undefined" &&
+                recvCovers &&
+                typeof recvCovers.get === "function"
+                    ? recvCovers.get(messageId)
+                    : null;
+            const knownWire =
+                window.__oslProseWireByMsgId &&
+                typeof window.__oslProseWireByMsgId.get === "function"
+                    ? window.__oslProseWireByMsgId.get(messageId)
+                    : null;
+            const submitted = parsed.content.trim();
+            if (
+                (typeof knownCover === "string" &&
+                    submitted === knownCover.trim()) ||
+                (typeof knownWire === "string" &&
+                    submitted === knownWire.trim())
+            ) {
+                console.log(
+                    "[OSL] edit no-op (" +
+                        source +
+                        "): submitted content equals the cover for msg=" +
+                        messageId +
+                        " (plaintext swap didn't take); passthrough"
+                );
+                return Reflect.apply(target, thisArg, args);
+            }
+        } catch (_) {}
         const origPlaintext = parsed.content;
 
         return interceptBody(
@@ -14177,10 +14213,36 @@
         const messageId = m[1];
         if (textboxEl.dataset.oslSwapped === messageId) return;
         const text = (textboxEl.textContent || "").trim();
-        if (text.indexOf("DPC0::") !== 0) return;
 
+        // Beta 1.0 edit fix: the old gate only fired when the edit box
+        // showed `DPC0::` ciphertext. After the prose-token cutover the
+        // box shows innocuous PROSE cover instead, so the swap never
+        // ran and the user ended up editing the cover text. Gate on
+        // POSITIVE OSL signals instead, so we swap the plaintext in for
+        // prose covers AND legacy DPC0::, while never touching a plain
+        // Discord message someone is editing.
         const resolved = editTabResolvePlaintext(messageId);
+        const looksLikeRawWire =
+            text.indexOf("DPC0::") === 0 || text.indexOf("DPC1::") === 0;
+        const knownOslMsg =
+            !!resolved ||
+            looksLikeRawWire ||
+            (window.__oslProseWireByMsgId &&
+                window.__oslProseWireByMsgId.has(messageId)) ||
+            (typeof recvCovers !== "undefined" &&
+                recvCovers &&
+                typeof recvCovers.has === "function" &&
+                recvCovers.has(messageId));
+        if (!knownOslMsg) return; // plain Discord message; leave alone
+
         if (resolved) {
+            // Already showing the plaintext (Discord re-mounted the box
+            // after our swap)? Mark and bail so we don't clobber the
+            // user's in-progress keystrokes or loop the observer.
+            if (text === (resolved.plaintext || "").trim()) {
+                textboxEl.dataset.oslSwapped = messageId;
+                return;
+            }
             editTabSwapTextbox(
                 textboxEl,
                 messageId,
@@ -17661,7 +17723,15 @@
 
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", recvInstallObserver);
-        // document.addEventListener("DOMContentLoaded", editTabStartObserver);  // disabled: broken Slate-model swap, pending overlay rewrite
+        // Beta 1.0: re-enabled. The edit-tab observer swaps plaintext
+        // into Discord's NATIVE edit box regardless of how the edit was
+        // triggered (toolbar pencil, context menu, OR up-arrow keyboard
+        // shortcut — the overlay click handler misses the latter two).
+        // The prose-cover detection in editTabHandleTextbox now fires
+        // for prose covers, and interceptEditBody no-ops if the swap
+        // didn't take, so the worst case is "edit does nothing" rather
+        // than corrupting the message.
+        document.addEventListener("DOMContentLoaded", editTabStartObserver);
         document.addEventListener("DOMContentLoaded", editOverlayInstall);
         document.addEventListener("DOMContentLoaded", oslInstallPhase7c);
         document.addEventListener("DOMContentLoaded", oslInstallKeybinds);
@@ -17670,7 +17740,7 @@
         document.addEventListener("DOMContentLoaded", oslScheduleDomCanary);
     } else {
         recvInstallObserver();
-        // editTabStartObserver();  // disabled: broken Slate-model swap, pending overlay rewrite
+        editTabStartObserver();
         editOverlayInstall();
         oslInstallPhase7c();
         oslInstallKeybinds();
