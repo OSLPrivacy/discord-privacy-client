@@ -135,27 +135,35 @@ pub fn should_encrypt_to(
                     .get(&scope.storage_key())
                     .map(|s| s.channel_whitelisted)
                     .unwrap_or(false);
-                // Per-channel GREEN override: everyone in THIS channel,
-                // regardless of the server tier (even grey/yellow).
-                if chan_on
-                    && ctx
-                        .membership
-                        .is_channel_member(srv, chan, recipient_discord_id)
-                {
+                // The membership oracle is BEST-EFFORT: it's populated
+                // from Discord's gateway member-list frames, which often
+                // haven't arrived (a freshly-joined server / unopened
+                // member list resolves to 0 members). Discord itself
+                // gates who can actually read a channel, so gating
+                // encryption recipients on the oracle adds no security —
+                // it only breaks delivery when the oracle is empty (the
+                // "not a recipient" / self-only-encryption bug). So a
+                // DM-whitelisted peer (someone the user explicitly
+                // trusts) is granted regardless of what the oracle knows.
+                let dm_wl = has_dm_whitelist(peer_map, recipient_discord_id);
+                let is_chan_member =
+                    ctx.membership.is_channel_member(srv, chan, recipient_discord_id);
+                let is_srv_member = ctx.membership.is_server_member(srv, recipient_discord_id);
+                // Per-channel GREEN override: everyone in THIS channel
+                // (observed members), plus DM-whitelisted peers as the
+                // oracle-empty fallback.
+                if chan_on && (is_chan_member || dm_wl) {
                     return true;
                 }
-                // Server GREEN: every OSL member of the whole server.
-                if green && ctx.membership.is_server_member(srv, recipient_discord_id) {
+                // Server GREEN: every OSL member of the whole server;
+                // falls back to known DM peers when the oracle is empty.
+                if green && (is_srv_member || dm_wl) {
                     return true;
                 }
-                // Server YELLOW: DM-whitelisted peers who are members of
-                // this server. (The lock is the server-wide switch, so
-                // every DM-whitelisted peer qualifies — no per-peer
-                // `broadened` opt-in required.)
-                if yellow
-                    && has_dm_whitelist(peer_map, recipient_discord_id)
-                    && ctx.membership.is_server_member(srv, recipient_discord_id)
-                {
+                // Server YELLOW: DM-whitelisted peers. NOT gated on the
+                // oracle — the user explicitly whitelisted them and
+                // Discord enforces actual channel access.
+                if yellow && dm_wl {
                     return true;
                 }
                 // GREY (both tiers off, no per-channel): nobody.
@@ -840,6 +848,46 @@ mod should_encrypt_to_tests {
             vec![],
         ));
         let b = build_y(false, true, false, &[PEER]);
+        assert!(should_encrypt_to(
+            &p,
+            &ctx(&b),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn server_yellow_grants_dm_peer_with_empty_oracle() {
+        // The bug: membership oracle has 0 members (fresh server), so
+        // the old is_server_member gate excluded the DM peer → sender
+        // encrypted self-only → peer saw "not a recipient". Now a
+        // DM-whitelisted peer is granted regardless of the oracle.
+        let p = pm(peer(
+            vec![WhitelistEntry::Dm {
+                broadened: false,
+                enabled_at: None,
+            }],
+            vec![],
+        ));
+        let b = build_y(false, true, false, &[]); // NO members noted
+        assert!(should_encrypt_to(
+            &p,
+            &ctx(&b),
+            &Scope::server_channel(SRV, CH),
+            PEER
+        ));
+    }
+
+    #[test]
+    fn server_green_falls_back_to_dm_peer_with_empty_oracle() {
+        let p = pm(peer(
+            vec![WhitelistEntry::Dm {
+                broadened: false,
+                enabled_at: None,
+            }],
+            vec![],
+        ));
+        let b = build_y(true, false, false, &[]); // green, NO members noted
         assert!(should_encrypt_to(
             &p,
             &ctx(&b),
