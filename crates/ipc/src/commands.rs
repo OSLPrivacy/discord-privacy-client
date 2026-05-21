@@ -5121,6 +5121,23 @@ pub fn cmd_osl_control_inbox_post(
         .decode(body)
         .map_err(|e| format!("OSL: control_inbox_post: base64 decode: {e}"))?;
 
+    // CRITICAL addressing fix: the inbox is keyed by the recipient's
+    // OSL user_id (that's what their drain GETs by — get_control_inbox
+    // uses identity.user_id). boot.js hands us the recipient's DISCORD
+    // ID. Those are EQUAL for identities registered with their
+    // snowflake, but NOT for identities whose user_id is an older /
+    // pseudonymous value — and then the row lands in a mailbox the
+    // recipient never reads, so SKDMs / session-resets silently never
+    // arrive (the "desync that won't heal" + one-directional decrypt
+    // failures). Map Discord ID -> osl_user_id via peer_map; fall back
+    // to the Discord ID when there's no mapping (snowflake-as-user_id).
+    let recipient_osl_id = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(&recipient_id)
+            .and_then(|e| e.osl_user_id.clone())
+            .unwrap_or_else(|| recipient_id.clone())
+    };
+
     // IMPORTANT: clone the identity + keyserver client out from under
     // the AppState mutexes, then DROP the guards BEFORE the network
     // call. Holding state.identity across the HTTP roundtrip blocks
@@ -5139,10 +5156,11 @@ pub fn cmd_osl_control_inbox_post(
             .clone()
     };
     let resp = client
-        .post_control_inbox(&identity, &recipient_id, &scope_id, &bundle)
+        .post_control_inbox(&identity, &recipient_osl_id, &scope_id, &bundle)
         .map_err(|e| format!("OSL: control_inbox_post: {e}"))?;
     tracing::info!(
-        recipient = %recipient_id,
+        recipient_discord = %recipient_id,
+        recipient_osl = %recipient_osl_id,
         scope = %scope_id,
         bundle_len = bundle.len(),
         inbox_id = %resp.id,
@@ -5209,11 +5227,24 @@ pub fn cmd_osl_control_inbox_drain(
             }
         };
         let content = format!("DPC0::{}", STANDARD.encode(&bundle));
+        // The inbox stores sender_id as the sender's OSL user_id, but
+        // the decrypt/apply path (resolve_sender_pubkey, peer_map
+        // ratchet/SKDM keying) works in DISCORD IDs. Reverse-map via
+        // peer_map so a sender whose osl_user_id != Discord snowflake
+        // still resolves to the right peer entry. Falls back to the
+        // raw value when they're identical or there's no mapping.
+        let sender_discord_id = {
+            let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            pm.iter()
+                .find(|(_, e)| e.osl_user_id.as_deref() == Some(item.sender_id.as_str()))
+                .map(|(did, _)| did.clone())
+                .unwrap_or_else(|| item.sender_id.clone())
+        };
         let res = cmd_osl_decrypt_message_v2(
             state,
             None,
             String::new(),
-            item.sender_id.clone(),
+            sender_discord_id.clone(),
             content,
             None,
             config_dir.clone(),
@@ -5251,11 +5282,15 @@ pub fn cmd_osl_control_inbox_drain(
                 // a build/post failure just falls back to the
                 // next-message bootstrap.
                 if sentinel == OSL_RESULT_SESSION_RESET_APPLIED {
-                    match build_v4_bootstrap_ping(state, &item.sender_id) {
+                    // Build the ping against the peer's DISCORD ID
+                    // (peer_map keying / v=4 encrypt) but POST it to the
+                    // peer's OSL user_id (item.sender_id), which is what
+                    // their drain reads.
+                    match build_v4_bootstrap_ping(state, &sender_discord_id) {
                         Ok(ping_wire) => {
                             if let Some(b64) = ping_wire.strip_prefix("DPC0::") {
                                 if let Ok(ping_bundle) = STANDARD.decode(b64) {
-                                    let scope_id = format!("dm:{}", item.sender_id);
+                                    let scope_id = format!("dm:{}", sender_discord_id);
                                     match client.post_control_inbox(
                                         &identity,
                                         &item.sender_id,
