@@ -2346,7 +2346,7 @@ function renderAbout() {
   const vval = document.createElement("div");
   vval.className = "osl-field-value";
   const vspan = document.createElement("span");
-  vspan.textContent = "0.7.0-alpha (Phase 7d-C)";
+  vspan.textContent = "Beta 1.0";
   vval.appendChild(vspan);
   ver.appendChild(vlab);
   ver.appendChild(vval);
@@ -2371,7 +2371,7 @@ function renderAbout() {
   const links = [
     { label: "Website", value: "oslprivacy.com (when launched)" },
     { label: "Source code", value: "https://github.com/OSLPrivacy" },
-    { label: "License", value: "AGPL-3.0" },
+    { label: "License", value: "Apache-2.0" },
   ];
   for (const l of links) {
     const li = document.createElement("li");

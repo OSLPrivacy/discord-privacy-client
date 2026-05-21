@@ -357,8 +357,8 @@ This is equivalent to Signal's safety numbers.
 
 ## License and ToS
 
-This app is AGPL-3.0-only. Source code is available; reproducible
-builds are documented per release.
+This app is licensed under Apache-2.0. Source code is available;
+reproducible builds are documented per release.
 
 Using this app may violate Discord's Terms of Service. The user
 assumes that risk.

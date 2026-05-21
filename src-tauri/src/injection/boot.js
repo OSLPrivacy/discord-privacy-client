@@ -4790,14 +4790,31 @@
     const PROFILE_BUTTON_DATA_ATTR = "data-osl-whitelist-btn";
 
     /**
+     * Tri-state lock colors. Baked directly into the SVG stroke (see
+     * oslLockSvg) rather than relying on `currentColor` inheritance.
+     * Discord ships CSS rules on header buttons whose specificity beat
+     * our inline `style.color`, so a currentColor SVG could render
+     * blurple (#5865f2) instead of our intended color. Hardcoding the
+     * stroke removes that whole class of "lock is blue" bugs.
+     */
+    const OSL_LOCK_COLORS = {
+        closed: "#23a559", // green  — fully encrypted
+        partial: "#f0b132", // yellow — some recipients set up
+        open: "#b5bac1", // light grey — no encryption (clearly not blue)
+        unknown: "#80848e", // dim grey — roster not loaded yet
+    };
+
+    /**
      * SVG lock icon used by the Whitelist button + encrypt toggle.
-     * `state` is "open" or "closed". Renders at 16x16; inherits
-     * currentColor so theme-aware CSS variables apply.
+     * `state` is "open" | "closed" | "partial" | "unknown". The stroke
+     * color is baked in per state so the icon can never inherit
+     * Discord's button accent (blurple). Renders at 16x16.
      */
     function oslLockSvg(state) {
         // 9-C1 Stage 4: tri-state lock — "closed" (all whitelisted),
         // "partial" (some), "open" (none), "unknown" (roster unknown).
         // The shackle path varies per state; the body is constant.
+        const color = OSL_LOCK_COLORS[state] || OSL_LOCK_COLORS.open;
         let shackle;
         switch (state) {
             case "closed":
@@ -4814,12 +4831,16 @@
                 // Question-mark inside an upside-down shackle.
                 return (
                     '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
-                    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+                    'stroke="' +
+                    color +
+                    '" stroke-width="2" stroke-linecap="round" ' +
                     'stroke-linejoin="round" aria-hidden="true">' +
                     '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
                     '<path d="M8 11V7a4 4 0 0 1 8 0"/>' +
                     '<text x="12" y="19" text-anchor="middle" font-size="9" ' +
-                    'font-weight="bold" stroke="none" fill="currentColor">?</text>' +
+                    'font-weight="bold" stroke="none" fill="' +
+                    color +
+                    '">?</text>' +
                     "</svg>"
                 );
             case "open":
@@ -4829,7 +4850,9 @@
         }
         return (
             '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
-            'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+            'stroke="' +
+            color +
+            '" stroke-width="2" stroke-linecap="round" ' +
             'stroke-linejoin="round" aria-hidden="true">' +
             '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
             shackle +
@@ -6858,32 +6881,95 @@
                 oslToast("OSL: " + cur.error);
                 return;
             }
-            const wasOn = !!(cur.value && cur.value.server_header);
-            const next = !wasOn;
-            const setRes = await oslInvoke("osl_set_server_header_whitelist", {
-                serverId: scopeInput.server_id,
-                on: next,
-            });
-            if (!setRes.ok) {
-                oslToast("OSL: " + setRes.error);
-                return;
+            // Tri-state CYCLE: off -> channel-only -> server-wide -> off.
+            // The old handler only toggled `server_header`, so once the
+            // per-channel flag was set (via the settings UI) the button
+            // could never clear it: the lock oscillated green<->yellow
+            // with no way back to grey, which read as "bricked". Driving
+            // BOTH flags coherently here (and clearing the other on each
+            // transition) means every state is reachable from the button
+            // alone and none is ever stranded.
+            const serverOn = !!(cur.value && cur.value.server_header);
+            const channelOn = !!(cur.value && cur.value.channel);
+            let target; // "channel" | "server" | "off"
+            if (serverOn) {
+                target = "off";
+            } else if (channelOn) {
+                target = "server";
+            } else {
+                target = "channel";
             }
-            if (next) {
-                // Make THIS channel encrypt immediately (other/future
-                // channels via the server encrypt-by-default path).
-                try {
+
+            // Helper: surface the first failing IPC and abort so we
+            // never leave a half-applied combination.
+            const step = async (cmd, args) => {
+                const r = await oslInvoke(cmd, args);
+                if (!r || !r.ok) {
+                    throw new Error((r && r.error) || cmd + " failed");
+                }
+            };
+            try {
+                if (target === "server") {
+                    // Server-wide supersedes channel-only: clear the
+                    // per-channel flag, set the server flag, ensure this
+                    // channel encrypts now.
+                    await step("osl_set_channel_whitelist", {
+                        scopeInput: scopeInput,
+                        on: false,
+                    });
+                    await step("osl_set_server_header_whitelist", {
+                        serverId: scopeInput.server_id,
+                        on: true,
+                    });
                     await oslInvoke("osl_set_scope_encrypt", {
                         scopeInput: scopeInput,
                         enabled: true,
                     });
+                    oslToast(
+                        "Server-wide encryption ON — every OSL member of " +
+                            "this server."
+                    );
+                } else if (target === "channel") {
+                    // Channel-only: server flag off, this channel on.
+                    await step("osl_set_server_header_whitelist", {
+                        serverId: scopeInput.server_id,
+                        on: false,
+                    });
+                    await step("osl_set_channel_whitelist", {
+                        scopeInput: scopeInput,
+                        on: true,
+                    });
+                    oslToast(
+                        "This channel ON — encrypting to OSL members here."
+                    );
+                } else {
+                    // Off: clear both flags AND stop encrypting so the
+                    // grey lock actually means "plaintext".
+                    await step("osl_set_server_header_whitelist", {
+                        serverId: scopeInput.server_id,
+                        on: false,
+                    });
+                    await step("osl_set_channel_whitelist", {
+                        scopeInput: scopeInput,
+                        on: false,
+                    });
+                    await oslInvoke("osl_set_scope_encrypt", {
+                        scopeInput: scopeInput,
+                        enabled: false,
+                    });
+                    oslToast("Encryption OFF for this channel.");
+                }
+            } catch (err) {
+                oslToast(
+                    "OSL: " + (err && err.message ? err.message : err)
+                );
+                // Still refresh so the button reflects whatever DID
+                // apply, instead of looking frozen.
+                try {
+                    await oslRefreshHeaderState({ force: true });
                 } catch (_) {}
+                return;
             }
-            oslToast(
-                next
-                    ? "Server-wide whitelist ON — encrypting to all OSL " +
-                          "members of this server."
-                    : "Server-wide whitelist OFF."
-            );
             try {
                 await oslRefreshHeaderState({ force: true });
             } catch (_) {}
@@ -13695,17 +13781,19 @@
     // clears that attribute (along with `data-osl-cipher-text` and
     // the inline marker styling) when real plaintext lands.
     function oslAutoHideCiphertext(div) {
-        if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
-            return;
-        }
+        // Beta 1.0: no longer blanks undecrypted messages. We keep
+        // stashing the original wire on `data-osl-cipher-text` (re-
+        // dispatch / burn-restore / debug read it) but leave the
+        // visible children alone, so an undecrypted message shows its
+        // cover prose instead of a blank that hid the user's own sends.
+        if (!div) return;
         try {
-            const cipher = div.textContent || "";
-            div.setAttribute("data-osl-cipher-hidden", "1");
-            div.setAttribute("data-osl-cipher-text", cipher);
-            const span = document.createElement("span");
-            span.textContent = " ";
-            span.setAttribute("data-osl-encrypted-marker", "1");
-            div.replaceChildren(span);
+            if (!div.hasAttribute("data-osl-cipher-text")) {
+                div.setAttribute(
+                    "data-osl-cipher-text",
+                    div.textContent || ""
+                );
+            }
         } catch (_) {}
     }
 
@@ -16503,26 +16591,26 @@
                 if (here && here !== lastLoadedChannelId) {
                     lastLoadedChannelId = here;
                     recvLoadHistory(here);
-                    // Switch detected: kick fast re-sweeps over
-                    // the next ~150ms so the # → 🔒 swap lands as
-                    // soon as Discord paints the newly-selected
-                    // sidebar item, instead of waiting up to a
-                    // full 1s for the next periodic tick.
-                    nativeSetTimeout(function () {
+                    // Switch detected: kick fast re-paints over the
+                    // next ~250ms so the # → 🔒 swap (sidebar) AND the
+                    // header lock land as soon as Discord paints the
+                    // newly-selected channel, instead of waiting up to
+                    // a full 1s for the next periodic tick. Switching
+                    // SERVERS changes the channel id too, so this also
+                    // covers the "locks don't show until I click a
+                    // channel" case. force:true bypasses the
+                    // scope-key throttle on the header refresh.
+                    const repaintLocks = function () {
                         try {
                             oslSweepSidebarChannelLock();
                         } catch (_) {}
-                    }, 0);
-                    nativeSetTimeout(function () {
                         try {
-                            oslSweepSidebarChannelLock();
+                            oslRefreshHeaderState({ force: true });
                         } catch (_) {}
-                    }, 50);
-                    nativeSetTimeout(function () {
-                        try {
-                            oslSweepSidebarChannelLock();
-                        } catch (_) {}
-                    }, 150);
+                    };
+                    nativeSetTimeout(repaintLocks, 0);
+                    nativeSetTimeout(repaintLocks, 80);
+                    nativeSetTimeout(repaintLocks, 250);
                 }
             } catch (e) {
                 console.log(
