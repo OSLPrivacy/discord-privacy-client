@@ -252,6 +252,127 @@ pub fn recipients_for_scope(
     out
 }
 
+/// Server-channel candidate member set: the dynamic membership oracle
+/// (whole server when GREEN is on, else this channel) UNIONed with any
+/// peer carrying an explicit entry, a broadened DM, or any DM whitelist
+/// (the yellow tier). `should_encrypt_to` still gates each candidate
+/// against the live server-lock tier. Shared by text (v=3) and
+/// attachment (v=2) resolution so images encrypt to the EXACT same set
+/// as text in a server channel.
+fn server_channel_candidate_set(
+    peer_map: &PeerMap,
+    ctx: &ScopeAuthCtx,
+    scope: &Scope,
+    self_discord_id: &str,
+) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let (Some(srv), Some(chan)) = (&scope.server_id, &scope.channel_id) {
+        let header_on = ctx
+            .server_defaults
+            .get(srv)
+            .map(|d| d.server_header_whitelisted)
+            .unwrap_or(false);
+        for did in ctx.membership.server_channel_candidates(srv, chan, header_on) {
+            set.insert(did);
+        }
+    }
+    for (did, entry) in peer_map.iter() {
+        if did.as_str() == self_discord_id || entry.is_self == Some(true) {
+            continue;
+        }
+        if has_explicit_whitelist_entry(peer_map, scope, did)
+            || has_broadened_dm_access(peer_map, did)
+            || has_dm_whitelist(peer_map, did)
+        {
+            set.insert(did.clone());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// GC dynamic candidate set when the GC-header flag is on (roster-
+/// independent, like a server channel). Empty otherwise (caller uses
+/// the static `channel_members` walk). Shared by text + attachments.
+fn gc_dynamic_candidate_set(
+    peer_map: &PeerMap,
+    ctx: &ScopeAuthCtx,
+    scope: &Scope,
+    self_discord_id: &str,
+) -> Vec<String> {
+    let on = ctx
+        .whitelist_state
+        .get(&scope.storage_key())
+        .map(|s| s.channel_whitelisted)
+        .unwrap_or(false);
+    if !on {
+        return Vec::new();
+    }
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for did in ctx.membership.members_for_key(&crate::membership::gc_key(&scope.id)) {
+        set.insert(did);
+    }
+    for (did, entry) in peer_map.iter() {
+        if did.as_str() == self_discord_id || entry.is_self == Some(true) {
+            continue;
+        }
+        if has_explicit_whitelist_entry(peer_map, scope, did)
+            || has_broadened_dm_access(peer_map, did)
+        {
+            set.insert(did.clone());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// X25519-only recipient resolution that mirrors [`recipients_for_scope_v3`]'s
+/// recipient SET (same candidate resolution + same `should_encrypt_to`
+/// gate) but returns plain X25519 pubkeys for the v=2 attachment wrap.
+///
+/// This is what makes IMAGES encrypt to the exact same people as text:
+/// the legacy [`recipients_for_scope`] used `can_encrypt_to` and a
+/// static member list, ignoring the server/channel lock tiers — so a
+/// server image could encrypt to a different (often wrong/self-only)
+/// set than the text. Attachments now route through here.
+pub fn recipients_x25519_authz(
+    peer_map: &PeerMap,
+    ctx: &ScopeAuthCtx,
+    scope: &Scope,
+    channel_members: &[String],
+    self_discord_id: &str,
+    self_pubkey: &x25519::PublicKey,
+) -> Vec<x25519::PublicKey> {
+    let mut out: Vec<x25519::PublicKey> = vec![*self_pubkey];
+    let server_members;
+    let gc_members;
+    let members: &[String] = match scope.kind {
+        ScopeKind::ServerChannel => {
+            server_members = server_channel_candidate_set(peer_map, ctx, scope, self_discord_id);
+            &server_members
+        }
+        ScopeKind::Gc => {
+            gc_members = gc_dynamic_candidate_set(peer_map, ctx, scope, self_discord_id);
+            if gc_members.is_empty() {
+                channel_members
+            } else {
+                &gc_members
+            }
+        }
+        _ => channel_members,
+    };
+    for member in members {
+        if member == self_discord_id {
+            continue;
+        }
+        if !should_encrypt_to(peer_map, ctx, scope, member) {
+            continue;
+        }
+        if let Some(pk) = peer_pubkey(peer_map, member) {
+            out.push(pk);
+        }
+    }
+    out
+}
+
 /// Phase 9-A1: PQ-hybrid recipient resolution for v=3 sends.
 ///
 /// Same gate as [`recipients_for_scope`] (whitelist + per-member
@@ -312,36 +433,7 @@ pub fn recipients_for_scope_v3(
     // gate changes (can_encrypt_to → should_encrypt_to) so the DM
     // bleed is member-gated per decision #2 and server flags apply.
     let server_channel_members: Vec<String> = if scope.kind == ScopeKind::ServerChannel {
-        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        if let (Some(srv), Some(chan)) = (&scope.server_id, &scope.channel_id) {
-            let header_on = ctx
-                .server_defaults
-                .get(srv)
-                .map(|d| d.server_header_whitelisted)
-                .unwrap_or(false);
-            for did in ctx
-                .membership
-                .server_channel_candidates(srv, chan, header_on)
-            {
-                set.insert(did);
-            }
-        }
-        // Fold in peers with a legacy explicit entry, a broadened DM,
-        // or ANY DM whitelist (the yellow tier) so none is lost if
-        // membership hasn't observed them yet; should_encrypt_to still
-        // gates each one against the live server-lock tier.
-        for (did, entry) in peer_map.iter() {
-            if did.as_str() == self_discord_id || entry.is_self == Some(true) {
-                continue;
-            }
-            if has_explicit_whitelist_entry(peer_map, scope, did)
-                || has_broadened_dm_access(peer_map, did)
-                || has_dm_whitelist(peer_map, did)
-            {
-                set.insert(did.clone());
-            }
-        }
-        set.into_iter().collect()
+        server_channel_candidate_set(peer_map, ctx, scope, self_discord_id)
     } else {
         Vec::new()
     };
@@ -352,28 +444,8 @@ pub fn recipients_for_scope_v3(
     // behavior is byte-for-byte unchanged (the caller-supplied
     // `channel_members` walk), so legacy per-peer GC whitelists are
     // unaffected.
-    let gc_dynamic_members: Vec<String> = if scope.kind == ScopeKind::Gc
-        && ctx
-            .whitelist_state
-            .get(&scope.storage_key())
-            .map(|s| s.channel_whitelisted)
-            .unwrap_or(false)
-    {
-        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for did in ctx.membership.members_for_key(&crate::membership::gc_key(&scope.id)) {
-            set.insert(did);
-        }
-        for (did, entry) in peer_map.iter() {
-            if did.as_str() == self_discord_id || entry.is_self == Some(true) {
-                continue;
-            }
-            if has_explicit_whitelist_entry(peer_map, scope, did)
-                || has_broadened_dm_access(peer_map, did)
-            {
-                set.insert(did.clone());
-            }
-        }
-        set.into_iter().collect()
+    let gc_dynamic_members: Vec<String> = if scope.kind == ScopeKind::Gc {
+        gc_dynamic_candidate_set(peer_map, ctx, scope, self_discord_id)
     } else {
         Vec::new()
     };

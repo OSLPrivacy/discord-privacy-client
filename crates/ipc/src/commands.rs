@@ -3691,10 +3691,31 @@ pub fn cmd_osl_encrypt_attachment_envelope(
     let self_pk = identity.x25519_public;
     drop(id_guard);
 
+    // Same server-aware recipient resolution as text (see
+    // cmd_osl_seal_attachment_with_cover_v3) so the image envelope
+    // encrypts to the identical set as a text message in this scope.
     let recipients = {
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        crate::whitelist::recipients_for_scope(
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let sd_guard = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let mem_guard = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        let auth_ctx = crate::whitelist::ScopeAuthCtx {
+            whitelist_state: &ws_guard,
+            server_defaults: &sd_guard,
+            membership: &mem_guard,
+        };
+        crate::whitelist::recipients_x25519_authz(
             &pm_guard,
+            &auth_ctx,
             &scope,
             &channel_members,
             &self_discord_id,
@@ -3885,10 +3906,34 @@ pub fn cmd_osl_seal_attachment_with_cover_v3(
     let sender_sk = identity.x25519_secret.clone();
     let self_pk = identity.x25519_public;
     drop(id_guard);
+    // Resolve recipients with the SAME authority + membership logic as
+    // text (recipients_x25519_authz mirrors recipients_for_scope_v3's
+    // set) so an image encrypts to the exact same people as a text
+    // message in this scope — including the server-lock tiers. The old
+    // recipients_for_scope ignored the server/channel lock and used a
+    // static member list, so server images could leak to the wrong set.
     let recipients = {
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
-        crate::whitelist::recipients_for_scope(
+        let ws_guard = state
+            .whitelist_state
+            .lock()
+            .expect("whitelist_state mutex poisoned");
+        let sd_guard = state
+            .server_defaults
+            .lock()
+            .expect("server_defaults mutex poisoned");
+        let mem_guard = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        let auth_ctx = crate::whitelist::ScopeAuthCtx {
+            whitelist_state: &ws_guard,
+            server_defaults: &sd_guard,
+            membership: &mem_guard,
+        };
+        crate::whitelist::recipients_x25519_authz(
             &pm_guard,
+            &auth_ctx,
             &scope,
             &channel_members,
             &self_discord_id,

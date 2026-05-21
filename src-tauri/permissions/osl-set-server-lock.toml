@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Server-lock tri-state setter (grey / yellow / green).
+[[permission]]
+identifier = "allow-osl-set-server-lock"
+description = "Permits invoking `osl_set_server_lock` (server-lock tri-state: grey/yellow/green)."
+commands.allow = ["osl_set_server_lock"]
