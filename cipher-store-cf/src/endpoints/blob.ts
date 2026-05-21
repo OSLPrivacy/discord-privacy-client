@@ -125,14 +125,22 @@ export async function handleFetch(
     // Expired but the sweep hasn't run yet. Treat as gone.
     return notFound();
   }
-  // Phase 6 enforcement temporarily disabled: client-side mac_key
-  // derivation is asymmetric for DM scopes (sender uses peer's id,
-  // recipient uses their own peer's id -> different scope strings ->
-  // different derived tokens -> false-positive 403s). The column
-  // stays for forensics + future Phase 6.1 re-enable once the
-  // mac_key derivation is symmetric. Token is still stored on
-  // upload so existing blobs keep their proofs.
-  void row.fetch_token;
+  // Phase 6 gate: when the row carries a fetch_token, the caller must
+  // present a matching one. Legacy rows (NULL) remain fetchable by
+  // ID alone -- they predate Phase 6 and will TTL out within 7d.
+  if (row.fetch_token !== null) {
+    const presented = readFetchToken(request);
+    if (presented === null) {
+      return error(
+        401,
+        "fetch_token_required",
+        "X-OSL-Fetch-Token header required for this blob"
+      );
+    }
+    if (!constantTimeEqual(row.fetch_token, presented)) {
+      return error(403, "fetch_token_mismatch", "fetch token does not match");
+    }
+  }
   // D1's BLOB return type is officially ArrayBuffer but in practice
   // varies by runtime version (Uint8Array, plain string, or even an
   // object with byteLength). Normalise to bytes regardless.
@@ -187,11 +195,24 @@ export async function handleDelete(
   // Legacy rows (fetch_token NULL, predating Phase 6) accept any
   // delete -- same back-compat treatment as fetch -- and will TTL
   // out within 7d.
-  // Phase 6 enforcement temporarily disabled (see handleFetch).
-  // DELETE remains gated only by knowing the blob_id, same as
-  // pre-Phase 6 -- the existing 64-bit random IDs are the
-  // capability. Phase 6.1 will re-enable once mac_key derivation
-  // is symmetric across DM peers.
+  const row = await env.DB.prepare(
+    "SELECT fetch_token FROM blobs WHERE id = ? LIMIT 1"
+  )
+    .bind(id)
+    .first<{ fetch_token: string | null }>();
+  if (row && row.fetch_token !== null) {
+    const presented = readFetchToken(request);
+    if (presented === null) {
+      return error(
+        401,
+        "fetch_token_required",
+        "X-OSL-Fetch-Token header required to delete this blob"
+      );
+    }
+    if (!constantTimeEqual(row.fetch_token, presented)) {
+      return error(403, "fetch_token_mismatch", "fetch token does not match");
+    }
+  }
   await env.DB.prepare("DELETE FROM blobs WHERE id = ?").bind(id).run();
   return new Response(null, { status: 204 });
 }
