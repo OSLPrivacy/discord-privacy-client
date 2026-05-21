@@ -1626,6 +1626,16 @@
      * null on failure (logged).
      */
     async function oslSendControlMessage(channelId, wireString, scopeInput) {
+        // Phase 4-rollback: the prose-token wrap for control wires
+        // (commit 9b13b72) appears to have broken cross-user
+        // sender-key install in GCs. Reverted to raw DPC0:: POST
+        // for now. The visible-ciphertext leak this was meant to
+        // hide will need a different fix (probably wrapping covers
+        // in a way that doesn't depend on the receiver having the
+        // right scope context at exactly the moment the SKDM
+        // arrives). `scopeInput` param retained so callers don't
+        // need to change.
+        void scopeInput;
         if (!editOverlayAuthToken) {
             console.log(
                 "[OSL] oslSendControlMessage FAIL reason=no_auth_token"
@@ -1641,77 +1651,7 @@
             );
             return null;
         }
-        // Phase 2 extension (Mode-1 SKDM/burn-marker leak fix):
-        // control wires (SKDMs, burn markers, recovery SKDMs) used
-        // to POST raw DPC0:: text, leaving giant ciphertext visible
-        // to anyone reading the channel — including server-side
-        // observers and non-OSL clients in the GC. Wrap them in the
-        // same prose-token cover content messages use. Scope is
-        // required so the receiver can HMAC-verify the cover and
-        // route to the v=4/v=5 decrypt path.
-        if (!scopeInput) {
-            try {
-                const ctx =
-                    typeof oslCurrentChannelContext === "function"
-                        ? oslCurrentChannelContext()
-                        : null;
-                if (
-                    ctx &&
-                    typeof oslScopeForCurrentContext === "function"
-                ) {
-                    scopeInput = oslScopeForCurrentContext(ctx);
-                }
-            } catch (_) {
-                scopeInput = null;
-            }
-        }
-        if (!scopeInput) {
-            console.error(
-                "[OSL] oslSendControlMessage ABORT reason=no_scope " +
-                    "channel=" +
-                    channelId +
-                    " (refusing raw DPC0:: leak)"
-            );
-            return null;
-        }
-        let bodyContent;
-        try {
-            // Phase 3: per-scope TTL (default 72h if no setting).
-            const _ttl = await oslGetScopeTtl(scopeInput);
-            const proseResp = await oslInvoke("osl_prose_token_send", {
-                scopeInput: scopeInput,
-                dpc0Wire: wireString,
-                ttlSeconds: _ttl,
-            });
-            if (
-                proseResp &&
-                proseResp.ok &&
-                proseResp.value &&
-                typeof proseResp.value.cover_text === "string" &&
-                proseResp.value.cover_text.length > 0
-            ) {
-                bodyContent = proseResp.value.cover_text;
-            } else {
-                console.error(
-                    "[OSL] oslSendControlMessage ABORT reason=prose_token_send_failed " +
-                        "channel=" +
-                        channelId +
-                        " err=" +
-                        (proseResp && proseResp.error) +
-                        " (refusing raw DPC0:: leak)"
-                );
-                return null;
-            }
-        } catch (e) {
-            console.error(
-                "[OSL] oslSendControlMessage ABORT reason=prose_token_send_threw " +
-                    "channel=" +
-                    channelId +
-                    " (refusing raw DPC0:: leak)",
-                e
-            );
-            return null;
-        }
+        const bodyContent = wireString;
         const url = "/api/v9/channels/" + channelId + "/messages";
         try {
             // 9-B3: retry-on-stale-token wrapper. SKDM dispatch and
@@ -1731,9 +1671,7 @@
                     "[OSL] oslSendControlMessage OK channel=" +
                         channelId +
                         " wire_len=" +
-                        wireString.length +
-                        " cover_len=" +
-                        bodyContent.length
+                        wireString.length
                 );
             } else {
                 console.log(
