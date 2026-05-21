@@ -283,6 +283,11 @@ struct ReplenishOpkWire {
 /// (POST / PUT / DELETE) carries an `Authorization: Bearer <token>`
 /// header. GET requests never carry the header — the keyserver's
 /// public endpoints are intentionally unauthenticated.
+/// `Clone` is cheap: `reqwest::blocking::Client` is `Arc`-backed, so
+/// a clone shares the same connection pool. Callers clone the client
+/// out from under the `AppState` keyserver mutex so network calls
+/// don't hold that lock (see the Phase 6.4 control-inbox drain).
+#[derive(Clone)]
 pub struct KeyServerClient {
     /// Canonicalised base URL. Includes scheme + host + optional
     /// port + optional base path. Trailing `/` stripped so callers

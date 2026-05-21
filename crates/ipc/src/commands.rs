@@ -5049,19 +5049,26 @@ pub fn cmd_osl_control_inbox_post(
         .decode(body)
         .map_err(|e| format!("OSL: control_inbox_post: base64 decode: {e}"))?;
 
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
-    let identity = id_guard
-        .as_ref()
-        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
-    let client = ks_guard
-        .as_ref()
-        .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+    // IMPORTANT: clone the identity + keyserver client out from under
+    // the AppState mutexes, then DROP the guards BEFORE the network
+    // call. Holding state.identity across the HTTP roundtrip blocks
+    // every send (encrypt needs state.identity) — that was the
+    // "messages take insanely long to send" regression.
+    let identity = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        g.as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+            .clone()
+    };
+    let client = {
+        let g = state.keyserver.lock().expect("keyserver mutex poisoned");
+        g.as_ref()
+            .ok_or_else(|| "OSL: key-server not initialised".to_string())?
+            .clone()
+    };
     let resp = client
-        .post_control_inbox(identity, &recipient_id, &scope_id, &bundle)
+        .post_control_inbox(&identity, &recipient_id, &scope_id, &bundle)
         .map_err(|e| format!("OSL: control_inbox_post: {e}"))?;
-    drop(ks_guard);
-    drop(id_guard);
     tracing::info!(
         recipient = %recipient_id,
         scope = %scope_id,
@@ -5092,19 +5099,28 @@ pub fn cmd_osl_control_inbox_drain(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<u32, String> {
-    let items = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
-        let identity = id_guard
-            .as_ref()
-            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-        let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
-        let client = ks_guard
-            .as_ref()
-            .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
-        client
-            .get_control_inbox(identity)
-            .map_err(|e| format!("OSL: control_inbox_drain GET: {e}"))?
+    // Snapshot identity + client out from under the AppState mutexes
+    // and DROP the guards BEFORE any network call. The drain runs on a
+    // 10s timer; holding state.identity across the GET + per-item
+    // DELETE network roundtrips blocked every concurrent send (encrypt
+    // needs state.identity), which is what made sends "take an
+    // insanely long time." With clones, the locks are held only for
+    // the microseconds it takes to clone.
+    let identity = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        g.as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+            .clone()
     };
+    let client = {
+        let g = state.keyserver.lock().expect("keyserver mutex poisoned");
+        g.as_ref()
+            .ok_or_else(|| "OSL: key-server not initialised".to_string())?
+            .clone()
+    };
+    let items = client
+        .get_control_inbox(&identity)
+        .map_err(|e| format!("OSL: control_inbox_drain GET: {e}"))?;
     let item_count = items.len();
 
     let mut applied: u32 = 0;
@@ -5139,15 +5155,9 @@ pub fn cmd_osl_control_inbox_drain(
                     sentinel = %sentinel,
                     "[OSL] control_inbox item applied"
                 );
-                let id_guard = state.identity.lock().expect("identity mutex poisoned");
-                let identity = id_guard
-                    .as_ref()
-                    .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-                let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
-                let client = ks_guard
-                    .as_ref()
-                    .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
-                if let Err(e) = client.delete_control_inbox(identity, &item.id) {
+                // Uses the cloned identity + client (no AppState locks
+                // held across this network DELETE).
+                if let Err(e) = client.delete_control_inbox(&identity, &item.id) {
                     // Best-effort: failing to delete just means a
                     // duplicate apply next poll, which the SKDM /
                     // burn handlers tolerate (rotate is idempotent
@@ -5159,8 +5169,6 @@ pub fn cmd_osl_control_inbox_drain(
                         "[OSL] control_inbox DELETE failed (will retry)"
                     );
                 }
-                drop(ks_guard);
-                drop(id_guard);
                 applied = applied.saturating_add(1);
             }
             Err(e) => {

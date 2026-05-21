@@ -35,6 +35,13 @@ pub const IDENTITY_BLOB_VERSION: u32 = 3;
 /// `ml-kem` 0.2's `DecapsulationKey` does not implement `Clone`. We
 /// reconstruct the typed key via [`Self::mlkem_decapsulation_key`]
 /// when needed.
+///
+/// `Clone` is derived so callers can pull a snapshot out from under
+/// the `AppState` identity mutex and run slow work (e.g. network
+/// I/O) WITHOUT holding that lock — the secret-bearing fields
+/// (`x25519_secret`, `ed25519_secret`, `mlkem_secret_bytes`) are all
+/// `ZeroizeOnDrop`, so each clone zeroizes when it drops.
+#[derive(Clone)]
 pub struct Identity {
     pub user_id: String,
     pub x25519_secret: x25519::SecretKey,
