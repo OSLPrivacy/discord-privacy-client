@@ -6485,6 +6485,42 @@
             encryptBtn.innerHTML = oslLockSvg("unknown");
             encryptBtn.title = "Whitelist state loading…";
             encryptBtn.addEventListener("click", oslOnWhitelistIconClick);
+            // Press-and-hold resets a SERVER lock to grey (nobody). A
+            // plain click cycles yellow/green; only a hold returns to
+            // grey. No-op for DM/GC (their handlers are unchanged).
+            let __oslHoldTimer = null;
+            let __oslHoldFired = false;
+            const __oslClearHold = function () {
+                if (__oslHoldTimer) {
+                    nativeClearTimeout(__oslHoldTimer);
+                    __oslHoldTimer = null;
+                }
+            };
+            encryptBtn.addEventListener("pointerdown", function () {
+                __oslHoldFired = false;
+                __oslClearHold();
+                __oslHoldTimer = nativeSetTimeout(function () {
+                    __oslHoldFired = true;
+                    try {
+                        oslServerLockSetGrey();
+                    } catch (_) {}
+                }, 550);
+            });
+            encryptBtn.addEventListener("pointerup", __oslClearHold);
+            encryptBtn.addEventListener("pointerleave", __oslClearHold);
+            // Capture-phase guard: swallow the click that fires after a
+            // hold so the cycle handler doesn't also run.
+            encryptBtn.addEventListener(
+                "click",
+                function (e) {
+                    if (__oslHoldFired) {
+                        __oslHoldFired = false;
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                    }
+                },
+                true
+            );
             container.insertBefore(encryptBtn, container.firstChild);
             injectedAny = true;
         }
@@ -6657,36 +6693,41 @@
                 return;
             }
             const st = sw.value || {};
-            let lockState, color, label;
+            // Server-lock TRI-STATE (the header button now reflects the
+            // SERVER tier only; per-channel lives on the sidebar lock):
+            //   GREEN  (server_header) = every OSL member of the server
+            //   YELLOW (server_dm)     = your DM-whitelisted peers here
+            //   GREY                   = nobody (self-only)
+            let lockState, color, label, aria;
             if (st.server_header) {
                 lockState = "closed";
                 color = "var(--status-positive, #23a559)";
+                aria = "green";
                 label =
-                    "Server-wide OSL whitelist ON — encrypting to every " +
-                    "OSL member of this server. Click to turn the " +
-                    "server-wide whitelist OFF.";
-            } else if (st.channel) {
+                    "Server lock: GREEN — every OSL member of this server " +
+                    "can read your messages. Click → yellow. Press and hold " +
+                    "→ grey (nobody).";
+            } else if (st.server_dm) {
                 lockState = "partial";
                 color = "#f0b132";
+                aria = "yellow";
                 label =
-                    "This channel is whitelisted (server-wide OFF). " +
-                    "Click to whitelist the WHOLE server instead.";
+                    "Server lock: YELLOW — only your DM-whitelisted peers " +
+                    "who are in this server can read. Click → green (all OSL " +
+                    "members). Press and hold → grey (nobody).";
             } else {
                 lockState = "open";
                 color = "var(--text-muted, #87898c)";
+                aria = "grey";
                 label =
-                    "Not whitelisted. Click to whitelist this whole " +
-                    "server (all OSL members, current + future).";
+                    "Server lock: GREY — nobody in this server can read your " +
+                    "messages. Click → yellow (your DM peers).";
             }
             encryptBtn.innerHTML = oslLockSvg(lockState);
             // Definitive state rendered — clear the unknown flag so the
             // throttle can cache this scope.
             oslHeaderStateLastWasUnknown = false;
-            encryptBtn.setAttribute(
-                "aria-label",
-                "OSL server whitelist: " +
-                    (st.server_header ? "server" : st.channel ? "channel" : "off")
-            );
+            encryptBtn.setAttribute("aria-label", "OSL server lock: " + aria);
             encryptBtn.style.opacity = "1";
             encryptBtn.style.pointerEvents = "auto";
             encryptBtn.style.color = color;
@@ -6910,6 +6951,29 @@
     // members would be impossible to undo by memory alone.
     const BULK_CONFIRM_THRESHOLD = 25;
 
+    // Press-and-hold target for the server header lock: reset to GREY
+    // (nobody in the server can read). Server channels only.
+    async function oslServerLockSetGrey() {
+        const ctx = oslCurrentChannelContext();
+        const scopeInput = oslScopeForCurrentContext(ctx);
+        if (!scopeInput || scopeInput.kind !== "server_channel") return;
+        const r = await oslInvoke("osl_set_server_lock", {
+            serverId: scopeInput.server_id,
+            lockState: "grey",
+        });
+        if (!r.ok) {
+            oslToast("OSL: " + r.error);
+            return;
+        }
+        oslToast("Server lock GREY — nobody in this server can read your messages.");
+        try {
+            await oslRefreshHeaderState({ force: true });
+        } catch (_) {}
+        try {
+            oslChanWlRefreshAll();
+        } catch (_) {}
+    }
+
     async function oslOnWhitelistIconClick(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -6927,6 +6991,14 @@
         // this channel now (decision #2). Returns before the DM/GC
         // roster flow, which is left entirely unchanged.
         if (scopeInput.kind === "server_channel") {
+            // REWORK: the header button is now the SERVER-LOCK tri-state
+            // (grey/yellow/green). A plain CLICK cycles grey→yellow→
+            // green→yellow; it never returns to grey (press-and-hold
+            // does that — see oslServerLockSetGrey, wired at the button).
+            //   yellow = DM-whitelisted peers who are in this server
+            //   green  = every OSL member of this server
+            // Per-channel "everyone in this channel" lives on the
+            // sidebar lock now, not here.
             const cur = await oslInvoke("osl_get_server_whitelist_state", {
                 serverId: scopeInput.server_id,
                 channelScopeInput: scopeInput,
@@ -6935,97 +7007,35 @@
                 oslToast("OSL: " + cur.error);
                 return;
             }
-            // Tri-state CYCLE: off -> channel-only -> server-wide -> off.
-            // The old handler only toggled `server_header`, so once the
-            // per-channel flag was set (via the settings UI) the button
-            // could never clear it: the lock oscillated green<->yellow
-            // with no way back to grey, which read as "bricked". Driving
-            // BOTH flags coherently here (and clearing the other on each
-            // transition) means every state is reachable from the button
-            // alone and none is ever stranded.
-            const serverOn = !!(cur.value && cur.value.server_header);
-            const channelOn = !!(cur.value && cur.value.channel);
-            let target; // "channel" | "server" | "off"
-            if (serverOn) {
-                target = "off";
-            } else if (channelOn) {
-                target = "server";
-            } else {
-                target = "channel";
-            }
-
-            // Helper: surface the first failing IPC and abort so we
-            // never leave a half-applied combination.
-            const step = async (cmd, args) => {
-                const r = await oslInvoke(cmd, args);
-                if (!r || !r.ok) {
-                    throw new Error((r && r.error) || cmd + " failed");
-                }
-            };
-            try {
-                if (target === "server") {
-                    // Server-wide supersedes channel-only: clear the
-                    // per-channel flag, set the server flag, ensure this
-                    // channel encrypts now.
-                    await step("osl_set_channel_whitelist", {
-                        scopeInput: scopeInput,
-                        on: false,
-                    });
-                    await step("osl_set_server_header_whitelist", {
-                        serverId: scopeInput.server_id,
-                        on: true,
-                    });
-                    await oslInvoke("osl_set_scope_encrypt", {
-                        scopeInput: scopeInput,
-                        enabled: true,
-                    });
-                    oslToast(
-                        "Server-wide encryption ON — every OSL member of " +
-                            "this server."
-                    );
-                } else if (target === "channel") {
-                    // Channel-only: server flag off, this channel on.
-                    await step("osl_set_server_header_whitelist", {
-                        serverId: scopeInput.server_id,
-                        on: false,
-                    });
-                    await step("osl_set_channel_whitelist", {
-                        scopeInput: scopeInput,
-                        on: true,
-                    });
-                    oslToast(
-                        "This channel ON — encrypting to OSL members here."
-                    );
-                } else {
-                    // Off: clear both flags AND stop encrypting so the
-                    // grey lock actually means "plaintext".
-                    await step("osl_set_server_header_whitelist", {
-                        serverId: scopeInput.server_id,
-                        on: false,
-                    });
-                    await step("osl_set_channel_whitelist", {
-                        scopeInput: scopeInput,
-                        on: false,
-                    });
-                    await oslInvoke("osl_set_scope_encrypt", {
-                        scopeInput: scopeInput,
-                        enabled: false,
-                    });
-                    oslToast("Encryption OFF for this channel.");
-                }
-            } catch (err) {
-                oslToast(
-                    "OSL: " + (err && err.message ? err.message : err)
-                );
-                // Still refresh so the button reflects whatever DID
-                // apply, instead of looking frozen.
+            const green = !!(cur.value && cur.value.server_header);
+            const yellow = !!(cur.value && cur.value.server_dm);
+            const target = green ? "yellow" : yellow ? "green" : "yellow";
+            const r = await oslInvoke("osl_set_server_lock", {
+                serverId: scopeInput.server_id,
+                lockState: target,
+            });
+            if (!r.ok) {
+                oslToast("OSL: " + r.error);
                 try {
                     await oslRefreshHeaderState({ force: true });
                 } catch (_) {}
                 return;
             }
+            // Picking a sharing tier turns encryption on for this channel.
+            await oslInvoke("osl_set_scope_encrypt", {
+                scopeInput: scopeInput,
+                enabled: true,
+            });
+            oslToast(
+                target === "green"
+                    ? "Server lock GREEN — every OSL member of this server can read."
+                    : "Server lock YELLOW — your DM-whitelisted peers in this server can read."
+            );
             try {
                 await oslRefreshHeaderState({ force: true });
+            } catch (_) {}
+            try {
+                oslChanWlRefreshAll();
             } catch (_) {}
             return;
         }
