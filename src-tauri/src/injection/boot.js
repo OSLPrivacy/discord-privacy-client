@@ -15225,6 +15225,33 @@
         ) {
             const __osl_pre_msgId = recvMessageIdOf(div);
             if (__osl_pre_msgId) {
+                // Loading-time win (cross-restart): if this message's
+                // plaintext is already known — rehydrated from the
+                // local sealed store by recvLoadHistory, or decrypted
+                // earlier this session — render it directly and SKIP
+                // the osl_prose_token_recv IPC + cipher-store network
+                // fetch. On a relaunch this turns "N network
+                // round-trips to repaint a channel" into "N cheap DOM
+                // applies." We seed recvCovers with the current cover
+                // so a later ONLINE edit (cover changes) is still
+                // detected and re-decrypted; the only thing skipped is
+                // catching an edit that happened while the app was
+                // closed, which is rare and self-heals on the next
+                // edit.
+                const __osl_cachedPt =
+                    loadedHistory.get(__osl_pre_msgId) ||
+                    recvPlaintext.get(__osl_pre_msgId) ||
+                    selfSentPlaintext.get(__osl_pre_msgId);
+                if (typeof __osl_cachedPt === "string") {
+                    const __osl_coverNow = (div.textContent || "").trim();
+                    if (__osl_coverNow !== __osl_cachedPt.trim()) {
+                        recvCovers.set(__osl_pre_msgId, __osl_coverNow);
+                        recvApplyPlaintext(div, __osl_cachedPt);
+                    }
+                    recvPlaintext.set(__osl_pre_msgId, __osl_cachedPt);
+                    recvDone.add(__osl_pre_msgId);
+                    return;
+                }
                 if (!window.__oslProseWireByMsgId) {
                     window.__oslProseWireByMsgId = new Map();
                 }
