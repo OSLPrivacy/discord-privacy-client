@@ -16551,7 +16551,17 @@
                     // Phase 6.4: auto-recovery requests go to the
                     // peer's keyserver inbox, not the Discord
                     // channel. peer is the single recipient.
-                    return oslSendControlOob([peer], scopeInput, wire);
+                    //
+                    // BUGFIX: a SESSION_RESET is peer-level, so the
+                    // recovery path has no scopeInput — oslSendControlOob
+                    // then bailed with "no_scope" and the reset NEVER
+                    // delivered, so a v=4 DM desync could never heal. A
+                    // v=4 desync is always a DM, so synthesize the DM
+                    // scope from the peer for the inbox label. (The SKDM
+                    // path always has a real scopeInput.)
+                    const effScope =
+                        scopeInput || { kind: "dm", id: peer };
+                    return oslSendControlOob([peer], effScope, wire);
                 })
                 .then(function (oobRes) {
                     if (oobRes && oobRes.ok > 0) {
