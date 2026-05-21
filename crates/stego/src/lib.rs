@@ -43,6 +43,7 @@
 //! to expect a stego'd message — for the v1 alpha test loop this is
 //! "every message in the configured private channel").
 
+pub mod bigram;
 mod mode0;
 mod mode1;
 mod mode1_chunking;
