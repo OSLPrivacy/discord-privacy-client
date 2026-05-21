@@ -2907,6 +2907,17 @@ fn scope_is_group_or_server(scope: &crate::scope::Scope) -> bool {
 /// Phase 9-A3: 24-hour rotation timer threshold.
 const SENDER_KEY_ROTATE_AFTER_SECS: u64 = 24 * 60 * 60;
 
+/// Phase 6.2: how often (in seconds) we re-emit the SKDM bundle for
+/// self-heal purposes when the chain hasn't otherwise changed.
+/// Pre-6.2 behaviour was "emit on every send", which produced N extra
+/// Discord messages for N user sends in an active GC. Now the bundle
+/// is emitted on install, on rotate, OR when this many seconds have
+/// elapsed since the last emit. Tradeoff: receivers who miss every
+/// SKDM in the interval window will have to wait or trigger the
+/// SKDM_REQUEST recovery path; in exchange, active conversations
+/// shed ~95% of the noise messages.
+const SKDM_PERIODIC_EMIT_INTERVAL_SECS: u64 = 5 * 60;
+
 /// Phase 9-A3: decide whether the sender-keys chain for this scope
 /// needs to rotate before the next send. Returns `true` when:
 /// - the time since `chain_started_at` exceeds 24 hours, OR
@@ -3134,7 +3145,18 @@ fn encrypt_v5_send(
     let mut skdm_wires: Vec<String> = Vec::new();
     let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
     let _ = send_skdm; // retained for self-receiver gate above; no longer gates bundle emit
-    if !non_self_peers.is_empty() {
+    // Phase 6.2: gate the periodic self-heal emit. Always emit on
+    // install/rotate (the chain is fresh, every receiver needs it).
+    // Otherwise emit only if SKDM_PERIODIC_EMIT_INTERVAL_SECS have
+    // elapsed since the last emit. The 0-default on legacy on-disk
+    // records (pre-6.2 SenderChainOnDisk) forces a one-time emit on
+    // load, which is the right thing -- it primes receivers who
+    // might have missed the prior chain.
+    let last_emit_at = sks.sender_chain().map(|c| c.last_skdm_emit_at()).unwrap_or(0);
+    let periodic_due =
+        now.saturating_sub(last_emit_at) >= SKDM_PERIODIC_EMIT_INTERVAL_SECS;
+    let should_emit_bundle = needs_install || needs_rotate || periodic_due;
+    if !non_self_peers.is_empty() && should_emit_bundle {
         // Include self as a recipient so the sender's own DOM
         // (which sees the SKDM bundle round-tripped through Discord
         // like any other channel message) decodes it cleanly instead
@@ -3167,6 +3189,13 @@ fn encrypt_v5_send(
         ) {
             Ok(skdm_wire) => {
                 skdm_wires.push(skdm_wire);
+                // Phase 6.2: stamp the periodic emit clock so the
+                // next send within SKDM_PERIODIC_EMIT_INTERVAL_SECS
+                // skips bundle emission unless install/rotate
+                // independently triggers it.
+                if let Some(chain) = sks.sender_chain_mut() {
+                    chain.mark_skdm_emitted_at(now);
+                }
                 for pair in non_self_peers.iter() {
                     skdm_peer_status.push(SkdmPeerStatus {
                         peer_discord_id: pair.0.clone(),

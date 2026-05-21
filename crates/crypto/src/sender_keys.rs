@@ -376,6 +376,14 @@ pub struct SenderChain {
     /// triggers a rotate. Bytes here are caller-defined opaque
     /// member ids (typically Discord snowflakes as UTF-8 bytes).
     last_known_members: Vec<Vec<u8>>,
+    /// Phase 6.2: unix-seconds timestamp of the most recent SKDM
+    /// bundle emission for this chain. Lets the IPC send loop skip
+    /// SKDM dispatch when the chain hasn't changed AND the last
+    /// emission is still within the self-heal window. Stamped by
+    /// `new()` / `rotate()` and refreshed by callers via
+    /// `mark_skdm_emitted_at`. Defaults to 0 on legacy on-disk
+    /// records, which forces a one-time emit on the next send.
+    last_skdm_emit_at: u64,
 }
 
 impl SenderChain {
@@ -384,14 +392,18 @@ impl SenderChain {
     pub fn new() -> Result<Self> {
         let rotation_root = RotationRoot::random();
         let ck_0 = derive_ck_0(&rotation_root, 0)?;
+        let now = now_unix_secs();
         Ok(SenderChain {
             rotation_root,
             chain_id: 0,
             ck_n: ck_0,
             n: 0,
             prev_chain_length: 0,
-            chain_started_at: now_unix_secs(),
+            chain_started_at: now,
             last_known_members: Vec::new(),
+            // Install IS an SKDM-emit event; stamp now so the
+            // periodic gate counts from install.
+            last_skdm_emit_at: now,
         })
     }
 
@@ -405,15 +417,18 @@ impl SenderChain {
             .checked_add(1)
             .ok_or_else(|| Error::Internal("sender keys: chain_id overflow on rotate".into()))?;
         let prev = self.n;
+        let now = now_unix_secs();
         self.rotation_root = RotationRoot::random();
         self.chain_id = new_chain_id;
         self.ck_n = derive_ck_0(&self.rotation_root, self.chain_id)?;
         self.n = 0;
         self.prev_chain_length = prev;
-        self.chain_started_at = now_unix_secs();
+        self.chain_started_at = now;
         // last_known_members reset by the orchestrator after rotate
         // (it has the fresh member snapshot to install).
         self.last_known_members.clear();
+        // Rotation always emits an SKDM bundle.
+        self.last_skdm_emit_at = now;
         Ok(())
     }
 
@@ -425,6 +440,20 @@ impl SenderChain {
     /// Phase 9-A3: snapshot of the member set at install/rotate time.
     pub fn last_known_members(&self) -> &[Vec<u8>] {
         &self.last_known_members
+    }
+
+    /// Phase 6.2: unix-seconds of the most recent SKDM bundle emit.
+    /// 0 for chains loaded from pre-6.2 on-disk records (forces a
+    /// one-time periodic emit on next send).
+    pub fn last_skdm_emit_at(&self) -> u64 {
+        self.last_skdm_emit_at
+    }
+
+    /// Phase 6.2: stamp the most recent SKDM emit time. Caller is
+    /// the IPC encrypt_v5_send loop, which calls this after
+    /// successfully building (not necessarily POSTing) the bundle.
+    pub fn mark_skdm_emitted_at(&mut self, now: u64) {
+        self.last_skdm_emit_at = now;
     }
 
     /// Phase 9-A3: install the current member-set snapshot. Called
@@ -873,6 +902,13 @@ pub struct SenderChainOnDisk {
     /// Discord snowflakes as UTF-8 bytes).
     #[serde(default)]
     pub last_known_members_b64: Vec<String>,
+    /// Phase 6.2: unix-seconds of the most recent SKDM bundle
+    /// emit. `#[serde(default)]` (= 0) on pre-6.2 records, which
+    /// the IPC layer interprets as "emit on next send" so old
+    /// chains pick up periodic-emit semantics from one self-heal
+    /// trigger onward.
+    #[serde(default)]
+    pub last_skdm_emit_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -923,6 +959,7 @@ impl From<&SenderChain> for SenderChainOnDisk {
                 .iter()
                 .map(|m| STANDARD.encode(m))
                 .collect(),
+            last_skdm_emit_at: c.last_skdm_emit_at,
         }
     }
 }
@@ -1010,6 +1047,7 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
             prev_chain_length: d.prev_chain_length,
             chain_started_at: d.chain_started_at,
             last_known_members,
+            last_skdm_emit_at: d.last_skdm_emit_at,
         })
     }
 }
