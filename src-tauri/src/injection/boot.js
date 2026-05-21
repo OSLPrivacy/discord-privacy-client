@@ -683,30 +683,6 @@
     }
 
     /**
-     * Thin wrapper around the Tauri command. Resolves to the cover-
-     * text string on success, rejects on IPC-level failure. Phase 3:
-     * command body is stubbed to `[OSL-STUB] <plaintext>`. Phase 4
-     * swaps in the real crypto pipeline behind the same wire shape.
-     */
-    window.__OSL_INTERCEPT__ = function (channelId, plaintext, options) {
-        const invoke = getTauriInvoke();
-        if (typeof invoke !== "function") {
-            return Promise.reject(
-                new Error(
-                    "[OSL] Tauri IPC bridge not present on window â€” check " +
-                        "capabilities/main.json grants `allow-osl-encrypt-message` " +
-                        "and `remote.urls` includes `https://discord.com/*`."
-                )
-            );
-        }
-        return invoke("osl_encrypt_message", {
-            channelId: channelId,
-            plaintext: plaintext,
-            options: options || {},
-        });
-    };
-
-    /**
      * Debug-only manual decrypt invoker for DevTools.
      *
      * Discord's main world (where boot.js runs to hook fetch/XHR)
@@ -822,9 +798,9 @@
      *   This is **safe**: nothing was meant to be encrypted.
      * - `onAbort(err)` â€” Phase 4 fail-closed. We **tried** to
      *   encrypt but the pipeline rejected (IPC throw, non-Promise,
-     *   non-string result, JSON re-serialisation failure, or
-     *   `__OSL_INTERCEPT__` rejected). The caller MUST simulate a
-     *   network failure rather than passing the plaintext through.
+     *   non-string result, JSON re-serialisation failure, or the
+     *   prose-token send command failing). The caller MUST simulate
+     *   a network failure rather than passing the plaintext through.
      *
      * Phase 3 fail-open routed every error to `onPassthrough()`,
      * which would have leaked plaintext on any pipeline failure. Phase 4
@@ -942,100 +918,11 @@
                     plaintext.length
             );
 
-        // Phase 7c send-path gate: if the current channel scope has
-        // encrypt_toggle ON and a non-empty whitelist, encrypt to
-        // the v=2 wire format (scope-whitelist recipients) and skip
-        // the v=1 per-channel-share path. Coexistence: when toggle
-        // is off OR whitelist empty OR scope-state read fails, fall
-        // through to v=1 (`__OSL_INTERCEPT__`) so pre-7c senders
-        // and not-yet-whitelisted scopes keep working.
-        function v1Send() {
-            let interceptResult;
-            try {
-                interceptResult = window.__OSL_INTERCEPT__(
-                    channelId,
-                    plaintext,
-                    parsed
-                );
-            } catch (e) {
-                console.error(
-                    "[OSL] __OSL_INTERCEPT__ threw synchronously (" +
-                        source +
-                        "); ABORT (fail-closed)",
-                    e
-                );
-                return onAbort(e);
-            }
-            if (!interceptResult || typeof interceptResult.then !== "function") {
-                console.error(
-                    "[OSL] __OSL_INTERCEPT__ did not return a Promise (" +
-                        source +
-                        "); ABORT (fail-closed)",
-                    { actualType: typeof interceptResult }
-                );
-                return onAbort(
-                    new Error("__OSL_INTERCEPT__ did not return a Promise")
-                );
-            }
-
-            return interceptResult.then(
-                function (coverText) {
-                    if (typeof coverText !== "string") {
-                        console.error(
-                            "[OSL] __OSL_INTERCEPT__ returned non-string (" +
-                                typeof coverText +
-                                ", source=" +
-                                source +
-                                "); ABORT (fail-closed)"
-                        );
-                        return onAbort(new Error("non-string cover text"));
-                    }
-                    parsed.content = coverText;
-                    let newBody;
-                    try {
-                        newBody = JSON.stringify(parsed);
-                    } catch (e) {
-                        console.error(
-                            "[OSL] re-serialising mutated body failed (" +
-                                source +
-                                "); ABORT (fail-closed)",
-                            e
-                        );
-                        return onAbort(e);
-                    }
-                    return onMutated(newBody);
-                },
-                function (err) {
-                    // Phase 7c bug-fix #2: "OSL: recipient lookup:
-                    // channel ... not configured in recipients file"
-                    // means this channel has no v=1 entry in
-                    // channels.json AND already (by virtue of being
-                    // in v1Send) no v=2 whitelist/toggle. There's
-                    // nothing to encrypt — fall through to plaintext
-                    // passthrough rather than aborting the send.
-                    // The v=2 gate above still fails closed for its
-                    // own error paths; only the unconfigured-channel
-                    // case lands here.
-                    const msg = err && err.message ? err.message : String(err);
-                    if (msg.indexOf("OSL: recipient lookup:") === 0) {
-                        if (DEBUG)
-                            console.log(
-                                "[OSL] v=1 path: channel not OSL-configured (" +
-                                    source +
-                                    "); passthrough plaintext"
-                            );
-                        return onPassthrough();
-                    }
-                    console.error(
-                        "[OSL] __OSL_INTERCEPT__ rejected (" +
-                            source +
-                            "); ABORT (fail-closed)",
-                        err
-                    );
-                    return onAbort(err);
-                }
-            );
-        }
+        // Phase 7c / 7d-PIVOT send-path gate: the v=1 per-channel-share
+        // path (formerly v1Send + window.__OSL_INTERCEPT__) was retired
+        // in Phase 5 cleanup. V2 toggle-gated encryption is the only
+        // remaining encrypt path. "encrypt off" means plaintext
+        // passthrough; "encrypt on" means the v=2 wire below.
 
         let v7cCtx = null;
         try {
@@ -1061,8 +948,8 @@
             // 7d-PIVOT-FIX4: no scope detected (or Tauri bridge
             // missing) means the user couldn't have toggled
             // encrypt on for this send — passthrough the plain
-            // body. v1Send was the legacy per-channel-share path;
-            // under PIVOT we never want to silently fall into it.
+            // body. (The legacy v=1 per-channel-share path was
+            // retired in Phase 5 cleanup.)
             console.log(
                 "[OSL] send-gate (" +
                     source +
@@ -1135,14 +1022,9 @@
             );
             if (!encryptOn) {
                 // 7d-PIVOT-FIX4: toggle OFF means the user wants
-                // the message plain. PIVOT-FIX3 routed this through
-                // v1Send() which calls __OSL_INTERCEPT__, which
-                // invokes the legacy `osl_encrypt_message` (v=1)
-                // per-channel-share path — that still produced a
-                // DPC0:: ciphertext on the wire. PIVOT replaced the
-                // v=1 model with the toggle-gated v=2 model, so the
-                // only correct "encrypt off" behaviour is to
-                // forward the original plaintext untouched.
+                // the message plain. (The legacy v=1 path that
+                // could turn this into DPC0:: ciphertext anyway was
+                // retired in Phase 5 cleanup.)
                 return onPassthrough();
             }
             const memberIds = (v7cCtx.members || [])
