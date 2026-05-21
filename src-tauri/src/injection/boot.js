@@ -1727,6 +1727,32 @@
                 body: JSON.stringify({ content: bodyContent }),
             });
             if (resp && resp.ok) {
+                // Phase 6.2 fix: control messages (SKDM bundles +
+                // burn markers) are protocol noise that shouldn't be
+                // visible to the SENDER's own UI. The previous
+                // approach relied on the receive pipeline observing
+                // the message, decoding the prose cover, running
+                // Rust decrypt, getting the SKDM_APPLIED sentinel,
+                // and only then hiding -- a multi-second async chain
+                // during which the sender sees the prose cover sit
+                // in chat for every send. Now: parse the POST
+                // response (Discord returns { id, ... }) and stash
+                // the message_id in oslSkdmHiddenMsgIds immediately,
+                // so the next periodic sweep (~1s tick) hides it
+                // even before our own recv processes the SKDM. Best-
+                // effort: a parse failure leaves the legacy async
+                // hide path in charge.
+                try {
+                    const _respClone = resp.clone();
+                    _respClone
+                        .json()
+                        .then(function (j) {
+                            if (j && typeof j.id === "string" && j.id) {
+                                oslSkdmHiddenMsgIds.add(j.id);
+                            }
+                        })
+                        .catch(function () {});
+                } catch (_) {}
                 console.log(
                     "[OSL] oslSendControlMessage OK channel=" +
                         channelId +
