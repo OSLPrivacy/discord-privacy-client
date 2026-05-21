@@ -9815,21 +9815,36 @@
         oslTrace("[F0-FIX3-TRACE] snowflake bootstrap: shell ready, proceeding");
 
         const r = await oslInvoke("osl_get_self_user_id", {});
-        if (r.ok && typeof r.value === "string" && /^\d{17,20}$/.test(r.value)) {
-            // Already registered — bootstrap already repaired
-            // peer_map. Nothing more to do.
-            oslTrace(
-                "[F0-FIX3-TRACE] snowflake bootstrap: already registered (" +
-                    r.value +
-                    ")"
-            );
-            return;
-        }
+        const storedSnowflake =
+            r.ok && typeof r.value === "string" && /^\d{17,20}$/.test(r.value)
+                ? r.value
+                : null;
 
+        // Discord-account-switch detection. Even if the Rust side
+        // ALREADY has an identity registered, we must compare it
+        // against what Discord runtime is currently reporting — if
+        // the user switched Discord accounts on this machine, the
+        // stored identity is now wrong for the new account. The
+        // mismatch triggers an auto-burn + re-register on the Rust
+        // side inside `osl_register_self_snowflake`.
         const sf = await oslExtractSnowflakeRetry(10000);
         oslTrace(
-            "[F0-FIX3-TRACE] extracted snowflake=" + (sf || "null")
+            "[F0-FIX3-TRACE] extracted snowflake=" +
+                (sf || "null") +
+                " stored=" +
+                (storedSnowflake || "null")
         );
+        if (storedSnowflake && sf && storedSnowflake !== sf) {
+            console.warn(
+                "[OSL] Discord account switch detected on client side: " +
+                    "stored=" +
+                    storedSnowflake +
+                    " runtime=" +
+                    sf +
+                    " — Rust-side osl_register_self_snowflake will " +
+                    "auto-burn + re-register under the new snowflake."
+            );
+        }
         if (!sf) {
             console.warn(
                 "[OSL][F0-FIX3] snowflake extraction failed after 10s " +
