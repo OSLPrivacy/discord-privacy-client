@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Beta 1.0: persist a decrypted attachment's bytes to the local
+# sealed message store so images survive channel re-entry + restart.
+[[permission]]
+identifier = "allow-osl-attachment-cache-put"
+description = "Permits boot.js to persist a decrypted attachment (sealed at rest) keyed by message id + random filename, so re-entry rehydrates the image without a CDN re-fetch + re-decrypt."
+commands.allow = ["osl_attachment_cache_put"]

@@ -2243,6 +2243,84 @@ pub fn cmd_osl_load_channel_history(
     Ok(rows.into_iter().map(StoredMessageDto::from).collect())
 }
 
+/// Largest decrypted attachment we persist to the local cache.
+/// Images are worth caching; multi-MB videos aren't (they bloat the
+/// DB and re-fetch quickly enough). 8 MiB comfortably covers photos.
+const OSL_ATTACHMENT_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Soft cap on cached attachment rows; trimmed oldest-first.
+const OSL_ATTACHMENT_CACHE_KEEP: u32 = 600;
+
+/// Beta 1.0: persist a decrypted attachment's bytes to the local
+/// sealed store so a channel re-entry / restart rehydrates the image
+/// without a CDN re-fetch + re-decrypt. No-op when persistence is
+/// disabled, the bytes exceed the size cap, or base64 is malformed.
+pub fn cmd_osl_attachment_cache_put(
+    state: &AppState,
+    discord_message_id: String,
+    random_filename: String,
+    mime: String,
+    bytes_b64: String,
+) -> Result<(), String> {
+    let bytes = STANDARD
+        .decode(bytes_b64.as_bytes())
+        .map_err(|e| format!("OSL: attachment_cache_put base64: {e}"))?;
+    if bytes.len() > OSL_ATTACHMENT_CACHE_MAX_BYTES {
+        tracing::debug!(
+            msg_id = %discord_message_id,
+            len = bytes.len(),
+            "OSL: attachment_cache_put: over size cap; skipping"
+        );
+        return Ok(());
+    }
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    store
+        .put_attachment(&discord_message_id, &random_filename, &mime, &bytes)
+        .map_err(|e| format!("OSL: put_attachment: {e}"))?;
+    // Best-effort trim so the cache stays bounded. Cheap (one DELETE).
+    let _ = store.trim_attachments(OSL_ATTACHMENT_CACHE_KEEP);
+    Ok(())
+}
+
+/// Beta 1.0: fetch a previously-cached decrypted attachment. Returns
+/// `None` (the JS side then fetches + decrypts from the CDN) when
+/// persistence is disabled or the attachment isn't cached.
+pub fn cmd_osl_attachment_cache_get(
+    state: &AppState,
+    discord_message_id: String,
+    random_filename: String,
+) -> Result<Option<AttachmentCacheDto>, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(None);
+    };
+    match store
+        .get_attachment(&discord_message_id, &random_filename)
+        .map_err(|e| format!("OSL: get_attachment: {e}"))?
+    {
+        Some((mime, bytes)) => Ok(Some(AttachmentCacheDto {
+            mime,
+            bytes_b64: STANDARD.encode(&bytes),
+        })),
+        None => Ok(None),
+    }
+}
+
+/// JS-facing decrypted-attachment payload from the local cache.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AttachmentCacheDto {
+    pub mime: String,
+    pub bytes_b64: String,
+}
+
 /// Layer 10 / Phase 6a IPC entry point: re-persist a stored
 /// message under a new plaintext after the user edited it
 /// through Discord's edit flow.
@@ -8021,6 +8099,20 @@ pub fn cmd_osl_mark_scope_burned(
 ) -> Result<(), String> {
     use crate::burned_scopes_file::BurnedScopeEntry;
     let now = now_unix_secs();
+    // Beta 1.0: also drop any cached decrypted attachments for the
+    // burned messages, so a burned image can't be rehydrated from the
+    // local attachment cache after the burn.
+    if !burned_message_ids.is_empty() {
+        let guard = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned");
+        if let Some(store) = guard.as_ref() {
+            for mid in &burned_message_ids {
+                let _ = store.delete_attachments_for_message(mid);
+            }
+        }
+    }
     let entry = BurnedScopeEntry {
         scope_kind: scope_kind.clone(),
         scope_id: scope_id.clone(),

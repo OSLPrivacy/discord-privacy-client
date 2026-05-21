@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Beta 1.0: fetch a previously-cached decrypted attachment.
+[[permission]]
+identifier = "allow-osl-attachment-cache-get"
+description = "Permits boot.js to read a previously-cached decrypted attachment from the local sealed store, returning null when not cached."
+commands.allow = ["osl_attachment_cache_get"]

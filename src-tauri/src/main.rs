@@ -383,6 +383,54 @@ async fn osl_persist_outbound(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Beta 1.0: persist a decrypted attachment's bytes to the local
+/// sealed store. boot.js calls this after a successful attachment
+/// decrypt so re-entry / restart rehydrates the image without a CDN
+/// re-fetch + re-decrypt.
+#[tauri::command]
+async fn osl_attachment_cache_put(
+    app: tauri::AppHandle,
+    discord_message_id: String,
+    random_filename: String,
+    mime: String,
+    bytes_b64: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_attachment_cache_put(
+            state.inner(),
+            discord_message_id,
+            random_filename,
+            mime,
+            bytes_b64,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Beta 1.0: fetch a previously-cached decrypted attachment. Returns
+/// null when not cached (boot.js then fetches + decrypts from the CDN).
+#[tauri::command]
+async fn osl_attachment_cache_get(
+    app: tauri::AppHandle,
+    discord_message_id: String,
+    random_filename: String,
+) -> Result<Option<ipc::commands::AttachmentCacheDto>, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_attachment_cache_get(
+            state.inner(),
+            discord_message_id,
+            random_filename,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 // ---- Phase 7b: wire v=2 + control message Tauri wrappers ----
 
 /// Layer 10 / Phase 7b: encrypt a v=2 content message under a
@@ -2931,6 +2979,8 @@ fn main() {
             osl_burn_scope_data,
             osl_control_inbox_post,
             osl_control_inbox_drain,
+            osl_attachment_cache_put,
+            osl_attachment_cache_get,
             osl_mark_scope_burned,
             osl_unburn_scope,
             osl_list_burned_scopes,

@@ -42,6 +42,8 @@
     "allow-osl-burn-engage",
     "allow-osl-control-inbox-post",
     "allow-osl-control-inbox-drain",
+    "allow-osl-attachment-cache-put",
+    "allow-osl-attachment-cache-get",
     "allow-osl-mark-scope-burned",
     "allow-osl-unburn-scope",
     "allow-osl-list-burned-scopes",

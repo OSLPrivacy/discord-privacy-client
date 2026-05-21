@@ -334,6 +334,102 @@ impl MessageStore {
         Ok(rows)
     }
 
+    /// Beta 1.0: persist a decrypted attachment's bytes, sealed at
+    /// rest (AAD = cache_key), so a channel re-entry or app restart
+    /// can rehydrate the image/file without re-fetching from the CDN
+    /// and re-decrypting. `cache_key` is
+    /// `"<discord_message_id>/<random_filename>"`. Insert-or-replace
+    /// keyed on cache_key. The caller is expected to cap the size it
+    /// hands in (large videos aren't worth persisting).
+    pub fn put_attachment(
+        &self,
+        discord_message_id: &str,
+        random_filename: &str,
+        mime: &str,
+        plaintext: &[u8],
+    ) -> Result<(), StoreError> {
+        let cache_key = format!("{discord_message_id}/{random_filename}");
+        let (nonce, ct) = cipher::seal(&self.key, cache_key.as_bytes(), plaintext)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO attachments \
+                (cache_key, discord_message_id, random_filename, mime, \
+                 ciphertext, nonce, byte_len, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(cache_key) DO UPDATE SET \
+                mime = excluded.mime, \
+                ciphertext = excluded.ciphertext, \
+                nonce = excluded.nonce, \
+                byte_len = excluded.byte_len, \
+                created_at = excluded.created_at",
+            params![
+                cache_key,
+                discord_message_id,
+                random_filename,
+                mime,
+                ct,
+                nonce,
+                plaintext.len() as i64,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Beta 1.0: fetch a previously-persisted decrypted attachment.
+    /// Returns `(mime, plaintext_bytes)` or `None` if not cached.
+    pub fn get_attachment(
+        &self,
+        discord_message_id: &str,
+        random_filename: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        let cache_key = format!("{discord_message_id}/{random_filename}");
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let row_opt: Option<(String, Vec<u8>, Vec<u8>)> = conn
+            .query_row(
+                "SELECT mime, ciphertext, nonce FROM attachments WHERE cache_key = ?1",
+                params![cache_key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((mime, ct, nonce)) = row_opt else {
+            return Ok(None);
+        };
+        let pt = cipher::unseal(&self.key, cache_key.as_bytes(), &nonce, &ct)?;
+        Ok(Some((mime, pt)))
+    }
+
+    /// Beta 1.0: bound the attachments table's disk footprint by
+    /// trimming oldest rows beyond `keep`. Best-effort; called
+    /// occasionally by the caller. Returns rows deleted.
+    pub fn trim_attachments(&self, keep: u32) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let rows = conn.execute(
+            "DELETE FROM attachments WHERE cache_key NOT IN \
+                (SELECT cache_key FROM attachments ORDER BY created_at DESC LIMIT ?1)",
+            params![keep],
+        )?;
+        Ok(rows)
+    }
+
+    /// Delete cached attachments for a channel's messages (used by
+    /// scope burn so burned images don't linger in the cache).
+    pub fn delete_attachments_for_message(
+        &self,
+        discord_message_id: &str,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let rows = conn.execute(
+            "DELETE FROM attachments WHERE discord_message_id = ?1",
+            params![discord_message_id],
+        )?;
+        Ok(rows)
+    }
+
     /// Materialize a (channel_id, sender_discord_id,
     /// sender_osl_user_id, ct, nonce, decrypted_at, burned)
     /// row tuple into a [`StoredMessage`] using the supplied

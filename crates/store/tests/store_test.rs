@@ -278,3 +278,82 @@ fn reopen_with_future_schema_version_refuses() {
         Err(e) => assert!(matches!(e, StoreError::Schema(_)), "got {e:?}"),
     }
 }
+
+// ---- Beta 1.0: attachment cache ----
+
+#[test]
+fn attachment_put_get_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    let bytes: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    store
+        .put_attachment("1502771310428819569", "a1b2c3d4.bin", "image/png", &bytes)
+        .unwrap();
+    let out = store
+        .get_attachment("1502771310428819569", "a1b2c3d4.bin")
+        .unwrap()
+        .expect("attachment should be present");
+    assert_eq!(out.0, "image/png");
+    assert_eq!(out.1, bytes);
+}
+
+#[test]
+fn attachment_get_miss_is_none() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    assert!(store
+        .get_attachment("nope", "nope.bin")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn attachment_survives_reopen() {
+    let tmp = TempDir::new().unwrap();
+    let bytes = b"decrypted image bytes".to_vec();
+    {
+        let store = open_a(tmp.path());
+        store
+            .put_attachment("msg1", "f.bin", "image/jpeg", &bytes)
+            .unwrap();
+    }
+    // Reopen with the same secret: the row + its seal must survive.
+    let store = open_a(tmp.path());
+    let out = store.get_attachment("msg1", "f.bin").unwrap().unwrap();
+    assert_eq!(out.1, bytes);
+}
+
+#[test]
+fn attachment_wrong_secret_cannot_unseal() {
+    let tmp = TempDir::new().unwrap();
+    {
+        let store = open_a(tmp.path());
+        store
+            .put_attachment("msg1", "f.bin", "image/jpeg", b"secret bytes")
+            .unwrap();
+    }
+    // A different secret fails the canary at open(), so we never
+    // even reach get_attachment — assert the open itself refuses.
+    match MessageStore::open(tmp.path(), SECRET_B) {
+        Ok(_) => panic!("wrong secret must refuse to open"),
+        Err(e) => assert!(matches!(e, StoreError::Sealer(_)), "got {e:?}"),
+    }
+}
+
+#[test]
+fn attachment_trim_keeps_newest() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    for i in 0..10 {
+        store
+            .put_attachment(&format!("msg{i}"), "f.bin", "image/png", &[i as u8; 8])
+            .unwrap();
+        // Space out created_at so ordering is deterministic.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let deleted = store.trim_attachments(3).unwrap();
+    assert_eq!(deleted, 7);
+    // Newest (msg9) should remain; oldest (msg0) should be gone.
+    assert!(store.get_attachment("msg9", "f.bin").unwrap().is_some());
+    assert!(store.get_attachment("msg0", "f.bin").unwrap().is_none());
+}

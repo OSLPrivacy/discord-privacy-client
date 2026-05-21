@@ -7707,6 +7707,46 @@
      * idempotency check in swap can skip a re-injection on the
      * next observer pass.
      */
+    /**
+     * Beta 1.0: build a blob from decrypted bytes, register it in the
+     * per-message cache, and swap it into the DOM. Shared by the live
+     * CDN-decrypt path and the local-cache-hit path so both render
+     * identically. `bytes` is a Uint8Array of the decrypted file.
+     */
+    function oslInjectAttachmentBytes(li, msgId, cand, bytes, mime, newCache) {
+        const blob = new Blob([bytes], { type: mime });
+        const blobUrl = URL.createObjectURL(blob);
+        newCache.byRandomName[cand.name] = {
+            blobUrl: blobUrl,
+            mime: mime,
+            url: cand.url,
+        };
+        newCache.blobUrls.push(blobUrl);
+        const targets = oslFindAttachmentTargets(li, cand.name);
+        if (targets.length === 0) {
+            oslSwapAttachmentElement(
+                { el: null, url: cand.url, name: cand.name, li: li, msgId: msgId },
+                blobUrl,
+                mime
+            );
+        } else {
+            targets.forEach(function (t) {
+                oslSwapAttachmentElement(t, blobUrl, mime);
+            });
+        }
+        return blobUrl;
+    }
+
+    /** Decode a base64 string to a Uint8Array. */
+    function oslB64ToBytes(b64) {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+    }
+
     function oslMakeInlineMedia(blobUrl, mime) {
         if (typeof mime === "string" && mime.indexOf("video/") === 0) {
             const video = document.createElement("video");
@@ -9129,6 +9169,48 @@
         const newCache = { byRandomName: {}, blobUrls: [] };
         for (const cand of candidates) {
             try {
+                // Beta 1.0: local sealed-store cache hit. If we
+                // decrypted this attachment in a prior session, skip
+                // the CDN fetch + decrypt entirely and render from the
+                // cached bytes. Keyed by (msgId, random filename).
+                try {
+                    if (msgId) {
+                        const cacheRes = await oslInvoke(
+                            "osl_attachment_cache_get",
+                            {
+                                discordMessageId: msgId,
+                                randomFilename: cand.name,
+                            }
+                        );
+                        if (
+                            cacheRes &&
+                            cacheRes.ok &&
+                            cacheRes.value &&
+                            typeof cacheRes.value.bytes_b64 === "string"
+                        ) {
+                            const cachedBytes = oslB64ToBytes(
+                                cacheRes.value.bytes_b64
+                            );
+                            oslInjectAttachmentBytes(
+                                li,
+                                msgId,
+                                cand,
+                                cachedBytes,
+                                cacheRes.value.mime,
+                                newCache
+                            );
+                            console.log(
+                                "[OSL] attachment cache HIT msg=" +
+                                    msgId +
+                                    " random=" +
+                                    cand.name +
+                                    " bytes=" +
+                                    cachedBytes.length
+                            );
+                            continue;
+                        }
+                    }
+                } catch (_) {}
                 // 8d-FIX2: with `.bin` wrappers Discord doesn't
                 // transcode, so the DOM-rendered URL on the
                 // attachment card (typically the actual
@@ -9216,43 +9298,26 @@
                     continue;
                 }
                 const plain = decRes.value;
-                const binary = atob(plain.plaintextB64);
-                const bytes = new Uint8Array(binary.length);
-                for (let i = 0; i < binary.length; i++) {
-                    bytes[i] = binary.charCodeAt(i);
-                }
-                const blob = new Blob([bytes], { type: plain.mimeType });
-                const blobUrl = URL.createObjectURL(blob);
-                newCache.byRandomName[cand.name] = {
-                    blobUrl: blobUrl,
-                    mime: plain.mimeType,
-                    // 8e-FIX6: cache the URL too so the replay path
-                    // can fall back to message-content injection when
-                    // the DOM walk misses (zero-sample MP4 file card).
-                    url: cand.url,
-                };
-                newCache.blobUrls.push(blobUrl);
-                const targets = oslFindAttachmentTargets(li, cand.name);
-                if (targets.length === 0) {
-                    // 8e-FIX6: targets empty when Discord's file card
-                    // hides the CDN URL in React state (zero-sample
-                    // MP4 path). Let the swap function re-locate by
-                    // URL and fall back to message-content injection.
-                    oslSwapAttachmentElement(
-                        {
-                            el: null,
-                            url: cand.url,
-                            name: cand.name,
-                            li: li,
-                            msgId: msgId,
-                        },
-                        blobUrl,
-                        plain.mimeType
-                    );
-                } else {
-                    targets.forEach(function (t) {
-                        oslSwapAttachmentElement(t, blobUrl, plain.mimeType);
-                    });
+                const bytes = oslB64ToBytes(plain.plaintextB64);
+                oslInjectAttachmentBytes(
+                    li,
+                    msgId,
+                    cand,
+                    bytes,
+                    plain.mimeType,
+                    newCache
+                );
+                // Beta 1.0: persist the decrypted bytes to the local
+                // sealed store so the next re-entry / restart hits the
+                // cache-get path above instead of re-fetching +
+                // re-decrypting. Fire-and-forget; size-capped in Rust.
+                if (msgId) {
+                    oslInvoke("osl_attachment_cache_put", {
+                        discordMessageId: msgId,
+                        randomFilename: cand.name,
+                        mime: plain.mimeType,
+                        bytesB64: plain.plaintextB64,
+                    }).catch(function () {});
                 }
                 console.log(
                     "[OSL] attachment decrypt: msg=" +

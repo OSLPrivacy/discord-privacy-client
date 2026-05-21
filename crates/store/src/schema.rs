@@ -39,7 +39,11 @@ use rusqlite::{params, Connection};
 ///        scope_id columns (all NULL on existing rows). Driven
 ///        by the per-message ephemeral-key + scoped burn model
 ///        in `docs/phase-7-design.md` §§ 3, 5.4.
-pub(crate) const SCHEMA_VERSION: u32 = 2;
+///   v3 — Beta 1.0. Adds the `attachments` table so decrypted
+///        image/file bytes survive a restart (sealed at rest, same
+///        as message plaintext) instead of being re-fetched +
+///        re-decrypted from Discord's CDN on every channel re-entry.
+pub(crate) const SCHEMA_VERSION: u32 = 3;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -74,6 +78,31 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_channel
     ON messages(channel_id, decrypted_at DESC);
+"#;
+
+/// Schema v=3 (Beta 1.0): the `attachments` table. `ciphertext` is
+/// the sealed decrypted attachment bytes (AAD = `cache_key`), `nonce`
+/// the per-row XChaCha20-Poly1305 nonce. `cache_key` is
+/// `"<discord_message_id>/<random_filename>"`, unique per attachment.
+/// Created `IF NOT EXISTS` so it layers onto an existing v=2 DB
+/// without a rewrite.
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS attachments (
+    cache_key TEXT PRIMARY KEY,
+    discord_message_id TEXT NOT NULL,
+    random_filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    byte_len INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_msg
+    ON attachments(discord_message_id);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_created
+    ON attachments(created_at);
 "#;
 
 /// Phase 7a column additions (schema v=2). Each is appended via a
@@ -120,6 +149,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
     // v=2 directly because we stamp `schema_version = SCHEMA_VERSION`
     // below.
     apply_v2_columns(conn)?;
+    // v=3: the attachments table. CREATE IF NOT EXISTS is idempotent
+    // so this is safe to run on a fresh DB and on an existing v=2 DB.
+    conn.execute_batch(SCHEMA_V3)?;
     let on_disk: Option<u32> = read_meta_u32(conn, "schema_version")?;
     match on_disk {
         None => {
