@@ -16499,14 +16499,13 @@
                             recvScopeInput
                         );
                     } else if (isV4Desync) {
-                        // Ratchet desync: ask peer to drop their
-                        // ratchet so next v=4 re-handshakes both ways.
-                        oslMaybeEmitRecovery(
-                            "session",
-                            senderDiscordId,
-                            channelId,
-                            null
-                        );
+                        // OPTION B: DMs are stateless v=3 now; v=4 is
+                        // retired. A v=4 desync can only come from an
+                        // OLD pre-migration message, so DON'T fire the
+                        // session-reset recovery (that loop was the
+                        // churn). Leave the old message undecoded —
+                        // harmless, and no new v=4 is ever sent.
+                        // (intentionally no recovery)
                     } else if (isV4NotRecipient) {
                         // Stale-identity: sender wrapped to an
                         // identity we no longer hold (they

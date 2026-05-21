@@ -2859,7 +2859,17 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         .iter()
         .skip(1) // recipients[0] is (self_discord_id, self) per recipients_for_scope_v3
         .collect();
-    if non_self_peers.len() == 1 && !scope_is_group_or_server(&scope) {
+    // OPTION B: DMs no longer use the v=4 Double Ratchet. They route
+    // through the stateless v=3 path below (the same PQ-hybrid scheme
+    // groups use), which eliminates the desync class entirely — there
+    // is no session state to fall out of sync, no bootstrap handshake,
+    // and no reset/recovery loop. v=4 was the sole source of the
+    // recurring "ratchet desync" DM failures. The branch is gated off
+    // (kept inert for reference) rather than deleted to keep this a
+    // minimal, low-risk change; the v=4 recovery machinery in boot.js
+    // is also disabled so old undecodable v=4 messages don't churn.
+    let v4_dm_enabled = false;
+    if v4_dm_enabled && non_self_peers.len() == 1 && !scope_is_group_or_server(&scope) {
         let peer_did_opt = derive_v4_peer_discord_id(state, &channel_members, &self_discord_id);
         if let Some(peer_did) = peer_did_opt {
             // Probe peer_map for v=4 eligibility. Eligible iff (a)
