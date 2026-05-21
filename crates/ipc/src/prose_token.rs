@@ -81,17 +81,58 @@ pub enum ProseTokenError {
 /// Derive the per-conversation MAC key + ConversationCipher used by
 /// both encode_token and decode_token. Same scope → same outputs on
 /// both sender and receiver — no roundtrip needed.
+///
+/// Symmetric salt rules (matter for prose-token only; other crypto
+/// like the ratchet keeps using `scope.storage_key()`):
+///
+///   - `dm`: use `dm:<channel_id>` if `channel_id` is set in the
+///     ScopeInput, else fall back to `scope.storage_key()` which is
+///     `dm:<peer_id>`. The Discord DM channel id is symmetric across
+///     both peers; the per-peer storage_key would give EACH side a
+///     different salt -> different mac_key -> recipient HMAC fails
+///     -> silent decode None. That's the bug that broke cross-user
+///     DM decrypt since the Phase 2 prose-token cutover.
+///   - `gc` / `server_channel` / `server_full`: scope.storage_key()
+///     is already symmetric across peers (uses channel_id /
+///     server_id) so no change is needed.
 fn derive_scope_primitives(
     scope_input: &ScopeInput,
 ) -> Result<(stego::ConversationCipher, [u8; MAC_KEY_LEN]), ProseTokenError> {
     let scope = crate::scope::Scope::try_from(scope_input.clone())?;
-    let salt = scope.storage_key();
+    let salt = prose_token_salt(&scope);
     let cipher = stego::ConversationCipher::from_salt(salt.as_bytes());
     let hk = Hkdf::<Sha256>::new(None, salt.as_bytes());
     let mut mac_key = [0u8; MAC_KEY_LEN];
     hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut mac_key)
         .expect("HKDF expand to 32 bytes is infallible");
     Ok((cipher, mac_key))
+}
+
+/// Prose-token-specific salt. See [`derive_scope_primitives`] for the
+/// rationale — TL;DR: DMs need a symmetric value across peers, and
+/// the per-peer `dm:<peer_id>` form `Scope::storage_key()` produces
+/// isn't symmetric.
+fn prose_token_salt(scope: &crate::scope::Scope) -> String {
+    use crate::scope::ScopeKind;
+    match scope.kind {
+        ScopeKind::Dm => match &scope.channel_id {
+            // Heuristic for "real channel_id" vs "TryFrom fallback to
+            // peer_id" (line ~207 in scope.rs):
+            //   - present, non-empty, AND different from scope.id
+            //     (peer_id) -> real DM channel id, symmetric.
+            //   - equal to scope.id -> the TryFrom fallback fired
+            //     because the JS caller didn't pass channel_id, so
+            //     using it would still be asymmetric. Fall back to
+            //     storage_key() to preserve pre-fix behaviour for
+            //     those legacy callsites (mostly profile-action and
+            //     recovery paths that don't drive content encrypt).
+            Some(ch) if !ch.is_empty() && ch != &scope.id => format!("dm:{}", ch),
+            _ => scope.storage_key(),
+        },
+        ScopeKind::Gc | ScopeKind::ServerChannel | ScopeKind::ServerFull => {
+            scope.storage_key()
+        }
+    }
 }
 
 fn id_hex_to_bytes(id_hex: &str) -> Result<[u8; stego::TOKEN_ID_BYTES], ProseTokenError> {
@@ -310,5 +351,80 @@ mod tests {
         let (_, ka) = derive_scope_primitives(&a).unwrap();
         let (_, kb) = derive_scope_primitives(&b).unwrap();
         assert_ne!(ka, kb);
+    }
+
+    /// Cross-peer DM symmetry: each side sees the OTHER user as `id`
+    /// but both share the same Discord DM `channel_id`. Phase 6.1
+    /// (this commit): mac_keys MUST be identical so the prose-token
+    /// cover decodes on the recipient.
+    #[test]
+    fn dm_with_channel_id_yields_symmetric_mac_keys() {
+        // Desktop's view: peer = LAPTOP_ID
+        let desktop_view = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "1502770642930634812".to_string(), // laptop user id
+            server_id: None,
+            channel_id: Some("9999999999999999".to_string()), // DM channel
+        };
+        // Laptop's view: peer = DESKTOP_ID
+        let laptop_view = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "1500650102635630622".to_string(), // desktop user id
+            server_id: None,
+            channel_id: Some("9999999999999999".to_string()), // DM channel
+        };
+        let (_, ka) = derive_scope_primitives(&desktop_view).unwrap();
+        let (_, kb) = derive_scope_primitives(&laptop_view).unwrap();
+        assert_eq!(
+            ka, kb,
+            "DM mac_keys must be symmetric across peers when channel_id is set"
+        );
+    }
+
+    /// Pre-fix behaviour preserved: when channel_id is missing /
+    /// equals scope.id (TryFrom fallback case), we use storage_key().
+    /// Cross-peer derivation in this case is ASYMMETRIC (the pre-fix
+    /// bug) — verifying that fallback path so we don't regress legacy
+    /// callsites that never passed a real DM channel_id.
+    #[test]
+    fn dm_without_channel_id_falls_back_to_storage_key() {
+        let no_ch = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "111".to_string(),
+            server_id: None,
+            channel_id: None,
+        };
+        let ch_eq_id = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "111".to_string(),
+            server_id: None,
+            channel_id: Some("111".to_string()), // fallback equals id
+        };
+        let (_, k1) = derive_scope_primitives(&no_ch).unwrap();
+        let (_, k2) = derive_scope_primitives(&ch_eq_id).unwrap();
+        // Both should produce the same key (both use storage_key()).
+        assert_eq!(k1, k2);
+    }
+
+    /// GC scopes are already symmetric (both peers share the same
+    /// gc channel_id as `scope.id`). Verify channel_id presence
+    /// doesn't change anything.
+    #[test]
+    fn gc_mac_key_unchanged_by_channel_id_presence() {
+        let with_ch = ScopeInput {
+            kind: crate::scope::ScopeKind::Gc,
+            id: "111".to_string(),
+            server_id: None,
+            channel_id: Some("111".to_string()),
+        };
+        let without_ch = ScopeInput {
+            kind: crate::scope::ScopeKind::Gc,
+            id: "111".to_string(),
+            server_id: None,
+            channel_id: None,
+        };
+        let (_, k1) = derive_scope_primitives(&with_ch).unwrap();
+        let (_, k2) = derive_scope_primitives(&without_ch).unwrap();
+        assert_eq!(k1, k2);
     }
 }

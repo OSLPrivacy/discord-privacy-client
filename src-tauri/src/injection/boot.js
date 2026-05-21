@@ -15486,20 +15486,35 @@
                         // their retry budgets a second time without
                         // unlocking anything. Narrow to covers whose
                         // author matches the SKDM sender.
+                        //
+                        // Phase 6.1 fix: post-prose-token-cutover the
+                        // div's textContent is the PROSE COVER, not
+                        // the DPC0:: wire, so `oslCoverWireVersion`
+                        // against textContent always returns -1 and
+                        // every awaiting v=5 was being skipped. Now
+                        // we ALSO check the cached wire stashed by
+                        // prose_token_recv in __oslProseWireByMsgId.
+                        // If either source is a v=5 cover, the
+                        // message qualifies for revive.
                         const _divs = document.querySelectorAll(
                             RECV_MESSAGE_DIV_SELECTOR
                         );
                         let _revived = 0;
                         for (const _d of _divs) {
-                            if (
-                                oslCoverWireVersion(
-                                    _d.textContent || ""
-                                ) !== 5
-                            ) {
-                                continue;
-                            }
                             const _mid = recvMessageIdOf(_d);
                             if (!_mid) continue;
+                            // Try textContent first (covers the pre-
+                            // prose path) then the cached wire.
+                            let _isV5 =
+                                oslCoverWireVersion(_d.textContent || "") === 5;
+                            if (!_isV5 && window.__oslProseWireByMsgId) {
+                                const _cw =
+                                    window.__oslProseWireByMsgId.get(_mid);
+                                if (typeof _cw === "string") {
+                                    _isV5 = oslCoverWireVersion(_cw) === 5;
+                                }
+                            }
+                            if (!_isV5) continue;
                             if (recvPlaintext.has(_mid)) continue;
                             const _author = recvExtractAuthorId(_d);
                             if (
