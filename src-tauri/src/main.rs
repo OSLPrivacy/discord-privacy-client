@@ -2453,33 +2453,6 @@ async fn osl_set_scope_ttl(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Read the user's customised encryption-marker text. Empty string
-/// means "render cipher rows blank". Default = "[Encryption - Ignore]".
-#[tauri::command]
-async fn osl_get_encryption_marker(app: tauri::AppHandle) -> Result<String, String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_get_encryption_marker(state.inner())
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
-/// Persist the user's customised encryption-marker text. Any string
-/// allowed including empty (renders cipher rows blank).
-#[tauri::command]
-async fn osl_set_encryption_marker(app: tauri::AppHandle, text: String) -> Result<(), String> {
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app_handle.state::<AppState>();
-        let dir = keystore::osl_config_dir().ok();
-        ipc::commands::cmd_osl_set_encryption_marker(state.inner(), text, dir)
-    })
-    .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
-}
-
 fn main() {
     // Without a subscriber, every `tracing::info!/warn!/error!`
     // across the workspace is silently discarded — three diagnosis
@@ -3004,8 +2977,6 @@ fn main() {
             osl_install_update,
             osl_get_update_channel,
             osl_set_update_channel,
-            osl_get_encryption_marker,
-            osl_set_encryption_marker,
             osl_prose_token_send,
             osl_prose_token_recv,
             osl_prose_token_burn,

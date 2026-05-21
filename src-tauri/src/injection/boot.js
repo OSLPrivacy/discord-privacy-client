@@ -5528,7 +5528,7 @@
                 title = "Server-wide whitelist ON. Click to turn OFF.";
             } else if (st.channel) {
                 state = "partial";
-                color = "var(--status-warning, #f0b132)";
+                color = "#f0b132";
                 title =
                     "This channel is whitelisted. Click to whitelist the WHOLE server.";
             } else {
@@ -6598,7 +6598,7 @@
                     "server-wide whitelist OFF.";
             } else if (st.channel) {
                 lockState = "partial";
-                color = "var(--status-warning, #f0b132)";
+                color = "#f0b132";
                 label =
                     "This channel is whitelisted (server-wide OFF). " +
                     "Click to whitelist the WHOLE server instead.";
@@ -6733,7 +6733,7 @@
                 break;
             case "some":
                 lockState = "partial";
-                color = "var(--status-warning, #f0b132)";
+                color = "#f0b132";
                 label =
                     "Encrypting with " +
                     summary.whitelisted_count +
@@ -13675,7 +13675,7 @@
             window.__oslAutoHideStyleInstalled = true;
         } catch (_) {}
     }
-    // Replace DPC0::/DPC1:: cipher content with a stable marker.
+    // Replace DPC0::/DPC1:: cipher content with a blank placeholder.
     // Critical property: the row keeps a normal text-line height --
     // layout never shrinks, which means Discord's virtualised
     // scroller doesn't get confused (no scroll snap-back, no
@@ -13683,17 +13683,17 @@
     // on `data-osl-cipher-text` so any code that needs to re-read
     // the wire (re-dispatch, debug) can still find it.
     //
-    // The marker text is user-configurable via the Display
-    // settings page (osl_get_encryption_marker / osl_set_encryption_marker).
-    // Empty string == render blank, no text. Default applied
-    // until the IPC fetch completes, then `oslEncryptionMarkerText`
-    // is overwritten with the persisted value.
+    // Phase 6.4 cleanup: marker text was removed entirely. The
+    // post-6.4 transport keeps control wires off Discord, so the
+    // only thing that hits this path is content waiting on a
+    // sender-key — which usually resolves within ~1 tick. A
+    // visible "[Encryption - Ignore]" string was just noise.
+    // ` ` (non-breaking space) preserves the row's line
+    // height without rendering any visible glyph.
     //
     // Idempotent via `data-osl-cipher-hidden=1`. recvApplyPlaintext
     // clears that attribute (along with `data-osl-cipher-text` and
     // the inline marker styling) when real plaintext lands.
-    let oslEncryptionMarkerText = "[Encryption - Ignore]";
-
     function oslAutoHideCiphertext(div) {
         if (!div || div.getAttribute("data-osl-cipher-hidden") === "1") {
             return;
@@ -13703,56 +13703,11 @@
             div.setAttribute("data-osl-cipher-hidden", "1");
             div.setAttribute("data-osl-cipher-text", cipher);
             const span = document.createElement("span");
-            span.textContent = oslEncryptionMarkerText;
-            span.style.color = "var(--text-muted, #888)";
-            span.style.fontStyle = "italic";
-            span.style.opacity = "0.75";
+            span.textContent = " ";
             span.setAttribute("data-osl-encrypted-marker", "1");
             div.replaceChildren(span);
         } catch (_) {}
     }
-
-    // Walk every currently-marked cipher row and update the marker
-    // text in-place. Called when the user changes the preference
-    // via the settings page (osl:encryption-marker-changed event).
-    function oslRefreshAllEncryptionMarkers() {
-        try {
-            const spans = document.querySelectorAll(
-                "span[data-osl-encrypted-marker='1']"
-            );
-            for (const s of spans) s.textContent = oslEncryptionMarkerText;
-        } catch (_) {}
-    }
-
-    // Fetch the persisted marker text once at boot, then listen for
-    // cross-window change events from the Display settings page.
-    (async function () {
-        try {
-            const r = await oslInvoke("osl_get_encryption_marker", {});
-            if (r && r.ok && typeof r.value === "string") {
-                oslEncryptionMarkerText = r.value;
-                oslRefreshAllEncryptionMarkers();
-            }
-        } catch (_) {}
-    })();
-    try {
-        if (
-            window.__TAURI__ &&
-            window.__TAURI__.event &&
-            typeof window.__TAURI__.event.listen === "function"
-        ) {
-            window.__TAURI__.event.listen(
-                "osl:encryption-marker-changed",
-                function (e) {
-                    const v = e && e.payload;
-                    if (typeof v === "string") {
-                        oslEncryptionMarkerText = v;
-                        oslRefreshAllEncryptionMarkers();
-                    }
-                }
-            );
-        }
-    } catch (_) {}
 
     /**
      * Pull the sender's Discord user_id (== OSL user_id in v1)
@@ -15053,6 +15008,32 @@
                     // infinite loop that buried the console in 50k
                     // "scan no candidates" lines until the client died.
                     if (recvDone.has(__osl_pre_msgId)) {
+                        // Channel-re-entry cache fix: Discord may have
+                        // re-mounted this <div> with the original prose
+                        // cover textContent instead of our previously-
+                        // applied plaintext span. If we have cached
+                        // plaintext (in-memory or MessageStore-loaded),
+                        // re-apply it before bailing — otherwise the row
+                        // stays as cover text forever and the user sees
+                        // "messages don't decrypt that previously did".
+                        //
+                        // Stop signal against the observer loop: only
+                        // re-apply when textContent currently differs
+                        // from the cached plaintext. After apply, the
+                        // observer fires once more, re-enters here, the
+                        // textContent now matches, and we no-op out.
+                        try {
+                            const _restore =
+                                recvPlaintext.get(__osl_pre_msgId) ||
+                                loadedHistory.get(__osl_pre_msgId) ||
+                                selfSentPlaintext.get(__osl_pre_msgId);
+                            if (
+                                typeof _restore === "string" &&
+                                div.textContent !== _restore
+                            ) {
+                                recvApplyPlaintext(div, _restore);
+                            }
+                        } catch (_) {}
                         return;
                     }
                     text = __osl_cachedWire;
@@ -16522,6 +16503,26 @@
                 if (here && here !== lastLoadedChannelId) {
                     lastLoadedChannelId = here;
                     recvLoadHistory(here);
+                    // Switch detected: kick fast re-sweeps over
+                    // the next ~150ms so the # → 🔒 swap lands as
+                    // soon as Discord paints the newly-selected
+                    // sidebar item, instead of waiting up to a
+                    // full 1s for the next periodic tick.
+                    nativeSetTimeout(function () {
+                        try {
+                            oslSweepSidebarChannelLock();
+                        } catch (_) {}
+                    }, 0);
+                    nativeSetTimeout(function () {
+                        try {
+                            oslSweepSidebarChannelLock();
+                        } catch (_) {}
+                    }, 50);
+                    nativeSetTimeout(function () {
+                        try {
+                            oslSweepSidebarChannelLock();
+                        } catch (_) {}
+                    }, 150);
                 }
             } catch (e) {
                 console.log(
@@ -16751,6 +16752,65 @@
                         console.log(
                             "[OSL] control_inbox drain: applied=" + applied
                         );
+                        // Phase 6.4 cache-reliability fix: applied SKDMs
+                        // arrive via inbox now (not via the live decrypt
+                        // IPC), so the per-sender v=5 revive sweep that
+                        // the live SKDM_APPLIED path runs is bypassed.
+                        // Mirror it here: clear terminal/retry state for
+                        // every stuck v=5 cover currently in the DOM so
+                        // the next periodic sweep re-dispatches with the
+                        // freshly-installed sender chain. Author-
+                        // unrestricted (we don't know which senders just
+                        // installed) -- worst case is wasted dispatches
+                        // on rows whose chain didn't change, all gated
+                        // by recvPlaintext.has() short-circuit.
+                        try {
+                            const _divs = document.querySelectorAll(
+                                RECV_MESSAGE_DIV_SELECTOR
+                            );
+                            let _revived = 0;
+                            for (const _d of _divs) {
+                                const _mid = recvMessageIdOf(_d);
+                                if (!_mid) continue;
+                                let _isV5 =
+                                    oslCoverWireVersion(
+                                        _d.textContent || ""
+                                    ) === 5;
+                                if (
+                                    !_isV5 &&
+                                    window.__oslProseWireByMsgId
+                                ) {
+                                    const _cw =
+                                        window.__oslProseWireByMsgId.get(
+                                            _mid
+                                        );
+                                    if (typeof _cw === "string") {
+                                        _isV5 =
+                                            oslCoverWireVersion(_cw) === 5;
+                                    }
+                                }
+                                if (!_isV5) continue;
+                                if (recvPlaintext.has(_mid)) continue;
+                                recvDone.delete(_mid);
+                                recvRetries.delete(_mid);
+                                recvAuthorRetryCount.delete(_mid);
+                                _revived++;
+                            }
+                            if (_revived > 0) {
+                                console.log(
+                                    "[OSL] inbox drain revive: cleared " +
+                                        "terminal/retry state for " +
+                                        _revived +
+                                        " stuck v=5 message(s)"
+                                );
+                            }
+                            // Burn markers / scope flag changes can also
+                            // arrive via inbox; refresh the header so
+                            // the lock badge reflects new state.
+                            try {
+                                oslRefreshHeaderState({ force: true });
+                            } catch (_) {}
+                        } catch (_) {}
                     }
                 } else if (resp && !resp.ok) {
                     // Quietly log; transient keyserver issues are
@@ -16929,7 +16989,7 @@
 
         const MUTED = "var(--text-muted, #949ba4)";
         const DANGER = "var(--status-danger, #ed4245)";
-        const WARN = "var(--status-warning, #f0b132)";
+        const WARN = "#f0b132";
         const OK_NEUTRAL = "var(--text-normal, #dbdee1)";
         const STRONG_OK = "var(--status-positive, #23a55a)";
 

@@ -51,7 +51,6 @@
     "allow-osl-set-guild-list",
     "allow-osl-set-server-default",
     "allow-osl-get-server-defaults",
-    "allow-osl-get-encryption-marker",
     "allow-osl-prose-token-send",
     "allow-osl-prose-token-recv",
     "allow-osl-prose-token-burn",
