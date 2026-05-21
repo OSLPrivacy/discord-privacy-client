@@ -1453,7 +1453,14 @@ async function onRemoveWhitelist(row) {
     scopeInput,
     revokeBroadened: false,
   });
-  if (!result.ok) { oslToast("Remove failed: " + result.error); return; }
+  // NOTE: do NOT early-return when this fails. A server-wide row has no
+  // per-peer entry to unwhitelist, so this can fail/no-op — but the
+  // green lock is driven by the scope-level server_header flag, which
+  // we still need to clear below. Bailing here was why "remove a
+  // server with the header green-locked" did nothing.
+  if (!result.ok) {
+    console.log("[OSL] settings remove: per-peer unwhitelist note: " + result.error);
+  }
   // The whitelist manager takes priority over the per-scope lock
   // buttons: Remove also clears the scope-level flags that keep the
   // lock green/yellow (encrypt toggle, the per-channel/GC whitelist

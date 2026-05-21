@@ -10488,6 +10488,11 @@
                 // just changed, so the lock must re-read and (likely)
                 // go grey.
                 oslRefreshHeaderState({ force: true });
+                // Repaint the sidebar channel locks too: removing a
+                // server's whitelist must drop their green/yellow to
+                // grey (they're skipped by inject's dedup, so they need
+                // an explicit re-resolve).
+                oslChanWlRefreshAll();
             } catch (err) {
                 console.error("[OSL] whitelist_removed handler:", err);
             }
@@ -10572,6 +10577,7 @@
                 );
                 oslRefreshHeaderState({ force: true });
                 oslComposerToggleRefreshIfMounted({ force: true });
+                oslChanWlRefreshAll();
             } catch (err) {
                 console.error(
                     "[OSL] scope_encryption_toggled handler:",
@@ -10618,6 +10624,7 @@
                 );
                 oslRefreshHeaderState({ force: true });
                 oslComposerToggleRefreshIfMounted({ force: true });
+                oslChanWlRefreshAll();
             } catch (err) {
                 console.error("[OSL] scope_encrypt_changed handler:", err);
             }
@@ -11986,41 +11993,38 @@
         };
     }
 
-    // Lock glyph for the per-channel button. OFF/"server" use
-    // `currentColor` so the icon inherits Discord's interactive color
-    // from the copied action-item class (i.e. exactly the same color
-    // as the adjacent "Create Invite" button, including its hover
-    // transition). ON is forced green so whitelist state is still
-    // visible at a glance.
-    function oslChanWlSvg(on) {
-        if (on) {
-            return (
-                '<svg width="16" height="16" viewBox="0 0 24 24" ' +
-                'fill="#23a559" aria-hidden="true">' +
-                '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
-                '<path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="#23a559" ' +
-                'stroke-width="2" fill="none" stroke-linecap="round"/>' +
-                "</svg>"
-            );
-        }
+    // Lock glyph for the per-channel button. Colors are BAKED per
+    // state (no more currentColor): "off" inherited Discord's
+    // interactive color, which on an unread/selected channel is blue —
+    // that was the "still blue" report. Now:
+    //   off / server-overridden-off → grey   (#80848e)
+    //   partial (some members WL'd)  → yellow (#f0b132)
+    //   on / server-wide (all)       → green  (#23a559)
+    function oslChanWlColor(state) {
+        if (state === "on" || state === "server") return "#23a559";
+        if (state === "partial") return "#f0b132";
+        return "#80848e";
+    }
+    function oslChanWlSvg(state) {
+        const c = oslChanWlColor(state);
         return (
             '<svg width="16" height="16" viewBox="0 0 24 24" ' +
-            'fill="currentColor" aria-hidden="true">' +
+            'fill="' + c + '" aria-hidden="true">' +
             '<rect x="4" y="11" width="16" height="10" rx="2"/>' +
-            '<path d="M8 11V7a4 4 0 0 1 8 0" stroke="currentColor" ' +
+            '<path d="M8 11V7a4 4 0 0 1 8 0' + (state === "on" || state === "server" || state === "partial" ? "v4" : "") + '" stroke="' + c + '" ' +
             'stroke-width="2" fill="none" stroke-linecap="round"/>' +
             "</svg>"
         );
     }
 
-    // state: "on" (channel whitelisted), "off", "server" (server-wide
-    // whitelist on → per-channel overridden / inert).
+    // state: "on" (channel whitelisted, all), "partial" (some members
+    // whitelisted), "off" (none), "server" (server-wide whitelist on →
+    // per-channel overridden / inert, shown green).
     function oslChanWlPaint(btn, state) {
-        const on = state === "on";
-        btn.innerHTML = oslChanWlSvg(on);
+        btn.innerHTML = oslChanWlSvg(state);
         btn.setAttribute("data-osl-chanwl-state", state);
         if (state === "server") {
-            btn.style.opacity = "0.4";
+            btn.style.opacity = "0.7";
             btn.style.cursor = "not-allowed";
             btn.title =
                 "Server-wide whitelist is ON (overrides channels). " +
@@ -12029,9 +12033,12 @@
         } else {
             btn.style.opacity = "1";
             btn.style.cursor = "pointer";
-            btn.title = on
-                ? "OSL: this channel is whitelisted (click to remove)"
-                : "OSL: whitelist this channel (encrypt to its OSL members)";
+            btn.title =
+                state === "on"
+                    ? "OSL: this channel is whitelisted (click to remove)"
+                    : state === "partial"
+                      ? "OSL: some members whitelisted (click to whitelist the channel)"
+                      : "OSL: whitelist this channel (encrypt to its OSL members)";
         }
     }
 
@@ -12041,17 +12048,58 @@
                 serverId: scopeInput.server_id,
                 channelScopeInput: scopeInput,
             });
-            if (!sw.ok || !sw.value) {
-                oslChanWlPaint(btn, "off");
+            // Server-wide whitelist covers this channel → green/inert.
+            if (sw.ok && sw.value && sw.value.server_header) {
+                oslChanWlPaint(btn, "server");
                 return;
             }
-            if (sw.value.server_header) {
-                oslChanWlPaint(btn, "server");
-            } else {
-                oslChanWlPaint(btn, sw.value.channel ? "on" : "off");
+            // Channel-level "whitelist everyone here" flag → green.
+            if (sw.ok && sw.value && sw.value.channel) {
+                oslChanWlPaint(btn, "on");
+                return;
             }
+            // Otherwise distinguish some-vs-none from the per-member
+            // whitelist summary so a partially-whitelisted channel reads
+            // yellow instead of grey.
+            const sum = await oslInvoke("osl_get_scope_whitelist_summary", {
+                scopeInput,
+            });
+            if (sum.ok && sum.value) {
+                if (sum.value.state === "all") {
+                    oslChanWlPaint(btn, "on");
+                    return;
+                }
+                if (sum.value.state === "some") {
+                    oslChanWlPaint(btn, "partial");
+                    return;
+                }
+            }
+            oslChanWlPaint(btn, "off");
         } catch (_) {
             oslChanWlPaint(btn, "off");
+        }
+    }
+
+    // Re-resolve every already-injected channel lock (e.g. after a
+    // whitelist change from settings or the header). Inject() skips
+    // existing buttons via dedup, so without this they'd keep their
+    // stale color until the user navigated away and back.
+    function oslChanWlRefreshAll() {
+        let btns;
+        try {
+            btns = document.querySelectorAll("[" + OSL_CHANWL_ATTR + "='1']");
+        } catch (_) {
+            return;
+        }
+        for (const btn of btns) {
+            try {
+                const a =
+                    (btn.closest && btn.closest('a[href^="/channels/"]')) ||
+                    (btn.closest && btn.closest("li") &&
+                        btn.closest("li").querySelector('a[href^="/channels/"]'));
+                const ids = a && oslChanWlParseHref(a.getAttribute("href") || "");
+                if (ids) oslChanWlRefresh(btn, oslChanWlScope(ids));
+            } catch (_) {}
         }
     }
 
@@ -12379,13 +12427,17 @@
     }
 
     try {
-        // Periodic backstop (primary, like the C3 badge system) +
-        // a body observer best-effort. Initial pass after Tauri ready.
+        // Periodic backstop + a body observer best-effort. Lowered the
+        // backstop 5000 -> 1200ms: at 5s, switching channels left the
+        // new row showing Discord's bare # for up to five seconds (the
+        // "gotta click 3-4 times before the hashtags switch" report).
+        // 1.2s is a snappy backstop; the observer still catches most
+        // renders sooner.
         nativeSetInterval(() => {
             try {
                 oslChanWlInject();
             } catch (_) {}
-        }, 5000);
+        }, 1200);
         nativeSetTimeout(() => {
             try {
                 oslChanWlInject();
