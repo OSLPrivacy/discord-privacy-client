@@ -632,26 +632,33 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         let id = guard
             .as_mut()
             .ok_or_else(|| "OSL: register_self_snowflake: identity not loaded".to_string())?;
-        if let Some(existing) = &id.discord_snowflake {
-            if existing != &snowflake {
-                // Discord account-switch detected. The user logged
-                // into a different Discord account on this machine,
-                // so the locally-stored OSL identity (bound to the
-                // OLD snowflake) is wrong for the NEW one. Trigger
-                // an auto-burn + fresh-register flow below — this
-                // matches what the user would otherwise have to do
-                // manually via Settings → Account → Account Burn.
-                //
-                // Trade-off: the OLD account's local OSL state
-                // (peer_map, channels, message store, etc.) is
-                // destroyed. If the user wanted to keep both
-                // accounts' state, they'd need per-user-id config
-                // dirs — that's a bigger structural change, not
-                // worth solving until someone actually asks for it.
-                Step::DiscordAccountSwitched(existing.clone())
-            } else {
-                Step::AlreadySet
-            }
+        // Determine what snowflake the stored identity is "bound to":
+        //   - Prefer `discord_snowflake` (post-9-F0-FIX2 field).
+        //   - Fall back to `user_id` on legacy identity files where
+        //     `discord_snowflake` was never written (those files have
+        //     user_id == the original Discord snowflake by
+        //     construction). Without this fallback the switch
+        //     detection silently fails on any identity from before
+        //     the field was added.
+        let bound_to = id
+            .discord_snowflake
+            .clone()
+            .unwrap_or_else(|| id.user_id.clone());
+        if !bound_to.is_empty() && bound_to != snowflake {
+            // Discord account-switch detected. The user logged into
+            // a different Discord account on this machine, so the
+            // locally-stored OSL identity (bound to `bound_to`) is
+            // wrong for the NEW one. Trigger an auto-burn +
+            // fresh-register flow below — same outcome the user
+            // would get from Settings → Account → Account Burn.
+            //
+            // Trade-off: the OLD account's local OSL state
+            // (peer_map, channels, message store, etc.) is
+            // destroyed. Per-user-id config dirs would preserve
+            // both, but that's a structural change for later.
+            Step::DiscordAccountSwitched(bound_to)
+        } else if id.discord_snowflake.is_some() {
+            Step::AlreadySet
         } else {
             id.discord_snowflake = Some(snowflake.clone());
             let mut snapshot = keystore::Identity::from_bytes(
