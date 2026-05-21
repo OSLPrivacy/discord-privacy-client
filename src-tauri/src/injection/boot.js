@@ -7663,7 +7663,12 @@
     if (!window.__oslAttachmentDecrypted) {
         window.__oslAttachmentDecrypted = new Map();
     }
-    const OSL_ATT_CACHE_CAP = 50;
+    // Raised from 50: at 50 entries, scrolling an image-heavy channel
+    // evicted decrypted blobs fast, so re-entry / scroll-back re-fetched
+    // + re-decrypted (and looked like "images don't cache"). 250 keeps a
+    // session's worth of images resident; cross-restart disk persistence
+    // is a separate follow-up.
+    const OSL_ATT_CACHE_CAP = 250;
 
     function oslAttachmentCacheEvictIfFull() {
         const m = window.__oslAttachmentDecrypted;
