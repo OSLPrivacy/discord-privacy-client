@@ -1457,23 +1457,30 @@ async function onRemoveWhitelist(row) {
   // The whitelist manager takes priority over the per-scope lock
   // buttons: Remove also clears the scope-level flags that keep the
   // lock green/yellow (encrypt toggle, the per-channel/GC whitelist
-  // flag, and — for a server channel — the server-wide flag). Without
-  // this, you could Remove the only whitelisted user yet the header
-  // lock stayed green because a scope flag was still set. Best-effort;
-  // inapplicable calls (e.g. channel flag on a DM) just no-op/error
-  // and are swallowed.
+  // flag, and the server-wide flag). Without this, Remove on a GC or
+  // server scope only flipped encryption off but the header lock
+  // stayed green because the whitelist flag was still set.
+  //
+  // Gate off the RESOLVED scopeInput.kind ("dm" | "gc" |
+  // "server_channel" | "server_full"), NOT row.scope_kind (which is
+  // "gc_full" / "server_channel_full" / "server_full" / "*_per_user"
+  // — those never matched the old check, which is why this didn't work
+  // before). Best-effort; inapplicable calls are swallowed.
   try {
     await oslInvoke("osl_set_scope_encrypt", { scopeInput, enabled: false });
   } catch (_) {}
-  if (row.scope_kind === "server_channel" || row.scope_kind === "gc") {
+  if (scopeInput.kind === "gc" || scopeInput.kind === "server_channel") {
     try {
       await oslInvoke("osl_set_channel_whitelist", { scopeInput, on: false });
     } catch (_) {}
   }
-  if (row.scope_kind === "server_channel" && row.server_id) {
+  if (
+    (scopeInput.kind === "server_channel" || scopeInput.kind === "server_full") &&
+    scopeInput.server_id
+  ) {
     try {
       await oslInvoke("osl_set_server_header_whitelist", {
-        serverId: row.server_id,
+        serverId: scopeInput.server_id,
         on: false,
       });
     } catch (_) {}
@@ -1632,15 +1639,12 @@ function oslBulkWhitelistModal() {
     btn.addEventListener("click", () => switchAction(action));
     return btn;
   }
-  pickerRow.appendChild(
-    makeActionTile("friends", "Friend list", "Whitelist Discord friends as DM peers")
-  );
-  pickerRow.appendChild(
-    makeActionTile("server", "Server members", "Whitelist all members of a server")
-  );
-  pickerRow.appendChild(
-    makeActionTile("paste", "Paste IDs", "Whitelist by Discord ID list (DM scope)")
-  );
+  // Bulk Whitelist offers a single path: import by Discord user IDs.
+  // The friends-list and server-members tiles were removed per product
+  // decision — paste-IDs is the only supported bulk import. With one
+  // option the picker row is pointless, so hide it and land straight
+  // on the paste UI (switchAction("paste") below).
+  pickerRow.style.display = "none";
 
   function switchAction(action) {
     activeAction = action;
@@ -1893,6 +1897,8 @@ function oslBulkWhitelistModal() {
 
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
+  // Only one bulk path now — land straight on the paste-IDs UI.
+  switchAction("paste");
 }
 
 // ============================================================

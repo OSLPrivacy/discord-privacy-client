@@ -5417,6 +5417,13 @@
     // oslOnWhitelistIconClick handler.
     const SIDEBAR_LOCK_DATA_ATTR = "data-osl-sidebar-channel-lock";
     const SIDEBAR_HIDDEN_ICON_ATTR = "data-osl-sidebar-hashtag-hidden";
+    // Last definitive lock state per channel id ("closed"|"partial"|
+    // "open"). Lets a freshly-injected sidebar lock paint its real
+    // color INSTANTLY from cache instead of showing the grey-blue
+    // "unknown" glyph while the async whitelist-state IPC is in flight
+    // — that flash (worse under IPC congestion) is the "still blue,
+    // not instant" report.
+    const oslSidebarLockCache = new Map();
 
     function oslSweepSidebarChannelLock() {
         try {
@@ -5491,7 +5498,17 @@
             lock.style.color = "var(--text-muted, #87898c)";
             lock.style.width = (iconEl.offsetWidth || 16) + "px";
             lock.style.height = (iconEl.offsetHeight || 16) + "px";
-            lock.innerHTML = oslLockSvg("unknown");
+            // Paint the last-known state for this channel immediately so
+            // there's no grey "unknown" flash; the async refresh below
+            // overwrites it once the real state lands.
+            let __initState = "unknown";
+            try {
+                const __c = oslCurrentChannelContext();
+                if (__c && __c.channelId && oslSidebarLockCache.has(__c.channelId)) {
+                    __initState = oslSidebarLockCache.get(__c.channelId);
+                }
+            } catch (_) {}
+            lock.innerHTML = oslLockSvg(__initState);
             lock.title = "Server-channel whitelist (loading…)";
             lock.addEventListener("click", function (e) {
                 e.preventDefault();
@@ -5563,6 +5580,11 @@
             lock.innerHTML = oslLockSvg(state);
             lock.style.color = color;
             lock.title = title;
+            // Cache the definitive state so the next inject for this
+            // channel paints instantly (no unknown/blue flash).
+            if (ctx.channelId) {
+                oslSidebarLockCache.set(ctx.channelId, state);
+            }
         } catch (_) {}
     }
 
