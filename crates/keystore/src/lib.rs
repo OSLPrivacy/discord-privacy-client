@@ -32,6 +32,7 @@
 pub mod burn;
 pub mod burn_alert;
 pub mod client;
+pub mod control_inbox;
 pub mod duress;
 pub mod identity;
 pub mod license_cache;
@@ -47,8 +48,9 @@ pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use unregister::{canonical_unregister_bytes, sign_unregister, UNREGISTER_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
-    BurnResponse, KeyServerClient, LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse,
-    PubkeysResponse, RegisterResponse, ReplenishResponse,
+    BurnResponse, ControlInboxItem, ControlInboxPostResponse, KeyServerClient,
+    LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
+    RegisterResponse, ReplenishResponse,
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,

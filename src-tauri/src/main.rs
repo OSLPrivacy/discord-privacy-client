@@ -1198,6 +1198,55 @@ async fn osl_burn_engage(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+// ===== Phase 6.4: control-message inbox (OOB delivery) =====
+
+/// Phase 6.4: hand-off a control wire (SKDM, burn marker,
+/// SKDM_REQUEST, recovery SKDM) to the keyserver inbox for a single
+/// recipient instead of posting it as a Discord-channel cover.
+///
+/// `wire_string` is the full `DPC0::<base64>` wire produced by the
+/// v=3/v=4 send paths in Rust. boot.js receives that string from
+/// the encrypt response and calls this command per recipient.
+#[tauri::command]
+async fn osl_control_inbox_post(
+    app: tauri::AppHandle,
+    recipient_id: String,
+    scope_input: ScopeInput,
+    wire_string: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_control_inbox_post(
+            state.inner(),
+            recipient_id,
+            scope_input,
+            wire_string,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 6.4: drain the local user's keyserver inbox.
+///
+/// Fetches all pending control items, dispatches each through the
+/// v=2/v=3/v=4 decrypt pipeline (which applies SKDM/burn/etc), and
+/// deletes successfully-applied rows. Returns the count of items
+/// applied so boot.js can log throughput. boot.js calls this every
+/// 10s while a Discord client window is alive.
+#[tauri::command]
+async fn osl_control_inbox_drain(app: tauri::AppHandle) -> Result<u32, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let config_dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_control_inbox_drain(state.inner(), config_dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Phase 4b: persistent sentinel that disables every OSL UI/runtime
 /// injection. Written by `osl_burn_engage` (account burn), read by
 /// boot.js at IIFE-top. Living in the OSL config dir means a full
@@ -2907,6 +2956,8 @@ fn main() {
             osl_stealth_mode_engage,
             osl_burn_engage,
             osl_burn_scope_data,
+            osl_control_inbox_post,
+            osl_control_inbox_drain,
             osl_mark_scope_burned,
             osl_unburn_scope,
             osl_list_burned_scopes,

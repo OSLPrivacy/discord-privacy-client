@@ -29,6 +29,7 @@ license.workspace = true
 # `tauri::async_runtime::spawn_blocking`).
 crypto = { path = "../crypto" }
 base64 = "0.22"
+sha2 = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # B2 — Argon2id password hashing per docs/design/unlock-and-duress.md.
 # Production params: m_cost = 64 MiB, parallelism = 1, t_cost tuned to

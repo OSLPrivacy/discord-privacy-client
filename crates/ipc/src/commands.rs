@@ -4942,6 +4942,168 @@ fn apply_skdm_recv(
     Ok(OSL_RESULT_SKDM_APPLIED.to_string())
 }
 
+// ===== Phase 6.4: control-message inbox (OOB delivery) =====
+
+/// Phase 6.4: post a single control wire (SKDM, burn marker,
+/// SKDM_REQUEST, recovery SKDM) to the keyserver inbox for a
+/// recipient. Replaces the prior Discord-channel cover delivery
+/// path: control bytes never touch Discord, eliminating ciphertext
+/// noise and cipher-store cover load.
+///
+/// `wire_string` is the full `DPC0::<base64>` wire as produced by
+/// the v=3/v=4 send paths. Stripping + decoding happens here so JS
+/// stays out of the raw-bytes business.
+pub fn cmd_osl_control_inbox_post(
+    state: &AppState,
+    recipient_id: String,
+    scope_input: crate::scope::ScopeInput,
+    wire_string: String,
+) -> Result<(), String> {
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: control_inbox_post scope: {e}"))?;
+    let scope_id = scope.storage_key();
+
+    let body = wire_string
+        .strip_prefix("DPC0::")
+        .ok_or_else(|| "OSL: control_inbox_post: wire missing DPC0:: prefix".to_string())?;
+    let bundle = STANDARD
+        .decode(body)
+        .map_err(|e| format!("OSL: control_inbox_post: base64 decode: {e}"))?;
+
+    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let identity = id_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+    let client = ks_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+    let resp = client
+        .post_control_inbox(identity, &recipient_id, &scope_id, &bundle)
+        .map_err(|e| format!("OSL: control_inbox_post: {e}"))?;
+    drop(ks_guard);
+    drop(id_guard);
+    tracing::info!(
+        recipient = %recipient_id,
+        scope = %scope_id,
+        bundle_len = bundle.len(),
+        inbox_id = %resp.id,
+        "[OSL] control_inbox POST ok"
+    );
+    Ok(())
+}
+
+/// Phase 6.4: drain the local user's keyserver inbox.
+///
+/// For each item, reconstruct the `DPC0::<b64>` wire from raw bundle
+/// bytes, dispatch through [`cmd_osl_decrypt_message_v2`], and on
+/// success DELETE the row so it isn't re-applied next poll. The
+/// dispatched msg_types are control wires (SKDM, BURN, SKDM_REQUEST,
+/// SESSION_RESET), all of which return an `OSL_RESULT_*` sentinel —
+/// CONTENT/ATTACHMENT should never appear here (sender-side gate).
+///
+/// `channel_id` is passed empty: control wires don't persist user
+/// plaintext, and they don't consult the Mode-1 reassembly buffer.
+/// `scope_input` is None: v=3/v=4 SKDM/burn/session-reset paths
+/// don't read the outer scope (the bundle carries its own
+/// `scope_storage_key`).
+///
+/// Returns the count of items successfully applied + deleted.
+pub fn cmd_osl_control_inbox_drain(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<u32, String> {
+    let items = {
+        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let identity = id_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let client = ks_guard
+            .as_ref()
+            .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+        client
+            .get_control_inbox(identity)
+            .map_err(|e| format!("OSL: control_inbox_drain GET: {e}"))?
+    };
+    let item_count = items.len();
+
+    let mut applied: u32 = 0;
+    for item in items {
+        let bundle = match STANDARD.decode(&item.bundle_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    inbox_id = %item.id,
+                    error = %e,
+                    "[OSL] control_inbox_drain: skip undecodable bundle"
+                );
+                continue;
+            }
+        };
+        let content = format!("DPC0::{}", STANDARD.encode(&bundle));
+        let res = cmd_osl_decrypt_message_v2(
+            state,
+            None,
+            String::new(),
+            item.sender_id.clone(),
+            content,
+            None,
+            config_dir.clone(),
+        );
+        match res {
+            Ok(sentinel) => {
+                tracing::info!(
+                    inbox_id = %item.id,
+                    sender = %item.sender_id,
+                    scope = %item.scope_id,
+                    sentinel = %sentinel,
+                    "[OSL] control_inbox item applied"
+                );
+                let id_guard = state.identity.lock().expect("identity mutex poisoned");
+                let identity = id_guard
+                    .as_ref()
+                    .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+                let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+                let client = ks_guard
+                    .as_ref()
+                    .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
+                if let Err(e) = client.delete_control_inbox(identity, &item.id) {
+                    // Best-effort: failing to delete just means a
+                    // duplicate apply next poll, which the SKDM /
+                    // burn handlers tolerate (rotate is idempotent
+                    // on same chain_id; burn is idempotent on
+                    // scope+timestamp).
+                    tracing::warn!(
+                        inbox_id = %item.id,
+                        error = %e,
+                        "[OSL] control_inbox DELETE failed (will retry)"
+                    );
+                }
+                drop(ks_guard);
+                drop(id_guard);
+                applied = applied.saturating_add(1);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    inbox_id = %item.id,
+                    sender = %item.sender_id,
+                    scope = %item.scope_id,
+                    error = %e,
+                    "[OSL] control_inbox item dispatch failed (leaving row in place)"
+                );
+            }
+        }
+    }
+    tracing::info!(
+        fetched = item_count,
+        applied = applied,
+        "[OSL] control_inbox drain done"
+    );
+    Ok(applied)
+}
+
 /// Phase 9-A3: v=5 receive dispatch. Parses the wire, applies the
 /// kill-list gate (same as v=4), looks up the matching
 /// `SenderKeyState` + `ReceiverChain`, runs the sender-keys

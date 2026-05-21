@@ -1,0 +1,12 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 6.4: drain the local user's keyserver control-inbox.
+# Pulls pending control wires (SKDM, burn marker, SKDM_REQUEST,
+# SESSION_RESET) addressed to this user, dispatches each through the
+# v=2/v=3/v=4 decrypt pipeline, and deletes successfully-applied
+# rows. Called by boot.js on a ~10s timer while a Discord client
+# window is alive.
+[[permission]]
+identifier = "allow-osl-control-inbox-drain"
+description = "Permits boot.js to drain the local user's keyserver control-inbox: fetches pending control wires, applies each (SKDM install/rotate, burn, session reset, SKDM_REQUEST handling), deletes applied rows, returns the count of items applied."
+commands.allow = ["osl_control_inbox_drain"]

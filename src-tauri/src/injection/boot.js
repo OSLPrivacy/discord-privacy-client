@@ -1240,22 +1240,36 @@
                                     return s && s.peer_discord_id;
                                 })
                                 .filter(Boolean);
+                            // Phase 6.4: SKDM bundles ride the
+                            // keyserver control-inbox, NOT Discord.
+                            // The wire is the same v=3 multi-
+                            // recipient bundle (each peer is a slot)
+                            // — we fan-out one inbox POST per peer.
+                            const skdmRecipients = okStatuses
+                                .map(function (s) {
+                                    return s && s.peer_discord_id;
+                                })
+                                .filter(Boolean);
                             for (
                                 let i = 0;
                                 i < __oslCtrl.length;
                                 i++
                             ) {
-                                let posted = false;
+                                let oobRes = null;
                                 try {
-                                    posted = !!(await oslSendControlMessage(
-                                        channelId,
-                                        __oslCtrl[i],
-                                        v7cScope
-                                    ));
+                                    oobRes = await oslSendControlOob(
+                                        skdmRecipients,
+                                        v7cScope,
+                                        __oslCtrl[i]
+                                    );
                                 } catch (_) {
-                                    posted = false;
+                                    oobRes = null;
                                 }
-                                if (!posted) {
+                                if (!oobRes || oobRes.fail > 0 || oobRes.recipients === 0) {
+                                    // Treat any per-recipient failure as
+                                    // "delivery incomplete" so the user
+                                    // gets the same toast as the prior
+                                    // Discord-cover failure mode.
                                     const st = okStatuses[i];
                                     affected.push(
                                         (st &&
@@ -1777,6 +1791,105 @@
             );
             return null;
         }
+    }
+
+    /**
+     * Phase 6.4: out-of-band control delivery via the keyserver
+     * control-inbox. Replaces the Discord-channel cover POST for
+     * SKDMs, burn markers, SKDM_REQUESTs, and recovery SKDMs.
+     *
+     * `recipientIds` is an array of Discord snowflakes that should
+     * each receive the wire. Self is excluded automatically -- the
+     * sender doesn't need to receive their own control wire (Rust
+     * state was already mutated on the send side).
+     *
+     * Returns a status object: { ok: number, fail: number,
+     * recipients: number } so the caller can surface a partial-
+     * delivery toast on any per-recipient failure. Best-effort: a
+     * single failed inbox POST does not abort the rest.
+     */
+    async function oslSendControlOob(recipientIds, scopeInput, wireString) {
+        if (
+            typeof wireString !== "string" ||
+            wireString.indexOf("DPC0::") !== 0
+        ) {
+            console.log(
+                "[OSL] oslSendControlOob FAIL reason=not_dpc0_wire"
+            );
+            return { ok: 0, fail: 0, recipients: 0 };
+        }
+        if (!scopeInput) {
+            console.log(
+                "[OSL] oslSendControlOob FAIL reason=no_scope"
+            );
+            return { ok: 0, fail: 0, recipients: 0 };
+        }
+        if (!Array.isArray(recipientIds)) {
+            recipientIds = [];
+        }
+        let self = null;
+        try {
+            if (typeof oslSelfDiscordId === "function") {
+                self = await oslSelfDiscordId();
+            }
+        } catch (_) {
+            self = null;
+        }
+        const uniq = Array.from(
+            new Set(
+                recipientIds.filter(function (r) {
+                    return (
+                        typeof r === "string" &&
+                        r.length > 0 &&
+                        (!self || r !== self)
+                    );
+                })
+            )
+        );
+        let okCount = 0;
+        let failCount = 0;
+        for (let i = 0; i < uniq.length; i++) {
+            const recipientId = uniq[i];
+            try {
+                const resp = await oslInvoke("osl_control_inbox_post", {
+                    recipientId: recipientId,
+                    scopeInput: scopeInput,
+                    wireString: wireString,
+                });
+                if (resp && resp.ok) {
+                    okCount++;
+                } else {
+                    failCount++;
+                    console.log(
+                        "[OSL] oslSendControlOob per-recipient FAIL " +
+                            "recipient=" +
+                            recipientId +
+                            " err=" +
+                            (resp && resp.error)
+                    );
+                }
+            } catch (e) {
+                failCount++;
+                console.log(
+                    "[OSL] oslSendControlOob per-recipient threw " +
+                        "recipient=" +
+                        recipientId +
+                        " err=" +
+                        (e && e.message ? e.message : e)
+                );
+            }
+        }
+        console.log(
+            "[OSL] oslSendControlOob ok=" +
+                okCount +
+                " fail=" +
+                failCount +
+                " recipients=" +
+                uniq.length +
+                " wire_len=" +
+                wireString.length
+        );
+        return { ok: okCount, fail: failCount, recipients: uniq.length };
     }
 
     /**
@@ -6948,7 +7061,17 @@
             selfDiscordId: selfId,
         });
         if (sendResult.ok) {
-            await oslSendControlMessage(ctx.channelId, sendResult.value);
+            // Phase 6.4: burn markers ride the keyserver control-
+            // inbox; recipients = ctx.members minus self.
+            const burnRecipients = (Array.isArray(ctx.members) ? ctx.members : [])
+                .filter(function (m) {
+                    return typeof m === "string" && m !== selfId;
+                });
+            await oslSendControlOob(
+                burnRecipients,
+                scopeInput,
+                sendResult.value
+            );
         } else if (sendResult.error !== "no_whitelisted_recipients") {
             // Real error — burn marker not shipped. Still proceed
             // with local apply so the user's own state is wiped.
@@ -10138,12 +10261,39 @@
                 if (p.burn_marker_payload && p.channel_id) {
                     const _burnScope =
                         p.scope_kind && p.scope_id
-                            ? { kind: p.scope_kind, id: p.scope_id }
+                            ? {
+                                  kind: p.scope_kind,
+                                  id: p.scope_id,
+                                  server_id: p.server_id || null,
+                                  channel_id: p.channel_id,
+                              }
                             : null;
-                    oslSendControlMessage(
-                        p.channel_id,
-                        p.burn_marker_payload,
-                        _burnScope
+                    // Phase 6.4: burn markers ride the keyserver
+                    // control-inbox; recipients = either the payload's
+                    // own `recipients` field (if the future Rust
+                    // emitter populates it) or the current channel
+                    // ctx members minus self.
+                    let burnRecipients = Array.isArray(p.recipients)
+                        ? p.recipients.slice()
+                        : null;
+                    if (!burnRecipients) {
+                        try {
+                            const _ctx =
+                                typeof oslCurrentChannelContext === "function"
+                                    ? oslCurrentChannelContext()
+                                    : null;
+                            burnRecipients =
+                                _ctx && Array.isArray(_ctx.members)
+                                    ? _ctx.members
+                                    : [];
+                        } catch (_) {
+                            burnRecipients = [];
+                        }
+                    }
+                    oslSendControlOob(
+                        burnRecipients,
+                        _burnScope,
+                        p.burn_marker_payload
                     ).catch(function (e2) {
                         console.error(
                             "[OSL] scope_burned send marker:",
@@ -13331,6 +13481,15 @@
     // messages, not a backup.
     const RECV_SWEEP_INTERVAL_MS = 1000;
 
+    // Phase 6.4: control-inbox drain cadence. SKDMs, burn markers,
+    // and recovery wires ride the keyserver inbox instead of
+    // Discord channels; this is how often we poll for new items
+    // addressed to this user. 10s is the locked default: low enough
+    // that a typical send→install→re-decrypt round-trip feels
+    // instant, high enough to keep keyserver load bounded across
+    // the user base.
+    const CONTROL_INBOX_POLL_INTERVAL_MS = 10000;
+
     // Expose the receive-side state on `window` so the developer
     // can inspect cache health from DevTools without needing a
     // Rust round-trip. These are READ-ONLY references â€” mutating
@@ -15581,15 +15740,27 @@
                     );
                     recvDone.add(messageId);
                     try {
-                        oslSendControlMessage(channelId, _skdmWire);
-                        console.log(
-                            "[OSL] SKDM re-request: posted SKDM wire to " +
-                                "channel=" +
-                                channelId +
-                                " (msg=" +
-                                messageId +
-                                ")"
-                        );
+                        // Phase 6.4: SKDM re-request response goes
+                        // to the original requester's inbox (= the
+                        // sender of the SKDM_REQUEST we just
+                        // honored). No Discord channel POST.
+                        oslSendControlOob(
+                            [senderDiscordId],
+                            recvScopeInput,
+                            _skdmWire
+                        ).then(function (r) {
+                            console.log(
+                                "[OSL] SKDM re-request: posted to inbox " +
+                                    "recipient=" +
+                                    senderDiscordId +
+                                    " (msg=" +
+                                    messageId +
+                                    ") ok=" +
+                                    (r && r.ok) +
+                                    " fail=" +
+                                    (r && r.fail)
+                            );
+                        });
                     } catch (e) {
                         console.log(
                             "[OSL] SKDM re-request POST threw: " +
@@ -16080,21 +16251,25 @@
                         );
                         return null;
                     }
-                    return oslSendControlMessage(channelId, wire);
+                    // Phase 6.4: auto-recovery requests go to the
+                    // peer's keyserver inbox, not the Discord
+                    // channel. peer is the single recipient.
+                    return oslSendControlOob([peer], scopeInput, wire);
                 })
-                .then(function (posted) {
-                    if (posted) {
+                .then(function (oobRes) {
+                    if (oobRes && oobRes.ok > 0) {
                         // Only arm the cooldown on a confirmed
-                        // successful POST so transient throttle /
-                        // no-pubkey / IPC failures remain retryable.
+                        // successful inbox POST so transient
+                        // throttle / no-pubkey / IPC failures
+                        // remain retryable.
                         recvRecoveryCooldown.set(cdKey, Date.now());
                         console.log(
                             "[OSL] auto-recovery: " +
                                 kind +
-                                " request posted to channel=" +
-                                channelId +
-                                " peer=" +
-                                peer
+                                " request posted to inbox peer=" +
+                                peer +
+                                " channel=" +
+                                channelId
                         );
                     }
                 })
@@ -16553,6 +16728,60 @@
                 RECV_SWEEP_INTERVAL_MS +
                 "ms, id=" +
                 String(sweepIntervalId) +
+                ")"
+        );
+
+        // Phase 6.4: control-inbox drain loop. Polls keyserver
+        // every CONTROL_INBOX_POLL_INTERVAL_MS for pending control
+        // wires (SKDM, burn, SESSION_RESET, SKDM_REQUEST) addressed
+        // to this user. Each tick is best-effort: a single failed
+        // drain just leaves the rows on the server for the next
+        // tick. Stored on `window` so the user can inspect / cancel
+        // from DevTools.
+        let inboxDrainInFlight = false;
+        async function inboxDrainTick() {
+            if (inboxDrainInFlight) return;
+            inboxDrainInFlight = true;
+            try {
+                const resp = await oslInvoke("osl_control_inbox_drain", {});
+                if (resp && resp.ok) {
+                    const applied =
+                        typeof resp.value === "number" ? resp.value : 0;
+                    if (applied > 0) {
+                        console.log(
+                            "[OSL] control_inbox drain: applied=" + applied
+                        );
+                    }
+                } else if (resp && !resp.ok) {
+                    // Quietly log; transient keyserver issues are
+                    // expected and don't warrant a toast.
+                    console.log(
+                        "[OSL] control_inbox drain err: " +
+                            (resp && resp.error)
+                    );
+                }
+            } catch (e) {
+                console.log(
+                    "[OSL] control_inbox drain threw: " +
+                        (e && e.message ? e.message : e)
+                );
+            } finally {
+                inboxDrainInFlight = false;
+            }
+        }
+        const inboxDrainIntervalId = nativeSetInterval(
+            inboxDrainTick,
+            CONTROL_INBOX_POLL_INTERVAL_MS
+        );
+        window.__OSL_INBOX_DRAIN_INTERVAL__ = inboxDrainIntervalId;
+        // Kick a first tick immediately so a relaunch picks up any
+        // queued control wires without waiting a full poll interval.
+        inboxDrainTick();
+        console.log(
+            "[OSL] control_inbox drain registered (interval=" +
+                CONTROL_INBOX_POLL_INTERVAL_MS +
+                "ms, id=" +
+                String(inboxDrainIntervalId) +
                 ")"
         );
 

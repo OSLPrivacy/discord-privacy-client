@@ -21,6 +21,9 @@
 //! runtime stays unblocked.
 
 use crate::burn::{sign_burn, BurnScope};
+use crate::control_inbox::{
+    sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_post,
+};
 use crate::identity::Identity;
 use crate::unregister::sign_unregister;
 use crate::prekeys::{
@@ -671,6 +674,99 @@ impl KeyServerClient {
         Ok(())
     }
 
+    /// Phase 6.4: enqueue a control-message wire into the
+    /// recipient's keyserver inbox. The bundle is the same opaque
+    /// v=3/v=4 wire we used to POST to Discord channels via
+    /// oslSendControlMessage; the keyserver server-side stores it
+    /// and the recipient drains via [`Self::get_control_inbox`].
+    /// Signed by the sender's identity ed25519.
+    pub fn post_control_inbox(
+        &self,
+        sender: &Identity,
+        recipient_id: &str,
+        scope_id: &str,
+        bundle: &[u8],
+    ) -> Result<ControlInboxPostResponse> {
+        let timestamp_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let sig = sign_control_inbox_post(
+            sender,
+            recipient_id,
+            scope_id,
+            timestamp_ms,
+            bundle,
+        );
+        let body = ControlInboxPostBody {
+            sender_id: &sender.user_id,
+            recipient_id,
+            scope_id,
+            bundle_b64: STANDARD.encode(bundle),
+            timestamp_ms,
+            signature_b64: STANDARD.encode(sig.as_bytes()),
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let resp = self.send_request(
+            "POST",
+            "/v1/control-inbox",
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&resp)?;
+        Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// Phase 6.4: drain the caller's own control-message inbox.
+    /// Returns up to MAX_DRAIN_ROWS items in FIFO order. Each
+    /// returned item carries an inbox `id` the caller MUST
+    /// [`Self::delete_control_inbox`] after applying so the row
+    /// doesn't re-appear on the next poll.
+    pub fn get_control_inbox(&self, identity: &Identity) -> Result<Vec<ControlInboxItem>> {
+        let timestamp_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let sig = sign_control_inbox_get(identity, timestamp_ms);
+        let sig_b64 = STANDARD.encode(sig.as_bytes());
+        // ed25519 sigs are 64 bytes -> 88 base64 chars; URL-encode
+        // them since `+` / `/` would otherwise corrupt the query.
+        let sig_q = urlencode_query_value(&sig_b64);
+        let path = format!(
+            "/v1/control-inbox/{}?ts={}&sig={}",
+            urlencode_segment(&identity.user_id),
+            timestamp_ms,
+            sig_q,
+        );
+        let resp = self.send_request("GET", &path, None)?;
+        check_2xx(&resp)?;
+        let parsed: ControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
+        Ok(parsed.items)
+    }
+
+    /// Phase 6.4: delete a specific inbox row after the caller has
+    /// successfully applied the bundle. Idempotent.
+    pub fn delete_control_inbox(&self, identity: &Identity, inbox_id_hex: &str) -> Result<()> {
+        let timestamp_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let sig = sign_control_inbox_delete(identity, inbox_id_hex, timestamp_ms);
+        let body = ControlInboxDeleteBody {
+            user_id: &identity.user_id,
+            timestamp_ms,
+            signature_b64: STANDARD.encode(sig.as_bytes()),
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let path = format!("/v1/control-inbox/{}", urlencode_segment(inbox_id_hex));
+        let resp = self.send_request(
+            "DELETE",
+            &path,
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&resp)?;
+        Ok(())
+    }
+
     /// `POST /v1/license/validate`. Public endpoint — no admin
     /// token attached even when one is configured (the keyserver
     /// rate-limits per IP for this route). Returns a
@@ -798,4 +894,53 @@ fn urlencode_segment(s: &str) -> String {
         }
     }
     out
+}
+
+/// URL-encode a query-string value. Same unreserved-set as
+/// `urlencode_segment`. Used by the control-inbox GET which
+/// passes the ed25519 signature as `?sig=...` (raw base64 has `+`
+/// and `/` which would corrupt the query parser).
+fn urlencode_query_value(s: &str) -> String {
+    urlencode_segment(s)
+}
+
+// ---- Phase 6.4 control-inbox payload shapes (used by post_control_inbox /
+// get_control_inbox / delete_control_inbox above). Shapes mirror
+// keyserver-cf/src/endpoints/control-inbox.ts. ----
+
+#[derive(Serialize)]
+struct ControlInboxPostBody<'a> {
+    sender_id: &'a str,
+    recipient_id: &'a str,
+    scope_id: &'a str,
+    bundle_b64: String,
+    timestamp_ms: i64,
+    signature_b64: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ControlInboxPostResponse {
+    pub id: String,
+    pub expires_at: i64,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ControlInboxItem {
+    pub id: String,
+    pub sender_id: String,
+    pub scope_id: String,
+    pub bundle_b64: String,
+    pub created_at: i64,
+}
+
+#[derive(Deserialize)]
+struct ControlInboxGetResponse {
+    items: Vec<ControlInboxItem>,
+}
+
+#[derive(Serialize)]
+struct ControlInboxDeleteBody<'a> {
+    user_id: &'a str,
+    timestamp_ms: i64,
+    signature_b64: String,
 }
