@@ -546,7 +546,7 @@ function pwCopyButton(text) {
 // ============================================================
 let currentPage = "identity";
 let wlData = null;
-let wlTab = "flat";
+let wlTab = "by_scope";
 let wlSort = { col: "user", dir: "asc" };
 const wlCollapse = new Map();
 
@@ -1334,7 +1334,6 @@ async function renderWhitelist() {
   const tabRow = document.createElement("div");
   tabRow.className = "osl-tab-row";
   const tabs = [
-    { id: "flat", label: "Flat" },
     { id: "by_scope", label: "By Scope" },
     { id: "by_user", label: "By User" },
   ];
@@ -1379,9 +1378,8 @@ async function renderWhitelist() {
     body.appendChild(empty);
     return;
   }
-  if (wlTab === "flat") body.appendChild(renderWlFlat(wlData));
-  else if (wlTab === "by_scope") body.appendChild(renderWlByScope(wlData));
-  else body.appendChild(renderWlByUser(wlData));
+  if (wlTab === "by_user") body.appendChild(renderWlByUser(wlData));
+  else body.appendChild(renderWlByScope(wlData));
 }
 
 function wlToggle(row) {
@@ -1456,8 +1454,34 @@ async function onRemoveWhitelist(row) {
     revokeBroadened: false,
   });
   if (!result.ok) { oslToast("Remove failed: " + result.error); return; }
+  // The whitelist manager takes priority over the per-scope lock
+  // buttons: Remove also clears the scope-level flags that keep the
+  // lock green/yellow (encrypt toggle, the per-channel/GC whitelist
+  // flag, and — for a server channel — the server-wide flag). Without
+  // this, you could Remove the only whitelisted user yet the header
+  // lock stayed green because a scope flag was still set. Best-effort;
+  // inapplicable calls (e.g. channel flag on a DM) just no-op/error
+  // and are swallowed.
+  try {
+    await oslInvoke("osl_set_scope_encrypt", { scopeInput, enabled: false });
+  } catch (_) {}
+  if (row.scope_kind === "server_channel" || row.scope_kind === "gc") {
+    try {
+      await oslInvoke("osl_set_channel_whitelist", { scopeInput, on: false });
+    } catch (_) {}
+  }
+  if (row.scope_kind === "server_channel" && row.server_id) {
+    try {
+      await oslInvoke("osl_set_server_header_whitelist", {
+        serverId: row.server_id,
+        on: false,
+      });
+    } catch (_) {}
+  }
   oslToast("Removed whitelist for " + row.peer_username + " in " + wlScopeLabel(row));
-  // Cross-window event so boot.js can refresh in-memory state.
+  // Cross-window event so boot.js can refresh in-memory state + repaint
+  // the header lock (force-refresh handles the case where the affected
+  // scope is the currently-viewed channel).
   oslEmit("osl:whitelist_removed", {
     scope_kind: row.scope_kind,
     scope_id: row.scope_id,

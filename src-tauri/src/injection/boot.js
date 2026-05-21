@@ -10461,7 +10461,11 @@
                         ":" +
                         (p.scope_id || "?")
                 );
-                oslRefreshHeaderState();
+                // force: the scope key is unchanged, so a throttled
+                // refresh would skip — but the whitelist/encrypt flags
+                // just changed, so the lock must re-read and (likely)
+                // go grey.
+                oslRefreshHeaderState({ force: true });
             } catch (err) {
                 console.error("[OSL] whitelist_removed handler:", err);
             }
