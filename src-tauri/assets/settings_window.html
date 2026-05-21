@@ -562,7 +562,6 @@ const LIVE_ITEMS = [
   { id: "passwords", label: "Passwords" },
   { id: "account", label: "Account" },
   { id: "updates", label: "Updates" },
-  { id: "stego", label: "Stego Mode" },
   { id: "display", label: "Display" },
   { id: "keybinds", label: "Keybinds" },
   { id: "about", label: "About" },
@@ -592,7 +591,6 @@ function switchPage(pageId) {
   else if (pageId === "passwords") renderPasswords();
   else if (pageId === "account") renderAccount();
   else if (pageId === "updates") renderUpdates();
-  else if (pageId === "stego") renderStego();
   else if (pageId === "display") renderDisplay();
   else if (pageId === "keybinds") renderKeybinds();
   else if (pageId === "about") renderAbout();
@@ -680,91 +678,6 @@ async function renderDisplay() {
     input.value = "";
   });
   row.appendChild(blank);
-}
-
-// ============================================================
-// Phase 9-B1: Stego Mode settings page.
-// ============================================================
-async function renderStego() {
-  const pane = getPane();
-  pane.innerHTML = "";
-  const h = document.createElement("h2");
-  h.className = "osl-h2";
-  h.textContent = "Stego Mode";
-  pane.appendChild(h);
-  const desc = document.createElement("p");
-  desc.style.cssText = "margin:0 0 16px 0;font-size:13px;color:#b5bac1;";
-  desc.innerHTML =
-    "<b>Mode 0</b> sends one <code>DPC0::&lt;base64&gt;</code> cover per message via " +
-    "the PQ-hybrid wire (X25519 + ML-KEM-768 + ratchet/sender-keys).<br>" +
-    "<b>Mode 1</b> (natural-language disguise) is deferred to a future release.";
-  pane.appendChild(desc);
-
-  const status = await oslInvoke("osl_get_app_preferences", {});
-  if (!status.ok) {
-    const err = document.createElement("div");
-    err.className = "osl-empty";
-    err.textContent = "Could not load preferences: " + status.error;
-    pane.appendChild(err);
-    return;
-  }
-  // 9-MODE1-RETIRE: V2 ships Mode 0 only. Legacy app_preferences.json
-  // files with stego_mode=mode1 are coerced to Mode 0 in Rust on send;
-  // here we just render Mode 0 selected + Mode 1 disabled regardless.
-  const _prefs = status.value || { stego_mode: "mode0" };
-
-  function radio(name, value, label, opts) {
-    opts = opts || {};
-    const wrap = document.createElement("label");
-    wrap.style.cssText =
-      "display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0;" +
-      (opts.disabled ? "opacity:0.55;cursor:not-allowed;" : "");
-    const r = document.createElement("input");
-    r.type = "radio";
-    r.name = name;
-    r.value = value;
-    if (opts.checked) r.checked = true;
-    if (opts.disabled) r.disabled = true;
-    wrap.appendChild(r);
-    wrap.appendChild(document.createTextNode(label));
-    if (opts.badge) {
-      const tag = document.createElement("span");
-      tag.className = "osl-sidebar-tag";
-      tag.style.cssText = "margin-left:6px;";
-      tag.textContent = opts.badge;
-      wrap.appendChild(tag);
-    }
-    return { wrap, input: r };
-  }
-  const mode0 = radio(
-    "stego_mode",
-    "mode0",
-    "Mode 0 — Post-quantum encryption (active)",
-    { checked: true, disabled: true }
-  );
-  const mode1 = radio(
-    "stego_mode",
-    "mode1",
-    "Mode 1 — Natural language disguise (coming in a future release)",
-    { disabled: true, badge: "Soon" }
-  );
-  pane.appendChild(mode0.wrap);
-  pane.appendChild(mode1.wrap);
-
-  const save = document.createElement("button");
-  save.className = "osl-row-btn osl-row-btn-remove";
-  save.style.cssText = "padding:8px 16px;margin-top:16px;";
-  save.textContent = "Save";
-  save.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    // 9-MODE1-RETIRE: always persist Mode 0 regardless of any radio
-    // state. The Mode 1 radio is disabled, so this is just defensive.
-    const next = { stego_mode: "mode0" };
-    const r = await oslInvoke("osl_set_app_preferences", { prefs: next });
-    if (r.ok) oslToast("Preferences saved.");
-    else oslToast("Save failed: " + r.error);
-  });
-  pane.appendChild(save);
 }
 
 // ============================================================
