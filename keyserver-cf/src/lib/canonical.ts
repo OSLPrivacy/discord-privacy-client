@@ -31,6 +31,9 @@
 const REPLENISH_DOMAIN = "discord-privacy-client/prekey-replenish/v1";
 const BURN_DOMAIN = "discord-privacy-client/burn/v1";
 const UNREGISTER_DOMAIN = "discord-privacy-client/unregister/v1";
+const CONTROL_INBOX_POST_DOMAIN = "discord-privacy-client/control-inbox-post/v1";
+const CONTROL_INBOX_GET_DOMAIN = "discord-privacy-client/control-inbox-get/v1";
+const CONTROL_INBOX_DELETE_DOMAIN = "discord-privacy-client/control-inbox-delete/v1";
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   let total = 0;
@@ -156,4 +159,59 @@ export function canonicalReplenishBytes(args: {
     parts.push(lpString(opk.pub_b64));
   }
   return concatBytes(parts);
+}
+
+// ---- SKDM inbox (Phase 6.4) ----
+//
+// Three operations, each signed by the requester's identity ed25519.
+// The freshness window mirrors UNREGISTER_FRESHNESS_WINDOW_MS (5min).
+//
+// POST: sender claims they're sending a bundle of size N for
+// recipient R in scope S at time T. The bundle hash is included so
+// a tamper between sig + body fails verify.
+// GET / DELETE: the recipient claims authority over their own inbox
+// at time T (DELETE also pins a specific row id).
+
+export const CONTROL_INBOX_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+
+export function canonicalControlInboxPostBytes(args: {
+  sender_id: string;
+  recipient_id: string;
+  scope_id: string;
+  timestamp_ms: number;
+  bundle_sha256: Uint8Array;
+}): Uint8Array {
+  return concatBytes([
+    lpString(CONTROL_INBOX_POST_DOMAIN),
+    lpString(args.sender_id),
+    lpString(args.recipient_id),
+    lpString(args.scope_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(""), // reserved for future fields without breaking sig shape
+    args.bundle_sha256,
+  ]);
+}
+
+export function canonicalControlInboxGetBytes(args: {
+  user_id: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return concatBytes([
+    lpString(CONTROL_INBOX_GET_DOMAIN),
+    lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+  ]);
+}
+
+export function canonicalControlInboxDeleteBytes(args: {
+  user_id: string;
+  inbox_id_hex: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return concatBytes([
+    lpString(CONTROL_INBOX_DELETE_DOMAIN),
+    lpString(args.user_id),
+    lpString(args.inbox_id_hex),
+    lpString(String(args.timestamp_ms)),
+  ]);
 }

@@ -42,6 +42,11 @@ import { handleRegister } from "./endpoints/register.js";
 import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleUnregister } from "./endpoints/unregister.js";
+import {
+  handleControlInboxDelete,
+  handleControlInboxGet,
+  handleControlInboxPost,
+} from "./endpoints/control-inbox.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import {
   handleWrappedKeysDelete,
@@ -87,6 +92,25 @@ export default {
     } catch (err) {
       console.error("[cron] sweep failed:", err);
     }
+    // Phase 6.4: TTL-sweep expired control_inbox rows. Hourly is
+    // fine -- rows expire at 7d so a 1h slack is well within
+    // tolerance, and clients drain their inbox far more frequently
+    // than that anyway.
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const r = await env.DB.prepare(
+        "DELETE FROM control_inbox WHERE expires_at < ?",
+      )
+        .bind(now)
+        .run();
+      const meta = r as unknown as { meta?: { changes?: number } };
+      const changes = meta.meta?.changes ?? 0;
+      if (changes > 0) {
+        console.log(`[cron] control_inbox sweep deleted ${changes} expired row(s)`);
+      }
+    } catch (err) {
+      console.error("[cron] control_inbox sweep failed:", err);
+    }
   },
 };
 
@@ -121,6 +145,8 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     }
     const bundleUserId = matchParam(path, /^\/v1\/prekey-bundle\/([^/]+)$/);
     if (bundleUserId !== null) return await handlePrekeyBundleGet(env, bundleUserId);
+    const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
+    if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
     const um = path.match(
       /^\/v1\/update-manifest\/([^/]+)\/([^/]+)\/([^/]+)$/,
     );
@@ -140,6 +166,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
 
   if (method === "POST") {
     if (path === "/v1/register") return await handleRegister(request, env);
+    if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);
@@ -162,6 +189,8 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysDelete(request, env);
     const unregUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (unregUserId) return await handleUnregister(request, env, unregUserId);
+    const inboxId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
+    if (inboxId) return await handleControlInboxDelete(request, env, inboxId);
     return notFound("not found");
   }
 
