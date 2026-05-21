@@ -14759,8 +14759,12 @@
                     if (!window.__oslProseInFlight) {
                         window.__oslProseInFlight = new Set();
                     }
+                    if (!window.__oslProseRetryCount) {
+                        window.__oslProseRetryCount = new Map();
+                    }
                     if (!window.__oslProseInFlight.has(__osl_pre_msgId)) {
                         let __osl_proseScope = null;
+                        let __osl_scopeErr = null;
                         try {
                             const __osl_ctx =
                                 typeof oslCurrentChannelContext ===
@@ -14775,8 +14779,13 @@
                                           __osl_ctx
                                       )
                                     : null;
-                        } catch (_) {}
+                        } catch (e) {
+                            __osl_scopeErr = e;
+                        }
                         if (__osl_proseScope) {
+                            window.__oslProseRetryCount.delete(
+                                __osl_pre_msgId
+                            );
                             window.__oslProseInFlight.add(
                                 __osl_pre_msgId
                             );
@@ -14818,6 +14827,28 @@
                                         try {
                                             recvHandleDiv(div);
                                         } catch (_) {}
+                                    } else {
+                                        // Silent fall-through used to
+                                        // leave the marker stuck with
+                                        // no log; surface the bad
+                                        // resolve so the failure is
+                                        // diagnosable in F12.
+                                        console.warn(
+                                            "[OSL] prose_token_recv resolved without wire" +
+                                                " msgId=" +
+                                                __osl_pre_msgId +
+                                                " ok=" +
+                                                !!(
+                                                    __osl_resp &&
+                                                    __osl_resp.ok
+                                                ) +
+                                                " hasValue=" +
+                                                !!(
+                                                    __osl_resp &&
+                                                    __osl_resp.value
+                                                ),
+                                            __osl_resp
+                                        );
                                     }
                                 })
                                 .catch(function (e) {
@@ -14832,6 +14863,59 @@
                             // No wire yet -- existing path is a no-op
                             // until the async resolves + re-invokes.
                             return;
+                        } else {
+                            // Channel context isn't resolved yet --
+                            // fiber/store/dom resolvers haven't
+                            // hydrated. The mutation observer fires
+                            // before that's ready in GCs more often
+                            // than DMs, which is why this used to
+                            // intermittently leave [Encryption -
+                            // Ignore] stuck with no logs. Retry with
+                            // backoff instead of bailing silently.
+                            const __osl_retryN =
+                                window.__oslProseRetryCount.get(
+                                    __osl_pre_msgId
+                                ) || 0;
+                            const __OSL_PROSE_MAX_RETRIES = 6;
+                            if (
+                                __osl_retryN < __OSL_PROSE_MAX_RETRIES
+                            ) {
+                                const __osl_delay =
+                                    200 * Math.pow(2, __osl_retryN);
+                                window.__oslProseRetryCount.set(
+                                    __osl_pre_msgId,
+                                    __osl_retryN + 1
+                                );
+                                console.warn(
+                                    "[OSL] prose_token scope null; retry " +
+                                        (__osl_retryN + 1) +
+                                        "/" +
+                                        __OSL_PROSE_MAX_RETRIES +
+                                        " in " +
+                                        __osl_delay +
+                                        "ms msgId=" +
+                                        __osl_pre_msgId +
+                                        (__osl_scopeErr
+                                            ? " err=" +
+                                              String(__osl_scopeErr)
+                                            : "")
+                                );
+                                setTimeout(function () {
+                                    try {
+                                        recvHandleDiv(div);
+                                    } catch (_) {}
+                                }, __osl_delay);
+                                return;
+                            }
+                            console.warn(
+                                "[OSL] prose_token scope still null after " +
+                                    __OSL_PROSE_MAX_RETRIES +
+                                    " retries; giving up msgId=" +
+                                    __osl_pre_msgId
+                            );
+                            window.__oslProseRetryCount.delete(
+                                __osl_pre_msgId
+                            );
                         }
                     }
                 }
