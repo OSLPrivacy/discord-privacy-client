@@ -3520,6 +3520,78 @@ fn encrypt_v4_send(
     Ok(wire)
 }
 
+/// Deterministic DM resync: build an empty-body v=4 message to
+/// `peer_did`. Called right after this client honors a SESSION_RESET
+/// (which cleared our ratchet to None), so this `encrypt_v4_send`
+/// bootstraps a fresh Double Ratchet as initiator. Posting the
+/// resulting wire to the peer's inbox lets the peer establish its
+/// RECEIVE ratchet immediately — without waiting for our next content
+/// message — which is what makes a one-directional desync self-heal
+/// every time instead of depending on send timing.
+///
+/// Empty plaintext is fine: it rides v=4 MSG_TYPE_CONTENT and decrypts
+/// to "" on the far side, which the inbox-drain dispatcher discards
+/// (no message id => not persisted, not rendered). The bootstrap is
+/// the whole point; the body is irrelevant.
+fn build_v4_bootstrap_ping(state: &AppState, peer_did: &str) -> Result<String, String> {
+    let (sender_sk, self_pk, self_discord_id) = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        let id = g
+            .as_ref()
+            .ok_or_else(|| "OSL: bootstrap ping: identity not loaded".to_string())?;
+        (
+            id.x25519_secret.clone(),
+            id.x25519_public,
+            id.discord_snowflake.clone().unwrap_or_default(),
+        )
+    };
+    let recipient = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm
+            .get(peer_did)
+            .ok_or_else(|| format!("OSL: bootstrap ping: no peer entry for {peer_did}"))?;
+        let x_b64 = entry
+            .pubkey
+            .as_ref()
+            .ok_or_else(|| format!("OSL: bootstrap ping: peer {peer_did} missing x25519"))?;
+        let mlkem_b64 = entry
+            .ik_mlkem768_pub
+            .as_ref()
+            .ok_or_else(|| format!("OSL: bootstrap ping: peer {peer_did} missing ml-kem"))?;
+        let x_bytes = STANDARD
+            .decode(x_b64)
+            .map_err(|e| format!("OSL: bootstrap ping: x25519 b64: {e}"))?;
+        if x_bytes.len() != crypto::x25519::PUBLIC_KEY_SIZE {
+            return Err("OSL: bootstrap ping: x25519 wrong length".to_string());
+        }
+        let mlkem_bytes = STANDARD
+            .decode(mlkem_b64)
+            .map_err(|e| format!("OSL: bootstrap ping: ml-kem b64: {e}"))?;
+        if mlkem_bytes.len() != crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE {
+            return Err("OSL: bootstrap ping: ml-kem wrong length".to_string());
+        }
+        let mut x_arr = [0u8; crypto::x25519::PUBLIC_KEY_SIZE];
+        x_arr.copy_from_slice(&x_bytes);
+        let mut mlkem_arr = [0u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE];
+        mlkem_arr.copy_from_slice(&mlkem_bytes);
+        crate::wire_v2::RecipientV3 {
+            x25519_pub: crypto::x25519::PublicKey::from_bytes(x_arr),
+            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&mlkem_arr),
+        }
+    };
+    let scope = crate::scope::Scope::dm(peer_did);
+    encrypt_v4_send(
+        state,
+        &sender_sk,
+        &self_pk,
+        peer_did,
+        &recipient,
+        &scope,
+        b"",
+        &self_discord_id,
+    )
+}
+
 /// 7d-PIVOT-FIX2 Bug F: re-engaging a previously-burned scope by
 /// sending a fresh encrypted message un-burns it. Idempotent — if
 /// the scope isn't currently burned, returns `Ok(false)` and the
@@ -5168,6 +5240,49 @@ pub fn cmd_osl_control_inbox_drain(
                         error = %e,
                         "[OSL] control_inbox DELETE failed (will retry)"
                     );
+                }
+                // Deterministic DM resync: we just honored a
+                // SESSION_RESET (our v=4 ratchet with this peer is now
+                // None). Immediately send the peer an empty v=4
+                // bootstrap so THEIR receive ratchet re-establishes
+                // right now, instead of waiting for our next content
+                // message (which might never come if we go idle —
+                // that was the desync that wouldn't heal). Best-effort:
+                // a build/post failure just falls back to the
+                // next-message bootstrap.
+                if sentinel == OSL_RESULT_SESSION_RESET_APPLIED {
+                    match build_v4_bootstrap_ping(state, &item.sender_id) {
+                        Ok(ping_wire) => {
+                            if let Some(b64) = ping_wire.strip_prefix("DPC0::") {
+                                if let Ok(ping_bundle) = STANDARD.decode(b64) {
+                                    let scope_id = format!("dm:{}", item.sender_id);
+                                    match client.post_control_inbox(
+                                        &identity,
+                                        &item.sender_id,
+                                        &scope_id,
+                                        &ping_bundle,
+                                    ) {
+                                        Ok(_) => tracing::info!(
+                                            peer = %item.sender_id,
+                                            "[OSL] resync: bootstrap ping posted after \
+                                             SESSION_RESET"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            peer = %item.sender_id,
+                                            error = %e,
+                                            "[OSL] resync: bootstrap ping POST failed"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            peer = %item.sender_id,
+                            error = %e,
+                            "[OSL] resync: bootstrap ping build failed (falling back \
+                             to next-message bootstrap)"
+                        ),
+                    }
                 }
                 applied = applied.saturating_add(1);
             }
