@@ -1300,7 +1300,8 @@
                                 try {
                                     posted = !!(await oslSendControlMessage(
                                         channelId,
-                                        __oslCtrl[i]
+                                        __oslCtrl[i],
+                                        v7cScope
                                     ));
                                 } catch (_) {
                                     posted = false;
@@ -1674,7 +1675,7 @@
      * Fire-and-forget: returns the fetch Response on success or
      * null on failure (logged).
      */
-    async function oslSendControlMessage(channelId, wireString) {
+    async function oslSendControlMessage(channelId, wireString, scopeInput) {
         if (!editOverlayAuthToken) {
             console.log(
                 "[OSL] oslSendControlMessage FAIL reason=no_auth_token"
@@ -1690,6 +1691,75 @@
             );
             return null;
         }
+        // Phase 2 extension (Mode-1 SKDM/burn-marker leak fix):
+        // control wires (SKDMs, burn markers, recovery SKDMs) used
+        // to POST raw DPC0:: text, leaving giant ciphertext visible
+        // to anyone reading the channel — including server-side
+        // observers and non-OSL clients in the GC. Wrap them in the
+        // same prose-token cover content messages use. Scope is
+        // required so the receiver can HMAC-verify the cover and
+        // route to the v=4/v=5 decrypt path.
+        if (!scopeInput) {
+            try {
+                const ctx =
+                    typeof oslCurrentChannelContext === "function"
+                        ? oslCurrentChannelContext()
+                        : null;
+                if (
+                    ctx &&
+                    typeof oslScopeForCurrentContext === "function"
+                ) {
+                    scopeInput = oslScopeForCurrentContext(ctx);
+                }
+            } catch (_) {
+                scopeInput = null;
+            }
+        }
+        if (!scopeInput) {
+            console.error(
+                "[OSL] oslSendControlMessage ABORT reason=no_scope " +
+                    "channel=" +
+                    channelId +
+                    " (refusing raw DPC0:: leak)"
+            );
+            return null;
+        }
+        let bodyContent;
+        try {
+            const proseResp = await oslInvoke("osl_prose_token_send", {
+                scopeInput: scopeInput,
+                dpc0Wire: wireString,
+                ttlSeconds: 259200,
+            });
+            if (
+                proseResp &&
+                proseResp.ok &&
+                proseResp.value &&
+                typeof proseResp.value.cover_text === "string" &&
+                proseResp.value.cover_text.length > 0
+            ) {
+                bodyContent = proseResp.value.cover_text;
+            } else {
+                console.error(
+                    "[OSL] oslSendControlMessage ABORT reason=prose_token_send_failed " +
+                        "channel=" +
+                        channelId +
+                        " err=" +
+                        (proseResp && proseResp.error) +
+                        " (refusing raw DPC0:: leak)"
+                );
+                return null;
+            }
+        } catch (e) {
+            console.error(
+                "[OSL] oslSendControlMessage ABORT reason=prose_token_send_threw " +
+                    "channel=" +
+                    channelId +
+                    " (refusing raw DPC0:: leak)",
+                e
+            );
+            return null;
+        }
         const url = "/api/v9/channels/" + channelId + "/messages";
         try {
             // 9-B3: retry-on-stale-token wrapper. SKDM dispatch and
@@ -1702,14 +1772,16 @@
                     Authorization: editOverlayAuthToken,
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ content: wireString }),
+                body: JSON.stringify({ content: bodyContent }),
             });
             if (resp && resp.ok) {
                 console.log(
                     "[OSL] oslSendControlMessage OK channel=" +
                         channelId +
                         " wire_len=" +
-                        wireString.length
+                        wireString.length +
+                        " cover_len=" +
+                        bodyContent.length
                 );
             } else {
                 console.log(
@@ -9999,9 +10071,14 @@
                     oslBurnedScopesAdd(p.scope_kind, p.scope_id);
                 }
                 if (p.burn_marker_payload && p.channel_id) {
+                    const _burnScope =
+                        p.scope_kind && p.scope_id
+                            ? { kind: p.scope_kind, id: p.scope_id }
+                            : null;
                     oslSendControlMessage(
                         p.channel_id,
-                        p.burn_marker_payload
+                        p.burn_marker_payload,
+                        _burnScope
                     ).catch(function (e2) {
                         console.error(
                             "[OSL] scope_burned send marker:",
