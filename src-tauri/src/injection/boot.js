@@ -1134,10 +1134,13 @@
                     // decrypt path runs.
                     if (out.messages.length === 1) {
                         const __osl_dpc0Wire = out.messages[0];
+                        // Phase 3: per-scope TTL (default 72h if no
+                        // setting / IPC fails).
+                        return oslGetScopeTtl(v7cScope).then(function (__osl_ttl) {
                         return oslInvoke("osl_prose_token_send", {
                             scopeInput: v7cScope,
                             dpc0Wire: __osl_dpc0Wire,
-                            ttlSeconds: 259200,
+                            ttlSeconds: __osl_ttl,
                         }).then(function (__osl_resp) {
                             if (
                                 !__osl_resp ||
@@ -1343,6 +1346,7 @@
                         })();
                         return __oslSendResult;
                         }); // close osl_prose_token_send .then() body
+                        }); // close oslGetScopeTtl .then() body
                     }
                     // 9-MODE1-RETIRE: Mode 1 dispatch suppressed for
                     // V2. Rust coerces stego_mode=mode1 → Mode 0 at
@@ -1726,10 +1730,12 @@
         }
         let bodyContent;
         try {
+            // Phase 3: per-scope TTL (default 72h if no setting).
+            const _ttl = await oslGetScopeTtl(scopeInput);
             const proseResp = await oslInvoke("osl_prose_token_send", {
                 scopeInput: scopeInput,
                 dpc0Wire: wireString,
-                ttlSeconds: 259200,
+                ttlSeconds: _ttl,
             });
             if (
                 proseResp &&
@@ -4641,6 +4647,58 @@
             return { ok: false, error: msg };
         }
     }
+
+    // Phase 3: per-scope cipher-store TTL. Replaces the hardcoded
+    // 259200 (72h) every `osl_prose_token_send` callsite used to
+    // pass. Falls back to the same 72h default if the IPC fails or
+    // returns something unexpected — never blocks a send on a
+    // settings read.
+    const OSL_DEFAULT_TTL_SECONDS = 259200;
+    async function oslGetScopeTtl(scopeInput) {
+        if (!scopeInput) return OSL_DEFAULT_TTL_SECONDS;
+        try {
+            const resp = await oslInvoke("osl_get_scope_ttl", {
+                scopeInput: scopeInput,
+            });
+            if (
+                resp &&
+                resp.ok &&
+                typeof resp.value === "number" &&
+                resp.value > 0
+            ) {
+                return resp.value | 0;
+            }
+        } catch (_) {}
+        return OSL_DEFAULT_TTL_SECONDS;
+    }
+
+    /**
+     * Phase 3 debug handle. Sets the per-scope TTL until the
+     * settings UI slider is wired in. Returns the effective
+     * (post-clamp) value so the caller can confirm.
+     *
+     * Example:
+     *   await window.__oslSetScopeTtl("gc", "1502771310428819569", 86400)
+     */
+    window.__oslSetScopeTtl = async function (scopeKind, scopeId, seconds) {
+        const resp = await oslInvoke("osl_set_scope_ttl", {
+            scopeInput: { kind: scopeKind, id: scopeId },
+            ttlSeconds: seconds | 0,
+        });
+        console.log(
+            "[OSL] __oslSetScopeTtl",
+            scopeKind + ":" + scopeId,
+            "requested=" + (seconds | 0),
+            "result=",
+            resp
+        );
+        return resp;
+    };
+    window.__oslGetScopeTtl = async function (scopeKind, scopeId) {
+        const r = await oslGetScopeTtl({ kind: scopeKind, id: scopeId });
+        console.log("[OSL] __oslGetScopeTtl", scopeKind + ":" + scopeId, "=>", r);
+        return r;
+    };
 
     // ---- Section 3: profile popout/sidebar Whitelist button ----
 

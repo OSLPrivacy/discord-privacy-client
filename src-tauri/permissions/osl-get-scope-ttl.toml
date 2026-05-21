@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Phase 3 per-conversation TTL. Read-only, no side effects beyond a
+# single file read of `scope_ttl.json` in the OSL config dir.
+[[permission]]
+identifier = "allow-osl-get-scope-ttl"
+description = "Permits the discord.com main webview to invoke `osl_get_scope_ttl` (read the per-scope cipher-store TTL preference; falls back to 259200s/72h when no entry exists)."
+commands.allow = ["osl_get_scope_ttl"]

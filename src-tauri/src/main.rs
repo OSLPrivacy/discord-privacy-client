@@ -2216,6 +2216,60 @@ async fn osl_prose_token_burn(app: tauri::AppHandle, blob_id: String) -> Result<
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Phase 3: read the per-scope cipher-store TTL (seconds). Returns
+/// `DEFAULT_TTL_SECONDS` (72h) when no entry exists for the scope,
+/// clamped to `[MIN_TTL_SECONDS, MAX_TTL_SECONDS]` (1h..=7d). boot.js
+/// calls this immediately before each `osl_prose_token_send` and uses
+/// the result as the `ttl_seconds` arg.
+#[tauri::command]
+async fn osl_get_scope_ttl(
+    app: tauri::AppHandle,
+    scope_input: ipc::scope::ScopeInput,
+) -> Result<u32, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope: ipc::scope::Scope = scope_input
+            .try_into()
+            .map_err(|e: ipc::scope::ScopeError| format!("OSL: {e}"))?;
+        let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+        let path = dir.join("scope_ttl.json");
+        let file = ipc::scope_ttl_file::load_scope_ttls(&path);
+        Ok(ipc::scope_ttl_file::get_scope_ttl(
+            &file,
+            &scope.storage_key(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Phase 3: set the per-scope cipher-store TTL (seconds). The stored
+/// value is clamped to `[MIN_TTL_SECONDS, MAX_TTL_SECONDS]`; the
+/// effective (post-clamp) value is returned so the UI can echo it
+/// back to the slider without a follow-up read.
+#[tauri::command]
+async fn osl_set_scope_ttl(
+    app: tauri::AppHandle,
+    scope_input: ipc::scope::ScopeInput,
+    ttl_seconds: u32,
+) -> Result<u32, String> {
+    let _ = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope: ipc::scope::Scope = scope_input
+            .try_into()
+            .map_err(|e: ipc::scope::ScopeError| format!("OSL: {e}"))?;
+        let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
+        let path = dir.join("scope_ttl.json");
+        let mut file = ipc::scope_ttl_file::load_scope_ttls(&path);
+        let stored =
+            ipc::scope_ttl_file::set_scope_ttl(&mut file, scope.storage_key(), ttl_seconds);
+        ipc::scope_ttl_file::write_scope_ttls(&path, &file)?;
+        Ok(stored)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Read the user's customised encryption-marker text. Empty string
 /// means "render cipher rows blank". Default = "[Encryption - Ignore]".
 #[tauri::command]
@@ -2770,6 +2824,8 @@ fn main() {
             osl_prose_token_send,
             osl_prose_token_recv,
             osl_prose_token_burn,
+            osl_get_scope_ttl,
+            osl_set_scope_ttl,
         ])
         .run(tauri::generate_context!())
         .expect("error while running discord-privacy-client tauri app");
