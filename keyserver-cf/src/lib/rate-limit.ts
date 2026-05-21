@@ -48,18 +48,30 @@ export async function checkRateLimit(
   // (e.g. register: per-IP "rl" AND per-user_id "rlreg") without the
   // counters colliding. Existing callers keep the default "rl".
   const key = `${bucket}:${ip}:${windowStart}`;
-  const raw = await env.RATE_LIMIT_KV.get(key);
-  const current = raw ? Number.parseInt(raw, 10) : 0;
-  if (current >= max) {
-    const retryAfter = WINDOW_SEC - (now - windowStart);
-    return { ok: false, retryAfter: Math.max(retryAfter, 1) };
+  // FAIL OPEN on any KV error. The free-tier KV write quota is
+  // 1,000/day per account; once exhausted, `get`/`put` throw
+  // ("KV put() limit exceeded for the day"). Previously that bubbled
+  // up as an HTTP 500 on EVERY rate-limited route — the keyserver and
+  // cipher-store both stopped working entirely until midnight UTC.
+  // A throttle is defence-in-depth, not a correctness gate, so on KV
+  // failure we allow the request rather than break the whole service.
+  try {
+    const raw = await env.RATE_LIMIT_KV.get(key);
+    const current = raw ? Number.parseInt(raw, 10) : 0;
+    if (current >= max) {
+      const retryAfter = WINDOW_SEC - (now - windowStart);
+      return { ok: false, retryAfter: Math.max(retryAfter, 1) };
+    }
+    // expirationTtl bounded by KV minimum (60s); 120 gives a clean
+    // cushion past the window flip.
+    await env.RATE_LIMIT_KV.put(key, String(current + 1), {
+      expirationTtl: KV_TTL_SEC,
+    });
+    return { ok: true, retryAfter: 0 };
+  } catch (err) {
+    console.error("[rate-limit] KV error, failing open:", err);
+    return { ok: true, retryAfter: 0 };
   }
-  // expirationTtl bounded by KV minimum (60s); 120 gives a clean
-  // cushion past the window flip.
-  await env.RATE_LIMIT_KV.put(key, String(current + 1), {
-    expirationTtl: KV_TTL_SEC,
-  });
-  return { ok: true, retryAfter: 0 };
 }
 
 /** Extract the caller IP. Cloudflare provides CF-Connecting-IP. */

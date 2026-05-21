@@ -71,20 +71,31 @@ export async function rateLimit(
   const now = Math.floor(Date.now() / 1000);
   const windowStart = now - (now % WINDOW_SECONDS);
   const key = await bucketKey(ip, bucket, windowStart);
-  const cur = await env.RATE_LIMIT.get(key);
-  const used = cur ? parseInt(cur, 10) || 0 : 0;
-  const budget = BUDGETS[bucket];
-  if (used >= budget) {
-    return { allowed: false, remaining: 0 };
+  // FAIL OPEN on any KV error. The free-tier KV write quota is
+  // 1,000/day per account; once exhausted, `get`/`put` throw and the
+  // upload endpoint started 500ing on every request ("server
+  // failure"), which the send gate turns into a fail-closed abort —
+  // i.e. nothing sends. Rate limiting is defence-in-depth, not a
+  // correctness gate, so on KV failure we allow the request.
+  try {
+    const cur = await env.RATE_LIMIT.get(key);
+    const used = cur ? parseInt(cur, 10) || 0 : 0;
+    const budget = BUDGETS[bucket];
+    if (used >= budget) {
+      return { allowed: false, remaining: 0 };
+    }
+    // KV writes are eventually consistent (~60s convergence); for
+    // rate limiting this is acceptable — a bad actor across multiple
+    // edge POPs can briefly exceed the cap, but the absolute ceiling
+    // is still bounded by `budget * pop_count` per window, which is
+    // small enough to not threaten the service. TTL is 2× the window
+    // so the current window's key always outlives the window itself.
+    await env.RATE_LIMIT.put(key, String(used + 1), {
+      expirationTtl: WINDOW_SECONDS * 2,
+    });
+    return { allowed: true, remaining: budget - used - 1 };
+  } catch (err) {
+    console.error("[rate-limit] KV error, failing open:", err);
+    return { allowed: true, remaining: 0 };
   }
-  // KV writes are eventually consistent (~60s convergence); for
-  // rate limiting this is acceptable — a bad actor across multiple
-  // edge POPs can briefly exceed the cap, but the absolute ceiling
-  // is still bounded by `budget * pop_count` per window, which is
-  // small enough to not threaten the service. TTL is 2× the window
-  // so the current window's key always outlives the window itself.
-  await env.RATE_LIMIT.put(key, String(used + 1), {
-    expirationTtl: WINDOW_SECONDS * 2,
-  });
-  return { allowed: true, remaining: budget - used - 1 };
 }

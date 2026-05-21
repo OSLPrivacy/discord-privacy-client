@@ -226,10 +226,14 @@ async function handleControlInboxGetInner(
   env: Env,
   userId: string,
 ): Promise<Response> {
-  // Drain GETs poll every ~10s; own bucket keeps them off the POST
-  // counter so a chatty server can't rate-limit its own sends.
-  const rl = await checkRateLimit(env, callerIp(request), 3600, "ci-get");
-  if (!rl.ok) return tooMany(rl.retryAfter);
+  // NO rate-limit KV write here. The drain polls this GET every ~10s
+  // (8,640×/day per client), and the per-request KV write that the
+  // throttle does was blowing the free-tier KV write quota (1,000/day
+  // per account) — which then 500'd EVERY KV-touching endpoint,
+  // including cipher-store uploads. The GET is already authenticated
+  // by an ed25519 signature over a fresh timestamp and is read-only
+  // (a D1 SELECT), so a throttle adds little and isn't worth a KV
+  // write per poll. POST/DELETE keep their throttles.
 
   const url = new URL(request.url);
   const ts = parseInt(url.searchParams.get("ts") || "", 10);
