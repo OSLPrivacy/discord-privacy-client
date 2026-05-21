@@ -6512,6 +6512,13 @@
     // Pass `{ force: true }` from cross-window-event listeners
     // (Rust side mutated state we couldn't otherwise see).
     let oslHeaderStateLastScopeKey = null;
+    // True when the most recent header render for the cached scope key
+    // resolved to "unknown" (state fetch failed/incomplete). Lets the
+    // throttle retry instead of latching a grey lock forever.
+    let oslHeaderStateLastWasUnknown = false;
+    // Rate-limits the unknown-retry bypass so it can't spam IPCs during
+    // the send-time header-observer storm.
+    let oslHeaderStateLastUnknownRetryAt = 0;
     // 9-C1 Stage 4: cache the most recent summary so the click
     // handler doesn't have to round-trip again.
     let oslHeaderLastSummary = null;
@@ -6583,10 +6590,27 @@
         if (!encryptBtn) return;
         const key = oslScopeStorageKey(scopeInput);
         const force = opts && opts.force === true;
+        // Throttle on scope key UNLESS the last render for this scope
+        // landed on "unknown" (a failed/incomplete state fetch). Without
+        // the unknown bypass, a single failed fetch cached the key and
+        // the lock stayed grey ("blue"/unknown) forever until a channel
+        // switch — which is exactly the "lock does not change" report.
+        //
+        // The unknown bypass is itself rate-limited to once per 1.5s:
+        // the header MutationObserver fires hundreds of times/sec during
+        // a send, and an unbounded bypass would spam osl_get_server_
+        // whitelist_state IPCs and reintroduce the "multi-second slow
+        // send" the scope-key throttle exists to prevent.
         if (!force && key === oslHeaderStateLastScopeKey) {
-            return;
+            if (!oslHeaderStateLastWasUnknown) return;
+            const _now = Date.now();
+            if (_now - oslHeaderStateLastUnknownRetryAt < 1500) return;
+            oslHeaderStateLastUnknownRetryAt = _now;
         }
         oslHeaderStateLastScopeKey = key;
+        // Assume unknown until a branch below renders a definitive
+        // state; that branch flips this back to false.
+        oslHeaderStateLastWasUnknown = true;
 
         // W2b: server text channels use the scope-flag model, NOT the
         // roster-summary path (Discord never loads a server roster —
@@ -6633,6 +6657,9 @@
                     "server (all OSL members, current + future).";
             }
             encryptBtn.innerHTML = oslLockSvg(lockState);
+            // Definitive state rendered — clear the unknown flag so the
+            // throttle can cache this scope.
+            oslHeaderStateLastWasUnknown = false;
             encryptBtn.setAttribute(
                 "aria-label",
                 "OSL server whitelist: " +
@@ -6676,6 +6703,7 @@
             }
             const on = !!(gw.value && gw.value.channel);
             encryptBtn.innerHTML = oslLockSvg(on ? "closed" : "open");
+            oslHeaderStateLastWasUnknown = false;
             encryptBtn.setAttribute(
                 "aria-label",
                 "OSL GC whitelist: " + (on ? "on" : "off")
@@ -6780,6 +6808,10 @@
                 break;
         }
         encryptBtn.innerHTML = oslLockSvg(lockState);
+        // Clear the unknown-retry flag only on a definitive state; a
+        // genuine "unknown" (roster not loaded) keeps retrying so the
+        // lock self-heals once the roster lands.
+        oslHeaderStateLastWasUnknown = lockState === "unknown";
         encryptBtn.setAttribute("aria-label", "OSL whitelist: " + summary.state);
         encryptBtn.style.opacity = "1";
         encryptBtn.style.pointerEvents = "auto";

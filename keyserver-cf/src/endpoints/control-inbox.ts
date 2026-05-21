@@ -28,6 +28,7 @@ import { verifyEd25519 } from "../lib/crypto.js";
 import { getUserForVerify } from "../lib/db.js";
 import {
   badRequest,
+  error,
   json,
   notFound,
   tooMany,
@@ -72,6 +73,21 @@ function hexToId(hex: string): Uint8Array | null {
 function freshnessOk(ts: unknown): ts is number {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return false;
   return Math.abs(Date.now() - ts) <= CONTROL_INBOX_FRESHNESS_WINDOW_MS;
+}
+
+/// Decode base64 WITHOUT throwing. `decodeBase64` calls `atob`, which
+/// throws `InvalidCharacterError` on a malformed / null / undefined
+/// value; an unguarded call turned a missing-or-bad signing key into
+/// an opaque HTTP 500 ("internal error") that broke the whole drain
+/// loop. Returns null on any decode failure so callers can answer
+/// with a clean 401/400 instead.
+function safeDecodeBase64(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    return decodeBase64(value);
+  } catch {
+    return null;
+  }
 }
 
 function bytesToU8(v: unknown): Uint8Array | null {
@@ -146,8 +162,12 @@ export async function handleControlInboxPost(
     timestamp_ms: body.timestamp_ms,
     bundle_sha256: bundleHash,
   });
-  const pubBytes = decodeBase64(sender.ik_ed25519_pub);
-  const sigBytes = decodeBase64(body.signature_b64);
+  const pubBytes = safeDecodeBase64(sender.ik_ed25519_pub);
+  const sigBytes = safeDecodeBase64(body.signature_b64);
+  if (!pubBytes) {
+    return unauthorized("no usable ed25519 signing key on file for sender");
+  }
+  if (!sigBytes) return badRequest("signature is not valid base64");
   const ok = await verifyEd25519(pubBytes, message, sigBytes);
   if (!ok) return unauthorized("signature verification failed");
 
@@ -189,6 +209,23 @@ export async function handleControlInboxGet(
   env: Env,
   userId: string,
 ): Promise<Response> {
+  try {
+    return await handleControlInboxGetInner(request, env, userId);
+  } catch (err) {
+    // Surface the real cause instead of the dispatch-level opaque
+    // "internal error" so a failing drain is diagnosable from the
+    // client console.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[control-inbox GET] error:", msg);
+    return error(500, `control-inbox GET: ${msg}`);
+  }
+}
+
+async function handleControlInboxGetInner(
+  request: Request,
+  env: Env,
+  userId: string,
+): Promise<Response> {
   // Drain GETs poll every ~10s; own bucket keeps them off the POST
   // counter so a chatty server can't rate-limit its own sends.
   const rl = await checkRateLimit(env, callerIp(request), 3600, "ci-get");
@@ -208,8 +245,12 @@ export async function handleControlInboxGet(
     user_id: userId,
     timestamp_ms: ts,
   });
-  const pubBytes = decodeBase64(user.ik_ed25519_pub);
-  const sigBytes = decodeBase64(sigB64);
+  const pubBytes = safeDecodeBase64(user.ik_ed25519_pub);
+  const sigBytes = safeDecodeBase64(sigB64);
+  if (!pubBytes) {
+    return unauthorized("no usable ed25519 signing key on file for this user");
+  }
+  if (!sigBytes) return badRequest("signature is not valid base64");
   const ok = await verifyEd25519(pubBytes, message, sigBytes);
   if (!ok) return unauthorized("signature verification failed");
 
@@ -286,8 +327,12 @@ export async function handleControlInboxDelete(
     inbox_id_hex: inboxIdHex,
     timestamp_ms: body.timestamp_ms,
   });
-  const pubBytes = decodeBase64(user.ik_ed25519_pub);
-  const sigBytes = decodeBase64(body.signature_b64);
+  const pubBytes = safeDecodeBase64(user.ik_ed25519_pub);
+  const sigBytes = safeDecodeBase64(body.signature_b64);
+  if (!pubBytes) {
+    return unauthorized("no usable ed25519 signing key on file for this user");
+  }
+  if (!sigBytes) return badRequest("signature is not valid base64");
   const ok = await verifyEd25519(pubBytes, message, sigBytes);
   if (!ok) return unauthorized("signature verification failed");
 
