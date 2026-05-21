@@ -5,6 +5,10 @@
 ///   - Upload size: 1..=65536 bytes (64 KB cap).
 ///   - TTL header `X-OSL-TTL-Seconds`: must be one of
 ///       86400 (24h), 259200 (72h), 604800 (7d).
+///   - Fetch-token header `X-OSL-Fetch-Token`: 32 hex chars (16 bytes).
+///     Required on upload; required on fetch/delete when the stored
+///     row has a non-NULL token (any new upload). Phase 6 capability
+///     gating -- defends against blob_id link-leak.
 ///   - ID path param: 16 hex chars.
 
 import type { Env } from "../env.js";
@@ -18,6 +22,29 @@ const ALLOWED_TTL_SECONDS = new Set<number>([
   604800, // 7d
 ]);
 
+const FETCH_TOKEN_HEX_LEN = 32; // 16 bytes
+const FETCH_TOKEN_HEX_RE = /^[0-9a-f]{32}$/;
+
+function readFetchToken(request: Request): string | null {
+  const raw = request.headers.get("x-osl-fetch-token");
+  if (raw === null) return null;
+  const lower = raw.trim().toLowerCase();
+  if (lower.length !== FETCH_TOKEN_HEX_LEN) return null;
+  if (!FETCH_TOKEN_HEX_RE.test(lower)) return null;
+  return lower;
+}
+
+/// Constant-time string comparison. Same-length only -- caller has
+/// already validated both sides are 32 hex chars.
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 export async function handleUpload(request: Request, env: Env): Promise<Response> {
   const ttlHeader = request.headers.get("x-osl-ttl-seconds");
   const ttl = ttlHeader ? parseInt(ttlHeader, 10) : NaN;
@@ -26,6 +53,18 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
       400,
       "bad_ttl",
       "X-OSL-TTL-Seconds must be 86400 (24h), 259200 (72h), or 604800 (7d)"
+    );
+  }
+
+  // Phase 6: capability token required for every new upload. The
+  // header value is opaque to the worker (HMAC-derived client-side);
+  // the worker just persists + later constant-time-compares.
+  const fetchToken = readFetchToken(request);
+  if (fetchToken === null) {
+    return error(
+      400,
+      "bad_fetch_token",
+      "X-OSL-Fetch-Token must be 32 hex chars (16 bytes)"
     );
   }
 
@@ -47,9 +86,9 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     const id = newBlobId();
     try {
       await env.DB.prepare(
-        "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)"
       )
-        .bind(id, data, data.length, expiresAt, now)
+        .bind(id, data, data.length, expiresAt, now, fetchToken)
         .run();
       return json({ id: idToHex(id), expires_at: expiresAt }, 201);
     } catch (err) {
@@ -69,21 +108,38 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
 }
 
 export async function handleFetch(
+  request: Request,
   env: Env,
   hex: string
 ): Promise<Response> {
   const id = hexToId(hex);
   if (!id) return error(400, "bad_id", "id must be 16 hex chars");
   const row = await env.DB.prepare(
-    "SELECT data, expires_at FROM blobs WHERE id = ? LIMIT 1"
+    "SELECT data, expires_at, fetch_token FROM blobs WHERE id = ? LIMIT 1"
   )
     .bind(id)
-    .first<{ data: unknown; expires_at: number }>();
+    .first<{ data: unknown; expires_at: number; fetch_token: string | null }>();
   if (!row) return notFound();
   const now = Math.floor(Date.now() / 1000);
   if (row.expires_at < now) {
     // Expired but the sweep hasn't run yet. Treat as gone.
     return notFound();
+  }
+  // Phase 6 gate: when the row carries a fetch_token, the caller must
+  // present a matching one. Legacy rows (NULL) remain fetchable by
+  // ID alone -- they predate Phase 6 and will TTL out within 7d.
+  if (row.fetch_token !== null) {
+    const presented = readFetchToken(request);
+    if (presented === null) {
+      return error(
+        401,
+        "fetch_token_required",
+        "X-OSL-Fetch-Token header required for this blob"
+      );
+    }
+    if (!constantTimeEqual(row.fetch_token, presented)) {
+      return error(403, "fetch_token_mismatch", "fetch token does not match");
+    }
   }
   // D1's BLOB return type is officially ArrayBuffer but in practice
   // varies by runtime version (Uint8Array, plain string, or even an
@@ -126,17 +182,37 @@ function blobToBytes(v: unknown): Uint8Array {
 }
 
 export async function handleDelete(
+  request: Request,
   env: Env,
   hex: string
 ): Promise<Response> {
   const id = hexToId(hex);
   if (!id) return error(400, "bad_id", "id must be 16 hex chars");
-  // Phase 1 MVP: anyone can burn any ID they know. The 8-byte ID
-  // is the capability token; if you have it, you can delete. This
-  // is fine because (a) IDs are server-generated random 64-bit
-  // values, never enumerable, and (b) the legitimate sender is
-  // the only party with the ID besides the server. Phase 6 adds
-  // anonymous-credential gating for upload + delete.
+  // Phase 6: DELETE is gated the same way as FETCH. Without this an
+  // adversary who learned blob_id but not the conversation key could
+  // DoS by deleting blobs from your conversation.
+  //
+  // Legacy rows (fetch_token NULL, predating Phase 6) accept any
+  // delete -- same back-compat treatment as fetch -- and will TTL
+  // out within 7d.
+  const row = await env.DB.prepare(
+    "SELECT fetch_token FROM blobs WHERE id = ? LIMIT 1"
+  )
+    .bind(id)
+    .first<{ fetch_token: string | null }>();
+  if (row && row.fetch_token !== null) {
+    const presented = readFetchToken(request);
+    if (presented === null) {
+      return error(
+        401,
+        "fetch_token_required",
+        "X-OSL-Fetch-Token header required to delete this blob"
+      );
+    }
+    if (!constantTimeEqual(row.fetch_token, presented)) {
+      return error(403, "fetch_token_mismatch", "fetch token does not match");
+    }
+  }
   await env.DB.prepare("DELETE FROM blobs WHERE id = ?").bind(id).run();
   return new Response(null, { status: 204 });
 }

@@ -2263,6 +2263,7 @@ async fn osl_scope_burn_blobs(
 ) -> Result<ScopeBurnBlobsDto, String> {
     let _ = app;
     tauri::async_runtime::spawn_blocking(move || {
+        let scope_for_token = scope_input.clone();
         let scope: ipc::scope::Scope = scope_input
             .try_into()
             .map_err(|e: ipc::scope::ScopeError| format!("OSL: {e}"))?;
@@ -2273,7 +2274,7 @@ async fn osl_scope_burn_blobs(
         let mut deleted = 0u32;
         let mut failed = 0u32;
         for id in &blob_ids {
-            match ipc::prose_token::prose_token_burn_id(&dir, id) {
+            match ipc::prose_token::prose_token_burn_id(&dir, &scope_for_token, id) {
                 Ok(()) => deleted += 1,
                 Err(e) => {
                     tracing::warn!(blob_id = %id, error = %e, "OSL: scope_burn_blobs delete failed");
@@ -2328,14 +2329,22 @@ async fn osl_prose_token_recv(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Phase 2 prose-token burn. Deletes a single blob from the
-/// cipher-store. Idempotent on the server side.
+/// Phase 2 prose-token burn (Phase 6 now scope-gated). Deletes a
+/// single blob from the cipher-store. Idempotent on the server side.
+/// Requires `scope_input` so the client can derive the same
+/// capability token the original uploader used — without it the
+/// worker 401s the DELETE (defends against blob_id-leak DoS).
 #[tauri::command]
-async fn osl_prose_token_burn(app: tauri::AppHandle, blob_id: String) -> Result<(), String> {
+async fn osl_prose_token_burn(
+    app: tauri::AppHandle,
+    scope_input: ipc::scope::ScopeInput,
+    blob_id: String,
+) -> Result<(), String> {
     let _ = app;
     tauri::async_runtime::spawn_blocking(move || {
         let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
-        ipc::prose_token::prose_token_burn_id(&dir, &blob_id).map_err(|e| e.to_string())
+        ipc::prose_token::prose_token_burn_id(&dir, &scope_input, &blob_id)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?

@@ -63,8 +63,8 @@ fn end_to_end_round_trip_via_live_store() {
     assert_eq!(recv.wire, wire);
 
     // Burn — second call should be idempotent.
-    prose_token_burn_id(&dir, &sent.blob_id).expect("burn succeeds");
-    prose_token_burn_id(&dir, &sent.blob_id).expect("burn idempotent");
+    prose_token_burn_id(&dir, &scope, &sent.blob_id).expect("burn succeeds");
+    prose_token_burn_id(&dir, &scope, &sent.blob_id).expect("burn idempotent");
 
     // After burn, recv should map to None (server returns 404 →
     // prose_token_recv folds that to Ok(None)).

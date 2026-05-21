@@ -1,0 +1,23 @@
+-- Phase 6: per-blob capability tokens for fetch + delete authorization.
+--
+-- Each upload now carries an X-OSL-Fetch-Token header (32 hex chars,
+-- 16 bytes). The token is HMAC-SHA256(per_conversation_mac_key, ...)
+-- computed client-side from data only the sender + recipients of a
+-- specific conversation possess. Storing it server-side lets the
+-- worker enforce that a fetcher proves possession of the same key
+-- material that produced the cover.
+--
+-- The column is NULLABLE for graceful migration:
+--   - Blobs uploaded before this migration land with fetch_token = NULL
+--     and remain fetchable by ID alone (legacy behaviour) until their
+--     TTL expires (max 7d).
+--   - New uploads MUST carry the header (worker enforces). All future
+--     blobs have a non-NULL token and require matching proof on
+--     fetch + delete.
+--
+-- Defends against the link-leak threat (blob_id alone shared outside
+-- the conversation context) but NOT against a compromised cipher-store
+-- operator who can read DB rows directly. That requires Privacy-Pass-
+-- style blind tokens (deferred work).
+
+ALTER TABLE blobs ADD COLUMN fetch_token TEXT;

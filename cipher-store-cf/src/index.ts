@@ -82,14 +82,14 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
       if (!rl.allowed) {
         return error(429, "rate_limited", "fetch rate limit hit");
       }
-      return handleFetch(env, idHex);
+      return handleFetch(request, env, idHex);
     }
     if (request.method === "DELETE") {
       const rl = await rateLimit(env, clientIp(request), "delete");
       if (!rl.allowed) {
         return error(429, "rate_limited", "delete rate limit hit");
       }
-      return handleDelete(env, idHex);
+      return handleDelete(request, env, idHex);
     }
   }
 

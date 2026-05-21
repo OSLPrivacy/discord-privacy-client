@@ -34,6 +34,20 @@ fn is_valid_ttl(ttl: u32) -> bool {
     ttl == TTL_24H || ttl == TTL_72H || ttl == TTL_7D
 }
 
+/// Phase 6 capability-token length. HMAC-SHA256 truncated to 16
+/// bytes (128 bits) — enough security margin against brute force
+/// while keeping the header short. The worker stores the hex form
+/// of this exact byte length.
+pub const FETCH_TOKEN_BYTES: usize = 16;
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
 /// Resolve the cipher-store base URL from the config dir's
 /// `keyserver.json`, falling back to the built-in production default.
 pub fn resolve_cipher_store_base_url(dir: &Path) -> String {
@@ -100,12 +114,16 @@ impl CipherStoreClient {
         })
     }
 
-    /// Upload a ciphertext blob with the chosen TTL. Returns the
-    /// server-assigned 16-hex-char ID and absolute expiry.
+    /// Upload a ciphertext blob with the chosen TTL + a per-blob
+    /// capability token (Phase 6). Returns the server-assigned
+    /// 16-hex-char ID and absolute expiry. The worker stores the
+    /// token alongside the blob and rejects future fetch/delete
+    /// requests that don't present a matching one.
     pub fn upload(
         &self,
         body: &[u8],
         ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
     ) -> Result<UploadResult, CipherStoreError> {
         if !is_valid_ttl(ttl_seconds) {
             return Err(CipherStoreError::BadTtl(ttl_seconds));
@@ -122,6 +140,7 @@ impl CipherStoreClient {
             .post(&url)
             .header("content-type", "application/octet-stream")
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
+            .header("x-osl-fetch-token", hex_lower(fetch_token))
             .body(body.to_vec())
             .send()?;
         let status = resp.status();
@@ -156,11 +175,21 @@ impl CipherStoreClient {
         Ok(UploadResult { id_hex, expires_at })
     }
 
-    /// Fetch ciphertext bytes by ID. Returns `NotFound` for missing /
-    /// expired / burned blobs.
-    pub fn fetch(&self, id_hex: &str) -> Result<Vec<u8>, CipherStoreError> {
+    /// Fetch ciphertext bytes by ID + capability token (Phase 6).
+    /// Returns `NotFound` for missing / expired / burned blobs.
+    /// Returns `Status { status: 401|403, .. }` when the token is
+    /// missing or doesn't match the one the uploader recorded.
+    pub fn fetch(
+        &self,
+        id_hex: &str,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<Vec<u8>, CipherStoreError> {
         let url = format!("{}/v1/blob/{}", self.base_url, id_hex);
-        let resp = self.http.get(&url).send()?;
+        let resp = self
+            .http
+            .get(&url)
+            .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .send()?;
         let status = resp.status();
         if status == StatusCode::NOT_FOUND {
             return Err(CipherStoreError::NotFound);
@@ -180,10 +209,20 @@ impl CipherStoreClient {
     }
 
     /// Burn (delete) a blob. Idempotent — second call returns Ok even
-    /// if the row was already gone.
-    pub fn delete(&self, id_hex: &str) -> Result<(), CipherStoreError> {
+    /// if the row was already gone. Phase 6: same capability-token
+    /// gate as fetch so a leaked blob_id alone cannot be used to
+    /// DoS-delete a conversation's blobs.
+    pub fn delete(
+        &self,
+        id_hex: &str,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<(), CipherStoreError> {
         let url = format!("{}/v1/blob/{}", self.base_url, id_hex);
-        let resp = self.http.delete(&url).send()?;
+        let resp = self
+            .http
+            .delete(&url)
+            .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .send()?;
         let status = resp.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(CipherStoreError::RateLimited);
