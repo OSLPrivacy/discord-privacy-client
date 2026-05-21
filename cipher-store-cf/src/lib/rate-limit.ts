@@ -6,13 +6,23 @@
 /// window so there's no retained log of who hit us.
 ///
 /// Budgets (per IP, per rolling window):
-///   uploads:  60 / hour
-///   fetches:  600 / hour
-///   deletes:  60 / hour
+///   uploads:  600 / hour
+///   fetches:  3600 / hour
+///   deletes:  600 / hour
 ///
 /// Returns true when the action is allowed and the counter has
 /// been incremented; false when the cap has been hit (caller
 /// returns HTTP 429).
+///
+/// Phase 6.3 bump: the prior 60/hr upload cap was tight enough that
+/// an active GC user hit it in under two minutes. The fail-closed
+/// V2 send-gate turned that into "messages grey out, never send"
+/// for the user, with no graceful degradation path. New cap allows
+/// 600 uploads/hr (10/min sustained) and 3600 fetches/hr, both
+/// generous enough for normal chat use while still bounding the
+/// damage from a single bad actor at a given IP. SKDMs are also
+/// migrating to a keyserver inbox path (Phase 6.4) which should
+/// further reduce per-send upload pressure.
 
 import type { Env } from "../env.js";
 
@@ -21,9 +31,9 @@ const HOUR_SECONDS = 60 * 60;
 export type Bucket = "upload" | "fetch" | "delete";
 
 const BUDGETS: Record<Bucket, number> = {
-  upload: 60,
-  fetch: 600,
-  delete: 60,
+  upload: 600,
+  fetch: 3600,
+  delete: 600,
 };
 
 async function bucketKey(ip: string, bucket: Bucket): Promise<string> {
