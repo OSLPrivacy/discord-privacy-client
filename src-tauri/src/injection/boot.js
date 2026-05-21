@@ -9411,18 +9411,29 @@
      * burnable per the Rust-side scope handling.
      */
     function oslBurnedScopesShouldSkip(channelId) {
-        if (!channelId) return false;
-        if (window.__oslBurnedScopes.size === 0) return false;
-        // Fast paths: dm:<channelId>, gc:<channelId>.
-        if (window.__oslBurnedScopes.has("dm:" + channelId)) return true;
-        if (window.__oslBurnedScopes.has("gc:" + channelId)) return true;
-        // server_channel storage_key is "server_channel:<server>:<channel>".
-        // Walk keys for the suffix.
-        for (const k of window.__oslBurnedScopes.keys()) {
-            if (k.startsWith("server_channel:") && k.endsWith(":" + channelId)) {
-                return true;
-            }
-        }
+        // Beta 1.0 burn simplification.
+        //
+        // This gate USED to skip decrypt for the ENTIRE channel,
+        // permanently, the moment a scope was burned — which made a
+        // burned conversation look broken forever: every NEW message
+        // after the burn also got skipped, and the only escape was a
+        // manual unburn. That was the single biggest source of "burn
+        // breaks things."
+        //
+        // Burn is meant to be simple: destroy the PAST (this scope's
+        // keys + the messages that existed at burn time) and let the
+        // conversation carry on. Correctness for the destroyed
+        // messages is already enforced two ways in Rust, both still
+        // active:
+        //   1. burn wipes the wrapped keys + deletes the rows, so old
+        //      ciphertext has no key and renders as cover.
+        //   2. the per-message burn kill-list (is_message_in_burn_kill
+        //      _list) refuses the specific message IDs that were live
+        //      at burn time, even if a key somehow survived.
+        // New messages aren't in the kill-list and get fresh keys, so
+        // they decrypt normally. We therefore no longer skip the whole
+        // channel here.
+        void channelId;
         return false;
     }
 

@@ -104,9 +104,10 @@ export async function handleControlInboxPost(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  // Generous-ish: peers can post a lot of SKDMs in a busy session.
-  // Still capped per IP for abuse.
-  const rl = await checkRateLimit(env, callerIp(request), 600);
+  // Generous-ish: peers can post a lot of SKDMs in a busy session
+  // (SKDM fan-out posts once per recipient). Own bucket so the
+  // drain loop's GET/DELETE traffic can't starve sends.
+  const rl = await checkRateLimit(env, callerIp(request), 1200, "ci-post");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
   let body: Record<string, unknown>;
@@ -188,7 +189,9 @@ export async function handleControlInboxGet(
   env: Env,
   userId: string,
 ): Promise<Response> {
-  const rl = await checkRateLimit(env, callerIp(request), 3600);
+  // Drain GETs poll every ~10s; own bucket keeps them off the POST
+  // counter so a chatty server can't rate-limit its own sends.
+  const rl = await checkRateLimit(env, callerIp(request), 3600, "ci-get");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
   const url = new URL(request.url);
@@ -256,7 +259,8 @@ export async function handleControlInboxDelete(
   env: Env,
   inboxIdHex: string,
 ): Promise<Response> {
-  const rl = await checkRateLimit(env, callerIp(request), 3600);
+  // Drain deletes up to MAX_DRAIN_ROWS items per cycle; own bucket.
+  const rl = await checkRateLimit(env, callerIp(request), 3600, "ci-del");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
   let body: Record<string, unknown>;

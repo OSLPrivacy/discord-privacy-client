@@ -28,6 +28,11 @@ import type { Env } from "../env.js";
 
 const HOUR_SECONDS = 60 * 60;
 
+// Rolling-window length. The counter key embeds the window start, so
+// the count resets every WINDOW_SECONDS instead of accumulating
+// forever.
+const WINDOW_SECONDS = HOUR_SECONDS;
+
 export type Bucket = "upload" | "fetch" | "delete";
 
 const BUDGETS: Record<Bucket, number> = {
@@ -36,15 +41,20 @@ const BUDGETS: Record<Bucket, number> = {
   delete: 600,
 };
 
-async function bucketKey(ip: string, bucket: Bucket): Promise<string> {
+async function bucketKey(
+  ip: string,
+  bucket: Bucket,
+  windowStart: number,
+): Promise<string> {
   const buf = new TextEncoder().encode(`${bucket}|${ip}`);
   const hash = await crypto.subtle.digest("SHA-256", buf);
   const bytes = new Uint8Array(hash);
   let hex = "";
   for (const b of bytes) hex += b.toString(16).padStart(2, "0");
   // Truncate to 32 hex chars (128 bits) -- collision-safe for the
-  // rate-limit purpose; we don't need full SHA-256 width.
-  return `rl:${bucket}:${hex.slice(0, 32)}`;
+  // rate-limit purpose; we don't need full SHA-256 width. The
+  // windowStart segment is what makes the counter reset each window.
+  return `rl:${bucket}:${windowStart}:${hex.slice(0, 32)}`;
 }
 
 export async function rateLimit(
@@ -52,7 +62,15 @@ export async function rateLimit(
   ip: string,
   bucket: Bucket
 ): Promise<{ allowed: boolean; remaining: number }> {
-  const key = await bucketKey(ip, bucket);
+  // BUGFIX (server grey-out): the previous key had no window segment
+  // and every write refreshed the TTL to a full hour, so the counter
+  // never reset while the user kept chatting — after `budget`
+  // cumulative uploads they were locked out until going idle for an
+  // hour, which surfaced as "messages grey out, never send." Embedding
+  // an aligned windowStart makes the count reset every WINDOW_SECONDS.
+  const now = Math.floor(Date.now() / 1000);
+  const windowStart = now - (now % WINDOW_SECONDS);
+  const key = await bucketKey(ip, bucket, windowStart);
   const cur = await env.RATE_LIMIT.get(key);
   const used = cur ? parseInt(cur, 10) || 0 : 0;
   const budget = BUDGETS[bucket];
@@ -62,10 +80,11 @@ export async function rateLimit(
   // KV writes are eventually consistent (~60s convergence); for
   // rate limiting this is acceptable — a bad actor across multiple
   // edge POPs can briefly exceed the cap, but the absolute ceiling
-  // is still bounded by `budget * pop_count` per hour, which is
-  // small enough to not threaten the service.
+  // is still bounded by `budget * pop_count` per window, which is
+  // small enough to not threaten the service. TTL is 2× the window
+  // so the current window's key always outlives the window itself.
   await env.RATE_LIMIT.put(key, String(used + 1), {
-    expirationTtl: HOUR_SECONDS,
+    expirationTtl: WINDOW_SECONDS * 2,
   });
   return { allowed: true, remaining: budget - used - 1 };
 }
