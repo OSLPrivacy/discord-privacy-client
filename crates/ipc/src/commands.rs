@@ -9361,6 +9361,22 @@ pub struct TourStateDto {
 }
 
 pub fn cmd_osl_tour_get_state(state: &AppState) -> Result<TourStateDto, String> {
+    // Robust onboarding guard: if a main password already exists, the
+    // user has clearly been through setup before — report the tour as
+    // completed so it never re-runs, regardless of whether the tour
+    // flag itself persisted. The password marker is device-level (base)
+    // and reliable; the tour flag has been flaky across the
+    // multi-account dir changes. (Setting a password is part of the
+    // tour, so any onboarded user has one.)
+    if let Ok(dir) = keystore::osl_base_dir() {
+        if crate::main_password::marker_exists(&dir) {
+            return Ok(TourStateDto {
+                completed: true,
+                skipped: false,
+                last_slide: 0,
+            });
+        }
+    }
     let g = state
         .app_preferences
         .lock()
