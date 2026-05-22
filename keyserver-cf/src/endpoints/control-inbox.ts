@@ -262,10 +262,7 @@ async function handleControlInboxGetInner(
   if (!isPlainString(userId)) return badRequest("user_id required");
 
   const user = await getUserForVerify(env.DB, userId);
-  if (!user) {
-    console.log(`[ci-get] userId='${userId}' -> user NOT FOUND (404)`);
-    return notFound();
-  }
+  if (!user) return notFound();
 
   const message = canonicalControlInboxGetBytes({
     user_id: userId,
@@ -297,29 +294,6 @@ async function handleControlInboxGetInner(
       bundle: unknown;
       created_at: number;
     }>();
-
-  // DIAGNOSTIC: what did the Worker actually query + get? Compare the
-  // matched count here against the same query run via `wrangler d1
-  // execute`. Also probe WITHOUT the expires filter + with a LIKE to
-  // catch type/whitespace/affinity mismatches between this bound
-  // userId and the stored recipient_id.
-  try {
-    const probe = await env.DB.prepare(
-      "SELECT " +
-        "(SELECT COUNT(*) FROM control_inbox WHERE recipient_id = ?) AS exact, " +
-        "(SELECT COUNT(*) FROM control_inbox WHERE recipient_id = ? AND expires_at >= ?) AS unexpired, " +
-        "(SELECT COUNT(*) FROM control_inbox) AS total",
-    )
-      .bind(userId, userId, now)
-      .first<{ exact: number; unexpired: number; total: number }>();
-    console.log(
-      `[ci-get] userId='${userId}' len=${userId.length} now=${now} ` +
-        `returned=${(rows.results || []).length} exact=${probe?.exact} ` +
-        `unexpired=${probe?.unexpired} total=${probe?.total}`,
-    );
-  } catch (e) {
-    console.log(`[ci-get] probe failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
 
   const items = (rows.results || []).map((r) => {
     const idBytes = bytesToU8(r.id) ?? new Uint8Array(0);
