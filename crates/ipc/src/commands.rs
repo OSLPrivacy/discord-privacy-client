@@ -3978,22 +3978,42 @@ pub fn cmd_osl_open_attachment_v2(
     legacy_att_key_b64: Option<String>,
     discord_message_id: Option<String>,
 ) -> Result<crate::attachment_wire::OpenedAttachment, String> {
-    // 9-A1c: burn kill list defense-in-depth on attachment open.
-    // If this specific message was burned, refuse to recover its
-    // attachment even if the scope was later unburned.
-    if let (Some(input), Some(msg_id)) = (scope_input.as_ref(), discord_message_id.as_deref()) {
+    // Burn enforcement on attachment open. Two layers:
+    if let Some(input) = scope_input.as_ref() {
         let scope: crate::scope::Scope = input
             .clone()
             .try_into()
             .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-        if is_message_in_burn_kill_list(state, &scope, msg_id) {
-            tracing::info!(
-                msg_id = %msg_id,
-                "[OSL] attachment open blocked: in_burn_kill_list"
-            );
-            return Err(format!(
-                "OSL: attachment open blocked: msg={msg_id} reason=in_burn_kill_list"
-            ));
+        // (1) SCOPE burn by the SENDER. A burn destroys the burner's
+        // messages AND attachments in the scope — but attachments
+        // decrypt from a self-contained att_key in the envelope, not
+        // the store wrapped_keys the text-burn wipes, so without this
+        // check a burned sender's images stayed openable. If the
+        // attachment's sender burned this scope, refuse.
+        {
+            let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+            if crate::whitelist::is_burned_in_scope(&pm, &scope, &sender_discord_id) {
+                tracing::info!(
+                    sender = %sender_discord_id,
+                    "[OSL] attachment open blocked: scope burned by sender"
+                );
+                return Err(format!(
+                    "OSL: attachment open blocked: scope burned by sender {sender_discord_id}"
+                ));
+            }
+        }
+        // (2) Per-message kill list (9-A1c): refuse a specifically-
+        // burned message even if the scope was later unburned.
+        if let Some(msg_id) = discord_message_id.as_deref() {
+            if is_message_in_burn_kill_list(state, &scope, msg_id) {
+                tracing::info!(
+                    msg_id = %msg_id,
+                    "[OSL] attachment open blocked: in_burn_kill_list"
+                );
+                return Err(format!(
+                    "OSL: attachment open blocked: msg={msg_id} reason=in_burn_kill_list"
+                ));
+            }
         }
     }
 
@@ -6157,7 +6177,12 @@ fn apply_burn_recv(
         .as_ref()
     {
         let (scope_type, scope_id) = scope_storage_pair(&marker.scope);
-        if let Err(e) = store.wipe_wrapped_keys_in_scope(&scope_type, &scope_id) {
+        // Burn only the BURNER's messages on our side — sender_discord_id
+        // is the peer who burned. Their burn must not blank our own or
+        // other members' messages in the same channel.
+        if let Err(e) =
+            store.wipe_wrapped_keys_in_scope(&scope_type, &scope_id, Some(sender_discord_id))
+        {
             tracing::warn!(error = %e, "OSL: wipe wrapped_keys failed; burn proceeded in peer_map only");
         }
     }
@@ -6240,6 +6265,14 @@ pub fn cmd_osl_apply_burn(
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
     let (scope_type, scope_id) = scope_storage_pair(&scope);
+    // A burn destroys YOUR OWN messages only — NOT every sender's in the
+    // channel. Resolve self's Discord id and scope the wipe to it, so a
+    // server burn doesn't blank the whole channel (everyone reverting to
+    // the DPC0 cover). None falls back to full-scope (account-burn case).
+    let self_did = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        g.as_ref().and_then(|id| id.discord_snowflake.clone())
+    };
     if let Some(store) = state
         .message_store
         .lock()
@@ -6247,8 +6280,41 @@ pub fn cmd_osl_apply_burn(
         .as_ref()
     {
         store
-            .wipe_wrapped_keys_in_scope(&scope_type, &scope_id)
+            .wipe_wrapped_keys_in_scope(&scope_type, &scope_id, self_did.as_deref())
             .map_err(|e| format!("OSL: wipe wrapped_keys: {e}"))?;
+    }
+    // Record the burn on our OWN self-entry so OUR attachments in this
+    // scope are gated too. Text reverts via the wrapped-key wipe above;
+    // attachments decrypt from a self-contained att_key, so the
+    // attachment-open gate consults this burned_scopes ledger
+    // (is_burned_in_scope for the sender == us). Without this, your own
+    // images stayed openable after you burned the scope.
+    if let Some(self_did) = self_did.as_deref() {
+        use crate::peer_map::BurnedScope as B;
+        let burned_at = format_iso8601_secs(now_unix_secs()).unwrap_or_else(|| "?".to_string());
+        let entry = match scope.kind {
+            crate::scope::ScopeKind::Dm => B::Dm { burned_at },
+            crate::scope::ScopeKind::Gc => B::Gc {
+                id: scope.id.clone(),
+                burned_at,
+            },
+            crate::scope::ScopeKind::ServerChannel => B::ServerChannel {
+                server_id: scope.server_id.clone().unwrap_or_default(),
+                channel_id: scope.channel_id.clone().unwrap_or_default(),
+                burned_at,
+            },
+            crate::scope::ScopeKind::ServerFull => B::ServerFull {
+                server_id: scope.server_id.clone().unwrap_or_default(),
+                burned_at,
+            },
+        };
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let pe = pm.entry(self_did.to_string()).or_default();
+        if !pe.burned_scopes.iter().any(|b| same_burn(b, &entry)) {
+            pe.burned_scopes.push(entry);
+        }
+        drop(pm);
+        persist_peer_map_now(state);
     }
     Ok(())
 }

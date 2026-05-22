@@ -588,7 +588,11 @@ pub enum RecipientsV3Error {
 
 /// Is `recipient` named in a [`BurnedScope`] entry that matches
 /// `scope`? See [`BurnedScope`] variants for the per-kind match.
-fn is_burned_in_scope(peer_map: &PeerMap, scope: &Scope, recipient_discord_id: &str) -> bool {
+pub(crate) fn is_burned_in_scope(
+    peer_map: &PeerMap,
+    scope: &Scope,
+    recipient_discord_id: &str,
+) -> bool {
     let Some(entry) = peer_map.get(recipient_discord_id) else {
         return false;
     };

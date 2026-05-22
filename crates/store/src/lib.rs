@@ -295,18 +295,36 @@ impl MessageStore {
     /// Returns the number of rows touched (useful for the caller
     /// to log "burned N messages" without a separate count
     /// query).
+    /// Wipe the per-message keys for a scope so the rows can no longer
+    /// be decrypted (they revert to the cover wire).
+    ///
+    /// `only_sender_discord_id`: when `Some(id)`, ONLY rows whose
+    /// `sender_discord_id == id` are wiped — used so a burn destroys
+    /// the burner's OWN messages without nuking everyone else's in the
+    /// channel (a server burn used to blank the whole channel). When
+    /// `None`, every row in the scope is wiped (full-scope destruction,
+    /// e.g. account burn).
     pub fn wipe_wrapped_keys_in_scope(
         &self,
         scope_type: &str,
         scope_id: &str,
+        only_sender_discord_id: Option<&str>,
     ) -> Result<usize, StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let rows = conn.execute(
-            "UPDATE messages \
-                SET wrapped_key = NULL, burned = 1, burned_at = strftime('%s','now') \
-              WHERE scope_type = ?1 AND scope_id = ?2",
-            params![scope_type, scope_id],
-        )?;
+        let rows = match only_sender_discord_id {
+            Some(sender) => conn.execute(
+                "UPDATE messages \
+                    SET wrapped_key = NULL, burned = 1, burned_at = strftime('%s','now') \
+                  WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
+                params![scope_type, scope_id, sender],
+            )?,
+            None => conn.execute(
+                "UPDATE messages \
+                    SET wrapped_key = NULL, burned = 1, burned_at = strftime('%s','now') \
+                  WHERE scope_type = ?1 AND scope_id = ?2",
+                params![scope_type, scope_id],
+            )?,
+        };
         Ok(rows)
     }
 
