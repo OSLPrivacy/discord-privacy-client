@@ -195,9 +195,12 @@ pub fn reload_encrypted_state_after_unlock(
     }
 
     // app_preferences.json — holds tour resume state, stego mode,
-    // and the VPN-warning dismissal. Without this reload, the tour
-    // replays on every launch (the trigger for 9-D-FIX2).
-    let prefs_path = config_dir.join("app_preferences.json");
+    // and the VPN-warning dismissal. DEVICE-level: lives at the base
+    // dir (multi-account), NOT the per-account `config_dir`, matching
+    // run_autostart + persist_app_preferences_now.
+    let prefs_path = keystore::osl_base_dir()
+        .unwrap_or_else(|_| config_dir.to_path_buf())
+        .join("app_preferences.json");
     if prefs_path.exists() {
         let prefs = crate::app_preferences::load_app_preferences(&prefs_path);
         report.app_prefs_loaded = true;

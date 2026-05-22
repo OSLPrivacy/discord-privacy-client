@@ -8456,7 +8456,17 @@ pub fn cmd_osl_verify_gate_password(
             // whitelist, burns, sender chains, tour state, and
             // stego-mode pref stay blank for the whole session and
             // the tour replays on every launch.
-            match crate::state_reload::reload_encrypted_state_after_unlock(state, &dir) {
+            //
+            // Multi-account: the account-level encrypted files
+            // (peer_map, whitelist, sender_key, burned, membership)
+            // live in the ACTIVE-account dir (osl_config_dir), NOT the
+            // base (`dir` here is the device-level password dir). Pass
+            // the account dir or the post-gate reload pulls everything
+            // from the base → whitelist + sender keys come back EMPTY
+            // every unlock. (app_preferences is device-level and the
+            // reload reads it from the base internally.)
+            let account_dir = keystore::osl_config_dir().unwrap_or_else(|_| dir.clone());
+            match crate::state_reload::reload_encrypted_state_after_unlock(state, &account_dir) {
                 Ok(r) => tracing::info!(
                     peer_map_entries = r.peer_map_entries,
                     whitelist_scopes = r.whitelist_scopes,
