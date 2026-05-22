@@ -362,7 +362,16 @@ fn write_active_marker(snowflake: &str) {
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(p, snowflake);
+        match std::fs::write(&p, snowflake) {
+            Ok(()) => eprintln!(
+                "[OSL][multi-account] wrote active marker={snowflake} → {}",
+                p.display()
+            ),
+            Err(e) => eprintln!(
+                "[OSL][multi-account] FAILED to write active marker {}: {e}",
+                p.display()
+            ),
+        }
     }
 }
 
@@ -371,11 +380,28 @@ fn write_active_marker(snowflake: &str) {
 /// override unset (single-account / pre-migration → shared base).
 fn resolve_active_account_on_launch() {
     let Some(sf) = read_active_marker() else {
+        eprintln!("[OSL][multi-account] launch: no active marker — using BASE dir");
         return;
     };
-    if let Ok(adir) = keystore::account_dir(&sf) {
-        if adir.join("identity.json").exists() {
-            keystore::set_active_account_dir(Some(adir));
+    match keystore::account_dir(&sf) {
+        Ok(adir) => {
+            let id_path = adir.join("identity.json");
+            if id_path.exists() {
+                eprintln!(
+                    "[OSL][multi-account] launch: active account={sf} → dir={}",
+                    adir.display()
+                );
+                keystore::set_active_account_dir(Some(adir));
+            } else {
+                eprintln!(
+                    "[OSL][multi-account] launch: marker={sf} but {} MISSING — \
+                     falling back to BASE dir (this loses per-account state!)",
+                    id_path.display()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("[OSL][multi-account] launch: account_dir({sf}) failed: {e} — using BASE");
         }
     }
 }
@@ -467,6 +493,12 @@ pub fn switch_account(state: &AppState, snowflake: String) -> Result<(), String>
             .ok()
             .and_then(|g| g.as_ref().and_then(|i| i.discord_snowflake.clone()))
     });
+    eprintln!(
+        "[OSL][multi-account] switch_account(req={snowflake}) current={:?} \
+         active_dir={:?}",
+        current,
+        keystore::active_account_dir().map(|d| d.display().to_string())
+    );
 
     // First-run migration: bring the existing flat account into the
     // system under its own snowflake before doing anything else.
