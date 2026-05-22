@@ -17270,14 +17270,34 @@
                 }
                 const resp = await oslInvoke("osl_control_inbox_drain", {});
                 if (resp && resp.ok) {
-                    const applied =
-                        typeof resp.value === "number" ? resp.value : 0;
-                    // Diagnostic: log EVERY tick (even applied=0) so the
-                    // F12 console shows whether the drain is running and
-                    // whether anything is landing in this user's inbox.
-                    // applied=0 forever → peer isn't delivering / wrong
-                    // mailbox; applied>=1 → an SKDM/control wire arrived.
-                    console.log("[OSL] control_inbox drain tick: applied=" + applied);
+                    // Drain now returns { applied, fetched, errors[] }.
+                    // (Older shape returned a bare number.)
+                    const v = resp.value;
+                    let applied = 0;
+                    let fetched = 0;
+                    let drainErrors = [];
+                    if (typeof v === "number") {
+                        applied = v;
+                    } else if (v && typeof v === "object") {
+                        applied = typeof v.applied === "number" ? v.applied : 0;
+                        fetched = typeof v.fetched === "number" ? v.fetched : 0;
+                        drainErrors = Array.isArray(v.errors) ? v.errors : [];
+                    }
+                    // Diagnostic: log EVERY tick. fetched>0 + applied=0 +
+                    // errors[] = the inbox HAS items but they fail to
+                    // decrypt/apply — the errors say exactly why.
+                    console.log(
+                        "[OSL] control_inbox drain tick: applied=" +
+                            applied +
+                            " fetched=" +
+                            fetched
+                    );
+                    if (drainErrors.length > 0) {
+                        console.warn(
+                            "[OSL] control_inbox drain item errors: " +
+                                JSON.stringify(drainErrors.slice(0, 5))
+                        );
+                    }
                     if (applied > 0) {
                         console.log(
                             "[OSL] control_inbox drain: applied=" + applied

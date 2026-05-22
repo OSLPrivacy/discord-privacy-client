@@ -1367,7 +1367,9 @@ async fn osl_control_inbox_post(
 /// applied so boot.js can log throughput. boot.js calls this every
 /// 10s while a Discord client window is alive.
 #[tauri::command]
-async fn osl_control_inbox_drain(app: tauri::AppHandle) -> Result<u32, String> {
+async fn osl_control_inbox_drain(
+    app: tauri::AppHandle,
+) -> Result<ipc::commands::ControlInboxDrainReport, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();

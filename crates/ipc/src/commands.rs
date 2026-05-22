@@ -5250,10 +5250,21 @@ pub fn cmd_osl_control_inbox_post(
 /// `scope_storage_key`).
 ///
 /// Returns the count of items successfully applied + deleted.
+/// Drain result. `applied` is the count of successfully-applied items;
+/// `errors` carries the per-item dispatch failures (decrypt/apply) so
+/// the JS layer can surface WHY an SKDM didn't install instead of just
+/// seeing applied=0.
+#[derive(serde::Serialize)]
+pub struct ControlInboxDrainReport {
+    pub applied: u32,
+    pub fetched: u32,
+    pub errors: Vec<String>,
+}
+
 pub fn cmd_osl_control_inbox_drain(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
-) -> Result<u32, String> {
+) -> Result<ControlInboxDrainReport, String> {
     // Snapshot identity + client out from under the AppState mutexes
     // and DROP the guards BEFORE any network call. The drain runs on a
     // 10s timer; holding state.identity across the GET + per-item
@@ -5279,6 +5290,7 @@ pub fn cmd_osl_control_inbox_drain(
     let item_count = items.len();
 
     let mut applied: u32 = 0;
+    let mut errors: Vec<String> = Vec::new();
     for item in items {
         let bundle = match STANDARD.decode(&item.bundle_b64) {
             Ok(b) => b,
@@ -5434,6 +5446,7 @@ pub fn cmd_osl_control_inbox_drain(
                     error = %e,
                     "[OSL] control_inbox item dispatch failed (leaving row in place)"
                 );
+                errors.push(format!("from={} scope={}: {e}", item.sender_id, item.scope_id));
             }
         }
     }
@@ -5442,7 +5455,11 @@ pub fn cmd_osl_control_inbox_drain(
         applied = applied,
         "[OSL] control_inbox drain done"
     );
-    Ok(applied)
+    Ok(ControlInboxDrainReport {
+        applied,
+        fetched: item_count as u32,
+        errors,
+    })
 }
 
 /// Phase 9-A3: v=5 receive dispatch. Parses the wire, applies the
