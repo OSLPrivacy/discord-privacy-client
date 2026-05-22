@@ -17252,6 +17252,12 @@
                 if (resp && resp.ok) {
                     const applied =
                         typeof resp.value === "number" ? resp.value : 0;
+                    // Diagnostic: log EVERY tick (even applied=0) so the
+                    // F12 console shows whether the drain is running and
+                    // whether anything is landing in this user's inbox.
+                    // applied=0 forever → peer isn't delivering / wrong
+                    // mailbox; applied>=1 → an SKDM/control wire arrived.
+                    console.log("[OSL] control_inbox drain tick: applied=" + applied);
                     if (applied > 0) {
                         console.log(
                             "[OSL] control_inbox drain: applied=" + applied

@@ -2952,23 +2952,13 @@ pub fn cmd_osl_encrypt_message_v2_wire(
 
     // Phase 9-A3 / GC Step 2: groups + server channels route to v=5
     // (sender-keys). DM-shape (handled above) routes to v=4.
-    // v=5 (sender-keys) only pays off for LARGE groups: it trades a
-    // one-time SKDM distribution for cheap per-message sends. But that
-    // distribution is FRAGILE — it rides a cross-device control-inbox
-    // round-trip (both sides must drain, the responder must post the
-    // key back, osl_user_id routing must be current), and any gap
-    // leaves recipients permanently "awaiting SKDM". For SMALL groups
-    // the N-way v=3 wrap (stateless, per-message PQXDH — exactly what
-    // makes DMs rock-solid) is both cheap enough AND far more robust:
-    // every recipient decodes their own slot, no sender-key, no SKDM,
-    // no round-trip. GCs are ≤10 by Discord; small servers fit too.
-    // Only ABOVE the threshold is v=5's per-message saving worth its
-    // delivery fragility.
-    const V3_GROUP_MAX_RECIPIENTS: usize = 20;
-    if !non_self_peers.is_empty()
-        && scope_is_group_or_server(&scope)
-        && non_self_peers.len() > V3_GROUP_MAX_RECIPIENTS
-    {
+    // Threshold lowered from >=2 to >=1: a gc:/server scope with at
+    // least one OSL-resolvable peer is still a group and must use
+    // sender-keys, not v=4 (the single-peer DM path is now gated
+    // off for group scopes above). With 0 resolvable OSL peers it
+    // falls through to v=3 self-only (non-OSL members see DPC0::,
+    // per decision (a)). Anything else falls through to v=3.
+    if !non_self_peers.is_empty() && scope_is_group_or_server(&scope) {
         return encrypt_v5_send(
             state,
             &sender_sk,
