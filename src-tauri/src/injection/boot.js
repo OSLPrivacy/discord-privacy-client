@@ -9476,6 +9476,10 @@
                         randomFilename: cand.name,
                         mime: plain.mimeType,
                         bytesB64: plain.plaintextB64,
+                        // Scope + sender so a burn can wipe this cached
+                        // attachment precisely (burn-of-attachments).
+                        scopeInput: scope || null,
+                        senderDiscordId: senderId || null,
                     }).catch(function () {});
                 }
                 console.log(

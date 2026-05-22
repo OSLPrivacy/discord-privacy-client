@@ -359,12 +359,19 @@ impl MessageStore {
     /// `"<discord_message_id>/<random_filename>"`. Insert-or-replace
     /// keyed on cache_key. The caller is expected to cap the size it
     /// hands in (large videos aren't worth persisting).
+    #[allow(clippy::too_many_arguments)]
     pub fn put_attachment(
         &self,
         discord_message_id: &str,
         random_filename: &str,
         mime: &str,
         plaintext: &[u8],
+        // Scope + sender so a burn can wipe the burner's cached
+        // attachments precisely. `None` is tolerated (legacy callers /
+        // unknown context) — such rows just won't match a scope wipe.
+        scope_type: Option<&str>,
+        scope_id: Option<&str>,
+        sender_discord_id: Option<&str>,
     ) -> Result<(), StoreError> {
         let cache_key = format!("{discord_message_id}/{random_filename}");
         let (nonce, ct) = cipher::seal(&self.key, cache_key.as_bytes(), plaintext)?;
@@ -376,14 +383,18 @@ impl MessageStore {
         conn.execute(
             "INSERT INTO attachments \
                 (cache_key, discord_message_id, random_filename, mime, \
-                 ciphertext, nonce, byte_len, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 ciphertext, nonce, byte_len, created_at, \
+                 scope_type, scope_id, sender_discord_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
              ON CONFLICT(cache_key) DO UPDATE SET \
                 mime = excluded.mime, \
                 ciphertext = excluded.ciphertext, \
                 nonce = excluded.nonce, \
                 byte_len = excluded.byte_len, \
-                created_at = excluded.created_at",
+                created_at = excluded.created_at, \
+                scope_type = excluded.scope_type, \
+                scope_id = excluded.scope_id, \
+                sender_discord_id = excluded.sender_discord_id",
             params![
                 cache_key,
                 discord_message_id,
@@ -393,9 +404,38 @@ impl MessageStore {
                 nonce,
                 plaintext.len() as i64,
                 now,
+                scope_type,
+                scope_id,
+                sender_discord_id,
             ],
         )?;
         Ok(())
+    }
+
+    /// Burn: delete cached attachments for a scope, optionally limited
+    /// to one sender (the burner). Mirrors `wipe_wrapped_keys_in_scope`
+    /// — `Some(sender)` wipes only that sender's cached attachments so a
+    /// burn doesn't evict everyone's images in the channel; `None`
+    /// wipes the whole scope. Returns the row count.
+    pub fn wipe_attachments_in_scope(
+        &self,
+        scope_type: &str,
+        scope_id: &str,
+        only_sender_discord_id: Option<&str>,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let rows = match only_sender_discord_id {
+            Some(sender) => conn.execute(
+                "DELETE FROM attachments \
+                  WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
+                params![scope_type, scope_id, sender],
+            )?,
+            None => conn.execute(
+                "DELETE FROM attachments WHERE scope_type = ?1 AND scope_id = ?2",
+                params![scope_type, scope_id],
+            )?,
+        };
+        Ok(rows)
     }
 
     /// Beta 1.0: fetch a previously-persisted decrypted attachment.

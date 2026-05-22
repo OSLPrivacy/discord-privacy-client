@@ -287,7 +287,15 @@ fn attachment_put_get_roundtrip() {
     let store = open_a(tmp.path());
     let bytes: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
     store
-        .put_attachment("1502771310428819569", "a1b2c3d4.bin", "image/png", &bytes)
+        .put_attachment(
+            "1502771310428819569",
+            "a1b2c3d4.bin",
+            "image/png",
+            &bytes,
+            None,
+            None,
+            None,
+        )
         .unwrap();
     let out = store
         .get_attachment("1502771310428819569", "a1b2c3d4.bin")
@@ -314,7 +322,7 @@ fn attachment_survives_reopen() {
     {
         let store = open_a(tmp.path());
         store
-            .put_attachment("msg1", "f.bin", "image/jpeg", &bytes)
+            .put_attachment("msg1", "f.bin", "image/jpeg", &bytes, None, None, None)
             .unwrap();
     }
     // Reopen with the same secret: the row + its seal must survive.
@@ -329,7 +337,7 @@ fn attachment_wrong_secret_cannot_unseal() {
     {
         let store = open_a(tmp.path());
         store
-            .put_attachment("msg1", "f.bin", "image/jpeg", b"secret bytes")
+            .put_attachment("msg1", "f.bin", "image/jpeg", b"secret bytes", None, None, None)
             .unwrap();
     }
     // A different secret fails the canary at open(), so we never
@@ -346,7 +354,15 @@ fn attachment_trim_keeps_newest() {
     let store = open_a(tmp.path());
     for i in 0..10 {
         store
-            .put_attachment(&format!("msg{i}"), "f.bin", "image/png", &[i as u8; 8])
+            .put_attachment(
+                &format!("msg{i}"),
+                "f.bin",
+                "image/png",
+                &[i as u8; 8],
+                None,
+                None,
+                None,
+            )
             .unwrap();
         // Space out created_at so ordering is deterministic.
         std::thread::sleep(std::time::Duration::from_millis(2));

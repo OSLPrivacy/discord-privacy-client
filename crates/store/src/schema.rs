@@ -134,6 +134,20 @@ const V2_COLUMNS: &[&str] = &[
     "ALTER TABLE messages ADD COLUMN scope_id TEXT",
 ];
 
+/// Burn follow-up: scope + sender on the attachment cache. The burn
+/// open-gate already refuses to RE-decrypt a burned sender's
+/// attachment, but a cache hit serves already-decrypted bytes without
+/// hitting that gate — so a burn must also wipe the cached rows. These
+/// columns let `wipe_attachments_in_scope` delete exactly the burner's
+/// cached attachments in a scope. Additive + pre-checked like V2; old
+/// rows get NULL (they predate the fix and won't match a scope wipe,
+/// which is acceptable).
+const ATTACHMENT_SCOPE_COLUMNS: &[&str] = &[
+    "ALTER TABLE attachments ADD COLUMN scope_type TEXT",
+    "ALTER TABLE attachments ADD COLUMN scope_id TEXT",
+    "ALTER TABLE attachments ADD COLUMN sender_discord_id TEXT",
+];
+
 /// Apply the schema and resolve the on-disk version.
 ///
 /// On a fresh DB: runs the v1 schema, writes
@@ -152,6 +166,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
     // v=3: the attachments table. CREATE IF NOT EXISTS is idempotent
     // so this is safe to run on a fresh DB and on an existing v=2 DB.
     conn.execute_batch(SCHEMA_V3)?;
+    // Burn follow-up: scope/sender columns on the attachment cache.
+    // Pre-checked additive ALTERs (idempotent), like the v=2 columns.
+    apply_attachment_scope_columns(conn)?;
     let on_disk: Option<u32> = read_meta_u32(conn, "schema_version")?;
     match on_disk {
         None => {
@@ -191,6 +208,27 @@ fn apply_v2_columns(conn: &Connection) -> Result<(), StoreError> {
             .strip_prefix("ALTER TABLE messages ADD COLUMN ")
             .ok_or_else(|| {
                 StoreError::Schema(format!("internal: unexpected V2 column SQL shape: {sql}"))
+            })?;
+        let name = after.split_whitespace().next().ok_or_else(|| {
+            StoreError::Schema(format!("internal: cannot parse column name from {sql}"))
+        })?;
+        if existing.iter().any(|c| c == name) {
+            continue;
+        }
+        conn.execute(sql, [])?;
+    }
+    Ok(())
+}
+
+/// Idempotent additive ALTERs for the attachment-cache scope/sender
+/// columns, pre-checked via `PRAGMA table_info` like [`apply_v2_columns`].
+fn apply_attachment_scope_columns(conn: &Connection) -> Result<(), StoreError> {
+    let existing = existing_columns(conn, "attachments")?;
+    for sql in ATTACHMENT_SCOPE_COLUMNS {
+        let after = sql
+            .strip_prefix("ALTER TABLE attachments ADD COLUMN ")
+            .ok_or_else(|| {
+                StoreError::Schema(format!("internal: unexpected attachment column SQL: {sql}"))
             })?;
         let name = after.split_whitespace().next().ok_or_else(|| {
             StoreError::Schema(format!("internal: cannot parse column name from {sql}"))

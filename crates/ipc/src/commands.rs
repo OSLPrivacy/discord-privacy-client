@@ -2264,6 +2264,9 @@ pub fn cmd_osl_attachment_cache_put(
     random_filename: String,
     mime: String,
     bytes_b64: String,
+    // Scope + sender so a burn can wipe the burner's cached attachments.
+    scope_input: Option<crate::scope::ScopeInput>,
+    sender_discord_id: Option<String>,
 ) -> Result<(), String> {
     let bytes = STANDARD
         .decode(bytes_b64.as_bytes())
@@ -2276,6 +2279,17 @@ pub fn cmd_osl_attachment_cache_put(
         );
         return Ok(());
     }
+    // Resolve scope_type/scope_id for the burn-wipe filter (best-effort).
+    let (scope_type, scope_id): (Option<String>, Option<String>) = match scope_input {
+        Some(input) => match crate::scope::Scope::try_from(input) {
+            Ok(scope) => {
+                let (t, i) = scope_storage_pair(&scope);
+                (Some(t), Some(i))
+            }
+            Err(_) => (None, None),
+        },
+        None => (None, None),
+    };
     let guard = state
         .message_store
         .lock()
@@ -2284,7 +2298,15 @@ pub fn cmd_osl_attachment_cache_put(
         return Ok(());
     };
     store
-        .put_attachment(&discord_message_id, &random_filename, &mime, &bytes)
+        .put_attachment(
+            &discord_message_id,
+            &random_filename,
+            &mime,
+            &bytes,
+            scope_type.as_deref(),
+            scope_id.as_deref(),
+            sender_discord_id.as_deref(),
+        )
         .map_err(|e| format!("OSL: put_attachment: {e}"))?;
     // Best-effort trim so the cache stays bounded. Cheap (one DELETE).
     let _ = store.trim_attachments(OSL_ATTACHMENT_CACHE_KEEP);
@@ -6185,6 +6207,10 @@ fn apply_burn_recv(
         {
             tracing::warn!(error = %e, "OSL: wipe wrapped_keys failed; burn proceeded in peer_map only");
         }
+        // Evict the burner's cached decrypted attachments in this scope
+        // so their already-rendered images vanish, not just stop
+        // re-decrypting.
+        let _ = store.wipe_attachments_in_scope(&scope_type, &scope_id, Some(sender_discord_id));
     }
     // 7d-FIX1: persist peer_map (the burned-scope entry is new state).
     persist_peer_map_now(state);
@@ -6282,6 +6308,10 @@ pub fn cmd_osl_apply_burn(
         store
             .wipe_wrapped_keys_in_scope(&scope_type, &scope_id, self_did.as_deref())
             .map_err(|e| format!("OSL: wipe wrapped_keys: {e}"))?;
+        // Also evict OUR cached decrypted attachments in this scope so a
+        // previously-rendered image doesn't linger from cache after the
+        // burn (the open-gate only blocks re-decryption).
+        let _ = store.wipe_attachments_in_scope(&scope_type, &scope_id, self_did.as_deref());
     }
     // Record the burn on our OWN self-entry so OUR attachments in this
     // scope are gated too. Text reverts via the wrapped-key wipe above;

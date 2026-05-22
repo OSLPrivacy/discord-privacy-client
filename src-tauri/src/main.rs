@@ -394,6 +394,8 @@ async fn osl_attachment_cache_put(
     random_filename: String,
     mime: String,
     bytes_b64: String,
+    scope_input: Option<ipc::scope::ScopeInput>,
+    sender_discord_id: Option<String>,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -404,6 +406,8 @@ async fn osl_attachment_cache_put(
             random_filename,
             mime,
             bytes_b64,
+            scope_input,
+            sender_discord_id,
         )
     })
     .await
