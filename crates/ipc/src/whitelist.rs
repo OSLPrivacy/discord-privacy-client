@@ -195,7 +195,17 @@ pub fn should_encrypt_to(
                 .get(&scope.storage_key())
                 .map(|s| s.channel_whitelisted)
                 .unwrap_or(false);
-            if gc_header_on && ctx.membership.is_gc_member(&scope.id, recipient_discord_id) {
+            // Same oracle-empty fallback as ServerChannel: the gateway
+            // member list is best-effort and often empty (fresh GC /
+            // post-reprovision), so gate the GC-lock-on grant on
+            // is_gc_member OR a DM-whitelisted peer. Discord enforces
+            // actual GC access, so a non-member dm peer never receives
+            // it — this only fixes the self-only-encryption bug when the
+            // oracle hasn't observed members yet.
+            let dm_wl = has_dm_whitelist(peer_map, recipient_discord_id);
+            if gc_header_on
+                && (ctx.membership.is_gc_member(&scope.id, recipient_discord_id) || dm_wl)
+            {
                 return true;
             }
         }
@@ -325,6 +335,7 @@ fn gc_dynamic_candidate_set(
         }
         if has_explicit_whitelist_entry(peer_map, scope, did)
             || has_broadened_dm_access(peer_map, did)
+            || has_dm_whitelist(peer_map, did)
         {
             set.insert(did.clone());
         }
