@@ -5352,6 +5352,46 @@ pub fn cmd_osl_control_inbox_drain(
                              to next-message bootstrap)"
                         ),
                     }
+                } else if let Some(resp_wire) =
+                    sentinel.strip_prefix(OSL_RESULT_SKDM_REREQUEST_PREFIX)
+                {
+                    // An SKDM_REQUEST honored via the inbox: post the
+                    // rebuilt sender-key bundle BACK to the requester's
+                    // inbox. The channel-recv path does this post in
+                    // boot.js (it has channelId in scope), but the inbox
+                    // drain must do it here — otherwise the response is
+                    // built and DROPPED, the requester stays "awaiting
+                    // SKDM" forever, and GC messages never decrypt. Post
+                    // to the requester's OSL user_id (item.sender_id),
+                    // same scope.
+                    if let Some(b64) = resp_wire.strip_prefix("DPC0::") {
+                        match STANDARD.decode(b64) {
+                            Ok(resp_bundle) => {
+                                match client.post_control_inbox(
+                                    &identity,
+                                    &item.sender_id,
+                                    &item.scope_id,
+                                    &resp_bundle,
+                                ) {
+                                    Ok(_) => tracing::info!(
+                                        requester = %item.sender_id,
+                                        scope = %item.scope_id,
+                                        "[OSL] SKDM_REQUEST honored via inbox — \
+                                         sender key posted back to requester"
+                                    ),
+                                    Err(e) => tracing::warn!(
+                                        requester = %item.sender_id,
+                                        error = %e,
+                                        "[OSL] SKDM response post-back failed"
+                                    ),
+                                }
+                            }
+                            Err(e) => tracing::warn!(
+                                error = %e,
+                                "[OSL] SKDM response wire base64 decode failed"
+                            ),
+                        }
+                    }
                 }
                 applied = applied.saturating_add(1);
             }
