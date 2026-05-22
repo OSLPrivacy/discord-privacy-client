@@ -17887,11 +17887,26 @@
     // selector patch from a developer; the canary just surfaces the
     // need.
     // ============================================================
+    // A channel is "open" only when the URL has a channel id segment
+    // (/channels/@me/<id> for DMs/GCs, /channels/<guild>/<id> for
+    // servers). On the Friends/Home view (/channels/@me) Discord
+    // renders NO composer and NO channel header — so the canary must
+    // not count those as "missing" there, or it false-fires the
+    // "OSL UI broken" banner on a perfectly healthy launch that just
+    // happened to start on the friends list.
+    function oslCanaryChannelOpen() {
+        return /^\/channels\/(?:@me|\d{15,21})\/(\d{15,21})/.test(
+            (window.location && window.location.pathname) || ""
+        );
+    }
+
     const OSL_CANARY_CHECKS = [
         {
             name: "channel_header",
             critical: true,
             probe: function () {
+                // Not applicable with no channel open → treat as present.
+                if (!oslCanaryChannelOpen()) return true;
                 return typeof oslFindChannelHeader === "function"
                     ? oslFindChannelHeader()
                     : null;
@@ -17908,6 +17923,9 @@
             name: "composer",
             critical: true,
             probe: function () {
+                // No composer on the friends list — only flag a missing
+                // composer when a channel is actually open.
+                if (!oslCanaryChannelOpen()) return true;
                 return oslAnchorResolve("composer");
             },
         },
