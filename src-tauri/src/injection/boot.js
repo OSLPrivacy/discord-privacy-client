@@ -7744,6 +7744,15 @@
     // re-adds it when the scan finds nothing.
     const oslAttScannedEmpty = new Set();
 
+    // Negative cache: message ids whose attachment decrypt PERMANENTLY
+    // failed (e.g. "not a recipient" — wrapped to keys we don't hold,
+    // common for pre-re-provision messages, or a non-OSL file). Without
+    // this the scan re-FETCHED (full CDN download) + re-decrypted these
+    // every tick forever, flooding the console + pegging the main
+    // thread. In-memory, so a relaunch (possibly with recovered keys)
+    // retries once.
+    const oslAttDecryptFailed = new Set();
+
     function oslAttachmentCacheEvictIfFull() {
         const m = window.__oslAttachmentDecrypted;
         while (m.size > OSL_ATT_CACHE_CAP) {
@@ -8932,6 +8941,12 @@
             return;
         }
         const msgId = m[1];
+        // Permanently-failed attachment decrypt → never re-fetch/re-try
+        // this message (stops the every-tick CDN re-download + decrypt
+        // loop). Cleared only by a relaunch.
+        if (oslAttDecryptFailed.has(msgId)) {
+            return;
+        }
         // Clear the negative-cache mark on entry: any direct call
         // (mutation observer) re-evaluates, so lazy-rendered media is
         // caught. The sweep, by contrast, skips set members without
@@ -9380,6 +9395,17 @@
                                 " reason=" +
                                 decRes.error
                         );
+                    }
+                    // Permanent failures (not a recipient / non-OSL file)
+                    // will NEVER decrypt this session — cache so the
+                    // sweep stops re-fetching + re-decrypting every tick.
+                    const e = decRes.error || "";
+                    if (
+                        e.indexOf("not a recipient") !== -1 ||
+                        e.indexOf("MagicNotFound") !== -1 ||
+                        e.indexOf("magic") !== -1
+                    ) {
+                        if (msgId) oslAttDecryptFailed.add(msgId);
                     }
                     continue;
                 }
@@ -17053,6 +17079,11 @@
                     // suppresses the wasteful every-tick re-walk of plain
                     // text messages that was pegging the main thread.
                     if (oslAttScannedEmpty.has(amid)) {
+                        continue;
+                    }
+                    // Permanently-failed decrypt (not a recipient / non-
+                    // OSL) — don't re-fetch + re-decrypt every tick.
+                    if (oslAttDecryptFailed.has(amid)) {
                         continue;
                     }
                     if (
