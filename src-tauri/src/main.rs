@@ -1161,13 +1161,29 @@ async fn osl_export_data(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Device transfer: restore an exported data blob onto this device.
+/// Device transfer: restore a full account export (phrase decrypts it).
 #[tauri::command]
-async fn osl_import_data(app: tauri::AppHandle, blob_b64: String) -> Result<(), String> {
+async fn osl_import_data(
+    app: tauri::AppHandle,
+    blob_b64: String,
+    phrase: String,
+) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_import_data(state.inner(), blob_b64)
+        ipc::commands::cmd_osl_recover_account_from_export(state.inner(), blob_b64, phrase)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Legacy upgrade: assign a recovery phrase to an account that lacks one.
+#[tauri::command]
+async fn osl_ensure_recovery_phrase(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_ensure_recovery_phrase(state.inner())
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -3051,6 +3067,7 @@ fn main() {
             osl_switch_account,
             osl_export_data,
             osl_import_data,
+            osl_ensure_recovery_phrase,
             osl_verify_main_password,
             osl_verify_recovery_phrase,
             osl_set_main_password_after_recovery,

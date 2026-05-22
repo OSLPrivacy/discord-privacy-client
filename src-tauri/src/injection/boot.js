@@ -10379,6 +10379,12 @@
             // calls re-fetch (it may have changed with the account).
             oslSelfDiscordIdCache = null;
             oslSelfDiscordIdLastError = null;
+            // Legacy accounts (created before seed-phrase support) get a
+            // recovery phrase assigned now so they're transferable.
+            // Safe + idempotent; doesn't touch existing keys.
+            try {
+                await oslInvoke("osl_ensure_recovery_phrase", {});
+            } catch (_) {}
         } else {
             oslTrace("[F0-FIX3-TRACE] switch_account failed: " + (reg.error || "?"));
             console.warn("[OSL] account switch failed:", reg.error);

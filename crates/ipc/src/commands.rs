@@ -8099,6 +8099,44 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     verify_and_persist_peer_map_self_entry(state).map(|_| ())
 }
 
+/// Legacy-account upgrade: if the active identity has no recovery
+/// phrase (created before seed-phrase support), assign one now. SAFE —
+/// the entropy is recovery metadata + the data-export encryption secret;
+/// it does NOT touch the existing keys (those ride along in the data
+/// export for transfer). Idempotent. Called by boot.js on launch.
+pub fn cmd_osl_ensure_recovery_phrase(state: &AppState) -> Result<(), String> {
+    let already = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        match g.as_ref() {
+            Some(id) => id.recovery_entropy.is_some(),
+            None => return Ok(()), // no identity yet; nothing to do
+        }
+    };
+    if already {
+        return Ok(());
+    }
+    let bytes = crypto::random::random_bytes(16);
+    let mut entropy = [0u8; 16];
+    entropy.copy_from_slice(&bytes);
+    {
+        let mut g = state.identity.lock().expect("identity mutex poisoned");
+        if let Some(id) = g.as_mut() {
+            id.recovery_entropy = Some(entropy);
+        }
+    }
+    // Persist (re-seal) so the phrase survives restart.
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let g = state.identity.lock().expect("identity mutex poisoned");
+    if let Some(id) = g.as_ref() {
+        let sealer = keystore::select_best_sealer();
+        keystore::save_identity(&dir.join("identity.json"), id, sealer.as_ref())
+            .map_err(|e| format!("OSL: ensure_recovery_phrase: save: {e}"))?;
+        tracing::info!("OSL: assigned a recovery phrase to a legacy account");
+    }
+    Ok(())
+}
+
 /// Magic header for an encrypted data-export blob.
 const OSL_EXPORT_MAGIC: &[u8] = b"OSLDATA1";
 
@@ -8160,10 +8198,28 @@ pub fn cmd_osl_export_data(state: &AppState) -> Result<String, String> {
             );
         }
     }
-    if files.is_empty() {
-        return Err("OSL: nothing to export yet (no account data on disk).".to_string());
-    }
-    let bundle = serde_json::json!({ "version": 1, "files": files });
+    // Include the RAW identity keys so the export is a COMPLETE,
+    // portable account backup: transferable even for legacy random-key
+    // accounts (whose phrase can't re-derive keys) and across devices
+    // (the on-disk identity.json is device-sealed; these raw bytes get
+    // re-sealed locally on import). Encrypted under the phrase like the
+    // rest of the bundle.
+    let identity_obj = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        g.as_ref().map(|id| {
+            serde_json::json!({
+                "x25519_secret": STANDARD.encode(id.x25519_secret.as_bytes()),
+                "x25519_public": STANDARD.encode(id.x25519_public.as_bytes()),
+                "ed25519_secret": STANDARD.encode(id.ed25519_secret.as_bytes()),
+                "ed25519_public": STANDARD.encode(id.ed25519_public.as_bytes()),
+                "mlkem_secret": STANDARD.encode(id.mlkem_secret_bytes()),
+                "mlkem_public": STANDARD.encode(id.mlkem_public_bytes),
+                "snowflake": id.discord_snowflake.clone(),
+                "entropy": id.recovery_entropy.as_ref().map(|e| STANDARD.encode(e)),
+            })
+        })
+    };
+    let bundle = serde_json::json!({ "version": 1, "files": files, "identity": identity_obj });
     let plaintext = serde_json::to_vec(&bundle).map_err(|e| format!("OSL: export serialize: {e}"))?;
 
     let key = export_aead_key(&entropy)?;
@@ -8181,22 +8237,34 @@ pub fn cmd_osl_export_data(state: &AppState) -> Result<String, String> {
     Ok(STANDARD.encode(&out))
 }
 
-/// Device transfer: restore a data export onto THIS device. Decrypts
-/// with the recovery-phrase entropy (so the identity must already be
-/// recovered via the 12-word phrase) and writes the account files back.
-/// A relaunch loads them — the recovered identity (same x25519 secret)
-/// opens the restored message store and decrypts the history.
-pub fn cmd_osl_import_data(state: &AppState, blob_b64: String) -> Result<(), String> {
-    let entropy = require_recovery_entropy(
-        state,
-        "recover your identity with the 12-word phrase FIRST, then restore data",
-    )?;
+/// Device transfer: restore a full account export onto THIS device
+/// using its 12-word phrase. The phrase decrypts the blob; the bundle
+/// carries the raw identity keys + all data. We reconstruct the
+/// identity (re-sealing locally — the source's on-disk seal was
+/// device-bound) and write the data files back. A relaunch loads the
+/// restored account. Self-contained: works for legacy and seed-phrase
+/// accounts alike, and the local pre-import identity is irrelevant.
+pub fn cmd_osl_recover_account_from_export(
+    state: &AppState,
+    blob_b64: String,
+    phrase: String,
+) -> Result<(), String> {
+    // Phrase -> entropy -> export-decryption key.
+    let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, phrase.trim())
+        .map_err(|_| "OSL: that isn't a valid 12-word recovery phrase.".to_string())?;
+    let ev = mnemonic.to_entropy();
+    if ev.len() != 16 {
+        return Err("OSL: recovery phrase must be exactly 12 words.".to_string());
+    }
+    let mut entropy = [0u8; 16];
+    entropy.copy_from_slice(&ev);
+
     let raw = STANDARD
         .decode(blob_b64.trim())
         .map_err(|e| format!("OSL: import: base64 decode: {e}"))?;
     let prefix = OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE;
     if raw.len() < prefix || &raw[..OSL_EXPORT_MAGIC.len()] != OSL_EXPORT_MAGIC {
-        return Err("OSL: that file isn't an OSL data export.".to_string());
+        return Err("OSL: that file isn't an OSL account export.".to_string());
     }
     let mut na = [0u8; crypto::aead::NONCE_SIZE];
     na.copy_from_slice(&raw[OSL_EXPORT_MAGIC.len()..prefix]);
@@ -8204,22 +8272,16 @@ pub fn cmd_osl_import_data(state: &AppState, blob_b64: String) -> Result<(), Str
     let key = export_aead_key(&entropy)?;
     let plaintext = crypto::aead::open(&key, &nonce, OSL_EXPORT_MAGIC, &raw[prefix..])
         .map_err(|_| {
-            "OSL: couldn't decrypt the export — it was made under a different \
-             recovery phrase than this account, or the file is corrupt."
+            "OSL: couldn't decrypt — the phrase doesn't match this export file, \
+             or the file is corrupt."
                 .to_string()
         })?;
     let bundle: serde_json::Value =
         serde_json::from_slice(&plaintext).map_err(|e| format!("OSL: import parse: {e}"))?;
-    let files = bundle
-        .get("files")
-        .and_then(|f| f.as_object())
-        .ok_or_else(|| "OSL: import: malformed bundle".to_string())?;
 
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    // Release the SQLite handle so the message store file can be
-    // overwritten; it reopens (against the recovered identity) on the
-    // next launch.
+    // Release the SQLite handle so the store file can be overwritten.
     {
         let taken = state
             .message_store
@@ -8228,19 +8290,68 @@ pub fn cmd_osl_import_data(state: &AppState, blob_b64: String) -> Result<(), Str
             .take();
         drop(taken);
     }
-    for (rel, v) in files {
-        // Defensive: only allow the known relative paths (no traversal).
-        if !OSL_EXPORT_FILES.contains(&rel.as_str()) {
-            continue;
+
+    // Reconstruct + re-seal the identity from the bundle's raw keys.
+    if let Some(idobj) = bundle.get("identity").filter(|v| v.is_object()) {
+        let dec = |k: &str, n: usize| -> Result<Vec<u8>, String> {
+            let s = idobj
+                .get(k)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("OSL: import: identity.{k} missing"))?;
+            let b = STANDARD
+                .decode(s)
+                .map_err(|e| format!("OSL: import: identity.{k} b64: {e}"))?;
+            if b.len() != n {
+                return Err(format!("OSL: import: identity.{k} wrong length"));
+            }
+            Ok(b)
+        };
+        let to_arr = |v: Vec<u8>| {
+            let mut a = vec![0u8; v.len()];
+            a.copy_from_slice(&v);
+            a
+        };
+        let x_sec: [u8; 32] = to_arr(dec("x25519_secret", 32)?).try_into().unwrap();
+        let x_pub: [u8; 32] = to_arr(dec("x25519_public", 32)?).try_into().unwrap();
+        let ed_sec: [u8; 32] = to_arr(dec("ed25519_secret", 32)?).try_into().unwrap();
+        let ed_pub: [u8; 32] = to_arr(dec("ed25519_public", 32)?).try_into().unwrap();
+        let mlkem_sec: [u8; crypto::ml_kem_768::DECAPSULATION_KEY_SIZE] =
+            to_arr(dec("mlkem_secret", crypto::ml_kem_768::DECAPSULATION_KEY_SIZE)?)
+                .try_into()
+                .unwrap();
+        let mlkem_pub: [u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE] =
+            to_arr(dec("mlkem_public", crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE)?)
+                .try_into()
+                .unwrap();
+        let mut id =
+            keystore::Identity::from_bytes(String::new(), x_sec, x_pub, ed_sec, ed_pub, mlkem_sec, mlkem_pub);
+        if let Some(sf) = idobj.get("snowflake").and_then(|v| v.as_str()) {
+            id.user_id = sf.to_string();
+            id.discord_snowflake = Some(sf.to_string());
         }
-        let bytes = STANDARD
-            .decode(v.as_str().unwrap_or(""))
-            .map_err(|e| format!("OSL: import: file {rel} b64: {e}"))?;
-        let p = dir.join(rel);
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        // The phrase entropy IS the recovery entropy for this account.
+        id.recovery_entropy = Some(entropy);
+        let sealer = keystore::select_best_sealer();
+        keystore::save_identity(&dir.join("identity.json"), &id, sealer.as_ref())
+            .map_err(|e| format!("OSL: import: save identity: {e}"))?;
+        *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    }
+
+    // Write the data files back.
+    if let Some(files) = bundle.get("files").and_then(|f| f.as_object()) {
+        for (rel, v) in files {
+            if !OSL_EXPORT_FILES.contains(&rel.as_str()) {
+                continue; // no path traversal
+            }
+            let bytes = STANDARD
+                .decode(v.as_str().unwrap_or(""))
+                .map_err(|e| format!("OSL: import: file {rel} b64: {e}"))?;
+            let p = dir.join(rel);
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&p, &bytes).map_err(|e| format!("OSL: import: write {rel}: {e}"))?;
         }
-        std::fs::write(&p, &bytes).map_err(|e| format!("OSL: import: write {rel}: {e}"))?;
     }
     Ok(())
 }

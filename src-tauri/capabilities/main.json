@@ -64,6 +64,7 @@
     "allow-osl-close-settings-window-if-open",
     "allow-osl-register-self-snowflake",
     "allow-osl-switch-account",
+    "allow-osl-ensure-recovery-phrase",
     "allow-osl-tour-get-state",
     "allow-osl-tour-advance",
     "allow-osl-tour-complete",

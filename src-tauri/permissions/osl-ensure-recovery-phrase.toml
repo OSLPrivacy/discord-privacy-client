@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Legacy upgrade: assign a recovery phrase to an account that lacks one.
+[[permission]]
+identifier = "allow-osl-ensure-recovery-phrase"
+description = "Permits invoking `osl_ensure_recovery_phrase` (auto-assign a recovery phrase to a legacy account)."
+commands.allow = ["osl_ensure_recovery_phrase"]
