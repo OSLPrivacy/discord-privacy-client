@@ -91,6 +91,11 @@ struct KeyserverConfig {
 ///
 /// Caller: `tauri::Builder::setup` once per app launch.
 pub fn run_autostart(state: &AppState) {
+    // Multi-account: before resolving the config dir, point it at the
+    // persisted active account (if any). With no marker this is a
+    // no-op and osl_config_dir() returns the shared base exactly as a
+    // single-account install always did.
+    resolve_active_account_on_launch();
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -120,7 +125,13 @@ pub fn run_autostart(state: &AppState) {
     }
     tracing::info!(config_dir = %dir.display(), "OSL bootstrap: starting");
 
-    let keyserver_cfg = read_keyserver_config(&dir);
+    // Device-level config (keyserver URL/token, license, app prefs,
+    // password gate) lives at the shared BASE, not per-account — so a
+    // multi-account switch doesn't reset prefs or drop a paid license.
+    // When no account override is active, base == dir (unchanged).
+    let base = keystore::osl_base_dir().unwrap_or_else(|_| dir.clone());
+
+    let keyserver_cfg = read_keyserver_config(&base);
     let (identity_loaded, identity_regenerated) =
         load_or_generate_identity(state, &dir, keyserver_cfg.as_ref());
     // G3-FIX: keyserver.json is an OVERRIDE only. The base URL always
@@ -135,7 +146,7 @@ pub fn run_autostart(state: &AppState) {
     // present. Identity lifecycle is unchanged — register still
     // requires a loaded identity.
     if identity_loaded {
-        let base_url = ipc::commands::resolve_keyserver_base_url(&dir);
+        let base_url = ipc::commands::resolve_keyserver_base_url(&base);
         let admin_token = keyserver_cfg.as_ref().and_then(|c| c.admin_token.clone());
         init_keyserver_and_register(state, &base_url, admin_token);
     } else {
@@ -268,7 +279,7 @@ pub fn run_autostart(state: &AppState) {
     // DPC0:: and DPC1:: cover envelopes. 9-MODE1-FIX dropped the
     // preview-modal-related fields; legacy files still load via
     // serde's unknown-field tolerance.
-    let prefs_path = dir.join("app_preferences.json");
+    let prefs_path = base.join("app_preferences.json");
     let prefs = ipc::app_preferences::load_app_preferences(&prefs_path);
     tracing::info!(
         mode = ?prefs.stego_mode,
@@ -287,7 +298,7 @@ pub fn run_autostart(state: &AppState) {
     // value when it returns. Cache-only here means no network and
     // no PaidOfflineGrace: that case requires a failed online
     // attempt, which only happens in `refresh_license_state`.
-    ipc::license_lifecycle::launch_classify(state, &dir);
+    ipc::license_lifecycle::launch_classify(state, &base);
     tracing::info!(
         license_state = ?state
             .license_state
@@ -306,6 +317,206 @@ pub fn run_autostart(state: &AppState) {
     // bottom-line check.
 
     tracing::info!("OSL bootstrap: done");
+}
+
+// ============================================================
+// Multi-account (#2): each Discord account gets its own OSL identity +
+// state under `<base>/accounts/<snowflake>/`. The active account is
+// persisted in `<base>/active`. `osl_config_dir()` is overridden to the
+// active account's dir, so all ~60 state-file consumers transparently
+// read/write the right account. Switching resets account-scoped
+// AppState, flips the override, and re-runs the (tested) load sequence.
+// ============================================================
+
+/// Account-state files that live PER ACCOUNT. password/lockout markers,
+/// app prefs, license, and keyserver.json stay device-level at the base.
+const ACCOUNT_STATE_FILES: &[&str] = &[
+    "identity.json",
+    "peer_map.json",
+    "whitelist_state.json",
+    "sender_key_state.json",
+    "channels.json",
+    "burned_scopes.json",
+    "membership.json",
+    "scope_ttl.json",
+    "scope_blobs.json",
+];
+
+fn active_marker_path() -> Option<std::path::PathBuf> {
+    keystore::osl_base_dir().ok().map(|b| b.join("active"))
+}
+
+fn read_active_marker() -> Option<String> {
+    let p = active_marker_path()?;
+    let s = std::fs::read_to_string(p).ok()?;
+    let s = s.trim();
+    if s.chars().all(|c| c.is_ascii_digit()) && (17..=20).contains(&s.len()) {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
+fn write_active_marker(snowflake: &str) {
+    if let Some(p) = active_marker_path() {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(p, snowflake);
+    }
+}
+
+/// At launch, set the config-dir override to the active account's dir
+/// when a marker names one whose identity exists. Otherwise leave the
+/// override unset (single-account / pre-migration → shared base).
+fn resolve_active_account_on_launch() {
+    let Some(sf) = read_active_marker() else {
+        return;
+    };
+    if let Ok(adir) = keystore::account_dir(&sf) {
+        if adir.join("identity.json").exists() {
+            keystore::set_active_account_dir(Some(adir));
+        }
+    }
+}
+
+/// Reset every ACCOUNT-SCOPED AppState field to empty so a switch can't
+/// leak the previous account's data (peers, sessions, whitelists) into
+/// the next — critical for a privacy tool. Device-level state (license,
+/// app prefs, password gate) is intentionally left alone.
+fn reset_account_scoped_state(state: &AppState) {
+    use std::sync::atomic::Ordering;
+    *state.identity.lock().expect("identity poisoned") = None;
+    *state.keyserver.lock().expect("keyserver poisoned") = None;
+    *state.message_store.lock().expect("message_store poisoned") = None;
+    *state.peer_map.lock().expect("peer_map poisoned") = Default::default();
+    *state.whitelist_state.lock().expect("whitelist poisoned") = Default::default();
+    *state.server_defaults.lock().expect("server_defaults poisoned") = Default::default();
+    *state.sender_key_state.lock().expect("sender_key poisoned") = Default::default();
+    *state.burned_scopes.lock().expect("burned poisoned") = Default::default();
+    *state.scope_membership.lock().expect("membership poisoned") = Default::default();
+    *state.channel_members.lock().expect("channel_members poisoned") = Default::default();
+    *state.key_change_alerts.lock().expect("key_change poisoned") = Default::default();
+    *state.friend_ids.lock().expect("friend_ids poisoned") = Default::default();
+    *state.guild_list.lock().expect("guild_list poisoned") = Default::default();
+    *state.recovery_guard.lock().expect("recovery_guard poisoned") = Default::default();
+    state
+        .identity_regenerated_this_launch
+        .store(false, Ordering::SeqCst);
+}
+
+/// One-time migration: an existing single-account install has its files
+/// flat at the base. Copy them (NON-destructively — the flat originals
+/// remain as a backup) into `accounts/<bound_snowflake>/` and write the
+/// active marker, bringing that account into the multi-account system.
+fn migrate_flat_account_if_needed(bound_snowflake: &str) {
+    let Ok(base) = keystore::osl_base_dir() else {
+        return;
+    };
+    // Already migrated (a marker exists) → nothing to do.
+    if read_active_marker().is_some() {
+        return;
+    }
+    let Ok(adir) = keystore::account_dir(bound_snowflake) else {
+        return;
+    };
+    if adir.join("identity.json").exists() {
+        // Account dir already populated; just adopt it.
+        write_active_marker(bound_snowflake);
+        keystore::set_active_account_dir(Some(adir));
+        return;
+    }
+    let _ = std::fs::create_dir_all(adir.join("store"));
+    for rel in ACCOUNT_STATE_FILES {
+        let src = base.join(rel);
+        if src.exists() {
+            let _ = std::fs::copy(&src, adir.join(rel));
+        }
+    }
+    // Message store DB lives under store/.
+    for db in ["messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm"] {
+        let src = base.join("store").join(db);
+        if src.exists() {
+            let _ = std::fs::copy(&src, adir.join("store").join(db));
+        }
+    }
+    write_active_marker(bound_snowflake);
+    keystore::set_active_account_dir(Some(adir));
+    tracing::info!(
+        snowflake = %bound_snowflake,
+        "OSL multi-account: migrated flat install into per-account dir (originals kept as backup)"
+    );
+}
+
+/// Instant account switch (#2). Idempotent when `snowflake` is already
+/// active. Otherwise: reset account-scoped state, point the config dir
+/// at `accounts/<snowflake>/` (generating a fresh seed-phrase identity
+/// there if it's a brand-new account), and re-run the load sequence so
+/// AppState reflects that account. The previous account's files stay on
+/// disk in its own dir, ready to switch back to.
+pub fn switch_account(state: &AppState, snowflake: String) -> Result<(), String> {
+    if !snowflake.chars().all(|c| c.is_ascii_digit()) || !(17..=20).contains(&snowflake.len()) {
+        return Err(format!("OSL: switch_account: invalid snowflake '{snowflake}'"));
+    }
+
+    // What account is active right now?
+    let current = read_active_marker().or_else(|| {
+        state
+            .identity
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|i| i.discord_snowflake.clone()))
+    });
+
+    // First-run migration: bring the existing flat account into the
+    // system under its own snowflake before doing anything else.
+    if read_active_marker().is_none() {
+        if let Some(cur) = current.clone() {
+            migrate_flat_account_if_needed(&cur);
+        }
+    }
+
+    if current.as_deref() == Some(snowflake.as_str()) {
+        // Already this account — just make sure the override points at
+        // its dir (post-migration) and we're registered.
+        if let Ok(adir) = keystore::account_dir(&snowflake) {
+            if adir.join("identity.json").exists() {
+                keystore::set_active_account_dir(Some(adir));
+            }
+        }
+        return Ok(());
+    }
+
+    tracing::info!(
+        from = ?current,
+        to = %snowflake,
+        "OSL multi-account: switching account"
+    );
+
+    // Switch: reset state, flip the active dir, ensure the target
+    // account exists, reload.
+    reset_account_scoped_state(state);
+    let adir = keystore::account_dir(&snowflake)
+        .map_err(|e| format!("OSL: switch_account: account_dir: {e}"))?;
+    let _ = std::fs::create_dir_all(&adir);
+    keystore::set_active_account_dir(Some(adir.clone()));
+    write_active_marker(&snowflake);
+
+    // Brand-new account: generate a fresh seed-phrase identity bound to
+    // this snowflake and save it, so the reload below loads it (and the
+    // user gets a recovery phrase for it).
+    if !adir.join("identity.json").exists() {
+        let mut id = keystore::generate_identity(snowflake.clone());
+        id.discord_snowflake = Some(snowflake.clone());
+        let sealer = keystore::select_best_sealer();
+        if let Err(e) = save_identity(&adir.join("identity.json"), &id, sealer.as_ref()) {
+            return Err(format!("OSL: switch_account: save new identity: {e}"));
+        }
+    }
+
+    // Re-run the full, tested load sequence against the new active dir.
+    run_autostart(state);
+    Ok(())
 }
 
 /// Open the at-rest-encrypted [`MessageStore`] under

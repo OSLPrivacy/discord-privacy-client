@@ -248,9 +248,26 @@ mod recovery_derivation_tests {
     }
 
     #[test]
-    fn random_identity_has_no_recovery_entropy() {
-        // Legacy random-key identities can't show a phrase.
-        let id = generate_identity("u".into());
-        assert_eq!(id.recovery_entropy, None);
+    fn generated_identity_is_seed_backed() {
+        // generate_identity is now seed-backed, so every fresh identity
+        // carries recovery_entropy (and thus a transferable phrase).
+        // Two fresh identities differ (independent random entropy).
+        let a = generate_identity("u".into());
+        let b = generate_identity("u".into());
+        assert!(a.recovery_entropy.is_some());
+        assert!(b.recovery_entropy.is_some());
+        assert_ne!(a.recovery_entropy, b.recovery_entropy);
+        // Only identities LOADED from a pre-transfer blob have None
+        // (set by from_bytes); covered by the storage layer.
+        let legacy = Identity::from_bytes(
+            "u".into(),
+            [1u8; 32],
+            [2u8; 32],
+            [3u8; 32],
+            [4u8; 32],
+            [5u8; crypto::ml_kem_768::DECAPSULATION_KEY_SIZE],
+            [6u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE],
+        );
+        assert_eq!(legacy.recovery_entropy, None);
     }
 }

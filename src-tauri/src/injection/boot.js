@@ -10333,13 +10333,12 @@
                 ? r.value
                 : null;
 
-        // Discord-account-switch detection. Even if the Rust side
-        // ALREADY has an identity registered, we must compare it
-        // against what Discord runtime is currently reporting — if
-        // the user switched Discord accounts on this machine, the
-        // stored identity is now wrong for the new account. The
-        // mismatch triggers an auto-burn + re-register on the Rust
-        // side inside `osl_register_self_snowflake`.
+        // Discord-account-switch detection. Multi-account: each Discord
+        // account has its OWN OSL identity + state under
+        // accounts/<snowflake>/. When the runtime snowflake differs from
+        // the stored one, osl_switch_account performs an INSTANT switch
+        // (preserving both accounts) rather than the old destructive
+        // auto-burn.
         const sf = await oslExtractSnowflakeRetry(10000);
         oslTrace(
             "[F0-FIX3-TRACE] extracted snowflake=" +
@@ -10349,13 +10348,11 @@
         );
         if (storedSnowflake && sf && storedSnowflake !== sf) {
             console.warn(
-                "[OSL] Discord account switch detected on client side: " +
-                    "stored=" +
+                "[OSL] Discord account switch detected: stored=" +
                     storedSnowflake +
                     " runtime=" +
                     sf +
-                    " — Rust-side osl_register_self_snowflake will " +
-                    "auto-burn + re-register under the new snowflake."
+                    " — switching to that account's OSL identity (both kept)."
             );
         }
         if (!sf) {
@@ -10368,21 +10365,23 @@
         }
         console.log("[OSL] self snowflake extracted from runtime: " + sf);
 
-        const reg = await oslInvoke("osl_register_self_snowflake", {
-            snowflake: sf,
-        });
+        // Multi-account: osl_switch_account makes `sf` the active OSL
+        // account — migrating a legacy flat install on first run,
+        // generating a fresh seed-phrase identity for a brand-new
+        // account, or instantly switching to an existing one. It also
+        // registers with the keyserver (via the reload). Idempotent
+        // when `sf` is already active.
+        const reg = await oslInvoke("osl_switch_account", { snowflake: sf });
         if (reg.ok) {
-            oslTrace("[F0-FIX3-TRACE] registration succeeded");
-            console.log("[OSL] self snowflake registered from Discord runtime");
-            // Reset the cached miss so subsequent
-            // oslSelfDiscordId() calls re-fetch.
+            oslTrace("[F0-FIX3-TRACE] switch_account succeeded");
+            console.log("[OSL] active OSL account set to " + sf);
+            // Reset cached self id so subsequent oslSelfDiscordId()
+            // calls re-fetch (it may have changed with the account).
             oslSelfDiscordIdCache = null;
             oslSelfDiscordIdLastError = null;
         } else {
-            oslTrace(
-                "[F0-FIX3-TRACE] registration failed: " + (reg.error || "?")
-            );
-            console.warn("[OSL] self snowflake registration failed:", reg.error);
+            oslTrace("[F0-FIX3-TRACE] switch_account failed: " + (reg.error || "?"));
+            console.warn("[OSL] account switch failed:", reg.error);
         }
     }
 

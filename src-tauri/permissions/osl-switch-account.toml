@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Multi-account: switch the active OSL account (instant) on a Discord
+# account change.
+[[permission]]
+identifier = "allow-osl-switch-account"
+description = "Permits invoking `osl_switch_account` (switch the active OSL identity when the Discord account changes)."
+commands.allow = ["osl_switch_account"]

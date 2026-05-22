@@ -125,7 +125,43 @@ pub enum RecipientError {
 /// `channels.json`. (Re-using a single path resolver keeps all
 /// three files co-located without each callsite duplicating the
 /// XDG / APPDATA fallback chain.)
-pub fn osl_config_dir() -> Result<PathBuf, RecipientError> {
+/// Multi-account: when set, every consumer of [`osl_config_dir`] reads
+/// + writes inside this per-account directory instead of the shared
+/// base. `None` (the default) preserves the original single-account
+/// behavior exactly — `osl_config_dir() == osl_base_dir()`. Set by the
+/// bootstrap (from the persisted active-account marker) and by an
+/// in-session account switch. A process-global is the pragmatic choice:
+/// `osl_config_dir` is a free function called from ~60 sites that can't
+/// thread an account parameter, and the active account is a
+/// process-wide fact.
+static ACTIVE_ACCOUNT_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Point all subsequent `osl_config_dir()` resolution at `dir`
+/// (`Some`) or back at the shared base (`None`).
+pub fn set_active_account_dir(dir: Option<PathBuf>) {
+    if let Ok(mut g) = ACTIVE_ACCOUNT_DIR.write() {
+        *g = dir;
+    }
+}
+
+/// The currently-active per-account directory, if one is set.
+pub fn active_account_dir() -> Option<PathBuf> {
+    ACTIVE_ACCOUNT_DIR.read().ok().and_then(|g| g.clone())
+}
+
+/// Per-account directory for `snowflake`: `<base>/accounts/<snowflake>`.
+pub fn account_dir(snowflake: &str) -> Result<PathBuf, RecipientError> {
+    let mut p = osl_base_dir()?;
+    p.push("accounts");
+    p.push(snowflake);
+    Ok(p)
+}
+
+/// The shared OSL base directory (`%APPDATA%/osl` or `$XDG_CONFIG_HOME/
+/// osl`). Holds the multi-account registry (`accounts/`, `active`
+/// marker) and, for single-account installs, the account files
+/// directly.
+pub fn osl_base_dir() -> Result<PathBuf, RecipientError> {
     // Windows: Roaming AppData. We don't fall back to LOCALAPPDATA
     // because the `osl` config is meant to be roamable (the same
     // user, same identity, same channel mappings should follow
@@ -164,6 +200,17 @@ pub fn osl_config_dir() -> Result<PathBuf, RecipientError> {
         }
         Err(RecipientError::NoConfigDir)
     }
+}
+
+/// The active config directory: the per-account override when set,
+/// else the shared base. Every state file (identity, peer_map,
+/// whitelist, message store, …) resolves through here, so switching the
+/// override transparently switches which account's files are used.
+pub fn osl_config_dir() -> Result<PathBuf, RecipientError> {
+    if let Some(dir) = active_account_dir() {
+        return Ok(dir);
+    }
+    osl_base_dir()
 }
 
 /// Lower-level form of [`get_recipients`] that takes the

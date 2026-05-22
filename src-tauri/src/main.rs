@@ -1133,6 +1133,22 @@ async fn osl_recover_identity_from_phrase(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Multi-account: make `snowflake` the active OSL account on this
+/// device (instant switch). boot.js calls this when Discord's active
+/// user changes. Generates a fresh seed-phrase identity for a new
+/// account, or loads the existing one; the previous account's data
+/// stays on disk to switch back to.
+#[tauri::command]
+async fn osl_switch_account(app: tauri::AppHandle, snowflake: String) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        bootstrap::switch_account(state.inner(), snowflake)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Device transfer: export account data (encrypted under the phrase).
 #[tauri::command]
 async fn osl_export_data(app: tauri::AppHandle) -> Result<String, String> {
@@ -3032,6 +3048,7 @@ fn main() {
             osl_view_recovery_phrase,
             osl_view_identity_recovery_phrase,
             osl_recover_identity_from_phrase,
+            osl_switch_account,
             osl_export_data,
             osl_import_data,
             osl_verify_main_password,

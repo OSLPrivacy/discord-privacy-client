@@ -76,7 +76,10 @@ pub use prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyConfig, PrekeyState, ReplenishOpk, ReplenishSpk,
     SpkEntry, REPLENISH_DOMAIN, SPK_ROTATION_INTERVAL_SECONDS,
 };
-pub use recipients::{get_recipients, get_recipients_from_path, osl_config_dir, RecipientError};
+pub use recipients::{
+    account_dir, active_account_dir, get_recipients, get_recipients_from_path, osl_base_dir,
+    osl_config_dir, set_active_account_dir, RecipientError,
+};
 pub use sealer::{
     evict_tpm_key, select_best_sealer, KeyringSealer, MemorySealer, NoOpSealer, Sealer,
     SealerError, TpmSealer, METHOD_KEYRING, METHOD_MEMORY, METHOD_NOOP, METHOD_TPM,
