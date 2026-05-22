@@ -2739,7 +2739,9 @@ fn main() {
             // local boot-gate page first; absent → load
             // discord.com directly (preserves pre-7d-B1 behavior
             // for users who haven't set a password).
-            let gate_required = match keystore::osl_config_dir() {
+            // Device-level: the password marker lives at the BASE, not
+            // a per-account dir (multi-account), so resolve the base.
+            let gate_required = match keystore::osl_base_dir() {
                 Ok(dir) => ipc::main_password::marker_exists(&dir),
                 Err(e) => {
                     tracing::warn!(
