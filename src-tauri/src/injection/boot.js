@@ -1058,6 +1058,49 @@
                         !Array.isArray(out.messages) ||
                         out.messages.length === 0
                     ) {
+                        // Non-OSL DM recipient: the keyserver has no
+                        // record of them ("unknown user_id" / 404), so
+                        // they could never decrypt anyway. Send the
+                        // message as PLAINTEXT instead of blocking it,
+                        // so you can DM normal Discord friends. Scoped to
+                        // DMs + this exact error only — any other failure
+                        // (transient network/500, group scopes) stays
+                        // fail-closed so we never leak a message we
+                        // could have encrypted.
+                        const encErr = (out && out.error) || "";
+                        const recipientNotOsl =
+                            encErr.indexOf("unknown user_id") !== -1 ||
+                            encErr.indexOf("404") !== -1;
+                        if (
+                            recipientNotOsl &&
+                            v7cScope &&
+                            v7cScope.kind === "dm"
+                        ) {
+                            console.log(
+                                "[OSL] v=2 send gate (" +
+                                    source +
+                                    "): DM recipient is not an OSL user — " +
+                                    "sending plaintext (cannot encrypt to a " +
+                                    "non-OSL user)."
+                            );
+                            try {
+                                if (!window.__oslPlaintextWarned) {
+                                    window.__oslPlaintextWarned = new Set();
+                                }
+                                const pid =
+                                    (v7cScope && v7cScope.id) || "?";
+                                if (!window.__oslPlaintextWarned.has(pid)) {
+                                    window.__oslPlaintextWarned.add(pid);
+                                    oslToast(
+                                        "This person isn't on OSL — your " +
+                                            "messages to them are sent " +
+                                            "unencrypted.",
+                                        { durationMs: 6000 }
+                                    );
+                                }
+                            } catch (_) {}
+                            return onPassthrough();
+                        }
                         console.error(
                             "[OSL] v=2 send gate (" +
                                 source +
@@ -1527,7 +1570,11 @@
         } catch (err) {
             const msg = err && err.message ? err.message : String(err);
             console.log("[OSL] oslEncryptV2 FAIL reason=" + msg);
-            return null;
+            // Surface the reason so the send gate can distinguish a
+            // recipient who simply isn't an OSL user (keyserver 404
+            // "unknown user_id" → safe to send plaintext in a DM) from
+            // a transient failure (stay fail-closed).
+            return { error: msg };
         }
     }
 
