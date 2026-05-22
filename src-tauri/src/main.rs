@@ -1106,6 +1106,33 @@ async fn osl_view_recovery_phrase(current: String) -> Result<String, String> {
         .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Device transfer: reveal this account's 12-word recovery phrase.
+#[tauri::command]
+async fn osl_view_identity_recovery_phrase(app: tauri::AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_view_identity_recovery_phrase(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Device transfer: rebuild this device's identity from a 12-word phrase.
+#[tauri::command]
+async fn osl_recover_identity_from_phrase(
+    app: tauri::AppHandle,
+    phrase: String,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_recover_identity_from_phrase(state.inner(), phrase)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 #[tauri::command]
 async fn osl_verify_main_password(password: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || cmd_osl_verify_main_password(password))
@@ -2979,6 +3006,8 @@ fn main() {
             osl_change_main_password,
             osl_remove_main_password,
             osl_view_recovery_phrase,
+            osl_view_identity_recovery_phrase,
+            osl_recover_identity_from_phrase,
             osl_verify_main_password,
             osl_verify_recovery_phrase,
             osl_set_main_password_after_recovery,

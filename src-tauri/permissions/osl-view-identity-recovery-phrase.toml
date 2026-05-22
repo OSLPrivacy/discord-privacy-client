@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Device transfer: reveal the account's 12-word recovery phrase.
+[[permission]]
+identifier = "allow-osl-view-identity-recovery-phrase"
+description = "Permits invoking `osl_view_identity_recovery_phrase` (reveal the 12-word account recovery phrase for device transfer)."
+commands.allow = ["osl_view_identity_recovery_phrase"]

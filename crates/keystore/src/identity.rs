@@ -145,38 +145,17 @@ impl Identity {
     }
 }
 
-/// Generate a fresh identity keypair using `OsRng`.
+/// Generate a fresh identity. Now seed-backed: it draws 16 random
+/// bytes of entropy (the 12-word recovery phrase) and derives every
+/// keypair deterministically from it via [`identity_from_entropy`], so
+/// EVERY new identity is recoverable/transferable by its phrase — no
+/// callsite needs to change. (Old random-key blobs already on disk
+/// load with `recovery_entropy = None` and simply have no phrase.)
 pub fn generate_identity(user_id: String) -> Identity {
-    let (x25519_secret, x25519_public) = x25519::generate_keypair();
-    let (ed25519_secret, ed25519_public) = ed25519::generate_keypair();
-    let (mlkem_decap, mlkem_encap) = ml_kem_768::generate_keypair();
-
-    let mlkem_secret_bytes = {
-        let z = mlkem_decap.to_bytes();
-        let mut out = [0u8; ml_kem_768::DECAPSULATION_KEY_SIZE];
-        out.copy_from_slice(&*z);
-        Zeroizing::new(out)
-    };
-
-    // Phase 9-A2: bootstrap the ratchet keypair eagerly so freshly-
-    // generated identities can immediately publish a v=4-ready
-    // bundle. Pre-A2 identities loaded from disk get this populated
-    // lazily via `Identity::ensure_ratchet_bootstrap`.
-    let (ratchet_initial_secret, ratchet_initial_pub) = x25519::generate_keypair();
-
-    Identity {
-        user_id,
-        x25519_secret,
-        x25519_public,
-        ed25519_secret,
-        ed25519_public,
-        mlkem_secret_bytes,
-        mlkem_public_bytes: mlkem_encap.to_bytes(),
-        discord_snowflake: None,
-        ratchet_initial_secret: Some(ratchet_initial_secret),
-        ratchet_initial_pub: Some(ratchet_initial_pub),
-        recovery_entropy: None,
-    }
+    let mut entropy = [0u8; 16];
+    let bytes = crypto::random::random_bytes(16);
+    entropy.copy_from_slice(&bytes);
+    identity_from_entropy(entropy, user_id)
 }
 
 /// Seed a CryptoRng deterministically from the identity entropy + a

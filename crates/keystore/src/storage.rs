@@ -84,6 +84,12 @@ struct InnerIdentity {
     ratchet_initial_secret_b64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ratchet_initial_pub_b64: Option<String>,
+
+    /// Device-transfer recovery: the 16 bytes the 12-word phrase
+    /// encodes. Persisted so the phrase can be revealed later from the
+    /// original device. `None` for legacy random-key identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_entropy_b64: Option<String>,
 }
 
 /// Save `identity` to `path` sealed under `sealer`.
@@ -105,6 +111,10 @@ pub fn save_identity(path: &Path, identity: &Identity, sealer: &dyn Sealer) -> R
             .ratchet_initial_pub
             .as_ref()
             .map(|pk| STANDARD.encode(pk.as_bytes())),
+        recovery_entropy_b64: identity
+            .recovery_entropy
+            .as_ref()
+            .map(|e| STANDARD.encode(e)),
     };
     let inner_bytes = serde_json::to_vec(&inner)?;
     let sealed = sealer.seal(&inner_bytes)?;
@@ -220,6 +230,9 @@ pub fn load_identity(path: &Path, sealer: &dyn Sealer) -> Result<Identity> {
     if let Some(pk_b64) = inner.ratchet_initial_pub_b64.as_deref() {
         let pk_bytes = decode_array::<{ x25519::PUBLIC_KEY_SIZE }>("ratchet_initial_pub", pk_b64)?;
         identity.ratchet_initial_pub = Some(x25519::PublicKey::from_bytes(pk_bytes));
+    }
+    if let Some(e_b64) = inner.recovery_entropy_b64.as_deref() {
+        identity.recovery_entropy = Some(decode_array::<16>("recovery_entropy", e_b64)?);
     }
     Ok(identity)
 }

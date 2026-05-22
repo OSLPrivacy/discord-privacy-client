@@ -574,6 +574,10 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         snapshot.discord_snowflake = Some(snowflake.clone());
         snapshot.ratchet_initial_secret = identity.ratchet_initial_secret.clone();
         snapshot.ratchet_initial_pub = identity.ratchet_initial_pub.clone();
+        // Preserve the recovery-phrase entropy through the from_bytes
+        // copy so the new account is transferable (the phrase is
+        // revealable in Settings).
+        snapshot.recovery_entropy = identity.recovery_entropy;
 
         let path = dir.join("identity.json");
         let sealer = keystore::select_best_sealer();
@@ -7998,6 +8002,101 @@ pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     crate::main_password::view_recovery_phrase(&dir, &current)
+}
+
+/// Device transfer: reveal the 12-word phrase that recovers THIS OSL
+/// identity (account) on another device. Reads the entropy the
+/// identity was derived from and renders it as a BIP39 mnemonic. Only
+/// works on the original device (the one holding the sealed identity).
+/// Returns an error for legacy random-key identities (no entropy
+/// stored — they predate transfer support).
+pub fn cmd_osl_view_identity_recovery_phrase(state: &AppState) -> Result<String, String> {
+    let entropy = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        let id = g
+            .as_ref()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+        id.recovery_entropy.ok_or_else(|| {
+            "OSL: this account predates transfer support and has no recovery \
+             phrase. Create a fresh account (it will get one) to enable transfer."
+                .to_string()
+        })?
+    };
+    let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+        .map_err(|e| format!("OSL: bip39 encode: {e}"))?;
+    Ok(mnemonic.to_string())
+}
+
+/// Device transfer: rebuild this device's OSL identity from a 12-word
+/// recovery phrase. Derives the SAME keys as the original device
+/// (deterministic from the phrase's entropy), overwrites the local
+/// identity, and re-registers with the keyserver — which recognizes
+/// the identity because the public keys match (no key-change conflict).
+/// The Discord account must already be active so we know which
+/// snowflake to bind the recovered identity to.
+pub fn cmd_osl_recover_identity_from_phrase(
+    state: &AppState,
+    phrase: String,
+) -> Result<(), String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    cmd_osl_recover_identity_from_phrase_with_dir(state, phrase, &dir)
+}
+
+pub fn cmd_osl_recover_identity_from_phrase_with_dir(
+    state: &AppState,
+    phrase: String,
+    dir: &std::path::Path,
+) -> Result<(), String> {
+    let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, phrase.trim())
+        .map_err(|_| {
+            "OSL: that doesn't look like a valid 12-word recovery phrase \
+             (check spelling + word order)."
+                .to_string()
+        })?;
+    let entropy_vec = mnemonic.to_entropy();
+    if entropy_vec.len() != 16 {
+        return Err("OSL: recovery phrase must be exactly 12 words.".to_string());
+    }
+    let mut entropy = [0u8; 16];
+    entropy.copy_from_slice(&entropy_vec);
+
+    // Bind to the currently-active Discord account.
+    let snowflake = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        g.as_ref()
+            .and_then(|i| i.discord_snowflake.clone())
+            .ok_or_else(|| {
+                "OSL: open Discord and let it load first — no active account to \
+                 attach the recovered identity to yet."
+                    .to_string()
+            })?
+    };
+
+    let mut recovered = keystore::identity_from_entropy(entropy, snowflake.clone());
+    recovered.discord_snowflake = Some(snowflake.clone());
+
+    let path = dir.join("identity.json");
+    let sealer = keystore::select_best_sealer();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    keystore::save_identity(&path, &recovered, sealer.as_ref())
+        .map_err(|e| format!("OSL: recover: save_identity: {e}"))?;
+    *state.identity.lock().expect("identity mutex poisoned") = Some(recovered);
+
+    // The freshly-generated (pre-recovery) identity's peer ratchet
+    // state is moot now; clear it so nothing stale lingers.
+    clear_all_peer_ratchet_state(state);
+
+    // Re-register: same public keys as the original device, so the
+    // keyserver upsert is recognized with no key-change/TOFU conflict.
+    ensure_keyserver_registered(
+        state,
+        &resolve_keyserver_base_url(dir),
+        read_keyserver_admin_token(dir),
+    );
+    verify_and_persist_peer_map_self_entry(state).map(|_| ())
 }
 
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {

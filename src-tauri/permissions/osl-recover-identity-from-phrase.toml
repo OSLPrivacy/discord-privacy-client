@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Device transfer: rebuild this device's identity from a 12-word phrase.
+[[permission]]
+identifier = "allow-osl-recover-identity-from-phrase"
+description = "Permits invoking `osl_recover_identity_from_phrase` (recover/transfer the OSL account onto this device from a 12-word phrase)."
+commands.allow = ["osl_recover_identity_from_phrase"]

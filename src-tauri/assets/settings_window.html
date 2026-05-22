@@ -905,6 +905,114 @@ async function renderIdentity() {
     info.keyserver_url === "Unknown" ? "Not configured" : "Configured",
     false
   ));
+
+  // ---- Device transfer / recovery phrase ----
+  const xferH = document.createElement("h2");
+  xferH.className = "osl-h2";
+  xferH.textContent = "Device Transfer";
+  pane.appendChild(xferH);
+
+  const xferHint = document.createElement("div");
+  xferHint.className = "osl-hint";
+  xferHint.textContent =
+    "Your 12-word recovery phrase IS your OSL account. Write it down and keep " +
+    "it secret — anyone who has it can read and send as you on any device. " +
+    "Reveal it only on a screen you trust.";
+  pane.appendChild(xferHint);
+
+  const revealBtn = document.createElement("button");
+  revealBtn.className = "osl-row-btn osl-row-btn-remove";
+  revealBtn.style.cssText = "padding:8px 16px;margin-top:8px;";
+  revealBtn.textContent = "Reveal recovery phrase";
+  pane.appendChild(revealBtn);
+
+  const phraseBox = document.createElement("div");
+  phraseBox.style.cssText =
+    "display:none;margin-top:10px;padding:12px;border:1px solid var(--osl-bg-accent);" +
+    "border-radius:6px;background:var(--osl-bg-secondary);font-family:monospace;" +
+    "font-size:14px;line-height:1.7;letter-spacing:0.3px;word-spacing:6px;user-select:all;";
+  pane.appendChild(phraseBox);
+
+  revealBtn.addEventListener("click", async () => {
+    if (phraseBox.style.display !== "none") {
+      // Toggle hide.
+      phraseBox.style.display = "none";
+      phraseBox.textContent = "";
+      revealBtn.textContent = "Reveal recovery phrase";
+      return;
+    }
+    const ok = await oslConfirm({
+      title: "Reveal recovery phrase?",
+      body:
+        "Make sure nobody can see your screen (no shoulder-surfers, no screen " +
+        "share, no recording). These 12 words give full access to your account.",
+      confirmText: "Reveal",
+      cancelText: "Cancel",
+    });
+    if (!ok) return;
+    const r = await oslInvoke("osl_view_identity_recovery_phrase", {});
+    if (!r.ok) { oslToast("Could not reveal phrase: " + r.error); return; }
+    phraseBox.textContent = r.value;
+    phraseBox.style.display = "block";
+    revealBtn.textContent = "Hide recovery phrase";
+  });
+
+  // ---- Recover an account onto this device ----
+  const recH = document.createElement("h2");
+  recH.className = "osl-h2";
+  recH.textContent = "Recover an account here";
+  pane.appendChild(recH);
+
+  const recHint = document.createElement("div");
+  recHint.className = "osl-hint";
+  recHint.textContent =
+    "Moving to a new device? Enter the 12-word phrase from your old device to " +
+    "rebuild the same OSL account here. This replaces this device's current " +
+    "identity. (Open Discord and log into the matching account first.)";
+  pane.appendChild(recHint);
+
+  const recInput = document.createElement("textarea");
+  recInput.placeholder = "word1 word2 word3 … word12";
+  recInput.rows = 2;
+  recInput.style.cssText =
+    "width:100%;margin-top:8px;padding:8px;border:1px solid var(--osl-bg-accent);" +
+    "border-radius:6px;background:var(--osl-bg-secondary);color:inherit;" +
+    "font-family:monospace;resize:vertical;box-sizing:border-box;";
+  pane.appendChild(recInput);
+
+  const recBtn = document.createElement("button");
+  recBtn.className = "osl-row-btn osl-row-btn-remove";
+  recBtn.style.cssText = "padding:8px 16px;margin-top:8px;";
+  recBtn.textContent = "Recover account";
+  pane.appendChild(recBtn);
+
+  recBtn.addEventListener("click", async () => {
+    const phrase = (recInput.value || "").trim().replace(/\s+/g, " ");
+    if (phrase.split(" ").length !== 12) {
+      oslToast("Enter exactly 12 words.");
+      return;
+    }
+    const ok = await oslConfirm({
+      title: "Recover account on this device?",
+      body:
+        "This replaces this device's OSL identity with the one from the phrase. " +
+        "Your current local messages stay, but new messages will use the " +
+        "recovered account's keys. Continue?",
+      confirmText: "Recover",
+      cancelText: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+    recBtn.disabled = true;
+    recBtn.textContent = "Recovering…";
+    const r = await oslInvoke("osl_recover_identity_from_phrase", { phrase });
+    recBtn.disabled = false;
+    recBtn.textContent = "Recover account";
+    if (!r.ok) { oslToast("Recovery failed: " + r.error); return; }
+    recInput.value = "";
+    oslToast("Account recovered on this device.");
+    renderIdentity();
+  });
 }
 
 // ============================================================

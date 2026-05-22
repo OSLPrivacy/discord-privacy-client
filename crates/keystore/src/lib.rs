@@ -56,7 +56,7 @@ pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
     StepOutcome, WipeFn, WipeStep,
 };
-pub use identity::{generate_identity, Identity, IDENTITY_BLOB_VERSION};
+pub use identity::{generate_identity, identity_from_entropy, Identity, IDENTITY_BLOB_VERSION};
 pub use license_cache::{
     classify_state, load_license_cache, save_license_cache, LicenseCacheInner, LicenseCacheOnDisk,
     LicenseState, LicenseStateDto,
