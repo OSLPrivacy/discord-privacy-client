@@ -5200,6 +5200,37 @@ pub fn cmd_osl_control_inbox_post(
         inbox_id = %resp.id,
         "[OSL] control_inbox POST ok"
     );
+    eprintln!(
+        "[OSL][inbox] POST recipient_discord={recipient_id} recipient_osl={recipient_osl_id} \
+         scope={scope_id} (mailbox the peer drains MUST equal recipient_osl)"
+    );
+    // ROBUST ADDRESSING: the recipient DRAINS by identity.user_id. In
+    // the current model user_id == the Discord snowflake, so the inbox
+    // is keyed by the snowflake. peer_map.osl_user_id is supposed to
+    // equal that, but if it's stale/wrong the row lands in a mailbox
+    // the recipient never reads (the "applied=0 forever / SKDM never
+    // arrives" bug, while DMs still work because they key off the
+    // pubkey). Belt-and-suspenders: if the mapped osl_user_id differs
+    // from the raw snowflake, ALSO post to the snowflake so it reaches
+    // the mailbox the recipient actually drains. apply_skdm_recv is
+    // idempotent, so a duplicate is harmless; the unread copy just ages
+    // out. Both posts share one bundle/scope.
+    if recipient_osl_id != recipient_id {
+        match client.post_control_inbox(&identity, &recipient_id, &scope_id, &bundle) {
+            Ok(r2) => {
+                eprintln!(
+                    "[OSL][inbox] POST (snowflake fallback) recipient={recipient_id} \
+                     inbox_id={} — osl_user_id differed, posted to both",
+                    r2.id
+                );
+            }
+            Err(e) => tracing::warn!(
+                recipient = %recipient_id,
+                error = %e,
+                "[OSL] control_inbox snowflake-fallback POST failed (primary already sent)"
+            ),
+        }
+    }
     Ok(())
 }
 

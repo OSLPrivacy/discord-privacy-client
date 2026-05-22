@@ -17244,10 +17244,30 @@
         // tick. Stored on `window` so the user can inspect / cancel
         // from DevTools.
         let inboxDrainInFlight = false;
+        let inboxIdentityLogged = false;
         async function inboxDrainTick() {
             if (inboxDrainInFlight) return;
             inboxDrainInFlight = true;
             try {
+                // One-time: log THIS machine's inbox drain key (the OSL
+                // user_id its drain GETs by). The peer must POST SKDMs to
+                // exactly this value or they land in an unread mailbox
+                // (applied=0). Compare against the peer's "control_inbox
+                // POST recipient_osl=…" on the other machine.
+                if (!inboxIdentityLogged) {
+                    inboxIdentityLogged = true;
+                    try {
+                        const idr = await oslInvoke("osl_get_identity_info", {});
+                        if (idr && idr.ok && idr.value) {
+                            console.log(
+                                "[OSL] inbox drain key (my osl_user_id)=" +
+                                    idr.value.osl_user_id +
+                                    " snowflake=" +
+                                    idr.value.discord_snowflake
+                            );
+                        }
+                    } catch (_) {}
+                }
                 const resp = await oslInvoke("osl_control_inbox_drain", {});
                 if (resp && resp.ok) {
                     const applied =
