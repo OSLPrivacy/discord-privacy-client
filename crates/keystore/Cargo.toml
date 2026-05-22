@@ -30,6 +30,14 @@ license.workspace = true
 crypto = { path = "../crypto" }
 base64 = "0.22"
 sha2 = { workspace = true }
+# Device-transfer recovery: deterministically derive the identity
+# keypairs from a 12-word seed phrase's entropy. ChaCha20Rng is a
+# CryptoRng+RngCore seeded from the per-key HKDF output, fed to the
+# crypto crate's `generate_keypair_with_rng` so the SAME phrase rebuilds
+# the SAME identity on any device. rand_core 0.6 matches the crypto
+# crate's bound.
+rand_chacha = "0.3"
+rand_core = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # B2 — Argon2id password hashing per docs/design/unlock-and-duress.md.
 # Production params: m_cost = 64 MiB, parallelism = 1, t_cost tuned to

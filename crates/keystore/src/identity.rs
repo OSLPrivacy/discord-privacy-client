@@ -71,8 +71,17 @@ pub struct Identity {
     /// Phase 9-A2: public half of the bootstrap keypair. Published
     /// in the keyserver's `ik_ratchet_initial_pub` column. Senders
     /// fetching peer pubkeys use this to start a v=4 session as
-    /// initiator.
+    /// initiator. (v=4 is retired as of Option B, but the field is
+    /// kept so old blobs deserialize.)
     pub ratchet_initial_pub: Option<x25519::PublicKey>,
+
+    /// Device-transfer recovery: the 16 bytes of entropy this identity
+    /// was deterministically derived from (the 12-word BIP39 phrase
+    /// encodes exactly these bytes). Present for identities created via
+    /// [`identity_from_entropy`]; `None` for legacy random-key
+    /// identities (which therefore can't show a recovery phrase). Held
+    /// only in memory + the sealed on-disk blob — never transmitted.
+    pub recovery_entropy: Option<[u8; 16]>,
 }
 
 impl Identity {
@@ -98,6 +107,7 @@ impl Identity {
             discord_snowflake: None,
             ratchet_initial_secret: None,
             ratchet_initial_pub: None,
+            recovery_entropy: None,
         }
     }
 
@@ -165,5 +175,103 @@ pub fn generate_identity(user_id: String) -> Identity {
         discord_snowflake: None,
         ratchet_initial_secret: Some(ratchet_initial_secret),
         ratchet_initial_pub: Some(ratchet_initial_pub),
+        recovery_entropy: None,
+    }
+}
+
+/// Seed a CryptoRng deterministically from the identity entropy + a
+/// per-key label, so each keypair is derived from independent 32 bytes.
+fn seeded_rng(entropy: &[u8; 16], label: &[u8]) -> rand_chacha::ChaCha20Rng {
+    use rand_core::SeedableRng;
+    let seed = crypto::hkdf::derive_32(b"OSL-identity-v1", entropy, label)
+        .expect("hkdf derive_32 for identity key seed");
+    rand_chacha::ChaCha20Rng::from_seed(seed)
+}
+
+/// Device-transfer recovery: build an identity DETERMINISTICALLY from
+/// 16 bytes of entropy (the bytes a 12-word BIP39 phrase encodes). The
+/// same `entropy` always reproduces the SAME X25519 / Ed25519 / ML-KEM
+/// keypairs, so entering the phrase on a new device rebuilds the exact
+/// same OSL account — and because the public keys match, the keyserver
+/// recognizes it with no TOFU conflict.
+///
+/// Each keypair is derived from an independent HKDF-expanded 32-byte
+/// seed fed to the crypto crate's `generate_keypair_with_rng` via a
+/// ChaCha20 CSPRNG. The entropy is stored on the returned identity so
+/// the phrase can be revealed later (original device only).
+pub fn identity_from_entropy(entropy: [u8; 16], user_id: String) -> Identity {
+    let (x25519_secret, x25519_public) = {
+        let mut rng = seeded_rng(&entropy, b"x25519");
+        x25519::generate_keypair_with_rng(&mut rng)
+    };
+    let (ed25519_secret, ed25519_public) = {
+        let mut rng = seeded_rng(&entropy, b"ed25519");
+        ed25519::generate_keypair_with_rng(&mut rng)
+    };
+    let (mlkem_decap, mlkem_encap) = {
+        let mut rng = seeded_rng(&entropy, b"mlkem768");
+        ml_kem_768::generate_keypair_with_rng(&mut rng)
+    };
+    let mlkem_secret_bytes = {
+        let z = mlkem_decap.to_bytes();
+        let mut out = [0u8; ml_kem_768::DECAPSULATION_KEY_SIZE];
+        out.copy_from_slice(&*z);
+        Zeroizing::new(out)
+    };
+    // Ratchet bootstrap keys are also derived (deterministic) so a
+    // recovered identity is byte-identical, even though v=4 is retired.
+    let (ratchet_initial_secret, ratchet_initial_pub) = {
+        let mut rng = seeded_rng(&entropy, b"ratchet-initial");
+        x25519::generate_keypair_with_rng(&mut rng)
+    };
+    Identity {
+        user_id,
+        x25519_secret,
+        x25519_public,
+        ed25519_secret,
+        ed25519_public,
+        mlkem_secret_bytes,
+        mlkem_public_bytes: mlkem_encap.to_bytes(),
+        discord_snowflake: None,
+        ratchet_initial_secret: Some(ratchet_initial_secret),
+        ratchet_initial_pub: Some(ratchet_initial_pub),
+        recovery_entropy: Some(entropy),
+    }
+}
+
+#[cfg(test)]
+mod recovery_derivation_tests {
+    use super::*;
+
+    #[test]
+    fn same_entropy_reproduces_identical_keys() {
+        let entropy = [7u8; 16];
+        let a = identity_from_entropy(entropy, "u".into());
+        let b = identity_from_entropy(entropy, "u".into());
+        // Public keys must match exactly — this is what lets the
+        // keyserver recognize a recovered identity with no TOFU clash.
+        assert_eq!(a.x25519_public.as_bytes(), b.x25519_public.as_bytes());
+        assert_eq!(a.ed25519_public.as_bytes(), b.ed25519_public.as_bytes());
+        assert_eq!(a.mlkem_public_bytes, b.mlkem_public_bytes);
+        // Secret halves too (so signing / decap behave identically).
+        assert_eq!(a.x25519_secret.as_bytes(), b.x25519_secret.as_bytes());
+        assert_eq!(a.mlkem_secret_bytes(), b.mlkem_secret_bytes());
+        assert_eq!(a.recovery_entropy, Some(entropy));
+    }
+
+    #[test]
+    fn different_entropy_gives_different_keys() {
+        let a = identity_from_entropy([1u8; 16], "u".into());
+        let b = identity_from_entropy([2u8; 16], "u".into());
+        assert_ne!(a.x25519_public.as_bytes(), b.x25519_public.as_bytes());
+        assert_ne!(a.ed25519_public.as_bytes(), b.ed25519_public.as_bytes());
+        assert_ne!(a.mlkem_public_bytes, b.mlkem_public_bytes);
+    }
+
+    #[test]
+    fn random_identity_has_no_recovery_entropy() {
+        // Legacy random-key identities can't show a phrase.
+        let id = generate_identity("u".into());
+        assert_eq!(id.recovery_entropy, None);
     }
 }
