@@ -3043,7 +3043,10 @@ fn encrypt_v5_send(
     self_pk: &crypto::x25519::PublicKey,
     scope: &crate::scope::Scope,
     self_discord_id: &str,
-    channel_members: &[String],
+    // Retained in the signature for call-site symmetry with the v=3
+    // path; v=5 derives membership from the resolved recipient set
+    // (`non_self_peers`), not the raw roster.
+    _channel_members: &[String],
     non_self_peers: &[&(String, crate::wire_v2::RecipientV3)],
     plaintext: &[u8],
 ) -> Result<EncryptWire, String> {
@@ -3059,54 +3062,13 @@ fn encrypt_v5_send(
     };
     let now: u64 = now_unix_secs().max(0) as u64;
 
-    // Bug 3 (a): server-channel sends are roster-independent. The
-    // SKDM fan-out + sender-key rotation membership for a
-    // ServerChannel scope is enumerated from peer_map (every peer
-    // whitelisted for this exact server_channel:<guild>:<channel>
-    // scope, via the same `can_encrypt_to` gate recipient
-    // resolution uses), NOT the gateway/React roster caches, which
-    // are empty for server channels. Self excluded by discord_id
-    // AND the `is_self` marker. Gc / Dm keep the
-    // gateway-snapshot-then-caller-list preference unchanged.
-    let server_channel_members: Vec<String> =
-        if scope.kind == crate::scope::ScopeKind::ServerChannel {
-            let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-            pm.iter()
-                .filter(|(did, entry)| {
-                    did.as_str() != self_discord_id
-                        && entry.is_self != Some(true)
-                        && crate::whitelist::can_encrypt_to(&pm, scope, did.as_str())
-                })
-                .map(|(did, _)| did.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
-    // Prefer the boot.js-pushed gateway snapshot of current channel
-    // members (state.channel_members) over the caller's
-    // `channel_members` list, which is built from React fiber props
-    // at send time and may be stale on server channels. The cache
-    // is populated by `cmd_osl_membership_update` from boot.js
-    // gateway hooks. Empty cache → fall through to caller list.
-    let live_members: Vec<String> = {
-        let cm = state
-            .channel_members
-            .lock()
-            .expect("channel_members mutex poisoned");
-        // Channel id for the cache key — for DM/GC scopes the
-        // scope's id field IS the channel id; for server channels
-        // it's scope.channel_id.
-        let cache_key = scope.channel_id.clone().unwrap_or_else(|| scope.id.clone());
-        cm.get(&cache_key).cloned().unwrap_or_default()
-    };
-    let effective_members: &[String] =
-        if scope.kind == crate::scope::ScopeKind::ServerChannel {
-            &server_channel_members
-        } else if live_members.is_empty() {
-            channel_members
-        } else {
-            &live_members
-        };
+    // Membership tracking for the sender key is derived from the
+    // actual recipient set below (`recipient_ids`, from
+    // `non_self_peers`), not the channel roster — see the rotation
+    // block. `channel_members` / the gateway snapshot are no longer
+    // consulted here: the caller already resolved who is a granted
+    // recipient (whitelist + lock tier) into `non_self_peers`, and the
+    // SKDM only ever goes to that set.
 
     // Load (or initialize) the per-scope SenderKeyState. We work on
     // a clone to keep the lock window short; persist back after.
@@ -3124,18 +3086,31 @@ fn encrypt_v5_send(
         }
     };
 
+    // Rotation/redistribution must track the ACTUAL recipient set —
+    // the granted peers who receive the SKDM (`non_self_peers`) — NOT
+    // the raw channel roster (`effective_members`). Tracking the roster
+    // was the GC bug: a peer you whitelist AFTER the chain exists is
+    // already in the roster, so the roster doesn't change, no rotation
+    // fires, and they never get the sender key (until the 5-min
+    // periodic re-emit) → permanent "not a recipient" in the meantime.
+    // Tracking the recipient set means whitelisting a peer changes the
+    // set → rotate → SKDM re-distributed to everyone on the very next
+    // send.
+    let recipient_ids: Vec<String> =
+        non_self_peers.iter().map(|p| p.0.clone()).collect();
+
     // Decide install / rotate / continue.
     let needs_install = sks.sender_chain().is_none();
     let needs_rotate = sks
         .sender_chain()
-        .map(|c| sender_key_needs_rotation(c, effective_members, now))
+        .map(|c| sender_key_needs_rotation(c, &recipient_ids, now))
         .unwrap_or(false);
 
     let send_skdm = needs_install || needs_rotate;
     if needs_install {
         sks.install_sender()
             .map_err(|e| format!("OSL: v=5 send: install_sender: {e}"))?;
-        let members_bytes: Vec<Vec<u8>> = effective_members
+        let members_bytes: Vec<Vec<u8>> = recipient_ids
             .iter()
             .map(|m| m.as_bytes().to_vec())
             .collect();
@@ -3145,7 +3120,7 @@ fn encrypt_v5_send(
     } else if needs_rotate {
         sks.rotate_sender()
             .map_err(|e| format!("OSL: v=5 send: rotate_sender: {e}"))?;
-        let members_bytes: Vec<Vec<u8>> = effective_members
+        let members_bytes: Vec<Vec<u8>> = recipient_ids
             .iter()
             .map(|m| m.as_bytes().to_vec())
             .collect();
