@@ -1010,8 +1010,95 @@ async function renderIdentity() {
     recBtn.textContent = "Recover account";
     if (!r.ok) { oslToast("Recovery failed: " + r.error); return; }
     recInput.value = "";
-    oslToast("Account recovered on this device.");
+    oslToast("Account recovered. Now restore your data below, then relaunch OSL.");
     renderIdentity();
+  });
+
+  // ---- Data export / restore ----
+  const dataH = document.createElement("h2");
+  dataH.className = "osl-h2";
+  dataH.textContent = "Your Data (contacts + messages)";
+  pane.appendChild(dataH);
+
+  const dataHint = document.createElement("div");
+  dataHint.className = "osl-hint";
+  dataHint.textContent =
+    "Your 12 words restore your account keys; this restores your DATA — " +
+    "contacts, encryption settings, and message history. On the old device, " +
+    "download the file below; move it to the new device; recover with your " +
+    "phrase above; then restore the file here and relaunch. The file is " +
+    "encrypted with your recovery phrase, so it's safe to transfer.";
+  pane.appendChild(dataHint);
+
+  const dlBtn = document.createElement("button");
+  dlBtn.className = "osl-row-btn osl-row-btn-remove";
+  dlBtn.style.cssText = "padding:8px 16px;margin-top:8px;margin-right:8px;";
+  dlBtn.textContent = "Download my data";
+  pane.appendChild(dlBtn);
+
+  dlBtn.addEventListener("click", async () => {
+    dlBtn.disabled = true;
+    dlBtn.textContent = "Preparing…";
+    const r = await oslInvoke("osl_export_data", {});
+    dlBtn.disabled = false;
+    dlBtn.textContent = "Download my data";
+    if (!r.ok) { oslToast("Export failed: " + r.error); return; }
+    try {
+      // r.value is base64; decode to bytes for a binary download.
+      const bin = atob(r.value);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const blob = new Blob([arr], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "osl-account-data.osl";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      oslToast("Data downloaded. Move osl-account-data.osl to your new device.");
+    } catch (e) {
+      oslToast("Download failed: " + (e && e.message ? e.message : e));
+    }
+  });
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".osl";
+  fileInput.style.display = "none";
+  pane.appendChild(fileInput);
+
+  const restoreBtn = document.createElement("button");
+  restoreBtn.className = "osl-row-btn osl-row-btn-remove";
+  restoreBtn.style.cssText = "padding:8px 16px;margin-top:8px;";
+  restoreBtn.textContent = "Restore data from file";
+  pane.appendChild(restoreBtn);
+  restoreBtn.addEventListener("click", () => fileInput.click());
+
+  fileInput.addEventListener("change", async () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    const buf = await f.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const b64 = btoa(bin);
+    fileInput.value = "";
+    const ok = await oslConfirm({
+      title: "Restore data from this file?",
+      body:
+        "This overwrites this device's contacts, settings, and message " +
+        "history with the file's. Recover your account with the 12-word " +
+        "phrase first if you haven't. Relaunch OSL afterward to load it.",
+      confirmText: "Restore",
+      cancelText: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+    const r = await oslInvoke("osl_import_data", { blobB64: b64 });
+    if (!r.ok) { oslToast("Restore failed: " + r.error); return; }
+    oslToast("Data restored. Relaunch OSL to load your contacts + history.");
   });
 }
 

@@ -25,6 +25,8 @@
     "allow-osl-view-recovery-phrase",
     "allow-osl-view-identity-recovery-phrase",
     "allow-osl-recover-identity-from-phrase",
+    "allow-osl-export-data",
+    "allow-osl-import-data",
     "allow-osl-set-stealth-password",
     "allow-osl-remove-stealth-password",
     "allow-osl-stealth-password-status",

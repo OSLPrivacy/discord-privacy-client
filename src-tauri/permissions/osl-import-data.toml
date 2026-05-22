@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Device transfer: restore an exported data blob onto this device.
+[[permission]]
+identifier = "allow-osl-import-data"
+description = "Permits invoking `osl_import_data` (restore account data on a new device)."
+commands.allow = ["osl_import_data"]

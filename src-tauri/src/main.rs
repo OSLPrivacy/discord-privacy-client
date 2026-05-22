@@ -1133,6 +1133,30 @@ async fn osl_recover_identity_from_phrase(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Device transfer: export account data (encrypted under the phrase).
+#[tauri::command]
+async fn osl_export_data(app: tauri::AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_export_data(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Device transfer: restore an exported data blob onto this device.
+#[tauri::command]
+async fn osl_import_data(app: tauri::AppHandle, blob_b64: String) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_import_data(state.inner(), blob_b64)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 #[tauri::command]
 async fn osl_verify_main_password(password: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || cmd_osl_verify_main_password(password))
@@ -3008,6 +3032,8 @@ fn main() {
             osl_view_recovery_phrase,
             osl_view_identity_recovery_phrase,
             osl_recover_identity_from_phrase,
+            osl_export_data,
+            osl_import_data,
             osl_verify_main_password,
             osl_verify_recovery_phrase,
             osl_set_main_password_after_recovery,

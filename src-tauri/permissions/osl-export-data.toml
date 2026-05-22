@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Device transfer: export account data, encrypted under the recovery phrase.
+[[permission]]
+identifier = "allow-osl-export-data"
+description = "Permits invoking `osl_export_data` (download account data for device transfer)."
+commands.allow = ["osl_export_data"]

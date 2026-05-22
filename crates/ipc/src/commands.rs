@@ -8099,6 +8099,152 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     verify_and_persist_peer_map_self_entry(state).map(|_| ())
 }
 
+/// Magic header for an encrypted data-export blob.
+const OSL_EXPORT_MAGIC: &[u8] = b"OSLDATA1";
+
+/// Account data files included in a transfer export, relative to the
+/// config dir. Excludes identity.json (rebuilt from the phrase),
+/// keyserver/license config + password/lockout markers + UI prefs
+/// (device-specific). The message store (sealed under the identity
+/// x25519 secret, which the phrase reproduces) is included so history
+/// transfers and decrypts on the new device.
+const OSL_EXPORT_FILES: &[&str] = &[
+    "peer_map.json",
+    "whitelist_state.json",
+    "sender_key_state.json",
+    "channels.json",
+    "burned_scopes.json",
+    "membership.json",
+    "scope_ttl.json",
+    "scope_blobs.json",
+    "store/messages.sqlite",
+    "store/messages.sqlite-wal",
+    "store/messages.sqlite-shm",
+];
+
+fn export_aead_key(entropy: &[u8; 16]) -> Result<crypto::aead::Key, String> {
+    let k = crypto::hkdf::derive_32(b"OSL-data-export-v1", entropy, b"aead-key")
+        .map_err(|e| format!("OSL: export key derive: {e}"))?;
+    Ok(crypto::aead::Key::from_bytes(k))
+}
+
+fn require_recovery_entropy(state: &AppState, why: &str) -> Result<[u8; 16], String> {
+    let g = state.identity.lock().expect("identity mutex poisoned");
+    let id = g
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    id.recovery_entropy.ok_or_else(|| format!("OSL: {why}"))
+}
+
+/// Device transfer: export this account's DATA (contacts, whitelists,
+/// group keys, message history) as a single blob, encrypted under a key
+/// derived from the recovery-phrase entropy. Returns the blob base64 so
+/// the Settings UI can offer it as a download. The same 12-word phrase
+/// that recovers the identity on the new device also decrypts this — so
+/// the export file is safe to move between devices.
+pub fn cmd_osl_export_data(state: &AppState) -> Result<String, String> {
+    let entropy = require_recovery_entropy(
+        state,
+        "this account has no recovery phrase, so its data can't be exported \
+         (only seed-phrase accounts are transferable — make a fresh account)",
+    )?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let mut files = serde_json::Map::new();
+    for rel in OSL_EXPORT_FILES {
+        let p = dir.join(rel);
+        if let Ok(bytes) = std::fs::read(&p) {
+            files.insert(
+                (*rel).to_string(),
+                serde_json::Value::String(STANDARD.encode(&bytes)),
+            );
+        }
+    }
+    if files.is_empty() {
+        return Err("OSL: nothing to export yet (no account data on disk).".to_string());
+    }
+    let bundle = serde_json::json!({ "version": 1, "files": files });
+    let plaintext = serde_json::to_vec(&bundle).map_err(|e| format!("OSL: export serialize: {e}"))?;
+
+    let key = export_aead_key(&entropy)?;
+    let nonce_bytes = crypto::random::random_bytes(crypto::aead::NONCE_SIZE);
+    let mut na = [0u8; crypto::aead::NONCE_SIZE];
+    na.copy_from_slice(&nonce_bytes);
+    let nonce = crypto::aead::Nonce::from_bytes(na);
+    let ct = crypto::aead::seal(&key, &nonce, OSL_EXPORT_MAGIC, &plaintext)
+        .map_err(|e| format!("OSL: export encrypt: {e}"))?;
+
+    let mut out = Vec::with_capacity(OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE + ct.len());
+    out.extend_from_slice(OSL_EXPORT_MAGIC);
+    out.extend_from_slice(nonce.as_bytes());
+    out.extend_from_slice(&ct);
+    Ok(STANDARD.encode(&out))
+}
+
+/// Device transfer: restore a data export onto THIS device. Decrypts
+/// with the recovery-phrase entropy (so the identity must already be
+/// recovered via the 12-word phrase) and writes the account files back.
+/// A relaunch loads them — the recovered identity (same x25519 secret)
+/// opens the restored message store and decrypts the history.
+pub fn cmd_osl_import_data(state: &AppState, blob_b64: String) -> Result<(), String> {
+    let entropy = require_recovery_entropy(
+        state,
+        "recover your identity with the 12-word phrase FIRST, then restore data",
+    )?;
+    let raw = STANDARD
+        .decode(blob_b64.trim())
+        .map_err(|e| format!("OSL: import: base64 decode: {e}"))?;
+    let prefix = OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE;
+    if raw.len() < prefix || &raw[..OSL_EXPORT_MAGIC.len()] != OSL_EXPORT_MAGIC {
+        return Err("OSL: that file isn't an OSL data export.".to_string());
+    }
+    let mut na = [0u8; crypto::aead::NONCE_SIZE];
+    na.copy_from_slice(&raw[OSL_EXPORT_MAGIC.len()..prefix]);
+    let nonce = crypto::aead::Nonce::from_bytes(na);
+    let key = export_aead_key(&entropy)?;
+    let plaintext = crypto::aead::open(&key, &nonce, OSL_EXPORT_MAGIC, &raw[prefix..])
+        .map_err(|_| {
+            "OSL: couldn't decrypt the export — it was made under a different \
+             recovery phrase than this account, or the file is corrupt."
+                .to_string()
+        })?;
+    let bundle: serde_json::Value =
+        serde_json::from_slice(&plaintext).map_err(|e| format!("OSL: import parse: {e}"))?;
+    let files = bundle
+        .get("files")
+        .and_then(|f| f.as_object())
+        .ok_or_else(|| "OSL: import: malformed bundle".to_string())?;
+
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    // Release the SQLite handle so the message store file can be
+    // overwritten; it reopens (against the recovered identity) on the
+    // next launch.
+    {
+        let taken = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned")
+            .take();
+        drop(taken);
+    }
+    for (rel, v) in files {
+        // Defensive: only allow the known relative paths (no traversal).
+        if !OSL_EXPORT_FILES.contains(&rel.as_str()) {
+            continue;
+        }
+        let bytes = STANDARD
+            .decode(v.as_str().unwrap_or(""))
+            .map_err(|e| format!("OSL: import: file {rel} b64: {e}"))?;
+        let p = dir.join(rel);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&p, &bytes).map_err(|e| format!("OSL: import: write {rel}: {e}"))?;
+    }
+    Ok(())
+}
+
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
