@@ -5300,6 +5300,7 @@ pub fn cmd_osl_control_inbox_drain(
                     error = %e,
                     "[OSL] control_inbox_drain: skip undecodable bundle"
                 );
+                errors.push(format!("from={} b64 decode failed: {e}", item.sender_id));
                 continue;
             }
         };

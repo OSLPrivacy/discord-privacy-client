@@ -98,6 +98,25 @@ function bytesToU8(v: unknown): Uint8Array | null {
     const view = v as ArrayBufferView;
     return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   }
+  // D1 returns BLOB columns as a plain Array<number> (byte values).
+  // THIS was the GC bug: an unhandled array fell through to `null` →
+  // the bundle/id came back EMPTY → the GET shipped bundle_b64="" → the
+  // client decoded 0 bytes → "wire too short: 0 bytes" on every SKDM.
+  if (Array.isArray(v)) {
+    return Uint8Array.from(v as number[]);
+  }
+  // Defensive: some runtimes hand back an object with numeric keys
+  // ({0:.., 1:.., length}) or a {data:[...]} wrapper.
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (Array.isArray(o.data)) return Uint8Array.from(o.data as number[]);
+    const keys = Object.keys(o).filter((k) => /^\d+$/.test(k));
+    if (keys.length > 0) {
+      const arr = new Uint8Array(keys.length);
+      for (const k of keys) arr[Number(k)] = Number(o[k]);
+      return arr;
+    }
+  }
   if (typeof v === "string") {
     try {
       const bin = atob(v);
