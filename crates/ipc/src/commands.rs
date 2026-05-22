@@ -7103,8 +7103,11 @@ pub fn cmd_osl_validate_license(
     state: &AppState,
     license_key: String,
 ) -> Result<keystore::LicenseValidateResponse, String> {
+    // license.json + keyserver.json are DEVICE-level (base), matching
+    // where launch_classify reads them — otherwise the license cache
+    // would be written into the per-account subdir and lost on relaunch.
     let dir =
-        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+        keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     // Fresh installs have no keyserver.json — fall back to the
     // built-in production URL. The file is now an OVERRIDE only
     // (dev/staging), not a hard requirement.
@@ -7291,7 +7294,7 @@ pub fn cmd_osl_get_license_state_with_dir(
 /// where we started.
 pub fn cmd_osl_clear_license(state: &AppState) -> Result<(), String> {
     let dir =
-        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+        keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
     cmd_osl_clear_license_with_dir(state, &dir)
 }
 
@@ -9374,12 +9377,17 @@ fn persist_app_preferences_now(state: &AppState, config_dir: Option<std::path::P
     // `config_dir` was None. Every boot.js caller of cmd_osl_tour_*
     // omits config_dir (the IPC argument doesn't exist on the JS
     // side), so the tour state mutations never actually persisted
-    // — the user re-saw the tour intro every launch. Default to
-    // `keystore::osl_config_dir()` so the no-arg path is functional;
-    // an explicit `config_dir` (test path) still wins.
+    // — the user re-saw the tour intro every launch.
+    //
+    // Multi-account fix: app_preferences (stego mode, tour state,
+    // update channel) is DEVICE-level and run_autostart READS it from
+    // osl_base_dir(); persisting to osl_config_dir() (the active-account
+    // subdir) wrote it where the next launch never reads → the tour +
+    // password setup re-ran every launch. Default to osl_base_dir() so
+    // read and write agree. An explicit `config_dir` (test path) wins.
     let dir = match config_dir {
         Some(d) => d,
-        None => match keystore::osl_config_dir() {
+        None => match keystore::osl_base_dir() {
             Ok(d) => d,
             Err(e) => {
                 record_persist_error(state, "app_preferences.json", e);

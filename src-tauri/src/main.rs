@@ -2898,7 +2898,9 @@ fn main() {
                 let h = refresh_handle.clone();
                 let _ = tauri::async_runtime::spawn_blocking(move || {
                     let s = h.state::<AppState>();
-                    if let Ok(dir) = keystore::osl_config_dir() {
+                    // license.json is device-level → base, matching the
+                    // launch_classify read (not the per-account subdir).
+                    if let Ok(dir) = keystore::osl_base_dir() {
                         let _ = ipc::license_lifecycle::refresh_license_state(s.inner(), &dir);
                     }
                 })
@@ -2913,7 +2915,7 @@ fn main() {
                     let h = refresh_handle.clone();
                     let _ = tauri::async_runtime::spawn_blocking(move || {
                         let s = h.state::<AppState>();
-                        if let Ok(dir) = keystore::osl_config_dir() {
+                        if let Ok(dir) = keystore::osl_base_dir() {
                             let _ = ipc::license_lifecycle::refresh_license_state(s.inner(), &dir);
                         }
                     })
