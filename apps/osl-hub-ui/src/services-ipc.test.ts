@@ -11,9 +11,16 @@ vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 import {
   createEmbeddedServiceAccount,
   closeEmbeddedServiceHost,
+  detachNativeAppWindow,
+  focusNativeAppWindow,
+  hostNativeAppWindow,
+  installNativeApp,
+  loadBrowserImports,
+  openBrowserImport,
   openEmbeddedHomeApp,
   openEmbeddedServiceAccount,
   removeEmbeddedServiceAccount,
+  resizeNativeAppWindow,
   setupEmbeddedHomeApp,
   type HomeAppCatalogEntry,
   type LinkedService,
@@ -105,5 +112,90 @@ describe("embedded service IPC", () => {
     mocks.invoke.mockResolvedValueOnce(undefined);
     await expect(closeEmbeddedServiceHost()).resolves.toBeUndefined();
     expect(mocks.invoke).toHaveBeenCalledWith("close_service_host");
+  });
+});
+
+describe("native window host IPC", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    mocks.isTauriRuntime.mockReturnValue(true);
+  });
+
+  it("hosts one exact allowlisted app through the narrow command", async () => {
+    const response = { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless" };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("discord")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "discord" });
+  });
+
+  it("starts installation only for an exact allowlisted app", async () => {
+    const response = { id: "telegram", started: true, packageId: "Telegram.TelegramDesktop" };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(installNativeApp("telegram")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("install_native_app", { appId: "telegram" });
+  });
+
+  it("uses argument-free lifecycle commands for resize, focus, and detach", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({ id: "discord", status: "resized", reason: "none", mode: "ownedBorderless" })
+      .mockResolvedValueOnce({ id: "discord", status: "focused", reason: "none", mode: "ownedBorderless" })
+      .mockResolvedValueOnce({ id: "discord", status: "detached", reason: "none", mode: "ownedBorderless" });
+    await expect(resizeNativeAppWindow()).resolves.toMatchObject({ status: "resized" });
+    await expect(focusNativeAppWindow()).resolves.toMatchObject({ status: "focused" });
+    await expect(detachNativeAppWindow()).resolves.toMatchObject({ status: "detached" });
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["resize_native_app_window"],
+      ["focus_native_app_window"],
+      ["detach_native_app_window"],
+    ]);
+  });
+
+  it.each([
+    { id: "telegram", status: "hosted", reason: "none", mode: "ownedBorderless" },
+    { id: "discord", status: "hosted", reason: "windowNotFound", mode: "ownedBorderless" },
+    { id: "discord", status: "failed", reason: "windowNotFound", mode: "ownedBorderless" },
+    { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless", extra: true },
+  ])("rejects malformed or mismatched host responses %#", async (response) => {
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("discord")).rejects.toThrow("invalid native window host response");
+  });
+
+  it("fails before IPC outside the native runtime", async () => {
+    mocks.isTauriRuntime.mockReturnValue(false);
+    await expect(hostNativeAppWindow("discord")).rejects.toThrow("native host unavailable");
+    await expect(resizeNativeAppWindow()).rejects.toThrow("native host unavailable");
+    await expect(focusNativeAppWindow()).rejects.toThrow("native host unavailable");
+    await expect(detachNativeAppWindow()).rejects.toThrow("native host unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("browser-owned import IPC", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    mocks.isTauriRuntime.mockReturnValue(true);
+  });
+
+  it("lists only a strict fixed browser catalog and opens one enum-selected wizard", async () => {
+    const catalog = [
+      { id: "chrome", displayName: "Chrome", installed: true },
+      { id: "edge", displayName: "Edge", installed: false },
+    ];
+    mocks.invoke.mockResolvedValueOnce(catalog).mockResolvedValueOnce({ id: "chrome", opened: true });
+    await expect(loadBrowserImports()).resolves.toEqual(catalog);
+    await expect(openBrowserImport("chrome")).resolves.toBeUndefined();
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["list_browser_imports"],
+      ["open_browser_import", { browserId: "chrome" }],
+    ]);
+  });
+
+  it("rejects injected ids and malformed native responses before they can widen the command", async () => {
+    await expect(openBrowserImport("chrome --load-extension=evil" as "chrome")).rejects.toThrow("browser import unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    mocks.invoke.mockResolvedValueOnce([{ id: "chrome", displayName: "Chrome", installed: true, path: "C:/evil.exe" }]);
+    await expect(loadBrowserImports()).rejects.toThrow("invalid browser import catalog");
+    mocks.invoke.mockResolvedValueOnce({ id: "edge", opened: true });
+    await expect(openBrowserImport("chrome")).rejects.toThrow("invalid browser import response");
   });
 });

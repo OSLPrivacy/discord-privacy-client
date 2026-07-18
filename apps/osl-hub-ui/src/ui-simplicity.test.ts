@@ -39,11 +39,11 @@ describe("one-step app guide", () => {
   it("opens the real service with minimal copy and a short privacy disclosure", () => {
     const guide = functionSource("serviceGuideContent", "settingsContent");
     expect(guide).not.toContain("Step ${step + 1} of 3");
-    expect(guide).toContain("Start fresh");
-    expect(guide).toContain("Use existing account");
-    expect(guide).toContain("Choose which account to use.");
+    expect(guide).toContain("Connect ${name}");
+    expect(guide).toContain('nativeInstalled ? "Open app in OSL" : "Open in OSL"');
+    expect(guide).toContain("A separate ${name} window opens inside OSL.");
     expect(guide).toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
-    expect(guide).not.toContain("Open in OSL");
+    expect(guide).not.toContain("Choose which account to use.");
     expect(guide).not.toMatch(/adapter|scope|auto-whitelist/i);
   });
 });

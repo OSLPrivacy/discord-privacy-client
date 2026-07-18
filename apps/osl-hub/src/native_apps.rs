@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::process::{Command, Stdio};
@@ -19,6 +21,32 @@ pub enum NativeAppId {
     Telegram,
     Signal,
     Whatsapp,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserImportId {
+    Chrome,
+    Edge,
+    Firefox,
+    Brave,
+    Opera,
+    Vivaldi,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserImportStatus {
+    pub id: BrowserImportId,
+    pub display_name: &'static str,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserImportResult {
+    pub id: BrowserImportId,
+    pub opened: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -38,13 +66,6 @@ pub enum NativeAppAvailability {
     Installed,
     Installable,
     Unavailable,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeLaunchResult {
-    pub id: NativeAppId,
-    pub started: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -105,7 +126,6 @@ enum KnownFolder {
 struct ExecutableCandidate {
     folder: KnownFolder,
     relative_path: &'static str,
-    arguments: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -117,41 +137,44 @@ struct NativeAppManifest {
     candidates: &'static [ExecutableCandidate],
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(any(target_os = "windows", test))]
+struct BrowserImportManifest {
+    id: BrowserImportId,
+    display_name: &'static str,
+    candidates: &'static [ExecutableCandidate],
+    import_arguments: &'static [&'static str],
+}
+
 const DISCORD_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
     folder: KnownFolder::Local,
     relative_path: r"Discord\Update.exe",
-    arguments: &["--processStart", "Discord.exe"],
 }];
 
 const TELEGRAM_CANDIDATES: &[ExecutableCandidate] = &[
     ExecutableCandidate {
         folder: KnownFolder::Roaming,
         relative_path: r"Telegram Desktop\Telegram.exe",
-        arguments: &[],
     },
     ExecutableCandidate {
         folder: KnownFolder::Local,
         relative_path: r"Programs\Telegram Desktop\Telegram.exe",
-        arguments: &[],
     },
 ];
 
 const SIGNAL_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
     folder: KnownFolder::Local,
     relative_path: r"Programs\signal-desktop\Signal.exe",
-    arguments: &[],
 }];
 
 const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[
     ExecutableCandidate {
         folder: KnownFolder::Local,
         relative_path: r"Microsoft\WindowsApps\WhatsApp.exe",
-        arguments: &[],
     },
     ExecutableCandidate {
         folder: KnownFolder::Local,
         relative_path: r"WhatsApp\WhatsApp.exe",
-        arguments: &[],
     },
 ];
 
@@ -187,6 +210,129 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
 ];
 
 #[cfg(any(target_os = "windows", test))]
+const CHROME_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"Google\Chrome\Application\chrome.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"Google\Chrome\Application\chrome.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFilesX86,
+        relative_path: r"Google\Chrome\Application\chrome.exe",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const EDGE_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFilesX86,
+        relative_path: r"Microsoft\Edge\Application\msedge.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"Microsoft\Edge\Application\msedge.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"Microsoft\Edge\Application\msedge.exe",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const BRAVE_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"BraveSoftware\Brave-Browser\Application\brave.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"BraveSoftware\Brave-Browser\Application\brave.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFilesX86,
+        relative_path: r"BraveSoftware\Brave-Browser\Application\brave.exe",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const OPERA_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"Programs\Opera\launcher.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"Opera\launcher.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFilesX86,
+        relative_path: r"Opera\launcher.exe",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const VIVALDI_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"Vivaldi\Application\vivaldi.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"Vivaldi\Application\vivaldi.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFilesX86,
+        relative_path: r"Vivaldi\Application\vivaldi.exe",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const BROWSER_IMPORTS: &[BrowserImportManifest] = &[
+    BrowserImportManifest {
+        id: BrowserImportId::Chrome,
+        display_name: "Chrome",
+        candidates: CHROME_IMPORT_CANDIDATES,
+        import_arguments: &["--new-window", "chrome://settings/importData"],
+    },
+    BrowserImportManifest {
+        id: BrowserImportId::Edge,
+        display_name: "Edge",
+        candidates: EDGE_IMPORT_CANDIDATES,
+        import_arguments: &[
+            "--new-window",
+            "edge://settings/profiles/importBrowsingData",
+        ],
+    },
+    BrowserImportManifest {
+        id: BrowserImportId::Firefox,
+        display_name: "Firefox",
+        candidates: FIREFOX_CANDIDATES,
+        import_arguments: &["--new-window", "about:preferences#general"],
+    },
+    BrowserImportManifest {
+        id: BrowserImportId::Brave,
+        display_name: "Brave",
+        candidates: BRAVE_IMPORT_CANDIDATES,
+        import_arguments: &["--new-window", "brave://settings/importData"],
+    },
+    BrowserImportManifest {
+        id: BrowserImportId::Opera,
+        display_name: "Opera",
+        candidates: OPERA_IMPORT_CANDIDATES,
+        import_arguments: &["--new-window", "opera://settings/importData"],
+    },
+    BrowserImportManifest {
+        id: BrowserImportId::Vivaldi,
+        display_name: "Vivaldi",
+        candidates: VIVALDI_IMPORT_CANDIDATES,
+        import_arguments: &["--new-window", "vivaldi://settings/importData"],
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
 const FIREFOX_PACKAGE_ID: &str = "Mozilla.Firefox";
 
 /// One per-Windows-user browsing profile for the initial native-browser
@@ -202,22 +348,18 @@ const FIREFOX_CANDIDATES: &[ExecutableCandidate] = &[
     ExecutableCandidate {
         folder: KnownFolder::ProgramFiles,
         relative_path: r"Mozilla Firefox\firefox.exe",
-        arguments: &[],
     },
     ExecutableCandidate {
         folder: KnownFolder::ProgramFilesX86,
         relative_path: r"Mozilla Firefox\firefox.exe",
-        arguments: &[],
     },
     ExecutableCandidate {
         folder: KnownFolder::Local,
         relative_path: r"Mozilla Firefox\firefox.exe",
-        arguments: &[],
     },
     ExecutableCandidate {
         folder: KnownFolder::Local,
         relative_path: r"Programs\Mozilla Firefox\firefox.exe",
-        arguments: &[],
     },
 ];
 
@@ -226,7 +368,13 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
     (FirefoxServiceId::Instagram, "https://www.instagram.com/"),
     (FirefoxServiceId::Snapchat, "https://web.snapchat.com/"),
     (FirefoxServiceId::X, "https://x.com/"),
-    (FirefoxServiceId::Messenger, "https://www.messenger.com/"),
+    // Meta retired the standalone Windows client and messenger.com now routes
+    // desktop users into Facebook. Keep the OSL profile on Meta's current,
+    // first-party messages surface instead of an unofficial wrapper.
+    (
+        FirefoxServiceId::Messenger,
+        "https://www.facebook.com/messages/",
+    ),
     (FirefoxServiceId::Gmail, "https://mail.google.com/"),
     (FirefoxServiceId::Outlook, "https://outlook.live.com/mail/"),
     (FirefoxServiceId::Proton, "https://mail.proton.me/"),
@@ -267,25 +415,73 @@ pub fn list_native_apps() -> Vec<NativeAppStatus> {
         .collect()
 }
 
-pub fn launch_native_app(id: NativeAppId) -> Result<NativeLaunchResult, String> {
+/// Reports only whether one of six fixed browsers exists in a standard
+/// Windows install location. OSL never opens a profile or reads browser data.
+pub fn list_browser_imports() -> Vec<BrowserImportStatus> {
+    #[cfg(any(target_os = "windows", test))]
+    {
+        BROWSER_IMPORTS
+            .iter()
+            .map(|browser| BrowserImportStatus {
+                id: browser.id,
+                display_name: browser.display_name,
+                installed: browser_import_executable(browser).is_some(),
+            })
+            .collect()
+    }
+    #[cfg(not(any(target_os = "windows", test)))]
+    {
+        Vec::new()
+    }
+}
+
+/// Opens one browser-owned import/settings surface after an explicit click.
+/// The caller supplies only an enum; executable paths and arguments are fixed.
+/// OSL does not receive a result from, observe, or perform the import.
+pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
-        let app = manifest(id);
-        let (executable, arguments) = installed_executable(app).ok_or_else(|| {
+        let browser = browser_import_manifest(id);
+        let executable = browser_import_executable(browser).ok_or_else(|| {
             format!(
                 "{} is not installed in a supported Windows location",
-                app.display_name
+                browser.display_name
             )
         })?;
-        spawn_detached(&executable, arguments)
-            .map_err(|_| format!("{} could not be launched", app.display_name))?;
-        Ok(NativeLaunchResult { id, started: true })
+        spawn_detached(&executable, browser.import_arguments).map_err(|_| {
+            format!(
+                "{} could not open its import settings",
+                browser.display_name
+            )
+        })?;
+        Ok(BrowserImportResult { id, opened: true })
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = id;
-        Err("Native app launching is available only on Windows".to_owned())
+        Err("Browser-owned import handoff is available only on Windows".to_owned())
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn browser_import_manifest(id: BrowserImportId) -> &'static BrowserImportManifest {
+    BROWSER_IMPORTS
+        .iter()
+        .find(|browser| browser.id == id)
+        .expect("every browser import enum has a fixed manifest")
+}
+
+#[cfg(target_os = "windows")]
+fn browser_import_executable(browser: &BrowserImportManifest) -> Option<PathBuf> {
+    browser.candidates.iter().find_map(|candidate| {
+        let executable = known_folder(candidate.folder)?.join(candidate.relative_path);
+        executable.is_file().then_some(executable)
+    })
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+fn browser_import_executable(_browser: &BrowserImportManifest) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Starts a fixed package-manager action after a trusted UI click. This does
@@ -307,6 +503,7 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
             app.package_source,
             "--accept-source-agreements",
             "--accept-package-agreements",
+            "--silent",
         ];
         spawn_detached(&winget, &arguments)
             .map_err(|_| format!("The {} installer could not be started", app.display_name))?;
@@ -482,20 +679,16 @@ fn firefox_executable() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn installed_executable(app: &NativeAppManifest) -> Option<(PathBuf, &'static [&'static str])> {
+fn installed_executable(app: &NativeAppManifest) -> Option<PathBuf> {
     app.candidates.iter().find_map(|candidate| {
         let root = known_folder(candidate.folder)?;
         let executable = root.join(candidate.relative_path);
-        executable
-            .is_file()
-            .then_some((executable, candidate.arguments))
+        executable.is_file().then_some(executable)
     })
 }
 
 #[cfg(not(target_os = "windows"))]
-fn installed_executable(
-    _app: &NativeAppManifest,
-) -> Option<(std::path::PathBuf, &'static [&'static str])> {
+fn installed_executable(_app: &NativeAppManifest) -> Option<std::path::PathBuf> {
     None
 }
 
@@ -564,6 +757,7 @@ fn spawn_detached(executable: &Path, arguments: &[&str]) -> std::io::Result<()> 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
         .spawn()
         .map(|_| ())
 }
@@ -592,6 +786,11 @@ mod tests {
         for (index, app) in NATIVE_APPS.iter().enumerate() {
             assert!(!app.display_name.is_empty());
             assert!(!app.package_id.is_empty());
+            assert!(!app.package_id.starts_with('-'));
+            assert!(app
+                .package_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
             assert!(matches!(app.package_source, "winget" | "msstore"));
             assert!(!app.candidates.is_empty());
             assert!(NATIVE_APPS[..index]
@@ -601,6 +800,8 @@ mod tests {
                 assert!(!candidate.relative_path.is_empty());
                 assert!(!candidate.relative_path.starts_with(['/', '\\']));
                 assert!(!candidate.relative_path.contains(".."));
+                assert!(!candidate.relative_path.contains(':'));
+                assert!(candidate.relative_path.ends_with(".exe"));
             }
         }
         assert_eq!(manifest(NativeAppId::Discord).package_id, "Discord.Discord");
@@ -633,6 +834,28 @@ mod tests {
     }
 
     #[test]
+    fn ipc_enums_reject_paths_urls_and_argument_shaped_values() {
+        for value in [
+            r#""discord --enable-logging""#,
+            r#""..\\evil.exe""#,
+            r#""C:\\Windows\\System32\\cmd.exe""#,
+            r#""https://example.test/""#,
+            r#"{"discord":"telegram"}"#,
+        ] {
+            assert!(serde_json::from_str::<NativeAppId>(value).is_err());
+        }
+        for value in [
+            r#""chrome --new-window https://example.test""#,
+            r#""file:///C:/Windows/System32/calc.exe""#,
+            r#""javascript:alert(1)""#,
+            r#""..\\browser.exe""#,
+            r#"{"id":"chrome","url":"https://example.test"}"#,
+        ] {
+            assert!(serde_json::from_str::<BrowserImportId>(value).is_err());
+        }
+    }
+
+    #[test]
     fn firefox_manifest_is_exhaustive_and_https_only() {
         assert_eq!(FIREFOX_SERVICES.len(), 11);
         assert_eq!(FIREFOX_PACKAGE_ID, "Mozilla.Firefox");
@@ -660,6 +883,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn browser_import_manifest_is_fixed_complete_and_has_no_profile_inputs() {
+        assert!(
+            serde_json::from_str::<BrowserImportId>(r#""chrome --load-extension=evil""#).is_err()
+        );
+        assert!(serde_json::from_str::<BrowserImportId>(r#""../firefox""#).is_err());
+        let expected_targets = [
+            (BrowserImportId::Chrome, "chrome://settings/importData"),
+            (
+                BrowserImportId::Edge,
+                "edge://settings/profiles/importBrowsingData",
+            ),
+            (BrowserImportId::Firefox, "about:preferences#general"),
+            (BrowserImportId::Brave, "brave://settings/importData"),
+            (BrowserImportId::Opera, "opera://settings/importData"),
+            (BrowserImportId::Vivaldi, "vivaldi://settings/importData"),
+        ];
+        assert_eq!(BROWSER_IMPORTS.len(), 6);
+        for (index, browser) in BROWSER_IMPORTS.iter().enumerate() {
+            assert!(!browser.display_name.is_empty());
+            assert!(!browser.candidates.is_empty());
+            assert_eq!(browser.import_arguments.first(), Some(&"--new-window"));
+            assert_eq!(browser.import_arguments.len(), 2);
+            assert_eq!(
+                browser.import_arguments[1],
+                expected_targets
+                    .iter()
+                    .find_map(|(id, target)| (*id == browser.id).then_some(*target))
+                    .expect("every browser id has one reviewed internal target")
+            );
+            assert!(!browser.import_arguments[1].starts_with("http:"));
+            assert!(!browser.import_arguments[1].starts_with("https:"));
+            assert!(!browser.import_arguments[1].starts_with("file:"));
+            assert!(!browser.import_arguments[1].starts_with("javascript:"));
+            assert!(BROWSER_IMPORTS[..index]
+                .iter()
+                .all(|previous| previous.id != browser.id));
+            for candidate in browser.candidates {
+                assert!(!candidate.relative_path.is_empty());
+                assert!(!candidate.relative_path.starts_with(['/', '\\']));
+                assert!(!candidate.relative_path.contains(".."));
+                assert!(!candidate.relative_path.contains(':'));
+                assert!(candidate.relative_path.ends_with(".exe"));
+            }
+        }
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Chrome).display_name,
+            "Chrome"
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Vivaldi).display_name,
+            "Vivaldi"
+        );
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn process_actions_fail_closed_off_windows() {
@@ -667,7 +945,6 @@ mod tests {
             .iter()
             .all(|app| app.availability == NativeAppAvailability::Unavailable
                 && !app.supports_overlay));
-        assert!(launch_native_app(NativeAppId::Discord).is_err());
         assert!(install_native_app(NativeAppId::Discord).is_err());
         assert_eq!(
             get_firefox_status().availability,
@@ -679,5 +956,9 @@ mod tests {
         )
         .is_err());
         assert!(install_firefox().is_err());
+        assert!(list_browser_imports()
+            .iter()
+            .all(|browser| !browser.installed));
+        assert!(open_browser_import(BrowserImportId::Chrome).is_err());
     }
 }

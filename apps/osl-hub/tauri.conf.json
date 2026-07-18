@@ -31,6 +31,12 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    },
     "icon": [
       "icons/icon-cyan.ico"
     ]

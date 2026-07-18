@@ -61,25 +61,38 @@ describe("clean onboarding sign in", () => {
 });
 
 describe("fresh-account continuation", () => {
-  it("asks how accounts should open and keeps per-app choices in Advanced", () => {
+  it("asks how accounts should open and shows explicit per-app install choices", () => {
     const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
     expect(tutorial).toContain("Choose how accounts open");
     expect(tutorial).toContain("Use existing account");
     expect(tutorial).toContain("Start fresh");
-    expect(tutorial).toContain('<details class="saved-account-advanced"><summary>Advanced</summary>');
-    expect(tutorial).toContain("OSL waits for your choice. It never signs in automatically.");
+    expect(tutorial).toContain('<fieldset class="saved-account-advanced first-install-apps"><legend>Apps</legend>');
+    expect(tutorial).toContain("Nothing opens or installs without your choice.");
     expect(tutorial).toContain('data-saved-native="${app.id}"');
+    expect(tutorial).toContain('data-first-install="${app.id}"');
+    expect(tutorial).toContain("Install in background");
   });
 
-  it("keeps saved-browser-password import off until a checkbox change", () => {
+  it("queues selected first-run installs without delaying the next setup step", () => {
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    const install = functionSource("startBackgroundInstall", "enqueueBackgroundInstalls");
+    const queue = functionSource("enqueueBackgroundInstalls", "nativeHostFailureMessage");
+    expect(binding).toMatch(/#continue-account-setup[\s\S]*?const selectedInstalls = \[\.\.\.selectedFirstInstallApps\];[\s\S]*?selectedFirstInstallApps\.clear\(\);[\s\S]*?enqueueBackgroundInstalls\(selectedInstalls\)[\s\S]*?onboardingRoute = "apps"/);
+    expect(install).toContain('installNativeApp(appId)');
+    expect(install).toContain('loadNativeApps().catch(() => nativeApps)');
+    expect(install).toContain('savedNativeApps.add(appId)');
+    expect(queue).toContain('const unique = [...new Set(appIds)].filter');
+    expect(queue).toContain('for (const appId of unique) await startBackgroundInstall(appId)');
+  });
+
+  it("keeps browser credentials browser-owned instead of exposing a fake import toggle", () => {
     const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
-    const binding = functionSource("bindSavedAccountControls", "importIdentityForm");
-    expect(source).toContain("let browserPasswordImportOptIn = false;");
-    expect(source).toContain('localStorage.getItem(browserPasswordImportStorageKey) === "true"');
-    expect(tutorial).toContain("Allow saved-password import");
-    expect(tutorial).toContain("Off by default. OSL asks again before copying browser passwords.");
-    expect(tutorial).toContain("data-browser-password-import");
-    expect(binding).toMatch(/\[data-browser-password-import\][\s\S]*?addEventListener\("change"[\s\S]*?browserPasswordImportOptIn = input\.checked/);
+    expect(tutorial).toContain("Browser passwords stay in your browser");
+    expect(tutorial).toContain("Chrome, Edge, Firefox, Brave, Opera, and Vivaldi");
+    expect(tutorial).toContain("OSL never reads their password files");
+    expect(source).not.toContain("browserPasswordImportOptIn");
+    expect(source).not.toContain("data-browser-password-import");
+    expect(source).not.toContain("browser-password-import-opt-in");
   });
 
   it("shows the recovery title without the removed grey subtitle", () => {

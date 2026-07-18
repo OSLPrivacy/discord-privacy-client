@@ -12,12 +12,17 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
+use osl_privacy_hub::mass_cleanup::{
+    self, MassCleanupCapabilityManifest, MassCleanupDiscoveryRequest, MassCleanupExecutionRequest,
+};
 use osl_privacy_hub::models::{
     EmailProvider, LinkedAccountDemo, LinkedServiceDemo, OnboardingPreferences, ServiceKind,
 };
 use osl_privacy_hub::native_apps::{
-    self, NativeAppId, NativeAppStatus, NativeInstallResult, NativeLaunchResult,
+    self, BrowserImportId, BrowserImportResult, BrowserImportStatus, NativeAppId, NativeAppStatus,
+    NativeInstallResult,
 };
+use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
@@ -118,6 +123,29 @@ fn list_core_features() -> Vec<CoreFeature> {
 #[tauri::command]
 fn get_hub_license_state(state: State<'_, HubCoreState>) -> Result<HubLicenseState, String> {
     core_bridge::license_state(&state)
+}
+
+#[tauri::command]
+fn get_mass_cleanup_capabilities(
+    state: State<'_, HubCoreState>,
+) -> Result<MassCleanupCapabilityManifest, String> {
+    mass_cleanup::capability_manifest(&state.osl)
+}
+
+#[tauri::command]
+fn discover_mass_cleanup_targets(
+    state: State<'_, HubCoreState>,
+    request: MassCleanupDiscoveryRequest,
+) -> Result<(), String> {
+    mass_cleanup::discover_targets(&state.osl, request)
+}
+
+#[tauri::command]
+fn execute_mass_cleanup_batch(
+    state: State<'_, HubCoreState>,
+    request: MassCleanupExecutionRequest,
+) -> Result<(), String> {
+    mass_cleanup::execute_batch(&state.osl, request)
 }
 
 #[tauri::command]
@@ -409,13 +437,68 @@ fn list_native_apps() -> Vec<NativeAppStatus> {
 }
 
 #[tauri::command]
-fn launch_native_app(app_id: NativeAppId) -> Result<NativeLaunchResult, String> {
-    native_apps::launch_native_app(app_id)
+fn install_native_app(app_id: NativeAppId) -> Result<NativeInstallResult, String> {
+    native_apps::install_native_app(app_id)
 }
 
 #[tauri::command]
-fn install_native_app(app_id: NativeAppId) -> Result<NativeInstallResult, String> {
-    native_apps::install_native_app(app_id)
+fn list_browser_imports() -> Vec<BrowserImportStatus> {
+    native_apps::list_browser_imports()
+}
+
+#[tauri::command]
+fn open_browser_import(browser_id: BrowserImportId) -> Result<BrowserImportResult, String> {
+    native_apps::open_browser_import(browser_id)
+}
+
+#[cfg(target_os = "windows")]
+fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "The trusted OSL Privacy window is unavailable".to_owned())?
+        .hwnd()
+        .map(|handle| handle.0 as isize)
+        .map_err(|_| "The trusted OSL Privacy window handle is unavailable".to_owned())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn main_window_hwnd(_app: &tauri::AppHandle) -> Result<isize, String> {
+    Ok(0)
+}
+
+#[tauri::command]
+async fn host_native_app_window(
+    app: tauri::AppHandle,
+    app_id: NativeAppId,
+) -> Result<NativeWindowHostResult, String> {
+    let parent = main_window_hwnd(&app)?;
+    let profile_root = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL-owned native profile directory is unavailable".to_owned())?;
+    let operation_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation_app
+            .state::<NativeWindowHostState>()
+            .host(app_id, &profile_root, parent)
+    })
+    .await
+    .map_err(|_| "The experimental native host operation was interrupted".to_owned())
+}
+
+#[tauri::command]
+fn resize_native_app_window(app: tauri::AppHandle) -> Result<NativeWindowHostResult, String> {
+    let parent = main_window_hwnd(&app)?;
+    Ok(app.state::<NativeWindowHostState>().resize(parent))
+}
+
+#[tauri::command]
+fn focus_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
+    app.state::<NativeWindowHostState>().focus()
+}
+
+#[tauri::command]
+fn detach_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
+    app.state::<NativeWindowHostState>().detach()
 }
 
 fn with_indexed_context_write<T>(
@@ -1316,6 +1399,7 @@ fn main() {
             app.manage(HubSecurityState::default());
             app.manage(HubIdentityRegistryState::default());
             app.manage(ServiceHostState::default());
+            app.manage(NativeWindowHostState::default());
             app.manage(HubAccountSessionState::default());
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
@@ -1347,6 +1431,9 @@ fn main() {
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
+            get_mass_cleanup_capabilities,
+            discover_mass_cleanup_targets,
+            execute_mass_cleanup_batch,
             validate_hub_activation_code,
             clear_hub_activation_code,
             unlock_hub_main_password,
@@ -1362,8 +1449,13 @@ fn main() {
             install_hub_update,
             open_hub_releases_page,
             list_native_apps,
-            launch_native_app,
             install_native_app,
+            list_browser_imports,
+            open_browser_import,
+            host_native_app_window,
+            resize_native_app_window,
+            focus_native_app_window,
+            detach_native_app_window,
             create_service_account,
             open_service_host,
             close_service_host,

@@ -13,7 +13,7 @@ function functionSource(name: string, nextName: string): string {
 
 describe("bounded desktop rendering", () => {
   it("mounts the desktop shell once and patches a memoized keyed surface", () => {
-    const render = functionSource("renderWorkspace", "nativeAccountChoiceMarkup");
+    const render = functionSource("renderWorkspace", "appLauncherStrip");
     expect(render).toContain('root.querySelector<HTMLElement>("#workspace-render-surface")');
     expect(render).toContain('id="workspace-render-surface"');
     expect(render).toContain("lastWorkspaceMarkup === markup");
@@ -50,6 +50,7 @@ describe("truthful bounded startup", () => {
     expect(bootstrap).toContain('withNativeDeadline(loadNativeApps(), "Load installed apps", bootSupportDeadlineMs)');
     expect(bootstrap).toContain('withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs)');
     expect(bootstrap).toContain("renderNow();");
-    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, licenseRequest])");
+    expect(bootstrap).toContain('withNativeDeadline(loadBrowserImports(), "Load browsers", bootSupportDeadlineMs)');
+    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, browserImportsRequest, licenseRequest])");
   });
 });

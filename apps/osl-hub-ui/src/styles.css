@@ -806,6 +806,21 @@ code {
 .saved-account-truth { margin: 12px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
 .saved-account-advanced,
 .saved-account-settings { margin-top: 14px; border-top: 1px solid var(--line); }
+.saved-account-advanced {
+  min-width: 0;
+  padding: 12px 0 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+}
+.saved-account-advanced > legend {
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
 .saved-account-advanced > summary,
 .saved-account-settings > summary { min-height: 44px; display: flex; align-items: center; color: var(--muted); cursor: pointer; }
 .saved-account-apps,
@@ -826,8 +841,58 @@ code {
 .saved-account-app small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .saved-account-app input { width: 20px; min-height: 20px; }
 .saved-account-app.unavailable { opacity: .45; }
-.saved-password-opt-in { margin-top: 10px; }
+.saved-account-browser-note {
+  margin-top: 10px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.saved-account-browser-note strong,
+.saved-account-browser-note small { display: block; }
+.saved-account-browser-note small { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.browser-import-actions { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
 .saved-account-settings > p { color: var(--muted); font-size: 11px; }
+
+.cleanup-lock,
+.cleanup-service-list {
+  margin-top: 18px;
+}
+
+.cleanup-lock {
+  min-height: 150px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  display: grid;
+  align-content: center;
+  gap: 7px;
+}
+
+.cleanup-lock > span {
+  width: max-content;
+  padding: 3px 6px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1em;
+}
+
+.cleanup-lock > p { margin: 0; color: var(--muted); font-size: 12px; }
+.cleanup-service-list { border-top: 1px solid var(--line); }
+.cleanup-service {
+  min-height: 62px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.cleanup-service strong,
+.cleanup-service small { display: block; }
+.cleanup-service small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.cleanup-service > span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.cleanup-service.unavailable { opacity: .72; }
 
 @keyframes saved-account-travel {
   0% { left: 0; opacity: 0; transform: scale(.7); }

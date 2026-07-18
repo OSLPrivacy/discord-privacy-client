@@ -59,6 +59,21 @@ description = "Read bounded local Free or Pro activation state from the trusted 
 commands.allow = ["get_hub_license_state"]
 
 [[permission]]
+identifier = "allow-get-mass-cleanup-capabilities"
+description = "After a native Pro check, list only static fail-closed Mass Cleanup adapter metadata; no service data is read."
+commands.allow = ["get_mass_cleanup_capabilities"]
+
+[[permission]]
+identifier = "allow-discover-mass-cleanup-targets"
+description = "Pro-gated Mass Cleanup discovery seam; it rejects every request until a reviewed local semantic adapter is installed."
+commands.allow = ["discover_mass_cleanup_targets"]
+
+[[permission]]
+identifier = "allow-execute-mass-cleanup-batch"
+description = "Pro-gated Mass Cleanup execution seam; it has no mutation adapter and always fails closed in this build."
+commands.allow = ["execute_mass_cleanup_batch"]
+
+[[permission]]
 identifier = "allow-validate-hub-activation-code"
 description = "Validate and seal one browser-delivered activation code from the trusted bundled OSL Privacy UI."
 commands.allow = ["validate_hub_activation_code"]
@@ -134,14 +149,39 @@ description = "Report installed status for the four fixed Windows-native messagi
 commands.allow = ["list_native_apps"]
 
 [[permission]]
-identifier = "allow-launch-native-app"
-description = "Launch one installed, compile-time allowlisted Windows-native messaging application after an explicit trusted-UI click."
-commands.allow = ["launch_native_app"]
+identifier = "allow-install-native-app"
+description = "Start one fixed silent winget or Microsoft Store background install after an explicit trusted-UI click, without shell input or automatic elevation."
+commands.allow = ["install_native_app"]
 
 [[permission]]
-identifier = "allow-install-native-app"
-description = "Start one fixed winget or Microsoft Store install action after an explicit trusted-UI click, without shell input or automatic elevation."
-commands.allow = ["install_native_app"]
+identifier = "allow-list-browser-imports"
+description = "Report only whether six fixed supported browsers exist in standard Windows install locations; never reads browser profiles, cookies, or credentials."
+commands.allow = ["list_browser_imports"]
+
+[[permission]]
+identifier = "allow-open-browser-import"
+description = "After an explicit click, open one detected browser's fixed browser-owned import/settings surface without reading or receiving browser data."
+commands.allow = ["open_browser_import"]
+
+[[permission]]
+identifier = "allow-host-native-app-window"
+description = "Experimentally launch only a verified isolated secondary instance of one fixed messaging app and align its owned borderless window inside OSL; unsupported clients fail closed."
+commands.allow = ["host_native_app_window"]
+
+[[permission]]
+identifier = "allow-resize-native-app-window"
+description = "Realign only the exact OSL-spawned native client window to the trusted OSL content bounds."
+commands.allow = ["resize_native_app_window"]
+
+[[permission]]
+identifier = "allow-focus-native-app-window"
+description = "Focus only the exact OSL-spawned native client window currently owned by OSL."
+commands.allow = ["focus_native_app_window"]
+
+[[permission]]
+identifier = "allow-detach-native-app-window"
+description = "Restore ownership, styles, and bounds only for the exact OSL-spawned native client window."
+commands.allow = ["detach_native_app_window"]
 
 [[permission]]
 identifier = "allow-open-service-host"

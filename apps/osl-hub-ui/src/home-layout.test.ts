@@ -97,11 +97,12 @@ describe("home interaction regressions", () => {
     expect(binding).toMatch(/if\s*\(dialog\s*&&\s*!dialog\.open\)\s*\{?\s*dialog\.showModal\(\)/);
   });
 
-  it("does not register resize work for removed embedded service surfaces", () => {
-    expect(source.match(/window\.addEventListener\("resize"/g) ?? []).toHaveLength(0);
+  it("registers one coalesced resize hook only for an active native host", () => {
+    expect(source.match(/window\.addEventListener\("resize"/g) ?? []).toHaveLength(1);
     const binding = functionSource(source, "bindWorkspace", "ttlSeconds");
     expect(binding).not.toContain('window.addEventListener("resize"');
     expect(binding).not.toContain('document.addEventListener("keydown"');
+    expect(source).toMatch(/window\.addEventListener\("resize"[\s\S]*?if \(!activeNativeHostId \|\| nativeHostResizeFrame\) return;[\s\S]*?requestAnimationFrame[\s\S]*?resizeNativeAppWindow\(\)/);
   });
 
   it("coalesces background state updates into one paint", () => {
@@ -158,7 +159,7 @@ describe("home interaction regressions", () => {
 
   it("acknowledges app clicks immediately and bounds the profile refresh", () => {
     const binding = functionSource(source, "bindWorkspace", "openHomeAppFromLauncher");
-    const opening = functionSource(source, "openHomeAppFromLauncher", "runNativeAppAction");
+    const opening = functionSource(source, "openHomeAppFromLauncher", "startBackgroundInstall");
     expect(binding).toMatch(/appLaunchPendingId = appId;[\s\S]*?renderNow\(\);[\s\S]*?openHomeAppFromLauncher/);
     expect(opening).toContain('withNativeDeadline(loadLinkedServices(), "Refresh apps", 450)');
     expect(opening).toContain("intent !== navigationIntentEpoch");
@@ -181,9 +182,11 @@ describe("home interaction regressions", () => {
   });
 
   it("closes the owned service surface before top-level navigation", () => {
-    const binding = functionSource(source, "bindWorkspace", "ttlSeconds");
-    expect(binding).toContain("closeEmbeddedServiceHost()");
-    expect(binding).toContain("activeEmbeddedHost = null");
+    const closing = functionSource(source, "closeActiveServiceSurface", "toggleLocalProtectedSheet");
+    expect(closing).toContain("closeEmbeddedServiceHost()");
+    expect(closing).toContain("activeEmbeddedHost = null");
+    expect(closing).toContain("detachNativeAppWindow()");
+    expect(closing).toContain("activeNativeHostId = null");
   });
 
   it("supports keyboard-operable tile edit controls", () => {
@@ -192,19 +195,17 @@ describe("home interaction regressions", () => {
     expect(source).toContain("saveHomeTilePreferences");
   });
 
-  it("keeps native launchers explicit while ordinary tiles open embedded profiles", () => {
-    expect(source).toContain("launchNativeApp(appId)");
+  it("hosts installed native apps while preserving isolated embedded fallbacks", () => {
+    expect(source).toContain("hostNativeAppWindow(appId)");
     expect(source).toContain("installNativeApp(appId)");
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
-    expect(source).toContain('data-native-launch="${nativeApp.id}"');
-    expect(source).toContain("Use existing account opens the installed app with its current login");
-    expect(source).toContain("Use existing account</button>");
-    expect(source).toContain("Start fresh</button>");
-    expect(source).toContain('id="native-account-choice-existing"');
-    expect(source).toContain('id="native-account-choice-new"');
-    expect(source).toContain("!app.linked && installedNative");
-    expect(source).toContain('savedAccountMode === "use" && savedNativeApps.has(installedNative.id)');
+    expect(source).toContain('candidate.availability === "installed"');
+    expect(source).toContain("void openNativeHostedApp(app, service, native.id)");
+    expect(source).toContain("await detachNativeAppWindow().catch(() => undefined)");
+    expect(source).toContain('withNativeDeadline(hostNativeAppWindow(appId), `Open ${app.displayName} inside OSL`, 12_000)');
+    expect(source).toContain(">Use existing account</strong>");
+    expect(source).toContain(">Start fresh</strong>");
     expect(source).toContain('savedAccountMode !== "ask"');
   });
 

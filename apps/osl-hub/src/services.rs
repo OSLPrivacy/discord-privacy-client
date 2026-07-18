@@ -514,16 +514,10 @@ fn service_descriptors() -> [ServiceDescriptor; 12] {
         ),
         descriptor(ServiceKind::X, "X", "X", 60, Consumer, Available),
         descriptor(ServiceKind::Email, "Email", "EM", 70, Consumer, Available),
-        // Signal has no first-party web messaging client. Listing it truthfully
-        // is safer than embedding an unofficial client under the Signal name.
-        descriptor(
-            ServiceKind::Signal,
-            "Signal",
-            "SG",
-            80,
-            Consumer,
-            ComingSoon,
-        ),
+        // Signal has no first-party web messenger. The service is available
+        // only through the separately spawned, OSL-owned native profile; the
+        // web host remains disabled in `service_host`.
+        descriptor(ServiceKind::Signal, "Signal", "SG", 80, Consumer, Available),
         descriptor(
             ServiceKind::Slack,
             "Slack",
@@ -600,8 +594,8 @@ mod tests {
             .iter()
             .find(|service| service.id == ServiceKind::Signal)
             .unwrap();
-        assert_eq!(signal.launch_state, ServiceLaunchState::ComingSoon);
-        assert!(!signal.supports_native_preview);
+        assert_eq!(signal.launch_state, ServiceLaunchState::Available);
+        assert!(signal.supports_native_preview);
         assert!(services
             .windows(2)
             .all(|pair| pair[0].sidebar_order < pair[1].sidebar_order));
@@ -741,8 +735,11 @@ mod tests {
                 Some(EmailProvider::Tuta),
             )
             .is_err());
+        let signal = state
+            .create_for_owner(OWNER_A, ServiceKind::Signal, "Signal".to_owned())
+            .unwrap();
+        assert_eq!(signal.label, "Signal");
         for unavailable in [
-            ServiceKind::Signal,
             ServiceKind::Slack,
             ServiceKind::Linkedin,
             ServiceKind::Teams,
@@ -755,6 +752,7 @@ mod tests {
             .list_for_owner(OWNER_A)
             .unwrap()
             .iter()
+            .filter(|service| service.id != ServiceKind::Signal)
             .all(|service| service.accounts.is_empty()));
         let _ = fs::remove_file(path);
     }

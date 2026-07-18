@@ -207,8 +207,8 @@ const SERVICES: &[ServiceManifest] = &[
     ServiceManifest {
         id: "messenger",
         display_name: "Facebook Messenger",
-        initial_url: "https://www.messenger.com/",
-        allowed_hosts: &["www.messenger.com", "www.facebook.com"],
+        initial_url: "https://www.facebook.com/messages/",
+        allowed_hosts: &["www.facebook.com"],
         launch_active: true,
     },
 ];
@@ -1568,6 +1568,23 @@ mod tests {
             );
         }
         assert!(validate_opaque_id("rose-2").is_ok());
+    }
+
+    #[test]
+    fn messenger_uses_metas_current_first_party_messages_surface() {
+        let manifest = service_manifest("messenger").unwrap();
+        assert_eq!(
+            validated_initial_url(manifest).unwrap().as_str(),
+            "https://www.facebook.com/messages/"
+        );
+        assert!(navigation_allowed(
+            manifest,
+            &Url::parse("https://www.facebook.com/login/").unwrap()
+        ));
+        assert!(!navigation_allowed(
+            manifest,
+            &Url::parse("https://messenger-plus.example/").unwrap()
+        ));
     }
 
     #[test]

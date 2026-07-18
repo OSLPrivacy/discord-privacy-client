@@ -11,6 +11,13 @@ export type HomeAppId = Exclude<ServiceId, "email" | "slack" | "linkedin" | "tea
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
 export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp";
+export type BrowserImportId = "chrome" | "edge" | "firefox" | "brave" | "opera" | "vivaldi";
+
+export interface BrowserImportStatus {
+  id: BrowserImportId;
+  displayName: string;
+  installed: boolean;
+}
 
 export interface NativeApp {
   id: NativeAppId;
@@ -23,6 +30,13 @@ export interface NativeAppAction {
   id: NativeAppId;
   started: true;
   packageId?: string;
+}
+
+export interface NativeWindowHostAction {
+  id: NativeAppId;
+  status: "hosted" | "resized" | "focused" | "detached" | "unsupported" | "failed";
+  reason: "none" | "platformUnsupported" | "secondaryInstanceUnverified" | "appNotInstalled" | "profileUnavailable" | "launchFailed" | "windowNotFound" | "windowIdentityChanged" | "ownerWindowUnavailable" | "hostWindowUnavailable" | "windowOperationRejected" | "notHosted";
+  mode: "none" | "ownedBorderless";
 }
 
 export interface FirefoxStatus {
@@ -92,6 +106,7 @@ const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"]
 const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp"];
+const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"];
 const firefoxServiceIds: readonly HomeAppId[] = [
   "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
 ];
@@ -118,7 +133,7 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("snapchat", "Snapchat", "snapchat"),
   homeApp("x", "X", "x"),
   homeApp("telegram", "Telegram", "telegram"),
-  homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
+  homeApp("signal", "Signal", "signal"),
   homeApp("whatsapp", "WhatsApp", "whatsapp"),
   homeApp("messenger", "Messenger", "messenger"),
   homeApp("gmail", "Gmail", "email", "gmail"),
@@ -140,7 +155,7 @@ const previewRegistry: unknown = [
   service("email", "Email", "EM", 4, "consumer", "available"),
   service("x", "X", "X", 5, "consumer", "available"),
   service("messenger", "Facebook Messenger", "MS", 6, "consumer", "available"),
-  service("signal", "Signal", "SG", 7, "consumer", "comingSoon"),
+  service("signal", "Signal", "SG", 7, "consumer", "available"),
   service("whatsapp", "WhatsApp", "WA", 8, "consumer", "available"),
   service("slack", "Slack", "SL", 9, "enterprise", "comingSoon"),
   service("linkedin", "LinkedIn messaging", "LI", 10, "enterprise", "comingSoon"),
@@ -165,14 +180,75 @@ export async function loadNativeApps(): Promise<NativeApp[]> {
   return parseNativeApps(await invoke<unknown>("list_native_apps"));
 }
 
-export async function launchNativeApp(appId: NativeAppId): Promise<NativeAppAction> {
-  if (!isTauriRuntime() || !nativeAppIds.includes(appId)) throw new Error("native launch unavailable");
-  return parseNativeAppAction(await invoke<unknown>("launch_native_app", { appId }), false);
-}
-
 export async function installNativeApp(appId: NativeAppId): Promise<NativeAppAction> {
   if (!isTauriRuntime() || !nativeAppIds.includes(appId)) throw new Error("native install unavailable");
   return parseNativeAppAction(await invoke<unknown>("install_native_app", { appId }), true);
+}
+
+export async function loadBrowserImports(): Promise<BrowserImportStatus[]> {
+  if (!isTauriRuntime()) return browserImportIds.map((id) => ({ id, displayName: id[0].toUpperCase() + id.slice(1), installed: false }));
+  return parseBrowserImports(await invoke<unknown>("list_browser_imports"));
+}
+
+export async function openBrowserImport(browserId: BrowserImportId): Promise<void> {
+  if (!isTauriRuntime() || !browserImportIds.includes(browserId)) throw new Error("browser import unavailable");
+  const raw = await invoke<unknown>("open_browser_import", { browserId });
+  if (!isExactRecord(raw, ["id", "opened"]) || raw.id !== browserId || raw.opened !== true) {
+    throw new Error("invalid browser import response");
+  }
+}
+
+export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {
+  if (!Array.isArray(raw) || raw.length > browserImportIds.length) throw new Error("invalid browser import catalog");
+  const seen = new Set<BrowserImportId>();
+  return raw.map((candidate) => {
+    if (!isExactRecord(candidate, ["id", "displayName", "installed"])) throw new Error("invalid browser import catalog");
+    const id = candidate.id as BrowserImportId;
+    if (!browserImportIds.includes(id) || seen.has(id) || !isDisplayString(candidate.displayName, 40) || typeof candidate.installed !== "boolean") {
+      throw new Error("invalid browser import catalog");
+    }
+    seen.add(id);
+    return candidate as unknown as BrowserImportStatus;
+  });
+}
+
+function parseNativeWindowHostAction(raw: unknown, expectedId?: NativeAppId): NativeWindowHostAction {
+  const statuses = ["hosted", "resized", "focused", "detached", "unsupported", "failed"];
+  const reasons = ["none", "platformUnsupported", "secondaryInstanceUnverified", "appNotInstalled", "profileUnavailable", "launchFailed", "windowNotFound", "windowIdentityChanged", "ownerWindowUnavailable", "hostWindowUnavailable", "windowOperationRejected", "notHosted"];
+  if (!isExactRecord(raw, ["id", "status", "reason", "mode"])
+    || !nativeAppIds.includes(raw.id as NativeAppId)
+    || (expectedId !== undefined && raw.id !== expectedId)
+    || !statuses.includes(String(raw.status))
+    || !reasons.includes(String(raw.reason))
+    || !["none", "ownedBorderless"].includes(String(raw.mode))) {
+    throw new Error("invalid native window host response");
+  }
+  const success = ["hosted", "resized", "focused", "detached"].includes(String(raw.status));
+  if ((success && (raw.reason !== "none" || raw.mode !== "ownedBorderless"))
+    || (!success && raw.mode !== "none")) {
+    throw new Error("invalid native window host response");
+  }
+  return raw as unknown as NativeWindowHostAction;
+}
+
+export async function hostNativeAppWindow(appId: NativeAppId): Promise<NativeWindowHostAction> {
+  if (!isTauriRuntime() || !nativeAppIds.includes(appId)) throw new Error("native host unavailable");
+  return parseNativeWindowHostAction(await invoke<unknown>("host_native_app_window", { appId }), appId);
+}
+
+export async function resizeNativeAppWindow(): Promise<NativeWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("native host unavailable");
+  return parseNativeWindowHostAction(await invoke<unknown>("resize_native_app_window"));
+}
+
+export async function focusNativeAppWindow(): Promise<NativeWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("native host unavailable");
+  return parseNativeWindowHostAction(await invoke<unknown>("focus_native_app_window"));
+}
+
+export async function detachNativeAppWindow(): Promise<NativeWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("native host unavailable");
+  return parseNativeWindowHostAction(await invoke<unknown>("detach_native_app_window"));
 }
 
 export function parseNativeApps(raw: unknown): NativeApp[] {

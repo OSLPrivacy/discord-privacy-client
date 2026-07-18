@@ -3,6 +3,7 @@ pub mod control_contract;
 pub mod external_overlay;
 pub mod models;
 pub mod native_apps;
+pub mod native_window_host;
 pub mod preferences;
 pub mod privacy_scan;
 pub mod service_host;
@@ -23,6 +24,8 @@ pub mod cleanup;
 pub mod core_bridge;
 #[cfg(feature = "core")]
 pub mod identity_registry;
+#[cfg(feature = "core")]
+pub mod mass_cleanup;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 #[cfg(feature = "core")]

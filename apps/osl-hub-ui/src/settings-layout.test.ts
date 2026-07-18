@@ -71,7 +71,7 @@ describe("simplified truthful settings", () => {
     expect(source).not.toContain("downloadSetupCsv");
   });
 
-  it("keeps explicit account-opening and saved-password choices editable", () => {
+  it("keeps account-opening choices editable and browser import browser-owned", () => {
     const start = source.indexOf("function serviceAccountsSettingsContent");
     const end = source.indexOf("function privacySettingsContent", start);
     const apps = source.slice(start, end);
@@ -81,8 +81,10 @@ describe("simplified truthful settings", () => {
     expect(apps).toContain('data-saved-native="${app.id}"');
     expect(apps).toContain("Use existing account");
     expect(apps).toContain("Start fresh");
-    expect(apps).toContain("data-browser-password-import");
-    expect(apps).toContain("Off by default");
+    expect(apps).toContain("data-browser-import");
+    expect(apps).toContain("Browser-owned sign-in");
+    expect(apps).toContain("OSL never reads their password files");
+    expect(apps).not.toContain("data-browser-password-import");
   });
 
   it("leaves app ordering to Home edit mode", () => {
