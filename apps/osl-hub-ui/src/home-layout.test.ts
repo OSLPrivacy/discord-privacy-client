@@ -198,8 +198,9 @@ describe("home interaction regressions", () => {
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).toContain('data-native-launch="${nativeApp.id}"');
-    expect(source).toContain("Installed app uses its existing login");
-    expect(source).toContain("Use saved ${name} account?");
+    expect(source).toContain("Use existing account opens the installed app with its current login");
+    expect(source).toContain("Use existing account</button>");
+    expect(source).toContain("Start fresh</button>");
     expect(source).toContain('id="native-account-choice-existing"');
     expect(source).toContain('id="native-account-choice-new"');
     expect(source).toContain("!app.linked && installedNative");

@@ -826,6 +826,7 @@ code {
 .saved-account-app small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .saved-account-app input { width: 20px; min-height: 20px; }
 .saved-account-app.unavailable { opacity: .45; }
+.saved-password-opt-in { margin-top: 10px; }
 .saved-account-settings > p { color: var(--muted); font-size: 11px; }
 
 @keyframes saved-account-travel {

@@ -71,15 +71,18 @@ describe("simplified truthful settings", () => {
     expect(source).not.toContain("downloadSetupCsv");
   });
 
-  it("keeps saved-account behavior editable per installed app", () => {
+  it("keeps explicit account-opening and saved-password choices editable", () => {
     const start = source.indexOf("function serviceAccountsSettingsContent");
     const end = source.indexOf("function privacySettingsContent", start);
     const apps = source.slice(start, end);
-    expect(apps).toContain("Saved account behavior");
+    expect(apps).toContain("Account opening");
     expect(apps).toContain('data-saved-account-mode="use"');
     expect(apps).toContain('data-saved-account-mode="clean"');
     expect(apps).toContain('data-saved-native="${app.id}"');
-    expect(apps).toContain("Browser sign-ins stay separate");
+    expect(apps).toContain("Use existing account");
+    expect(apps).toContain("Start fresh");
+    expect(apps).toContain("data-browser-password-import");
+    expect(apps).toContain("Off by default");
   });
 
   it("leaves app ordering to Home edit mode", () => {

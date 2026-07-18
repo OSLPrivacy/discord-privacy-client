@@ -61,14 +61,32 @@ describe("clean onboarding sign in", () => {
 });
 
 describe("fresh-account continuation", () => {
-  it("asks once about saved accounts and keeps per-app choices in Advanced", () => {
+  it("asks how accounts should open and keeps per-app choices in Advanced", () => {
     const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
-    expect(tutorial).toContain("Use saved accounts?");
-    expect(tutorial).toContain("Use available");
-    expect(tutorial).toContain("Start clean");
+    expect(tutorial).toContain("Choose how accounts open");
+    expect(tutorial).toContain("Use existing account");
+    expect(tutorial).toContain("Start fresh");
     expect(tutorial).toContain('<details class="saved-account-advanced"><summary>Advanced</summary>');
-    expect(tutorial).toContain("Browser accounts need one manual sign-in");
+    expect(tutorial).toContain("OSL waits for your choice. It never signs in automatically.");
     expect(tutorial).toContain('data-saved-native="${app.id}"');
+  });
+
+  it("keeps saved-browser-password import off until a checkbox change", () => {
+    const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
+    const binding = functionSource("bindSavedAccountControls", "importIdentityForm");
+    expect(source).toContain("let browserPasswordImportOptIn = false;");
+    expect(source).toContain('localStorage.getItem(browserPasswordImportStorageKey) === "true"');
+    expect(tutorial).toContain("Allow saved-password import");
+    expect(tutorial).toContain("Off by default. OSL asks again before copying browser passwords.");
+    expect(tutorial).toContain("data-browser-password-import");
+    expect(binding).toMatch(/\[data-browser-password-import\][\s\S]*?addEventListener\("change"[\s\S]*?browserPasswordImportOptIn = input\.checked/);
+  });
+
+  it("shows the recovery title without the removed grey subtitle", () => {
+    const recovery = functionSource("recoveryContent", "identityPasswordForm");
+    expect(recovery).toContain("Save your recovery kit");
+    expect(recovery).not.toContain("OSL cannot retrieve these later");
+    expect(recovery).not.toContain('class="compact-lead"');
   });
 
   it("continues from saved recovery material into the tutorial", () => {

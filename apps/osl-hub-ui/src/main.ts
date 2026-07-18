@@ -109,6 +109,7 @@ let nativeAccountChoiceAppId: NativeAppId | null = null;
 let nativeApps: NativeApp[] = [];
 let savedAccountMode: SavedAccountMode = "ask";
 let savedNativeApps = new Set<NativeAppId>();
+let browserPasswordImportOptIn = false;
 let nativeActionBusy = false;
 let onboardingServiceSetup = false;
 let activeEmbeddedHost: EmbeddedServiceHost | null = null;
@@ -180,6 +181,7 @@ const homeTileOrderStorageKey = "osl-home-tile-order-v1";
 const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
+const browserPasswordImportStorageKey = "osl-browser-password-import-opt-in-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp"]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -241,6 +243,7 @@ function loadUiPreferences(): void {
     savedNativeApps.clear();
   }
   savedAccountMode = parseSavedAccountMode(localStorage.getItem(savedAccountModeStorageKey));
+  browserPasswordImportOptIn = localStorage.getItem(browserPasswordImportStorageKey) === "true";
   notificationsEnabled = localStorage.getItem(notificationsStorageKey) === "true";
   notificationPreviewContent = localStorage.getItem(notificationPreviewStorageKey) === "true";
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
@@ -447,7 +450,8 @@ function tutorialContent(): string {
     const available = app.availability === "installed";
     return `<label class="saved-account-app ${available ? "" : "unavailable"}"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${available ? "Installed" : app.availability === "installable" ? "Install later" : "Unavailable"}</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""} ${available ? "" : "disabled"}/></label>`;
   }).join("");
-  return `<h1 id="route-heading" tabindex="-1">Use saved accounts?</h1><div class="saved-account-animation" data-mode="${savedAccountMode}" aria-label="OSL can open accounts already signed in to installed Windows apps. Separate OSL profiles start signed out."><span class="saved-account-source">APP</span><span class="saved-account-flow"></span><span class="saved-account-destination">OSL</span></div><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use available</strong><small>${installed.length ? `${installed.length} installed ${installed.length === 1 ? "app" : "apps"}` : "No installed apps found"}</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start clean</strong><small>Separate signed-out profiles</small></button></div><p class="saved-account-truth">Browser accounts need one manual sign-in. OSL never copies browser passwords or cookies.</p><details class="saved-account-advanced"><summary>Advanced</summary><div>${nativeRows}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-account-setup" ${savedAccountMode === "ask" ? "disabled" : ""}>Continue</button></div>`;
+  const passwordImportChoice = `<label class="saved-account-app saved-password-opt-in"><span><span><strong>Allow saved-password import</strong><small>Off by default. OSL asks again before copying browser passwords.</small></span></span><input type="checkbox" data-browser-password-import ${browserPasswordImportOptIn ? "checked" : ""}/></label>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose how accounts open</h1><div class="saved-account-animation" data-mode="${savedAccountMode}" aria-label="Use an account already signed in on this PC, or start with a separate signed-out OSL profile."><span class="saved-account-source">PC</span><span class="saved-account-flow"></span><span class="saved-account-destination">OSL</span></div><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use existing account</strong><small>${installed.length ? `${installed.length} installed ${installed.length === 1 ? "app" : "apps"} available` : "No installed apps found"}</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start fresh</strong><small>Isolated signed-out profile</small></button></div><p class="saved-account-truth">OSL waits for your choice. It never signs in automatically.</p>${passwordImportChoice}<details class="saved-account-advanced"><summary>Advanced</summary><div>${nativeRows}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-account-setup" ${savedAccountMode === "ask" ? "disabled" : ""}>Continue</button></div>`;
 }
 
 function onboardingAppsContent(): string {
@@ -462,6 +466,7 @@ function onboardingAppsContent(): string {
 function persistSavedAccountPreferences(): void {
   localStorage.setItem(savedAccountModeStorageKey, savedAccountMode);
   localStorage.setItem(savedNativeAppsStorageKey, JSON.stringify([...savedNativeApps]));
+  localStorage.setItem(browserPasswordImportStorageKey, String(browserPasswordImportOptIn));
 }
 
 function bindSavedAccountControls(): void {
@@ -480,6 +485,10 @@ function bindSavedAccountControls(): void {
     else savedNativeApps.delete(appId);
     persistSavedAccountPreferences();
   }));
+  document.querySelectorAll<HTMLInputElement>("[data-browser-password-import]").forEach((input) => input.addEventListener("change", () => {
+    browserPasswordImportOptIn = input.checked;
+    persistSavedAccountPreferences();
+  }));
 }
 
 function importIdentityForm(): string {
@@ -489,7 +498,7 @@ function importIdentityForm(): string {
 function recoveryContent(): string {
   if (!recoveryBundle) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="tutorial">Continue</button>`;
   const accountRecovery = recoveryBundle.identityPhrase ? `<code>${escapeHtml(recoveryBundle.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
-  return `<p class="eyebrow">One-time recovery</p><h1 id="route-heading" tabindex="-1">Save your recovery kit</h1><p class="compact-lead">OSL cannot retrieve these later. Save both somewhere private.</p><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article><details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><label class="check"><input id="recovery-saved" type="checkbox"/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" disabled>Continue</button></section>`;
+  return `<p class="eyebrow">One-time recovery</p><h1 id="route-heading" tabindex="-1">Save your recovery kit</h1><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article><details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><label class="check"><input id="recovery-saved" type="checkbox"/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" disabled>Continue</button></section>`;
 }
 
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
@@ -790,7 +799,7 @@ function nativeAccountChoiceMarkup(): string {
   const app = nativeApps.find((candidate) => candidate.id === nativeAccountChoiceAppId);
   if (!app || app.availability !== "installed") return "";
   const name = escapeHtml(app.displayName);
-  return `<dialog class="owned-confirmation-dialog native-account-dialog" id="native-account-choice" aria-labelledby="native-account-choice-title"><section class="owned-confirmation-card"><header><h2 id="native-account-choice-title">Use saved ${name} account?</h2><button class="icon-button" id="native-account-choice-close" aria-label="Cancel">×</button></header><p>Open your signed-in Windows app, or start signed out in a separate OSL profile.</p><footer><button class="button" id="native-account-choice-new">Start separate</button><button class="button primary" id="native-account-choice-existing">Use saved account</button></footer></section></dialog>`;
+  return `<dialog class="owned-confirmation-dialog native-account-dialog" id="native-account-choice" aria-labelledby="native-account-choice-title"><section class="owned-confirmation-card"><header><h2 id="native-account-choice-title">Open ${name}</h2><button class="icon-button" id="native-account-choice-close" aria-label="Cancel">×</button></header><p>Keep the current login in the installed app, or open an isolated profile for a new login.</p><footer><button class="button" id="native-account-choice-new">Start fresh</button><button class="button primary" id="native-account-choice-existing">Use existing account</button></footer></section></dialog>`;
 }
 
 function appLauncherStrip(): string {
@@ -813,7 +822,7 @@ function trustedHeader(): string {
   const localProtection = route === "service" && activeEmbeddedHost
     ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open}">Protect locally</button>`
     : "";
-  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Open in OSL" : "Needs setup"}</small></span>${localProtection}</div>` : "";
+  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : "Needs setup"}</small></span>${localProtection}</div>` : "";
   const onboardingContinue = route === "service" && onboardingServiceSetup && activeEmbeddedHost
     ? `<button class="button compact primary" id="onboarding-service-continue">Continue setup</button>`
     : "";
@@ -852,7 +861,7 @@ function workspaceContent(): string {
     if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${module.state}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small>${module.state}</small></span></button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
-    const state = app.linked ? "Open in OSL" : app.launchState === "available" ? "Set up" : "Coming later";
+    const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
     const pending = appLaunchPendingId === app.id;
     return `<article class="app-tile ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}"><button type="button" data-home-app="${app.id}" aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${appLaunchPendingId ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span></button>${controls}</article>`;
   };
@@ -1050,17 +1059,17 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
   void step;
   const nativeApp = activeNativeApp();
   const installedAction = nativeApp?.availability === "installed"
-    ? `<button class="button" data-native-launch="${nativeApp.id}" ${nativeActionBusy ? "disabled" : ""}>Open installed ${name}</button>`
+    ? `<button class="button" data-native-launch="${nativeApp.id}" ${nativeActionBusy ? "disabled" : ""}>Use existing account</button>`
     : nativeApp?.availability === "installable"
       ? `<button class="button" data-native-install="${nativeApp.id}" ${nativeActionBusy ? "disabled" : ""}>Install ${name}</button>`
       : "";
-  const details = `<details class="guide-details"><summary>Sign-in privacy</summary><p>Open in OSL keeps a separate local session. OSL does not copy passwords from your browser or installed app.</p></details>`;
+  const details = `<details class="guide-details"><summary>Sign-in privacy</summary><p>Start fresh keeps a separate local session. Saved-password import stays off until you opt in, and OSL asks again before copying anything.</p></details>`;
   const selectedApp = homeAppsFromServices(services).find((app) => app.id === activeHomeAppId);
   const openAction = selectedApp?.launchState === "available"
-    ? `<button class="button primary" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name} in OSL`}</button>`
+    ? `<button class="button primary" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : "Start fresh"}</button>`
     : `<button class="button" disabled>Coming later</button>`;
-  const nativeNote = nativeApp?.availability === "installed" ? `<p class="guide-native-note">Installed app uses its existing login. OSL protection requires the OSL profile for now.</p>` : "";
-  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>Connect ${name}</h1><p>Choose where to open it.</p></div><footer class="guide-actions">${openAction}${installedAction}</footer>${nativeNote}${details}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
+  const nativeNote = nativeApp?.availability === "installed" ? `<p class="guide-native-note">Use existing account opens the installed app with its current login. Start fresh opens an isolated OSL profile.</p>` : "";
+  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>Connect ${name}</h1><p>Choose which account to use.</p></div><footer class="guide-actions">${openAction}${installedAction}</footer>${nativeNote}${details}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
 }
 
 function settingsContent(): string {
@@ -1114,7 +1123,8 @@ function serviceAccountsSettingsContent(): string {
     return `<article><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${state}</small></span></div>${action}</article>`;
   }).join("");
   const installedChoices = nativeApps.map((app) => `<label class="saved-account-app ${app.availability === "installed" ? "" : "unavailable"}"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed" : "Not installed"}</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""} ${app.availability === "installed" ? "" : "disabled"}/></label>`).join("");
-  const savedAccountSettings = `<details class="saved-account-settings"><summary>Saved account behavior</summary><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use available</strong><small>Only selected installed apps</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start clean</strong><small>Separate signed-out profiles</small></button></div><div class="saved-account-apps">${installedChoices}</div><p>Browser sign-ins stay separate and require one manual login.</p></details>`;
+  const passwordImportChoice = `<label class="saved-account-app saved-password-opt-in"><span><span><strong>Allow saved-password import</strong><small>Off by default. OSL asks again before copying browser passwords.</small></span></span><input type="checkbox" data-browser-password-import ${browserPasswordImportOptIn ? "checked" : ""}/></label>`;
+  const savedAccountSettings = `<details class="saved-account-settings"><summary>Account opening</summary><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use existing account</strong><small>Only selected installed apps</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start fresh</strong><small>Isolated signed-out profiles</small></button></div><div class="saved-account-apps">${installedChoices}${passwordImportChoice}</div><p>OSL never opens or imports an account until you choose it.</p></details>`;
   return `<h2>Apps</h2><p>Each account has its own local sign-in profile inside OSL.</p>${savedAccountSettings}<div class="account-settings-list">${rows}</div><div class="warning"><strong>Local sessions</strong><p>Service cookies stay in the matching OSL profile so you remain signed in. Your typed service password is not sent to OSL.</p></div>`;
 }
 
