@@ -12,6 +12,31 @@ describe("restrained motion system", () => {
     expect(styles).toMatch(/\.view-enter\s*\{[\s\S]*?animation:\s*view-enter var\(--motion-slow\)/);
   });
 
+  it("uses one brief transition for tool routes and modal tools", () => {
+    expect(source).toContain('if (route === "settings" || route === "service") view?.classList.add("tool-enter")');
+    expect(styles).toMatch(/\.tool-enter\s*\{[^}]*animation:\s*tool-enter var\(--motion-base\)/s);
+    expect(styles).toMatch(/\.unlock-dialog\[open\],[\s\S]*?\.scrub-review-dialog\[open\],[\s\S]*?animation:\s*tool-enter var\(--motion-base\)/);
+    expect(styles).toContain("--motion-base: 200ms");
+  });
+
+  it("opens with the existing vector mark and a one-shot seal animation", () => {
+    expect(source).toContain('class="loading-seal"');
+    expect(source).toContain('class="loading-seal-lock"');
+    expect(source).toContain('src="${oslVectorLogoUrl}"');
+    expect(styles).toMatch(/\.loading-logo\s*\{[^}]*animation:\s*seal-mark-enter 620ms/s);
+    expect(styles).toMatch(/\.loading-seal-lock\s*\{[^}]*animation:\s*seal-lock-enter 540ms 170ms/s);
+    expect(styles).not.toMatch(/animation:\s*seal-(?:mark|ring|lock)-enter[^;]*infinite/);
+  });
+
+  it("gives sign-in and password unlock distinct one-shot logo reveals", () => {
+    expect(source).toContain('class="unlock-logo-stage"');
+    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?Enter your password/);
+    expect(styles).toMatch(/\.signin-logo\s*\{[^}]*animation:\s*signin-logo-reveal 440ms/s);
+    expect(styles).toMatch(/\.unlock-logo-ring\s*\{[^}]*animation:\s*unlock-ring-reveal 560ms/s);
+    expect(styles).toMatch(/\.unlock-logo-stage \.osl-logo\s*\{[^}]*animation:\s*unlock-mark-reveal 500ms 80ms/s);
+    expect(styles).not.toMatch(/animation:\s*(?:signin-logo-reveal|unlock-(?:mark|ring)-reveal)[^;]*infinite/);
+  });
+
   it("limits interaction motion to compositor-friendly properties", () => {
     expect(styles).toContain("--motion-fast: 160ms");
     expect(styles).toContain("--motion-slow: 240ms");
@@ -31,6 +56,10 @@ describe("restrained motion system", () => {
     expect(reduced).toContain(".placement-demo-typing { width: 17ch !important; }");
     expect(reduced).toContain(".placement-demo article::after");
     expect(reduced).toContain(".view-enter");
+    expect(reduced).toContain(".tool-enter");
+    expect(reduced).toContain(".loading-seal-lock");
+    expect(reduced).toContain(".signin-logo");
+    expect(reduced).toContain(".unlock-logo-ring");
     expect(reduced).toContain('.toast { transform: translateX(-50%) !important; }');
   });
 

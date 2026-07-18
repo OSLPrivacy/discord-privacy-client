@@ -33,6 +33,8 @@ describe("clean onboarding sign in", () => {
 
   it("keeps password unlock to one field and one action", () => {
     expect(source).toContain('class="password-form unlock-form"');
+    expect(source).toContain('class="unlock-logo-stage"');
+    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Enter your password<\/h1>/);
     expect(source).toContain(">Enter your password</h1>");
     expect(source).toContain('id="identity-password-submit" type="submit" disabled>Unlock</button>');
   });

@@ -377,6 +377,13 @@ code {
   object-fit: contain;
 }
 
+.logo-treatment {
+  filter:
+    drop-shadow(0 1px 0 rgb(255 255 255 / 14%))
+    drop-shadow(0 3px 5px rgb(0 91 112 / 28%))
+    drop-shadow(0 0 11px color-mix(in srgb, var(--brand) 28%, transparent));
+}
+
 .check {
   min-height: 44px;
   margin-top: 16px;
@@ -435,7 +442,60 @@ code {
   color: var(--muted);
 }
 
-.loading-logo { width: 52px; height: 52px; }
+.loading-seal {
+  position: relative;
+  width: 104px;
+  height: 104px;
+  display: grid;
+  place-items: center;
+}
+
+.loading-logo {
+  width: 76px;
+  height: 76px;
+  animation: seal-mark-enter 620ms var(--ease-out) both;
+}
+
+.loading-seal-ring {
+  position: absolute;
+  inset: 4px;
+  border: 1px solid color-mix(in srgb, var(--brand) 42%, transparent);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--brand) 12%, transparent);
+  animation: seal-ring-enter 680ms var(--ease-out) both;
+}
+
+.loading-seal-lock {
+  position: absolute;
+  right: 4px;
+  bottom: 5px;
+  width: 25px;
+  height: 25px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--brand) 48%, var(--line));
+  background: var(--bg);
+  color: var(--brand);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  animation: seal-lock-enter 540ms 170ms var(--ease-out) both;
+}
+
+@keyframes seal-mark-enter {
+  from { opacity: 0; transform: scale(.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes seal-ring-enter {
+  from { opacity: 0; transform: scale(.72) rotate(-7deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@keyframes seal-lock-enter {
+  from { opacity: 0; transform: translateY(5px) scale(.84); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 .loading-lines {
   width: 180px;
@@ -467,6 +527,10 @@ code {
   animation: view-enter var(--motion-slow) var(--ease-out) both;
 }
 
+.tool-enter {
+  animation: tool-enter var(--motion-base) var(--ease-out) both;
+}
+
 .view-enter .tutorial-grid article,
 .view-enter .home-app-section {
   animation: section-enter var(--motion-slow) var(--ease-out) both;
@@ -486,6 +550,11 @@ code {
 @keyframes section-enter {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes tool-enter {
+  from { opacity: 0; transform: translateY(4px) scale(.995); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .onboarding-shell {
@@ -521,10 +590,16 @@ code {
 }
 
 .signin-logo {
-  width: 48px;
-  height: 48px;
+  width: 64px;
+  height: 64px;
   margin: 0 auto 22px;
   object-fit: contain;
+  animation: signin-logo-reveal 440ms var(--ease-out) both;
+}
+
+@keyframes signin-logo-reveal {
+  from { opacity: 0; transform: translateY(4px) scale(.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .signin-card h1 {
@@ -645,11 +720,19 @@ code {
 .text-back {
   min-height: 44px;
   margin-bottom: 14px;
-  padding: 0;
-  border: 0;
-  background: transparent;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
   color: var(--muted);
   cursor: pointer;
+  font-family: var(--font-ui);
+  font-weight: 600;
+}
+.text-back:hover,
+.text-back:focus-visible {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+  color: var(--danger);
 }
 
 .setup-surface {
@@ -1248,7 +1331,7 @@ code {
   cursor: pointer;
 }
 
-.command-brand .osl-logo { width: 29px; height: 29px; }
+.command-brand .osl-logo { width: 34px; height: 34px; }
 .command-brand strong,
 .command-brand small { display: block; }
 .command-brand strong { font-size: 12px; letter-spacing: .01em; }
@@ -1492,7 +1575,7 @@ code {
   cursor: pointer;
 }
 
-.home-brand .osl-logo { width: 34px; height: 34px; }
+.home-brand .osl-logo { width: 38px; height: 38px; }
 .home-brand strong,
 .home-brand small { display: block; }
 .home-brand strong { font-size: 13px; letter-spacing: .01em; }
@@ -1533,10 +1616,6 @@ code {
 .home-brand-mark .osl-logo {
   width: 52px;
   height: 52px;
-  filter:
-    drop-shadow(0 1px 0 rgb(255 255 255 / 16%))
-    drop-shadow(0 3px 4px rgb(0 91 112 / 30%))
-    drop-shadow(0 0 6px color-mix(in srgb, var(--brand) 18%, transparent));
 }
 
 :root[data-theme="light"] .home-brand-mark {
@@ -2598,13 +2677,15 @@ code {
 .unlock-dialog[open],
 .friends-dialog[open],
 .burn-dialog[open],
+.scrub-review-dialog[open],
 .owned-confirmation-dialog[open] {
-  animation: dialog-enter var(--motion-base) var(--ease-out) both;
+  animation: tool-enter var(--motion-base) var(--ease-out) both;
 }
 
 .unlock-dialog[open]::backdrop,
 .friends-dialog[open]::backdrop,
 .burn-dialog[open]::backdrop,
+.scrub-review-dialog[open]::backdrop,
 .owned-confirmation-dialog[open]::backdrop {
   animation: backdrop-enter var(--motion-base) ease-out both;
 }
@@ -2619,6 +2700,40 @@ code {
   padding: 21px;
   display: grid;
   gap: 11px;
+}
+
+.unlock-logo-stage {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 9px;
+  display: grid;
+  place-items: center;
+}
+
+.unlock-logo-stage .osl-logo {
+  width: 70px;
+  height: 70px;
+  animation: unlock-mark-reveal 500ms 80ms var(--ease-out) both;
+}
+
+.unlock-logo-ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--brand) 46%, transparent);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--brand) 13%, transparent);
+  animation: unlock-ring-reveal 560ms var(--ease-out) both;
+}
+
+@keyframes unlock-mark-reveal {
+  from { opacity: 0; transform: scale(.88); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes unlock-ring-reveal {
+  0% { opacity: 0; transform: rotate(-24deg) scale(.68); }
+  72% { opacity: 1; transform: rotate(2deg) scale(1.025); }
+  100% { opacity: 1; transform: rotate(0) scale(1); }
 }
 
 .unlock-card h2 { margin: 0; }
@@ -3435,10 +3550,19 @@ code {
   .placement-demo-caret { opacity: 1 !important; }
   .placement-demo article::after { opacity: 1 !important; transform: scaleX(1) !important; }
   .view-enter,
+  .tool-enter,
   .view-enter .tutorial-grid article,
   .view-enter .home-app-section,
+  .loading-logo,
+  .loading-seal-ring,
+  .loading-seal-lock,
+  .signin-logo,
+  .unlock-logo-stage .osl-logo,
+  .unlock-logo-ring,
   .unlock-dialog[open],
   .friends-dialog[open],
+  .burn-dialog[open],
+  .scrub-review-dialog[open],
   .update-banner,
   .toast { opacity: 1 !important; transform: none !important; }
   .toast { transform: translateX(-50%) !important; }
@@ -3526,7 +3650,8 @@ code {
   padding: 38px 0 74px;
 }
 .onboarding-panel h1 { margin: 0 0 22px; text-align: center; font-size: clamp(25px, 4vw, 34px); letter-spacing: -.025em; }
-.onboarding-panel > .text-back { position: absolute; top: 54px; margin: 0; }
+.onboarding-panel > .text-back,
+.unlock-card > .text-back { width: 100%; margin: 10px 0 0; }
 .onboarding-skip-dock {
   position: fixed;
   z-index: 30;
@@ -3690,8 +3815,8 @@ code {
   background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 98%, #fff 2%), var(--panel));
 }
 .home-brand-home { gap: 14px; }
-.home-brand-mark { width: 64px; height: 64px; flex-basis: 64px; border-color: color-mix(in srgb, var(--brand) 34%, var(--line)); }
-.home-brand-mark .osl-logo { width: 59px; height: 59px; }
+.home-brand-mark { width: 68px; height: 68px; flex-basis: 68px; border-color: color-mix(in srgb, var(--brand) 34%, var(--line)); }
+.home-brand-mark .osl-logo { width: 64px; height: 64px; }
 .home-brand-copy strong { font-size: 14px; letter-spacing: .035em; }
 .app-launcher-strip { height: 52px; justify-content: center; gap: 8px; }
 .app-launcher { width: 44px; flex-basis: 44px; min-height: 44px; border: 1px solid transparent; background: transparent; }
@@ -3757,8 +3882,8 @@ code {
   .onboarding-panel { width: min(100% - 28px, 540px); }
   .onboarding-skip-dock { left: 10px; bottom: 8px; }
   .home-header { height: 62px; min-height: 62px; padding: 0 12px; }
-  .home-brand-mark { width: 52px; height: 52px; flex-basis: 52px; }
-  .home-brand-home .osl-logo { width: 49px; height: 49px; }
+  .home-brand-mark { width: 56px; height: 56px; flex-basis: 56px; }
+  .home-brand-home .osl-logo { width: 52px; height: 52px; }
   .app-grid { grid-template-columns: repeat(3, minmax(74px, 1fr)); }
   .home-primary { padding: 18px 14px; }
   .manual-send-demo { grid-template-columns: 1fr; gap: 6px; }

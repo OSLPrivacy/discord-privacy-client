@@ -1,0 +1,101 @@
+:root {
+  font-family: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  color: #f3f5f7;
+  background: #090b0d;
+  font-synthesis: none;
+  --cyan: #06b6d4;
+  --panel: #111417;
+  --panel-2: #171b1f;
+  --line: #293038;
+  --muted: #8f9aa5;
+}
+* { box-sizing: border-box; }
+html, body { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100vh; background: #090b0d; }
+button, input, select { font: inherit; }
+button, select { min-height: 42px; }
+button {
+  border: 1px solid var(--line); border-radius: 2px; background: #15191d; color: #e9edf0;
+  cursor: pointer; transition: border-color 150ms ease, background 150ms ease, transform 120ms ease;
+}
+button:hover:not(:disabled) { border-color: #63707c; background: #1c2228; }
+button:active:not(:disabled) { transform: scale(.985); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+button:disabled { cursor: not-allowed; opacity: .4; }
+.topbar {
+  height: 64px; padding: 0 24px; border-bottom: 1px solid var(--line); display: flex; align-items: center;
+  justify-content: space-between; gap: 20px; background: rgba(9, 11, 13, .94); position: sticky; top: 0; z-index: 10;
+  backdrop-filter: blur(18px);
+}
+.topbar > div { display: flex; align-items: center; gap: 10px; }
+.topbar strong { font-size: 14px; letter-spacing: -.01em; }
+.topbar small { color: var(--muted); font-size: 11px; }
+.brand-dot { width: 11px; height: 11px; border: 2px solid var(--cyan); display: inline-block; transform: rotate(45deg); }
+.history-actions { gap: 6px !important; }
+.history-actions button { padding: 0 13px; font-size: 12px; }
+main { min-height: calc(100vh - 64px); display: grid; grid-template-columns: minmax(0, 1fr) 350px; }
+.preview-column { min-width: 0; padding: clamp(22px, 4vw, 52px); display: flex; flex-direction: column; gap: 18px; }
+.preview-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
+p { margin: 0; }
+.preview-header p, .control-heading p, .export-panel p:first-child { color: var(--cyan); font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+h1, h2 { margin: 4px 0 0; font-weight: 600; letter-spacing: -.025em; }
+h1 { font-size: clamp(25px, 4vw, 38px); }
+h2 { font-size: 18px; }
+#dimensions { color: var(--muted); font: 12px "Cascadia Mono", Consolas, monospace; }
+.context-tabs, .preset-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.context-tabs button, .preset-row button { padding: 0 12px; color: var(--muted); font-size: 11px; }
+.context-tabs button[aria-pressed="true"] { border-color: var(--cyan); color: #eefcff; background: rgba(6,182,212,.12); }
+.preview-stage {
+  min-height: 460px; flex: 1; border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden;
+  position: relative; isolation: isolate; transition: background 180ms ease;
+}
+.preview-stage.context-transparent {
+  background-color: #dfe3e6;
+  background-image: linear-gradient(45deg,#cbd1d5 25%,transparent 25%),linear-gradient(-45deg,#cbd1d5 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#cbd1d5 75%),linear-gradient(-45deg,transparent 75%,#cbd1d5 75%);
+  background-size: 22px 22px; background-position: 0 0,0 11px,11px -11px,-11px 0;
+}
+.preview-stage.context-dark { background: #0b0e10; }
+.preview-stage.context-light { background: #f5f7f8; }
+.preview-stage.context-device { background: linear-gradient(145deg,#20262c,#0d1013); padding: 54px 34px 34px; }
+.preview-stage.context-device::before { content: ""; position: absolute; inset: 28px; border: 1px solid #3a424b; background: #0a0d0f; box-shadow: 0 28px 80px rgba(0,0,0,.45); z-index: -1; }
+.device-chrome { display: none; position: absolute; top: 29px; left: 29px; right: 29px; height: 34px; border-bottom: 1px solid #252c32; padding: 12px; gap: 5px; }
+.context-device .device-chrome { display: flex; }
+.device-chrome i { width: 7px; height: 7px; background: #414b54; }
+.preview-artboard { width: min(86%, 760px); display: grid; place-items: center; transition: opacity 140ms ease, transform 180ms cubic-bezier(.2,.8,.2,1); }
+.preview-artboard.updating { opacity: .7; transform: scale(.995); }
+.preview-artboard svg { width: 100%; max-height: 460px; display: block; }
+.preset-row { justify-content: center; }
+.preset-row button { min-width: 104px; }
+.controls { padding: 30px 24px 40px; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; }
+.control-heading { margin-bottom: 24px; }
+.controls > label { margin: 0 0 17px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 7px; color: #d5dbe0; font-size: 12px; }
+.controls output { color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; }
+input[type="range"] { width: 100%; height: 20px; grid-column: 1 / -1; accent-color: var(--cyan); cursor: ew-resize; }
+.control-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.color-control, .toggle-control { min-height: 54px; padding: 8px 10px; border: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 9px; color: #d5dbe0; font-size: 12px; }
+input[type="color"] { width: 38px; height: 30px; padding: 0; border: 0; background: transparent; }
+.toggle-control input { width: 18px; height: 18px; accent-color: var(--cyan); }
+.export-panel { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); }
+.png-size { margin-top: 18px; display: grid; grid-template-columns: 1fr auto; align-items: center; color: #d5dbe0; font-size: 12px; }
+.png-size select { padding: 0 10px; border: 1px solid var(--line); background: #0e1114; color: #e9edf0; }
+.export-actions { margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.export-actions button { padding: 0 7px; font-size: 11px; }
+.local-note { margin-top: 12px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.toast { position: fixed; left: 50%; bottom: 22px; min-width: 200px; padding: 10px 14px; border: 1px solid var(--line); background: #11161a; color: #e9edf0; font-size: 12px; text-align: center; opacity: 0; transform: translate(-50%,8px); pointer-events: none; transition: 160ms ease; }
+.toast.visible { opacity: 1; transform: translate(-50%,0); }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  .controls { border-top: 1px solid var(--line); border-left: 0; }
+  .preview-stage { min-height: 390px; }
+}
+@media (max-width: 560px) {
+  .topbar { height: auto; min-height: 64px; padding: 10px 13px; align-items: flex-start; }
+  .topbar small { display: none; }
+  .history-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .history-actions button { min-height: 38px; padding-inline: 9px; }
+  .preview-column { padding: 22px 13px; }
+  .preview-stage { min-height: 310px; }
+  .controls { padding: 26px 16px; }
+  .export-actions { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }

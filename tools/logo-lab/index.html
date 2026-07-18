@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>OSL Logo Lab</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="brand-dot" aria-hidden="true"></span><strong>OSL Logo Lab</strong><small>Local only</small></div>
+    <div class="history-actions">
+      <button id="undo" type="button" disabled>Undo</button>
+      <button id="reset" type="button">Reset</button>
+      <button id="random" type="button">Safe variant</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="preview-column" aria-labelledby="preview-title">
+      <div class="preview-header">
+        <div><p>LIVE PREVIEW</p><h1 id="preview-title">Public OSL mark</h1></div>
+        <output id="dimensions">—</output>
+      </div>
+      <div class="context-tabs" role="group" aria-label="Preview surface">
+        <button type="button" data-context="transparent">Transparent</button>
+        <button type="button" data-context="dark" aria-pressed="true">Dark</button>
+        <button type="button" data-context="light">Light</button>
+        <button type="button" data-context="device">Device</button>
+      </div>
+      <div class="preview-stage context-dark" id="preview-stage">
+        <div class="device-chrome" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="preview-artboard" id="preview" aria-live="polite"></div>
+      </div>
+      <div class="preset-row" role="group" aria-label="Logo presets">
+        <button type="button" data-preset="homepage">Homepage</button>
+        <button type="button" data-preset="desktop">Desktop app</button>
+        <button type="button" data-preset="website">Website header</button>
+        <button type="button" data-preset="favicon">Favicon</button>
+      </div>
+    </section>
+
+    <aside class="controls" aria-label="Logo controls">
+      <div class="control-heading"><p>ADJUST</p><h2>Mark</h2></div>
+      <label>Size <output data-output="size"></output><input id="size" type="range" min="48" max="560" step="1" /></label>
+      <label>Padding <output data-output="padding"></output><input id="padding" type="range" min="0" max="100" step="1" /></label>
+      <label>Stroke <output data-output="stroke"></output><input id="stroke" type="range" min="0" max="10" step="0.25" /></label>
+      <label>Shield shape <output data-output="shield"></output><input id="shield" type="range" min="-100" max="100" step="1" /></label>
+      <label>Glow <output data-output="glow"></output><input id="glow" type="range" min="0" max="40" step="1" /></label>
+      <label>Shadow <output data-output="shadow"></output><input id="shadow" type="range" min="0" max="40" step="1" /></label>
+      <label>Wordmark gap <output data-output="wordmarkSpacing"></output><input id="wordmarkSpacing" type="range" min="0" max="100" step="1" /></label>
+      <div class="control-pair">
+        <label class="color-control">Color <input id="color" type="color" value="#06b6d4" /></label>
+        <label class="toggle-control"><input id="wordmark" type="checkbox" checked /><span>Wordmark</span></label>
+      </div>
+
+      <div class="export-panel">
+        <div><p>EXPORT</p><h2>Ready assets</h2></div>
+        <label class="png-size">PNG width
+          <select id="png-size">
+            <option value="32">32 px</option><option value="64">64 px</option><option value="128">128 px</option>
+            <option value="256" selected>256 px</option><option value="512">512 px</option><option value="1024">1024 px</option>
+          </select>
+        </label>
+        <div class="export-actions">
+          <button id="export-svg" type="button">SVG</button>
+          <button id="export-png" type="button">PNG</button>
+          <button id="export-css" type="button">CSS variables</button>
+        </div>
+        <p class="local-note">Nothing leaves this computer. Exports stay transparent.</p>
+      </div>
+    </aside>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>

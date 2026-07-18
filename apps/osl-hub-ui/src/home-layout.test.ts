@@ -70,9 +70,18 @@ describe("home workspace hierarchy", () => {
     expect(homeHeader).toContain('class="home-brand-mark"');
     expect(homeHeader).toContain('src="${oslVectorLogoUrl}"');
     expect(styles).toMatch(/\.home-brand-mark\s*\{[^}]*width:\s*56px[^}]*height:\s*56px[^}]*border:[^}]*background:[^}]*box-shadow:/s);
-    expect(styles).toMatch(/\.home-brand-mark \.osl-logo\s*\{[^}]*width:\s*52px[^}]*height:\s*52px[^}]*filter:[^}]*drop-shadow/s);
-    expect(styles).toMatch(/@media \(max-width: 620px\)[\s\S]*?\.home-brand-home \.osl-logo\s*\{[^}]*width:\s*48px[^}]*height:\s*48px/s);
+    expect(styles).toMatch(/\.home-brand-mark\s*\{[^}]*width:\s*68px[^}]*height:\s*68px[^}]*flex-basis:\s*68px/s);
+    expect(styles).toMatch(/\.home-brand-mark \.osl-logo\s*\{[^}]*width:\s*64px[^}]*height:\s*64px/s);
+    expect(styles).toMatch(/\.logo-treatment\s*\{[^}]*filter:[^}]*drop-shadow[^}]*drop-shadow/s);
+    expect(styles).toMatch(/@media \(max-width: 620px\)[\s\S]*?\.home-brand-home \.osl-logo\s*\{[^}]*width:\s*52px[^}]*height:\s*52px/s);
     expect(functionSource(source, "trustedHeader", "homeHeader")).not.toContain("home-brand-mark");
+  });
+
+  it("uses the same crisp vector logo treatment throughout the visible app chrome", () => {
+    expect(source.match(/src="\$\{oslVectorLogoUrl\}"/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(source.match(/class="[^"]*logo-treatment[^"]*"/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(styles).toMatch(/\.signin-logo\s*\{[^}]*width:\s*64px[^}]*height:\s*64px/s);
+    expect(styles).toMatch(/\.command-brand \.osl-logo\s*\{[^}]*width:\s*34px[^}]*height:\s*34px/s);
   });
 
   it("keeps friends persistently visible on wide screens and responsive on compact screens", () => {
