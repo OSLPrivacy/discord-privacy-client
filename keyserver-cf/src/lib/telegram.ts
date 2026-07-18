@@ -38,6 +38,7 @@ function normalizeTelegramChatId(value: unknown): string | null {
  * reopen access through the legacy value.
  */
 function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
+  let operatorChatIds: string[];
   if (env.TELEGRAM_OPERATOR_CHAT_IDS !== undefined) {
     const rawIds = env.TELEGRAM_OPERATOR_CHAT_IDS.split(",");
     if (rawIds.length === 0 || rawIds.length > MAX_OPERATOR_CHAT_IDS) {
@@ -53,16 +54,34 @@ function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
     if (chatIds.length === 0 || chatIds.filter((chatId) => chatId.startsWith("-")).length > 1) {
       return { status: "invalid", chatIds: [] };
     }
-    return { status: "configured", chatIds };
+    operatorChatIds = chatIds;
+  } else if (env.TELEGRAM_ADMIN_CHAT_ID !== undefined) {
+    const legacyChatId = normalizeTelegramChatId(env.TELEGRAM_ADMIN_CHAT_ID);
+    if (legacyChatId === null) return { status: "invalid", chatIds: [] };
+    operatorChatIds = [legacyChatId];
+  } else {
+    operatorChatIds = [];
   }
 
-  if (env.TELEGRAM_ADMIN_CHAT_ID === undefined) {
-    return { status: "unconfigured", chatIds: [] };
+  const viewerChatIds: string[] = [];
+  if (env.TELEGRAM_VIEWER_CHAT_IDS !== undefined) {
+    const rawIds = env.TELEGRAM_VIEWER_CHAT_IDS.split(",");
+    if (rawIds.length === 0 || rawIds.length > MAX_OPERATOR_CHAT_IDS) {
+      return { status: "invalid", chatIds: [] };
+    }
+    for (const rawId of rawIds) {
+      const normalized = normalizeTelegramChatId(rawId);
+      if (normalized === null || normalized.startsWith("-")) {
+        return { status: "invalid", chatIds: [] };
+      }
+      viewerChatIds.push(normalized);
+    }
   }
-  const legacyChatId = normalizeTelegramChatId(env.TELEGRAM_ADMIN_CHAT_ID);
-  return legacyChatId === null
-    ? { status: "invalid", chatIds: [] }
-    : { status: "configured", chatIds: [legacyChatId] };
+
+  const chatIds = [...new Set([...operatorChatIds, ...viewerChatIds])];
+  return chatIds.length === 0
+    ? { status: "unconfigured", chatIds: [] }
+    : { status: "configured", chatIds };
 }
 
 export function telegramReportingIsConfigured(env: Env): boolean {

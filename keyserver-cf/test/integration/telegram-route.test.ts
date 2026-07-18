@@ -152,6 +152,40 @@ describe("Telegram operator webhook route", () => {
     },
   );
 
+  it("adds private viewers without replacing the operator allowlist", async () => {
+    const viewerChatId = "8876204092";
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/downloads", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      fetcher,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseJson(response)).resolves.toEqual({
+      ok: true,
+      result: "accepted",
+    });
+    const telegramBody = JSON.parse(
+      String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body),
+    ) as { chat_id: string };
+    expect(telegramBody.chat_id).toBe(viewerChatId);
+  });
+
+  it("fails closed when the additive viewer allowlist is malformed", async () => {
+    for (const malformed of ["", "8876204092,", "@coworker", "-1001234567890"]) {
+      const fetcher = outboundFetcher();
+      const response = await handleTelegramWebhook(
+        commandRequest("/stats", PRIVATE_CHAT_ONE),
+        configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: malformed }),
+        fetcher,
+      );
+
+      expect(response.status).toBe(503);
+      expect(fetcher).not.toHaveBeenCalled();
+    }
+  });
+
   it("fails closed on an explicit malformed allowlist even when legacy config is valid", async () => {
     for (const malformed of ["", "1122334455,", "abc", "-1001,-1002"]) {
       const fetcher = outboundFetcher();

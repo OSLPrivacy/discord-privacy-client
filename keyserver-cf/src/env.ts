@@ -57,6 +57,11 @@ export interface Env {
    * This explicit allowlist supersedes TELEGRAM_ADMIN_CHAT_ID when present.
    */
   TELEGRAM_OPERATOR_CHAT_IDS?: string;
+  /**
+   * Additional comma-separated private chat IDs that may read aggregate bot
+   * reports. Kept separate so adding a coworker cannot replace operators.
+   */
+  TELEGRAM_VIEWER_CHAT_IDS?: string;
   /** Legacy single-chat setting retained only for deployment migration. */
   TELEGRAM_ADMIN_CHAT_ID?: string;
   /** Public, immutable installer URL used by the tracked redirect. */

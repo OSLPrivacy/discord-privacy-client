@@ -16,7 +16,8 @@ preview_urls = false
 # Stripe / Telegram secrets are installed with `wrangler secret put`; never
 # place them in this file or a repository-tracked environment file. Telegram
 # uses TELEGRAM_OPERATOR_CHAT_IDS (CSV private IDs plus at most one group ID),
-# with TELEGRAM_ADMIN_CHAT_ID accepted only as a migration fallback.
+# with TELEGRAM_VIEWER_CHAT_IDS as an additive private-account allowlist and
+# TELEGRAM_ADMIN_CHAT_ID accepted only as a migration fallback.
 
 # Several authenticated protocol routes still carry opaque identity/content
 # identifiers in their URL. Retaining request traces would undermine OSL's
