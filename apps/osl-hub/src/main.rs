@@ -19,16 +19,18 @@ use osl_privacy_hub::models::{
     EmailProvider, LinkedAccountDemo, LinkedServiceDemo, OnboardingPreferences, ServiceKind,
 };
 use osl_privacy_hub::native_apps::{
-    self, BrowserImportId, BrowserImportResult, BrowserImportStatus, NativeAppId, NativeAppStatus,
-    NativeInstallResult,
+    self, BrowserAccountImportResult, BrowserImportId, BrowserImportResult, BrowserImportStatus,
+    MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
 };
 use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
-use osl_privacy_hub::placement::PlacementReceipt;
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
+use osl_privacy_hub::scrub_index::{
+    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexState, ScrubIndexStatus,
+};
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
     ScopeSecurityDto,
@@ -37,6 +39,7 @@ use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
+use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -92,6 +95,101 @@ fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
     core_bridge::readiness(core)
         .active_osl_user_id
         .ok_or_else(|| "Unlock an OSL identity before accessing service profiles".to_owned())
+}
+
+#[tauri::command]
+async fn initialize_scrub_index(
+    state: State<'_, ScrubIndexState>,
+    registry: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ScrubIndexInitializeRequest,
+) -> Result<ScrubIndexStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    for selection in &request.selections {
+        let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
+            .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
+        registry.require_owned(&owner, service, &selection.account_id)?;
+    }
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.initialize(&owner, request))
+        .await
+        .map_err(|_| "Scrub initialization was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn append_scrub_index_chunk(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ScrubIndexChunkRequest,
+) -> Result<ScrubIndexStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.append_chunk(&owner, request))
+        .await
+        .map_err(|_| "Scrub indexing was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_index_status(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Option<ScrubIndexStatus>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.status(&owner))
+        .await
+        .map_err(|_| "Scrub status check was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn pause_scrub_index(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    import_id: String,
+) -> Result<ScrubIndexStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.pause(&owner, &import_id))
+        .await
+        .map_err(|_| "Scrub pause was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn resume_scrub_index(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    import_id: String,
+) -> Result<ScrubIndexStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.resume(&owner, &import_id))
+        .await
+        .map_err(|_| "Scrub resume was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn cancel_scrub_index(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    import_id: String,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.cancel(&owner, &import_id))
+        .await
+        .map_err(|_| "Scrub cancellation was interrupted".to_owned())?
 }
 
 #[derive(Default)]
@@ -170,16 +268,58 @@ async fn clear_hub_activation_code(app: tauri::AppHandle) -> Result<HubLicenseSt
 }
 
 #[tauri::command]
-async fn unlock_hub_main_password(
+async fn unlock_hub_password_gate(
     app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
     password: String,
-) -> Result<CoreReadiness, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
-        core_bridge::unlock_main_password(&state, password)
+) -> Result<HubGateUnlockResult, String> {
+    let _session = session.transition.lock().await;
+    let verify_app = app.clone();
+    let verification = tauri::async_runtime::spawn_blocking(move || {
+        startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
     })
     .await
-    .map_err(|_| "OSL unlock worker failed".to_string())?
+    .map_err(|_| "OSL password-gate worker failed".to_owned())??;
+
+    match verification.role {
+        VerifiedGateRole::Wrong => Ok(HubGateUnlockResult::wrong(verification)),
+        VerifiedGateRole::Main => {
+            let readiness = startup_gate::readiness_after_main(&app.state::<HubCoreState>());
+            Ok(HubGateUnlockResult::unlocked(verification, readiness))
+        }
+        VerifiedGateRole::Stealth => {
+            service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
+            let _ = app.state::<NativeWindowHostState>().detach();
+            app.state::<HubBrokerState>().clear()?;
+            startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
+            Ok(HubGateUnlockResult::decoy(verification))
+        }
+        VerifiedGateRole::Burn => {
+            service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
+            let _ = app.state::<NativeWindowHostState>().detach();
+            app.state::<HubBrokerState>().clear()?;
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|_| "OSL Privacy configuration storage is unavailable".to_owned())?;
+            let local_data_dir = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|_| "OSL Privacy local storage is unavailable".to_owned())?;
+            let burn_app = app.clone();
+            let burn = tauri::async_runtime::spawn_blocking(move || {
+                cleanup::execute_verified_gate_burn(
+                    &burn_app.state::<HubCoreState>(),
+                    &config_dir,
+                    &local_data_dir,
+                    true,
+                )
+            })
+            .await
+            .map_err(|_| "OSL burn worker failed".to_owned())??;
+            Ok(HubGateUnlockResult::burned(verification, burn))
+        }
+    }
 }
 
 #[tauri::command]
@@ -442,6 +582,21 @@ fn install_native_app(app_id: NativeAppId) -> Result<NativeInstallResult, String
 }
 
 #[tauri::command]
+fn get_mullvad_status() -> MullvadStatus {
+    native_apps::get_mullvad_status()
+}
+
+#[tauri::command]
+fn install_mullvad() -> Result<MullvadActionResult, String> {
+    native_apps::install_mullvad()
+}
+
+#[tauri::command]
+fn open_mullvad() -> Result<MullvadActionResult, String> {
+    native_apps::open_mullvad()
+}
+
+#[tauri::command]
 fn list_browser_imports() -> Vec<BrowserImportStatus> {
     native_apps::list_browser_imports()
 }
@@ -449,6 +604,17 @@ fn list_browser_imports() -> Vec<BrowserImportStatus> {
 #[tauri::command]
 fn open_browser_import(browser_id: BrowserImportId) -> Result<BrowserImportResult, String> {
     native_apps::open_browser_import(browser_id)
+}
+
+#[tauri::command]
+fn begin_browser_account_import(
+    app: tauri::AppHandle,
+) -> Result<BrowserAccountImportResult, String> {
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
+    native_apps::begin_browser_account_import(&app_local_data_dir)
 }
 
 #[cfg(target_os = "windows")]
@@ -682,25 +848,6 @@ async fn activate_local_loopback_context(
         account_id: lease.account_id,
         conversation_id,
     })
-}
-
-#[tauri::command]
-fn place_prepared_capsule(
-    _app: tauri::AppHandle,
-    host_state: State<'_, ServiceHostState>,
-    broker_state: State<'_, HubBrokerState>,
-    context_token: String,
-    _capsule: String,
-) -> Result<PlacementReceipt, String> {
-    let active = host_state
-        .current()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "OSL placement requires an active service host".to_owned())?;
-    broker_state.validate_active_host(&context_token, &active)?;
-    Err(
-        "Automatic placement is disabled until OSL verifies the exact native composer and conversation"
-            .to_owned(),
-    )
 }
 
 #[tauri::command]
@@ -1384,6 +1531,14 @@ fn main() {
             // because both applications run on the same Windows account.
             keystore::set_active_account_dir(None);
             keystore::set_base_dir_override(Some(config_dir.join("osl-core")));
+            let local_data_dir = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|error| format!("could not resolve app local-data directory: {error}"))?;
+            // Resume an already-committed gate burn before any identity can be
+            // selected or decrypted. The recovery record contains no paths or
+            // secrets; it only authorizes the same fixed-root idempotent purge.
+            cleanup::resume_interrupted_gate_burn(&config_dir, &local_data_dir)?;
             identity_registry::select_active_identity_before_bootstrap()?;
             app.manage(PreviewState::load(
                 config_dir.join("preview-preferences.json"),
@@ -1403,6 +1558,7 @@ fn main() {
             app.manage(HubAccountSessionState::default());
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
+            app.manage(ScrubIndexState::default());
             let registration_app = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 registration_app
@@ -1427,6 +1583,12 @@ fn main() {
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             scan_local_privacy,
+            initialize_scrub_index,
+            append_scrub_index_chunk,
+            get_scrub_index_status,
+            pause_scrub_index,
+            resume_scrub_index,
+            cancel_scrub_index,
             list_linked_services,
             get_core_readiness,
             list_core_features,
@@ -1436,7 +1598,7 @@ fn main() {
             execute_mass_cleanup_batch,
             validate_hub_activation_code,
             clear_hub_activation_code,
-            unlock_hub_main_password,
+            unlock_hub_password_gate,
             create_hub_osl_identity,
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
@@ -1450,8 +1612,12 @@ fn main() {
             open_hub_releases_page,
             list_native_apps,
             install_native_app,
+            get_mullvad_status,
+            install_mullvad,
+            open_mullvad,
             list_browser_imports,
             open_browser_import,
+            begin_browser_account_import,
             host_native_app_window,
             resize_native_app_window,
             focus_native_app_window,
@@ -1462,7 +1628,6 @@ fn main() {
             set_local_protected_sheet_open,
             remove_service_account,
             activate_local_loopback_context,
-            place_prepared_capsule,
             prepare_encrypted_text,
             decrypt_hub_capsule,
             prepare_local_protected_text_with_policy,

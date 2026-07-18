@@ -3,11 +3,16 @@ import "./styles.css";
 import "./local-protected-sheet.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  canCompleteSetup,
+  formatSendMode,
+  needsRiskAcceptance,
   parseSetupState,
+  type SendMode,
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import {
+  beginBrowserAccountImport,
   escapeHtml,
   closeEmbeddedServiceHost,
   configuredTopStripApps,
@@ -17,21 +22,29 @@ import {
   loadBrowserImports,
   homeAppsFromServices,
   hostNativeAppWindow,
+  installFirefox,
   installNativeApp,
+  installMullvad,
+  loadFirefoxStatus,
   loadLinkedServices,
+  loadMullvadStatus,
   loadNativeApps,
+  openMullvad,
   openBrowserImport,
   openEmbeddedHomeApp,
   resizeNativeAppWindow,
   setupEmbeddedHomeApp,
   type EmailProvider,
   type EmbeddedServiceHost,
+  type FirefoxStatus,
   type HomeAppCatalogEntry,
   type HomeAppId,
   type LinkedService,
+  type MullvadStatus,
   type NativeApp,
   type NativeAppId,
   type BrowserImportStatus,
+  type BrowserAccountImportAction,
   type ServiceId,
 } from "./services";
 import {
@@ -52,7 +65,7 @@ import {
   setupHubMainPassword,
   unavailableCoreIntegration,
   unconfiguredLicenseState,
-  unlockHubMainPassword,
+  unlockHubPasswordGate,
   validateHubActivationCode,
   type CoreIntegration,
   type HubLicenseState,
@@ -60,7 +73,7 @@ import {
 } from "./core";
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
 import { serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, listHubIdentities, listHubPeople, loadAppNotifications, loadFriendProfile, prepareLocalProtectedText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, listHubIdentities, listHubPeople, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, prepareLocalProtectedText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
@@ -69,10 +82,11 @@ import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep,
 import { withNativeDeadline } from "./native-deadline";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
+import { getScrubIndexStatus, initializeScrubIndex, type ScrubAccountSelection, type ScrubIndexStatus } from "./scrub-index";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 
 type Route = "onboarding" | "home" | "service" | "settings";
-type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "tutorial" | "apps" | "sending" | "scrub";
+type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "tutorial" | "detected" | "install" | "apps" | "browser" | "mullvad" | "sending" | "passwords" | "burnpass" | "privacy" | "scrub" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type ThemeChoice = "system" | "dark" | "light";
 type SavedAccountMode = "ask" | "use" | "clean";
@@ -93,8 +107,9 @@ function requireRoot(): HTMLDivElement {
 }
 const root = requireRoot();
 
-function manualSendingAnimationMarkup(): string {
-  return `<div class="manual-send-demo" role="img" aria-label="OSL encrypts a message on this device. You review it, copy it, and paste it into the app yourself."><span>Write</span><i aria-hidden="true"></i><span>Encrypt</span><i aria-hidden="true"></i><span>Copy</span><i aria-hidden="true"></i><span>Send</span></div>`;
+function manualSendingAnimationMarkup(mode: SendMode = "clipboard"): string {
+  const finalStep = mode === "double" ? "Enter again" : mode === "single" ? "Recheck & send" : "You send";
+  return `<div class="manual-send-demo" role="img" aria-label="OSL encrypts on this device, verifies the destination, and fails closed if anything changes."><span>Write</span><i aria-hidden="true"></i><span>Encrypt</span><i aria-hidden="true"></i><span>${mode === "clipboard" || mode === "manual" ? "Copy" : "Verify"}</span><i aria-hidden="true"></i><span>${finalStep}</span></div>`;
 }
 
 function passwordEyeIcon(visible = false): string {
@@ -115,11 +130,22 @@ let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
 let nativeApps: NativeApp[] = [];
+let mullvadStatus: MullvadStatus = { availability: "unavailable" };
+let mullvadBusy = false;
+let mullvadConnectedConfirmed = false;
 let browserImports: BrowserImportStatus[] = [];
+let browserAccountImport: BrowserAccountImportAction | null = null;
+let browserImportBusy = false;
+let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
+let firefoxInstallBusy = false;
+let browserMigrationAwaitingConfirmation = false;
+let savedAccountsReady = false;
 let savedAccountMode: SavedAccountMode = "ask";
 let savedNativeApps = new Set<NativeAppId>();
 const backgroundInstallIds = new Set<NativeAppId>();
 const selectedFirstInstallApps = new Set<NativeAppId>();
+const selectedOnboardingApps = new Set<HomeAppId>();
+let onboardingConnectAppId: HomeAppId | null = null;
 let backgroundInstallQueue: Promise<void> = Promise.resolve();
 let nativeActionBusy = false;
 let onboardingServiceSetup = false;
@@ -160,7 +186,8 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
-let scrubReviewConfirmed = false;
+let scrubIndexStatus: ScrubIndexStatus | null = null;
+let scrubIndexBusy = false;
 let lastFocusKey = "";
 let lastWorkspaceMarkup: string | null = null;
 let lastWorkspaceViewKey = "";
@@ -193,6 +220,8 @@ const homeTileOrderStorageKey = "osl-home-tile-order-v1";
 const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
+const savedAccountsReadyStorageKey = "osl-browser-accounts-ready-v1";
+const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp"]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -201,6 +230,31 @@ const scrubReviewPageSize = 20;
 const bootCoreDeadlineMs = 4_000;
 const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
+
+function experimentalSendConsentId(mode: SendMode, serviceId: string, accountId: string): string {
+  return `${mode}:${serviceId}:${accountId}`;
+}
+
+function loadExperimentalSendConsents(): Set<string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(experimentalSendConsentStorageKey) ?? "[]") as unknown;
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
+      ? new Set(parsed.filter((item) => item.length <= 256).slice(0, 100))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function hasExperimentalSendConsent(mode: SendMode, serviceId: string, accountId: string): boolean {
+  return loadExperimentalSendConsents().has(experimentalSendConsentId(mode, serviceId, accountId));
+}
+
+function rememberExperimentalSendConsent(mode: SendMode, serviceId: string, accountId: string): void {
+  const consents = loadExperimentalSendConsents();
+  consents.add(experimentalSendConsentId(mode, serviceId, accountId));
+  localStorage.setItem(experimentalSendConsentStorageKey, JSON.stringify([...consents].slice(-100)));
+}
 
 function parseTheme(raw: string | null): ThemeChoice {
   return raw === "light" || raw === "dark" || raw === "system" ? raw : "system";
@@ -254,6 +308,7 @@ function loadUiPreferences(): void {
     savedNativeApps.clear();
   }
   savedAccountMode = parseSavedAccountMode(localStorage.getItem(savedAccountModeStorageKey));
+  savedAccountsReady = localStorage.getItem(savedAccountsReadyStorageKey) === "true";
   notificationsEnabled = localStorage.getItem(notificationsStorageKey) === "true";
   notificationPreviewContent = localStorage.getItem(notificationPreviewStorageKey) === "true";
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
@@ -421,8 +476,11 @@ function bindDesktopTitlebar(): void {
 }
 
 function renderOnboarding(): void {
-  const canSkipSetup = onboardingRoute === "tutorial" || onboardingRoute === "apps" || onboardingRoute === "sending" || onboardingRoute === "scrub";
-  const markup = `<div class="app-frame">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${canSkipSetup ? '<button class="onboarding-skip-dock" id="skip-onboarding">Skip · manual setup</button>' : ""}</div>${scrubReviewDialogMarkup()}</div>`;
+  const setupScreen = ["tutorial", "detected", "install", "apps", "browser", "mullvad", "sending", "passwords", "burnpass", "privacy", "scrub"].includes(onboardingRoute);
+  const setupNavigation = setupScreen
+    ? '<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button><button class="onboarding-skip-dock" id="skip-onboarding" type="button">Skip · manual setup</button>'
+    : "";
+  const markup = `<div class="app-frame">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${setupNavigation}</div>${scrubReviewDialogMarkup()}</div>`;
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
   root.innerHTML = markup;
@@ -450,36 +508,96 @@ function onboardingContent(): string {
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
   if (onboardingRoute === "tutorial") return tutorialContent();
+  if (onboardingRoute === "detected") return detectedAppsContent();
+  if (onboardingRoute === "install") return installMissingAppsContent();
   if (onboardingRoute === "apps") return onboardingAppsContent();
+  if (onboardingRoute === "browser") return browserImportContent();
+  if (onboardingRoute === "mullvad") return mullvadSetupContent();
+  if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
+  if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
+  if (onboardingRoute === "privacy") return onboardingPrivacyContent();
   if (onboardingRoute === "scrub") return onboardingScrubContent();
+  if (onboardingRoute === "decoy") return `<section class="decoy-workspace" aria-labelledby="route-heading"><h1 id="route-heading" tabindex="-1">Workspace</h1><p>No recent items.</p><button class="button ghost" id="close-decoy" type="button">Close</button></section>`;
 
   return sendingSetupContent();
 }
 
 function tutorialContent(): string {
-  const installed = nativeApps.filter((app) => app.availability === "installed");
-  const nativeRows = nativeApps.map((app) => {
-    if (app.availability === "installed") {
-      return `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""}/></label>`;
-    }
-    if (app.availability === "installable") {
-      const installing = backgroundInstallIds.has(app.id);
-      return `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${installing ? "Installing…" : "Install in background"}</small></span></span><input type="checkbox" data-first-install="${app.id}" ${selectedFirstInstallApps.has(app.id) ? "checked" : ""} ${installing ? "disabled" : ""}/></label>`;
-    }
-    return `<div class="saved-account-app unavailable"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Unavailable on this PC</small></span></span></div>`;
-  }).join("");
-  const browserButtons = browserImports.filter((browser) => browser.installed).map((browser) => `<button class="button compact" type="button" data-browser-import="${browser.id}">Open ${escapeHtml(browser.displayName)} import</button>`).join("");
-  const browserNotice = `<div class="saved-account-browser-note"><strong>Browser passwords stay in your browser</strong><small>Chrome, Edge, Firefox, Brave, Opera, and Vivaldi keep control of import and consent. OSL never reads their password files.</small>${browserButtons ? `<div class="browser-import-actions">${browserButtons}</div>` : ""}</div>`;
-  return `<h1 id="route-heading" tabindex="-1">Choose how accounts open</h1><div class="saved-account-animation" data-mode="${savedAccountMode}" aria-label="Use an account already signed in on this PC, or start with a separate signed-out OSL profile."><span class="saved-account-source">PC</span><span class="saved-account-flow"></span><span class="saved-account-destination">OSL</span></div><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use existing account</strong><small>${installed.length ? `${installed.length} installed ${installed.length === 1 ? "app" : "apps"} available` : "No installed apps found"}</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start fresh</strong><small>Separate OSL profile</small></button></div><p class="saved-account-truth">Nothing opens or installs without your choice.</p><fieldset class="saved-account-advanced first-install-apps"><legend>Apps</legend><div>${nativeRows}</div></fieldset>${browserNotice}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-account-setup" ${savedAccountMode === "ask" ? "disabled" : ""}>Continue</button></div>`;
-}
-
-function onboardingAppsContent(): string {
   const apps = homeAppsFromServices(services)
     .filter((app) => app.visibility === "launch" && app.launchState === "available");
   const choices = apps.length
-    ? `<div class="onboarding-app-grid" role="list">${apps.map((app) => `<button type="button" class="onboarding-app" data-onboarding-app="${app.id}" aria-label="Connect ${escapeHtml(app.displayName)} inside OSL"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
+    ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="Services to set up">${apps.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
+    : `<div class="empty-state"><strong>No apps are available</strong><p>You can continue and add apps later from Home.</p></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose your apps</h1><p class="compact-lead onboarding-centered-copy">Pick the services you want available in OSL. This does not sign in or discover accounts.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button">Continue</button></div>`;
+}
+
+function selectedNativeApps(): NativeApp[] {
+  return nativeApps.filter((app) => selectedOnboardingApps.has(app.id));
+}
+
+function selectedInstalledNativeApp(appId: HomeAppId): NativeApp | undefined {
+  const nativeId = appId as NativeAppId;
+  if (savedAccountMode !== "use" || !supportedNativeAppIds.has(nativeId) || !savedNativeApps.has(nativeId)) return undefined;
+  return nativeApps.find((candidate) => candidate.id === nativeId && candidate.availability === "installed");
+}
+
+function detectedAppsContent(): string {
+  const installed = selectedNativeApps().filter((app) => app.availability === "installed");
+  const rows = installed.length
+    ? installed.map((app) => `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed on this PC</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""}/></label>`).join("")
+    : `<div class="empty-state"><strong>No selected desktop apps were detected</strong><p>OSL can still use isolated web profiles.</p></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose which detected desktop apps OSL may open. OSL does not discover their accounts or sign you in.</p><div class="saved-account-choices"><button type="button" class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use selected apps</strong><small>Open only the apps checked below</small></button><button type="button" class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Use web profiles</strong><small>Start with isolated OSL profiles</small></button></div><div class="setup-list">${rows}</div><p class="saved-account-truth">Nothing opens without your choice.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
+}
+
+function installMissingAppsContent(): string {
+  const missing = selectedNativeApps().filter((app) => app.availability !== "installed");
+  const rows = missing.length
+    ? missing.map((app) => app.availability === "installable"
+      ? `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Optional Windows install</small></span></span><input type="checkbox" data-first-install="${app.id}" ${selectedFirstInstallApps.has(app.id) ? "checked" : ""}/></label>`
+      : `<div class="saved-account-app unavailable"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Install unavailable on this PC</small></span></span></div>`).join("")
+    : `<div class="empty-state"><strong>No missing desktop apps</strong><p>Your selected desktop apps are already installed, or use the web.</p></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Install missing apps</h1><p class="compact-lead onboarding-centered-copy">Selected installs start through Windows after you continue. OSL does not sign in for you.</p><div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-install-apps" type="button">Continue</button></div>`;
+}
+
+function onboardingAppsContent(): string {
+  const available = homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available");
+  const apps = selectedOnboardingApps.size
+    ? available.filter((app) => selectedOnboardingApps.has(app.id))
+    : available;
+  const choices = apps.length
+    ? `<div class="onboarding-app-grid" role="radiogroup" aria-label="App to connect now">${apps.map((app) => `<button type="button" role="radio" class="onboarding-app ${onboardingConnectAppId === app.id ? "selected" : ""}" data-connect-app-choice="${app.id}" aria-checked="${onboardingConnectAppId === app.id}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
     : `<div class="empty-state"><strong>Apps are unavailable</strong><p>Skip for now and add one from Home.</p></div>`;
-  return `<h1 id="route-heading" tabindex="-1">Connect one app</h1>${choices}`;
+  return `<h1 id="route-heading" tabindex="-1">Connect one app</h1><p class="compact-lead onboarding-centered-copy">Choose one service to open its real sign-in. You can add the rest later.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-connect-app" type="button" ${onboardingConnectAppId ? "" : "disabled"}>Continue</button></div>`;
+}
+
+function browserImportContent(): string {
+  const installed = browserImports.filter((browser) => browser.installed);
+  const names = installed.map((browser) => escapeHtml(browser.displayName)).join(", ");
+  const advancedButtons = installed.map((browser) => `<button class="button compact" type="button" data-browser-import="${browser.id}">Prepare export in ${escapeHtml(browser.displayName)}</button>`).join("");
+  const chromeNote = installed.some((browser) => browser.id === "chrome")
+    ? `<p class="saved-account-truth"><strong>Chrome on Windows:</strong> app-bound encryption prevents a silent copy. Firefox will guide a browser-owned CSV export, Windows confirmation, and explicit file selection. Delete that plaintext CSV when Firefox finishes.</p>`
+    : "";
+  const ready = savedAccountsReady
+    ? `<div class="saved-account-browser-note"><strong>Firefox import marked complete</strong><small>You confirmed the browser-owned import finished. Firefox may offer imported saved logins on supported sites. MFA and CAPTCHA still apply; OSL never receives your passwords.</small></div>`
+    : "";
+  const selectedRoute = browserAccountImport
+    ? `<p class="saved-account-truth">Recommended source: ${escapeHtml(browserAccountImport.preferredSource)}. Firefox keeps the final source and confirmation visible among ${browserAccountImport.detectedSources.length} detected browser${browserAccountImport.detectedSources.length === 1 ? "" : "s"}.</p>`
+    : "";
+  const buttonLabel = browserImportBusy
+    ? "Opening Firefox…"
+    : browserMigrationAwaitingConfirmation
+      ? "I finished the Firefox import"
+      : savedAccountsReady
+        ? "Import marked complete"
+        : "Import saved accounts";
+  const firefoxAction = firefoxStatus.availability === "installed"
+    ? ""
+    : firefoxStatus.availability === "installable"
+      ? `<button class="button" id="install-firefox" type="button" ${firefoxInstallBusy ? "disabled" : ""}>${firefoxInstallBusy ? "Installing Firefox…" : "Install Firefox"}</button>`
+      : `<p class="saved-account-truth">Firefox is required for this visible import and could not be installed automatically on this PC.</p>`;
+  const disabled = browserImportBusy || savedAccountsReady || installed.length === 0 || firefoxStatus.availability !== "installed";
+  return `<h1 id="route-heading" tabindex="-1">Import browser accounts</h1><p class="compact-lead onboarding-centered-copy">${installed.length ? `Found ${names}.` : "No supported browser was found."} Import stays in Firefox's visible, browser-owned flow.</p><section class="saved-account-browser-note"><strong>Local-only consent</strong><small>Firefox performs the migration into OSL's isolated Firefox profile. Your browser or Windows keeps every confirmation visible. OSL does not scrape or decrypt browser databases, discover accounts, receive passwords, or upload account data.</small></section>${ready}${selectedRoute}${firefoxAction}<button class="button" id="import-saved-accounts" type="button" ${disabled ? "disabled" : ""}>${buttonLabel}</button>${browserMigrationAwaitingConfirmation && !savedAccountsReady ? `<p class="saved-account-truth">Finish the temporary Firefox wizard, return to OSL, then confirm with the same button.</p>` : ""}${chromeNote}<details class="saved-account-advanced"><summary>Advanced browser export</summary><p>Use these only if Firefox asks for a manual export.</p><div class="browser-import-actions">${advancedButtons || "No browser export shortcut is available."}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-browser-import" type="button">Continue</button></div>`;
 }
 
 function persistSavedAccountPreferences(): void {
@@ -509,21 +627,82 @@ function bindSavedAccountControls(): void {
     if (input.checked) selectedFirstInstallApps.add(appId);
     else selectedFirstInstallApps.delete(appId);
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-background-install]").forEach((button) => button.addEventListener("click", () => {
+    void startBackgroundInstall(button.dataset.backgroundInstall as NativeAppId);
+  }));
+}
+
+function bindBrowserImportControls(): void {
+  document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", async () => {
+    if (browserImportBusy || savedAccountsReady) return;
+    if (browserMigrationAwaitingConfirmation) {
+      const completed = window.confirm("Confirm only if the Firefox migration window reports that the import finished. OSL does not inspect the imported passwords.");
+      if (!completed) return;
+      savedAccountsReady = true;
+      browserMigrationAwaitingConfirmation = false;
+      localStorage.setItem(savedAccountsReadyStorageKey, "true");
+      showToast("Saved accounts ready in OSL Firefox");
+      render();
+      return;
+    }
+    const consented = window.confirm("Import saved accounts locally? Firefox will detect supported browsers and open a temporary migration window in OSL's isolated Firefox profile. Browser and Windows confirmations stay visible. OSL never receives or uploads your passwords.");
+    if (!consented) return;
+    browserImportBusy = true;
+    render();
+    try {
+      browserAccountImport = await withNativeDeadline(beginBrowserAccountImport(), "Open Firefox account migration", 5_000);
+      browserMigrationAwaitingConfirmation = true;
+      showToast(browserAccountImport.manualExportRequired
+        ? "Firefox opened — follow its browser-owned export and import steps"
+        : "Temporary Firefox migration window opened");
+    } catch (failure) {
+      showToast(localActionError(failure, "Saved-account migration could not open"));
+    } finally {
+      browserImportBusy = false;
+      render();
+    }
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-browser-import]").forEach((button) => button.addEventListener("click", async () => {
     const browserId = button.dataset.browserImport as BrowserImportStatus["id"];
     button.disabled = true;
     try {
       await openBrowserImport(browserId);
-      showToast("Browser import settings opened");
+      showToast("Browser password manager opened — approve export there");
     } catch (failure) {
-      showToast(localActionError(failure, "Browser import settings could not open"));
+      showToast(localActionError(failure, "Browser password manager could not open"));
     } finally {
       button.disabled = false;
     }
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-background-install]").forEach((button) => button.addEventListener("click", () => {
-    void startBackgroundInstall(button.dataset.backgroundInstall as NativeAppId);
-  }));
+  document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", () => {
+    onboardingRoute = "mullvad";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#install-firefox")?.addEventListener("click", () => void runFirefoxInstall());
+}
+
+async function runFirefoxInstall(): Promise<void> {
+  if (firefoxInstallBusy || firefoxStatus.availability !== "installable") return;
+  firefoxInstallBusy = true;
+  render();
+  try {
+    await withNativeDeadline(installFirefox(), "Start Firefox install");
+    showToast("Firefox is installing in Windows");
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 3_000));
+      firefoxStatus = await loadFirefoxStatus().catch(() => firefoxStatus);
+      if (firefoxStatus.availability === "installed") {
+        showToast("Firefox is ready");
+        return;
+      }
+    }
+    showToast("Firefox is still installing in Windows");
+  } catch (failure) {
+    showToast(localActionError(failure, "Firefox installation could not start"));
+  } finally {
+    firefoxInstallBusy = false;
+    render();
+  }
 }
 
 function importIdentityForm(): string {
@@ -538,12 +717,43 @@ function recoveryContent(): string {
 
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
   const setup = mode === "setup";
-  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><span class="unlock-logo-ring"></span><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
+  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><span class="unlock-logo-ring"></span><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><svg class="security-motion unlock-security-motion" viewBox="0 0 120 120"><g class="security-center"><path d="M49 46h22v7H56v14h15v7H49Z"/></g><g class="security-key"><circle cx="44" cy="60" r="6"/><path d="M50 60h24m-7 0v7m-7-7v5"/></g><g class="security-lock"><path class="security-shackle" d="M47 55V44a13 13 0 0 1 26 0v11"/><path class="security-lock-body" d="M42 55h36v28H42Z"/></g></svg></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
 function sendingSetupContent(): string {
-  return `<h1 id="route-heading" tabindex="-1">Send with copy & paste</h1>${manualSendingAnimationMarkup()}<p class="saved-account-truth">OSL prepares encrypted text. You review, copy, paste, and send it yourself.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding">Continue</button></div>`;
+  const selectedMode: SendMode = setup.sendMode === "manual" ? "clipboard" : setup.sendMode;
+  const option = (mode: SendMode, title: string, detail: string, badge = "") => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${title}</strong>${badge ? `<small class="send-mode-badge">${badge}</small>` : ""}</span><small>${detail}</small></button>`;
+  const risk = needsRiskAcceptance(selectedMode)
+    ? `<label class="send-risk"><input id="accept-send-risk" type="checkbox" ${setup.acceptedRisk && setup.acceptedRiskForMode === selectedMode ? "checked" : ""}/><span><strong>I understand</strong><small>Experimental sending can target the wrong chat if an app changes. OSL stops unless it can verify the exact app, account, chat, and composer. Each account asks again.</small></span></label>`
+    : "";
+  return `<h1 id="route-heading" tabindex="-1">Choose how to send</h1>${manualSendingAnimationMarkup(selectedMode)}<div class="send-mode-list">${option("clipboard", "Copy", "Encrypts and copies. Never presses Send.", "Recommended")}${option("double", "Double Enter", "First Enter prepares. A second distinct Enter sends only after another exact check.", "Experimental")}<details class="send-mode-advanced" ${selectedMode === "single" ? "open" : ""}><summary>Advanced</summary>${option("single", "Single Enter", "One Enter prepares and sends after an exact recheck.", "Highest risk")}</details></div>${risk}<p class="send-mode-truth">If OSL cannot prove the destination, it copies the encrypted text and sends nothing.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
+}
+
+function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
+  const stealth = role === "stealth";
+  const configured = stealth ? passwordRoleStatus?.stealthPasswordSet : passwordRoleStatus?.burnPasswordSet;
+  const title = stealth ? "Stealth password" : "Burn password";
+  const detail = stealth ? "Opens an empty workspace without loading your private data." : "Erases OSL data from this device when entered at sign in.";
+  const next = stealth ? "burnpass" : "privacy";
+  if (configured) {
+    return `<h1 id="route-heading" tabindex="-1">${title}</h1><div class="password-role-ready"><span class="status-tag">Set</span><p>${detail}</p></div><div class="setup-footer onboarding-actions"><button class="button primary" data-password-role-next="${next}" type="button">Continue</button></div>`;
+  }
+  return `<h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><form class="setup-surface password-form onboarding-role-form" data-onboarding-password-role="${role}" data-password-role-next="${next}" novalidate><label for="setup-${role}-current">Current password</label><div class="password-input-row"><input id="setup-${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div><label for="setup-${role}-alternate">New ${stealth ? "stealth" : "burn"} password</label><div class="password-input-row"><input id="setup-${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div><label for="setup-${role}-confirm">Confirm</label><div class="password-input-row"><input id="setup-${role}-confirm" name="confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="setup-${role}-confirm" aria-label="Show password confirmation">${passwordEyeIcon()}</button></div><p class="unlock-error" data-onboarding-role-error role="alert"></p><button class="button primary" type="submit" disabled>Set password</button></form>`;
+}
+
+function onboardingPrivacyContent(): string {
+  return `<h1 id="route-heading" tabindex="-1">Privacy</h1><p class="compact-lead onboarding-centered-copy">Turn on the protection this build can enforce.</p><div class="setup-list"><label class="setup-status-row interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras and malware can still capture content.</small></span><input id="onboarding-screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label><section class="setup-status-row" aria-disabled="true"><span><strong>Decrypt display</strong><small>Unavailable during setup. Decryption choices require a real protected chat context.</small></span><span class="status-tag">Unavailable</span></section></div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
+}
+
+function mullvadSetupContent(): string {
+  const availability = mullvadStatus.availability;
+  const action = availability === "installed"
+    ? `<button class="button" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "Open Mullvad"}</button>`
+    : availability === "installable"
+      ? `<button class="button" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "Install Mullvad"}</button>`
+      : `<p class="mullvad-unavailable">Mullvad or Windows App Installer was not found.</p>`;
+  return `<section class="mullvad-setup" aria-labelledby="route-heading"><div class="mullvad-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 19 6v5c0 4.5-2.8 8-7 10-4.2-2-7-5.5-7-10V6l7-3Z"/><path d="M9 12.2 11 14l4-4"/></svg></div><h1 id="route-heading" tabindex="-1">Mullvad</h1><p>Optional. Connect before opening your apps.</p><div class="mullvad-actions">${action}<button class="button ghost" id="refresh-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>Check again</button></div>${availability === "installed" ? `<label class="check mullvad-confirm"><input id="mullvad-connected" type="checkbox" ${mullvadConnectedConfirmed ? "checked" : ""}/><span>Mullvad shows Connected</span></label><p class="mullvad-truth">OSL opens Mullvad but cannot read your account, traffic, settings, or connection.</p>` : ""}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-mullvad" type="button" ${mullvadConnectedConfirmed ? "" : "disabled"}>Continue</button><button class="text-button" id="skip-mullvad" type="button">Not now</button></div></section>`;
 }
 
 function scrubCategoryChooserMarkup(compact = false): string {
@@ -551,17 +761,57 @@ function scrubCategoryChooserMarkup(compact = false): string {
 }
 
 function onboardingScrubContent(): string {
-  if (scrubReviewConfirmed) {
-    return `<p class="eyebrow">Scrub</p><h1 id="route-heading" tabindex="-1">Your list is confirmed</h1><p class="compact-lead scrub-local-promise"><strong>Your messages never leave this device.</strong> Find each checked message in its original app and decide whether to delete it there.</p><ol class="scrub-manual-directions"><li>Open the app and chat shown for each suggestion.</li><li>Check that you sent the exact message.</li><li>Delete it yourself only if you still want to.</li></ol><aside class="scrub-pro-compact"><span>PRO · COMING SOON</span><strong>AutoScrub assistant</strong><p>Schedules local scans and prepares a list. You still review and confirm every batch.</p></aside><div class="setup-footer"><button class="button primary" id="complete-onboarding">Done</button></div>`;
-  }
-  const scanAction = `<label class="button ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose message export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>`;
-  const results = privacyScanResult ? privacyScanResultsMarkup() : "";
-  return `<h1 id="route-heading" tabindex="-1">Try Scrub</h1><p class="compact-lead scrub-local-promise"><strong>Optional. Your messages never leave this device.</strong> Choose a supported export only if you have one.</p><div class="onboarding-scrub-actions">${scanAction}</div>${privacyScanResult ? scrubCategoryChooserMarkup(true) : ""}${results}<div class="setup-footer onboarding-actions"><button class="button primary" id="complete-onboarding">Finish setup</button></div>`;
+  const accounts = scrubAccountSelections();
+  const rows = accounts.length
+    ? accounts.map(({ selection, service, account }) => `<label class="scrub-index-account"><span><strong>${escapeHtml(account)}</strong><small>${escapeHtml(service)}</small></span><input type="checkbox" data-scrub-index-account="${escapeHtml(selection.serviceId)}:${escapeHtml(selection.accountId)}" checked ${scrubIndexStatus ? "disabled" : ""}/></label>`).join("")
+    : `<div class="empty-state"><strong>No connected accounts</strong><p>Connect an app first, or initialize Scrub later.</p></div>`;
+  const state = scrubIndexStatus
+    ? `<span class="status-tag">Initialized</span><strong>Private index created</strong><p>${scrubIndexStatus.messagesIndexed} messages indexed · ${formatBytes(scrubIndexStatus.bytesStored)} encrypted. It waits for an explicit export or supported OSL-visible source.</p>`
+    : `<span class="status-tag">Local only</span><strong>Build a private index</strong><p>Stores only exports you choose and messages OSL already shows. Nothing is uploaded or deleted.</p>`;
+  const action = scrubIndexStatus
+    ? `<button class="button primary" id="complete-onboarding">Finish setup</button>`
+    : accounts.length
+      ? `<button class="button primary" id="initialize-scrub" type="button" ${scrubIndexBusy ? "disabled" : ""}>${scrubIndexBusy ? "Initializing…" : "Initialize"}</button>`
+      : `<button class="button primary" id="complete-onboarding">Finish setup</button>`;
+  return `<h1 id="route-heading" tabindex="-1">Initialize Scrub</h1><p class="compact-lead scrub-local-promise"><strong>This stays on your device.</strong></p><section class="scrub-index-status" aria-label="Scrub indexing status">${state}<div class="scrub-index-accounts">${rows}</div></section><p class="scrub-final-warning"><strong>Nothing is deleted now.</strong> Every future deletion starts with an editable list and your confirmation.</p><div class="setup-footer onboarding-actions">${action}</div>`;
+}
+
+function scrubAccountSelections(): Array<{ selection: ScrubAccountSelection; service: string; account: string }> {
+  const servicePattern = /^[a-z0-9_-]{1,32}$/u;
+  const accountPattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
+  return services.flatMap((service) => service.accounts.flatMap((account) => {
+    if (!servicePattern.test(service.id) || !accountPattern.test(account.id)) return [];
+    return [{ selection: { serviceId: service.id, accountId: account.id }, service: service.displayName, account: account.label }];
+  })).slice(0, 32);
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
+  const routes: Partial<Record<OnboardingRoute, OnboardingRoute>> = {
+    tutorial: "recovery",
+    detected: "tutorial",
+    install: "detected",
+    apps: "install",
+    browser: "apps",
+    mullvad: "browser",
+    sending: "mullvad",
+    passwords: "sending",
+    burnpass: "passwords",
+    privacy: "burnpass",
+    scrub: "privacy",
+  };
+  return routes[current] ?? "welcome";
 }
 
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboarding as OnboardingRoute; render(); }));
   bindSavedAccountControls();
+  bindBrowserImportControls();
   bindPasswordVisibility();
   bindPasswordForm();
   bindImportForm();
@@ -569,17 +819,33 @@ function bindOnboarding(): void {
   const recoveryContinue = document.querySelector<HTMLButtonElement>("#recovery-continue");
   recoverySaved?.addEventListener("change", () => { if (recoveryContinue) recoveryContinue.disabled = !recoverySaved.checked; });
   recoveryContinue?.addEventListener("click", () => { recoveryBundle = null; onboardingRoute = "tutorial"; render(); });
-  document.querySelector<HTMLButtonElement>("#continue-account-setup")?.addEventListener("click", () => {
-    if (savedAccountMode === "ask") return;
+  document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
+    const appId = button.dataset.onboardingAppChoice as HomeAppId;
+    if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
+    else selectedOnboardingApps.add(appId);
+    onboardingConnectAppId = null;
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", () => { onboardingRoute = "detected"; render(); });
+  document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
+    if (savedAccountMode === "ask") savedAccountMode = savedNativeApps.size ? "use" : "clean";
     persistSavedAccountPreferences();
+    onboardingRoute = "install";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#continue-install-apps")?.addEventListener("click", () => {
     const selectedInstalls = [...selectedFirstInstallApps];
     selectedFirstInstallApps.clear();
     if (selectedInstalls.length) enqueueBackgroundInstalls(selectedInstalls);
     onboardingRoute = "apps";
     render();
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app]").forEach((button) => button.addEventListener("click", () => {
-    const app = homeAppsFromServices(services).find((candidate) => candidate.id === button.dataset.onboardingApp);
+  document.querySelectorAll<HTMLButtonElement>("[data-connect-app-choice]").forEach((button) => button.addEventListener("click", () => {
+    onboardingConnectAppId = button.dataset.connectAppChoice as HomeAppId;
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#continue-connect-app")?.addEventListener("click", () => {
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === onboardingConnectAppId);
     const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
     if (!app || !service || app.launchState !== "available") {
       showToast("This app is unavailable right now");
@@ -592,21 +858,118 @@ function bindOnboarding(): void {
     serviceGuideStep = 0;
     persistServiceGuideState();
     render();
-  }));
-  document.querySelector("#skip-onboarding")?.addEventListener("click", () => { onboardingServiceSetup = false; void completeOnboarding(); });
-  document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
-    if (onboardingRoute !== "sending") return;
-    setup.sendMode = "manual";
+  });
+  document.querySelector("#onboarding-back")?.addEventListener("click", () => { onboardingRoute = previousSetupRoute(onboardingRoute); render(); });
+  document.querySelector("#skip-onboarding")?.addEventListener("click", () => {
+    onboardingServiceSetup = false;
+    if (onboardingRoute === "scrub") void completeOnboarding();
+    else { onboardingRoute = "scrub"; render(); void refreshScrubIndexStatus(); }
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-send-mode]").forEach((button) => button.addEventListener("click", () => {
+    const mode = button.dataset.sendMode as SendMode;
+    if (!["clipboard", "double", "single"].includes(mode)) return;
+    setup.sendMode = mode;
     setup.placementMode = "atomic";
     setup.acceptedRisk = false;
     setup.acceptedRiskForMode = null;
-    onboardingRoute = "scrub";
+    render();
+  }));
+  document.querySelector<HTMLInputElement>("#accept-send-risk")?.addEventListener("change", (event) => {
+    const accepted = (event.currentTarget as HTMLInputElement).checked;
+    setup.acceptedRisk = accepted;
+    setup.acceptedRiskForMode = accepted ? setup.sendMode : null;
     render();
   });
+  document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
+    if (onboardingRoute !== "sending") return;
+    if (setup.sendMode === "manual") setup.sendMode = "clipboard";
+    if (!canCompleteSetup(setup)) return;
+    setup.placementMode = "atomic";
+    onboardingRoute = "passwords";
+    render();
+  });
+  bindOnboardingPasswordRole();
+  document.querySelectorAll<HTMLButtonElement>("[data-password-role-next]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.passwordRoleNext as OnboardingRoute; render(); }));
+  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "scrub"; render(); void refreshScrubIndexStatus(); });
+  document.querySelector<HTMLInputElement>("#onboarding-screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
+  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { mullvadConnectedConfirmed = false; onboardingRoute = "sending"; render(); });
+  document.querySelector("#continue-mullvad")?.addEventListener("click", () => { if (!mullvadConnectedConfirmed) return; onboardingRoute = "sending"; render(); });
+  document.querySelector<HTMLInputElement>("#mullvad-connected")?.addEventListener("change", (event) => { mullvadConnectedConfirmed = (event.currentTarget as HTMLInputElement).checked; render(); });
+  document.querySelector("#refresh-mullvad")?.addEventListener("click", () => void refreshMullvadSetup());
+  document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
+  document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
   document.querySelector("#skip-scrub-onboarding")?.addEventListener("click", () => void completeOnboarding());
   document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding());
-  document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
-  bindScrubControls();
+  document.querySelector("#initialize-scrub")?.addEventListener("click", () => void initializeOnboardingScrub());
+  document.querySelector("#close-decoy")?.addEventListener("click", () => void getCurrentWindow().close().catch(() => undefined));
+}
+
+async function initializeOnboardingScrub(): Promise<void> {
+  if (scrubIndexBusy || scrubIndexStatus) return;
+  const selected = new Set([...document.querySelectorAll<HTMLInputElement>("[data-scrub-index-account]:checked")].map((input) => input.dataset.scrubIndexAccount));
+  const selections = scrubAccountSelections().filter(({ selection }) => selected.has(`${selection.serviceId}:${selection.accountId}`)).map(({ selection }) => selection);
+  if (!selections.length) {
+    showToast("Choose at least one connected account");
+    return;
+  }
+  scrubIndexBusy = true;
+  render();
+  try {
+    scrubIndexStatus = await initializeScrubIndex({ selections, source: "osl_visible_data" });
+    showToast("Scrub initialized on this device");
+  } catch (failure) {
+    showToast(localActionError(failure, "Scrub could not initialize"));
+  } finally {
+    scrubIndexBusy = false;
+    render();
+  }
+}
+
+async function refreshScrubIndexStatus(): Promise<void> {
+  try {
+    scrubIndexStatus = await getScrubIndexStatus();
+    if (route === "onboarding" && onboardingRoute === "scrub") render();
+  } catch {
+    scrubIndexStatus = null;
+  }
+}
+
+function bindOnboardingPasswordRole(): void {
+  const form = document.querySelector<HTMLFormElement>("[data-onboarding-password-role]");
+  if (!form) return;
+  const role = form.dataset.onboardingPasswordRole === "stealth" ? "stealth" : "burn";
+  const current = form.elements.namedItem("current") as HTMLInputElement;
+  const alternate = form.elements.namedItem("alternate") as HTMLInputElement;
+  const confirm = form.elements.namedItem("confirm") as HTMLInputElement;
+  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+  const error = form.querySelector<HTMLElement>("[data-onboarding-role-error]");
+  const validate = (): void => {
+    if (!submit || !error) return;
+    submit.disabled = !isValidMainPassword(current.value) || !isValidNewMainPassword(alternate.value) || alternate.value !== confirm.value || alternate.value === current.value;
+    error.textContent = "";
+  };
+  current.addEventListener("input", validate);
+  alternate.addEventListener("input", validate);
+  confirm.addEventListener("input", validate);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!submit || submit.disabled || !error) return;
+    submit.disabled = true;
+    const currentSecret = current.value;
+    const alternateSecret = alternate.value;
+    current.value = "";
+    alternate.value = "";
+    confirm.value = "";
+    try {
+      passwordRoleStatus = await setHubAlternatePassword(role, currentSecret, alternateSecret);
+      onboardingRoute = form.dataset.passwordRoleNext as OnboardingRoute;
+      render();
+    } catch (failure) {
+      error.textContent = localActionError(failure, "Password was not changed");
+      submit.disabled = false;
+      current.focus();
+    }
+  });
 }
 
 function bindPasswordVisibility(): void {
@@ -636,6 +999,41 @@ async function completeOnboarding(): Promise<void> {
     render();
   } catch {
     showToast("Could not save local setup · nothing changed");
+  }
+}
+
+async function refreshMullvadSetup(): Promise<void> {
+  if (mullvadBusy) return;
+  mullvadBusy = true;
+  render();
+  try {
+    mullvadStatus = await withNativeDeadline(loadMullvadStatus(), "Check Mullvad", bootSupportDeadlineMs);
+  } catch {
+    showToast("Mullvad status is unavailable");
+  } finally {
+    mullvadBusy = false;
+    render();
+  }
+}
+
+async function runMullvadSetupAction(action: "install" | "open"): Promise<void> {
+  if (mullvadBusy) return;
+  mullvadBusy = true;
+  render();
+  try {
+    if (action === "install") {
+      await withNativeDeadline(installMullvad(), "Start Mullvad install");
+      showToast("Mullvad is installing in Windows · check again when it finishes");
+    } else {
+      await withNativeDeadline(openMullvad(), "Open Mullvad");
+      showToast("Connect in Mullvad, then return to OSL");
+    }
+  } catch (failure) {
+    showToast(localActionError(failure, `Mullvad could not ${action === "install" ? "install" : "open"}`));
+  } finally {
+    mullvadBusy = false;
+    if (action === "open") mullvadStatus = await loadMullvadStatus().catch(() => mullvadStatus);
+    render();
   }
 }
 
@@ -679,7 +1077,39 @@ function bindPasswordForm(): void {
         };
         onboardingRoute = "recovery";
       } else {
-        await unlockHubMainPassword(secret);
+        const gate = await unlockHubPasswordGate(secret);
+        secret = "";
+        if (gate.outcome === "wrong") {
+          error.textContent = gate.lockoutSecondsRemaining > 0
+            ? `Try again in ${gate.lockoutSecondsRemaining} seconds.`
+            : "Password not recognized.";
+          submit.disabled = false;
+          password.focus();
+          return;
+        }
+        if (gate.outcome === "decoy") {
+          core = structuredClone(unavailableCoreIntegration);
+          services = [];
+          passwordRoleStatus = null;
+          route = "onboarding";
+          onboardingRoute = "decoy";
+          render();
+          return;
+        }
+        if (gate.outcome === "burned") {
+          localStorage.clear();
+          onboardingComplete = false;
+          setup = parseSetupState(null);
+          services = [];
+          passwordRoleStatus = null;
+          core = structuredClone(unavailableCoreIntegration);
+          route = "onboarding";
+          onboardingRoute = "welcome";
+          showToast(gate.burn?.localCleanupComplete ? "OSL data erased from this device" : "OSL cleanup needs attention");
+          render();
+          return;
+        }
+        if (!gate.readiness?.unlocked) throw new Error("OSL did not unlock");
         core = await loadCoreIntegration();
         services = await loadLinkedServices().catch(() => services);
         passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
@@ -802,7 +1232,7 @@ function bindImportForm(): void {
 }
 
 function renderWorkspace(): void {
-  const protectedSheet = activeEmbeddedHost ? localProtectedSheetMarkup(localProtectedSheet) : "";
+  const protectedSheet = activeEmbeddedHost ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode) : "";
   const markup = `<div class="hub-layout"><section class="hub-workspace">${trustedHeader()}${workspaceContent()}</section></div>${protectedSheet}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
@@ -852,8 +1282,8 @@ function trustedHeader(): string {
   const localProtection = route === "service" && activeEmbeddedHost
     ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open}">Protect locally</button>`
     : "";
-  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : "Needs setup"}</small></span>${localProtection}</div>` : "";
-  const onboardingContinue = route === "service" && onboardingServiceSetup && activeEmbeddedHost
+  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : activeNativeHostId ? "OSL app window" : "Needs setup"}</small></span>${localProtection}</div>` : "";
+  const onboardingContinue = route === "service" && onboardingServiceSetup && (activeEmbeddedHost || activeNativeHostId)
     ? `<button class="button compact primary" id="onboarding-service-continue">Continue setup</button>`
     : "";
   return `<div class="trusted-stack"><header class="workspace-header"><div class="hub-command"><button class="command-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span><strong>OSL Privacy</strong></span></button>${appLauncherStrip()}${simpleDeviceStatusMarkup()}</div>${serviceControls ? `<div class="context-command">${serviceControls}</div>` : ""}${onboardingContinue}${settingsButtonMarkup("workspace-settings")}</header>${updateBannerMarkup()}</div>`;
@@ -960,7 +1390,8 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
       ? `<small>${hiddenScopeCount > 0 ? `${hiddenScopeCount} more approved ${hiddenScopeCount === 1 ? "chat" : "chats"}` : "More approved chats"} stored locally.</small>`
       : "";
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
-    return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong>${person.pendingKeyChange ? `<small>Security change needs review</small>` : ""}</div>${action}</header>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details></article>`;
+    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details></div></details>`;
+    return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong>${person.pendingKeyChange ? `<small>Security change needs review</small>` : `<small>${person.safetyNumberVerified ? "Verified" : "Request pending"}</small>`}</div>${action}</header>${management}</article>`;
   }).join("");
 }
 
@@ -983,7 +1414,7 @@ function friendsDialogMarkup(): string {
   const inviteCard = friendCode && friendDisplayId
     ? `<section class="friend-invite" aria-labelledby="friend-id-label"><div><span id="friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
-  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><div><p class="eyebrow">Your circle</p><h2 id="friends-dialog-title">Friends</h2></div><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-form" class="friend-add-form"><label class="friend-add-step" for="friend-code-input"><span>1</span><strong>Paste their invite</strong><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label class="friend-add-step" for="friend-nickname-input"><span>2</span><strong>Name them on this device</strong><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off after adding someone. Compare the verification code another way, then approve each chat separately.</p><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
+  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off after adding someone. Compare the verification code another way, then approve each chat separately.</p><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
 }
 
 function activeServiceBurnTarget(): { serviceId: string; accountId: string } | null {
@@ -1049,7 +1480,7 @@ function burnDialogMarkup(): string {
         ? `OSL destroys local decrypt material and caches for all ${serviceBurnReadiness.indexedScopes} indexed OSL ${serviceBurnReadiness.indexedScopes === 1 ? "chat" : "chats"} in this connected account. Its login profile and cookies stay.`
         : "OSL must prove complete local coverage before app-wide burn is available.";
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><div><p class="eyebrow">Local privacy</p><h2 id="burn-dialog-title">Burn</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div><section class="burn-truth"><strong>Exactly what happens</strong><ul><li>${effects}</li><li>Messages and history in the service remain.</li><li>Screenshots, exports, backups, and copies held by other people cannot be retracted.</li></ul></section><div class="burn-options"><label class="setting-line unavailable"><span><strong>Also forget messages they sent me</strong><small>Incoming OSL messages are already included in local chat and account burns.</small></span><input type="checkbox" checked disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div><form id="burn-confirm-form" class="burn-confirm"><label for="burn-confirm-input">Type <code>${phrase}</code> to continue</label><input id="burn-confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false" ${selectedReason ? "disabled" : ""}/><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "This cannot be undone."}</p><footer><button class="button" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
+  return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><h2 id="burn-dialog-title">Burn local data</h2><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div><section class="burn-truth"><strong>Before you continue</strong><ul><li>${effects}</li><li>Messages and history in the service remain.</li><li>Screenshots, exports, backups, and copies held by other people cannot be retracted.</li></ul></section><details class="burn-more"><summary>Other options</summary><div class="burn-options"><label class="setting-line unavailable"><span><strong>Also forget messages they sent me</strong><small>Incoming OSL messages are already included in local chat and account burns.</small></span><input type="checkbox" checked disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div></details><form id="burn-confirm-form" class="burn-confirm"><label for="burn-confirm-input">Type <code>${phrase}</code> to continue</label><input id="burn-confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false" ${selectedReason ? "disabled" : ""}/><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "This cannot be undone."}</p><footer><button class="button ghost" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
 }
 
 function ownedConfirmationMarkup(): string {
@@ -1093,23 +1524,23 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
       ? `<button class="button" data-background-install="${nativeApp.id}" ${backgroundInstallIds.has(nativeApp.id) ? "disabled" : ""}>${backgroundInstallIds.has(nativeApp.id) ? "Installing…" : "Background install"}</button>`
       : "";
   const nativeInstalled = nativeApp?.availability === "installed";
-  const details = `<details class="guide-details"><summary>Sign-in privacy</summary><p>${nativeInstalled ? "OSL opens a separate local app profile. Your normal app and account stay untouched." : "OSL keeps this service in its own local browser profile. Sign in once here; later opens reuse that profile."}</p></details>`;
+  const details = `<details class="guide-details"><summary>Sign-in privacy</summary><p>${nativeInstalled ? "OSL uses a separate local app profile only when the installed app supports one safely. Otherwise it opens an isolated OSL web profile. Your normal app and account stay untouched." : "OSL keeps this service in its own local browser profile. Sign in once here; later opens reuse that profile."}</p></details>`;
   const selectedApp = homeAppsFromServices(services).find((app) => app.id === activeHomeAppId);
   const openAction = selectedApp?.launchState === "available"
     ? `<button class="button primary" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : nativeInstalled ? "Open app in OSL" : "Open in OSL"}</button>`
     : `<button class="button" disabled>Coming later</button>`;
-  const nativeNote = nativeInstalled ? `<p class="guide-native-note">A separate ${name} window opens inside OSL. The normal window stays open.</p>` : "";
+  const nativeNote = nativeInstalled ? `<p class="guide-native-note">OSL never closes or borrows the normal ${name} window.</p>` : "";
   return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>Connect ${name}</h1></div><footer class="guide-actions">${openAction}${installedAction}</footer>${nativeNote}${details}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Mass cleanup · Pro"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
-  return `<main class="content-viewport settings-page"><div class="settings-sidebar"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}">${label}</button>`).join("")}</div><section class="settings-detail">${settingsSectionContent()}</section></main>`;
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  return `<main class="content-viewport settings-page"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="page"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
 }
 
 function settingsSectionContent(): string {
-  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${settingsDivider()}${accountAdvancedSettingsContent()}`;
-  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${settingsDivider()}${sendingSettingsContent()}`;
+  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}`;
+  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
@@ -1183,11 +1614,11 @@ function passwordSecuritySettingsContent(): string {
   const roles = passwordRoleStatus
     ? `<div class="security-shortcuts">${roleForm("stealth", passwordRoleStatus.stealthPasswordSet, passwordRoleStatus.stealthActionWired)}${roleForm("burn", passwordRoleStatus.burnPasswordSet, passwordRoleStatus.burnActionWired)}</div>`
     : `<div class="settings-unavailable"><strong>Password roles unavailable</strong><span>Unlock OSL and reopen Settings.</span></div>`;
-  return `<h2>Password & security</h2><p>Unlocks encrypted storage on this device.</p><div class="settings-actions">${passwordAction}</div>${roles}`;
+  return `<section class="settings-section password-security"><header><div><h3>Password & security</h3><p>Protects encrypted storage on this device.</p></div><div class="settings-actions">${passwordAction}</div></header><details class="settings-disclosure"><summary>Alternate passwords</summary><div>${roles}</div></details></section>`;
 }
 
 function accountAdvancedSettingsContent(): string {
-  return `<details class="account-advanced"><summary>Advanced</summary><div class="danger-zone"><h3>Burn</h3><p>Review exactly what OSL can remove before anything changes.</p><button class="button danger" id="full-cleanup-button" data-open-burn="account">Open Burn</button></div></details>`;
+  return `<details class="account-advanced settings-disclosure"><summary>Advanced</summary><div class="danger-zone"><h3>Burn local data</h3><p>Review the scope and limits before anything changes.</p><button class="button danger" id="full-cleanup-button" data-open-burn="account">Review Burn</button></div></details>`;
 }
 
 function serviceAccountsSettingsContent(): string {
@@ -1203,10 +1634,8 @@ function serviceAccountsSettingsContent(): string {
     if (app.availability === "installable") return `<div class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${backgroundInstallIds.has(app.id) ? "Installing…" : "Optional Windows app"}</small></span></span><button class="button compact" type="button" data-background-install="${app.id}" ${backgroundInstallIds.has(app.id) ? "disabled" : ""}>${backgroundInstallIds.has(app.id) ? "Installing…" : "Background install"}</button></div>`;
     return `<div class="saved-account-app unavailable"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Embedded web only</small></span></span></div>`;
   }).join("");
-  const browserButtons = browserImports.filter((browser) => browser.installed).map((browser) => `<button class="button compact" type="button" data-browser-import="${browser.id}">Open ${escapeHtml(browser.displayName)} import</button>`).join("");
-  const browserNotice = `<div class="saved-account-browser-note"><strong>Browser-owned sign-in</strong><small>Chrome, Edge, Firefox, Brave, Opera, and Vivaldi keep control of saved-password import. OSL never reads their password files.</small>${browserButtons ? `<div class="browser-import-actions">${browserButtons}</div>` : ""}</div>`;
-  const savedAccountSettings = `<details class="saved-account-settings"><summary>Account opening</summary><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use existing account</strong><small>Reuse OSL profiles</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start fresh</strong><small>Create a new OSL profile</small></button></div><div class="saved-account-apps">${installedChoices}</div>${browserNotice}<p>Services open inside OSL. External desktop apps are never launched.</p></details>`;
-  return `<h2>Apps</h2><p>Each account has its own local sign-in profile inside OSL.</p>${savedAccountSettings}<div class="account-settings-list">${rows}</div><div class="warning"><strong>Local sessions</strong><p>Service cookies stay in the matching OSL profile so you remain signed in. Your typed service password is not sent to OSL.</p></div>`;
+  const savedAccountSettings = `<details class="saved-account-settings settings-disclosure"><summary>Account opening</summary><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use selected apps</strong><small>Open only checked desktop apps</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Use web profiles</strong><small>Create an isolated OSL profile</small></button></div><div class="saved-account-apps">${installedChoices}</div><p>Only checked installed apps may open in a separate OSL-owned window.</p></details>`;
+  return `<h2>Apps</h2><p>Open each account in its own OSL profile.</p><div class="account-settings-list">${rows}</div>${savedAccountSettings}<details class="settings-disclosure sign-in-details"><summary>How sign-ins stay private</summary><div class="warning"><strong>Local sessions</strong><p>Service cookies stay in the matching OSL profile so you remain signed in. Your typed service password is not sent to OSL.</p></div></details>`;
 }
 
 async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
@@ -1233,7 +1662,6 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
     scrubResultsPage = 0;
     scrubReviewOpen = false;
     scrubReviewPage = 0;
-    scrubReviewConfirmed = false;
     privacyScanFileName = file.name.slice(0, 96);
   } catch (failure) {
     privacyScanResult = null;
@@ -1246,14 +1674,54 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
 }
 
 function sendingSettingsContent(): string {
-  return `<h2>Sending</h2><div class="setting-status"><span class="dot"></span>Copy & paste</div><p>Review encrypted text, then copy, paste, and send it yourself. Automatic sending is not available in this build.</p>`;
+  const selectedMode: SendMode = setup.sendMode === "manual" ? "clipboard" : setup.sendMode;
+  const modes: Array<[SendMode, string, string]> = [
+    ["clipboard", "Copy", "Never presses Send"],
+    ["double", "Double Enter", "Experimental · two exact checks"],
+    ["single", "Single Enter", "Advanced · highest risk"],
+  ];
+  const accounts = services.flatMap((service) => service.accounts.map((account) => ({
+    serviceId: service.id,
+    service: service.displayName,
+    accountId: account.id,
+    account: account.label,
+  })));
+  const consentRows = needsRiskAcceptance(selectedMode) && accounts.length
+    ? `<div class="send-account-consents"><strong>Account approvals</strong>${accounts.map((account) => `<div><span>${escapeHtml(account.service)} · ${escapeHtml(account.account)}</span><small>${hasExperimentalSendConsent(selectedMode, account.serviceId, account.accountId) ? "Approved on this device" : "Will ask before first use"}</small></div>`).join("")}</div>`
+    : "";
+  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send.</p>`}${consentRows}</div></details>`;
+}
+
+async function changeSendingMode(mode: SendMode): Promise<void> {
+  if (!["clipboard", "double", "single"].includes(mode)) return;
+  if (needsRiskAcceptance(mode)) {
+    const accepted = window.confirm(`${formatSendMode(mode)} is experimental. Apps can change without warning. OSL will stop unless it can verify the exact app, account, chat, and composer, and each account will ask again before first use.`);
+    if (!accepted) return;
+  }
+  const previous = { ...setup };
+  setup = {
+    sendMode: mode,
+    placementMode: "atomic",
+    acceptedRisk: needsRiskAcceptance(mode),
+    acceptedRiskForMode: needsRiskAcceptance(mode) ? mode : null,
+  };
+  render();
+  try {
+    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true });
+    setup = saved.setup;
+    showToast(`${formatSendMode(mode)} selected`);
+  } catch {
+    setup = previous;
+    showToast("Sending preference could not be saved");
+  }
+  render();
 }
 
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
   const autoScrubPlan = proActive ? "PRO ACTIVE · COMING SOON" : "PRO · COMING SOON";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Scans, previews, selections, and review lists stay local. Pro does not change this.</p><div class="scrub-tier-grid"><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review your history</h3><p>Choose a TXT, CSV, or JSON messages file. OSL shows suggestions; you choose what to review.</p></div>${scanActions}</section><section class="autoscrub-card" aria-disabled="true"><header><div><span class="privacy-local-mark">${autoScrubPlan}</span><h3>AutoScrub assistant</h3></div><span class="status-tag">Off by default</span></header><p>Coming soon. It schedules local scans and prepares a complete editable list. Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details><button class="button compact" type="button" disabled>Unavailable in this build</button></section></div>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card" aria-disabled="true"><p>Coming soon. It schedules local scans and prepares an editable list. Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details><button class="button compact" type="button" disabled>Unavailable in this build</button></section></details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
 }
 
 function clearPrivacyScanState(): void {
@@ -1263,7 +1731,6 @@ function clearPrivacyScanState(): void {
   scrubResultsPage = 0;
   scrubReviewOpen = false;
   scrubReviewPage = 0;
-  scrubReviewConfirmed = false;
 }
 
 function privacyScanResultsMarkup(): string {
@@ -1330,7 +1797,6 @@ function bindScrubControls(): void {
     selectedScrubFindings.clear();
     scrubResultsPage = 0;
     scrubReviewOpen = false;
-    scrubReviewConfirmed = false;
     render();
   }));
   document.querySelectorAll<HTMLInputElement>("[data-scrub-finding]").forEach((input) => input.addEventListener("change", () => {
@@ -1343,7 +1809,6 @@ function bindScrubControls(): void {
     if (!selectedScrubItems().length) return;
     scrubReviewOpen = true;
     scrubReviewPage = 0;
-    scrubReviewConfirmed = false;
     render();
   });
   document.querySelector<HTMLButtonElement>("#select-all-scrub")?.addEventListener("click", () => {
@@ -1377,7 +1842,6 @@ function bindScrubControls(): void {
   document.querySelector("#close-scrub-review-footer")?.addEventListener("click", closeReview);
   document.querySelector("#confirm-scrub-list")?.addEventListener("click", () => {
     if (!selectedScrubItems().length) return;
-    scrubReviewConfirmed = true;
     scrubReviewOpen = false;
     render();
   });
@@ -1385,7 +1849,7 @@ function bindScrubControls(): void {
 
 function notificationSettingsContent(): string {
   const apps = orderedServices().filter((service) => service.category === "consumer").map((service) => `<label class="notification-app-row">${serviceLogo(service.id)}<span><strong>${escapeHtml(service.displayName)}</strong><small>Unread access is not supported yet</small></span><input type="checkbox" data-notification-app="${service.id}" ${notificationAppPreferences[service.id] !== false ? "checked" : ""}/></label>`).join("");
-  return `<h2>Notifications</h2><p>OSL can show activity created on this device. It cannot read app unread counts yet.</p><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Security and app-connection events on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show preview content</strong><small>Off by default. When off, Activity hides event details.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions ask you to approve a chat. They never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label><div class="settings-subhead"><h3>Apps</h3><p>Choose which apps may appear here when unread access is supported.</p></div><div class="notification-app-list">${apps}</div>`;
+  return `<h2>Notifications</h2><p>Local OSL activity only. App unread counts are not supported yet.</p><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Security and app-connection events on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div><details class="settings-disclosure notification-apps"><summary><span><strong>Apps</strong><small>For future unread support</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
 }
 
 function identitySettingsContent(): string {
@@ -1393,7 +1857,7 @@ function identitySettingsContent(): string {
     ? hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)} · ${escapeHtml(identity.safetyNumber)}</small></div>${identity.active ? `<span class="status-tag">Active</span>` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("")
     : `<div class="empty-state"><strong>Identity list unavailable</strong><p>Unlock OSL to manage encrypted identity slots.</p></div>`;
   const recovery = newIdentityRecoveryPhrase ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>` : "";
-  return `<h2>Plan & identities</h2><p>Manage this device.</p>${activationSettingsContent()}<div class="settings-subhead"><h3>Private identities</h3><p>Only one is active at a time.</p></div><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details><div class="danger-zone"><h3>Burn</h3><p>Review the scope before anything is removed.</p><button class="button danger" id="burn-identity-button" data-open-burn="account">Open Burn</button></div>`;
+  return `<h2>Account</h2><p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
 }
 
 function activationSettingsContent(): string {
@@ -1401,7 +1865,7 @@ function activationSettingsContent(): string {
   const accessLabel = licenseState.access === "offlineGrace" ? "Pro, offline grace" : pro ? "Pro active" : "Free";
   const period = licenseState.currentPeriodEnd === null ? "" : `<small>${licenseState.status === "CANCELLED" ? "Access through" : "Current period ends"} ${formatUnixDate(licenseState.currentPeriodEnd)}</small>`;
   const clear = licenseState.status === "UNCONFIGURED" ? "" : `<button class="button compact" id="clear-activation-code" type="button">Clear activation</button>`;
-  return `<section class="license-card" aria-labelledby="activation-heading"><div class="license-state"><div><h3 id="activation-heading">Plan</h3><strong>${accessLabel}</strong>${period}</div><span class="status-tag ${pro ? "active" : ""}">${escapeHtml(licenseState.status === "UNCONFIGURED" ? "Not activated" : licenseState.status)}</span></div><p>After checkout, your activation code appears in the browser. Paste it here for instant activation. No email is required.</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></section>`;
+  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${accessLabel}</small>${period}</span><span class="status-tag ${pro ? "active" : ""}">${escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status)}</span></summary><div><p>Paste the activation code shown after checkout. No email is required.</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
 }
 
 function formatUnixDate(seconds: number): string {
@@ -1524,6 +1988,11 @@ async function startLocalProtectedContext(event: SubmitEvent): Promise<void> {
     if (!context) throw new Error("local context unavailable");
     localProtectedSheet.context = context;
     activeContextToken = context.contextToken;
+    const security = await loadActiveContextSecurity(context.contextToken);
+    if (security) {
+      localProtectedSheet.ttlSeconds = security.ttlSeconds;
+      localProtectedSheet.decryptDisplayEnabled = security.decryptDisplayEnabled;
+    }
     localProtectedSheet.status = "Ready on this device.";
   } catch {
     localProtectedSheet.status = "Could not start. Nothing was sent.";
@@ -1541,17 +2010,31 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   const viewOnce = document.querySelector<HTMLInputElement>("#local-protected-view-once");
   const plaintext = draft?.value ?? "";
   const ttlSeconds = Number(ttl?.value ?? 0);
-  if (!contextToken || !plaintext.trim() || ![0, 3_600, 86_400, 604_800].includes(ttlSeconds)) {
+  if (!contextToken || !plaintext.trim() || ![0, 3_600, 86_400, 259_200, 604_800].includes(ttlSeconds)) {
     localProtectedSheet.status = "Write a message first.";
     render();
     return;
   }
+  const sendContext = localProtectedSheet.context;
+  if ((setup.sendMode === "double" || setup.sendMode === "single")
+    && sendContext
+    && !hasExperimentalSendConsent(setup.sendMode, sendContext.serviceId, sendContext.accountId)) {
+    const accepted = window.confirm(`${formatSendMode(setup.sendMode)} is experimental for this account. OSL will send nothing unless it can verify the exact account, chat, and composer immediately before every action. Continue with safe Copy fallback?`);
+    if (!accepted) {
+      localProtectedSheet.draft = plaintext;
+      localProtectedSheet.status = "Cancelled. Your draft is still here and nothing was sent.";
+      render();
+      return;
+    }
+    rememberExperimentalSendConsent(setup.sendMode, sendContext.serviceId, sendContext.accountId);
+  }
   localProtectedSheet.busy = true;
+  localProtectedSheet.draft = plaintext;
   localProtectedSheet.ttlSeconds = ttlSeconds;
   localProtectedSheet.viewOnce = viewOnce?.checked === true;
   localProtectedSheet.status = "";
   render();
-  const policy = await saveActiveContextSecurity(contextToken, ttlSeconds, true);
+  const policy = await saveActiveContextSecurity(contextToken, ttlSeconds, localProtectedSheet.decryptDisplayEnabled);
   const prepared = policy
     ? await prepareLocalProtectedText(contextToken, plaintext, localProtectedSheet.viewOnce)
     : null;
@@ -1562,7 +2045,14 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
     return;
   }
   localProtectedSheet.capsule = prepared.capsule;
-  localProtectedSheet.status = "Encrypted on this device.";
+  try {
+    await navigator.clipboard.writeText(prepared.capsule);
+    localProtectedSheet.status = setup.sendMode === "double" || setup.sendMode === "single"
+      ? "Exact composer verification is unavailable here. Copied safely; nothing was sent."
+      : "Encrypted and copied. OSL did not press Send.";
+  } catch {
+    localProtectedSheet.status = "Encrypted. Automatic copy failed; select the encrypted text below. Nothing was sent.";
+  }
   render();
 }
 
@@ -1573,6 +2063,11 @@ async function openLocalProtectedCapsule(event: SubmitEvent): Promise<void> {
   const capsule = input?.value.trim() ?? "";
   if (!contextToken || !capsule) {
     localProtectedSheet.status = "Paste encrypted text first.";
+    render();
+    return;
+  }
+  if (!localProtectedSheet.decryptDisplayEnabled) {
+    localProtectedSheet.status = "Decrypted display is off for this local chat.";
     render();
     return;
   }
@@ -1589,6 +2084,25 @@ async function openLocalProtectedCapsule(event: SubmitEvent): Promise<void> {
   }
   localProtectedSheet.openedPlaintext = opened.plaintext;
   localProtectedSheet.status = opened.viewOnceConsumed ? "Opened once. Its local key was removed." : "Opened on this device.";
+  render();
+}
+
+async function changeLocalDecryptDisplay(input: HTMLInputElement): Promise<void> {
+  const contextToken = localProtectedSheet.context?.contextToken;
+  if (!contextToken) {
+    input.checked = localProtectedSheet.decryptDisplayEnabled;
+    return;
+  }
+  const saved = await saveActiveContextSecurity(contextToken, localProtectedSheet.ttlSeconds, input.checked);
+  if (!saved) {
+    input.checked = localProtectedSheet.decryptDisplayEnabled;
+    localProtectedSheet.status = "This chat setting could not be saved.";
+    render();
+    return;
+  }
+  localProtectedSheet.decryptDisplayEnabled = saved.decryptDisplayEnabled;
+  if (!saved.decryptDisplayEnabled) localProtectedSheet.openedPlaintext = "";
+  localProtectedSheet.status = saved.decryptDisplayEnabled ? "Decrypted display is on for this local chat." : "Decrypted display is off for this local chat.";
   render();
 }
 
@@ -1610,6 +2124,7 @@ function bindLocalProtectedSheet(): void {
   document.querySelector<HTMLFormElement>("#local-protect-form")?.addEventListener("submit", (event) => void prepareLocalProtectedDraft(event));
   document.querySelector<HTMLFormElement>("#local-open-form")?.addEventListener("submit", (event) => void openLocalProtectedCapsule(event));
   document.querySelector<HTMLButtonElement>("#local-capsule-copy")?.addEventListener("click", () => void copyLocalProtectedCapsule());
+  document.querySelector<HTMLInputElement>("#local-decrypt-display")?.addEventListener("change", (event) => void changeLocalDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelectorAll<HTMLButtonElement>("[data-local-pane]").forEach((button) => button.addEventListener("click", () => {
     localProtectedSheet.pane = button.dataset.localPane as LocalProtectedPane;
     localProtectedSheet.openedPlaintext = "";
@@ -1665,12 +2180,15 @@ function bindWorkspace(): void {
     render();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
+    void changeSendingMode(button.dataset.settingsSendMode as SendMode);
+  }));
   document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
-  document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { privacyScanResult = null; privacyScanFileName = null; selectedScrubFindings.clear(); scrubReviewOpen = false; scrubReviewConfirmed = false; render(); });
+  document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { privacyScanResult = null; privacyScanFileName = null; selectedScrubFindings.clear(); scrubReviewOpen = false; render(); });
   bindScrubControls();
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
   document.querySelectorAll<HTMLFormElement>("[data-password-role]").forEach((form) => form.addEventListener("submit", (event) => void submitPasswordRole(event)));
@@ -1714,7 +2232,11 @@ function bindWorkspace(): void {
     if (onboardingServiceSetup) {
       onboardingServiceSetup = false;
       clearServiceGuide();
-      void completeOnboarding();
+      route = "onboarding";
+      onboardingRoute = "browser";
+      activeService = null;
+      activeHomeAppId = null;
+      render();
       return;
     }
     clearServiceGuide();
@@ -1725,7 +2247,7 @@ function bindWorkspace(): void {
       onboardingServiceSetup = false;
       clearServiceGuide();
       route = "onboarding";
-      onboardingRoute = "sending";
+      onboardingRoute = "browser";
       activeService = null;
       activeHomeAppId = null;
       render();
@@ -1739,7 +2261,7 @@ function bindWorkspace(): void {
       onboardingServiceSetup = false;
       clearServiceGuide();
       route = "onboarding";
-      onboardingRoute = "tutorial";
+      onboardingRoute = "apps";
       activeService = null;
       activeHomeAppId = null;
       await closeActiveServiceSurface();
@@ -1823,7 +2345,7 @@ async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promis
       return;
     }
     appLaunchPendingId = null;
-    const native = nativeApps.find((candidate) => candidate.id === app.id && candidate.availability === "installed");
+    const native = selectedInstalledNativeApp(app.id);
     if (native) {
       void openNativeHostedApp(app, service, native.id);
     } else if (app.linked && savedAccountMode !== "clean") {
@@ -1888,6 +2410,19 @@ function nativeHostFailureMessage(reason: string, name: string): string {
   return `${name} could not open as a native OSL window`;
 }
 
+async function openSafeEmbeddedFallback(app: HomeAppCatalogEntry): Promise<void> {
+  const existingProfiles = embeddedAccountsForHomeApp(app, services);
+  const opened = existingProfiles.length > 0 && savedAccountMode !== "clean"
+    ? { host: await openEmbeddedHomeApp(app, services) }
+    : await setupEmbeddedHomeApp(app, existingProfiles.length === 0 ? "Personal" : `Profile ${existingProfiles.length + 1}`);
+  activeEmbeddedHost = opened.host;
+  activeNativeHostId = null;
+  serviceAccountPickerOpen = false;
+  services = await loadLinkedServices().catch(() => services);
+  serviceGuideStep = null;
+  localStorage.removeItem(serviceGuideStorageKey);
+}
+
 async function openNativeHostedApp(app: HomeAppCatalogEntry, service: LinkedService, appId: NativeAppId): Promise<void> {
   if (nativeActionBusy) return;
   if (activeNativeHostId === appId) {
@@ -1915,6 +2450,11 @@ async function openNativeHostedApp(app: HomeAppCatalogEntry, service: LinkedServ
     const result = await withNativeDeadline(hostNativeAppWindow(appId), `Open ${app.displayName} inside OSL`, 12_000);
     if (result.status !== "hosted") {
       activeNativeHostId = null;
+      if (result.reason === "secondaryInstanceUnverified") {
+        await openSafeEmbeddedFallback(app);
+        showToast(`${app.displayName} opened in a separate OSL web profile; the normal app stayed open`);
+        return;
+      }
       serviceGuideStep = 0;
       showToast(nativeHostFailureMessage(result.reason, app.displayName));
       return;
@@ -1939,7 +2479,7 @@ async function setupEmbeddedApp(forceNewProfile = false): Promise<void> {
   resetLocalProtectedSheet();
   render();
   try {
-    const native = nativeApps.find((candidate) => candidate.id === app.id && candidate.availability === "installed");
+    const native = selectedInstalledNativeApp(app.id);
     if (native) {
       const service = services.find((candidate) => candidate.id === app.serviceId);
       if (!service) throw new Error("This app is unavailable right now");
@@ -1984,7 +2524,7 @@ async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService,
   serviceAccountPickerOpen = false;
   render();
   try {
-    const native = nativeApps.find((candidate) => candidate.id === app.id && candidate.availability === "installed");
+    const native = selectedInstalledNativeApp(app.id);
     if (native) {
       nativeActionBusy = false;
       await openNativeHostedApp(app, service, native.id);
@@ -2006,7 +2546,7 @@ async function continueOnboardingFromService(): Promise<void> {
   await closeActiveServiceSurface();
   onboardingServiceSetup = false;
   route = "onboarding";
-  onboardingRoute = "sending";
+  onboardingRoute = "browser";
   activeService = null;
   activeHomeAppId = null;
   render();
@@ -2475,7 +3015,7 @@ function updateSettingsContent(): string {
     : updateStatus.state === "error" ? "Update check failed"
     : "Updater backend unavailable";
   const actions = updateStatus.state === "available" ? `<button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-modal>Install</button>` : "";
-  return `<h2>About & updates</h2><p>Checks and installs run only through the trusted local updater. Release notes are bounded plain text; remote HTML is never rendered.</p><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>No telemetry is sent by this UI.</small></div></div><div class="settings-actions"><button class="button" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><div class="setting-line"><span>Device status</span><strong>${deviceReady ? "Ready" : "Needs attention"}</strong></div><details class="device-diagnostics"><summary>Diagnostics</summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
+  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Signed local updater · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Release notes are plain text; remote HTML is never rendered.</p></details><details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
 }
 
 function bindUpdateControls(): void {
@@ -2575,12 +3115,14 @@ async function bootstrap(): Promise<void> {
   const attempt = ++bootstrapEpoch;
   applyTheme(themeChoice);
   loadUiPreferences();
-  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><span class="loading-seal-ring"></span><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><svg class="loading-seal-lock" viewBox="0 0 24 24"><path d="M8 10V7.7a4 4 0 0 1 8 0V10"/><rect x="6" y="10" width="12" height="9"/><path d="M12 13.5v2"/></svg></div><span class="sr-only">Opening OSL</span></main></div>`;
+  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><span class="loading-seal-ring"></span><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><svg class="security-motion lock-security-motion" viewBox="0 0 120 120"><g class="security-center"><path d="M49 46h22v7H56v14h15v7H49Z"/></g><g class="security-key"><circle cx="44" cy="60" r="6"/><path d="M50 60h24m-7 0v7m-7-7v5"/></g><g class="security-lock loading-seal-lock"><path class="security-shackle" d="M47 55V44a13 13 0 0 1 26 0v11"/><path class="security-lock-body" d="M42 55h36v28H42Z"/></g></svg></div><span class="sr-only">Opening OSL</span></main></div>`;
   bindDesktopTitlebar();
   const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
   const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
   const nativeAppsRequest = withNativeDeadline(loadNativeApps(), "Load installed apps", bootSupportDeadlineMs).catch(() => null);
+  const mullvadRequest = withNativeDeadline(loadMullvadStatus(), "Check Mullvad", bootSupportDeadlineMs).catch(() => null);
   const browserImportsRequest = withNativeDeadline(loadBrowserImports(), "Load browsers", bootSupportDeadlineMs).catch(() => null);
+  const firefoxRequest = withNativeDeadline(loadFirefoxStatus(), "Check Firefox", bootSupportDeadlineMs).catch(() => null);
   const licenseRequest = withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs).catch(() => null);
   try {
     const coreIntegration = await withNativeDeadline(loadCoreIntegration(), "Start OSL", bootCoreDeadlineMs);
@@ -2613,11 +3155,13 @@ async function bootstrap(): Promise<void> {
   }
   renderNow();
   startReadyWorkspaceLoads();
-  void Promise.all([servicesRequest, nativeAppsRequest, browserImportsRequest, licenseRequest]).then(([linkedServices, nativeCatalog, browserCatalog, currentLicenseState]) => {
+  void Promise.all([servicesRequest, nativeAppsRequest, mullvadRequest, browserImportsRequest, firefoxRequest, licenseRequest]).then(([linkedServices, nativeCatalog, currentMullvadStatus, browserCatalog, currentFirefoxStatus, currentLicenseState]) => {
     if (attempt !== bootstrapEpoch) return;
     if (linkedServices) services = linkedServices;
     if (nativeCatalog) nativeApps = nativeCatalog;
+    if (currentMullvadStatus) mullvadStatus = currentMullvadStatus;
     if (browserCatalog) browserImports = browserCatalog;
+    if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
     if (currentLicenseState) licenseState = currentLicenseState;
     route === "onboarding" ? render() : renderWhenIdle();
   });

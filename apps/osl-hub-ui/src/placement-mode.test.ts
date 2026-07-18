@@ -12,20 +12,23 @@ function functionSource(name: string, nextName: string): string {
   return source.slice(start, end);
 }
 
-describe("truthful manual sending", () => {
-  it("stores only the behavior this build can perform", () => {
+describe("guarded sending choices", () => {
+  it("stores the explicit choice and never bypasses risk acceptance", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(binding).toContain('setup.sendMode = "manual"');
+    expect(binding).toContain('"clipboard", "double", "single"');
     expect(binding).toContain('setup.placementMode = "atomic"');
-    expect(binding).toContain("setup.acceptedRisk = false");
+    expect(binding).toContain("canCompleteSetup(setup)");
   });
 
-  it("does not offer unavailable automatic or keystroke modes", () => {
-    const onboarding = functionSource("sendingSetupContent", "scrubCategoryChooserMarkup");
+  it("makes Copy safe and keeps Enter modes explicit and experimental", () => {
+    const onboarding = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
     const settings = functionSource("sendingSettingsContent", "privacySettingsContent");
-    expect(onboarding).toContain("Send with copy & paste");
-    expect(settings).toContain("Automatic sending is not available in this build.");
-    expect(`${onboarding}${settings}`).not.toMatch(/Single Enter|Double Enter|Type it|Keystrokes|data-placement|data-send-mode/);
+    expect(onboarding).toContain("Choose how to send");
+    expect(onboarding).toContain('data-send-mode="${mode}"');
+    expect(onboarding).toContain("Never presses Send");
+    expect(onboarding).toContain("Each account asks again");
+    expect(settings).toContain("Will ask before first use");
+    expect(`${onboarding}${settings}`).not.toMatch(/simulated typing|human-like|evasion/i);
   });
 
   it("uses one finite CSS animation with a reduced-motion final state", () => {

@@ -51,6 +51,9 @@ describe("truthful bounded startup", () => {
     expect(bootstrap).toContain('withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs)');
     expect(bootstrap).toContain("renderNow();");
     expect(bootstrap).toContain('withNativeDeadline(loadBrowserImports(), "Load browsers", bootSupportDeadlineMs)');
-    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, browserImportsRequest, licenseRequest])");
+    expect(bootstrap).toContain('withNativeDeadline(loadMullvadStatus(), "Check Mullvad", bootSupportDeadlineMs)');
+    expect(bootstrap).toContain('withNativeDeadline(loadFirefoxStatus(), "Check Firefox", bootSupportDeadlineMs)');
+    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, mullvadRequest, browserImportsRequest, firefoxRequest, licenseRequest])");
+    expect(bootstrap).toContain("if (currentMullvadStatus) mullvadStatus = currentMullvadStatus");
   });
 });

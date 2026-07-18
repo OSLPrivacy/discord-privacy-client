@@ -14,7 +14,16 @@ use crate::identity_registry::{self, RemoteUnregisterState};
 
 const HUB_CORE_DIR: &str = "osl-core";
 const PROFILE_DIR: &str = "service-profiles-v2";
+const NATIVE_PROFILE_DIR: &str = "native-window-profiles-v1";
+const GATE_BURN_JOURNAL: &str = ".gate-burn-journal.json";
+const GATE_BURN_JOURNAL_TMP: &str = ".gate-burn-journal.tmp";
 const MAX_IDENTITIES: usize = 16;
+
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+struct GateBurnJournal {
+    version: u32,
+    state: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +80,10 @@ pub fn full_cleanup_manifest() -> HubFullCleanupManifest {
             HubCleanupTargetDto {
                 id: "service_profiles",
                 contains: "OSL Privacy browser profiles, cookies, site storage, and cleanup tombstones",
+            },
+            HubCleanupTargetDto {
+                id: "native_profiles",
+                contains: "OSL-owned isolated native-app profiles and their local sessions",
             },
             HubCleanupTargetDto {
                 id: "service_registry",
@@ -151,6 +164,152 @@ pub fn execute_full_hub_cleanup(
     })
 }
 
+/// Execute the destructive consequence of an already-verified burn password.
+///
+/// Unlike the ordinary settings cleanup, this path does not need the main
+/// password's file key. It first persists a fixed-root recovery journal. Once
+/// that journal is durable, a crash can only delay deletion: startup resumes
+/// the same idempotent local purge before loading any OSL identity.
+pub fn execute_verified_gate_burn(
+    core: &HubCoreState,
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    service_hosts_shutdown: bool,
+) -> Result<HubFullCleanupResult, String> {
+    if !service_hosts_shutdown {
+        return Err("OSL burn requires every OSL-owned service host to be closed first".to_owned());
+    }
+    validate_trusted_roots(app_config_dir, app_local_data_dir)?;
+
+    // Collect only what is already available in trusted memory. Sealed
+    // identities that cannot be opened without the ordinary password are
+    // counted as unavailable; no plaintext secret is exported to make remote
+    // unregister possible.
+    let (identities, unreadable_identities) = collect_identities(core, app_config_dir)?;
+    let client = core
+        .osl
+        .keyserver
+        .lock()
+        .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+        .clone();
+
+    write_gate_burn_journal(app_config_dir)?;
+
+    let mut remote = RemoteUnregisterSummary {
+        identities_found: identities.len().saturating_add(unreadable_identities),
+        unavailable: unreadable_identities,
+        ..RemoteUnregisterSummary::default()
+    };
+    for identity in &identities {
+        match identity_registry::attempt_unregister(identity, client.clone()) {
+            RemoteUnregisterState::Succeeded => remote.succeeded += 1,
+            RemoteUnregisterState::Failed => remote.failed += 1,
+            RemoteUnregisterState::Unavailable => remote.unavailable += 1,
+        }
+    }
+
+    identity_registry::reset_account_scoped_state(&core.osl);
+    ipc::main_password::set_file_storage_key(None);
+    keystore::set_active_account_dir(None);
+
+    let (removed_targets, failed_targets) = purge_fixed_targets(app_config_dir, app_local_data_dir);
+    if failed_targets.is_empty() {
+        remove_gate_burn_journal(app_config_dir)?;
+    }
+    Ok(HubFullCleanupResult {
+        local_cleanup_complete: failed_targets.is_empty(),
+        removed_targets,
+        failed_targets,
+        remote_unregister: remote,
+        restart_required: false,
+        original_discord_data_untouched: true,
+    })
+}
+
+/// Resume a burn that crossed its durable commit point before a crash. This is
+/// intentionally local-only: remote unregister was best effort in the first
+/// process and must never block destruction of local decrypt capability.
+pub fn resume_interrupted_gate_burn(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+) -> Result<bool, String> {
+    validate_trusted_roots(app_config_dir, app_local_data_dir)?;
+    let journal_path = app_config_dir.join(GATE_BURN_JOURNAL);
+    let bytes = match std::fs::read(&journal_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("OSL burn recovery journal is unavailable".to_owned()),
+    };
+    let journal: GateBurnJournal = serde_json::from_slice(&bytes).map_err(|_| {
+        "OSL burn recovery journal is invalid; no deletion was attempted".to_owned()
+    })?;
+    if journal.version != 1 || journal.state != "purging" {
+        return Err("OSL burn recovery journal is invalid; no deletion was attempted".to_owned());
+    }
+    let (_, failed_targets) = purge_fixed_targets(app_config_dir, app_local_data_dir);
+    if !failed_targets.is_empty() {
+        return Err("OSL burn recovery remains pending".to_owned());
+    }
+    remove_gate_burn_journal(app_config_dir)?;
+    ipc::main_password::set_file_storage_key(None);
+    keystore::set_active_account_dir(None);
+    Ok(true)
+}
+
+fn write_gate_burn_journal(app_config_dir: &Path) -> Result<(), String> {
+    let journal = GateBurnJournal {
+        version: 1,
+        state: "purging".to_owned(),
+    };
+    let bytes = serde_json::to_vec(&journal)
+        .map_err(|_| "OSL burn recovery journal could not be encoded".to_owned())?;
+    let path = app_config_dir.join(GATE_BURN_JOURNAL);
+    let tmp = app_config_dir.join(GATE_BURN_JOURNAL_TMP);
+    std::fs::create_dir_all(app_config_dir)
+        .map_err(|_| "OSL burn recovery journal directory is unavailable".to_owned())?;
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|_| "OSL burn recovery journal could not be created".to_owned())?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "OSL burn recovery journal could not be committed".to_owned())?;
+    std::fs::rename(&tmp, &path)
+        .map_err(|_| "OSL burn recovery journal could not be committed".to_owned())?;
+    if let Ok(directory) = std::fs::File::open(app_config_dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+fn remove_gate_burn_journal(app_config_dir: &Path) -> Result<(), String> {
+    for path in [
+        app_config_dir.join(GATE_BURN_JOURNAL),
+        app_config_dir.join(GATE_BURN_JOURNAL_TMP),
+    ] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("OSL burn recovery journal could not be cleared".to_owned()),
+        }
+    }
+    Ok(())
+}
+
+fn purge_fixed_targets(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+) -> (Vec<String>, Vec<String>) {
+    let mut removed_targets = Vec::new();
+    let mut failed_targets = Vec::new();
+    for target in cleanup_targets(app_config_dir, app_local_data_dir) {
+        match remove_target_without_following_links(&target.path) {
+            Ok(()) => removed_targets.push(target.id.to_owned()),
+            Err(()) => failed_targets.push(target.id.to_owned()),
+        }
+    }
+    (removed_targets, failed_targets)
+}
+
 fn validate_trusted_roots(app_config_dir: &Path, app_local_data_dir: &Path) -> Result<(), String> {
     if !app_config_dir.is_absolute() || !app_local_data_dir.is_absolute() {
         return Err("OSL cleanup roots must be absolute trusted application paths".to_owned());
@@ -179,6 +338,10 @@ fn cleanup_targets(app_config_dir: &Path, app_local_data_dir: &Path) -> Vec<Clea
         CleanupTarget {
             id: "service_profiles",
             path: app_local_data_dir.join(PROFILE_DIR),
+        },
+        CleanupTarget {
+            id: "native_profiles",
+            path: app_local_data_dir.join(NATIVE_PROFILE_DIR),
         },
         CleanupTarget {
             id: "service_registry",
@@ -408,5 +571,34 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn gate_burn_recovery_is_fixed_root_idempotent_and_fail_closed() {
+        let config = temp_root("gate-config");
+        let local = temp_root("gate-local");
+        std::fs::create_dir_all(config.join(HUB_CORE_DIR)).unwrap();
+        std::fs::create_dir_all(local.join(PROFILE_DIR)).unwrap();
+        std::fs::write(config.join(HUB_CORE_DIR).join("identity.json"), b"sealed").unwrap();
+        std::fs::write(local.join(PROFILE_DIR).join("cache"), b"ciphertext").unwrap();
+        keystore::set_base_dir_override(Some(config.join(HUB_CORE_DIR)));
+
+        // Corrupt or attacker-authored state cannot authorize deletion.
+        std::fs::write(config.join(GATE_BURN_JOURNAL), b"not a journal").unwrap();
+        assert!(resume_interrupted_gate_burn(&config, &local).is_err());
+        assert!(config.join(HUB_CORE_DIR).join("identity.json").exists());
+        assert!(local.join(PROFILE_DIR).join("cache").exists());
+
+        write_gate_burn_journal(&config).unwrap();
+        assert!(resume_interrupted_gate_burn(&config, &local).unwrap());
+        assert!(!config.join(HUB_CORE_DIR).exists());
+        assert!(!local.join(PROFILE_DIR).exists());
+        assert!(!config.join(GATE_BURN_JOURNAL).exists());
+        // A completed recovery is a harmless no-op on the next launch.
+        assert!(!resume_interrupted_gate_burn(&config, &local).unwrap());
+
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(config);
+        let _ = std::fs::remove_dir_all(local);
     }
 }

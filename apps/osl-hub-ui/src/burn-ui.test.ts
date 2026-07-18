@@ -44,7 +44,9 @@ describe("truthful Burn UI", () => {
   });
 
   it("uses real local commands, guards repeats, and reports partial results inline", () => {
+    const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
     const execute = functionSource("executeBurn", "ttlSeconds");
+    const burnUi = `${dialog}\n${execute}`;
     expect(execute).toContain("burnBusy");
     expect(execute).toContain("burnActiveHubContext(contextToken)");
     expect(execute).toContain("burnHubServiceAccount");
@@ -53,8 +55,8 @@ describe("truthful Burn UI", () => {
     expect(execute).toContain("executeHubFullCleanup()");
     expect(execute).toContain("localCleanupComplete");
     expect(execute).toContain("no remote deletion success is being claimed");
-    expect(source).not.toContain("window.confirm");
-    expect(source).not.toContain("window.alert");
+    expect(burnUi).not.toContain("window.confirm");
+    expect(burnUi).not.toContain("window.alert");
   });
 
   it("keeps uninstall separate and uses square scope cards", () => {

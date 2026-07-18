@@ -63,23 +63,26 @@ describe("clean onboarding sign in", () => {
 });
 
 describe("fresh-account continuation", () => {
-  it("asks how accounts should open and shows explicit per-app install choices", () => {
-    const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
-    expect(tutorial).toContain("Choose how accounts open");
-    expect(tutorial).toContain("Use existing account");
-    expect(tutorial).toContain("Start fresh");
-    expect(tutorial).toContain('<fieldset class="saved-account-advanced first-install-apps"><legend>Apps</legend>');
-    expect(tutorial).toContain("Nothing opens or installs without your choice.");
-    expect(tutorial).toContain('data-saved-native="${app.id}"');
-    expect(tutorial).toContain('data-first-install="${app.id}"');
-    expect(tutorial).toContain("Install in background");
+  it("separates app choice, detected apps, and missing-app installation", () => {
+    const choice = functionSource("tutorialContent", "selectedNativeApps");
+    const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
+    const install = functionSource("installMissingAppsContent", "onboardingAppsContent");
+    expect(choice).toContain("Choose your apps");
+    expect(choice).toContain('data-onboarding-app-choice="${app.id}"');
+    expect(choice).toContain("does not sign in or discover accounts");
+    expect(detected).toContain("Use installed apps");
+    expect(detected).toContain('data-saved-native="${app.id}"');
+    expect(detected).toContain("does not discover their accounts or sign you in");
+    expect(install).toContain("Install missing apps");
+    expect(install).toContain('data-first-install="${app.id}"');
+    expect(install).toContain("Selected installs start through Windows after you continue");
   });
 
   it("queues selected first-run installs without delaying the next setup step", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const install = functionSource("startBackgroundInstall", "enqueueBackgroundInstalls");
     const queue = functionSource("enqueueBackgroundInstalls", "nativeHostFailureMessage");
-    expect(binding).toMatch(/#continue-account-setup[\s\S]*?const selectedInstalls = \[\.\.\.selectedFirstInstallApps\];[\s\S]*?selectedFirstInstallApps\.clear\(\);[\s\S]*?enqueueBackgroundInstalls\(selectedInstalls\)[\s\S]*?onboardingRoute = "apps"/);
+    expect(binding).toMatch(/#continue-install-apps[\s\S]*?const selectedInstalls = \[\.\.\.selectedFirstInstallApps\];[\s\S]*?selectedFirstInstallApps\.clear\(\);[\s\S]*?enqueueBackgroundInstalls\(selectedInstalls\)[\s\S]*?onboardingRoute = "apps"/);
     expect(install).toContain('installNativeApp(appId)');
     expect(install).toContain('loadNativeApps().catch(() => nativeApps)');
     expect(install).toContain('savedNativeApps.add(appId)');
@@ -87,11 +90,24 @@ describe("fresh-account continuation", () => {
     expect(queue).toContain('for (const appId of unique) await startBackgroundInstall(appId)');
   });
 
-  it("keeps browser credentials browser-owned instead of exposing a fake import toggle", () => {
-    const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
-    expect(tutorial).toContain("Browser passwords stay in your browser");
-    expect(tutorial).toContain("Chrome, Edge, Firefox, Brave, Opera, and Vivaldi");
-    expect(tutorial).toContain("OSL never reads their password files");
+  it("keeps saved-account migration on its own local-only page without account discovery claims", () => {
+    const tutorial = functionSource("tutorialContent", "selectedNativeApps");
+    const browser = functionSource("browserImportContent", "persistSavedAccountPreferences");
+    const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
+    expect(tutorial).not.toContain("data-browser-import");
+    expect(browser).toContain("Import browser accounts");
+    expect(browser).toContain("Local-only consent");
+    expect(browser).toContain('id="import-saved-accounts"');
+    expect(browser).toContain('id="install-firefox"');
+    expect(browser).toContain('firefoxStatus.availability !== "installed"');
+    expect(browser.match(/id="import-saved-accounts"/g)).toHaveLength(1);
+    expect(browser).toContain("Advanced browser export");
+    expect(browser).toContain("Prepare export in");
+    expect(browser).toContain("OSL does not scrape or decrypt browser databases");
+    expect(browser).toContain("does not scrape or decrypt browser databases, discover accounts");
+    expect(browser).toContain("MFA and CAPTCHA still apply");
+    expect(binding).toContain("beginBrowserAccountImport()");
+    expect(binding).toContain('onboardingRoute = "mullvad"');
     expect(source).not.toContain("browserPasswordImportOptIn");
     expect(source).not.toContain("data-browser-password-import");
     expect(source).not.toContain("browser-password-import-opt-in");
@@ -113,38 +129,85 @@ describe("fresh-account continuation", () => {
     const onboardingRender = functionSource("renderOnboarding", "onboardingContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(onboardingRender).toContain('id="skip-onboarding"');
+    expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).toContain("Skip · manual setup");
+    expect(onboardingRender).toContain('["tutorial", "detected", "install", "apps", "browser", "mullvad", "sending", "passwords", "burnpass", "privacy", "scrub"]');
     expect(binding).toContain('document.querySelector("#skip-onboarding")?.addEventListener("click"');
+    expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
   });
 
-  it("guides through one real app connection before sending setup", () => {
-    const apps = functionSource("onboardingAppsContent", "persistSavedAccountPreferences");
+  it("guides through one real app connection before saved accounts", () => {
+    const apps = functionSource("onboardingAppsContent", "browserImportContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
+    const workspaceBinding = functionSource("bindWorkspace", "openHomeAppFromLauncher");
     expect(apps).toContain("Connect one app");
-    expect(apps).toContain('data-onboarding-app="${app.id}"');
-    expect(binding).toMatch(/#continue-account-setup[\s\S]*?onboardingRoute = "apps"/);
-    expect(binding).toMatch(/\[data-onboarding-app\][\s\S]*?onboardingServiceSetup = true[\s\S]*?route = "service"/);
+    expect(apps).toContain('data-connect-app-choice="${app.id}"');
+    expect(apps).toContain('id="continue-connect-app"');
+    expect(binding).toMatch(/#continue-install-apps[\s\S]*?onboardingRoute = "apps"/);
+    expect(binding).toMatch(/#continue-connect-app[\s\S]*?onboardingServiceSetup = true[\s\S]*?route = "service"/);
+    expect(source).toMatch(/async function continueOnboardingFromService[\s\S]*?onboardingRoute = "browser"/);
+    expect(workspaceBinding).toMatch(/#service-guide-finish[\s\S]*?onboardingRoute = "browser"/);
+    expect(source).toContain("onboardingServiceSetup && (activeEmbeddedHost || activeNativeHostId)");
   });
 
   it("places featured local Scrub last before Home", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const completion = functionSource("completeOnboarding", "bindPasswordForm");
-    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?setup\.sendMode = "manual"[\s\S]*?onboardingRoute = "scrub"/);
+    const scrub = functionSource("onboardingScrubContent", "bindOnboarding");
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/#skip-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "passwords"/);
+    expect(source).toContain('data-password-role-next="${next}"');
+    expect(binding).toContain('button.dataset.passwordRoleNext as OnboardingRoute');
+    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "scrub"/);
     expect(binding).toContain('document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding())');
-    expect(source).toContain('id="route-heading" tabindex="-1">Try Scrub');
-    expect(source).toContain("Your messages never leave this device.");
-    expect(source).toContain('id="privacy-export-input"');
+    expect(source).toContain('id="route-heading" tabindex="-1">Initialize Scrub');
+    expect(source).toContain("Nothing is uploaded or deleted.");
+    expect(source).toContain('id="initialize-scrub"');
+    expect(scrub).not.toContain('id="privacy-export-input"');
     expect(source).not.toContain('id="onboarding-start-scrub"');
     expect(completion.indexOf("await loadNativeApps()")).toBeGreaterThan(completion.indexOf("await saveOnboardingPreferences"));
     expect(completion).toContain('route = "home"');
   });
 
-  it("shows only the manual sending behavior that works in this build", () => {
-    const content = functionSource("sendingSetupContent", "scrubCategoryChooserMarkup");
-    expect(content).toContain("Send with copy & paste");
-    expect(content).toContain("manualSendingAnimationMarkup()");
-    expect(content).toContain("You review, copy, paste, and send it yourself.");
-    expect(content).not.toMatch(/Single Enter|Double Enter|Choose how to send|Choose how text appears/);
+  it("offers an optional fixed Mullvad handoff without claiming tunnel access", () => {
+    const content = functionSource("mullvadSetupContent", "scrubCategoryChooserMarkup");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    expect(content).toContain("Optional. Connect before opening your apps.");
+    expect(content).toContain('id="install-mullvad"');
+    expect(content).toContain('id="open-mullvad"');
+    expect(content).toContain('id="refresh-mullvad"');
+    expect(content).toContain("OSL opens Mullvad but cannot read your account, traffic, settings, or connection.");
+    expect(content).toContain('id="mullvad-connected"');
+    expect(content).toContain('id="continue-mullvad"');
+    expect(binding).toContain('runMullvadSetupAction("install")');
+    expect(binding).toContain('runMullvadSetupAction("open")');
+  });
+
+  it("offers guarded sending choices without overstating placement support", () => {
+    const content = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
+    expect(content).toContain("Choose how to send");
+    expect(content).toContain("manualSendingAnimationMarkup(selectedMode)");
+    expect(content).toContain("Never presses Send");
+    expect(content).toContain('option("double", "Double Enter"');
+    expect(content).toContain('option("single", "Single Enter"');
+    expect(content).toContain("If OSL cannot prove the destination");
+  });
+
+  it("collects only wired password roles and exposes only real capture resistance", () => {
+    const passwords = functionSource("onboardingPasswordRoleContent", "onboardingPrivacyContent");
+    const privacy = functionSource("onboardingPrivacyContent", "mullvadSetupContent");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    expect(passwords).toContain("Stealth password");
+    expect(passwords).toContain("Burn password");
+    expect(passwords).toContain('data-onboarding-password-role="${role}"');
+    expect(passwords).toContain("Current password");
+    expect(passwords).toContain("Set password");
+    expect(privacy).toContain('id="onboarding-screenshot-protection"');
+    expect(privacy).toContain("Decrypt display");
+    expect(privacy).toContain("Unavailable during setup");
+    expect(privacy).not.toContain('id="decrypt-display"');
+    expect(binding).toContain("changeScreenshotProtection");
   });
 
   it("re-reads readiness when password setup reports a failure", () => {

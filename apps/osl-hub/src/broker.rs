@@ -682,6 +682,8 @@ fn decrypt_local_protected_capsule_in_dir(
         return Err("The protected message is too large to open on this device".to_owned());
     }
     let context = broker.context_for(context_token)?;
+    let display_policy = crate::security::scope_security(scope_input(&context)?)?;
+    require_decrypt_display_enabled(display_policy.decrypt_display_enabled)?;
     let (identity, file_key) = local_protected_identity(core, &context)?;
     let _transition = broker
         .local_protected_transition
@@ -748,6 +750,14 @@ fn decrypt_local_protected_capsule_in_dir(
         context_verified: true,
         view_once_consumed,
     })
+}
+
+fn require_decrypt_display_enabled(enabled: bool) -> Result<(), String> {
+    if enabled {
+        Ok(())
+    } else {
+        Err("Decryption display is off for this conversation".to_owned())
+    }
 }
 
 fn apply_successful_open_policy(
@@ -1331,5 +1341,14 @@ mod tests {
         assert_eq!(ledger.records["normal"].last_opened_at, None);
         assert!(!apply_successful_open_policy(&mut ledger, "normal", false, 3).unwrap());
         assert_eq!(ledger.records["normal"].last_opened_at, Some(3));
+    }
+
+    #[test]
+    fn disabled_decrypt_display_fails_before_plaintext_is_returned() {
+        assert!(require_decrypt_display_enabled(true).is_ok());
+        assert_eq!(
+            require_decrypt_display_enabled(false).unwrap_err(),
+            "Decryption display is off for this conversation"
+        );
     }
 }

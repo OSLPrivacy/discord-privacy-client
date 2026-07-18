@@ -29,11 +29,15 @@ pub mod mass_cleanup;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 #[cfg(feature = "core")]
+pub mod scrub_index;
+#[cfg(feature = "core")]
 pub mod security;
 #[cfg(feature = "core")]
 pub mod security_credentials;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
+#[cfg(feature = "core")]
+pub mod startup_gate;
 
 // Share the original Tauri-free bootstrap verbatim so the app loads the same
 // sealed identity and local security state without forking that logic.

@@ -64,6 +64,28 @@ export interface HubPasswordRoleStatus {
   burnActionWired: boolean;
 }
 
+export interface HubGateBurnResult {
+  localCleanupComplete: boolean;
+  removedTargets: string[];
+  failedTargets: string[];
+  remoteUnregister: {
+    identitiesFound: number;
+    succeeded: number;
+    failed: number;
+    unavailable: number;
+  };
+  restartRequired: boolean;
+  originalDiscordDataUntouched: true;
+}
+
+export interface HubGateUnlockResult {
+  outcome: "unlocked" | "decoy" | "burned" | "wrong";
+  lockoutSecondsRemaining: number;
+  attemptsUsed: number;
+  readiness: CoreReadiness | null;
+  burn: HubGateBurnResult | null;
+}
+
 export type HubLicenseAccess = "free" | "pro" | "offlineGrace";
 
 export interface HubLicenseState {
@@ -143,11 +165,9 @@ export function isValidNewMainPassword(password: string): boolean {
   return /^[\x20-\x7e]{6,128}$/.test(password);
 }
 
-export async function unlockHubMainPassword(password: string): Promise<CoreReadiness> {
+export async function unlockHubPasswordGate(password: string): Promise<HubGateUnlockResult> {
   if (!isTauriRuntime() || !isValidMainPassword(password)) throw new Error("unlock unavailable");
-  const parsed = parseCoreReadiness(await invoke<unknown>("unlock_hub_main_password", { password }));
-  if (!parsed.originalCoreLinked) throw new Error("unlock unavailable");
-  return parsed;
+  return parseHubGateUnlockResult(await invoke<unknown>("unlock_hub_password_gate", { password }));
 }
 
 export async function loadHubPasswordRoleStatus(): Promise<HubPasswordRoleStatus> {
@@ -226,6 +246,44 @@ export function parseHubPasswordRoleStatus(raw: unknown): HubPasswordRoleStatus 
     throw new Error("invalid password-role response");
   }
   return raw as unknown as HubPasswordRoleStatus;
+}
+
+export function parseHubGateUnlockResult(raw: unknown): HubGateUnlockResult {
+  if (!isExactRecord(raw, ["outcome", "lockoutSecondsRemaining", "attemptsUsed", "readiness", "burn"])) {
+    throw new Error("invalid password-gate response");
+  }
+  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "decoy", "burned", "wrong"];
+  if (
+    !outcomes.includes(raw.outcome as HubGateUnlockResult["outcome"])
+    || !Number.isSafeInteger(raw.lockoutSecondsRemaining)
+    || (raw.lockoutSecondsRemaining as number) < 0
+    || !Number.isSafeInteger(raw.attemptsUsed)
+    || (raw.attemptsUsed as number) < 0
+  ) throw new Error("invalid password-gate response");
+
+  const readiness = raw.readiness === null ? null : parseCoreReadiness(raw.readiness);
+  const burn = raw.burn === null ? null : parseHubGateBurnResult(raw.burn);
+  if (
+    (raw.outcome === "unlocked") !== (readiness !== null)
+    || (raw.outcome === "burned") !== (burn !== null)
+  ) throw new Error("invalid password-gate response");
+  return { ...raw, readiness, burn } as HubGateUnlockResult;
+}
+
+function parseHubGateBurnResult(raw: unknown): HubGateBurnResult {
+  if (!isExactRecord(raw, ["localCleanupComplete", "removedTargets", "failedTargets", "remoteUnregister", "restartRequired", "originalDiscordDataUntouched"])) {
+    throw new Error("invalid password-gate response");
+  }
+  if (
+    typeof raw.localCleanupComplete !== "boolean"
+    || !isSafeTextArray(raw.removedTargets, 64, 64)
+    || !isSafeTextArray(raw.failedTargets, 64, 64)
+    || typeof raw.restartRequired !== "boolean"
+    || raw.originalDiscordDataUntouched !== true
+    || !isExactRecord(raw.remoteUnregister, ["identitiesFound", "succeeded", "failed", "unavailable"])
+    || Object.values(raw.remoteUnregister).some((value) => !Number.isSafeInteger(value) || (value as number) < 0)
+  ) throw new Error("invalid password-gate response");
+  return raw as unknown as HubGateBurnResult;
 }
 
 export function isRecoveryPhrase(value: string): boolean {
@@ -357,6 +415,12 @@ function isExactRecord(value: unknown, keys: readonly string[]): value is Record
 
 function isSafeText(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function isSafeTextArray(value: unknown, maxItems: number, maxLength: number): value is string[] {
+  return Array.isArray(value)
+    && value.length <= maxItems
+    && value.every((item) => isSafeText(item, maxLength));
 }
 
 function isOptionalUnixSeconds(value: unknown): value is number | null {

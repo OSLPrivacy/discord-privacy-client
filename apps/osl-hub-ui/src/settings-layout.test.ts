@@ -19,9 +19,10 @@ describe("simplified truthful settings", () => {
   });
 
   it("does not advertise automatic sending as functional", () => {
-    expect(source).toContain("Automatic sending is not available in this build.");
-    expect(source).toContain("Review encrypted text, then copy, paste, and send it yourself.");
-    expect(source).not.toMatch(/Advanced sending preview|data-send-mode|data-placement/);
+    expect(source).toContain("OSL encrypts and copies. You choose where and when to send.");
+    expect(source).toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
+    expect(source).toContain("data-settings-send-mode");
+    expect(source).not.toMatch(/Advanced sending preview|data-placement/);
     expect(source).not.toContain("Composer adapter required");
   });
 
@@ -40,7 +41,7 @@ describe("simplified truthful settings", () => {
     const accountEnd = source.indexOf("function serviceAccountsSettingsContent", accountStart);
     const scrubStart = source.indexOf("function privacySettingsContent");
     const scrubEnd = source.indexOf("function privacyScanResultsMarkup", scrubStart);
-    expect(source.slice(accountStart, accountEnd)).toContain('<details class="account-advanced">');
+    expect(source.slice(accountStart, accountEnd)).toContain('<details class="account-advanced settings-disclosure">');
     expect(source.slice(accountStart, accountEnd)).toContain('id="full-cleanup-button"');
     expect(source.slice(scrubStart, scrubEnd)).not.toContain('id="full-cleanup-button"');
   });
@@ -65,13 +66,13 @@ describe("simplified truthful settings", () => {
   });
 
   it("lists isolated embedded profiles without shared-browser actions", () => {
-    expect(source).toContain("Each account has its own local sign-in profile inside OSL.");
+    expect(source).toContain("Open each account in its own OSL profile.");
     expect(source).not.toContain('data-firefox-launch=');
     expect(source).not.toContain('data-install-firefox');
     expect(source).not.toContain("downloadSetupCsv");
   });
 
-  it("keeps account-opening choices editable and browser import browser-owned", () => {
+  it("keeps account-opening choices editable without duplicating onboarding browser import", () => {
     const start = source.indexOf("function serviceAccountsSettingsContent");
     const end = source.indexOf("function privacySettingsContent", start);
     const apps = source.slice(start, end);
@@ -79,11 +80,11 @@ describe("simplified truthful settings", () => {
     expect(apps).toContain('data-saved-account-mode="use"');
     expect(apps).toContain('data-saved-account-mode="clean"');
     expect(apps).toContain('data-saved-native="${app.id}"');
-    expect(apps).toContain("Use existing account");
-    expect(apps).toContain("Start fresh");
-    expect(apps).toContain("data-browser-import");
-    expect(apps).toContain("Browser-owned sign-in");
-    expect(apps).toContain("OSL never reads their password files");
+    expect(apps).toContain("Use selected apps");
+    expect(apps).toContain("Use web profiles");
+    expect(apps).toContain("Only checked installed apps may open");
+    expect(apps).not.toContain("data-browser-import");
+    expect(apps).not.toContain("Prepare export in");
     expect(apps).not.toContain("data-browser-password-import");
   });
 

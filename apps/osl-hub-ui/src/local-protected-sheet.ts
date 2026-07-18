@@ -1,4 +1,5 @@
 import type { LocalLoopbackContext } from "./adapters";
+import type { SendMode } from "./state";
 
 export type LocalProtectedPane = "write" | "open";
 
@@ -9,14 +10,16 @@ export interface LocalProtectedSheetModel {
   pane: LocalProtectedPane;
   ttlSeconds: number;
   viewOnce: boolean;
+  decryptDisplayEnabled: boolean;
   busy: boolean;
+  draft: string;
   capsule: string;
   openedPlaintext: string;
   status: string;
 }
 
 export const LOCAL_CHAT_LABEL_MAX_LENGTH = 48;
-export const LOCAL_TTL_OPTIONS = [0, 3_600, 86_400, 604_800] as const;
+export const LOCAL_TTL_OPTIONS = [0, 3_600, 86_400, 259_200, 604_800] as const;
 const STORAGE_PREFIX = "osl-local-loopback-context-v1";
 
 export function validLocalChatLabel(value: string): boolean {
@@ -57,7 +60,9 @@ export function blankLocalProtectedModel(open = false): LocalProtectedSheetModel
     pane: "write",
     ttlSeconds: 0,
     viewOnce: false,
+    decryptDisplayEnabled: true,
     busy: false,
+    draft: "",
     capsule: "",
     openedPlaintext: "",
     status: "",
@@ -77,11 +82,12 @@ function escapeHtml(value: string): string {
 function ttlLabel(seconds: number): string {
   if (seconds === 3_600) return "1 hour";
   if (seconds === 86_400) return "1 day";
+  if (seconds === 259_200) return "3 days";
   if (seconds === 604_800) return "7 days";
   return "No timer";
 }
 
-export function localProtectedSheetMarkup(model: LocalProtectedSheetModel): string {
+export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "clipboard"): string {
   if (!model.open) return "";
   const close = `<button class="local-protected-close" id="local-protected-close" type="button" aria-label="Close local protection">×</button>`;
   if (!model.context) {
@@ -98,19 +104,29 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel): stri
   }
 
   const ttlOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${model.ttlSeconds === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
+  const primaryLabel = sendMode === "double"
+    ? "Prepare · Double Enter"
+    : sendMode === "single"
+      ? "Prepare · Single Enter"
+      : "Encrypt & copy";
+  const sendTruth = sendMode === "double" || sendMode === "single"
+    ? "OSL will stop at Copy until it can verify this app's exact chat and composer."
+    : "OSL copies encrypted text. It never presses Send.";
   const write = `<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
-      <textarea id="local-protected-draft" maxlength="1000" rows="5" autocomplete="off" spellcheck="true" placeholder="Write privately"></textarea>
+      <textarea id="local-protected-draft" maxlength="1000" rows="5" autocomplete="off" spellcheck="true" placeholder="Write privately">${escapeHtml(model.draft)}</textarea>
       <div class="local-protected-options"><label><span>Delete key after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/></label></div>
-      <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : "Encrypt"}</button>
+      <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
+      <small class="local-send-truth">${escapeHtml(sendTruth)}</small>
     </form>
-    ${model.capsule ? `<section class="local-capsule-result"><label for="local-capsule-output">Encrypted text</label><textarea id="local-capsule-output" rows="4" readonly>${escapeHtml(model.capsule)}</textarea><button class="local-copy" id="local-capsule-copy" type="button">Copy</button><small>Paste and send it yourself.</small></section>` : ""}`;
+    ${model.capsule ? `<section class="local-capsule-result"><label for="local-capsule-output">Encrypted text</label><textarea id="local-capsule-output" rows="4" readonly>${escapeHtml(model.capsule)}</textarea><button class="local-copy" id="local-capsule-copy" type="button">Copy again</button><small>Review the destination before you send.</small></section>` : ""}`;
 
   const open = `<form id="local-open-form" class="local-protected-form">
       <label for="local-capsule-input">Encrypted text</label>
       <textarea id="local-capsule-input" maxlength="262144" rows="6" autocomplete="off" spellcheck="false" placeholder="Paste here yourself"></textarea>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Opening…" : "Open locally"}</button>
     </form>
+    <label class="local-decrypt-display"><span><strong>Show decrypted text</strong><small>Only for this local chat.</small></span><input id="local-decrypt-display" type="checkbox" ${model.decryptDisplayEnabled ? "checked" : ""}/></label>
     ${model.openedPlaintext ? `<section class="local-plaintext-result"><span>On this device</span><p>${escapeHtml(model.openedPlaintext)}</p></section>` : ""}`;
 
   return `<aside class="local-protected-sheet ready" aria-labelledby="local-protected-title">

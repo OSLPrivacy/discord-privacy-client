@@ -51,6 +51,16 @@ pub struct BrowserImportResult {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserAccountImportResult {
+    pub preferred_source: BrowserImportId,
+    pub detected_sources: Vec<BrowserImportId>,
+    pub opened: bool,
+    pub mode: &'static str,
+    pub manual_export_required: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAppStatus {
     pub id: NativeAppId,
     pub display_name: &'static str,
@@ -74,6 +84,18 @@ pub struct NativeInstallResult {
     pub id: NativeAppId,
     pub started: bool,
     pub package_id: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MullvadStatus {
+    pub availability: NativeAppAvailability,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MullvadActionResult {
+    pub started: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -175,6 +197,21 @@ const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[
     ExecutableCandidate {
         folder: KnownFolder::Local,
         relative_path: r"WhatsApp\WhatsApp.exe",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_PACKAGE_ID: &str = "MullvadVPN.MullvadVPN";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"Mullvad VPN\Mullvad VPN.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"Programs\Mullvad VPN\Mullvad VPN.exe",
     },
 ];
 
@@ -295,40 +332,37 @@ const BROWSER_IMPORTS: &[BrowserImportManifest] = &[
         id: BrowserImportId::Chrome,
         display_name: "Chrome",
         candidates: CHROME_IMPORT_CANDIDATES,
-        import_arguments: &["--new-window", "chrome://settings/importData"],
+        import_arguments: &["--new-window", "chrome://password-manager/settings"],
     },
     BrowserImportManifest {
         id: BrowserImportId::Edge,
         display_name: "Edge",
         candidates: EDGE_IMPORT_CANDIDATES,
-        import_arguments: &[
-            "--new-window",
-            "edge://settings/profiles/importBrowsingData",
-        ],
+        import_arguments: &["--new-window", "edge://settings/passwords"],
     },
     BrowserImportManifest {
         id: BrowserImportId::Firefox,
         display_name: "Firefox",
         candidates: FIREFOX_CANDIDATES,
-        import_arguments: &["--new-window", "about:preferences#general"],
+        import_arguments: &["--new-window", "about:logins"],
     },
     BrowserImportManifest {
         id: BrowserImportId::Brave,
         display_name: "Brave",
         candidates: BRAVE_IMPORT_CANDIDATES,
-        import_arguments: &["--new-window", "brave://settings/importData"],
+        import_arguments: &["--new-window", "brave://password-manager/settings"],
     },
     BrowserImportManifest {
         id: BrowserImportId::Opera,
         display_name: "Opera",
         candidates: OPERA_IMPORT_CANDIDATES,
-        import_arguments: &["--new-window", "opera://settings/importData"],
+        import_arguments: &["--new-window", "opera://password-manager/settings"],
     },
     BrowserImportManifest {
         id: BrowserImportId::Vivaldi,
         display_name: "Vivaldi",
         candidates: VIVALDI_IMPORT_CANDIDATES,
-        import_arguments: &["--new-window", "vivaldi://settings/importData"],
+        import_arguments: &["--new-window", "vivaldi://password-manager/settings"],
     },
 ];
 
@@ -435,9 +469,11 @@ pub fn list_browser_imports() -> Vec<BrowserImportStatus> {
     }
 }
 
-/// Opens one browser-owned import/settings surface after an explicit click.
+/// Opens one browser-owned password-manager/export surface after an explicit
+/// click. The browser retains export confirmation, OS or primary-password
+/// authentication, the destination chooser, and the resulting plaintext CSV.
 /// The caller supplies only an enum; executable paths and arguments are fixed.
-/// OSL does not receive a result from, observe, or perform the import.
+/// OSL does not receive a result from, observe, or perform the export.
 pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
@@ -450,7 +486,7 @@ pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, S
         })?;
         spawn_detached(&executable, browser.import_arguments).map_err(|_| {
             format!(
-                "{} could not open its import settings",
+                "{} could not open its password manager",
                 browser.display_name
             )
         })?;
@@ -459,8 +495,65 @@ pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, S
     #[cfg(not(target_os = "windows"))]
     {
         let _ = id;
-        Err("Browser-owned import handoff is available only on Windows".to_owned())
+        Err("Browser-owned password handoff is available only on Windows".to_owned())
     }
+}
+
+/// Opens Firefox's own migration wizard inside OSL's isolated Firefox profile.
+/// Detection, source choice, profile path, executable, arguments, and target
+/// page are all fixed natively. Firefox—not OSL—reads supported browser data,
+/// requests OS/browser authorization, and owns any CSV file picker.
+pub fn begin_browser_account_import(
+    app_local_data_dir: &std::path::Path,
+) -> Result<BrowserAccountImportResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let detected_sources = BROWSER_IMPORTS
+            .iter()
+            .filter(|browser| browser_import_executable(browser).is_some())
+            .map(|browser| browser.id)
+            .collect::<Vec<_>>();
+        let preferred_source = preferred_browser_import_source(&detected_sources)
+            .ok_or_else(|| "No supported browser account source was found".to_owned())?;
+        let firefox = firefox_executable().ok_or_else(|| {
+            "Firefox is required for OSL's browser-owned account migration".to_owned()
+        })?;
+        let profile = ensure_firefox_profile(app_local_data_dir)?;
+        spawn_firefox_migration_wizard(&firefox, &profile)
+            .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
+        Ok(BrowserAccountImportResult {
+            preferred_source,
+            detected_sources,
+            opened: true,
+            mode: "firefoxMigrationWizard",
+            manual_export_required: matches!(
+                preferred_source,
+                BrowserImportId::Chrome | BrowserImportId::Firefox
+            ),
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app_local_data_dir;
+        Err("Browser account migration is available only on Windows".to_owned())
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn preferred_browser_import_source(sources: &[BrowserImportId]) -> Option<BrowserImportId> {
+    // Prefer Firefox's direct Windows migrators before Chrome's specialized
+    // manual CSV flow. The wizard remains visible and lets the user change the
+    // detected source before confirming anything.
+    [
+        BrowserImportId::Edge,
+        BrowserImportId::Brave,
+        BrowserImportId::Opera,
+        BrowserImportId::Vivaldi,
+        BrowserImportId::Chrome,
+        BrowserImportId::Firefox,
+    ]
+    .into_iter()
+    .find(|candidate| sources.contains(candidate))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -518,6 +611,83 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
         let _ = id;
         Err("Native app installation is available only on Windows".to_owned())
     }
+}
+
+/// Reports only whether the fixed Mullvad desktop executable exists in one of
+/// its reviewed standard Windows locations. No account, tunnel, traffic, or
+/// configuration state is read.
+pub fn get_mullvad_status() -> MullvadStatus {
+    let availability = if mullvad_executable().is_some() {
+        NativeAppAvailability::Installed
+    } else if installer_executable().is_some() {
+        NativeAppAvailability::Installable
+    } else {
+        NativeAppAvailability::Unavailable
+    };
+    MullvadStatus { availability }
+}
+
+/// Starts only the exact current Mullvad package from the public winget
+/// repository. Winget verifies the selected manifest and installer; OSL does
+/// not accept a package id, source, executable path, or argument from the UI.
+pub fn install_mullvad() -> Result<MullvadActionResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let winget = installer_executable()
+            .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
+        let arguments = [
+            "install",
+            "--id",
+            MULLVAD_PACKAGE_ID,
+            "--exact",
+            "--source",
+            "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--silent",
+        ];
+        spawn_detached(&winget, &arguments)
+            .map_err(|_| "The Mullvad installer could not be started".to_owned())?;
+        Ok(MullvadActionResult { started: true })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Mullvad installation is available only on Windows".to_owned())
+    }
+}
+
+/// Opens only Mullvad's reviewed desktop executable with no arguments. OSL
+/// never reads or changes VPN account, tunnel, DNS, or Lockdown Mode state.
+pub fn open_mullvad() -> Result<MullvadActionResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let executable = mullvad_executable()
+            .ok_or_else(|| "Mullvad is not installed in a supported Windows location".to_owned())?;
+        spawn_detached(&executable, &[]).map_err(|_| "Mullvad could not be opened".to_owned())?;
+        Ok(MullvadActionResult { started: true })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Mullvad can be opened by OSL only on Windows".to_owned())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn mullvad_executable() -> Option<PathBuf> {
+    MULLVAD_CANDIDATES.iter().find_map(|candidate| {
+        let executable = known_folder(candidate.folder)?.join(candidate.relative_path);
+        executable.is_file().then_some(executable)
+    })
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+fn mullvad_executable() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(all(not(target_os = "windows"), not(test)))]
+fn mullvad_executable() -> Option<std::path::PathBuf> {
+    None
 }
 
 pub fn get_firefox_status() -> FirefoxStatus {
@@ -776,6 +946,21 @@ fn spawn_firefox_tab(executable: &Path, profile: &Path, url: &str) -> std::io::R
         .map(|_| ())
 }
 
+#[cfg(target_os = "windows")]
+fn spawn_firefox_migration_wizard(executable: &Path, profile: &Path) -> std::io::Result<()> {
+    Command::new(executable)
+        .arg("--no-remote")
+        .arg("--profile")
+        .arg(profile)
+        .arg("--migration")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,6 +991,23 @@ mod tests {
         }
         assert_eq!(manifest(NativeAppId::Discord).package_id, "Discord.Discord");
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
+    }
+
+    #[test]
+    fn mullvad_actions_have_one_fixed_safe_manifest() {
+        assert_eq!(MULLVAD_PACKAGE_ID, "MullvadVPN.MullvadVPN");
+        assert_eq!(MULLVAD_CANDIDATES.len(), 2);
+        for candidate in MULLVAD_CANDIDATES {
+            assert!(!candidate.relative_path.starts_with(['/', '\\']));
+            assert!(!candidate.relative_path.contains(".."));
+            assert!(!candidate.relative_path.contains(':'));
+            assert!(candidate.relative_path.ends_with(r"Mullvad VPN.exe"));
+        }
+        assert!(
+            serde_json::to_value(MullvadActionResult { started: true }).unwrap()["started"]
+                .as_bool()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -890,15 +1092,18 @@ mod tests {
         );
         assert!(serde_json::from_str::<BrowserImportId>(r#""../firefox""#).is_err());
         let expected_targets = [
-            (BrowserImportId::Chrome, "chrome://settings/importData"),
             (
-                BrowserImportId::Edge,
-                "edge://settings/profiles/importBrowsingData",
+                BrowserImportId::Chrome,
+                "chrome://password-manager/settings",
             ),
-            (BrowserImportId::Firefox, "about:preferences#general"),
-            (BrowserImportId::Brave, "brave://settings/importData"),
-            (BrowserImportId::Opera, "opera://settings/importData"),
-            (BrowserImportId::Vivaldi, "vivaldi://settings/importData"),
+            (BrowserImportId::Edge, "edge://settings/passwords"),
+            (BrowserImportId::Firefox, "about:logins"),
+            (BrowserImportId::Brave, "brave://password-manager/settings"),
+            (BrowserImportId::Opera, "opera://password-manager/settings"),
+            (
+                BrowserImportId::Vivaldi,
+                "vivaldi://password-manager/settings",
+            ),
         ];
         assert_eq!(BROWSER_IMPORTS.len(), 6);
         for (index, browser) in BROWSER_IMPORTS.iter().enumerate() {
@@ -938,6 +1143,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn automatic_browser_migration_uses_a_fixed_fail_closed_preference_order() {
+        assert_eq!(preferred_browser_import_source(&[]), None);
+        assert_eq!(
+            preferred_browser_import_source(&[BrowserImportId::Chrome]),
+            Some(BrowserImportId::Chrome)
+        );
+        assert_eq!(
+            preferred_browser_import_source(&[
+                BrowserImportId::Chrome,
+                BrowserImportId::Edge,
+                BrowserImportId::Firefox,
+            ]),
+            Some(BrowserImportId::Edge)
+        );
+        assert_eq!(
+            preferred_browser_import_source(&[BrowserImportId::Firefox, BrowserImportId::Vivaldi,]),
+            Some(BrowserImportId::Vivaldi)
+        );
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn process_actions_fail_closed_off_windows() {
@@ -946,6 +1172,12 @@ mod tests {
             .all(|app| app.availability == NativeAppAvailability::Unavailable
                 && !app.supports_overlay));
         assert!(install_native_app(NativeAppId::Discord).is_err());
+        assert_eq!(
+            get_mullvad_status().availability,
+            NativeAppAvailability::Unavailable
+        );
+        assert!(install_mullvad().is_err());
+        assert!(open_mullvad().is_err());
         assert_eq!(
             get_firefox_status().availability,
             NativeAppAvailability::Unavailable
@@ -960,5 +1192,6 @@ mod tests {
             .iter()
             .all(|browser| !browser.installed));
         assert!(open_browser_import(BrowserImportId::Chrome).is_err());
+        assert!(begin_browser_account_import(std::path::Path::new("/trusted/osl-data")).is_err());
     }
 }

@@ -89,6 +89,12 @@
 .local-view-once input { width: 22px; min-height: 22px; }
 .local-capsule-result { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
 .local-capsule-result small { color: var(--muted); text-align: center; }
+.local-send-truth { color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }
+.local-decrypt-display { margin-top: 14px; padding: 11px 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.local-decrypt-display strong,
+.local-decrypt-display small { display: block; }
+.local-decrypt-display small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.local-decrypt-display input { width: 21px; min-height: 21px; flex: 0 0 auto; }
 .local-plaintext-result { margin-top: 18px; padding: 16px; border: 1px solid var(--line); background: var(--bg); }
 .local-plaintext-result p { margin: 8px 0 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .local-protected-status { min-height: 18px; margin-top: 12px; color: var(--muted); font-size: 11px; }

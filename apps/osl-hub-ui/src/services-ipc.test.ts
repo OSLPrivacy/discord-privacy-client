@@ -9,14 +9,18 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import {
+  beginBrowserAccountImport,
   createEmbeddedServiceAccount,
   closeEmbeddedServiceHost,
   detachNativeAppWindow,
   focusNativeAppWindow,
   hostNativeAppWindow,
   installNativeApp,
+  installMullvad,
   loadBrowserImports,
+  loadMullvadStatus,
   openBrowserImport,
+  openMullvad,
   openEmbeddedHomeApp,
   openEmbeddedServiceAccount,
   removeEmbeddedServiceAccount,
@@ -135,6 +139,21 @@ describe("native window host IPC", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("install_native_app", { appId: "telegram" });
   });
 
+  it("uses argument-free fixed Mullvad commands", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({ availability: "installed" })
+      .mockResolvedValueOnce({ started: true })
+      .mockResolvedValueOnce({ started: true });
+    await expect(loadMullvadStatus()).resolves.toEqual({ availability: "installed" });
+    await expect(openMullvad()).resolves.toEqual({ started: true });
+    await expect(installMullvad()).resolves.toEqual({ started: true });
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["get_mullvad_status"],
+      ["open_mullvad"],
+      ["install_mullvad"],
+    ]);
+  });
+
   it("uses argument-free lifecycle commands for resize, focus, and detach", async () => {
     mocks.invoke
       .mockResolvedValueOnce({ id: "discord", status: "resized", reason: "none", mode: "ownedBorderless" })
@@ -188,6 +207,31 @@ describe("browser-owned import IPC", () => {
       ["list_browser_imports"],
       ["open_browser_import", { browserId: "chrome" }],
     ]);
+  });
+
+  it("starts one argument-free Firefox migration and validates the exact result", async () => {
+    const response = {
+      preferredSource: "edge",
+      detectedSources: ["edge", "chrome"],
+      opened: true,
+      mode: "firefoxMigrationWizard",
+      manualExportRequired: false,
+    };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(beginBrowserAccountImport()).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("begin_browser_account_import");
+  });
+
+  it("rejects a widened or malformed account-migration result", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      preferredSource: "edge",
+      detectedSources: ["edge"],
+      opened: true,
+      mode: "firefoxMigrationWizard",
+      manualExportRequired: false,
+      profilePath: "C:/Users/example",
+    });
+    await expect(beginBrowserAccountImport()).rejects.toThrow("invalid browser account import response");
   });
 
   it("rejects injected ids and malformed native responses before they can widen the command", async () => {

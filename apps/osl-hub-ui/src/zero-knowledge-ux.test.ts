@@ -13,10 +13,13 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("zero-knowledge Scrub review", () => {
-  it("shows the local-only promise before every scan action", () => {
+  it("keeps first-run Scrub local-only without scanning or deleting", () => {
     const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
     const settings = functionSource("privacySettingsContent", "privacyScanResultsMarkup");
-    expect(onboarding).toMatch(/return `<h1[^`]*Your messages never leave this device\.<\/strong>[^`]*\$\{scanAction\}/);
+    expect(onboarding).toContain("This stays on your device.");
+    expect(onboarding).toContain("Nothing is uploaded or deleted.");
+    expect(onboarding).toContain("Stores only exports you choose and messages OSL already shows.");
+    expect(onboarding).not.toContain("privacy-export-input");
     expect(settings).toMatch(/return `<h2>Scrub<\/h2><p class="scrub-local-promise"><strong>Your messages never leave this device\.<\/strong>[\s\S]*\$\{scanActions\}/);
   });
 
@@ -29,13 +32,23 @@ describe("zero-knowledge Scrub review", () => {
     expect(categories).toContain("scrubSignalDefinitions.map(({ id }) => id)");
   });
 
-  it("offers only a real local export scan and one finish action", () => {
+  it("initializes only an encrypted local index without implying deletion", () => {
     const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
-    expect(onboarding).toContain("Choose message export");
-    expect(onboarding).toContain('type="file"');
-    expect(onboarding).toContain('id="complete-onboarding">Finish setup');
-    expect(onboarding).not.toContain("Scan this device");
+    expect(onboarding).toContain('id="initialize-scrub"');
+    expect(onboarding).toContain("Private index created");
+    expect(onboarding).toContain("waits for an explicit export or supported OSL-visible source");
+    expect(onboarding).toContain("Nothing is deleted now.");
+    expect(onboarding).not.toContain("Scanning…");
     expect(onboarding).not.toContain("Not now");
+  });
+
+  it("states that later deletion retains explicit review and confirmation", () => {
+    const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    expect(onboarding).toContain("Nothing is deleted now.");
+    expect(onboarding).toContain("editable list and your confirmation");
+    expect(binding).not.toContain("scanPrivacyExport");
+    expect(binding).not.toContain("bindScrubControls");
   });
 
   it("renders every selected item through a complete paged OSL-owned review", () => {

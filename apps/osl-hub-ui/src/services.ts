@@ -19,6 +19,14 @@ export interface BrowserImportStatus {
   installed: boolean;
 }
 
+export interface BrowserAccountImportAction {
+  preferredSource: BrowserImportId;
+  detectedSources: BrowserImportId[];
+  opened: true;
+  mode: "firefoxMigrationWizard";
+  manualExportRequired: boolean;
+}
+
 export interface NativeApp {
   id: NativeAppId;
   displayName: string;
@@ -30,6 +38,14 @@ export interface NativeAppAction {
   id: NativeAppId;
   started: true;
   packageId?: string;
+}
+
+export interface MullvadStatus {
+  availability: "installed" | "installable" | "unavailable";
+}
+
+export interface MullvadAction {
+  started: true;
 }
 
 export interface NativeWindowHostAction {
@@ -185,6 +201,34 @@ export async function installNativeApp(appId: NativeAppId): Promise<NativeAppAct
   return parseNativeAppAction(await invoke<unknown>("install_native_app", { appId }), true);
 }
 
+export async function loadMullvadStatus(): Promise<MullvadStatus> {
+  if (!isTauriRuntime()) return { availability: "unavailable" };
+  return parseMullvadStatus(await invoke<unknown>("get_mullvad_status"));
+}
+
+export async function installMullvad(): Promise<MullvadAction> {
+  if (!isTauriRuntime()) throw new Error("Mullvad installation unavailable");
+  return parseMullvadAction(await invoke<unknown>("install_mullvad"));
+}
+
+export async function openMullvad(): Promise<MullvadAction> {
+  if (!isTauriRuntime()) throw new Error("Mullvad launch unavailable");
+  return parseMullvadAction(await invoke<unknown>("open_mullvad"));
+}
+
+export function parseMullvadStatus(raw: unknown): MullvadStatus {
+  if (!isExactRecord(raw, ["availability"])
+    || !["installed", "installable", "unavailable"].includes(String(raw.availability))) {
+    throw new Error("invalid Mullvad status");
+  }
+  return raw as unknown as MullvadStatus;
+}
+
+function parseMullvadAction(raw: unknown): MullvadAction {
+  if (!isExactRecord(raw, ["started"]) || raw.started !== true) throw new Error("invalid Mullvad action");
+  return raw as unknown as MullvadAction;
+}
+
 export async function loadBrowserImports(): Promise<BrowserImportStatus[]> {
   if (!isTauriRuntime()) return browserImportIds.map((id) => ({ id, displayName: id[0].toUpperCase() + id.slice(1), installed: false }));
   return parseBrowserImports(await invoke<unknown>("list_browser_imports"));
@@ -196,6 +240,25 @@ export async function openBrowserImport(browserId: BrowserImportId): Promise<voi
   if (!isExactRecord(raw, ["id", "opened"]) || raw.id !== browserId || raw.opened !== true) {
     throw new Error("invalid browser import response");
   }
+}
+
+export async function beginBrowserAccountImport(): Promise<BrowserAccountImportAction> {
+  if (!isTauriRuntime()) throw new Error("browser account import unavailable");
+  const raw = await invoke<unknown>("begin_browser_account_import");
+  if (!isExactRecord(raw, ["preferredSource", "detectedSources", "opened", "mode", "manualExportRequired"])
+    || !browserImportIds.includes(raw.preferredSource as BrowserImportId)
+    || !Array.isArray(raw.detectedSources)
+    || raw.detectedSources.length < 1
+    || raw.detectedSources.length > browserImportIds.length
+    || new Set(raw.detectedSources).size !== raw.detectedSources.length
+    || !raw.detectedSources.every((id) => browserImportIds.includes(id as BrowserImportId))
+    || !raw.detectedSources.includes(raw.preferredSource)
+    || raw.opened !== true
+    || raw.mode !== "firefoxMigrationWizard"
+    || typeof raw.manualExportRequired !== "boolean") {
+    throw new Error("invalid browser account import response");
+  }
+  return raw as unknown as BrowserAccountImportAction;
 }
 
 export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {

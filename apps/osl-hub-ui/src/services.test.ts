@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
+import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 function validRegistry(): unknown[] {
   const ids = ["discord", "telegram", "instagram", "snapchat", "email", "x", "messenger", "signal", "whatsapp", "slack", "linkedin", "teams"];
@@ -64,6 +64,13 @@ describe("linked-service contract", () => {
     expect(parseFirefoxStatus({ availability: "installed" })).toEqual({ availability: "installed" });
     expect(() => parseFirefoxStatus({ availability: "installed", profile: "secret" })).toThrow();
     expect(() => parseFirefoxStatus({ availability: "embedded" })).toThrow();
+  });
+
+  it("strictly validates the narrow Mullvad availability receipt", () => {
+    expect(parseMullvadStatus({ availability: "installed" })).toEqual({ availability: "installed" });
+    expect(parseMullvadStatus({ availability: "installable" })).toEqual({ availability: "installable" });
+    expect(() => parseMullvadStatus({ availability: "connected" })).toThrow();
+    expect(() => parseMullvadStatus({ availability: "installed", account: "secret" })).toThrow();
   });
 
   it("strictly validates a newly-created isolated account profile", () => {

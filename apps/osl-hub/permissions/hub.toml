@@ -29,6 +29,36 @@ description = "Scan bounded caller-provided visible message text in local proces
 commands.allow = ["scan_local_privacy"]
 
 [[permission]]
+identifier = "allow-initialize-scrub-index"
+description = "Initialize one bounded encrypted local-only Scrub index for explicitly selected profiles owned by the active OSL identity."
+commands.allow = ["initialize_scrub_index"]
+
+[[permission]]
+identifier = "allow-append-scrub-index-chunk"
+description = "Append one bounded caller-provided export or OSL-visible-data chunk to the authenticated local Scrub index; provides no discovery, network, or deletion authority."
+commands.allow = ["append_scrub_index_chunk"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-status"
+description = "Read bounded progress metadata for the active identity's encrypted local Scrub index."
+commands.allow = ["get_scrub_index_status"]
+
+[[permission]]
+identifier = "allow-pause-scrub-index"
+description = "Pause the exact active local Scrub import by its random identifier."
+commands.allow = ["pause_scrub_index"]
+
+[[permission]]
+identifier = "allow-resume-scrub-index"
+description = "Resume the exact active local Scrub import by its random identifier."
+commands.allow = ["resume_scrub_index"]
+
+[[permission]]
+identifier = "allow-cancel-scrub-index"
+description = "Cancel and remove only the active identity's fixed encrypted Scrub index directory; cannot delete service messages."
+commands.allow = ["cancel_scrub_index"]
+
+[[permission]]
 identifier = "allow-list-linked-services"
 description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
@@ -84,9 +114,9 @@ description = "Remove the locally sealed activation code from the trusted bundle
 commands.allow = ["clear_hub_activation_code"]
 
 [[permission]]
-identifier = "allow-unlock-hub-main-password"
-description = "Unlock the local OSL core with the ordinary main password from the trusted bundled OSL Privacy UI."
-commands.allow = ["unlock_hub_main_password"]
+identifier = "allow-unlock-hub-password-gate"
+description = "Verify the original constant-time main, stealth, and burn password gate and execute exactly the role's trusted local consequence."
+commands.allow = ["unlock_hub_password_gate"]
 
 [[permission]]
 identifier = "allow-create-hub-osl-identity"
@@ -154,14 +184,34 @@ description = "Start one fixed silent winget or Microsoft Store background insta
 commands.allow = ["install_native_app"]
 
 [[permission]]
+identifier = "allow-get-mullvad-status"
+description = "Report only whether Mullvad exists in one of two fixed standard Windows locations; never reads VPN account, tunnel, traffic, or configuration state."
+commands.allow = ["get_mullvad_status"]
+
+[[permission]]
+identifier = "allow-install-mullvad"
+description = "Start only the fixed MullvadVPN.MullvadVPN package through winget after an explicit trusted-UI click, without caller-supplied package, path, or arguments."
+commands.allow = ["install_mullvad"]
+
+[[permission]]
+identifier = "allow-open-mullvad"
+description = "Open only a fixed detected Mullvad desktop executable with no arguments after an explicit trusted-UI click."
+commands.allow = ["open_mullvad"]
+
+[[permission]]
 identifier = "allow-list-browser-imports"
 description = "Report only whether six fixed supported browsers exist in standard Windows install locations; never reads browser profiles, cookies, or credentials."
 commands.allow = ["list_browser_imports"]
 
 [[permission]]
 identifier = "allow-open-browser-import"
-description = "After an explicit click, open one detected browser's fixed browser-owned import/settings surface without reading or receiving browser data."
+description = "After an explicit click, open one detected browser's fixed password-manager/export surface; the browser retains confirmation and OSL never reads the database or exported CSV."
 commands.allow = ["open_browser_import"]
+
+[[permission]]
+identifier = "allow-begin-browser-account-import"
+description = "After explicit local consent, open Firefox's fixed migration wizard in OSL's isolated Firefox profile; browser detection, profile path, executable, and arguments are native fixed values."
+commands.allow = ["begin_browser_account_import"]
 
 [[permission]]
 identifier = "allow-host-native-app-window"

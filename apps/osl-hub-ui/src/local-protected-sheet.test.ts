@@ -65,6 +65,14 @@ describe("local protected side sheet", () => {
     expect(readyMarkup).toContain("not person-to-person E2EE");
     expect(readyMarkup).not.toContain("<Rose>");
     expect(readyMarkup).not.toContain("<private>");
+    const openMarkup = localProtectedSheetMarkup({ ...ready, pane: "open" });
+    expect(openMarkup).toContain('id="local-decrypt-display"');
+    expect(openMarkup).toContain("Only for this local chat.");
+    expect(localProtectedSheetMarkup(ready, "clipboard")).toContain("Encrypt & copy");
+    expect(localProtectedSheetMarkup(ready, "double")).toContain("Prepare · Double Enter");
+    expect(localProtectedSheetMarkup(ready, "single")).toContain("Prepare · Single Enter");
+    expect(readyMarkup).toContain('<option value="259200"');
+    expect(readyMarkup).toContain("3 days");
   });
 
   it("keeps the sheet absent until an embedded profile explicitly opens it", () => {

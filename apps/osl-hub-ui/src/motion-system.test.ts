@@ -21,20 +21,36 @@ describe("restrained motion system", () => {
 
   it("opens with the existing vector mark and a one-shot seal animation", () => {
     expect(source).toContain('class="loading-seal"');
-    expect(source).toContain('class="loading-seal-lock"');
+    expect(source).toContain("loading-seal-lock");
+    expect(source).toContain('class="security-motion lock-security-motion"');
     expect(source).toContain('src="${oslVectorLogoUrl}"');
     expect(styles).toMatch(/\.loading-logo\s*\{[^}]*animation:\s*seal-mark-enter 620ms/s);
-    expect(styles).toMatch(/\.loading-seal-lock\s*\{[^}]*animation:\s*seal-lock-enter 540ms 170ms/s);
+    expect(styles).toMatch(/\.lock-security-motion \.security-key\s*\{[^}]*animation:\s*security-key-enter 350ms 190ms/s);
+    expect(styles).toMatch(/\.lock-security-motion \.security-shackle\s*\{[^}]*animation:\s*security-shackle-connect 350ms 430ms/s);
     expect(styles).not.toMatch(/animation:\s*seal-(?:mark|ring|lock)-enter[^;]*infinite/);
   });
 
   it("gives sign-in and password unlock distinct one-shot logo reveals", () => {
     expect(source).toContain('class="unlock-logo-stage"');
     expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?Enter your password/);
+    expect(source).toContain('class="security-motion unlock-security-motion"');
     expect(styles).toMatch(/\.signin-logo\s*\{[^}]*animation:\s*signin-logo-reveal 440ms/s);
-    expect(styles).toMatch(/\.unlock-logo-ring\s*\{[^}]*animation:\s*unlock-ring-reveal 560ms/s);
-    expect(styles).toMatch(/\.unlock-logo-stage \.osl-logo\s*\{[^}]*animation:\s*unlock-mark-reveal 500ms 80ms/s);
+    expect(styles).toMatch(/\.unlock-logo-ring\s*\{[^}]*animation:\s*unlock-ring-reveal 350ms 500ms/s);
+    expect(styles).toMatch(/\.unlock-logo-stage \.osl-logo\s*\{[^}]*animation:\s*unlock-mark-reveal 350ms 520ms/s);
+    expect(styles).toMatch(/\.unlock-security-motion \.security-center\s*\{[^}]*animation:\s*security-center-return 350ms 440ms/s);
     expect(styles).not.toMatch(/animation:\s*(?:signin-logo-reveal|unlock-(?:mark|ring)-reveal)[^;]*infinite/);
+  });
+
+  it("builds and reverses the lock with transform-and-opacity stages only", () => {
+    for (const name of ["security-center-enter", "security-key-enter", "security-shackle-connect", "security-body-connect", "security-lock-release", "security-key-exit", "security-center-return"]) {
+      const start = styles.indexOf(`@keyframes ${name}`);
+      const end = styles.indexOf("}", styles.indexOf("}", start) + 1) + 1;
+      const keyframes = styles.slice(start, end);
+      expect(start, `${name} should exist`).toBeGreaterThanOrEqual(0);
+      expect(keyframes).toMatch(/opacity:/);
+      expect(keyframes).toMatch(/transform:/);
+      expect(keyframes).not.toMatch(/(?:width|height|inset|padding|margin|stroke-dashoffset):/);
+    }
   });
 
   it("limits interaction motion to compositor-friendly properties", () => {
@@ -60,6 +76,8 @@ describe("restrained motion system", () => {
     expect(reduced).toContain(".loading-seal-lock");
     expect(reduced).toContain(".signin-logo");
     expect(reduced).toContain(".unlock-logo-ring");
+    expect(reduced).toContain(".security-motion *");
+    expect(reduced).toContain(".unlock-security-motion .security-lock");
     expect(reduced).toContain('.toast { transform: translateX(-50%) !important; }');
   });
 

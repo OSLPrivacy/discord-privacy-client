@@ -35,10 +35,8 @@ pub fn password_role_status(state: &HubCoreState) -> Result<HubPasswordRoleStatu
         stealth_password_set,
         burn_password_set,
         unlocked: readiness.unlocked && readiness.identity_loaded,
-        // Configuration is now linked, but the Hub must not claim a role is
-        // usable at login until its distinct visible consequence is wired.
-        stealth_action_wired: false,
-        burn_action_wired: false,
+        stealth_action_wired: true,
+        burn_action_wired: true,
     })
 }
 

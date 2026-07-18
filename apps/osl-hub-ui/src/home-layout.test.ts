@@ -213,9 +213,21 @@ describe("home interaction regressions", () => {
     expect(source).toContain("void openNativeHostedApp(app, service, native.id)");
     expect(source).toContain("await detachNativeAppWindow().catch(() => undefined)");
     expect(source).toContain('withNativeDeadline(hostNativeAppWindow(appId), `Open ${app.displayName} inside OSL`, 12_000)');
-    expect(source).toContain(">Use existing account</strong>");
-    expect(source).toContain(">Start fresh</strong>");
-    expect(source).toContain('savedAccountMode !== "ask"');
+    expect(source).toContain(">Use selected apps</strong>");
+    expect(source).toContain(">Use web profiles</strong>");
+    expect(source).toContain("selectedInstalledNativeApp(app.id)");
+    expect(source).toContain("savedNativeApps.has(nativeId)");
+  });
+
+  it("falls back to an isolated OSL web profile when a native client has no safe secondary instance", () => {
+    const fallback = functionSource(source, "openSafeEmbeddedFallback", "openNativeHostedApp");
+    const nativeOpen = functionSource(source, "openNativeHostedApp", "setupEmbeddedApp");
+    expect(nativeOpen).toContain('result.reason === "secondaryInstanceUnverified"');
+    expect(nativeOpen).toContain("await openSafeEmbeddedFallback(app)");
+    expect(fallback).toContain("openEmbeddedHomeApp(app, services)");
+    expect(fallback).toContain("setupEmbeddedHomeApp(app,");
+    expect(fallback).toContain("activeNativeHostId = null");
+    expect(nativeOpen).toContain("the normal app stayed open");
   });
 
   it("refreshes profiles before routing and asks which local profile to open", () => {

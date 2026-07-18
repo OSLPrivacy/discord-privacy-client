@@ -12,11 +12,13 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("radically simple onboarding", () => {
-  it("shows one truthful sending path instead of unavailable automation", () => {
-    const sending = functionSource("sendingSetupContent", "scrubCategoryChooserMarkup");
-    expect(sending).toContain("Send with copy & paste");
-    expect(sending).toContain("manualSendingAnimationMarkup()");
-    expect(sending).not.toMatch(/Single Enter|Double Enter|Keystrokes|Experimental|Recommended/);
+  it("keeps one recommended sending path and puts Single Enter under Advanced", () => {
+    const sending = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
+    expect(sending).toContain("Choose how to send");
+    expect(sending).toContain("manualSendingAnimationMarkup(selectedMode)");
+    expect(sending).toContain('"Copy", "Encrypts and copies. Never presses Send.", "Recommended"');
+    expect(sending).toContain('<details class="send-mode-advanced"');
+    expect(sending).toContain('"Single Enter"');
   });
 });
 
@@ -25,6 +27,7 @@ describe("plain-language friends", () => {
     const people = functionSource("peopleListMarkup", "peopleDialogMarkup");
     const dialog = functionSource("friendsDialogMarkup", "serviceContent");
     expect(people).toContain('<details class="friend-security"><summary>Security details</summary>');
+    expect(people).toContain('<details class="friend-management"><summary>Manage</summary>');
     expect(people).toContain("Verification code");
     expect(people).toContain("Approved chats");
     expect(people).not.toContain("Cryptographic OSL identity");
@@ -41,7 +44,7 @@ describe("one-step app guide", () => {
     expect(guide).not.toContain("Step ${step + 1} of 3");
     expect(guide).toContain("Connect ${name}");
     expect(guide).toContain('nativeInstalled ? "Open app in OSL" : "Open in OSL"');
-    expect(guide).toContain("A separate ${name} window opens inside OSL.");
+    expect(guide).toContain("OSL never closes or borrows the normal ${name} window.");
     expect(guide).toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
     expect(guide).not.toContain("Choose which account to use.");
     expect(guide).not.toMatch(/adapter|scope|auto-whitelist/i);
@@ -54,7 +57,7 @@ describe("quiet settings and status", () => {
     const about = functionSource("updateSettingsContent", "bindUpdateControls");
     expect(status).toContain('ready ? "Ready" : "Needs attention"');
     expect(status).not.toContain("coreReadinessLabel");
-    expect(about).toContain("Diagnostics");
+    expect(about).toContain("Device status");
     expect(about).toContain("coreReadinessLabel(core.readiness)");
   });
 
