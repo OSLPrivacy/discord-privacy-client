@@ -380,8 +380,9 @@ code {
 .logo-treatment {
   filter:
     drop-shadow(0 1px 0 rgb(255 255 255 / 14%))
-    drop-shadow(0 3px 5px rgb(0 91 112 / 28%))
-    drop-shadow(0 0 11px color-mix(in srgb, var(--brand) 28%, transparent));
+    drop-shadow(0 3px 6px rgb(0 91 112 / 34%))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--brand) 52%, transparent))
+    drop-shadow(0 0 18px color-mix(in srgb, var(--brand) 38%, transparent));
 }
 
 .check {
@@ -2704,24 +2705,24 @@ code {
 
 .unlock-logo-stage {
   position: relative;
-  width: 88px;
-  height: 88px;
-  margin: 0 auto 9px;
+  width: 124px;
+  height: 124px;
+  margin: 0 auto 13px;
   display: grid;
   place-items: center;
 }
 
 .unlock-logo-stage .osl-logo {
-  width: 70px;
-  height: 70px;
+  width: 104px;
+  height: 104px;
   animation: unlock-mark-reveal 500ms 80ms var(--ease-out) both;
 }
 
 .unlock-logo-ring {
   position: absolute;
-  inset: 0;
-  border: 1px solid color-mix(in srgb, var(--brand) 46%, transparent);
-  box-shadow: 0 0 20px color-mix(in srgb, var(--brand) 13%, transparent);
+  inset: 4px;
+  border: 0;
+  background: radial-gradient(circle, color-mix(in srgb, var(--brand) 13%, transparent), transparent 68%);
   animation: unlock-ring-reveal 560ms var(--ease-out) both;
 }
 
@@ -2731,9 +2732,9 @@ code {
 }
 
 @keyframes unlock-ring-reveal {
-  0% { opacity: 0; transform: rotate(-24deg) scale(.68); }
-  72% { opacity: 1; transform: rotate(2deg) scale(1.025); }
-  100% { opacity: 1; transform: rotate(0) scale(1); }
+  0% { opacity: 0; transform: scale(.68); }
+  72% { opacity: 1; transform: scale(1.035); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 .unlock-card h2 { margin: 0; }
