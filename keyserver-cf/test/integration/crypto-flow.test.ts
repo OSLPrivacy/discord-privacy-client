@@ -189,6 +189,19 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     expect(stored).toEqual({ plan: "pro", amount_usd_cents: 500 });
   });
 
+  it("rejects non-object JSON bodies before reading checkout fields", async () => {
+    for (const body of ["null", "[]", '"pro"']) {
+      const response = await handleCryptoQuote(new Request("http://test/v1/crypto/quote", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.94" },
+        body,
+      }), env as Env, async () => {
+        throw new Error("watcher must not be called");
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("rejects wrong amount, asset, confirmations, and signature before issuing", async () => {
     const keys = await deliveryKeys();
     const invoice = await quote("btc", keys.publicKey);

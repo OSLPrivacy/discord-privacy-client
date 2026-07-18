@@ -1,10 +1,13 @@
-/// Privacy-minimal fixed-tier Stripe donation checkout. The browser supplies
-/// only an allowed denomination and a random request capability used to make
-/// session creation idempotent. OSL stores no donor profile or entitlement.
+/// Privacy-minimal one-time Stripe donation checkout. The browser supplies an
+/// integer-cent amount within the server-owned bounds and a random request
+/// capability used to make session creation idempotent. OSL stores no donor
+/// profile or entitlement.
 
 import type { Env } from "../env.js";
 import {
   donationIdempotencyKey,
+  DONATION_MAX_USD_CENTS,
+  DONATION_MIN_USD_CENTS,
   donationMetadata,
   isDonationAmount,
   validDonationRequestToken,
@@ -46,7 +49,9 @@ export async function handleStripeDonationSession(
     return badRequest("unexpected donation field");
   }
   if (!isDonationAmount(body.amount_usd_cents)) {
-    return badRequest("amount_usd_cents must be 500, 2000, or 5000");
+    return badRequest(
+      `amount_usd_cents must be an integer from ${DONATION_MIN_USD_CENTS} to ${DONATION_MAX_USD_CENTS}`,
+    );
   }
   if (!validDonationRequestToken(body.request_token)) {
     return badRequest("request_token malformed");

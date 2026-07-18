@@ -55,7 +55,7 @@ async function tableCount(table: string): Promise<number> {
 
 describe("POST /v1/donations/stripe/session", () => {
   it.each([500, 2000, 5000] as const)(
-    "maps %i cents to a server-owned one-time amount",
+    "preserves the %i-cent preset as a server-owned one-time amount",
     async (amount) => {
     const token = requestToken();
     const idempotencyKeys: string[] = [];
@@ -100,12 +100,47 @@ describe("POST /v1/donations/stripe/session", () => {
     },
   );
 
-  it("rejects arbitrary amounts, malformed tokens, and identity-bearing fields", async () => {
+  it.each([100, 12_345, 1_000_000])(
+    "accepts the bounded custom amount %i cents",
+    async (amount) => {
+      const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+        const form = new URLSearchParams(String(init?.body));
+        expect(form.get("mode")).toBe("payment");
+        expect(form.get("line_items[0][price_data][unit_amount]")).toBe(String(amount));
+        expect(form.get("metadata[osl_donation_amount_cents]")).toBe(String(amount));
+        expect(form.get("payment_intent_data[metadata][osl_donation_amount_cents]")).toBe(
+          String(amount),
+        );
+        expect(form.has("customer_email")).toBe(false);
+        expect(form.has("payment_intent_data[setup_future_usage]")).toBe(false);
+        return Response.json({
+          id: `cs_live_custom_${amount}`,
+          url: `https://checkout.stripe.com/c/pay/custom-${amount}`,
+        });
+      });
+      const response = await handleStripeDonationSession(new Request(
+        "https://keyserver.test/v1/donations/stripe/session",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ amount_usd_cents: amount, request_token: requestToken() }),
+        },
+      ), configuredEnv(), fetcher);
+
+      expect(response.status).toBe(200);
+      expect(fetcher).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("rejects out-of-bounds or noninteger amounts, malformed tokens, and identity-bearing fields", async () => {
     const fetcher = vi.fn<typeof fetch>();
     for (const body of [
       null,
       [],
-      { amount_usd_cents: 501, request_token: requestToken() },
+      { amount_usd_cents: 99, request_token: requestToken() },
+      { amount_usd_cents: 1_000_001, request_token: requestToken() },
+      { amount_usd_cents: 100.5, request_token: requestToken() },
+      { amount_usd_cents: "500", request_token: requestToken() },
       { amount_usd_cents: 500, request_token: "short" },
       { amount_usd_cents: 500, request_token: requestToken(), email: "do-not-store@example.test" },
       { amount_usd_cents: 500, request_token: requestToken(), message: "do not retain this" },
@@ -121,6 +156,32 @@ describe("POST /v1/donations/stripe/session", () => {
       expect(response.status).toBe(400);
     }
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("binds the idempotency key to both the request token and custom amount", async () => {
+    const token = requestToken();
+    const idempotencyKeys: string[] = [];
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      idempotencyKeys.push(new Headers(init?.headers).get("idempotency-key") ?? "");
+      return Response.json({
+        id: `cs_live_${crypto.randomUUID().replace(/-/g, "")}`,
+        url: "https://checkout.stripe.com/c/pay/custom",
+      });
+    });
+    const send = (amount: number) => handleStripeDonationSession(new Request(
+      "https://keyserver.test/v1/donations/stripe/session",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount_usd_cents: amount, request_token: token }),
+      },
+    ), configuredEnv(), fetcher);
+
+    expect((await send(12_345)).status).toBe(200);
+    expect((await send(12_345)).status).toBe(200);
+    expect((await send(12_346)).status).toBe(200);
+    expect(idempotencyKeys[0]).toBe(idempotencyKeys[1]);
+    expect(idempotencyKeys[2]).not.toBe(idempotencyKeys[0]);
   });
 
   it.each(["sk_test_not_live", "rk_test_not_live", "pk_live_publishable"])(
@@ -199,6 +260,9 @@ describe("verified Stripe donation ledger", () => {
 
   it("rejects mismatched or entitlement-shaped donation metadata", async () => {
     for (const object of [
+      donationObject(`pi_donation_${crypto.randomUUID().replace(/-/g, "")}`, 99),
+      donationObject(`pi_donation_${crypto.randomUUID().replace(/-/g, "")}`, 1_000_001),
+      donationObject(`pi_donation_${crypto.randomUUID().replace(/-/g, "")}`, 100.5),
       donationObject(`pi_donation_${crypto.randomUUID().replace(/-/g, "")}`, 2000, {
         metadata: {
           osl_kind: "donation",
@@ -231,6 +295,29 @@ describe("verified Stripe donation ledger", () => {
         "SELECT 1 AS present FROM subscriptions WHERE subscription_id = ?",
       ).bind(paymentIntent).first()).toBeNull();
     }
+  });
+
+  it("rejects a conflicting amount for an existing PaymentIntent", async () => {
+    const paymentIntent = `pi_conflict_${crypto.randomUUID().replace(/-/g, "")}`;
+    const first = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "checkout.session.completed",
+      data: { object: donationObject(paymentIntent, 12_345) },
+    });
+    expect(first.status).toBe(200);
+
+    const conflict = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "checkout.session.async_payment_succeeded",
+      data: { object: donationObject(paymentIntent, 12_346) },
+    });
+    expect(conflict.status).toBe(200);
+
+    const stored = await env.DB.prepare(
+      `SELECT amount_usd_cents FROM donation_events
+        WHERE provider = 'stripe' AND provider_reference = ?`,
+    ).bind(paymentIntent).all<{ amount_usd_cents: number }>();
+    expect(stored.results).toEqual([{ amount_usd_cents: 12_345 }]);
   });
 
   it("stores no donor profile columns", async () => {

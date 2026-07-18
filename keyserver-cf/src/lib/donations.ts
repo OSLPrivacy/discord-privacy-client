@@ -1,7 +1,13 @@
 import type { StripeEvent } from "./stripe.js";
 
 export const DONATION_AMOUNTS_USD_CENTS = [500, 2000, 5000] as const;
-export type DonationAmountUsdCents = typeof DONATION_AMOUNTS_USD_CENTS[number];
+export const DONATION_MIN_USD_CENTS = 100;
+export const DONATION_MAX_USD_CENTS = 1_000_000;
+
+declare const donationAmountUsdCentsBrand: unique symbol;
+export type DonationAmountUsdCents = number & {
+  readonly [donationAmountUsdCentsBrand]: true;
+};
 
 export interface VerifiedDonation {
   donationId: string;
@@ -36,7 +42,9 @@ interface DonationMetadata {
 
 export function isDonationAmount(value: unknown): value is DonationAmountUsdCents {
   return typeof value === "number" &&
-    DONATION_AMOUNTS_USD_CENTS.includes(value as DonationAmountUsdCents);
+    Number.isSafeInteger(value) &&
+    value >= DONATION_MIN_USD_CENTS &&
+    value <= DONATION_MAX_USD_CENTS;
 }
 
 export function validDonationRequestToken(value: unknown): value is string {

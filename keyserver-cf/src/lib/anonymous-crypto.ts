@@ -124,7 +124,10 @@ export async function createWatcherInvoice(
       payload,
     ),
     body: payload,
-    signal: AbortSignal.timeout(5_000),
+    // The isolated watcher allows its loopback wallet RPC up to eight seconds.
+    // Keep the Worker deadline longer so a successfully allocated address is
+    // not abandoned only because the outer request timed out first.
+    signal: AbortSignal.timeout(12_000),
   });
   if (!response.ok) throw new Error(`crypto watcher returned ${response.status}`);
   const result = (await response.json()) as { invoice_id?: unknown; address?: unknown };

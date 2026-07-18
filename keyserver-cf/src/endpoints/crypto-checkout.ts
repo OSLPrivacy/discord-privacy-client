@@ -25,16 +25,20 @@ export async function handleCryptoQuote(
   const limit = await checkRateLimit(env, callerIp(request), 5, "crypto-quote-v2");
   if (!limit.ok) return tooMany(limit.retryAfter);
 
-  let body: {
+  let parsedBody: unknown;
+  try {
+    parsedBody = await request.json();
+  } catch {
+    return badRequest("malformed JSON body");
+  }
+  if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+    return badRequest("JSON body must be an object");
+  }
+  const body = parsedBody as {
     plan?: unknown;
     payment_method?: unknown;
     delivery_public_key_spki?: unknown;
   };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return badRequest("malformed JSON body");
-  }
   if (body.plan !== "pro") {
     return badRequest('plan must be "pro"');
   }
@@ -103,8 +107,11 @@ export async function handleCryptoQuote(
       expires_at: expiresAt,
       cleanup_at: expiresAt + INVOICE_RETENTION_SECONDS,
     });
-  } catch {
-    console.error("[crypto-invoice] creation failed");
+  } catch (error) {
+    // Never copy arbitrary runtime, database, or upstream text into logs.
+    // Keep just a bounded category that is useful for operations.
+    const reason = cryptoInvoiceFailureReason(error);
+    console.error("[crypto-invoice] creation failed", { reason });
     return serviceUnavailable("crypto invoice service is temporarily unavailable");
   }
 
@@ -120,4 +127,14 @@ export async function handleCryptoQuote(
     expires_at: expiresAt,
     confirmations_required: confirmationsRequired,
   });
+}
+
+function cryptoInvoiceFailureReason(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown";
+  if (error.name === "TimeoutError" || error.name === "AbortError") return "watcher_timeout";
+  if (error.message === "crypto watcher is not configured") return "watcher_not_configured";
+  if (error.message === "crypto watcher URL must use HTTPS") return "watcher_url_invalid";
+  if (/^crypto watcher returned [1-5][0-9]{2}$/.test(error.message)) return "watcher_http_error";
+  if (error.message.startsWith("crypto watcher returned ")) return "watcher_response_invalid";
+  return "internal_failure";
 }
