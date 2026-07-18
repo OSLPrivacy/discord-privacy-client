@@ -35,8 +35,8 @@ use keystore::generate_identity;
 
 // ---- fixtures ----
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 const GC_ID: &str = "1234567890";
 
 fn fresh_state_for_liam() -> (AppState, keystore::Identity) {
@@ -84,6 +84,7 @@ fn install_dm_whitelist(state: &AppState, peer_discord_id: &str, broadened: bool
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
+                ..ScopeState::default()
             },
         );
     }
@@ -104,6 +105,7 @@ fn install_gc_full_whitelist(state: &AppState, gc_id: &str, members: &[&str]) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
+                ..ScopeState::default()
             },
         );
     }
@@ -202,7 +204,7 @@ fn test_recv_burn_marker_applies_burn() {
 
     // Build the burn marker as if henry sent it.
     let scope = Scope::dm(LIAM_DID); // henry burns *his* DM with liam;
-                                     // scope.id = liam's discord id from henry's PoV.
+                                     // scope.id = synthetic sender id from henry's PoV.
     let marker = ipc::control_messages::BurnMarker {
         scope: scope.clone(),
         burned_at: 1_700_000_000,

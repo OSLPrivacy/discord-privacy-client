@@ -377,7 +377,12 @@ async fn osl_persist_outbound(
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_persist_outbound(state.inner(), channel_id, discord_message_id, plaintext)
+        ipc::commands::cmd_osl_persist_outbound(
+            state.inner(),
+            channel_id,
+            discord_message_id,
+            plaintext,
+        )
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -1143,7 +1148,7 @@ async fn osl_recover_identity_from_phrase(
 /// account, or loads the existing one; the previous account's data
 /// stays on disk to switch back to.
 #[tauri::command]
-async fn osl_switch_account(app: tauri::AppHandle, snowflake: String) -> Result<(), String> {
+async fn osl_switch_account(app: tauri::AppHandle, snowflake: String) -> Result<bool, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -1159,6 +1164,10 @@ async fn osl_export_data(app: tauri::AppHandle) -> Result<String, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
+        let _guard = state
+            .account_switch_lock
+            .lock()
+            .map_err(|_| "OSL: account switch lock poisoned".to_string())?;
         ipc::commands::cmd_osl_export_data(state.inner())
     })
     .await
@@ -1175,7 +1184,12 @@ async fn osl_import_data(
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        ipc::commands::cmd_osl_recover_account_from_export(state.inner(), blob_b64, phrase)
+        let _guard = state
+            .account_switch_lock
+            .lock()
+            .map_err(|_| "OSL: account switch lock poisoned".to_string())?;
+        ipc::commands::cmd_osl_recover_account_from_export(state.inner(), blob_b64, phrase)?;
+        bootstrap::reload_active_account_state(state.inner())
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -1187,6 +1201,10 @@ async fn osl_ensure_recovery_phrase(app: tauri::AppHandle) -> Result<(), String>
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
+        let _guard = state
+            .account_switch_lock
+            .lock()
+            .map_err(|_| "OSL: account switch lock poisoned".to_string())?;
         ipc::commands::cmd_osl_ensure_recovery_phrase(state.inner())
     })
     .await
@@ -1313,24 +1331,28 @@ async fn osl_stealth_mode_engage(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn osl_burn_engage(app: tauri::AppHandle) -> Result<(), String> {
+    // A settings window retains mutable copies of account state and
+    // can otherwise re-persist them after the wipe. Close it before
+    // touching disk and fail before destruction if it cannot close.
+    osl_close_settings_window_if_open(app.clone()).await?;
     let app_handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        // Fail closed before unregistering or touching identity state. If
+        // the process crashes during the burn (or a later wipe surfaces an
+        // error), the next launch must not inject OSL into Discord with a
+        // partially destroyed identity. `fresh_start` deliberately leaves
+        // this file alone, so the sentinel survives the canonical wipe.
+        write_decommissioned_flag()?;
         let state = app_handle.state::<AppState>();
         cmd_osl_burn_engage(state.inner())?;
-        // Phase 4b: write the decommission sentinel AFTER the wipe so
-        // it lands in the (possibly recreated) config dir and is the
-        // last file standing. boot.js reads this via
-        // `osl_is_decommissioned` and exits before any injection;
-        // localStorage caches the result so subsequent boots short-
-        // circuit synchronously. The only way to bring OSL back is to
-        // manually delete this file (or reinstall).
-        if let Err(e) = write_decommissioned_flag() {
-            tracing::warn!(error = %e, "OSL: failed to write decommissioned.flag");
-        }
         Ok(())
     })
     .await
-    .map_err(|e| format!("OSL: join error: {e}"))?
+    .map_err(|e| format!("OSL: join error: {e}"))?;
+    result?;
+    app.emit("osl:account_burned", ())
+        .map_err(|e| format!("OSL: account burn completion event: {e}"))?;
+    Ok(())
 }
 
 // ===== Phase 6.4: control-message inbox (OOB delivery) =====
@@ -1395,11 +1417,22 @@ fn decommissioned_flag_path() -> Result<std::path::PathBuf, String> {
 }
 
 fn write_decommissioned_flag() -> Result<(), String> {
+    use std::io::Write as _;
+
     let path = decommissioned_flag_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("OSL: mkdir: {e}"))?;
     }
-    std::fs::write(&path, b"1").map_err(|e| format!("OSL: write {}: {e}", path.display()))
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("OSL: open {}: {e}", path.display()))?;
+    file.write_all(b"1")
+        .map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("OSL: sync {}: {e}", path.display()))
 }
 
 fn read_decommissioned_flag() -> bool {
@@ -1793,9 +1826,7 @@ async fn osl_take_last_persist_error(app: tauri::AppHandle) -> Result<Option<Str
 /// different key). Boot.js polls this and shows a BLOCKING warning;
 /// it is deliberately NOT warn-swallowed.
 #[tauri::command]
-async fn osl_take_registration_alert(
-    app: tauri::AppHandle,
-) -> Result<Option<String>, String> {
+async fn osl_take_registration_alert(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -1823,10 +1854,7 @@ async fn osl_list_key_change_alerts(
 
 /// User accepted a peer's new identity key → adopt as new baseline.
 #[tauri::command]
-async fn osl_accept_key_change(
-    app: tauri::AppHandle,
-    discord_id: String,
-) -> Result<(), String> {
+async fn osl_accept_key_change(app: tauri::AppHandle, discord_id: String) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -1838,10 +1866,7 @@ async fn osl_accept_key_change(
 
 /// User declined a peer's new identity key → keep old baseline.
 #[tauri::command]
-async fn osl_decline_key_change(
-    app: tauri::AppHandle,
-    discord_id: String,
-) -> Result<(), String> {
+async fn osl_decline_key_change(app: tauri::AppHandle, discord_id: String) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -1855,10 +1880,7 @@ async fn osl_decline_key_change(
 /// peer's `ratchet_state` so the next v=4 message re-handshakes.
 /// Run on BOTH ends to recover a desynced ratchet.
 #[tauri::command]
-async fn osl_reset_v4_session(
-    app: tauri::AppHandle,
-    discord_id: String,
-) -> Result<(), String> {
+async fn osl_reset_v4_session(app: tauri::AppHandle, discord_id: String) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -2158,6 +2180,54 @@ async fn osl_close_settings_window_if_open(app: tauri::AppHandle) -> Result<(), 
     Ok(())
 }
 
+/// Open a minimal bundled local confirmation window for irreversible
+/// account burn. Discord-origin code may open/focus this window but
+/// cannot invoke `osl_burn_engage` itself.
+#[tauri::command]
+async fn osl_open_account_burn_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("account-burn") {
+        existing
+            .show()
+            .map_err(|e| format!("OSL burn: show: {e}"))?;
+        existing
+            .set_focus()
+            .map_err(|e| format!("OSL burn: focus: {e}"))?;
+        return Ok(());
+    }
+    let url: tauri::Url = "osl-gate://localhost/account-burn"
+        .parse()
+        .map_err(|e| format!("OSL burn: URL parse: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(&app, "account-burn", WebviewUrl::External(url))
+        .title("Confirm OSL Account Burn")
+        .inner_size(620.0, 480.0)
+        .resizable(false)
+        .decorations(true)
+        .center()
+        .always_on_top(true);
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder
+            .parent(&main)
+            .map_err(|e| format!("OSL burn: parent: {e}"))?;
+    }
+    let window = builder
+        .build()
+        .map_err(|e| format!("OSL burn: build: {e}"))?;
+    if let Some(main) = app.get_webview_window("main") {
+        main.set_enabled(false)
+            .map_err(|e| format!("OSL burn: disable main: {e}"))?;
+    }
+    let app_for_close = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            if let Some(main) = app_for_close.get_webview_window("main") {
+                let _ = main.set_enabled(true);
+                let _ = main.set_focus();
+            }
+        }
+    });
+    Ok(())
+}
+
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
 /// in the at-rest store. Subsequent
 /// `osl_load_channel_history` calls will not return it. Burns
@@ -2179,6 +2249,11 @@ async fn osl_burn_message(app: tauri::AppHandle, discord_message_id: String) -> 
 /// recovery-phrase entry, then `window.location.href`-navigates
 /// to discord.com when the user authenticates successfully.
 const PASSWORD_GATE_HTML: &str = include_str!("../assets/password_gate.html");
+
+/// Local confirmation page for irreversible account burn. The remote
+/// Discord origin can navigate here but cannot invoke the burn command
+/// itself; the destructive permission belongs only to this local origin.
+const ACCOUNT_BURN_HTML: &str = include_str!("../assets/account_burn.html");
 
 /// Phase 7d-C: bundled trusted-local Settings page. Served at
 /// `osl-gate://localhost/settings`. Hosts Identity / Whitelist
@@ -2237,8 +2312,8 @@ fn osl_build_channel_updater(
         "https://keyserver.oslprivacy.com/v1/update-manifest/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}?channel={}",
         channel.as_query_value()
     );
-    let url = tauri::Url::parse(&endpoint)
-        .map_err(|e| format!("OSL: bad updater endpoint: {e}"))?;
+    let url =
+        tauri::Url::parse(&endpoint).map_err(|e| format!("OSL: bad updater endpoint: {e}"))?;
 
     app.updater_builder()
         .endpoints(vec![url])
@@ -2296,9 +2371,7 @@ async fn osl_install_update(
 ) -> Result<ipc::commands::UpdateInstallResult, String> {
     let updater = match osl_build_channel_updater(&app) {
         Ok(u) => u,
-        Err(e) => {
-            return Ok(ipc::commands::UpdateInstallResult::Error { message: e })
-        }
+        Err(e) => return Ok(ipc::commands::UpdateInstallResult::Error { message: e }),
     };
 
     let update = match updater.check().await {
@@ -2347,9 +2420,7 @@ async fn osl_install_update(
                 "[OSL updater] download/verify/install FAILED — not installed"
             );
             Ok(ipc::commands::UpdateInstallResult::Error {
-                message: format!(
-                    "Update could not be verified and was NOT installed: {msg}"
-                ),
+                message: format!("Update could not be verified and was NOT installed: {msg}"),
             })
         }
     }
@@ -2390,7 +2461,7 @@ async fn osl_set_update_channel(
 /// Phase 2 prose-token send. Takes a `DPC0::<base64>` wire string
 /// produced by the existing encrypt pipeline, uploads the underlying
 /// cipher bytes to the cipher-store with the chosen TTL, and encodes
-/// the returned blob ID as natural-English prose. The returned
+/// the returned blob ID as marker-free, chat-like cover text. The returned
 /// `cover_text` is what the client posts to Discord — no DPC0::
 /// marker, no high-entropy base64 blob visible on the wire.
 #[derive(serde::Serialize)]
@@ -2681,18 +2752,23 @@ fn main() {
         // `settings-window-capability`.
         //
         // Path routing:
-        //   /settings, /settings/ → settings_window.html
-        //   anything else         → password_gate.html
+        //   /settings, /settings/       → settings_window.html
+        //   /account-burn[/]            → account_burn.html
+        //   anything else               → password_gate.html
         .register_uri_scheme_protocol("osl-gate", |_app, request| {
             let path = request.uri().path();
             let body: &[u8] = if path == "/settings" || path == "/settings/" {
                 SETTINGS_WINDOW_HTML.as_bytes()
+            } else if path == "/account-burn" || path == "/account-burn/" {
+                ACCOUNT_BURN_HTML.as_bytes()
             } else {
                 PASSWORD_GATE_HTML.as_bytes()
             };
             tauri::http::Response::builder()
                 .header("Content-Type", "text/html; charset=utf-8")
                 .header("Cache-Control", "no-store")
+                .header("Content-Security-Policy", "frame-ancestors 'none'")
+                .header("X-Frame-Options", "DENY")
                 .body(body.to_vec())
                 .unwrap_or_else(|_| {
                     tauri::http::Response::new(b"<h1>OSL gate render failed</h1>".to_vec())
@@ -3135,6 +3211,7 @@ fn main() {
             osl_peer_safety_number,
             osl_self_safety_number,
             osl_open_settings_window,
+            osl_open_account_burn_window,
             osl_close_settings_window_if_open,
             // Phase F0: deep-link smoke-test parser. Removed in F2.
             osl_test_deep_link,

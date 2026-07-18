@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Confirm account burn — OSL Privacy</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111318; color: #f2f3f5; }
+    main { width: min(560px, calc(100vw - 40px)); background: #1e2128; border: 1px solid #3a3f4b; border-radius: 14px; padding: 28px; box-shadow: 0 20px 70px #0008; }
+    h1 { margin-top: 0; color: #ff6b6b; }
+    p { line-height: 1.55; color: #c7cbd4; }
+    label { display: block; margin: 22px 0 8px; font-weight: 650; }
+    input { box-sizing: border-box; width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #555d6d; background: #111318; color: #fff; font: inherit; }
+    .actions { display: flex; gap: 12px; margin-top: 20px; }
+    button { flex: 1; padding: 12px; border: 0; border-radius: 8px; font: inherit; font-weight: 700; cursor: pointer; }
+    #cancel { background: #3a3f4b; color: #fff; }
+    #burn { background: #da373c; color: #fff; }
+    #burn:disabled { opacity: .45; cursor: not-allowed; }
+    #status { min-height: 1.5em; color: #ff9b9e; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Burn this OSL account?</h1>
+  <p>This permanently destroys the account's OSL keys and encrypted local history. It cannot be undone. Discord messages and your Discord account are not deleted.</p>
+  <label for="confirm">Type <strong>BURN EVERYTHING</strong> to continue</label>
+  <input id="confirm" autocomplete="off" spellcheck="false">
+  <div class="actions">
+    <button id="cancel" type="button">Cancel</button>
+    <button id="burn" type="button" disabled>Burn permanently</button>
+  </div>
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+<script>
+  const invoke = window.__TAURI__.core.invoke;
+  const currentWindow = window.__TAURI__.window.getCurrentWindow();
+  const confirmInput = document.getElementById("confirm");
+  const burnButton = document.getElementById("burn");
+  const status = document.getElementById("status");
+  confirmInput.addEventListener("input", () => {
+    burnButton.disabled = confirmInput.value !== "BURN EVERYTHING";
+  });
+  document.getElementById("cancel").addEventListener("click", async () => {
+    await currentWindow.close();
+  });
+  burnButton.addEventListener("click", async () => {
+    if (confirmInput.value !== "BURN EVERYTHING") return;
+    burnButton.disabled = true;
+    confirmInput.disabled = true;
+    status.textContent = "Burning local OSL state…";
+    try {
+      await invoke("osl_burn_engage", {});
+      status.textContent = "Burn complete.";
+      await currentWindow.close();
+    } catch (error) {
+      status.textContent = "Burn failed: " + String(error);
+      confirmInput.disabled = false;
+      burnButton.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

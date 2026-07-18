@@ -18,6 +18,7 @@ use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use store::MessageStore;
@@ -39,6 +40,32 @@ use store::MessageStore;
 /// Long-term answer is keyserver-pushed invalidation events over
 /// a websocket; v2.
 pub const SENDER_PUBKEY_CACHE_TTL: Duration = Duration::from_secs(1800);
+
+/// In-memory truth about the latest attempt to publish this device's public
+/// identity to the configured keyserver.  A constructed HTTP client is not
+/// proof that the remote registration exists, so the Hub must gate encrypted
+/// messaging on this state rather than [`AppState::has_keyserver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CloudRegistrationState {
+    NotAttempted = 0,
+    Pending = 1,
+    Registered = 2,
+    Conflict = 3,
+    Offline = 4,
+}
+
+impl CloudRegistrationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "notAttempted",
+            Self::Pending => "pending",
+            Self::Registered => "registered",
+            Self::Conflict => "conflict",
+            Self::Offline => "offline",
+        }
+    }
+}
 
 /// Single cache entry: the fetched X25519 public key plus the
 /// `Instant` it was inserted, used for TTL eviction.
@@ -72,7 +99,7 @@ impl SenderPubkeyCache {
         let mut guard = self.entries.lock().expect("pubkey cache mutex poisoned");
         match guard.get(user_id) {
             Some(entry) if entry.inserted_at.elapsed() < SENDER_PUBKEY_CACHE_TTL => {
-                Some(entry.pubkey.clone())
+                Some(entry.pubkey)
             }
             Some(_) => {
                 // Expired — evict so the entry doesn't stay
@@ -144,8 +171,17 @@ pub struct KeyChangeAlert {
 
 #[derive(Default)]
 pub struct AppState {
+    /// Serializes in-process Discord-account switches. The active account
+    /// directory is process-global, so two concurrent switch commands must
+    /// never interleave validation, marker updates, and state reloads.
+    pub account_switch_lock: Mutex<()>,
     pub identity: Mutex<Option<Identity>>,
     pub keyserver: Mutex<Option<KeyServerClient>>,
+
+    /// Latest confirmed outcome of this process's remote public-key
+    /// registration. This is deliberately launch-local: every launch retries
+    /// registration and must prove the current public keys again.
+    pub cloud_registration_state: AtomicU8,
 
     /// D: set true by `run_autostart` when THIS launch regenerated
     /// the local identity outside a burn. `state_reload`'s post-gate
@@ -187,8 +223,8 @@ pub struct AppState {
     /// Per-scope whitelist + encryption-toggle state, mirroring
     /// `<config_dir>/whitelist_state.json`. Empty by default —
     /// 7b's send-path queries this every encrypt to decide whether
-    /// + who to wrap K for. Loaded at bootstrap (Phase 7b
-    /// integration). Mutating Tauri commands must write-through
+    /// and who to wrap K for. Loaded at bootstrap (Phase 7b integration).
+    /// Mutating Tauri commands must write-through
     /// to disk via `crate::whitelist_state::write_whitelist_state`.
     pub whitelist_state: Mutex<WhitelistState>,
 
@@ -231,6 +267,13 @@ pub struct AppState {
     /// The recv-side path consults it to recover the
     /// per-(scope, sender) receiver chain.
     pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
+
+    /// Temporary compatibility kill-switch for v=5 group sender chains.
+    /// Defaults false in production because the current chain key omits a
+    /// physical device id and therefore desynchronizes when one Discord
+    /// account is active on two machines. Protocol-focused tests may enable
+    /// it explicitly while the v5 implementation remains covered.
+    pub sender_keys_enabled: std::sync::atomic::AtomicBool,
 
     /// Phase 9-A3: in-memory cache of the current channel-member set
     /// per channel_id. Populated by `osl_membership_update` (boot.js
@@ -337,5 +380,20 @@ impl AppState {
             .lock()
             .expect("keyserver mutex poisoned")
             .is_some()
+    }
+
+    pub fn set_cloud_registration_state(&self, state: CloudRegistrationState) {
+        self.cloud_registration_state
+            .store(state as u8, Ordering::Release);
+    }
+
+    pub fn cloud_registration_state(&self) -> CloudRegistrationState {
+        match self.cloud_registration_state.load(Ordering::Acquire) {
+            1 => CloudRegistrationState::Pending,
+            2 => CloudRegistrationState::Registered,
+            3 => CloudRegistrationState::Conflict,
+            4 => CloudRegistrationState::Offline,
+            _ => CloudRegistrationState::NotAttempted,
+        }
     }
 }

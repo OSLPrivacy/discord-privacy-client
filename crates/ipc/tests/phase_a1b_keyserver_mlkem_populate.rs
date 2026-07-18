@@ -17,7 +17,7 @@ use ipc::state::AppState;
 use keystore::client::PubkeysResponse;
 use keystore::generate_identity;
 
-const PEER_DID: &str = "1502770642930634812";
+const PEER_DID: &str = "900000000000000001";
 
 fn fresh_state() -> AppState {
     let state = AppState::new();

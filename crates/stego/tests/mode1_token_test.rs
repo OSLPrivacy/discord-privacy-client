@@ -3,12 +3,11 @@
 //! Properties verified:
 //!   * Roundtrip: encode(id) → decode → same id.
 //!   * Detection: decode rejects plain English (no false positive).
-//!   * Authentication: decode rejects mismatched HMAC key.
-//!   * Length bound: 5 sentences under any per-conversation cipher.
+//!   * Token detection: decode rejects a mismatched HMAC key.
+//!   * Canonicality: extra in-vocabulary words are rejected.
+//!   * Length bound: a compact variable-length bigram word stream.
 
-use stego::{
-    decode_token, encode_token, ConversationCipher, TOKEN_ID_BYTES,
-};
+use stego::{decode_token, encode_token, ConversationCipher, TOKEN_ID_BYTES};
 
 fn cipher(salt: &[u8]) -> ConversationCipher {
     ConversationCipher::from_salt(salt)
@@ -39,11 +38,12 @@ fn output_is_short_and_prefix_free() {
         n < 500,
         "prose token should be a short paragraph (~125-250 chars), got {n}"
     );
-    let sentence_count = cover.split('.').filter(|s| !s.trim().is_empty()).count();
+    let word_count = cover.split_ascii_whitespace().count();
     assert!(
-        sentence_count >= 4 && sentence_count <= 6,
-        "expected ~5 sentences, got {sentence_count}: {cover:?}"
+        (8..=64).contains(&word_count),
+        "expected a compact word stream, got {word_count} words: {cover:?}"
     );
+    assert!(cover.ends_with('.'), "cover should end with punctuation");
 }
 
 #[test]
@@ -74,16 +74,33 @@ fn decode_rejects_wrong_mac_key() {
 }
 
 #[test]
-fn decode_rejects_wrong_conversation_cipher() {
+fn current_codec_uses_the_scope_key_not_legacy_cipher_permutations() {
     let key = b"mac-key-32-bytes-padded________";
     let id: [u8; TOKEN_ID_BYTES] = [9, 9, 9, 9, 9, 9, 9, 9];
     let c1 = cipher(b"conversation-1");
     let c2 = cipher(b"conversation-2");
-    let cover = encode_token(&c1, key, &id);
-    // A different conversation has a different template permutation,
-    // so the encoded sentences should not parse back to the same id
-    // under c2 — and even if they did parse, the HMAC would fail.
-    assert!(decode_token(&c2, key, &cover).is_none());
+    let cover1 = encode_token(&c1, key, &id);
+    let cover2 = encode_token(&c2, key, &id);
+    // The current bigram format has one global language model. Scope
+    // separation is supplied by `key` in production; ConversationCipher
+    // remains in this API only so legacy template covers can be decoded.
+    assert_eq!(cover1, cover2);
+    assert_eq!(decode_token(&c2, key, &cover1), Some(id));
+}
+
+#[test]
+fn decode_rejects_noncanonical_extension() {
+    let c = cipher(b"token-canonical-test");
+    let key = b"mac-key-32-bytes-padded________";
+    let id: [u8; TOKEN_ID_BYTES] = [0x42; TOKEN_ID_BYTES];
+    let cover = encode_token(&c, key, &id);
+    assert_eq!(decode_token(&c, key, &cover), Some(id));
+
+    // `lol` is in the embedded vocabulary. Before the canonical-form
+    // check, extra words could narrow the already-pinned interval while
+    // preserving the same tag-valid 96-bit payload.
+    let extended = format!("{cover} lol");
+    assert!(decode_token(&c, key, &extended).is_none());
 }
 
 #[test]

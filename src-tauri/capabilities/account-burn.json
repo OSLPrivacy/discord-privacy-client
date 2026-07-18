@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "account-burn-capability",
+  "description": "Minimal local-only capability for the explicit account-burn confirmation window.",
+  "windows": ["account-burn"],
+  "local": true,
+  "permissions": [
+    "allow-osl-burn-engage",
+    "core:window:allow-close"
+  ]
+}

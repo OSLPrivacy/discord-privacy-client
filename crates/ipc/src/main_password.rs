@@ -13,8 +13,8 @@
 //!       blob of the BIP39 12-word recovery phrase. Key is the
 //!       SECOND half of the same argon2id output, so the phrase
 //!       only re-exposes after a successful password.
-//!   Absence of the file = no gate. Tauri loads discord.com
-//!   directly.
+//!
+//!     Absence of the file = no gate. Tauri loads discord.com directly.
 //!
 //! - `lockout_state.json` — failed-attempt counters + per-counter
 //!   lock-until timestamps for the password-entry and recovery-
@@ -46,6 +46,7 @@ use bip39::{Language, Mnemonic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::{Zeroize, Zeroizing};
 
 const MARKER_FILENAME: &str = "password_marker.json";
 const LOCKOUT_FILENAME: &str = "lockout_state.json";
@@ -53,7 +54,9 @@ const MARKER_VERSION: u32 = 2;
 const LOCKOUT_VERSION: u32 = 1;
 const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 
-const PASSWORD_LEN: usize = 6;
+pub const PASSWORD_MIN_LEN: usize = 6;
+pub const RECOMMENDED_PASSWORD_LEN: usize = 12;
+pub const PASSWORD_MAX_LEN: usize = 128;
 const SALT_LEN: usize = 16;
 const ARGON_OUTPUT_LEN: usize = 64; // 32 hash + 32 AES key
 const HASH_LEN: usize = 32;
@@ -164,13 +167,29 @@ pub struct LockoutStatusDto {
 // Validation.
 // =====================================================================
 
-/// Reject anything not exactly 6 ASCII chars in [0x20, 0x7E].
+/// Accept a bounded printable password. Twelve or more characters is strongly
+/// recommended in the UI, while six remains the enforceable minimum.
 pub fn validate_password(password: &str) -> Result<(), String> {
-    if password.len() != PASSWORD_LEN {
+    let length = password.len();
+    if !(PASSWORD_MIN_LEN..=PASSWORD_MAX_LEN).contains(&length) {
         return Err(format!(
-            "OSL: password must be exactly {PASSWORD_LEN} characters"
+            "OSL: password must contain {PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} characters"
         ));
     }
+    validate_printable_ascii(password)
+}
+
+/// Require the current policy for every newly-created OSL password.
+pub fn validate_new_password(password: &str) -> Result<(), String> {
+    if !(PASSWORD_MIN_LEN..=PASSWORD_MAX_LEN).contains(&password.len()) {
+        return Err(format!(
+            "OSL: new password must contain {PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} characters"
+        ));
+    }
+    validate_printable_ascii(password)
+}
+
+fn validate_printable_ascii(password: &str) -> Result<(), String> {
     for b in password.as_bytes() {
         if *b < 0x20 || *b > 0x7E {
             return Err("OSL: only standard keyboard characters allowed (space–tilde)".to_string());
@@ -183,11 +202,15 @@ pub fn validate_password(password: &str) -> Result<(), String> {
 // Argon2 core.
 // =====================================================================
 
-fn derive(password: &str, salt: &[u8], params: &Argon2ParamsDto) -> Result<[u8; 64], String> {
+fn derive(
+    password: &str,
+    salt: &[u8],
+    params: &Argon2ParamsDto,
+) -> Result<Zeroizing<[u8; ARGON_OUTPUT_LEN]>, String> {
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params.to_params()?);
-    let mut out = [0u8; ARGON_OUTPUT_LEN];
+    let mut out = Zeroizing::new([0u8; ARGON_OUTPUT_LEN]);
     argon
-        .hash_password_into(password.as_bytes(), salt, &mut out)
+        .hash_password_into(password.as_bytes(), salt, &mut out[..])
         .map_err(|e| format!("OSL: argon2: {e}"))?;
     Ok(out)
 }
@@ -350,8 +373,8 @@ fn phrase_lockout_secs(attempts: u32) -> i64 {
 // Recovery phrase ↔ AES-GCM.
 // =====================================================================
 
-fn random_bytes(n: usize) -> Vec<u8> {
-    crypto::random::random_bytes(n)
+fn random_bytes(n: usize) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(crypto::random::random_bytes(n))
 }
 
 fn generate_phrase() -> Result<String, String> {
@@ -381,10 +404,14 @@ fn decrypt_phrase(
 ) -> Result<String, String> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(nonce_bytes);
-    let pt = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| format!("OSL: aes-gcm decrypt: {e}"))?;
-    String::from_utf8(pt).map_err(|e| format!("OSL: phrase utf8: {e}"))
+    let pt = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("OSL: aes-gcm decrypt: {e}"))?,
+    );
+    // The returned String intentionally survives so the trusted caller can
+    // show the recovery phrase. The temporary AEAD plaintext buffer is wiped.
+    String::from_utf8(pt.to_vec()).map_err(|e| format!("OSL: phrase utf8: {e}"))
 }
 
 // =====================================================================
@@ -399,7 +426,7 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
     let params = Argon2ParamsDto::default_prod();
     let derived = derive(password, &salt, &params)?;
     let (hash, key_slice) = derived.split_at(HASH_LEN);
-    let mut key = [0u8; KEY_LEN];
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     key.copy_from_slice(key_slice);
     let (ct, nonce) = encrypt_phrase(phrase, &key)?;
     // Phrase hash for the recovery path: argon2id with the SAME
@@ -424,7 +451,10 @@ fn build_marker(password: &str, phrase: &str) -> Result<PasswordMarker, String> 
 /// Return Ok(aes_key) when password matches, Err(reason) otherwise.
 /// Reads the marker, runs argon2, constant-time compare. Does NOT
 /// touch lockout — caller handles that.
-fn verify_with_marker(marker: &PasswordMarker, password: &str) -> Result<[u8; KEY_LEN], String> {
+fn verify_with_marker(
+    marker: &PasswordMarker,
+    password: &str,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
     let salt = STANDARD
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
@@ -438,7 +468,7 @@ fn verify_with_marker(marker: &PasswordMarker, password: &str) -> Result<[u8; KE
     if !ct_eq(&derived[..HASH_LEN], &stored_hash) {
         return Err("OSL: bad password".to_string());
     }
-    let mut key = [0u8; KEY_LEN];
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
     key.copy_from_slice(&derived[HASH_LEN..]);
     Ok(key)
 }
@@ -477,9 +507,9 @@ pub fn set_main_password(dir: &Path, password: &str) -> Result<String, String> {
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
     let derived = derive(password, &salt, &marker.params)?;
-    let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
+    let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
     encrypt_existing_state_files(dir, &file_key)?;
-    set_file_storage_key(Some(file_key));
+    set_file_storage_key(Some(*file_key));
     Ok(phrase)
 }
 
@@ -497,17 +527,17 @@ pub fn change_main_password(dir: &Path, current: &str, new: &str) -> Result<Stri
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
     let old_derived = derive(current, &salt, &marker.params)?;
-    let old_file_key = derive_file_storage_key(&old_derived[HASH_LEN..]);
+    let old_file_key = Zeroizing::new(derive_file_storage_key(&old_derived[HASH_LEN..]));
     let new_phrase = generate_phrase()?;
     let new_marker = build_marker(new, &new_phrase)?;
     let new_derived = derive(new, &salt, &new_marker.params)?;
-    let new_file_key = derive_file_storage_key(&new_derived[HASH_LEN..]);
+    let new_file_key = Zeroizing::new(derive_file_storage_key(&new_derived[HASH_LEN..]));
     // Rotate the 3 JSONs (old → new key). If any file fails to
     // rotate we bail BEFORE writing the new marker, leaving disk
     // in a consistent (old-marker, old-key-encrypted) state.
     rotate_state_files(dir, &old_file_key, &new_file_key)?;
     write_marker(dir, &new_marker)?;
-    set_file_storage_key(Some(new_file_key));
+    set_file_storage_key(Some(*new_file_key));
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(new_phrase)
@@ -524,7 +554,7 @@ pub fn remove_main_password(dir: &Path, current: &str) -> Result<(), String> {
         .decode(&marker.salt_b64)
         .map_err(|e| format!("OSL: salt b64: {e}"))?;
     let derived = derive(current, &salt, &marker.params)?;
-    let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
+    let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
     let _ = decrypt_existing_state_files(dir, &file_key);
     set_file_storage_key(None);
     delete_marker(dir)?;
@@ -589,8 +619,8 @@ pub fn verify_main_password(dir: &Path, password: &str) -> Result<(), String> {
                 .decode(&marker.salt_b64)
                 .map_err(|e| format!("OSL: salt b64: {e}"))?;
             let derived = derive(password, &salt, &marker.params)?;
-            let file_key = derive_file_storage_key(&derived[HASH_LEN..]);
-            set_file_storage_key(Some(file_key));
+            let file_key = Zeroizing::new(derive_file_storage_key(&derived[HASH_LEN..]));
+            set_file_storage_key(Some(*file_key));
             state.password_failed_attempts = 0;
             state.password_locked_until = None;
             let _ = write_lockout(dir, &state);
@@ -711,7 +741,8 @@ pub fn verify_recovery_phrase(
     lock.phrase_locked_until = None;
     let _ = write_lockout(dir, &lock);
     // Issue a one-time token. AppState holds it; expires in 5 min.
-    let token = STANDARD.encode(random_bytes(24));
+    let token_bytes = random_bytes(24);
+    let token = STANDARD.encode(&*token_bytes);
     let expiry = now + 300;
     *state_app
         .recovery_token
@@ -738,6 +769,8 @@ pub fn set_main_password_after_recovery(
     let (stored_token, expiry, phrase) = guard
         .take()
         .ok_or_else(|| "OSL: no active recovery token".to_string())?;
+    let stored_token = Zeroizing::new(stored_token);
+    let phrase = Zeroizing::new(phrase);
     let now = now_unix_secs();
     if !ct_eq(stored_token.as_bytes(), token.as_bytes()) {
         // Don't reinstate the token — a wrong token consumes it.
@@ -812,14 +845,16 @@ pub fn get_file_storage_key() -> Option<[u8; 32]> {
 }
 
 pub fn set_file_storage_key(key: Option<[u8; 32]>) {
-    let was_some = file_storage_slot()
+    let mut slot = file_storage_slot()
         .lock()
-        .expect("file_storage_key mutex poisoned")
-        .is_some();
+        .expect("file_storage_key mutex poisoned");
+    let was_some = slot.is_some();
     let is_some = key.is_some();
-    *file_storage_slot()
-        .lock()
-        .expect("file_storage_key mutex poisoned") = key;
+    if let Some(mut old_key) = slot.take() {
+        old_key.zeroize();
+    }
+    *slot = key;
+    drop(slot);
     if is_some && !was_some {
         eprintln!("[OSL][crypto] file_storage_key populated");
     } else if !is_some && was_some {
@@ -838,9 +873,10 @@ fn hkdf_expand_32(prk: &[u8], info: &[u8]) -> [u8; 32] {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(prk).expect("hmac key");
     mac.update(info);
     mac.update(&[0x01u8]); // T(1) counter for single-block expand
-    let out = mac.finalize().into_bytes();
+    let mut out = mac.finalize().into_bytes();
     let mut k = [0u8; 32];
     k.copy_from_slice(&out[..32]);
+    out.zeroize();
     k
 }
 
@@ -896,16 +932,16 @@ pub fn maybe_decrypt(blob: &[u8]) -> Result<Vec<u8>, String> {
     if !has_enc_magic(blob) {
         return Ok(blob.to_vec());
     }
-    let key = get_file_storage_key().ok_or_else(|| {
+    let key = Zeroizing::new(get_file_storage_key().ok_or_else(|| {
         "OSL: encrypted at-rest file but no key in slot (password not entered?)".to_string()
-    })?;
+    })?);
     decrypt_at_rest(blob, &key)
 }
 
 /// Convenience: write-side mirror of `maybe_decrypt`. If a key is
 /// in the slot, encrypt; otherwise return plaintext verbatim.
 pub fn maybe_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    match get_file_storage_key() {
+    match get_file_storage_key().map(Zeroizing::new) {
         Some(key) => encrypt_at_rest(plaintext, &key),
         None => Ok(plaintext.to_vec()),
     }
@@ -1276,4 +1312,23 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         let _ = std::fs::remove_dir_all(&store);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod password_policy_tests {
+    use super::*;
+
+    #[test]
+    fn six_character_passwords_can_be_created_and_unlocked() {
+        assert!(validate_password("aB3!z9").is_ok());
+        assert!(validate_new_password("aB3!z9").is_ok());
+    }
+
+    #[test]
+    fn strong_policy_is_bounded_and_printable() {
+        assert!(validate_new_password("twelve-chars!").is_ok());
+        assert!(validate_new_password("short").is_err());
+        assert!(validate_new_password(&"x".repeat(PASSWORD_MAX_LEN + 1)).is_err());
+        assert!(validate_new_password("twelve\nchars").is_err());
+    }
 }

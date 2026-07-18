@@ -119,10 +119,7 @@ pub fn save_pending_rotation(
 
 /// Load the pending-rotation record. A missing file is `Ok(None)`
 /// (no rotation is pending — the common case).
-pub fn load_pending_rotation(
-    path: &Path,
-    sealer: &dyn Sealer,
-) -> Result<Option<PendingRotation>> {
+pub fn load_pending_rotation(path: &Path, sealer: &dyn Sealer) -> Result<Option<PendingRotation>> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -160,9 +157,9 @@ pub fn delete_pending_rotation(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::rot_msg;
     use crate::identity::generate_identity;
     use crate::sealer::{MemorySealer, NoOpSealer};
-    use crate::client::rot_msg;
     use crypto::ed25519;
     use tempfile::TempDir;
 

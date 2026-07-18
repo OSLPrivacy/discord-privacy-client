@@ -125,8 +125,9 @@ pub enum RecipientError {
 /// `channels.json`. (Re-using a single path resolver keeps all
 /// three files co-located without each callsite duplicating the
 /// XDG / APPDATA fallback chain.)
+///
 /// Multi-account: when set, every consumer of [`osl_config_dir`] reads
-/// + writes inside this per-account directory instead of the shared
+/// and writes inside this per-account directory instead of the shared
 /// base. `None` (the default) preserves the original single-account
 /// behavior exactly — `osl_config_dir() == osl_base_dir()`. Set by the
 /// bootstrap (from the persisted active-account marker) and by an
@@ -135,6 +136,17 @@ pub enum RecipientError {
 /// thread an account parameter, and the active account is a
 /// process-wide fact.
 static ACTIVE_ACCOUNT_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+static BASE_DIR_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Override the process-wide OSL base directory for a trusted application
+/// shell. The standalone Hub uses its own namespace so launching it never
+/// silently signs into or mutates the original Discord client's account.
+/// Existing clients that do not call this retain the historical OS default.
+pub fn set_base_dir_override(dir: Option<PathBuf>) {
+    if let Ok(mut guard) = BASE_DIR_OVERRIDE.write() {
+        *guard = dir;
+    }
+}
 
 /// Point all subsequent `osl_config_dir()` resolution at `dir`
 /// (`Some`) or back at the shared base (`None`).
@@ -162,6 +174,13 @@ pub fn account_dir(snowflake: &str) -> Result<PathBuf, RecipientError> {
 /// marker) and, for single-account installs, the account files
 /// directly.
 pub fn osl_base_dir() -> Result<PathBuf, RecipientError> {
+    if let Some(dir) = BASE_DIR_OVERRIDE
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+    {
+        return Ok(dir);
+    }
     // Windows: Roaming AppData. We don't fall back to LOCALAPPDATA
     // because the `osl` config is meant to be roamable (the same
     // user, same identity, same channel mappings should follow
@@ -176,7 +195,7 @@ pub fn osl_base_dir() -> Result<PathBuf, RecipientError> {
                 return Ok(p);
             }
         }
-        return Err(RecipientError::NoConfigDir);
+        Err(RecipientError::NoConfigDir)
     }
 
     // Linux / macOS path. XDG takes precedence (matches dirs-rs and

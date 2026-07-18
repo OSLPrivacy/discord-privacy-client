@@ -48,7 +48,10 @@ fn update_available_maps_all_fields() {
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["status"], "update_available");
     assert_eq!(v["next"], "0.0.2");
-    assert_eq!(v["url"], "https://installers.oslprivacy.com/osl-privacy-0.0.2.msi");
+    assert_eq!(
+        v["url"],
+        "https://installers.oslprivacy.com/osl-privacy-0.0.2.msi"
+    );
 }
 
 #[test]
@@ -69,10 +72,7 @@ fn missing_notes_become_empty_string() {
 
 #[test]
 fn check_failure_becomes_error_status() {
-    let r = cmd_osl_check_for_updates(
-        "0.0.1".to_string(),
-        Err("network unreachable".to_string()),
-    );
+    let r = cmd_osl_check_for_updates("0.0.1".to_string(), Err("network unreachable".to_string()));
     assert_eq!(
         r,
         UpdateCheckResult::Error {

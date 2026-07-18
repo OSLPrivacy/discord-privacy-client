@@ -1,0 +1,40 @@
+[Unit]
+Description=OSL watch-only cryptocurrency invoice observer
+After=network-online.target bitcoind.service monero-wallet-rpc.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=osl-crypto
+Group=osl-crypto
+SupplementaryGroups=bitcoin
+EnvironmentFile=/etc/osl-crypto/watcher.env
+Environment=CRYPTO_WATCHER_REQUEST_SECRET_FILE=/etc/osl-crypto/watcher-request-secret
+Environment=CRYPTO_WATCHER_SETTLEMENT_SIGNING_KEY_FILE=/etc/osl-crypto/watcher-settlement-key.pem
+Environment=CRYPTO_WATCHER_DB_KEY_FILE=/etc/osl-crypto/watcher-db-key
+ExecStart=/usr/local/bin/osl-crypto-watcher
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/osl-crypto
+ReadOnlyPaths=/run/bitcoind/.cookie
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

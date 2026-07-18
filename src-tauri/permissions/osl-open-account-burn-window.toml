@@ -1,0 +1,6 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-osl-open-account-burn-window"
+description = "Allows remote Discord UI to open OSL's bundled local account-burn confirmation window; it does not grant burn authority itself."
+commands.allow = ["osl_open_account_burn_window"]

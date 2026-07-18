@@ -211,7 +211,6 @@ mod imp {
     struct PumpState {
         hwnd: HWND,
         notify_handle: windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY,
-        class_atom: u16,
         hinstance: HMODULE,
         // Stored boxed so we can null the user-data pointer on
         // destroy without freeing twice.
@@ -313,7 +312,6 @@ mod imp {
             let _bundle = PumpState {
                 hwnd,
                 notify_handle,
-                class_atom: atom,
                 hinstance,
                 _state: state,
             };

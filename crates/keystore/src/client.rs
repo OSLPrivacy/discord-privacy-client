@@ -25,12 +25,14 @@ use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_post,
 };
 use crate::identity::Identity;
-use crate::unregister::sign_unregister;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
+use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
+use crate::unregister::sign_unregister;
+use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
 use crate::{Error, Result};
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -197,6 +199,29 @@ pub struct ReplenishResponse {
     pub opks_added: u32,
 }
 
+/// Recipient-authorized response from `GET /v1/wrapped-keys/:content_id`.
+#[derive(Debug, Deserialize)]
+pub struct WrappedKeyResponse {
+    pub content_id: String,
+    pub content_type: String,
+    pub system_message_kind: Option<String>,
+    pub sender_id: String,
+    pub recipient_id: String,
+    pub session_version: u32,
+    pub share_index: u32,
+    pub wrapped_share_blob: String,
+    pub blob_version: u32,
+    pub single_use: bool,
+    pub display_duration_seconds: Option<u32>,
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WrappedKeyPostResponse {
+    pub content_id: String,
+}
+
 /// Response body for `DELETE /v1/wrapped-keys`.
 #[derive(Debug, Deserialize)]
 pub struct BurnResponse {
@@ -248,12 +273,16 @@ struct BurnRequest<'a> {
     target_content_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_user_id: Option<&'a str>,
+    timestamp_ms: i64,
+    request_id: String,
     burn_signature_b64: String,
 }
 
 #[derive(Serialize)]
 struct ReplenishRequest {
     user_id: String,
+    timestamp_ms: i64,
+    request_id: String,
     batch_signature_b64: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     spk: Option<ReplenishSpkWire>,
@@ -273,16 +302,21 @@ struct ReplenishOpkWire {
     pub_b64: String,
 }
 
+#[derive(Serialize)]
+struct WrappedKeyPostRequest<'a> {
+    #[serde(flatten)]
+    upload: &'a WrappedKeyUpload,
+    sender_id: &'a str,
+    timestamp_ms: i64,
+    sender_signature_b64: String,
+}
+
 /// HTTP client for the OSL key server.
 ///
 /// Holds the canonicalised base URL, a `reqwest::blocking::Client`
-/// with rustls TLS configured, and an optional pre-shared admin
-/// token.
-///
-/// When `admin_token` is `Some(_)`, every state-mutating request
-/// (POST / PUT / DELETE) carries an `Authorization: Bearer <token>`
-/// header. GET requests never carry the header — the keyserver's
-/// public endpoints are intentionally unauthenticated.
+/// with rustls TLS configured. Public-client mutations are authorized
+/// by fresh registered-identity Ed25519 signatures; the open-source
+/// desktop client never embeds or transmits a shared bearer secret.
 /// `Clone` is cheap: `reqwest::blocking::Client` is `Arc`-backed, so
 /// a clone shares the same connection pool. Callers clone the client
 /// out from under the `AppState` keyserver mutex so network calls
@@ -295,15 +329,11 @@ pub struct KeyServerClient {
     /// double-slash hazards.
     base_url: String,
     client: reqwest::blocking::Client,
-    admin_token: Option<String>,
 }
 
 impl KeyServerClient {
-    /// `base_url` must start with `http://` or `https://`.
-    ///
-    /// Constructs a client with no admin token (works against
-    /// unsecured local keyservers). Use [`Self::with_admin_token`]
-    /// to attach a Phase-B-deployed keyserver token.
+    /// Release builds accept only the exact production HTTPS origin. Debug and
+    /// test builds additionally accept numeric loopback HTTP(S) endpoints.
     ///
     /// The underlying `reqwest::blocking::Client` is built with a
     /// 30-second timeout (matching the prior hand-rolled
@@ -312,50 +342,54 @@ impl KeyServerClient {
     /// v1-stable feature.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self> {
         let url = base_url.as_ref();
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(Error::Transport(format!(
-                "base_url must start with http:// or https://: {url:?}"
-            )));
-        }
-        // Defensive parse: reject syntactically broken URLs early
-        // so callers get a clean error from `new` rather than from
-        // the first `send_request`. Discards the parsed `Url`
-        // because we keep the canonicalised string for path joining.
-        reqwest::Url::parse(url)
+        let parsed = reqwest::Url::parse(url)
             .map_err(|e| Error::Transport(format!("invalid base_url {url:?}: {e}")))?;
 
-        let base_url = url.trim_end_matches('/').to_string();
+        let no_ambient_authority = parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.query().is_none()
+            && parsed.fragment().is_none();
+        let production = no_ambient_authority
+            && parsed.scheme() == "https"
+            && parsed.host_str() == Some("keyserver.oslprivacy.com")
+            && parsed.port_or_known_default() == Some(443)
+            && parsed.path() == "/";
+        let debug_loopback = cfg!(debug_assertions)
+            && no_ambient_authority
+            && matches!(parsed.scheme(), "http" | "https")
+            && parsed
+                .host_str()
+                .and_then(|host| {
+                    host.trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .parse::<std::net::IpAddr>()
+                        .ok()
+                })
+                .is_some_and(|ip| ip.is_loopback());
+        if !production && !debug_loopback {
+            return Err(Error::Transport(
+                "keyserver origin is not trusted for this build".to_string(),
+            ));
+        }
+
+        let base_url = parsed.as_str().trim_end_matches('/').to_string();
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
-            // Default redirect policy is "follow up to 10". That
-            // matches Railway's HTTP→HTTPS upgrade behaviour and
-            // reqwest's own default; spelling it out as a self-
-            // documenting line.
-            .redirect(reqwest::redirect::Policy::limited(10))
+            // Never follow an origin-changing redirect with signed protocol
+            // bodies. Production is already HTTPS and local tests do not need
+            // an upgrade redirect.
+            .redirect(reqwest::redirect::Policy::none())
             // User-Agent string mirrors the prior hand-rolled
             // value so server-side log greps continue working.
             .user_agent("discord-privacy-client/0.0.1")
             .build()
             .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
-        Ok(KeyServerClient {
-            base_url,
-            client,
-            admin_token: None,
-        })
+        Ok(KeyServerClient { base_url, client })
     }
 
-    /// Attach (or clear, by passing `None`) the pre-shared admin
-    /// token used for state-mutating routes. Builder-style:
-    /// `KeyServerClient::new(url)?.with_admin_token(token)`.
-    ///
-    /// Empty strings are normalised to `None` — a configured-but-
-    /// empty token would otherwise mean "send a `Bearer ` header
-    /// with no token," which is a footgun.
-    pub fn with_admin_token(mut self, token: Option<String>) -> Self {
-        self.admin_token = match token {
-            Some(t) if !t.is_empty() => Some(t),
-            _ => None,
-        };
+    /// Compatibility shim for pre-signed-mutation callers. The retired
+    /// client bearer is deliberately discarded and never placed on the wire.
+    pub fn with_client_token(self, _token: Option<String>) -> Self {
         self
     }
 
@@ -508,12 +542,77 @@ impl KeyServerClient {
     /// `GET /v1/prekey-bundle/:user_id`. Atomically pops one OPK
     /// server-side; the popped value rides in the response. Pool
     /// remaining count surfaces via `remaining_opk_count` so the
-    /// caller can decide whether to replenish.
-    pub fn fetch_prekey_bundle(&self, user_id: &str) -> Result<PrekeyBundleResponse> {
-        let path = format!("/v1/prekey-bundle/{}", urlencode_segment(user_id));
+    /// caller can decide whether to replenish. The requester signs
+    /// actor + recipient/target + timestamp; the client-wide bearer
+    /// is deliberately not used as identity authority.
+    pub fn fetch_prekey_bundle(
+        &self,
+        requester: &Identity,
+        recipient_user_id: &str,
+    ) -> Result<PrekeyBundleResponse> {
+        let timestamp_ms = unix_timestamp_ms();
+        let signature = sign_prekey_bundle_get(requester, recipient_user_id, timestamp_ms);
+        let sig_b64 = STANDARD.encode(signature.as_bytes());
+        let path = format!(
+            "/v1/prekey-bundle/{}?requester_id={}&recipient_id={}&ts={}&sig={}",
+            urlencode_segment(recipient_user_id),
+            urlencode_query_value(&requester.user_id),
+            urlencode_query_value(recipient_user_id),
+            timestamp_ms,
+            urlencode_query_value(&sig_b64),
+        );
         let resp = self.send_request("GET", &path, None)?;
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// Authenticated wrapped-key fetch. Only the intended recipient can
+    /// sign this request; a single-use row is atomically deleted by the
+    /// server only after verification succeeds.
+    pub fn fetch_wrapped_key(
+        &self,
+        recipient: &Identity,
+        content_id: &str,
+    ) -> Result<WrappedKeyResponse> {
+        let timestamp_ms = unix_timestamp_ms();
+        let signature = sign_wrapped_key_get(recipient, content_id, timestamp_ms);
+        let sig_b64 = STANDARD.encode(signature.as_bytes());
+        let path = format!(
+            "/v1/wrapped-keys/{}?requester_id={}&recipient_id={}&ts={}&sig={}",
+            urlencode_segment(content_id),
+            urlencode_query_value(&recipient.user_id),
+            urlencode_query_value(&recipient.user_id),
+            timestamp_ms,
+            urlencode_query_value(&sig_b64),
+        );
+        let resp = self.send_request("GET", &path, None)?;
+        check_2xx(&resp)?;
+        Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// Upload an opaque wrapped share authorized by the registered sender's
+    /// Ed25519 identity. No client-wide bearer is required or trusted.
+    pub fn post_wrapped_key(
+        &self,
+        sender: &Identity,
+        upload: &WrappedKeyUpload,
+    ) -> Result<WrappedKeyPostResponse> {
+        let timestamp_ms = unix_timestamp_ms();
+        let signature = sign_wrapped_key_post(sender, upload, timestamp_ms);
+        let body = WrappedKeyPostRequest {
+            upload,
+            sender_id: &sender.user_id,
+            timestamp_ms,
+            sender_signature_b64: STANDARD.encode(signature.as_bytes()),
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "POST",
+            "/v1/wrapped-keys",
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&response)?;
+        Ok(serde_json::from_slice(&response.body)?)
     }
 
     /// `POST /v1/prekey-bundle/replenish`. Signs the canonical batch
@@ -537,9 +636,13 @@ impl KeyServerClient {
                 pub_b64: STANDARD.encode(o.public),
             })
             .collect();
+        let timestamp_ms = unix_timestamp_ms();
+        let request_id = fresh_request_id();
         let sig = sign_replenish_batch(
             identity,
             &identity.user_id,
+            timestamp_ms,
+            &request_id,
             replenish_spk.as_ref(),
             &replenish_opks,
         );
@@ -548,6 +651,8 @@ impl KeyServerClient {
         // /v1/prekey-bundle/replenish handler.
         let body = ReplenishRequest {
             user_id: identity.user_id.clone(),
+            timestamp_ms,
+            request_id,
             batch_signature_b64: STANDARD.encode(sig.as_bytes()),
             spk: replenish_spk.map(|r| ReplenishSpkWire {
                 pub_b64: r.pub_b64,
@@ -602,7 +707,9 @@ impl KeyServerClient {
     /// `sender_id = identity.user_id` so this only ever deletes the
     /// caller's own rows. Returns `(scope, deleted_count)`.
     pub fn burn(&self, identity: &Identity, scope: &BurnScope) -> Result<BurnResponse> {
-        let sig = sign_burn(identity, scope);
+        let timestamp_ms = unix_timestamp_ms();
+        let request_id = fresh_request_id();
+        let sig = sign_burn(identity, timestamp_ms, &request_id, scope);
         let sig_b64 = STANDARD.encode(sig.as_bytes());
         let (target_content_id, target_user_id) = match scope {
             BurnScope::Single { content_id } => (Some(content_id.as_str()), None),
@@ -614,6 +721,8 @@ impl KeyServerClient {
             user_id: identity.user_id.as_str(),
             target_content_id,
             target_user_id,
+            timestamp_ms,
+            request_id,
             burn_signature_b64: sig_b64,
         };
         let body_json = serde_json::to_vec(&body)?;
@@ -670,11 +779,7 @@ impl KeyServerClient {
         };
         let body_json = serde_json::to_vec(&body)?;
         let path = format!("/v1/pubkeys/{}", urlencode_segment(user_id));
-        let resp = self.send_request(
-            "DELETE",
-            &path,
-            Some(("application/json", &body_json)),
-        )?;
+        let resp = self.send_request("DELETE", &path, Some(("application/json", &body_json)))?;
         check_2xx(&resp)?;
         Ok(())
     }
@@ -696,13 +801,7 @@ impl KeyServerClient {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let sig = sign_control_inbox_post(
-            sender,
-            recipient_id,
-            scope_id,
-            timestamp_ms,
-            bundle,
-        );
+        let sig = sign_control_inbox_post(sender, recipient_id, scope_id, timestamp_ms, bundle);
         let body = ControlInboxPostBody {
             sender_id: &sender.user_id,
             recipient_id,
@@ -763,11 +862,7 @@ impl KeyServerClient {
         };
         let body_json = serde_json::to_vec(&body)?;
         let path = format!("/v1/control-inbox/{}", urlencode_segment(inbox_id_hex));
-        let resp = self.send_request(
-            "DELETE",
-            &path,
-            Some(("application/json", &body_json)),
-        )?;
+        let resp = self.send_request("DELETE", &path, Some(("application/json", &body_json)))?;
         check_2xx(&resp)?;
         Ok(())
     }
@@ -813,12 +908,9 @@ impl KeyServerClient {
     /// `base_url + path` string into a [`reqwest::Url`] without
     /// double-encoding pre-encoded sequences.
     ///
-    /// Auth header is attached only on state-mutating methods —
-    /// GETs (pubkey lookup, prekey-bundle pop, healthz, manifest)
-    /// are designed to be public on the keyserver. Sending the
-    /// token on GETs would just be unnecessary header bloat with
-    /// no security benefit (and would make traffic analysis
-    /// easier — every request looks the same).
+    /// Authorization is operation-specific. Identity-sensitive mutations and
+    /// consuming reads carry canonical Ed25519 signatures in their payloads;
+    /// this generic transport never adds ambient authorization.
     fn send_request(
         &self,
         method: &str,
@@ -838,11 +930,6 @@ impl KeyServerClient {
             }
         };
         req = req.header("Accept", "application/json");
-        if let Some(ref token) = self.admin_token {
-            if matches!(method, "POST" | "PUT" | "DELETE") {
-                req = req.bearer_auth(token);
-            }
-        }
         if let Some((ctype, payload)) = body {
             req = req.header("Content-Type", ctype).body(payload.to_vec());
         }
@@ -895,7 +982,7 @@ fn urlencode_segment(s: &str) -> String {
         if unreserved {
             out.push(c as char);
         } else {
-            out.push_str(&format!("%{:02X}", c));
+            out.push_str(&format!("%{c:02X}"));
         }
     }
     out
@@ -907,6 +994,17 @@ fn urlencode_segment(s: &str) -> String {
 /// and `/` which would corrupt the query parser).
 fn urlencode_query_value(s: &str) -> String {
     urlencode_segment(s)
+}
+
+fn unix_timestamp_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn fresh_request_id() -> String {
+    URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32))
 }
 
 // ---- Phase 6.4 control-inbox payload shapes (used by post_control_inbox /

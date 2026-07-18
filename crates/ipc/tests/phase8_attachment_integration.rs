@@ -36,8 +36,8 @@ use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
 use keystore::generate_identity;
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 
 fn fresh_state_for_liam() -> AppState {
     let state = AppState::new();
@@ -72,6 +72,7 @@ fn install_dm_whitelist(state: &AppState, peer_discord_id: &str) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
+                ..ScopeState::default()
             },
         );
     }

@@ -68,6 +68,7 @@ impl Drop for ServerHandle {
     }
 }
 
+#[allow(clippy::zombie_processes)] // ServerHandle::drop kills and waits for the child.
 fn spawn_keyserver() -> ServerHandle {
     // Pick a random ephemeral port: bind to 0, take whatever the OS
     // gives, drop the listener (race), spawn the keyserver on that
@@ -141,7 +142,9 @@ fn prekey_round_trip_through_real_keyserver() {
     let _ = &mut state; // mark used
 
     // 3. Fetch the bundle — server pops one OPK.
-    let bundle = client.fetch_prekey_bundle("alice").expect("fetch bundle");
+    let bundle = client
+        .fetch_prekey_bundle(&id, "alice")
+        .expect("fetch bundle");
     assert_eq!(bundle.user_id, "alice");
     assert_eq!(bundle.remaining_opk_count, 99);
     let opk = bundle.opk.expect("opk should be present");
@@ -149,7 +152,7 @@ fn prekey_round_trip_through_real_keyserver() {
     assert!(opk.id < 100, "server popped an unknown OPK id: {}", opk.id);
 
     // 4. Fetch a few more — counts decrement, distinct IDs.
-    let bundle2 = client.fetch_prekey_bundle("alice").expect("fetch 2");
+    let bundle2 = client.fetch_prekey_bundle(&id, "alice").expect("fetch 2");
     assert_eq!(bundle2.remaining_opk_count, 98);
     let opk2 = bundle2.opk.unwrap();
     assert_ne!(opk.id, opk2.id);
@@ -176,9 +179,9 @@ fn replenish_using_state_tops_up_to_target() {
     // default replenish threshold of 25). Then call
     // `replenish_using_state` and confirm it tops the server back up.
     for _ in 0..80 {
-        client.fetch_prekey_bundle("alice").unwrap();
+        client.fetch_prekey_bundle(&id, "alice").unwrap();
     }
-    let bundle = client.fetch_prekey_bundle("alice").unwrap();
+    let bundle = client.fetch_prekey_bundle(&id, "alice").unwrap();
     assert_eq!(bundle.remaining_opk_count, 19);
 
     // server_remaining = 19 (below threshold). Top up to 100.
@@ -190,6 +193,6 @@ fn replenish_using_state_tops_up_to_target() {
 
     // Bundle now sees a fresh pool. (Each fetch pops one, so
     // remaining is 99 after the next fetch.)
-    let bundle = client.fetch_prekey_bundle("alice").unwrap();
+    let bundle = client.fetch_prekey_bundle(&id, "alice").unwrap();
     assert_eq!(bundle.remaining_opk_count, 99);
 }

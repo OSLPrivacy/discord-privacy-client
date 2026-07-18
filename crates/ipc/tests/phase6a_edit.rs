@@ -51,7 +51,7 @@ fn persist_edit_overwrites_existing_row() {
     let original = StoredMessage {
         discord_message_id: "msg-edit-1".to_string(),
         channel_id: "ch-edit".to_string(),
-        sender_discord_id: "1477008451799482419".to_string(),
+        sender_discord_id: "900000000000000003".to_string(),
         sender_osl_user_id: "liam".to_string(),
         plaintext: "before edit".to_string(),
         decrypted_at: 1_000_000_000, // 2001-09-09; well in the past
@@ -75,7 +75,7 @@ fn persist_edit_overwrites_existing_row() {
     assert_eq!(row.plaintext, "after edit (fresh plaintext)");
     // Non-plaintext metadata preserved from the seed row.
     assert_eq!(row.channel_id, "ch-edit");
-    assert_eq!(row.sender_discord_id, "1477008451799482419");
+    assert_eq!(row.sender_discord_id, "900000000000000003");
     assert_eq!(row.sender_osl_user_id, "liam");
     assert!(!row.burned);
     // decrypted_at advanced to "now". We assert strictly

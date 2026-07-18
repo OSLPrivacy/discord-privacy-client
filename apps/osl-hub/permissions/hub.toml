@@ -1,0 +1,284 @@
+[[permission]]
+identifier = "allow-get-onboarding-preferences"
+description = "Read the local, non-sensitive OSL Privacy preview preferences."
+commands.allow = ["get_onboarding_preferences"]
+
+[[permission]]
+identifier = "allow-set-hub-screenshot-protection"
+description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
+commands.allow = ["set_hub_screenshot_protection"]
+
+[[permission]]
+identifier = "allow-list-hub-app-notifications"
+description = "List bounded local OSL security notifications after explicit opt-in; never reads hosted page content."
+commands.allow = ["list_hub_app_notifications"]
+
+[[permission]]
+identifier = "allow-set-hub-notifications-enabled"
+description = "Enable or disable local OSL security-notification reads for this running OSL Privacy session."
+commands.allow = ["set_hub_notifications_enabled"]
+
+[[permission]]
+identifier = "allow-save-onboarding-preferences"
+description = "Save the local, non-sensitive OSL Privacy preview preferences."
+commands.allow = ["save_onboarding_preferences"]
+
+[[permission]]
+identifier = "allow-scan-local-privacy"
+description = "Scan bounded caller-provided visible message text in local process memory without persistence or network access."
+commands.allow = ["scan_local_privacy"]
+
+[[permission]]
+identifier = "allow-list-linked-services"
+description = "Read the static demo service and account registry."
+commands.allow = ["list_linked_services"]
+
+[[permission]]
+identifier = "allow-create-service-account"
+description = "Create local metadata for one fresh isolated service profile; stores no credentials or cookies."
+commands.allow = ["create_service_account"]
+
+[[permission]]
+identifier = "allow-remove-service-account"
+description = "Close and atomically detach one exact isolated service profile, then remove its local registry record."
+commands.allow = ["remove_service_account"]
+
+[[permission]]
+identifier = "allow-get-core-readiness"
+description = "Read non-sensitive readiness for the locally linked original OSL core."
+commands.allow = ["get_core_readiness"]
+
+[[permission]]
+identifier = "allow-list-core-features"
+description = "List the static original OSL feature integration manifest."
+commands.allow = ["list_core_features"]
+
+[[permission]]
+identifier = "allow-get-hub-license-state"
+description = "Read bounded local Free or Pro activation state from the trusted bundled OSL Privacy UI."
+commands.allow = ["get_hub_license_state"]
+
+[[permission]]
+identifier = "allow-validate-hub-activation-code"
+description = "Validate and seal one browser-delivered activation code from the trusted bundled OSL Privacy UI."
+commands.allow = ["validate_hub_activation_code"]
+
+[[permission]]
+identifier = "allow-clear-hub-activation-code"
+description = "Remove the locally sealed activation code from the trusted bundled OSL Privacy UI."
+commands.allow = ["clear_hub_activation_code"]
+
+[[permission]]
+identifier = "allow-unlock-hub-main-password"
+description = "Unlock the local OSL core with the ordinary main password from the trusted bundled OSL Privacy UI."
+commands.allow = ["unlock_hub_main_password"]
+
+[[permission]]
+identifier = "allow-create-hub-osl-identity"
+description = "Create one service-neutral OSL identity in persistent device storage from the trusted bundled OSL Privacy UI."
+commands.allow = ["create_hub_osl_identity"]
+
+[[permission]]
+identifier = "allow-import-hub-osl-identity-phrase"
+description = "Import one OSL-native identity phrase into an empty isolated OSL Privacy account from the trusted bundled OSL Privacy UI."
+commands.allow = ["import_hub_osl_identity_phrase"]
+
+[[permission]]
+identifier = "allow-setup-hub-main-password"
+description = "Set a strong local main passphrase once for an already-loaded isolated OSL Privacy identity and reload encrypted state."
+commands.allow = ["setup_hub_main_password"]
+
+[[permission]]
+identifier = "allow-get-hub-password-role-status"
+description = "Read whether trusted-local stealth and burn password roles are configured without returning hashes or marker contents."
+commands.allow = ["get_hub_password_role_status"]
+
+[[permission]]
+identifier = "allow-set-hub-stealth-password"
+description = "Configure the original OSL stealth password after ordinary-main-password verification in trusted local UI."
+commands.allow = ["set_hub_stealth_password"]
+
+[[permission]]
+identifier = "allow-remove-hub-stealth-password"
+description = "Remove the original OSL stealth password after ordinary-main-password verification in trusted local UI."
+commands.allow = ["remove_hub_stealth_password"]
+
+[[permission]]
+identifier = "allow-set-hub-burn-password"
+description = "Configure the original OSL burn password after ordinary-main-password verification in trusted local UI; this command does not execute a burn."
+commands.allow = ["set_hub_burn_password"]
+
+[[permission]]
+identifier = "allow-remove-hub-burn-password"
+description = "Remove the original OSL burn password after ordinary-main-password verification in trusted local UI."
+commands.allow = ["remove_hub_burn_password"]
+
+[[permission]]
+identifier = "allow-check-hub-for-updates"
+description = "Check the compiled-in signed OSL Privacy update endpoint and return bounded plain metadata."
+commands.allow = ["check_hub_for_updates"]
+
+[[permission]]
+identifier = "allow-install-hub-update"
+description = "After explicit trusted-UI consent, download, signature-verify, install, and restart an OSL Privacy update."
+commands.allow = ["install_hub_update"]
+
+[[permission]]
+identifier = "allow-open-hub-releases-page"
+description = "Open the single compiled-in OSL GitHub releases page in the system browser."
+commands.allow = ["open_hub_releases_page"]
+
+[[permission]]
+identifier = "allow-list-native-apps"
+description = "Report installed status for the four fixed Windows-native messaging applications without exposing executable paths."
+commands.allow = ["list_native_apps"]
+
+[[permission]]
+identifier = "allow-launch-native-app"
+description = "Launch one installed, compile-time allowlisted Windows-native messaging application after an explicit trusted-UI click."
+commands.allow = ["launch_native_app"]
+
+[[permission]]
+identifier = "allow-install-native-app"
+description = "Start one fixed winget or Microsoft Store install action after an explicit trusted-UI click, without shell input or automatic elevation."
+commands.allow = ["install_native_app"]
+
+[[permission]]
+identifier = "allow-open-service-host"
+description = "Open one explicitly allowlisted service in an isolated per-account child webview."
+commands.allow = ["open_service_host"]
+
+[[permission]]
+identifier = "allow-close-service-host"
+description = "Close the currently hosted service child webview."
+commands.allow = ["close_service_host"]
+
+[[permission]]
+identifier = "allow-set-local-protected-sheet-open"
+description = "Resize only the exact active capability-free service host to reveal or reclaim the fixed trusted local-protection sheet area."
+commands.allow = ["set_local_protected_sheet_open"]
+
+[[permission]]
+identifier = "allow-activate-local-loopback-context"
+description = "Create a local-only self-recipient context from the unlocked owner, one owned active service account, its current host generation, and a bounded opaque conversation id."
+commands.allow = ["activate_local_loopback_context"]
+
+[[permission]]
+identifier = "allow-place-prepared-capsule"
+description = "After an explicit trusted-UI action, focus the exact active service surface and place a prepared capsule without sending it."
+commands.allow = ["place_prepared_capsule"]
+
+[[permission]]
+identifier = "allow-prepare-encrypted-text"
+description = "Prepare original-OSL encrypted capsules for the exact active trusted context."
+commands.allow = ["prepare_encrypted_text"]
+
+[[permission]]
+identifier = "allow-decrypt-hub-capsule"
+description = "Decrypt one bounded capsule into the trusted local overlay for the exact active context."
+commands.allow = ["decrypt_hub_capsule"]
+
+[[permission]]
+identifier = "allow-decrypt-local-protected-capsule"
+description = "Decrypt one locally-ledgered self-encrypted capsule in its exact active context."
+commands.allow = ["decrypt_local_protected_capsule"]
+
+[[permission]]
+identifier = "allow-prepare-local-protected-text-with-policy"
+description = "Prepare one self-encrypted context-bound message with an optional locally enforced one-open policy; does not claim peer E2EE or screenshot prevention."
+commands.allow = ["prepare_local_protected_text_with_policy"]
+
+[[permission]]
+identifier = "allow-prepare-hub-attachment"
+description = "Seal one bounded attachment with the original OSL core for the exact active trusted context; does not upload or send it."
+commands.allow = ["prepare_hub_attachment"]
+
+[[permission]]
+identifier = "allow-open-hub-attachment"
+description = "Open one bounded OSL attachment only in the exact active trusted context and return plaintext solely to the bundled local UI."
+commands.allow = ["open_hub_attachment"]
+
+[[permission]]
+identifier = "allow-export-hub-friend-code"
+description = "Export the active identity's signed public friend code and safety number."
+commands.allow = ["export_hub_friend_code"]
+
+[[permission]]
+identifier = "allow-add-hub-friend"
+description = "Validate and add one signed OSL friend code to encrypted local People state."
+commands.allow = ["add_hub_friend"]
+
+[[permission]]
+identifier = "allow-verify-hub-friend-safety-number"
+description = "Record explicit out-of-band verification of one friend's safety number."
+commands.allow = ["verify_hub_friend_safety_number"]
+
+[[permission]]
+identifier = "allow-list-hub-people"
+description = "List bounded People metadata from encrypted local state."
+commands.allow = ["list_hub_people"]
+
+[[permission]]
+identifier = "allow-set-hub-friend-nickname"
+description = "Set or clear a bounded nickname in encrypted device-local People state."
+commands.allow = ["set_hub_friend_nickname"]
+
+[[permission]]
+identifier = "allow-set-active-hub-friend-permission"
+description = "Grant or revoke one verified person's permission for only the exact active hosted context."
+commands.allow = ["set_active_hub_friend_permission"]
+
+[[permission]]
+identifier = "allow-get-active-hub-context-security"
+description = "Read TTL and decrypt-display settings for only the exact active hosted context."
+commands.allow = ["get_active_hub_context_security"]
+
+[[permission]]
+identifier = "allow-set-active-hub-context-security"
+description = "Set TTL and decrypt-display settings for only the exact active hosted context."
+commands.allow = ["set_active_hub_context_security"]
+
+[[permission]]
+identifier = "allow-list-hub-identities"
+description = "List bounded metadata for unlocked OSL Privacy identity slots."
+commands.allow = ["list_hub_identities"]
+
+[[permission]]
+identifier = "allow-create-hub-identity-slot"
+description = "Create an additional encrypted OSL Privacy identity slot from trusted local UI."
+commands.allow = ["create_hub_identity_slot"]
+
+[[permission]]
+identifier = "allow-recover-hub-identity-slot"
+description = "Recover an additional OSL Privacy identity into a new encrypted slot from trusted local UI."
+commands.allow = ["recover_hub_identity_slot"]
+
+[[permission]]
+identifier = "allow-switch-hub-identity"
+description = "Close hosted services, invalidate broker context, and switch the active encrypted OSL Privacy identity slot."
+commands.allow = ["switch_hub_identity"]
+
+[[permission]]
+identifier = "allow-burn-active-hub-identity"
+description = "Permanently detach the active OSL Privacy identity and report local and remote cleanup outcomes separately."
+commands.allow = ["burn_active_hub_identity"]
+
+[[permission]]
+identifier = "allow-execute-hub-full-cleanup"
+description = "After explicit trusted confirmation, close hosts and delete every fixed OSL Privacy artifact without touching original Discord OSL data."
+commands.allow = ["execute_hub_full_cleanup"]
+
+[[permission]]
+identifier = "allow-get-hub-service-burn-readiness"
+description = "Preview the immutable, complete locally indexed OSL scope manifest for one owned service account without touching its login profile or native history."
+commands.allow = ["get_hub_service_burn_readiness"]
+
+[[permission]]
+identifier = "allow-burn-hub-service-account"
+description = "After exact manifest confirmation, burn only locally indexed OSL protected state for one owned service account while preserving its login profile, cookies, and native history."
+commands.allow = ["burn_hub_service_account"]
+
+[[permission]]
+identifier = "allow-burn-active-hub-context"
+description = "Burn only the exact active trusted service/account context and report local versus remote outcomes separately."
+commands.allow = ["burn_active_hub_context"]

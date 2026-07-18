@@ -39,12 +39,9 @@ fn one_to_one_roundtrip() {
 
     let plaintext = "hello bob, this is alice";
 
-    let cover = encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
-        plaintext,
-    )
-    .expect("encrypt");
+    let cover =
+        encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], plaintext)
+            .expect("encrypt");
 
     assert!(cover.starts_with("DPC0::"), "cover should be Mode 0 stego");
     let recovered =
@@ -64,11 +61,7 @@ fn multi_recipient_each_can_decrypt() {
 
     let cover = encrypt_osl_phase4_to_pubkeys(
         &sender.x25519_secret,
-        &[
-            r1.x25519_public.clone(),
-            r2.x25519_public.clone(),
-            r3.x25519_public.clone(),
-        ],
+        &[r1.x25519_public, r2.x25519_public, r3.x25519_public],
         plaintext,
     )
     .expect("encrypt");
@@ -94,12 +87,9 @@ fn non_recipient_cannot_decrypt() {
     let recipient = generate_identity("bob".to_string());
     let stranger = generate_identity("eve".to_string());
 
-    let cover = encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
-        "secret",
-    )
-    .expect("encrypt");
+    let cover =
+        encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], "secret")
+            .expect("encrypt");
 
     // Eve has the cover string and the sender's public key — same
     // information a passive observer of the channel would have —
@@ -109,8 +99,7 @@ fn non_recipient_cannot_decrypt() {
     let result = decrypt_osl_phase4_cover(&stranger.x25519_secret, &sender.x25519_public, &cover);
     assert!(
         result.is_err(),
-        "stranger should not be able to decode; got {:?}",
-        result
+        "stranger should not be able to decode; got {result:?}"
     );
 }
 
@@ -119,12 +108,8 @@ fn empty_plaintext_rejected() {
     let sender = generate_identity("alice".to_string());
     let recipient = generate_identity("bob".to_string());
 
-    let err = encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
-        "",
-    )
-    .expect_err("empty plaintext should fail closed");
+    let err = encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], "")
+        .expect_err("empty plaintext should fail closed");
     assert!(err.contains("empty"), "error should mention empty: {err}");
 }
 
@@ -134,12 +119,9 @@ fn oversized_plaintext_rejected() {
     let recipient = generate_identity("bob".to_string());
 
     let big = "a".repeat(OSL_PHASE4_PLAINTEXT_BYTE_CAP + 1);
-    let err = encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
-        &big,
-    )
-    .expect_err("oversized plaintext should fail closed");
+    let err =
+        encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], &big)
+            .expect_err("oversized plaintext should fail closed");
     assert!(
         err.contains("exceeds soft cap"),
         "error should mention cap: {err}"
@@ -171,7 +153,7 @@ fn over_budget_recipient_count_rejected() {
     // 17 recipients and the effective N is 18.
     let sender = generate_identity("alice".to_string());
     let recipients: Vec<x25519::PublicKey> = (0..17)
-        .map(|_| generate_identity("r".to_string()).x25519_public.clone())
+        .map(|_| generate_identity("r".to_string()).x25519_public)
         .collect();
     let plaintext = "a".repeat(100);
     let err = encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &recipients, &plaintext)
@@ -193,12 +175,9 @@ fn wire_format_self_consistency_check() {
     let plaintext = "exactly 32 chars long plaintext.";
     assert_eq!(plaintext.len(), 32);
 
-    let cover = encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
-        plaintext,
-    )
-    .expect("encrypt");
+    let cover =
+        encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], plaintext)
+            .expect("encrypt");
 
     let body = cover.strip_prefix("DPC0::").expect("Mode 0 prefix");
     let raw = STANDARD.decode(body).expect("base64 decode");
@@ -238,7 +217,7 @@ fn sender_can_decrypt_own_message() {
 
     let cover = encrypt_osl_phase4_to_pubkeys(
         &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
+        &[recipient.x25519_public],
         "hello, future me",
     )
     .expect("encrypt");
@@ -262,8 +241,8 @@ fn explicit_self_recipient_deduped() {
     let cover = encrypt_osl_phase4_to_pubkeys(
         &sender.x25519_secret,
         &[
-            sender.x25519_public.clone(), // explicit self
-            recipient.x25519_public.clone(),
+            sender.x25519_public, // explicit self
+            recipient.x25519_public,
         ],
         "deduped",
     )

@@ -210,6 +210,7 @@ pub const AD_BODY_V5: &[u8] = b"OSL/A3/body/v5";
 
 /// v=5 global header: version(1) + msg_type(1) + sender_ik_x25519_pub(32)
 /// + flags(1) = 35 bytes. Same shape as v=3's global header (`N` is
+///
 /// implicit at 1-sender-many-recipients).
 pub const V5_GLOBAL_HEADER_BYTES: usize = 1 + 1 + 32 + 1;
 
@@ -847,6 +848,7 @@ pub fn decrypt_v3(
 /// the bootstrap flag bit (or rewrites any byte of the global
 /// header) invalidates the wrap tag and the recipient rejects
 /// before touching the DR.
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt_v4(
     sender_ik_pub: &x25519::PublicKey,
     recipient: &RecipientV3,
@@ -950,14 +952,14 @@ pub fn encrypt_v4_from_ratchet(
 
 /// Parsed v=4 wire bytes plus the recovered PQXDH `SessionKey` —
 /// hand-off type for the IPC layer. The caller:
+///
 /// 1. Verifies the wrap-leg sentinel auth tag (`verify_sentinel` on
 ///    this type).
 /// 2. Bootstraps OR loads the live `DoubleRatchet` per the
 ///    `bootstrap` flag, using `session_key` as the seed when
 ///    bootstrapping.
-/// 3. Constructs a `ratchet::EncryptedMessage` from `enc_header_nonce`
-///    + `enc_header` + `body_nonce` + `body_ct` and calls
-///    `dr.decrypt(&em)` to recover the plaintext.
+/// 3. Constructs a `ratchet::EncryptedMessage` from `enc_header_nonce` +
+///    `enc_header` + `body_nonce` + `body_ct`, then calls `dr.decrypt(&em)`.
 pub struct ParsedV4 {
     pub msg_type: u8,
     pub bootstrap: bool,

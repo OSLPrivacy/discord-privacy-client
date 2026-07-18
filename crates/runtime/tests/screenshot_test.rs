@@ -1,4 +1,6 @@
-use runtime::{apply_to_hwnd, apply_to_hwnd_and_children, ScreenshotProtection};
+use runtime::ScreenshotProtection;
+#[cfg(not(windows))]
+use runtime::{apply_to_hwnd, apply_to_hwnd_and_children};
 
 // On Linux / macOS, `apply_to_hwnd` and `apply_to_hwnd_and_children`
 // are no-op stubs. We exercise the no-op paths here to lock their
@@ -39,5 +41,5 @@ fn protection_states_copy_eq_debug() {
     let on = ScreenshotProtection::On;
     let copy = on;
     assert_eq!(on, copy);
-    let _ = format!("{:?}", on); // Debug impl exists
+    let _ = format!("{on:?}"); // Debug impl exists
 }

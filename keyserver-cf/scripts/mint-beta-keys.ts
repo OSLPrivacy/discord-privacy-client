@@ -1,324 +1,234 @@
 /**
- * mint-beta-keys.ts — local batch minter for paid beta licenses.
+ * Owner comp batch client.
  *
- * Mints N valid paid licenses WITHOUT Stripe, by REUSING the exact
- * code the `checkout.session.completed` webhook uses:
- *
- *   - `generateLicenseKey()`  (src/lib/license.ts)  — key format +
- *     SHA-256 hash + HMAC checksum. NOT reimplemented here.
- *   - `upsertSubscription()` / `insertLicense()`  (src/lib/
- *     subscriptions.ts) — the real INSERT statements. We drive them
- *     with a capturing D1 stub so the SQL that hits prod is byte-for-
- *     byte what the webhook would write (no hand-written rows, no
- *     hand-written hash). If those helpers change, this script
- *     follows automatically.
- *
- * The raw keys are printed to stdout ONCE. They are never written to
- * disk and never stored raw server-side (only SHA-256(key) lands in
- * D1) — by design. Capture them at run time; they are unrecoverable.
- *
- * ──────────────────────────────────────────────────────────────────
- * CHECKSUM / SECRET — READ THIS
- * ──────────────────────────────────────────────────────────────────
- * `POST /v1/license/validate` HARD-REJECTS a key whose 2-char
- * checksum doesn't verify under the deployed worker's
- * `LICENSE_HMAC_SECRET` (see src/endpoints/license.ts: `if
- * (!checksum_ok) return UNKNOWN`). The checksum is computed from that
- * secret. THEREFORE: this script must mint with the SAME secret the
- * production worker runs with, or every key it produces is DEAD.
- *
- *   - Export `LICENSE_HMAC_SECRET` to the exact value of the
- *     deployed wrangler secret before running.
- *   - If — and only if — the deployed worker has NO `LICENSE_HMAC_
- *     SECRET` set, the worker falls back to the literal
- *     "osl-license-default-v1"; pass that.
- *   - The script refuses to run if the env var is unset (it will
- *     NOT silently default — a wrong guess wastes a batch).
- *
- * ──────────────────────────────────────────────────────────────────
- * USAGE
- * ──────────────────────────────────────────────────────────────────
- *   cd keyserver-cf
- *   LICENSE_HMAC_SECRET='<same value as the deployed worker secret>' \
- *     npx tsx scripts/mint-beta-keys.ts \
- *       --label beta-wave-1 --count 20 --permanent
- *
- *   # exactly one of --permanent | --days <N> is required (operator
- *   # decision: permanent comps vs. time-limited)
- *
- * The script writes two files under scripts/out/ (git-ignored) and
- * prints the raw keys. INSPECT the mint SQL, then apply to prod D1:
- *
- *   npx wrangler d1 execute osl-keyserver-prod --remote \
- *     --file=scripts/out/mint-beta-<label>-<ts>.sql
- *
- * ──────────────────────────────────────────────────────────────────
- * REVOKING THESE LATER (cleanup before / at public launch)
- * ──────────────────────────────────────────────────────────────────
- * Every row this script creates is tagged so it can be found and
- * removed precisely:
- *
- *   subscription_id  = beta_grant_<label>_<NN>
- *   customer_id      = beta_grant_<label>
- *   customer_email   = beta+<label>-<NN>@oslprivacy.com
- *
- * A companion `revoke-beta-<label>-<ts>.sql` is generated alongside
- * the mint file. Two options (both in that file):
- *
- *   (A) SOFT REVOKE — keep the rows for audit, lock paid features
- *       immediately. This is the in-code equivalent of
- *       `revokeLicensesForSubscription(db, subId, 'manual')`:
- *
- *         UPDATE licenses
- *            SET revoked_at = unixepoch(), revoked_reason = 'manual'
- *          WHERE subscription_id LIKE 'beta_grant_<label>_%'
- *            AND revoked_at IS NULL;
- *         UPDATE subscriptions
- *            SET status = 'REVOKED', updated_at = unixepoch()
- *          WHERE subscription_id LIKE 'beta_grant_<label>_%';
- *
- *       (validate returns REVOKED on a revoked license OR a REVOKED
- *        subscription — either line alone is sufficient; do both.)
- *
- *   (B) HARD DELETE — wipe all beta grants entirely. Delete licenses
- *       first (FK child), then subscriptions:
- *
- *         DELETE FROM licenses     WHERE subscription_id LIKE 'beta_grant_%';
- *         DELETE FROM subscriptions WHERE subscription_id LIKE 'beta_grant_%';
- *
- * Apply whichever you want via:
- *   npx wrangler d1 execute osl-keyserver-prod --remote \
- *     --file=scripts/out/revoke-beta-<label>-<ts>.sql
- *
- * This script is LOCAL ONLY. It exposes NO HTTP endpoint.
+ * The production HMAC root never leaves the Worker. This tool generates an
+ * ephemeral RSA delivery key, calls the dual-authorized operator endpoint,
+ * decrypts exactly one response locally, and writes the codes to a mode-0600
+ * file. It never prints activation codes or emits SQL.
  */
-
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { webcrypto } from "node:crypto";
 
-import { generateLicenseKey } from "../src/lib/license.js";
-import { insertLicense, upsertSubscription } from "../src/lib/subscriptions.js";
-
+const subtle = webcrypto.subtle;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(SCRIPT_DIR, "out");
+const AAD = new TextEncoder().encode("osl-comp-delivery-v1");
 
-// 2100-01-01T00:00:00Z — "permanent" beta comp. Far past any
-// plausible public-launch cleanup date but still a real epoch the
-// EXPIRED cron sweep / validate logic handles normally.
-const PERMANENT_PERIOD_END = 4102444800;
-
-interface Captured {
-  sql: string;
-  params: unknown[];
+function base64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
 }
 
-/** Minimal D1 stand-in. `upsertSubscription` / `insertLicense` only
- *  ever call `.prepare(sql).bind(...params).run()` and ignore the
- *  result, so we record the bound statement instead of executing it.
- *  Reusing the real helpers means we never hand-write the row SQL. */
-function capturingDb(sink: Captured[]): import("@cloudflare/workers-types").D1Database {
-  const stmt = (sql: string) => ({
-    bind: (...params: unknown[]) => ({
-      run: async () => {
-        sink.push({ sql, params });
-        return { success: true, meta: {} };
-      },
-    }),
-  });
-  return { prepare: (sql: string) => stmt(sql) } as unknown as
-    import("@cloudflare/workers-types").D1Database;
-}
-
-function sqlLiteral(v: unknown): string {
-  if (v === null || v === undefined) return "NULL";
-  if (typeof v === "number") {
-    if (!Number.isFinite(v)) throw new Error(`non-finite bind value: ${v}`);
-    return String(v);
-  }
-  if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
-  throw new Error(`unsupported bind type: ${typeof v}`);
-}
-
-/** Inline the captured statement's bind params. Handles both the
- *  numbered (`?1..?8`, upsertSubscription) and positional (`?`,
- *  insertLicense) placeholder styles the helpers use. */
-function inlineStatement(c: Captured): string {
-  const sql = c.sql.trim();
-  if (/\?\d/.test(sql)) {
-    return (
-      sql.replace(/\?(\d+)/g, (_m, n: string) => {
-        const idx = Number(n) - 1;
-        if (idx < 0 || idx >= c.params.length) {
-          throw new Error(`placeholder ?${n} out of range`);
-        }
-        return sqlLiteral(c.params[idx]);
-      }) + ";"
-    );
-  }
-  let i = 0;
-  return (
-    sql.replace(/\?/g, () => {
-      if (i >= c.params.length) throw new Error("positional ? out of range");
-      return sqlLiteral(c.params[i++]);
-    }) + ";"
-  );
+function base64url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
 }
 
 function parseArgs(argv: string[]) {
-  const a = {
-    count: 20,
-    label: "",
-    days: 0,
-    permanent: false,
-    db: "osl-keyserver-prod",
+  const args = { count: 0, purpose: "", days: 0, url: "", out: "", revoke: "" };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--count") args.count = Number(argv[++index]);
+    else if (arg === "--purpose") args.purpose = String(argv[++index] ?? "");
+    else if (arg === "--days") args.days = Number(argv[++index]);
+    else if (arg === "--url") args.url = String(argv[++index] ?? "");
+    else if (arg === "--out") args.out = String(argv[++index] ?? "");
+    else if (arg === "--revoke") args.revoke = String(argv[++index] ?? "");
+    else throw new Error(`unknown argument: ${arg}`);
+  }
+  return args;
+}
+
+function authorizationHeaders(): Record<string, string> {
+  const primary = process.env.OSL_KEYSERVER_ADMIN_TOKEN;
+  const comp = process.env.OSL_COMP_ADMIN_TOKEN;
+  if (!primary || !comp) {
+    throw new Error("OSL_KEYSERVER_ADMIN_TOKEN and OSL_COMP_ADMIN_TOKEN must both be set");
+  }
+  return {
+    authorization: `Bearer ${primary}`,
+    "x-osl-comp-authorization": `Bearer ${comp}`,
   };
-  for (let i = 0; i < argv.length; i++) {
-    const k = argv[i];
-    if (k === "--count") a.count = Number(argv[++i]);
-    else if (k === "--label") a.label = String(argv[++i] ?? "");
-    else if (k === "--days") a.days = Number(argv[++i]);
-    else if (k === "--permanent") a.permanent = true;
-    else if (k === "--db") a.db = String(argv[++i] ?? "");
-    else throw new Error(`unknown arg: ${k}`);
-  }
-  return a;
 }
 
-async function main() {
+export interface CompDeliveryPayload {
+  version: 1;
+  batch_id: string;
+  issuer: "production" | "qa";
+  expires_at: number;
+  activation_codes: string[];
+}
+
+export function parseDeliveryPayload(
+  bytes: Uint8Array,
+  expected: { batchId: string; quantity: number; expiresAt: number },
+): CompDeliveryPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } finally {
+    bytes.fill(0);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("encrypted delivery payload is malformed");
+  }
+  const record = parsed as Record<string, unknown>;
+  const exact = ["activation_codes", "batch_id", "expires_at", "issuer", "version"];
+  if (Object.keys(record).sort().join("\0") !== exact.join("\0")) {
+    throw new Error("encrypted delivery payload fields are unexpected");
+  }
+  if (
+    record.version !== 1 ||
+    record.batch_id !== expected.batchId ||
+    record.expires_at !== expected.expiresAt ||
+    (record.issuer !== "production" && record.issuer !== "qa") ||
+    !Array.isArray(record.activation_codes) ||
+    record.activation_codes.length !== expected.quantity
+  ) {
+    throw new Error("encrypted delivery payload does not match the issued batch");
+  }
+  const prefix = record.issuer === "qa" ? "OSLQ" : "OSL";
+  const pattern = new RegExp(`^${prefix}-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$`);
+  if (
+    !record.activation_codes.every((code) => typeof code === "string" && pattern.test(code)) ||
+    new Set(record.activation_codes).size !== record.activation_codes.length
+  ) {
+    throw new Error("encrypted delivery contains an invalid activation code");
+  }
+  return record as unknown as CompDeliveryPayload;
+}
+
+export function writeCompTextFile(outputPath: string, payload: CompDeliveryPayload): void {
+  if (!outputPath.toLowerCase().endsWith(".txt")) {
+    throw new Error("comp output path must end in .txt");
+  }
+  const text = [
+    `OSL comp batch: ${payload.batch_id}`,
+    `Issuer: ${payload.issuer}`,
+    `Expires: ${new Date(payload.expires_at * 1000).toISOString()}`,
+    "",
+    ...payload.activation_codes,
+    "",
+  ].join("\n");
+  const outputBytes = Buffer.from(text, "utf8");
+  try {
+    writeFileSync(outputPath, outputBytes, { mode: 0o600, flag: "wx" });
+    // Some filesystems and compatibility layers apply the process umask or
+    // ignore the create-mode hint. Reassert owner-only access after the
+    // exclusive create so the promised secret-file boundary is explicit.
+    chmodSync(outputPath, 0o600);
+  } finally {
+    outputBytes.fill(0);
+    payload.activation_codes.fill("");
+  }
+}
+
+async function revoke(url: string, batchId: string): Promise<void> {
+  if (!/^comp_[0-9a-f]{32}$/.test(batchId)) throw new Error("invalid batch id");
+  const response = await fetch(`${url}/v1/internal/comp/batches/${batchId}`, {
+    method: "DELETE",
+    headers: authorizationHeaders(),
+  });
+  if (!response.ok) throw new Error(`revocation failed (${response.status})`);
+  console.log(`Comp batch ${batchId} revoked.`);
+}
+
+async function issue(args: ReturnType<typeof parseArgs>): Promise<void> {
+  if (!Number.isInteger(args.count) || args.count < 1 || args.count > 25) {
+    throw new Error("--count must be an integer from 1 to 25");
+  }
+  if (!Number.isInteger(args.days) || args.days < 1 || args.days > 366) {
+    throw new Error("--days must be an integer from 1 to 366; permanent grants are forbidden");
+  }
+  if (args.purpose.length < 3 || args.purpose.length > 200) {
+    throw new Error("--purpose must contain 3 to 200 characters");
+  }
+
+  const pair = await subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"],
+  ) as CryptoKeyPair;
+  const publicSpki = new Uint8Array(await subtle.exportKey("spki", pair.publicKey));
+  const requestId = webcrypto.getRandomValues(new Uint8Array(32));
+  const response = await fetch(`${args.url}/v1/internal/comp/batches`, {
+    method: "POST",
+    headers: { ...authorizationHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({
+      quantity: args.count,
+      purpose: args.purpose,
+      expires_at: Math.floor(Date.now() / 1000) + args.days * 86400,
+      request_id: base64url(requestId),
+      delivery_public_key_spki: base64(publicSpki),
+    }),
+  });
+  const result = await response.json() as {
+    error?: string;
+    batch_id?: string;
+    audit_digest?: string;
+    quantity?: number;
+    expires_at?: number;
+    delivery?: {
+      algorithm?: string;
+      wrapped_key?: string;
+      nonce?: string;
+      ciphertext?: string;
+    };
+  };
+  if (
+    !response.ok ||
+    !result.batch_id ||
+    result.quantity !== args.count ||
+    !Number.isSafeInteger(result.expires_at) ||
+    result.delivery?.algorithm !== "rsa-oaep-sha256+aes-256-gcm"
+  ) {
+    throw new Error(result.error || `issuance failed (${response.status})`);
+  }
+
+  const rawAes = await subtle.decrypt(
+    { name: "RSA-OAEP" },
+    pair.privateKey,
+    Buffer.from(result.delivery.wrapped_key!, "base64"),
+  );
+  const aes = await subtle.importKey("raw", rawAes, "AES-GCM", false, ["decrypt"]);
+  new Uint8Array(rawAes).fill(0);
+  const plaintext = await subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: Buffer.from(result.delivery.nonce!, "base64"),
+      additionalData: AAD,
+    },
+    aes,
+    Buffer.from(result.delivery.ciphertext!, "base64"),
+  );
+
+  const payload = parseDeliveryPayload(new Uint8Array(plaintext), {
+    batchId: result.batch_id,
+    quantity: result.quantity,
+    expiresAt: result.expires_at!,
+  });
+  mkdirSync(OUT_DIR, { recursive: true, mode: 0o700 });
+  const outputPath = args.out || join(OUT_DIR, `${result.batch_id}.txt`);
+  writeCompTextFile(outputPath, payload);
+  console.log(`Comp batch ${result.batch_id} written once to ${outputPath} (mode 0600).`);
+  console.log(`Audit digest: ${result.audit_digest}`);
+}
+
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-
-  const hmacSecret = process.env.LICENSE_HMAC_SECRET;
-  if (!hmacSecret) {
-    console.error(
-      "REFUSING: LICENSE_HMAC_SECRET is not set.\n" +
-        "Keys minted with the wrong secret fail checksum validation on the\n" +
-        "deployed worker and are permanently dead. Export the SAME value the\n" +
-        "production worker uses (or 'osl-license-default-v1' iff the worker has\n" +
-        "no LICENSE_HMAC_SECRET secret set), then re-run.",
-    );
-    process.exit(1);
-  }
-  if (!args.label || !/^[a-z0-9][a-z0-9-]*$/.test(args.label)) {
-    console.error("REFUSING: --label is required, lowercase [a-z0-9-], e.g. --label beta-wave-1");
-    process.exit(1);
-  }
-  if (!Number.isInteger(args.count) || args.count < 1 || args.count > 500) {
-    console.error("REFUSING: --count must be an integer 1..500");
-    process.exit(1);
-  }
-  const hasDays = Number.isInteger(args.days) && args.days > 0;
-  if (args.permanent === hasDays) {
-    console.error(
-      "REFUSING: choose exactly one of --permanent OR --days <N>.\n" +
-        "Operator decision: permanent comps vs. ~90-day time-limited beta.",
-    );
-    process.exit(1);
-  }
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const periodEnd = args.permanent
-    ? PERMANENT_PERIOD_END
-    : nowSec + args.days * 86400;
-
-  const mint: Captured[] = [];
-  const db = capturingDb(mint);
-
-  const distributed: { idx: string; key: string; subscriptionId: string }[] = [];
-
-  for (let i = 1; i <= args.count; i++) {
-    const nn = String(i).padStart(2, "0");
-    const subscriptionId = `beta_grant_${args.label}_${nn}`;
-    const customerId = `beta_grant_${args.label}`;
-    const email = `beta+${args.label}-${nn}@oslprivacy.com`;
-
-    // REUSE: identical key + hash + checksum the webhook produces.
-    const license = await generateLicenseKey(hmacSecret);
-
-    // REUSE: identical INSERT path the webhook runs. Subscription
-    // first (licenses.subscription_id FK), then the license row.
-    await upsertSubscription(db, {
-      subscription_id: subscriptionId,
-      customer_id: customerId,
-      customer_email: email,
-      status: "ACTIVE",
-      current_period_end: periodEnd,
-      cancel_at_period_end: 0,
-      // Every minted key (--days N AND --permanent) is comped: no
-      // Stripe webhook will ever transition it, so the sweepExpired
-      // cron's is_comp=1 branch is what makes --days keys actually
-      // expire at current_period_end. (--permanent uses the 2100
-      // sentinel period end, so it simply never trips the sweep.)
-      is_comp: 1,
-    });
-    await insertLicense(db, {
-      license_hash: license.hash,
-      subscription_id: subscriptionId,
-    });
-
-    distributed.push({ idx: nn, key: license.plaintext, subscriptionId });
-  }
-
-  const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  mkdirSync(OUT_DIR, { recursive: true });
-  const mintPath = join(OUT_DIR, `mint-beta-${args.label}-${ts}.sql`);
-  const revokePath = join(OUT_DIR, `revoke-beta-${args.label}-${ts}.sql`);
-
-  const periodLabel = args.permanent
-    ? `permanent (current_period_end=${PERMANENT_PERIOD_END}, 2100-01-01Z)`
-    : `${args.days} days (current_period_end=${periodEnd})`;
-
-  // NOTE: NO `BEGIN TRANSACTION`/`COMMIT`/`SAVEPOINT`/`ROLLBACK`.
-  // Cloudflare D1's `wrangler d1 execute --file` manages atomicity
-  // itself and rejects raw transaction-control SQL (the whole file
-  // is refused). The file is plain semicolon-terminated statements;
-  // D1 runs them as one atomic batch. Per-key order (subscription
-  // row before its license row, for the FK) is preserved by the
-  // capture order.
-  const mintSql =
-    `-- OSL beta licenses — label="${args.label}" count=${args.count}\n` +
-    `-- generated ${new Date().toISOString()} — period: ${periodLabel}\n` +
-    `-- Rows reuse upsertSubscription()/insertLicense() exactly.\n` +
-    `-- Raw keys were printed to stdout ONCE and are NOT in this file.\n` +
-    `-- D1 runs every statement in this file as one atomic batch — do\n` +
-    `-- NOT add BEGIN/COMMIT/SAVEPOINT (wrangler d1 execute rejects them).\n` +
-    `-- Apply: npx wrangler d1 execute ${args.db} --remote --file=${mintPath}\n` +
-    mint.map(inlineStatement).join("\n") +
-    `\n`;
-
-  const like = `beta_grant_${args.label}_%`;
-  const revokeSql =
-    `-- REVOKE OSL beta licenses — label="${args.label}"\n` +
-    `-- D1 runs this file as one atomic batch; no BEGIN/COMMIT allowed.\n` +
-    `-- (A) SOFT REVOKE — keep rows, lock paid features now.\n` +
-    `UPDATE licenses SET revoked_at = unixepoch(), revoked_reason = 'manual'\n` +
-    ` WHERE subscription_id LIKE '${like}' AND revoked_at IS NULL;\n` +
-    `UPDATE subscriptions SET status = 'REVOKED', updated_at = unixepoch()\n` +
-    ` WHERE subscription_id LIKE '${like}';\n` +
-    `\n-- (B) HARD DELETE — uncomment to wipe ALL beta grants entirely.\n` +
-    `-- DELETE FROM licenses     WHERE subscription_id LIKE 'beta_grant_%';\n` +
-    `-- DELETE FROM subscriptions WHERE subscription_id LIKE 'beta_grant_%';\n`;
-
-  writeFileSync(mintPath, mintSql, { mode: 0o600 });
-  writeFileSync(revokePath, revokeSql, { mode: 0o600 });
-
-  // Raw keys — shown ONCE, never persisted raw.
-  console.log(
-    `\n=== ${args.count} beta licenses minted (label="${args.label}", ${periodLabel}) ===`,
-  );
-  console.log("Distribute these RAW keys. They are NOT stored raw anywhere:\n");
-  for (const d of distributed) {
-    console.log(`  ${d.idx}  ${d.key}   (${d.subscriptionId})`);
-  }
-  console.log(`\nMint SQL    : ${mintPath}`);
-  console.log(`Revoke SQL  : ${revokePath}`);
-  console.log(
-    `\nNEXT: inspect the mint SQL, then apply to PROD D1:\n` +
-      `  npx wrangler d1 execute ${args.db} --remote --file=${mintPath}\n`,
-  );
+  if (!/^https:\/\//.test(args.url)) throw new Error("--url must be an HTTPS keyserver base URL");
+  if (args.revoke) await revoke(args.url.replace(/\/$/, ""), args.revoke);
+  else await issue({ ...args, url: args.url.replace(/\/$/, "") });
 }
 
-main().catch((e) => {
-  console.error("mint-beta-keys failed:", e);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : "comp operation failed");
+    process.exitCode = 1;
+  });
+}

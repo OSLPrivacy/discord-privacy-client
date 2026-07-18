@@ -144,7 +144,7 @@ while (fiber) {
 - **Typical depth:** 1
 - **Returns:** `{ id, username, … }` (full user object)
 - **Verified against three real accounts:**
-  - `oslprivacy` → `1502770642930634812`
+  - `oslprivacy` → `900000000000000001`
   - `j5h0` → `264283974111723530`
   - `bestestperson2` → `1212181525739601990`
 
@@ -322,7 +322,7 @@ No members panel. Fiber walk for `channel.recipients`:
 ```js
 [
   "1212181525739601990",
-  "1502770642930634812"
+  "900000000000000001"
 ]
 ```
 

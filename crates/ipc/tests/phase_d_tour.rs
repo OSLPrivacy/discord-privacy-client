@@ -1,14 +1,11 @@
-//! Phase 9-D: onboarding tour + VPN warning command tests.
+//! Phase 9-D: onboarding tour command tests.
 //!
-//! Covers the persistence semantics of the 7 tour/VPN preference
-//! commands. The `cmd_osl_check_vpn` HTTP probe lives in main.rs
-//! (uses tokio+reqwest, which `ipc` deliberately avoids) and is
-//! covered by manual acceptance instead.
+//! Covers the persistence semantics of the tour preference commands.
 
 use ipc::app_preferences::{load_app_preferences, AppPreferences, TourState};
 use ipc::commands::{
     cmd_osl_tour_advance, cmd_osl_tour_complete, cmd_osl_tour_get_state, cmd_osl_tour_reset,
-    cmd_osl_tour_skip, cmd_osl_vpn_warning_dismiss_forever, cmd_osl_vpn_warning_reset,
+    cmd_osl_tour_skip,
 };
 use ipc::AppState;
 use std::sync::Mutex;
@@ -23,7 +20,6 @@ fn tour_state_default_is_not_completed() {
     assert!(!s.completed);
     assert!(!s.skipped);
     assert_eq!(s.last_slide, 0);
-    assert!(!s.vpn_warning_dismissed_forever);
 }
 
 #[test]
@@ -110,43 +106,6 @@ fn tour_reset_clears_state() {
     assert_eq!(on_disk.tour, TourState::default());
 }
 
-#[test]
-fn vpn_dismiss_forever_persists() {
-    use ipc::main_password::set_file_storage_key;
-    let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    set_file_storage_key(None);
-
-    let state = AppState::new();
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("app_preferences.json");
-
-    cmd_osl_vpn_warning_dismiss_forever(&state, Some(dir.path().to_path_buf())).unwrap();
-    let s = cmd_osl_tour_get_state(&state).unwrap();
-    assert!(s.vpn_warning_dismissed_forever);
-
-    let on_disk = load_app_preferences(&path);
-    assert!(on_disk.vpn_warning_dismissed_forever);
-}
-
-#[test]
-fn vpn_warning_reset_clears_dismissal() {
-    use ipc::main_password::set_file_storage_key;
-    let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    set_file_storage_key(None);
-
-    let state = AppState::new();
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("app_preferences.json");
-
-    cmd_osl_vpn_warning_dismiss_forever(&state, Some(dir.path().to_path_buf())).unwrap();
-    cmd_osl_vpn_warning_reset(&state, Some(dir.path().to_path_buf())).unwrap();
-    let s = cmd_osl_tour_get_state(&state).unwrap();
-    assert!(!s.vpn_warning_dismissed_forever);
-
-    let on_disk = load_app_preferences(&path);
-    assert!(!on_disk.vpn_warning_dismissed_forever);
-}
-
 /// 9-D version bump: writing through any of the new commands stamps
 /// version=2 on disk. Legacy v1 files keep their stego_mode but get
 /// the version field bumped on next mutation.
@@ -168,8 +127,8 @@ fn writes_stamp_version_2() {
     assert_eq!(on_disk.version, APP_PREFERENCES_VERSION);
 }
 
-/// Legacy v1 file (pre-D) carries `stego_mode` but no `tour` or
-/// `vpn_warning_dismissed_forever` keys. serde defaults must apply.
+/// Legacy v1 file (pre-D) carries `stego_mode` but no `tour` key.
+/// serde defaults must apply.
 #[test]
 fn legacy_v1_loads_with_defaults_for_new_fields() {
     let dir = tempdir().unwrap();
@@ -178,7 +137,6 @@ fn legacy_v1_loads_with_defaults_for_new_fields() {
     std::fs::write(&path, legacy).unwrap();
     let p = load_app_preferences(&path);
     assert_eq!(p.tour, TourState::default());
-    assert!(!p.vpn_warning_dismissed_forever);
     let expected_mode = ipc::app_preferences::StegoMode::Mode1;
     assert_eq!(p.stego_mode, expected_mode);
 }

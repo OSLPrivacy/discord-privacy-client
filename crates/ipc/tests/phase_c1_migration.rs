@@ -19,7 +19,7 @@ use ipc::peer_map::WhitelistEntry;
 use ipc::state::AppState;
 use tempfile::tempdir;
 
-const HENRY_DID: &str = "1502770642930634812";
+const HENRY_DID: &str = "900000000000000001";
 const ALICE_DID: &str = "1602770642930634812";
 const GC_ID: &str = "1234567890";
 const SERVER_ID: &str = "9876";

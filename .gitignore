@@ -12,6 +12,8 @@ node_modules/
 dist/
 build/
 .parcel-cache/
+__pycache__/
+*.py[cod]
 
 # Editor
 .vscode/
@@ -27,8 +29,18 @@ desktop.ini
 # Local config / secrets
 .env
 .env.local
+.env.*
+!.env.example
 *.pem
 *.key
+*.p12
+*.pfx
+KEYVAULT.md
+.claude/settings.local.json
+.serena/
+graphify-out/
+*.log
+apps/osl-hub-ui/screenshots/*.png
 
 # Build outputs
 *.msi

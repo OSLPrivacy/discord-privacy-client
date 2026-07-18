@@ -10,8 +10,8 @@ use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
 use keystore::generate_identity;
 
-const SELF_DID: &str = "1477008451799482419";
-const PEER_DID: &str = "1502770642930634812";
+const SELF_DID: &str = "900000000000000003";
+const PEER_DID: &str = "900000000000000001";
 
 fn state_with_self_snowflake() -> AppState {
     let state = AppState::new();
@@ -31,8 +31,7 @@ fn set_whitelist_rejects_self_with_clear_error() {
     let err = cmd_osl_set_whitelist(&state, SELF_DID.to_string(), dm(SELF_DID), false)
         .expect_err("whitelisting self must be rejected");
     assert!(
-        err.contains("refusing to whitelist yourself")
-            && err.contains(SELF_DID),
+        err.contains("refusing to whitelist yourself") && err.contains(SELF_DID),
         "error must be clear + name the offending id (got: {err})"
     );
     // The whitelist must NOT have been written.

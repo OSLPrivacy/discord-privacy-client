@@ -74,7 +74,7 @@ impl UpdateChannel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -84,17 +84,6 @@ pub struct AppPreferences {
     pub tour: TourState,
     #[serde(default)]
     pub update_channel: UpdateChannel,
-}
-
-impl Default for AppPreferences {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            stego_mode: StegoMode::default(),
-            tour: TourState::default(),
-            update_channel: UpdateChannel::default(),
-        }
-    }
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

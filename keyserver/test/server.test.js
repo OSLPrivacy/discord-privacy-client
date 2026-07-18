@@ -30,7 +30,7 @@ const VALID_REGISTRATION = {
   ik_x25519_pub: b64('x25519-pub'),
   ik_ed25519_pub: b64('ed25519-pub'),
   ik_mlkem768_pub: b64('mlkem768-pub'),
-  ik_x25519_signature: b64('selfsig'),
+  registration_sig: b64('selfsig'),
 };
 
 const validWrappedKey = (overrides = {}) => ({
@@ -101,7 +101,7 @@ test('register: missing required field returns 400', async () => {
     'ik_x25519_pub',
     'ik_ed25519_pub',
     'ik_mlkem768_pub',
-    'ik_x25519_signature',
+    'registration_sig',
   ]) {
     const payload = { ...VALID_REGISTRATION };
     delete payload[f];

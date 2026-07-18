@@ -123,7 +123,7 @@ impl PasswordHash {
         let bytes = crypto::random::random_bytes(16);
         salt.copy_from_slice(&bytes);
         let mut hash = [0u8; 32];
-        hash_into(&plaintext.as_bytes(), &salt, params, &mut hash)?;
+        hash_into(plaintext.as_bytes(), &salt, params, &mut hash)?;
         Ok(PasswordHash { salt, hash, params })
     }
 
@@ -133,7 +133,7 @@ impl PasswordHash {
     pub fn verify(&self, plaintext: &str) -> std::result::Result<bool, PasswordError> {
         let mut candidate = [0u8; 32];
         hash_into(
-            &plaintext.as_bytes(),
+            plaintext.as_bytes(),
             &self.salt,
             self.params,
             &mut candidate,

@@ -1,21 +1,33 @@
 name = "oslprivacy-keyserver"
 main = "src/index.ts"
-compatibility_date = "2024-12-30"
+compatibility_date = "2026-07-15"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
 
 # Production secrets (set via `wrangler secret put`):
-#   OSL_KEYSERVER_ADMIN_TOKEN     — bearer token for the STILL-gated
-#       mutation routes (wrapped-keys, prekey-bundle/replenish,
-#       crypto-admin). MUST remain set: it is also the enable switch
-#       for checkRateLimit, and /v1/register is now open + Ed25519-
-#       signed (no token) but must stay rate-limited.
+#   OSL_KEYSERVER_ADMIN_TOKEN     — operator-only payment/admin bearer
+#       payment and crypto-admin routes only.
 #   SELECTOR_MANIFEST_JSON        — optional signed selector-manifest envelope
 # RETIRED: OSL_KEYSERVER_ALLOWED_USERS (register is now open + signed;
 #   the allowlist was its only consumer — delete the secret).
-# Stripe / Resend secrets land here in F1.2.
+# RETIRED: OSL_KEYSERVER_CLIENT_TOKEN (public client mutations are
+#   identity-signed; a shared secret embedded in public clients is not secret).
+# Stripe / Telegram secrets are installed with `wrangler secret put`; never
+# place them in this file or a repository-tracked environment file. Telegram
+# uses TELEGRAM_OPERATOR_CHAT_IDS (CSV private IDs plus at most one group ID),
+# with TELEGRAM_ADMIN_CHAT_ID accepted only as a migration fallback.
 
+# Several authenticated protocol routes still carry opaque identity/content
+# identifiers in their URL. Retaining request traces would undermine OSL's
+# data-minimisation boundary, so production request observability stays off.
 [observability]
-enabled = true
+enabled = false
+
+[vars]
+DEPLOYMENT_ENV = "production"
+WINDOWS_INSTALLER_URL = "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi"
+CRYPTO_PRO_USD_CENTS = "500"
 
 # D1 database — create with:
 #   wrangler d1 create osl-keyserver-prod
@@ -26,12 +38,44 @@ database_name = "osl-keyserver-prod"
 database_id = "1de837cd-3bf6-4d33-be82-12d358523600"
 migrations_dir = "migrations"
 
-# Workers KV for IP rate limiting on mutation routes. Create with:
-#   wrangler kv namespace create RATE_LIMIT_KV
-# then paste the id below.
-[[kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "e6267cb7cc434745bade1334afaea725"
+# Native abuse-control counters. Cloudflare documents these as
+# permissive/eventually consistent, so identity signatures and D1
+# transactions remain the authorization and single-use boundaries.
+# Namespace IDs must be unique positive integers within the account.
+[[ratelimits]]
+name = "RATE_LIMIT_5"
+namespace_id = "2026071401"
+[ratelimits.simple]
+limit = 5
+period = 60
+
+[[ratelimits]]
+name = "RATE_LIMIT_10"
+namespace_id = "2026071402"
+[ratelimits.simple]
+limit = 10
+period = 60
+
+[[ratelimits]]
+name = "RATE_LIMIT_120"
+namespace_id = "2026071403"
+[ratelimits.simple]
+limit = 120
+period = 60
+
+[[ratelimits]]
+name = "RATE_LIMIT_1200"
+namespace_id = "2026071404"
+[ratelimits.simple]
+limit = 1200
+period = 60
+
+[[ratelimits]]
+name = "RATE_LIMIT_3600"
+namespace_id = "2026071405"
+[ratelimits.simple]
+limit = 3600
+period = 60
 
 # F1.4 cutover. Cloudflare auto-issues TLS for the custom hostname
 # (configure the DNS record `keyserver` as a proxied CNAME / A in
@@ -40,8 +84,8 @@ id = "e6267cb7cc434745bade1334afaea725"
 pattern = "keyserver.oslprivacy.com/*"
 zone_name = "oslprivacy.com"
 
-# F1.2 hourly EXPIRED sweep + F1.3 daily crypto-price snapshot.
-# Two distinct cron expressions — the scheduled() handler routes
-# on controller.cron.
+# Five-minute crypto-price refresh, hourly expiry sweeps, and one daily
+# Telegram commerce report. The handler routes on controller.cron so the
+# midnight report does not run on the five-minute price schedule.
 [triggers]
-crons = ["0 * * * *", "0 0 * * *"]
+crons = ["*/5 * * * *", "0 * * * *", "0 0 * * *"]

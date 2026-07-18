@@ -115,5 +115,5 @@ fn cross_scope_does_not_decode() {
     let recv_b = prose_token_recv(&dir, &scope_b, &sent.cover_text).expect("recv ok");
     assert!(recv_b.is_none(), "cross-scope decode must return None");
     // Cleanup.
-    let _ = prose_token_burn_id(&dir, &sent.blob_id);
+    let _ = prose_token_burn_id(&dir, &scope_a, &sent.blob_id);
 }

@@ -1,8 +1,9 @@
 /// POST /v1/register — OPEN, Ed25519-self-signed registration.
 ///
 /// SECURITY-CRITICAL. There is NO admin token and NO allowlist on
-/// this route (any OSL client self-registers on first launch). Safety
-/// comes entirely from:
+/// this route (any OSL client self-registers an opaque OSL identity on first
+/// launch). Safety
+/// currently comes from:
 ///   P1  proof-of-key-control: the request is Ed25519-signed by the
 ///       identity key being registered (verified against the
 ///       submitted ik_ed25519_pub).
@@ -10,19 +11,18 @@
 ///       user_id has a row, only a signature under the CURRENTLY
 ///       STORED ik_ed25519_pub can change it.
 /// plus strict decoded-length validation (kills the "AAAA" poison
-/// class) and per-IP + per-user_id rate limiting.
+/// class) and defense-in-depth per-IP + per-user_id rate limiting.
 ///
 /// The admin token / allowlist were removed FROM THIS ROUTE ONLY.
-/// `checkAdminToken` still gates wrapped-keys, prekey-bundle, and
-/// crypto-admin. `OSL_KEYSERVER_ADMIN_TOKEN` MUST remain a deployed
-/// secret — it is the on/off switch for `checkRateLimit`, so an open
-/// register without it is an UNTHROTTLED open register.
+/// Separate client/admin bearers still gate legacy wrapped-key and
+/// operator routes, but registration authentication does not depend
+/// on either secret.
 /// `OSL_KEYSERVER_ALLOWED_USERS` is retired (register was its only
 /// consumer).
 
 import type { Env } from "../env.js";
 import { getUserForVerify, insertUser, rotateUserKeys } from "../lib/db.js";
-import { badRequest, forbidden, json } from "../lib/http.js";
+import { badRequest, conflict, forbidden, json } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { tooMany } from "../lib/http.js";
 import {
@@ -31,7 +31,7 @@ import {
   ed25519SelfTest,
   verifySignedRequest,
 } from "../lib/signed-request.js";
-import { decodeBase64, isPlainString } from "../lib/validation.js";
+import { decodeBase64, isProtocolId, isPlainString } from "../lib/validation.js";
 
 /** Per-IP register attempts per minute. Legit clients register ~once. */
 const REGISTER_IP_MAX = 5;
@@ -71,7 +71,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   await ed25519SelfTest();
 
   // --- rate limit FIRST (cheap), before any crypto work ---
-  const rlIp = await checkRateLimit(env, callerIp(request), REGISTER_IP_MAX);
+  const rlIp = await checkRateLimit(env, callerIp(request), REGISTER_IP_MAX, "register-ip");
   if (!rlIp.ok) return tooMany(rlIp.retryAfter);
 
   let body: Record<string, unknown>;
@@ -92,12 +92,12 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   for (const field of required) {
     if (!(field in body)) return badRequest(`missing field: ${field}`);
   }
-  if (!isPlainString(body.user_id)) {
-    return badRequest("user_id must be a non-empty string");
+  if (!isProtocolId(body.user_id)) {
+    return badRequest("user_id must be a bounded identifier without control characters");
   }
   const userId = body.user_id;
 
-  // Per-user_id throttle (separate KV bucket so it can't collide
+  // Per-user_id throttle (separate native bucket so it cannot collide
   // with the per-IP counter).
   const rlUser = await checkRateLimit(
     env,
@@ -223,7 +223,15 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   );
   if (!newOk) return REJECT;
 
-  const { last_rotated_at } = await rotateUserKeys(env.DB, regInput);
+  const rotated = await rotateUserKeys(
+    env.DB,
+    regInput,
+    existing.ik_ed25519_pub,
+  );
+  if (!rotated) {
+    return conflict("identity key changed during rotation; retry");
+  }
+  const { last_rotated_at } = rotated;
   return json(
     { user_id: userId, status: "rotated", last_rotated_at },
     { status: 200 },

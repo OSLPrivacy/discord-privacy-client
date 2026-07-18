@@ -1,0 +1,81 @@
+name: Build signed OSL Privacy candidate
+
+on:
+  push:
+    tags:
+      - "hub-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    # A manually dispatched run is useful for retrying a tagged release, but
+    # selecting a branch must never reach signing or mutate hub-latest.
+    if: startsWith(github.ref, 'refs/tags/hub-v')
+    runs-on: windows-latest
+    environment: hub-release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.88.0
+
+      - name: Resolve and verify the app release version
+        id: hub-version
+        shell: pwsh
+        run: |
+          $config = Get-Content apps/osl-hub/tauri.conf.json | ConvertFrom-Json
+          $tag = "hub-v$($config.version)"
+          if ("${{ github.ref }}" -notlike "refs/tags/hub-v*") {
+            throw "OSL Privacy releases require a hub-v* tag, not ${{ github.ref }}"
+          }
+          if ("${{ github.ref_name }}" -ne $tag) {
+            throw "Tag ${{ github.ref_name }} does not match OSL Privacy version tag $tag"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Build and test trusted OSL Privacy frontend
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci
+          npm test -- --run
+          npm run build
+
+      - name: Test OSL Privacy core
+        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib
+
+      - name: Test OSL Privacy Windows identity lifecycle
+        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle
+
+      - name: Audit OSL Privacy updater supply-chain policy
+        run: |
+          python scripts/audit_hub_release.py
+          python -m unittest scripts/test_verify_hub_vm_qa_attestation.py
+
+      - name: Build signed draft installer and updater manifest
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/osl-hub
+          tagName: hub-v__VERSION__
+          releaseName: OSL Privacy __VERSION__
+          releaseBody: Signed OSL Privacy candidate. It remains a draft until the two-clean-VM QA gate passes.
+          generateReleaseNotes: true
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          releaseAssetNamePattern: osl-hub-[version]-[arch]-[bundle].[ext]
+          args: --features desktop

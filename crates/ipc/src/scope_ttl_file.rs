@@ -59,8 +59,8 @@ pub fn load_scope_ttls(path: &Path) -> ScopeTtlFile {
 }
 
 pub fn write_scope_ttls(path: &Path, file: &ScopeTtlFile) -> Result<(), String> {
-    let body = serde_json::to_vec_pretty(file)
-        .map_err(|e| format!("OSL: serialize scope_ttl: {e}"))?;
+    let body =
+        serde_json::to_vec_pretty(file).map_err(|e| format!("OSL: serialize scope_ttl: {e}"))?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt scope_ttl: {e}"))?;
     let tmp = path.with_extension("json.tmp");

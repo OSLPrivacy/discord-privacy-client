@@ -30,8 +30,8 @@ use keystore::{generate_identity, Identity};
 use store::MessageStore;
 use tempfile::TempDir;
 
-const LIAM_DISCORD_ID: &str = "1477008451799482419";
-const HENRY_DISCORD_ID: &str = "1502770642930634812";
+const LIAM_DISCORD_ID: &str = "900000000000000003";
+const HENRY_DISCORD_ID: &str = "900000000000000001";
 
 /// Pre-warm both peers' pubkeys so cmd_osl_decrypt_message_with_id
 /// hits the cache (no keyserver round-trip needed for these tests).

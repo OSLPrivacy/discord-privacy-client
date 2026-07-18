@@ -652,9 +652,9 @@ impl ReceiverChain {
 
         let (mk, header) = matched.ok_or_else(|| {
             Error::Internal(format!(
-                "sender keys decrypt: no matching slot within MAX_SKIPPED_PER_CHAIN ({}) \
-                 iterations (replay, oversized gap, unknown chain, or tampered header)",
-                MAX_SKIPPED_PER_CHAIN
+                "sender keys decrypt: no matching slot within MAX_SKIPPED_PER_CHAIN \
+                 ({MAX_SKIPPED_PER_CHAIN}) iterations (replay, oversized gap, unknown chain, \
+                 or tampered header)"
             ))
         })?;
 

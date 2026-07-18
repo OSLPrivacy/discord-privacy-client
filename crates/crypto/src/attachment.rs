@@ -262,11 +262,17 @@ impl StreamHeader {
         let expected_total = bucket_size / chunk_size as u64;
         if expected_total != total_chunks as u64 {
             return Err(Error::Internal(format!(
-                "attachment stream header: total_chunks {} != bucket_size/chunk_size {}",
-                total_chunks, expected_total
+                "attachment stream header: total_chunks {total_chunks} != bucket_size/chunk_size {expected_total}"
             )));
         }
-        if plaintext_len + LENGTH_PREFIX_SIZE as u64 > bucket_size {
+        let padded_plaintext_len = plaintext_len
+            .checked_add(LENGTH_PREFIX_SIZE as u64)
+            .ok_or_else(|| {
+                Error::Internal(
+                    "attachment stream header: plaintext_len overflows padded length".into(),
+                )
+            })?;
+        if padded_plaintext_len > bucket_size {
             return Err(Error::Internal(format!(
                 "attachment stream header: plaintext_len {} exceeds bucket_size {} payload \
                  capacity",
@@ -456,7 +462,7 @@ impl StreamEncryptor {
         // Flush whatever's in `pending`, padded with zeros.
         if !self.pending.is_empty() {
             self.pending.resize(ATTACHMENT_CHUNK_SIZE, 0);
-            let chunk = std::mem::replace(&mut self.pending, Vec::new());
+            let chunk = std::mem::take(&mut self.pending);
             let ct = self.emit_chunk(&chunk)?;
             out.extend_from_slice(&ct);
         }
@@ -654,7 +660,10 @@ pub fn encrypt_attachment(
 /// [`encrypt_attachment`]. Returns the original plaintext.
 pub fn decrypt_attachment(key: aead::Key, wire: &[u8]) -> Result<Vec<u8>> {
     let (mut dec, header_consumed) = StreamDecryptor::new(key, wire)?;
-    let mut out = Vec::with_capacity(dec.header().plaintext_len as usize);
+    let plaintext_capacity = usize::try_from(dec.header().plaintext_len).map_err(|_| {
+        Error::Internal("attachment decrypt: plaintext_len does not fit this platform".into())
+    })?;
+    let mut out = Vec::with_capacity(plaintext_capacity);
     let body = &wire[header_consumed..];
     // Stream the body through the decryptor in 16 KB ciphertext chunks
     // so we honour the streaming-window invariant even via the

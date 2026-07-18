@@ -262,6 +262,7 @@ impl Header {
 ///
 /// where `LP(x) = u32_be(x.len()) || x`. Deterministic for fixed
 /// inputs.
+#[allow(clippy::too_many_arguments)]
 pub fn canonical_ad(
     sender_ik_x25519: &[u8; 32],
     sender_ik_mlkem: &[u8],
@@ -645,8 +646,7 @@ impl DoubleRatchet {
         let gap = header.counter - self.receiving_counter;
         if (gap as usize) > MAX_SKIPPED_PER_CHAIN {
             return Err(Error::Internal(format!(
-                "ratchet decrypt: gap of {} skipped messages exceeds cap {}",
-                gap, MAX_SKIPPED_PER_CHAIN
+                "ratchet decrypt: gap of {gap} skipped messages exceeds cap {MAX_SKIPPED_PER_CHAIN}"
             )));
         }
 
@@ -705,8 +705,7 @@ impl DoubleRatchet {
                 .saturating_sub(self.receiving_counter);
             if (old_skip as usize) > MAX_SKIPPED_PER_CHAIN {
                 return Err(Error::Internal(format!(
-                    "ratchet decrypt: would skip {} keys on previous chain (cap {})",
-                    old_skip, MAX_SKIPPED_PER_CHAIN
+                    "ratchet decrypt: would skip {old_skip} keys on previous chain (cap {MAX_SKIPPED_PER_CHAIN})"
                 )));
             }
         }

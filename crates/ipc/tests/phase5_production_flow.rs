@@ -59,21 +59,21 @@ use keystore::{generate_identity, Identity};
 fn warm_cache(state: &AppState, a: &Identity, b: &Identity) {
     state
         .sender_pubkey_cache
-        .insert(a.user_id.clone(), a.x25519_public.clone());
+        .insert(a.user_id.clone(), a.x25519_public);
     state
         .sender_pubkey_cache
-        .insert(b.user_id.clone(), b.x25519_public.clone());
+        .insert(b.user_id.clone(), b.x25519_public);
 }
 
 /// Install the liam/henry peer_map both peers would have on disk.
 fn install_peer_map(state: &AppState) {
     let mut pm = state.peer_map.lock().unwrap();
     pm.insert(
-        "1477008451799482419".to_string(),
+        "900000000000000003".to_string(),
         ipc::peer_map::legacy_entry("liam"),
     );
     pm.insert(
-        "1502770642930634812".to_string(),
+        "900000000000000001".to_string(),
         ipc::peer_map::legacy_entry("henry"),
     );
 }
@@ -98,7 +98,7 @@ fn fresh_state(loaded: Identity, counterpart: &Identity) -> AppState {
 fn encrypt_as(sender: &Identity, others: &[&Identity], plaintext: &str) -> String {
     let mut sorted: Vec<&Identity> = others.to_vec();
     sorted.sort_by_key(|i| i.user_id.clone());
-    let pubs: Vec<_> = sorted.iter().map(|i| i.x25519_public.clone()).collect();
+    let pubs: Vec<_> = sorted.iter().map(|i| i.x25519_public).collect();
     encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &pubs, plaintext)
         .expect("encrypt should succeed for valid inputs")
 }
@@ -116,7 +116,7 @@ fn liam_decrypts_own_message_via_cmd() {
     let plaintext = cmd_osl_decrypt_message(
         &state,
         "channel-id".to_string(),
-        "1477008451799482419".to_string(), // liam's discord id (sender)
+        "900000000000000003".to_string(), // synthetic sender id (sender)
         cover,
     )
     .expect("liam should decrypt his own bounced message");
@@ -145,7 +145,7 @@ fn liam_decrypts_consecutive_own_messages() {
         let recovered = cmd_osl_decrypt_message(
             &state,
             "channel".to_string(),
-            "1477008451799482419".to_string(),
+            "900000000000000003".to_string(),
             cover,
         )
         .unwrap_or_else(|e| panic!("decrypt of {plaintext:?} failed: {e}"));
@@ -166,7 +166,7 @@ fn liam_decrypts_henrys_message_via_cmd() {
     let plaintext = cmd_osl_decrypt_message(
         &state,
         "channel".to_string(),
-        "1502770642930634812".to_string(), // henry's discord id (sender)
+        "900000000000000001".to_string(), // henry's discord id (sender)
         cover,
     )
     .expect("liam should decrypt henry's message");
@@ -184,7 +184,7 @@ fn henry_decrypts_liams_message_via_cmd() {
     let plaintext = cmd_osl_decrypt_message(
         &state,
         "channel".to_string(),
-        "1477008451799482419".to_string(), // liam's discord id (sender)
+        "900000000000000003".to_string(), // synthetic sender id (sender)
         cover,
     )
     .expect("henry should decrypt liam's message");
@@ -200,11 +200,11 @@ fn liam_decrypts_mixed_sender_sequence() {
 
     // Sequence: (sender_user_id_str, sender_did, plaintext).
     let cases: &[(&str, &str, &str)] = &[
-        ("liam", "1477008451799482419", "liam first"),
-        ("henry", "1502770642930634812", "henry replies"),
-        ("liam", "1477008451799482419", "liam continues"),
-        ("henry", "1502770642930634812", "henry again"),
-        ("liam", "1477008451799482419", "liam closes"),
+        ("liam", "900000000000000003", "liam first"),
+        ("henry", "900000000000000001", "henry replies"),
+        ("liam", "900000000000000003", "liam continues"),
+        ("henry", "900000000000000001", "henry again"),
+        ("liam", "900000000000000003", "liam closes"),
     ];
     let covers: Vec<(String, String)> = cases
         .iter()
@@ -262,7 +262,7 @@ fn cache_remains_valid_across_consecutive_decrypts() {
         let recovered = cmd_osl_decrypt_message(
             &state,
             "ch".to_string(),
-            "1502770642930634812".to_string(),
+            "900000000000000001".to_string(),
             cover,
         )
         .unwrap_or_else(|e| panic!("decrypt of {plaintext:?} failed: {e}"));
@@ -346,7 +346,7 @@ fn rotation_simulated_via_state_replacement_uses_new_pub() {
     // Pre-rotation encrypt with old identity.
     let pre = encrypt_osl_phase4_to_pubkeys(
         &old_id.x25519_secret,
-        &[henry.x25519_public.clone()],
+        &[henry.x25519_public],
         "msg before rotation",
     )
     .unwrap();
@@ -371,12 +371,9 @@ fn rotation_simulated_via_state_replacement_uses_new_pub() {
         .x25519_secret
         .clone();
     let post_pub = crypto::x25519::derive_public(&post_secret);
-    let post = encrypt_osl_phase4_to_pubkeys(
-        &post_secret,
-        &[henry.x25519_public.clone()],
-        "msg after rotation",
-    )
-    .unwrap();
+    let post =
+        encrypt_osl_phase4_to_pubkeys(&post_secret, &[henry.x25519_public], "msg after rotation")
+            .unwrap();
     let post_hints = slot_hints(&post);
     assert_eq!(post_hints.len(), 2, "henry + new-liam-auto-include");
     assert!(
@@ -402,11 +399,9 @@ fn encoder_always_derives_sender_pub_from_secret() {
     let henry = generate_identity("henry".to_string());
 
     let wire_a =
-        encrypt_osl_phase4_to_pubkeys(&id_a.x25519_secret, &[henry.x25519_public.clone()], "x")
-            .unwrap();
+        encrypt_osl_phase4_to_pubkeys(&id_a.x25519_secret, &[henry.x25519_public], "x").unwrap();
     let wire_b =
-        encrypt_osl_phase4_to_pubkeys(&id_b.x25519_secret, &[henry.x25519_public.clone()], "x")
-            .unwrap();
+        encrypt_osl_phase4_to_pubkeys(&id_b.x25519_secret, &[henry.x25519_public], "x").unwrap();
     let hints_a = slot_hints(&wire_a);
     let hints_b = slot_hints(&wire_b);
 

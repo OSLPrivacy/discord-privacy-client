@@ -1,0 +1,35 @@
+[Unit]
+Description=OSL pruned Monero node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monero
+Group=monero
+UMask=0077
+ExecStart=/usr/local/bin/monerod --config-file /etc/monero/monerod.conf --non-interactive
+ExecStop=/bin/kill -INT $MAINPID
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=600
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths=/var/lib/monero
+
+[Install]
+WantedBy=multi-user.target

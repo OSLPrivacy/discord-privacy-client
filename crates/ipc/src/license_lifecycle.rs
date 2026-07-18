@@ -17,20 +17,18 @@
 //!   load-bearing outcomes:
 //!     - keyserver answered 2xx → update cache, bump
 //!       `last_validated_at = now()`, classify online → `Paid`/`Free`
-//!     - keyserver UNREACHABLE
-//!       ([`keystore::Error::Transport`]) → do **not** touch the
-//!       cache, do **not** bump `last_validated_at`. Honour the
-//!       7-day offline-grace window: if the cached
+//!     - validation failed before an authoritative durable response
+//!       (transport error, non-2xx response, malformed response, or invalid
+//!       endpoint configuration) → do **not** touch the cache and do **not**
+//!       bump `last_validated_at`. Honour one bounded 7-day stale-entitlement
+//!       window: if the cached
 //!       `last_validated_at + 7 days > now` AND the cached
 //!       status is paid-equivalent, surface
 //!       [`LicenseState::PaidOfflineGrace`]; otherwise
 //!       [`LicenseState::Free`].
-//!     - keyserver answered with a non-2xx
-//!       ([`keystore::Error::HttpStatus`]) or returned a malformed
-//!       body ([`keystore::Error::Json`]) → classify from the
-//!       cache as-is, but do **not** extend grace. A reachable
-//!       keyserver saying "no" is authoritative; only network-
-//!       unreachable buys the grace window.
+//!       Only a successfully parsed, durable validation response can refresh
+//!       the timestamp. This prevents a persistent proxy error, bad deployment
+//!       route, or malformed response from preserving Pro indefinitely.
 //!
 //! Why typed `Error` matching instead of string-matching on
 //! `cmd_osl_validate_license`'s error prefixes? The F2.1 ship
@@ -108,9 +106,9 @@ pub fn refresh_license_state(state: &AppState, dir: &Path) -> LicenseStateDto {
     // Cache exists. Fresh installs have no keyserver.json; fall back
     // to the built-in production URL so periodic re-validation still
     // reaches prod. keyserver.json stays an override (dev/staging).
-    // The F2.4 outcome handling in `refresh_license_state_with_url`
-    // (Transport→grace, HttpStatus/Json→stale) is unchanged; only
-    // the URL source changed (previously: no keyserver.json →
+    // The F2.4 outcome handling in `refresh_license_state_with_url` applies a
+    // bounded stale-entitlement window to every validation failure. Only
+    // the URL source changed here (previously: no keyserver.json →
     // returned the cached classification without any network call).
     let base_url = crate::commands::resolve_keyserver_base_url(dir);
     refresh_license_state_with_url(state, dir, &base_url)
@@ -141,10 +139,11 @@ pub fn refresh_license_state_with_url(
         }
     };
 
+    let now = unix_seconds_now();
     let client = match KeyServerClient::new(base_url) {
         Ok(c) => c,
         Err(_) => {
-            let dto = LicenseStateDto::from_cache(&cache);
+            let dto = offline_grace_from_cache(&cache, now);
             stamp(state, &dto);
             return dto;
         }
@@ -152,7 +151,6 @@ pub fn refresh_license_state_with_url(
 
     // Dispatch on the typed Error variants. NOT string-matching
     // — see module doc.
-    let now = unix_seconds_now();
     match client.validate_license(&cache.license_plaintext) {
         Ok(resp) => {
             // F2.4 tidy-up: only persist the cache when the
@@ -198,15 +196,12 @@ pub fn refresh_license_state_with_url(
             dto
         }
         Err(Error::HttpStatus { status, body }) => {
-            // Keyserver ANSWERED but rejected. Do NOT extend
-            // grace — a reachable rejection is authoritative.
-            // Surface the cached classification as-is (online
-            // mapping only) so the UI doesn't suddenly flip on a
-            // transient 429. F3's ad gate will see Paid for an
-            // ACTIVE cache + a 429 — same as before the refresh
-            // attempt.
+            // A transient/repeated proxy or deployment error is not an
+            // authoritative license result. Keep a recently verified user in
+            // bounded grace, but never preserve Paid past the same seven-day
+            // ceiling used for transport failures.
             eprintln!("[OSL] refresh_license_state: keyserver rejected (status {status}): {body}");
-            let dto = LicenseStateDto::from_cache(&cache);
+            let dto = offline_grace_from_cache(&cache, now);
             stamp(state, &dto);
             dto
         }
@@ -214,7 +209,7 @@ pub fn refresh_license_state_with_url(
             // Keyserver answered but body was unparseable. Same
             // treatment as HttpStatus.
             eprintln!("[OSL] refresh_license_state: malformed keyserver response: {e}");
-            let dto = LicenseStateDto::from_cache(&cache);
+            let dto = offline_grace_from_cache(&cache, now);
             stamp(state, &dto);
             dto
         }
@@ -224,17 +219,16 @@ pub fn refresh_license_state_with_url(
             // reachable from validate_license's HTTP-path code,
             // but be defensive. Treat like HttpStatus.
             eprintln!("[OSL] refresh_license_state: unexpected error: {e}");
-            let dto = LicenseStateDto::from_cache(&cache);
+            let dto = offline_grace_from_cache(&cache, now);
             stamp(state, &dto);
             dto
         }
     }
 }
 
-/// Decide PaidOfflineGrace vs Free for the unreachable-keyserver
-/// case, given the cached row + current wallclock. Extracted so
-/// tests can exercise the policy without spinning up a fake
-/// network failure.
+/// Decide PaidOfflineGrace vs Free whenever validation did not produce an
+/// authoritative durable response. All failure classes share this ceiling so
+/// stale Pro authority cannot survive indefinitely behind a broken endpoint.
 pub fn offline_grace_from_cache(cache: &LicenseCacheInner, now: i64) -> LicenseStateDto {
     let within_grace = cache.last_validated_at + SEVEN_DAYS_SECONDS > now;
     let is_paid_status = matches!(

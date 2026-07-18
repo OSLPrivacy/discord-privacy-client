@@ -6,33 +6,28 @@
 //! Three production sealers (in preference order from most-secure to
 //! least), plus a `MemorySealer` for tests:
 //!
-//! 1. [`TpmSealer`] (Windows-only) — Microsoft Platform Crypto
-//!    Provider via NCrypt. RSA-wraps a per-seal random
-//!    XChaCha20-Poly1305 data key, the wrapped key + AEAD ciphertext
-//!    + nonce ride together as one sealed blob. The RSA key itself
-//!    is TPM-resident — it never leaves the TPM. Memory-dump
-//!    extraction yields no usable identity bytes.
-//! 2. [`KeyringSealer`] — keyring crate (Windows Credential Manager,
-//!    macOS Keychain, Linux Secret Service). 32-byte XChaCha20-Poly1305
-//!    key generated on first use and stored in the OS keyring; data
-//!    blob = nonce || ciphertext.
-//! 3. [`NoOpSealer`] — passthrough plain-file behaviour. Emits the
-//!    INSECURE banner on disk and reports
-//!    `requires_insecure_banner = true` so the storage layer surfaces
-//!    it loudly.
+//! - [`TpmSealer`] (Windows-only) uses Microsoft Platform Crypto
+//!   Provider via NCrypt. The RSA key is TPM-resident and wraps a
+//!   per-seal XChaCha20-Poly1305 data key.
+//! - [`KeyringSealer`] keeps a 32-byte XChaCha20-Poly1305 key in the
+//!   platform credential manager, Keychain, or Secret Service.
+//! - A process-wide ephemeral encrypted fallback preserves
+//!   confidentiality when TPM/keyring access is unavailable, but it
+//!   intentionally cannot reopen data after a process restart.
 //!
 //! Plus:
 //!
 //! - [`MemorySealer`] — test-only, in-memory random key,
 //!   never persisted; suitable for unit tests only.
 //!
-//! [`select_best_sealer`] tries TPM → keyring → NoOp in order. The
+//! [`select_best_sealer`] tries TPM → keyring → process memory in order. The
 //! caller (typically the Tauri startup or an ipc command) takes the
 //! returned `Box<dyn Sealer>` and threads it through
 //! [`crate::storage::save_identity`] / [`crate::storage::load_identity`].
 
 use crypto::aead;
 use crypto::random;
+use std::sync::OnceLock;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -43,6 +38,7 @@ pub const METHOD_TPM: &str = "tpm-pcp";
 pub const METHOD_KEYRING: &str = "keyring";
 pub const METHOD_NOOP: &str = "noop-insecure";
 pub const METHOD_MEMORY: &str = "memory-test";
+pub const METHOD_EPHEMERAL: &str = "memory-ephemeral";
 
 #[derive(Debug, Error)]
 pub enum SealerError {
@@ -73,11 +69,29 @@ pub trait Sealer: Send + Sync {
     fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
 }
 
+/// Verify that a sealer can perform the complete operation required by an
+/// identity save and a later load. Construction alone is not sufficient for
+/// some platform providers: Windows PCP can open a provider/key handle while
+/// the TPM is not ready to encrypt or decrypt.
+///
+/// The probe plaintext is a fixed, public domain-separation string. It never
+/// contains identity material, credentials, or caller data.
+pub fn verify_sealer_round_trip(sealer: &dyn Sealer) -> Result<()> {
+    const PROBE: &[u8] = b"OSL/keystore/sealer-readiness/v1";
+    let sealed = sealer.seal(PROBE)?;
+    let recovered = sealer.unseal(&sealed)?;
+    if recovered != PROBE {
+        return Err(SealerError::Malformed(
+            "sealer readiness round-trip returned different bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
 // ---- NoOpSealer ----
 
-/// Passthrough sealer. Plaintext on disk. Emits the INSECURE banner.
-/// Used as the absolute-last-resort fallback when neither TPM nor
-/// keyring is available (e.g. dev on Linux WSL with no DBus).
+/// Passthrough sealer retained for explicit compatibility tests only.
+/// Production selection never returns it because it writes plaintext.
 #[derive(Default)]
 pub struct NoOpSealer;
 
@@ -107,10 +121,7 @@ impl Sealer for NoOpSealer {
 
 // ---- MemorySealer (test only) ----
 
-/// In-memory random key. Encrypts via XChaCha20-Poly1305 using the
-/// in-process key. **Loses access on process exit** — only useful
-/// for unit tests that round-trip seal/unseal within the same
-/// process.
+/// In-memory random key for isolated tests.
 pub struct MemorySealer {
     key: aead::Key,
 }
@@ -126,6 +137,41 @@ impl MemorySealer {
         MemorySealer {
             key: random::random_aead_key(),
         }
+    }
+}
+
+/// Process-wide encrypted fallback used only when neither TPM nor
+/// the OS keyring is available. Separate constructions share a key
+/// for the life of this process, but the key is never persisted.
+struct EphemeralProcessSealer {
+    key: aead::Key,
+}
+
+impl EphemeralProcessSealer {
+    fn new() -> Self {
+        static KEY: OnceLock<[u8; aead::KEY_SIZE]> = OnceLock::new();
+        let bytes = KEY.get_or_init(|| *random::random_aead_key().as_bytes());
+        Self {
+            key: aead::Key::from_bytes(*bytes),
+        }
+    }
+}
+
+impl Sealer for EphemeralProcessSealer {
+    fn method_label(&self) -> &'static str {
+        METHOD_EPHEMERAL
+    }
+    fn is_tpm_backed(&self) -> bool {
+        false
+    }
+    fn requires_insecure_banner(&self) -> bool {
+        false
+    }
+    fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        seal_with_aead_key(&self.key, plaintext)
+    }
+    fn unseal(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        unseal_with_aead_key(&self.key, ciphertext)
     }
 }
 
@@ -157,8 +203,8 @@ impl Sealer for MemorySealer {
 /// + writes a fresh one. Subsequent constructions read the same key.
 ///
 /// On Linux WSL without DBus the keyring crate's secret-service
-/// backend errors out at this point — the caller falls through to
-/// [`NoOpSealer`].
+/// backend errors out at this point and production selection falls
+/// through to the encrypted process-ephemeral fallback.
 pub struct KeyringSealer {
     key: aead::Key,
 }
@@ -206,7 +252,7 @@ impl KeyringSealer {
         // fresh Entry. If the keyring backend is broken / not
         // persistent (e.g. WSL with a mock DBus session that drops
         // state across calls), this catches it here so
-        // `select_best_sealer` can fall through to NoOp instead of
+        // `select_best_sealer` can fall through to process memory instead of
         // silently returning a sealer whose state vanishes between
         // operations.
         let probe = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
@@ -558,23 +604,29 @@ pub fn evict_tpm_key() -> Result<()> {
 
 // ---- factory ----
 
-/// Pick the most-secure available sealer in this dev environment.
+/// Pick the most-secure available sealer.
 ///
-/// Order: TPM (Windows) → keyring (cross-platform) → no-op (always
-/// works, emits the INSECURE banner). Each layer is tried in turn;
-/// failures fall through silently except for the (always-succeeding)
-/// `NoOpSealer` terminator.
+/// Order: TPM (Windows) → keyring (cross-platform) → process-ephemeral
+/// encryption. The final fallback deliberately sacrifices persistence,
+/// not confidentiality: secret material is never written as plaintext
+/// merely because the platform sealer is unavailable.
 pub fn select_best_sealer() -> Box<dyn Sealer> {
     #[cfg(windows)]
     {
         if let Ok(s) = TpmSealer::new() {
-            return Box::new(s);
+            if verify_sealer_round_trip(&s).is_ok() {
+                return Box::new(s);
+            }
         }
     }
     if let Ok(s) = KeyringSealer::new() {
-        return Box::new(s);
+        if verify_sealer_round_trip(&s).is_ok() {
+            return Box::new(s);
+        }
     }
-    Box::new(NoOpSealer::new())
+    let fallback = EphemeralProcessSealer::new();
+    debug_assert!(verify_sealer_round_trip(&fallback).is_ok());
+    Box::new(fallback)
 }
 
 // ---- helpers ----

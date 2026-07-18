@@ -11,7 +11,13 @@
 
 import type { Env } from "../env.js";
 import { applyEvent } from "../lib/subscription-state.js";
-import { markEventProcessed } from "../lib/subscriptions.js";
+import { recordVerifiedStripeMetric } from "../lib/commerce-metrics.js";
+import {
+  claimStripeEvent,
+  completeStripeEvent,
+  releaseStripeEvent,
+} from "../lib/stripe-event-claims.js";
+import { notifyTelegramForStripeEvent } from "../lib/telegram.js";
 import {
   parseEvent,
   verifyWebhookSignature,
@@ -22,6 +28,7 @@ export async function handleStripeWebhook(
   request: Request,
   env: Env,
   fetcher: typeof fetch = fetch,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   if (!env.STRIPE_WEBHOOK_SECRET) {
     return serviceUnavailable("webhook not configured on this deployment");
@@ -42,23 +49,40 @@ export async function handleStripeWebhook(
   }
   const event = parseEvent(rawBody);
   if (!event) return badRequest("malformed event envelope");
+  if (!event.livemode) {
+    return badRequest("test-mode Stripe events are disabled on this deployment");
+  }
 
-  const isNew = await markEventProcessed(env.DB, event.id, event.type);
-  if (!isNew) {
-    // Stripe retry. Acknowledge with 200 so they don't retry again.
-    return json({ received: true, deduped: true });
+  const claim = await claimStripeEvent(env.DB, event.id, event.type);
+  if (claim === "completed") return json({ received: true, deduped: true });
+  if (claim === "busy") {
+    return new Response(JSON.stringify({ error: "event is already processing" }), {
+      status: 503,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "retry-after": "2",
+      },
+    });
   }
 
   try {
     const result = await applyEvent(env, event, fetcher);
+    await recordVerifiedStripeMetric(env.DB, event);
+    await completeStripeEvent(env.DB, event.id, event.type);
+    if (ctx) {
+      ctx.waitUntil(notifyTelegramForStripeEvent(env, event, fetcher).catch(() => {
+        console.error("[telegram] payment notification failed");
+      }));
+    }
     return json({ received: true, ...result });
-  } catch (err) {
+  } catch {
     // Don't tell Stripe we processed it on uncaught error — return
-    // 500 so they retry. The dedup row in stripe_events will be
-    // re-checked next time; if our partial state mutation is
-    // already committed, the second attempt's handlers re-converge
-    // (they're idempotent by design — ON CONFLICT upserts).
-    console.error("[webhook] handler crashed:", err);
+    // 500 so they retry. No processed marker exists yet; idempotent
+    // handlers and stable checkout claims converge on the same state.
+    console.error("[webhook] handler failed");
+    await releaseStripeEvent(env.DB, event.id).catch(() => {
+      console.error("[webhook] failed to release event claim");
+    });
     return new Response(JSON.stringify({ error: "internal error" }), {
       status: 500,
       headers: { "content-type": "application/json; charset=utf-8" },

@@ -66,9 +66,11 @@ fn app_preferences_roundtrip_plain_then_encrypted() {
     // ---- Plain ----
     let dir = tempdir().unwrap();
     let plain_path = dir.path().join("app_preferences_plain.json");
-    let mut prefs = AppPreferences::default();
-    prefs.version = APP_PREFERENCES_VERSION;
-    prefs.stego_mode = StegoMode::Mode1;
+    let prefs = AppPreferences {
+        version: APP_PREFERENCES_VERSION,
+        stego_mode: StegoMode::Mode1,
+        ..Default::default()
+    };
     write_app_preferences(&plain_path, &prefs).unwrap();
     let plain_raw = std::fs::read(&plain_path).unwrap();
     assert!(
@@ -81,9 +83,11 @@ fn app_preferences_roundtrip_plain_then_encrypted() {
     let key = [0x33u8; 32];
     set_file_storage_key(Some(key));
     let enc_path = dir.path().join("app_preferences_enc.json");
-    let mut enc_prefs = AppPreferences::default();
-    enc_prefs.version = APP_PREFERENCES_VERSION;
-    enc_prefs.stego_mode = StegoMode::Mode1;
+    let enc_prefs = AppPreferences {
+        version: APP_PREFERENCES_VERSION,
+        stego_mode: StegoMode::Mode1,
+        ..Default::default()
+    };
     write_app_preferences(&enc_path, &enc_prefs).unwrap();
     let enc_raw = std::fs::read(&enc_path).unwrap();
     assert!(

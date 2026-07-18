@@ -56,6 +56,15 @@ describe("POST /v1/license/validate", () => {
     expect(j.checksum_ok).toBe(true);
   });
 
+  it("production hard-rejects QA-marked activation codes before lookup", async () => {
+    const { plaintext, hash } = await generateLicenseKey("osl-license-qa-test-secret-v1", "qa");
+    const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;
+    await seedSubscription(subId, "ACTIVE");
+    await seedLicense(hash, subId);
+    const result = await validate(plaintext);
+    expect(result).toEqual({ status: "UNKNOWN", checksum_ok: false });
+  });
+
   it("returns ACTIVE for an issued + active subscription", async () => {
     const { plaintext, hash } = await generateLicenseKey(HMAC);
     const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;

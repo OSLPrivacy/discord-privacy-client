@@ -15,14 +15,14 @@ describe("REG_MSG / ROT_MSG byte format (MIRRORED with client.rs)", () => {
   // disagree by one byte, every registration fails.
   it("REG_MSG matches the pinned client vector (with ratchet)", () => {
     const bytes = buildRegMsg({
-      user_id: "1502770642930634812",
+      user_id: "900000000000000001",
       ik_x25519_pub: "WdsAAA==",
       ik_ed25519_pub: "ZWQyNTUx",
       ik_mlkem768_pub: "bWxrZW0=",
       ik_ratchet_initial_pub: "cmF0Y2g=",
     });
     expect(dec.decode(bytes)).toBe(
-      "OSL-REGISTER-v1\n1502770642930634812\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=",
+      "OSL-REGISTER-v1\n900000000000000001\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=",
     );
   });
 

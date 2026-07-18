@@ -1,20 +1,18 @@
-/// Admin-token gate for mutation routes. Mirrors the Railway
-/// server's preHandler — returns null when no token is configured
-/// (dev mode passthrough) or a Response when the request is
-/// unauthorized. Returns undefined when the check passes.
+/// Bearer-token gate for operator-only administration. Public client
+/// mutations use registered-identity signatures instead of a shared secret
+/// that an open-source desktop binary could never keep confidential.
 
 import type { Env } from "../env.js";
 import { constantTimeTokenEqual } from "./crypto.js";
-import { unauthorized } from "./http.js";
+import { serviceUnavailable, unauthorized } from "./http.js";
 
 /**
  * Run the admin-token check against an inbound request.
  *
  * Returns:
- *   - a 401 `Response` when the configured token is set and the
- *     header is missing or wrong
- *   - `null` when the check passes OR when no token is configured
- *     (open dev mode)
+ *   - a 503 `Response` when the deployment omitted the token
+ *   - a 401 `Response` when the header is missing or wrong
+ *   - `null` only when the check passes
  *
  * Always performs the hash + compare even on an empty `provided` so
  * a totally-missing Authorization header doesn't take a different
@@ -24,12 +22,41 @@ export async function checkAdminToken(
   request: Request,
   env: Env,
 ): Promise<Response | null> {
-  const token = env.OSL_KEYSERVER_ADMIN_TOKEN;
+  return checkToken(request, env.OSL_KEYSERVER_ADMIN_TOKEN, "admin");
+}
+
+/**
+ * Owner comp issuance is intentionally protected by two independent bearer
+ * secrets. Neither is shipped in a client, and both must be configured.
+ */
+export async function checkCompAdminTokens(
+  request: Request,
+  env: Env,
+): Promise<Response | null> {
+  const primary = await checkAdminToken(request, env);
+  if (primary) return primary;
+  if (!env.OSL_COMP_ADMIN_TOKEN) {
+    console.error("[auth] comp token is not configured; failing closed");
+    return serviceUnavailable("comp authorization not configured");
+  }
+  const header = request.headers.get("x-osl-comp-authorization") ?? "";
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  const provided = (match?.[1] ?? "").trim();
+  if (!provided || !(await constantTimeTokenEqual(provided, env.OSL_COMP_ADMIN_TOKEN))) {
+    console.warn(`[auth] comp token check failed: method=${request.method}`);
+    return unauthorized();
+  }
+  return null;
+}
+
+async function checkToken(
+  request: Request,
+  token: string | undefined,
+  kind: "admin",
+): Promise<Response | null> {
   if (!token || token.length === 0) {
-    // Dev mode — Railway server logged a loud warning on every
-    // request; we surface it once at fetch entry via console.warn
-    // (cheap and Workers-visible).
-    return null;
+    console.error(`[auth] ${kind} token is not configured; failing closed`);
+    return serviceUnavailable(`${kind} authorization not configured`);
   }
   const header = request.headers.get("authorization") ?? "";
   let provided = "";
@@ -37,9 +64,9 @@ export async function checkAdminToken(
   if (m) provided = (m[1] ?? "").trim();
   const ok = provided.length > 0 && (await constantTimeTokenEqual(provided, token));
   if (!ok) {
-    console.warn(
-      `[auth] admin token check failed: method=${request.method} url=${request.url} had_header=${header.length > 0}`,
-    );
+    // Never log the URL: signed protocol requests currently put opaque IDs
+    // and signatures in path/query components.
+    console.warn(`[auth] ${kind} token check failed: method=${request.method}`);
     return unauthorized();
   }
   return null;

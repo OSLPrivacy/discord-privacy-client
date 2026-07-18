@@ -42,24 +42,21 @@ pub fn decoy_mp4() -> &'static [u8] {
 /// Minimal SPS NAL unit for a 16×16 baseline level-1.0 H.264 stream.
 ///
 /// Byte layout:
+///
 /// - `0x67`: NAL header (forbidden_zero_bit=0, nal_ref_idc=3,
-///           nal_unit_type=7 = SPS).
+///   nal_unit_type=7 = SPS).
 /// - `0x42`: profile_idc = 66 (baseline).
 /// - `0xC0`: constraint_set0_flag + constraint_set1_flag, reserved 0.
 /// - `0x0A`: level_idc = 10 (level 1.0).
 /// - `0xF4`: bit-packed `seq_parameter_set_id=ue(0)`,
-///           `log2_max_frame_num_minus4=ue(0)`,
-///           `pic_order_cnt_type=ue(0)`,
-///           `log2_max_pic_order_cnt_lsb_minus4=ue(0)`,
-///           `num_ref_frames=ue(1)`,
-///           `gaps_in_frame_num_value_allowed_flag=0`.
+///   `log2_max_frame_num_minus4=ue(0)`, `pic_order_cnt_type=ue(0)`,
+///   `log2_max_pic_order_cnt_lsb_minus4=ue(0)`, `num_ref_frames=ue(1)`,
+///   `gaps_in_frame_num_value_allowed_flag=0`.
 /// - `0xE2`: bit-packed `pic_width_in_mbs_minus1=ue(0)` (16-px wide),
-///           `pic_height_in_map_units_minus1=ue(0)` (16-px tall),
-///           `frame_mbs_only_flag=1`,
-///           `direct_8x8_inference_flag=0`,
-///           `frame_cropping_flag=0`,
-///           `vui_parameters_present_flag=0`,
-///           `rbsp_trailing_bits=10000000` aligning to byte.
+///   `pic_height_in_map_units_minus1=ue(0)` (16-px tall),
+///   `frame_mbs_only_flag=1`, `direct_8x8_inference_flag=0`,
+///   `frame_cropping_flag=0`, `vui_parameters_present_flag=0`,
+///   `rbsp_trailing_bits=10000000` aligning to byte.
 const SPS: &[u8] = &[0x67, 0x42, 0xC0, 0x0A, 0xF4, 0xE2];
 
 /// Minimal PPS NAL unit. NAL header `0x68` (nal_unit_type=8 = PPS),
@@ -326,7 +323,7 @@ mod tests {
         assert!(d.len() >= 28);
         // size BE u32 at offset 0
         let size = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
-        assert!(size >= 24 && size <= 64);
+        assert!((24..=64).contains(&size));
         assert_eq!(&d[4..8], b"ftyp");
         assert_eq!(&d[8..12], b"isom");
     }

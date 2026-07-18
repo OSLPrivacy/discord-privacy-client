@@ -1682,6 +1682,21 @@ async function onRemoveWhitelist(row) {
 }
 
 async function onBurnScope(row) {
+  // These variants need either per-sender deletion (GC per-user) or
+  // enumeration of every server channel.  The backend deliberately
+  // rejects them today; stop before sending a marker so the UI can
+  // never claim a partially-applied burn succeeded.
+  if (
+    row.scope_kind === "gc_per_user" ||
+    row.scope_kind === "server_full" ||
+    row.scope_kind === "server_full_per_user"
+  ) {
+    oslToast(
+      "Burn is not available for this scope yet. Remove its whitelist " +
+      "instead; no burn marker was sent."
+    );
+    return;
+  }
   const ok = await oslConfirm({
     title: "Burn this scope?",
     body: "Burn " + wlScopeLabel(row) + " for " + row.peer_username +
@@ -1707,8 +1722,26 @@ async function onBurnScope(row) {
   const applyResult = await oslInvoke("osl_apply_burn", { scopeInput });
   if (!applyResult.ok) { oslToast("Burn apply failed: " + applyResult.error); return; }
   // Burn data destruction (7d-FIX1).
-  await oslInvoke("osl_burn_scope_data", { scopeInput });
-  await oslInvoke("osl_mark_scope_burned", { scopeInput });
+  const dataResult = await oslInvoke("osl_burn_scope_data", {
+    scopeKind: row.scope_kind,
+    scopeId: row.scope_id,
+    serverId: row.server_id || null,
+  });
+  if (!dataResult.ok) {
+    oslToast("Burn data cleanup failed: " + dataResult.error);
+    return;
+  }
+  const ledgerResult = await oslInvoke("osl_mark_scope_burned", {
+    scopeKind: row.scope_kind,
+    scopeId: row.scope_id,
+    serverId: row.server_id || null,
+    channelId: row.channel_id || null,
+    burnedMessageIds: [],
+  });
+  if (!ledgerResult.ok) {
+    oslToast("Burn ledger save failed: " + ledgerResult.error);
+    return;
+  }
   oslToast("Burned " + wlScopeLabel(row) + " for " + row.peer_username);
   // Cross-window event so Discord-origin updates __oslBurnedScopes and
   // repaints the affected channel, and ships the marker via the
@@ -3328,6 +3361,12 @@ function oslSettingsWireTourEvents() {
         const slide = payload && typeof payload.slide === "number" ? payload.slide : null;
         if (slide === 6 || slide === 7) {
           oslSettingsRenderTourSlide(slide);
+        }
+      });
+      window.__TAURI__.event.listen("osl:settings_navigate", (e) => {
+        const page = e && e.payload && e.payload.page;
+        if (["identity", "account", "whitelist", "passwords", "updates", "about"].includes(page)) {
+          switchPage(page);
         }
       });
     }

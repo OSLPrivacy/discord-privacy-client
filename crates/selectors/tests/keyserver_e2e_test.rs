@@ -126,6 +126,7 @@ process.stdout.write(JSON.stringify({{ envelope: env, pub: pubB64 }}));
     )
 }
 
+#[allow(clippy::zombie_processes)] // ServerHandle::drop kills and waits.
 fn spawn_keyserver_with_manifest(envelope_json: &str) -> ServerHandle {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
     tmp.write_all(envelope_json.as_bytes()).unwrap();

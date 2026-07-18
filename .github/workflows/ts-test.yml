@@ -9,16 +9,54 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install webview deps
         working-directory: webview
         run: npm ci
       - name: Typecheck webview
         working-directory: webview
         run: npm run typecheck
+      - name: Lint webview
+        working-directory: webview
+        run: npm run lint
       - name: Test webview
         working-directory: webview
+        run: npm test
+      # The app frontend is outside webview/ and has its own lockfile, tests,
+      # TypeScript check, and production Vite build.
+      - name: Install OSL Privacy UI dependencies
+        working-directory: apps/osl-hub-ui
+        run: npm ci
+      - name: Test OSL Privacy UI
+        working-directory: apps/osl-hub-ui
+        run: npm test
+      - name: Build OSL Privacy UI
+        working-directory: apps/osl-hub-ui
+        run: npm run build
+      - name: Install keyserver worker deps
+        working-directory: keyserver-cf
+        run: npm ci
+      - name: Typecheck keyserver worker
+        working-directory: keyserver-cf
+        run: npm run typecheck
+      - name: Test keyserver worker
+        working-directory: keyserver-cf
+        run: npm test
+      - name: Install cipher-store worker deps
+        working-directory: cipher-store-cf
+        run: npm ci
+      - name: Typecheck cipher-store worker
+        working-directory: cipher-store-cf
+        run: npm run typecheck
+      - name: Test cipher-store worker
+        working-directory: cipher-store-cf
+        run: npm test
+      - name: Install legacy keyserver deps
+        working-directory: keyserver
+        run: npm ci
+      - name: Test legacy keyserver
+        working-directory: keyserver
         run: npm test

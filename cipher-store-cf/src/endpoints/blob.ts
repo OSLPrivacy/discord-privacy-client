@@ -8,14 +8,15 @@
 ///   - Fetch-token header `X-OSL-Fetch-Token`: 32 hex chars (16 bytes).
 ///     Required on upload; required on fetch/delete when the stored
 ///     row has a non-NULL token (any new upload). Phase 6 capability
-///     gating -- defends against blob_id link-leak.
+///     gating -- prevents access with a bare blob ID. This opaque token
+///     is not an identity or sender-authentication credential.
 ///   - ID path param: 16 hex chars.
 
 import type { Env } from "../env.js";
 import { error, json, notFound } from "../lib/http.js";
 import { hexToId, idToHex, newBlobId } from "../lib/id.js";
 
-const MAX_BLOB_BYTES = 64 * 1024;
+export const MAX_BLOB_BYTES = 64 * 1024;
 const ALLOWED_TTL_SECONDS = new Set<number>([
   86400, // 24h
   259200, // 72h
@@ -46,6 +47,17 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export async function handleUpload(request: Request, env: Env): Promise<Response> {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^\d+$/.test(declaredLength)) {
+      return error(400, "bad_content_length", "Content-Length must be an unsigned integer");
+    }
+    const declaredBytes = Number(declaredLength);
+    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_BLOB_BYTES) {
+      return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
+    }
+  }
+
   const ttlHeader = request.headers.get("x-osl-ttl-seconds");
   const ttl = ttlHeader ? parseInt(ttlHeader, 10) : NaN;
   if (!Number.isFinite(ttl) || !ALLOWED_TTL_SECONDS.has(ttl)) {
@@ -68,8 +80,11 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     );
   }
 
-  const body = await request.arrayBuffer();
-  const data = new Uint8Array(body);
+  const body = await readBoundedBody(request, MAX_BLOB_BYTES);
+  if (body.status === "too_large") {
+    return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
+  }
+  const data = body.bytes;
   if (data.length === 0) {
     return error(400, "empty_body", "blob body required");
   }
@@ -105,6 +120,41 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     "id_collision_loop",
     "could not allocate a fresh ID after retries"
   );
+}
+
+/**
+ * Read a request stream with a hard in-memory ceiling. Content-Length is only
+ * an early rejection hint; this counter is authoritative for chunked bodies
+ * and dishonest declarations.
+ */
+export async function readBoundedBody(
+  request: Request,
+  maxBytes: number,
+): Promise<{ status: "ok"; bytes: Uint8Array } | { status: "too_large" }> {
+  if (!request.body) return { status: "ok", bytes: new Uint8Array(0) };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel("blob too large");
+      return { status: "too_large" };
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { status: "ok", bytes };
 }
 
 export async function handleFetch(
@@ -189,8 +239,9 @@ export async function handleDelete(
   const id = hexToId(hex);
   if (!id) return error(400, "bad_id", "id must be 16 hex chars");
   // Phase 6: DELETE is gated the same way as FETCH. Without this an
-  // adversary who learned blob_id but not the conversation key could
-  // DoS by deleting blobs from your conversation.
+  // caller with only blob_id cannot delete a current blob. The client
+  // currently derives this token from public scope metadata, so this is
+  // capability separation rather than strong conversation membership.
   //
   // Legacy rows (fetch_token NULL, predating Phase 6) accept any
   // delete -- same back-compat treatment as fetch -- and will TTL

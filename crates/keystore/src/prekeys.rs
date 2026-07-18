@@ -198,7 +198,7 @@ fn make_spk(identity: &Identity, now_unix_seconds: u64) -> SpkEntry {
 /// representable in milliseconds.
 pub fn iso_8601_from_unix_seconds(t: u64) -> String {
     // Avoid pulling chrono in. Compute Y/M/D/H/M/S manually.
-    let mut secs = t as i64;
+    let secs = t as i64;
     let h = (secs / 3600) % 24;
     let m = (secs / 60) % 60;
     let s = secs % 60;
@@ -229,8 +229,6 @@ pub fn iso_8601_from_unix_seconds(t: u64) -> String {
         }
     }
     let day = days + 1;
-    secs = secs;
-    let _ = secs;
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
         year,
@@ -270,19 +268,23 @@ pub struct ReplenishSpk {
 /// signature to verify.
 pub fn canonical_replenish_bytes(
     user_id: &str,
+    timestamp_ms: i64,
+    request_id: &str,
     spk: Option<&ReplenishSpk>,
     opks: &[ReplenishOpk],
 ) -> Vec<u8> {
     let mut buf = Vec::new();
     write_lp_str(&mut buf, std::str::from_utf8(REPLENISH_DOMAIN).unwrap());
     write_lp_str(&mut buf, user_id);
+    write_lp_str(&mut buf, &timestamp_ms.to_string());
+    write_lp_str(&mut buf, request_id);
     buf.push(if spk.is_some() { 1 } else { 0 });
     if let Some(s) = spk {
         write_lp_str(&mut buf, &s.pub_b64);
         write_lp_str(&mut buf, &s.signature_b64);
         write_lp_str(&mut buf, &s.rotated_at);
     }
-    let count = opks.len() as u32;
+    let count = u32::try_from(opks.len()).expect("OPK batch exceeds u32 count");
     buf.extend_from_slice(&count.to_be_bytes());
     for o in opks {
         buf.extend_from_slice(&o.id.to_be_bytes());
@@ -293,7 +295,8 @@ pub fn canonical_replenish_bytes(
 
 fn write_lp_str(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    let len = u32::try_from(bytes.len()).expect("canonical field exceeds u32 length");
+    buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(bytes);
 }
 
@@ -303,10 +306,12 @@ fn write_lp_str(buf: &mut Vec<u8>, s: &str) {
 pub fn sign_replenish_batch(
     identity: &Identity,
     user_id: &str,
+    timestamp_ms: i64,
+    request_id: &str,
     spk: Option<&ReplenishSpk>,
     opks: &[ReplenishOpk],
 ) -> ed25519::Signature {
-    let bytes = canonical_replenish_bytes(user_id, spk, opks);
+    let bytes = canonical_replenish_bytes(user_id, timestamp_ms, request_id, spk, opks);
     ed25519::sign(&identity.ed25519_secret, &bytes)
 }
 

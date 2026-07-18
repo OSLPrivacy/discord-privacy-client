@@ -39,6 +39,13 @@ npx wrangler kv namespace create RATE_LIMIT
 Paste the printed `id` into `wrangler.toml` under
 `[[kv_namespaces]]`.
 
+Install a random server-only HMAC key. Never put this value in the repo or a
+command-line argument:
+
+```sh
+openssl rand -base64 48 | npx wrangler secret put RATE_LIMIT_HASH_KEY
+```
+
 ## §4 Deploy
 
 ```sh
@@ -56,27 +63,32 @@ public subdomain you prefer — the client config will point here).
 ```sh
 # Upload (3 sec TTL would be ideal for a smoke test but the server
 # only accepts 24h/72h/7d -- so we upload then immediately delete).
+TOKEN=$(openssl rand -hex 16)
 ID=$(curl -sX POST https://ciphers.oslprivacy.com/v1/blob \
   -H "X-OSL-TTL-Seconds: 86400" \
+  -H "X-OSL-Fetch-Token: $TOKEN" \
   -H "content-type: application/octet-stream" \
   --data-binary $'\x01\x02\x03\x04' \
   | jq -r .id)
 echo "uploaded id=$ID"
 
 # Fetch back.
-curl -s https://ciphers.oslprivacy.com/v1/blob/$ID | xxd | head -1
+curl -s https://ciphers.oslprivacy.com/v1/blob/$ID \
+  -H "X-OSL-Fetch-Token: $TOKEN" | xxd | head -1
 
 # Burn.
-curl -sX DELETE https://ciphers.oslprivacy.com/v1/blob/$ID -i | head -1
+curl -sX DELETE https://ciphers.oslprivacy.com/v1/blob/$ID \
+  -H "X-OSL-Fetch-Token: $TOKEN" -i | head -1
 # expect: HTTP/2 204
 ```
 
 ## §6 Disable observability
 
-Cloudflare's Workers dashboard observability tab is on by default
-on some plans. Open the Worker's settings → Observability →
-**disable**. Same reason `wrangler.toml` has it commented out:
-we don't want a retained URL/status log.
+`wrangler.toml` explicitly disables Worker observability, invocation logs,
+persistence, traces, and sampling. After deployment, verify the Worker's
+settings → Observability page still shows disabled. Do not override the checked
+in configuration from the dashboard; retained URL/status logs are outside the
+cipher store's intended data-minimisation boundary.
 
 ## §7 Operational notes
 

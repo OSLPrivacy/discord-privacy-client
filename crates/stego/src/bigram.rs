@@ -112,8 +112,7 @@ fn train_from_corpus() -> BigramModel {
     // Step 1: tokenize the corpus and pick the top-(VOCAB_SIZE-1)
     // most-frequent tokens. Reserve slot 0 for BOS.
     let raw_tokens: Vec<&'static str> = tokenize_corpus(CORPUS);
-    let mut freq: std::collections::HashMap<&'static str, u32> =
-        std::collections::HashMap::new();
+    let mut freq: std::collections::HashMap<&'static str, u32> = std::collections::HashMap::new();
     for &t in &raw_tokens {
         *freq.entry(t).or_insert(0) += 1;
     }
@@ -210,7 +209,11 @@ fn train_from_corpus() -> BigramModel {
         cum.push(crow);
     }
 
-    BigramModel { vocab, index_of, cum }
+    BigramModel {
+        vocab,
+        index_of,
+        cum,
+    }
 }
 
 fn tokenize_corpus(s: &'static str) -> Vec<&'static str> {
@@ -247,7 +250,10 @@ fn strip_punct(tok: &'static str) -> &'static str {
 }
 
 fn is_punct(b: u8) -> bool {
-    matches!(b, b'.' | b',' | b'!' | b'?' | b';' | b':' | b'"' | b'(' | b')' | b'[' | b']')
+    matches!(
+        b,
+        b'.' | b',' | b'!' | b'?' | b';' | b':' | b'"' | b'(' | b')' | b'[' | b']'
+    )
 }
 
 // ============================================================
@@ -321,7 +327,11 @@ pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
         // smallest w with ⌊width·cum[w]/total⌋ > value - lo.
         let offset = value - lo;
         let word = find_word_by_boundary(&model.cum[prev], width, total, offset);
-        let cum_lo = if word == 0 { 0u128 } else { model.cum[prev][word - 1] as u128 };
+        let cum_lo = if word == 0 {
+            0u128
+        } else {
+            model.cum[prev][word - 1] as u128
+        };
         let cum_hi = model.cum[prev][word] as u128;
         let new_lo = lo + (width * cum_lo) / total;
         let new_hi = lo + (width * cum_hi) / total;
@@ -350,7 +360,11 @@ pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
         }
         let width = hi - lo;
         let total = model.cum[prev][VOCAB_SIZE - 1] as u128;
-        let cum_lo = if word == 0 { 0u128 } else { model.cum[prev][word - 1] as u128 };
+        let cum_lo = if word == 0 {
+            0u128
+        } else {
+            model.cum[prev][word - 1] as u128
+        };
         let cum_hi = model.cum[prev][word] as u128;
         let new_lo = lo + (width * cum_lo) / total;
         let new_hi = lo + (width * cum_hi) / total;
@@ -493,13 +507,43 @@ mod tests {
         let mut x: u64 = 0xdead_beef_cafe_babe;
         let bits: Vec<bool> = (0..TOKEN_PAYLOAD_BITS)
             .map(|_| {
-                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (x >> 63) & 1 == 1
             })
             .collect();
         let words = arithmetic_decode_bits(&bits, TOKEN_PAYLOAD_BITS);
         let back = arithmetic_encode_words(&words, TOKEN_PAYLOAD_BITS);
         assert_eq!(back, bits);
+    }
+
+    #[test]
+    fn ten_thousand_payloads_round_trip_within_word_bound() {
+        // Exercise interval-boundary rounding far beyond the handful of
+        // human-readable fixtures. This is deterministic and covers 960k
+        // generated payload bits without depending on an RNG crate.
+        let mut x = 0x6a09_e667_f3bc_c909u64;
+        for case in 0..10_000 {
+            let bits: Vec<bool> = (0..TOKEN_PAYLOAD_BITS)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x & 1 == 1
+                })
+                .collect();
+            let words = arithmetic_decode_bits(&bits, TOKEN_PAYLOAD_BITS);
+            assert!(
+                !words.is_empty() && words.len() < MAX_WORDS,
+                "case {case} exhausted the word bound"
+            );
+            assert_eq!(
+                arithmetic_encode_words(&words, TOKEN_PAYLOAD_BITS),
+                bits,
+                "case {case} failed interval round-trip"
+            );
+        }
     }
 
     #[test]

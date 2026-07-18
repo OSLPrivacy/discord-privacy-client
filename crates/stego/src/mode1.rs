@@ -144,8 +144,7 @@ pub fn encode_mode1(cipher: &ConversationCipher, ciphertext: &[u8]) -> Result<St
     // Pad to whole-sentence boundary with zeros so the decoder reads
     // a complete final sentence.
     let total_payload_bits = 16 + (ciphertext.len() * 8) as u32;
-    let pad_to =
-        ((total_payload_bits + BITS_PER_SENTENCE - 1) / BITS_PER_SENTENCE) * BITS_PER_SENTENCE;
+    let pad_to = total_payload_bits.div_ceil(BITS_PER_SENTENCE) * BITS_PER_SENTENCE;
     let pad = pad_to - total_payload_bits;
     if pad > 0 {
         bits.write(0, pad);
@@ -238,7 +237,7 @@ pub fn decode_mode1(cipher: &ConversationCipher, msg: &str) -> Result<Vec<u8>> {
 // ==========================================================================
 // Prose-token encoding (Phase 2 of the cipher-store pivot).
 //
-// Encodes an 8-byte cipher-store ID as natural-English prose with:
+// Encodes an 8-byte cipher-store ID as chat-like cover text with:
 //   * NO magic prefix (so Discord content scanners can't pattern-match);
 //   * a 4-byte HMAC-SHA256 tag appended to the ID so receivers can
 //     distinguish OSL tokens from coincidentally template-matching English
@@ -246,32 +245,29 @@ pub fn decode_mode1(cipher: &ConversationCipher, msg: &str) -> Result<Vec<u8>> {
 //     volumes).
 //
 // Payload layout: [id (8 B)] [hmac_tag (4 B)] = 12 bytes = 96 bits.
-// At BITS_PER_SENTENCE = 20, encoded cover is ceil(96/20) = 5 sentences,
-// padded with 4 zero bits to land on a clean sentence boundary.
+// The current bigram arithmetic codec emits a variable-length word stream;
+// the legacy five-template-sentence decoder remains for rollout compatibility.
 // ==========================================================================
 
 /// ID bytes carried per prose token. 64 bits is collision-safe for the
 /// cipher-store's TTL window (max a few thousand active blobs).
 pub const TOKEN_ID_BYTES: usize = 8;
 
-/// HMAC tag bytes appended for receiver-side authentication.
+/// HMAC tag bytes appended for receiver-side token detection. This is
+/// not sender authentication: the current caller derives the key from
+/// public scope metadata.
 pub const TOKEN_MAC_BYTES: usize = 4;
 
 /// Total bits in the encoded payload (ID || tag).
-pub const TOKEN_PAYLOAD_BITS: u32 =
-    (TOKEN_ID_BYTES as u32 + TOKEN_MAC_BYTES as u32) * 8;
+pub const TOKEN_PAYLOAD_BITS: u32 = (TOKEN_ID_BYTES as u32 + TOKEN_MAC_BYTES as u32) * 8;
 
 /// Domain separator for the HMAC over the prose-token ID.
 pub const TOKEN_MAC_DOMAIN: &[u8] = b"discord-privacy-client/mode1-token/v1";
 
 type HmacSha256 = Hmac<Sha256>;
 
-fn compute_token_tag(
-    mac_key: &[u8],
-    id: &[u8; TOKEN_ID_BYTES],
-) -> [u8; TOKEN_MAC_BYTES] {
-    let mut mac =
-        HmacSha256::new_from_slice(mac_key).expect("HMAC accepts any key length");
+fn compute_token_tag(mac_key: &[u8], id: &[u8; TOKEN_ID_BYTES]) -> [u8; TOKEN_MAC_BYTES] {
+    let mut mac = HmacSha256::new_from_slice(mac_key).expect("HMAC accepts any key length");
     mac.update(TOKEN_MAC_DOMAIN);
     mac.update(id);
     let full = mac.finalize().into_bytes();
@@ -280,12 +276,21 @@ fn compute_token_tag(
     tag
 }
 
-/// Encode an 8-byte cipher-store ID as natural-language prose. No
-/// magic prefix — the encoded output is just sentences, indistinguishable
-/// from any other Mode 1 cover text to a casual observer. The 4-byte HMAC
-/// tag appended to the ID is what lets the recipient distinguish "this
-/// is an OSL token" from "this is plain English that happened to parse
-/// as a Mode 1 sentence."
+fn token_payload_bits(id: &[u8; TOKEN_ID_BYTES], tag: &[u8; TOKEN_MAC_BYTES]) -> Vec<bool> {
+    let mut bits = Vec::with_capacity(TOKEN_PAYLOAD_BITS as usize);
+    for &b in id.iter().chain(tag.iter()) {
+        for i in (0..8).rev() {
+            bits.push((b >> i) & 1 == 1);
+        }
+    }
+    bits
+}
+
+/// Encode an 8-byte cipher-store ID as marker-free, chat-like cover text.
+/// The small embedded bigram model is not claimed to be statistically
+/// indistinguishable from human chat. The 4-byte HMAC tag appended to the
+/// ID lets the recipient distinguish an OSL token from ordinary text that
+/// happens to use only words in the model vocabulary.
 pub fn encode_token(
     _cipher: &ConversationCipher,
     mac_key: &[u8],
@@ -299,17 +304,7 @@ pub fn encode_token(
     // compatibility but is unused — the bigram model is global and
     // the per-conversation distinction is carried by the HMAC tag.
     let tag = compute_token_tag(mac_key, id);
-    let mut bits: Vec<bool> = Vec::with_capacity(TOKEN_PAYLOAD_BITS as usize);
-    for &b in id {
-        for i in (0..8).rev() {
-            bits.push((b >> i) & 1 == 1);
-        }
-    }
-    for &b in &tag {
-        for i in (0..8).rev() {
-            bits.push((b >> i) & 1 == 1);
-        }
-    }
+    let bits = token_payload_bits(id, &tag);
     let words = crate::bigram::arithmetic_decode_bits(&bits, TOKEN_PAYLOAD_BITS);
     crate::bigram::render_words(&words)
 }
@@ -363,6 +358,18 @@ fn decode_token_bigram(mac_key: &[u8], msg: &str) -> Option<[u8; TOKEN_ID_BYTES]
     if !constant_time_eq_token(&tag, &expected) {
         return None;
     }
+
+    // Arithmetic decoding stops as soon as the 96 payload bits are
+    // pinned. Without this canonical-form check, appending additional
+    // in-vocabulary words could leave those high bits unchanged and the
+    // modified cover would still validate. Recreate the unique encoder
+    // output and require the parsed word stream to match exactly.
+    let canonical_bits = token_payload_bits(&id, &expected);
+    let canonical_words =
+        crate::bigram::arithmetic_decode_bits(&canonical_bits, TOKEN_PAYLOAD_BITS);
+    if words != canonical_words {
+        return None;
+    }
     Some(id)
 }
 
@@ -381,11 +388,7 @@ fn decode_token_template(
     let mut t_cursor = 0usize;
     let mut writer = BitWriter::new();
     while t_cursor < tokens.len() {
-        let consumed = match match_one_sentence(
-            &tokens[t_cursor..],
-            cipher,
-            &mut writer,
-        ) {
+        let consumed = match match_one_sentence(&tokens[t_cursor..], cipher, &mut writer) {
             Ok(n) => n,
             Err(_) => return None,
         };
@@ -414,10 +417,7 @@ fn decode_token_template(
     Some(id)
 }
 
-fn constant_time_eq_token(
-    a: &[u8; TOKEN_MAC_BYTES],
-    b: &[u8; TOKEN_MAC_BYTES],
-) -> bool {
+fn constant_time_eq_token(a: &[u8; TOKEN_MAC_BYTES], b: &[u8; TOKEN_MAC_BYTES]) -> bool {
     let mut diff = 0u8;
     for i in 0..TOKEN_MAC_BYTES {
         diff |= a[i] ^ b[i];
@@ -662,10 +662,13 @@ mod tests {
                 std::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(seed));
             let cover = encode_token(&c, mac_key, &id);
             // Cover is bare prose — no DPC marker, no base64.
-            assert!(!cover.contains("DPC0"), "cover leaked a wire marker: {cover}");
+            assert!(
+                !cover.contains("DPC0"),
+                "cover leaked a wire marker: {cover}"
+            );
             assert!(!cover.is_empty());
-            let recovered = decode_token(&c, mac_key, &cover)
-                .expect("bigram cover must decode back to the id");
+            let recovered =
+                decode_token(&c, mac_key, &cover).expect("bigram cover must decode back to the id");
             assert_eq!(recovered, id, "id round-trip failed for seed={seed}");
         }
     }
@@ -761,9 +764,9 @@ mod tests {
         let got1 = decode_mode1(&c1, &s1).unwrap();
         assert_eq!(got1, payload);
         let got_cross = decode_mode1(&c2, &s1);
-        match got_cross {
-            Ok(bytes) => assert_ne!(bytes, payload),
-            Err(_) => {} // acceptable
+        // Authentication failure is also an acceptable cross-seed result.
+        if let Ok(bytes) = got_cross {
+            assert_ne!(bytes, payload);
         }
     }
 
@@ -817,7 +820,7 @@ mod tests {
             .iter()
             .copied()
             .chain(ADJECTIVES.iter().copied())
-            .chain(template_skeleton_tokens().into_iter())
+            .chain(template_skeleton_tokens())
             .collect();
         for tok in body.split_whitespace() {
             assert!(

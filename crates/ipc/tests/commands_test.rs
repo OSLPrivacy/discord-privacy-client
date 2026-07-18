@@ -72,12 +72,9 @@ fn init_keyserver_accepts_valid_url() {
 
 #[test]
 fn init_keyserver_accepts_https() {
-    // Phase B follow-up: client now supports HTTPS via rustls so
-    // it can talk to Railway-deployed keyservers (which force-
-    // redirect HTTP→HTTPS at the edge). The pre-Phase-B test
-    // asserted the opposite — that test is obsolete.
+    // Release clients accept the pinned production origin over HTTPS.
     let state = AppState::new();
-    cmd_init_keyserver(&state, "https://example.com".to_string()).unwrap();
+    cmd_init_keyserver(&state, "https://keyserver.oslprivacy.com".to_string()).unwrap();
     assert!(state.has_keyserver());
 }
 
@@ -200,12 +197,12 @@ fn status_reflects_state() {
     assert!(!s.keyserver_initialised);
     assert!(s.user_id.is_none());
 
-    cmd_generate_identity(&state, "liam".to_string()).unwrap();
-    cmd_init_keyserver(&state, "http://localhost:3000".to_string()).unwrap();
+    cmd_generate_identity(&state, "fixture-user".to_string()).unwrap();
+    cmd_init_keyserver(&state, "http://127.0.0.1:3000".to_string()).unwrap();
     let s = cmd_status(&state);
     assert!(s.identity_loaded);
     assert!(s.keyserver_initialised);
-    assert_eq!(s.user_id.as_deref(), Some("liam"));
+    assert_eq!(s.user_id.as_deref(), Some("fixture-user"));
     assert!(s.x25519_public_b64.is_some());
 }
 

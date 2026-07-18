@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "composer-overlay-local",
+  "description": "Zero-authority capability boundary for the bundled local protected-draft overlay. Remote service webviews never match this label.",
+  "webviews": ["composer-overlay"],
+  "local": true,
+  "permissions": []
+}

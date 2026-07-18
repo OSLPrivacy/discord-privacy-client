@@ -123,12 +123,7 @@ impl ScopeMembership {
     }
 
     /// Is `discord_id` a known member of this exact server channel?
-    pub fn is_channel_member(
-        &self,
-        server_id: &str,
-        channel_id: &str,
-        discord_id: &str,
-    ) -> bool {
+    pub fn is_channel_member(&self, server_id: &str, channel_id: &str, discord_id: &str) -> bool {
         self.map
             .get(&channel_key(server_id, channel_id))
             .is_some_and(|s| s.contains(discord_id))
@@ -247,8 +242,7 @@ pub fn load_scope_membership_from_path(
 /// at-rest-encrypted when a main password key is in the slot).
 pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
-    let out_bytes = crate::main_password::maybe_encrypt(&body)
-        .map_err(std::io::Error::other)?;
+    let out_bytes = crate::main_password::maybe_encrypt(&body).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &out_bytes)?;
     std::fs::rename(&tmp, path)?;
@@ -351,10 +345,7 @@ mod tests {
 
     #[test]
     fn file_round_trip_and_missing_is_notfound() {
-        let dir = std::env::temp_dir().join(format!(
-            "osl_mem_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("osl_mem_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("membership.json");
         let _ = std::fs::remove_file(&path);

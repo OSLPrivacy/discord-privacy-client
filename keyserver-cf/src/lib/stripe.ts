@@ -13,14 +13,21 @@
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
+/**
+ * Public commerce is production-only. Stripe secret keys and restricted keys
+ * use different prefixes, but either can safely identify live mode. Test-mode
+ * and publishable keys must fail before any Stripe request is attempted.
+ */
+export function isLiveStripeSecretKey(value: string): boolean {
+  return value.startsWith("sk_live_") || value.startsWith("rk_live_");
+}
+
 export interface CheckoutSessionInput {
   priceId: string;
-  /** Either 'subscription' or 'payment'; we always use subscription. */
+  /** Public OSL checkout is a one-time purchase, never a subscription. */
   successUrl: string;
   cancelUrl: string;
-  /** Optional Stripe customer_id; lets us track repeat purchasers. */
-  customerEmail?: string;
-  /** Optional metadata stored on the resulting subscription. */
+  /** Non-personal metadata stored on the Checkout Session. */
   metadata?: Record<string, string>;
 }
 
@@ -36,12 +43,16 @@ export async function createCheckoutSession(
   fetcher: typeof fetch = fetch,
 ): Promise<CheckoutSession> {
   const form = new URLSearchParams();
-  form.set("mode", "subscription");
+  form.set("mode", "payment");
+  // In payment mode this prevents Stripe from creating a reusable Customer
+  // unless the chosen payment method strictly requires one. OSL never passes
+  // an email, Customer id, or future-use instruction.
+  form.set("customer_creation", "if_required");
+  form.set("payment_method_types[0]", "card");
   form.set("line_items[0][price]", input.priceId);
   form.set("line_items[0][quantity]", "1");
   form.set("success_url", input.successUrl);
   form.set("cancel_url", input.cancelUrl);
-  if (input.customerEmail) form.set("customer_email", input.customerEmail);
   if (input.metadata) {
     for (const [k, v] of Object.entries(input.metadata)) {
       form.set(`metadata[${k}]`, v);
@@ -57,9 +68,9 @@ export async function createCheckoutSession(
     body: form.toString(),
   });
   if (!res.ok) {
-    throw new StripeError(
-      `Stripe checkout session failed: ${res.status} ${await res.text()}`,
-    );
+    // Error bodies can contain customer/request metadata. Never route them
+    // through an Error that Worker logging may retain.
+    throw new StripeError(`Stripe checkout session failed (${res.status})`);
   }
   return (await res.json()) as CheckoutSession;
 }
@@ -92,9 +103,7 @@ export async function createBillingPortalSession(
     body: form.toString(),
   });
   if (!res.ok) {
-    throw new StripeError(
-      `Stripe billing portal session failed: ${res.status} ${await res.text()}`,
-    );
+    throw new StripeError(`Stripe billing portal session failed (${res.status})`);
   }
   return (await res.json()) as BillingPortalSession;
 }
@@ -183,6 +192,7 @@ export interface StripeEvent {
   type: string;
   data: { object: Record<string, unknown> };
   created?: number;
+  livemode: boolean;
 }
 
 export function parseEvent(rawBody: string): StripeEvent | null {
@@ -191,6 +201,7 @@ export function parseEvent(rawBody: string): StripeEvent | null {
     if (
       typeof j.id !== "string" ||
       typeof j.type !== "string" ||
+      typeof j.livemode !== "boolean" ||
       !j.data ||
       typeof j.data.object !== "object"
     ) {

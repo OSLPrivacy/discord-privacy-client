@@ -24,8 +24,8 @@ use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
 use keystore::generate_identity;
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 
 fn fresh_state() -> AppState {
     let s = AppState::new();
@@ -68,6 +68,7 @@ fn install_dm_peer(state: &AppState) {
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
 }
@@ -179,8 +180,7 @@ fn mode1_chunks_reassemble_to_original_wire_bytes() {
     let v = complete.wire_bytes[0];
     assert!(
         v == 0x03 || v == 0x04 || v == 0x05,
-        "expected v=3/4/5 byte, got 0x{:02x}",
-        v
+        "expected v=3/4/5 byte, got 0x{v:02x}"
     );
     // raw_wire_bytes is unused beyond establishing the canonical
     // wire shape; keep the variable around to document intent.

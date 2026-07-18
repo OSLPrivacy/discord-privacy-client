@@ -114,6 +114,23 @@ pub struct MessageStore {
     key: aead::Key,
 }
 
+/// Flush destructive updates out of WAL and truncate the WAL file so
+/// pre-burn page images are not left recoverable beside the database.
+/// A non-zero busy result means another reader prevented the security
+/// checkpoint; surface that instead of claiming a completed shred.
+fn checkpoint_after_shred(conn: &Connection) -> Result<(), StoreError> {
+    let (busy, _, _): (i64, i64, i64) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 {
+        return Err(StoreError::Sealer(
+            "burn shred could not truncate SQLite WAL because a reader is active".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl MessageStore {
     /// Open or create the message store at
     /// `<app_data_dir>/messages.sqlite`.
@@ -145,6 +162,10 @@ impl MessageStore {
         // extra fsync per put, which is cheap at chat-rate writes.
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Burn operations overwrite or delete secret-bearing rows.
+        // Ask SQLite to scrub discarded cell content rather than
+        // leaving recoverable copies in free database pages.
+        conn.pragma_update(None, "secure_delete", "ON")?;
 
         schema::migrate(&conn)?;
 
@@ -248,13 +269,9 @@ impl MessageStore {
         Ok(out)
     }
 
-    /// Mark a message burned. Subsequent `get` returns
-    /// `Ok(None)` and `list_by_channel` filters the row out.
-    /// The encrypted row stays in `messages` (with `burned = 1`)
-    /// so the audit trail of "we once held this id" is intact
-    /// for forensic / burn-acknowledgment flows. v1 keeps the
-    /// ciphertext blob in place; a future `burn-with-shred`
-    /// mode could overwrite it with a fresh random blob.
+    /// Mark a message burned and cryptographically shred the local
+    /// ciphertext. Subsequent `get` returns `Ok(None)` and
+    /// `list_by_channel` filters the audit-stub row out.
     ///
     /// Returns [`StoreError::NotFound`] if no row exists for
     /// `discord_message_id`. Callers can distinguish "I burned
@@ -271,13 +288,20 @@ impl MessageStore {
         let Some(_) = burned_flag else {
             return Err(StoreError::NotFound(discord_message_id.to_string()));
         };
-        // Idempotent: re-burning an already-burned row is a
-        // no-op. The UPDATE below is harmless either way; the
-        // explicit early return makes the contract obvious.
+        if burned_flag == Some(1) {
+            return Ok(());
+        }
         conn.execute(
-            "UPDATE messages SET burned = 1 WHERE discord_message_id = ?1",
+            "UPDATE messages
+                SET ciphertext = zeroblob(length(ciphertext)),
+                    nonce = zeroblob(length(nonce)),
+                    wrapped_key = NULL,
+                    burned = 1,
+                    burned_at = strftime('%s','now')
+              WHERE discord_message_id = ?1",
             params![discord_message_id],
         )?;
+        checkpoint_after_shred(&conn)?;
         Ok(())
     }
 
@@ -314,17 +338,22 @@ impl MessageStore {
         let rows = match only_sender_discord_id {
             Some(sender) => conn.execute(
                 "UPDATE messages \
-                    SET wrapped_key = NULL, burned = 1, burned_at = strftime('%s','now') \
+                    SET ciphertext = zeroblob(length(ciphertext)), \
+                        nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
+                        burned = 1, burned_at = strftime('%s','now') \
                   WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
                 params![scope_type, scope_id, sender],
             )?,
             None => conn.execute(
                 "UPDATE messages \
-                    SET wrapped_key = NULL, burned = 1, burned_at = strftime('%s','now') \
+                    SET ciphertext = zeroblob(length(ciphertext)), \
+                        nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
+                        burned = 1, burned_at = strftime('%s','now') \
                   WHERE scope_type = ?1 AND scope_id = ?2",
                 params![scope_type, scope_id],
             )?,
         };
+        checkpoint_after_shred(&conn)?;
         Ok(rows)
     }
 
@@ -337,10 +366,8 @@ impl MessageStore {
     /// `__oslBurnedScopes` cache that skips dispatch, the user's
     /// view of the channel becomes pure ciphertext.
     ///
-    /// WAL-mode sqlite is fine; the WAL syncs on next checkpoint.
-    /// We don't `VACUUM` — deleted rows hold encrypted plaintext
-    /// (not raw plaintext), so leaving them in deleted-but-not-
-    /// vacuumed state is acceptable for v1.
+    /// `secure_delete=ON` scrubs freed database cells and an immediate
+    /// truncating checkpoint removes pre-delete page images from WAL.
     ///
     /// Returns the row count for diagnostic logging.
     pub fn delete_messages_in_channel(&self, channel_id: &str) -> Result<usize, StoreError> {
@@ -349,6 +376,7 @@ impl MessageStore {
             "DELETE FROM messages WHERE channel_id = ?1",
             params![channel_id],
         )?;
+        checkpoint_after_shred(&conn)?;
         Ok(rows)
     }
 
@@ -435,6 +463,7 @@ impl MessageStore {
                 params![scope_type, scope_id],
             )?,
         };
+        checkpoint_after_shred(&conn)?;
         Ok(rows)
     }
 
@@ -485,6 +514,7 @@ impl MessageStore {
             "DELETE FROM attachments WHERE discord_message_id = ?1",
             params![discord_message_id],
         )?;
+        checkpoint_after_shred(&conn)?;
         Ok(rows)
     }
 

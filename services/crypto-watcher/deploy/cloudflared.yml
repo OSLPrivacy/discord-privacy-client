@@ -1,0 +1,12 @@
+tunnel: c54208a3-2924-4534-a132-557d985c2863
+credentials-file: /etc/cloudflared/tunnel-credentials.json
+metrics: 127.0.0.1:20241
+no-autoupdate: true
+
+ingress:
+  - hostname: crypto-watcher.oslprivacy.com
+    service: http://127.0.0.1:8789
+    originRequest:
+      connectTimeout: 5s
+      noHappyEyeballs: false
+  - service: http_status:404

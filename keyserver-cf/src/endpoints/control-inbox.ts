@@ -28,9 +28,9 @@ import { verifyEd25519 } from "../lib/crypto.js";
 import { getUserForVerify } from "../lib/db.js";
 import {
   badRequest,
-  error,
   json,
   notFound,
+  serverError,
   tooMany,
   unauthorized,
 } from "../lib/http.js";
@@ -38,12 +38,17 @@ import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import {
   decodeBase64,
   isNonEmptyBase64,
-  isPlainString,
+  isProtocolId,
 } from "../lib/validation.js";
 
 const CONTROL_INBOX_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_BUNDLE_BYTES = 16 * 1024;
 const MAX_DRAIN_ROWS = 64;
+// At the maximum 16 KiB payload this bounds one recipient's pending
+// opaque data to 8 MiB. Applied/deleted messages stop counting, while
+// replay receipts remain until their normal seven-day expiry.
+const MAX_PENDING_ROWS_PER_RECIPIENT = 512;
+const MAX_PENDING_ROWS_PER_SENDER_RECIPIENT = 32;
 const INBOX_ID_BYTES = 16;
 const INBOX_ID_HEX_LEN = INBOX_ID_BYTES * 2;
 const INBOX_ID_HEX_RE = /^[0-9a-f]{32}$/;
@@ -135,6 +140,27 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(hash);
 }
 
+async function findRequestReceipt(
+  db: D1Database,
+  senderId: string,
+  requestDigest: Uint8Array,
+): Promise<{ id: string; expires_at: number } | null> {
+  const row = await db
+    .prepare(
+      `SELECT inbox_id, expires_at
+         FROM control_inbox_requests
+        WHERE sender_id = ? AND request_digest = ?`,
+    )
+    .bind(senderId, requestDigest)
+    .first<{ inbox_id: unknown; expires_at: number }>();
+  if (!row) return null;
+  const id = bytesToU8(row.inbox_id);
+  if (!id || id.length !== INBOX_ID_BYTES) {
+    throw new Error("invalid inbox id in request receipt");
+  }
+  return { id: idToHex(id), expires_at: row.expires_at };
+}
+
 export async function handleControlInboxPost(
   request: Request,
   env: Env,
@@ -152,10 +178,10 @@ export async function handleControlInboxPost(
     return badRequest("malformed JSON body");
   }
 
-  if (!isPlainString(body.sender_id)) return badRequest("sender_id required");
-  if (!isPlainString(body.recipient_id))
-    return badRequest("recipient_id required");
-  if (!isPlainString(body.scope_id)) return badRequest("scope_id required");
+  if (!isProtocolId(body.sender_id)) return badRequest("sender_id must be a bounded identifier");
+  if (!isProtocolId(body.recipient_id))
+    return badRequest("recipient_id must be a bounded identifier");
+  if (!isProtocolId(body.scope_id)) return badRequest("scope_id must be a bounded identifier");
   if (!isNonEmptyBase64(body.bundle_b64))
     return badRequest("bundle_b64 required (non-empty base64)");
   if (!isNonEmptyBase64(body.signature_b64))
@@ -165,7 +191,8 @@ export async function handleControlInboxPost(
       `timestamp_ms required (positive number within ${CONTROL_INBOX_FRESHNESS_WINDOW_MS}ms of server clock)`,
     );
 
-  const bundle = decodeBase64(body.bundle_b64);
+  const bundle = safeDecodeBase64(body.bundle_b64);
+  if (!bundle) return badRequest("bundle_b64 must be valid base64");
   if (bundle.length === 0) return badRequest("bundle is empty");
   if (bundle.length > MAX_BUNDLE_BYTES)
     return badRequest(`bundle exceeds ${MAX_BUNDLE_BYTES} bytes`);
@@ -190,33 +217,139 @@ export async function handleControlInboxPost(
   const ok = await verifyEd25519(pubBytes, message, sigBytes);
   if (!ok) return unauthorized("signature verification failed");
 
+  // Hash the exact canonical bytes that were just verified. A receipt
+  // survives deletion of the inbox item, preventing a captured request
+  // from re-enqueueing after the recipient applies it.
+  const requestDigest = await sha256(message);
+  const prior = await findRequestReceipt(
+    env.DB,
+    body.sender_id,
+    requestDigest,
+  );
+  if (prior) return json({ ...prior, replayed: true }, { status: 200 });
+
+  // Do not accept opaque storage for arbitrary/nonexistent recipient
+  // identifiers. Perform this only after sender authentication so the
+  // route is not an unauthenticated registration oracle.
+  const recipient = await getUserForVerify(env.DB, body.recipient_id);
+  if (!recipient) return notFound();
+
+  const now = Math.floor(Date.now() / 1000);
+  const pending = await env.DB
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM control_inbox
+        WHERE recipient_id = ? AND expires_at >= ?`,
+    )
+    .bind(body.recipient_id, now)
+    .first<{ count: number }>();
+  if ((pending?.count ?? 0) >= MAX_PENDING_ROWS_PER_RECIPIENT) {
+    return tooMany(60);
+  }
+  const pendingFromSender = await env.DB
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM control_inbox
+        WHERE recipient_id = ? AND sender_id = ? AND expires_at >= ?`,
+    )
+    .bind(body.recipient_id, body.sender_id, now)
+    .first<{ count: number }>();
+  if ((pendingFromSender?.count ?? 0) >= MAX_PENDING_ROWS_PER_SENDER_RECIPIENT) {
+    return tooMany(60);
+  }
+
   // Insert. Retry on the (vanishingly unlikely) primary-key
   // collision; 128-bit random id space means it's basically never.
-  const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + CONTROL_INBOX_TTL_SECONDS;
+  const receiptExpiresAt =
+    now + Math.ceil((2 * CONTROL_INBOX_FRESHNESS_WINDOW_MS) / 1000);
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = genInboxId();
     try {
-      await env.DB.prepare(
-        "INSERT INTO control_inbox (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      )
-        .bind(
-          id,
-          body.recipient_id,
-          body.sender_id,
-          body.scope_id,
-          bundle,
-          expiresAt,
-          now,
-        )
-        .run();
+      const results = await env.DB.batch([
+        env.DB
+          .prepare(
+            `INSERT INTO control_inbox
+               (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+              WHERE EXISTS (
+                SELECT 1 FROM users
+                 WHERE user_id = ?3 AND ik_ed25519_pub = ?8
+              )
+                AND EXISTS (
+                  SELECT 1 FROM users WHERE user_id = ?2
+                )`,
+          )
+          .bind(
+            id,
+            body.recipient_id,
+            body.sender_id,
+            body.scope_id,
+            bundle,
+            expiresAt,
+            now,
+            sender.ik_ed25519_pub,
+          ),
+        env.DB
+          .prepare(
+            `INSERT INTO control_inbox_requests
+               (sender_id, request_digest, inbox_id, recipient_id, expires_at)
+             SELECT ?1, ?2, ?3, ?4, ?5
+              WHERE EXISTS (
+                SELECT 1 FROM users
+                 WHERE user_id = ?1 AND ik_ed25519_pub = ?6
+              )
+                AND EXISTS (
+                  SELECT 1 FROM control_inbox
+                   WHERE id = ?3 AND sender_id = ?1 AND recipient_id = ?4
+                )`,
+          )
+          .bind(
+            body.sender_id,
+            requestDigest,
+            id,
+            body.recipient_id,
+            receiptExpiresAt,
+            sender.ik_ed25519_pub,
+          ),
+      ]);
+      if (
+        (results[0]?.meta?.changes ?? 0) !== 1 ||
+        (results[1]?.meta?.changes ?? 0) !== 1
+      ) {
+        const currentSender = await getUserForVerify(env.DB, body.sender_id);
+        if (currentSender?.ik_ed25519_pub !== sender.ik_ed25519_pub) {
+          return unauthorized("sender identity changed during authorization");
+        }
+        if (!(await getUserForVerify(env.DB, body.recipient_id))) return notFound();
+        throw new Error("control inbox authenticated insert made no change");
+      }
       return json(
         { id: idToHex(id), expires_at: expiresAt },
         { status: 201 },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("UNIQUE") || msg.includes("PRIMARY")) continue;
+      if (
+        msg.includes("control inbox recipient quota exceeded") ||
+        msg.includes("control inbox sender-recipient quota exceeded")
+      ) {
+        return tooMany(60);
+      }
+      if (msg.includes("UNIQUE") || msg.includes("PRIMARY")) {
+        // Either a simultaneous retry won the digest CAS, or the
+        // random inbox id collided. Distinguish them by reading the
+        // durable receipt; only the latter should allocate a new id.
+        const raced = await findRequestReceipt(
+          env.DB,
+          body.sender_id,
+          requestDigest,
+        );
+        if (raced) {
+          return json({ ...raced, replayed: true }, { status: 200 });
+        }
+        continue;
+      }
       throw err;
     }
   }
@@ -230,13 +363,9 @@ export async function handleControlInboxGet(
 ): Promise<Response> {
   try {
     return await handleControlInboxGetInner(request, env, userId);
-  } catch (err) {
-    // Surface the real cause instead of the dispatch-level opaque
-    // "internal error" so a failing drain is diagnosable from the
-    // client console.
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[control-inbox GET] error:", msg);
-    return error(500, `control-inbox GET: ${msg}`);
+  } catch {
+    console.error("[control-inbox GET] failed");
+    return serverError("internal error");
   }
 }
 
@@ -259,7 +388,7 @@ async function handleControlInboxGetInner(
   const sigB64 = url.searchParams.get("sig") || "";
   if (!freshnessOk(ts)) return badRequest("ts required (?ts= within window)");
   if (!sigB64) return badRequest("sig required (?sig=)");
-  if (!isPlainString(userId)) return badRequest("user_id required");
+  if (!isProtocolId(userId)) return badRequest("user_id must be a bounded identifier");
 
   const user = await getUserForVerify(env.DB, userId);
   if (!user) return notFound();
@@ -333,7 +462,7 @@ export async function handleControlInboxDelete(
   } catch {
     return badRequest("malformed JSON body");
   }
-  if (!isPlainString(body.user_id)) return badRequest("user_id required");
+  if (!isProtocolId(body.user_id)) return badRequest("user_id must be a bounded identifier");
   if (!isNonEmptyBase64(body.signature_b64))
     return badRequest("signature_b64 required");
   if (!freshnessOk(body.timestamp_ms))

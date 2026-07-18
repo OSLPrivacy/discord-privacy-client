@@ -41,16 +41,17 @@ pub mod pending_rotation;
 pub mod prekeys;
 pub mod recipients;
 pub mod sealer;
+pub mod signed_get;
 pub mod storage;
 pub mod unregister;
+pub mod wrapped_key;
 
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
-pub use unregister::{canonical_unregister_bytes, sign_unregister, UNREGISTER_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
     BurnResponse, ControlInboxItem, ControlInboxPostResponse, KeyServerClient,
     LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
-    RegisterResponse, ReplenishResponse,
+    RegisterResponse, ReplenishResponse, WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,
@@ -78,13 +79,23 @@ pub use prekeys::{
 };
 pub use recipients::{
     account_dir, active_account_dir, get_recipients, get_recipients_from_path, osl_base_dir,
-    osl_config_dir, set_active_account_dir, RecipientError,
+    osl_config_dir, set_active_account_dir, set_base_dir_override, RecipientError,
 };
 pub use sealer::{
-    evict_tpm_key, select_best_sealer, KeyringSealer, MemorySealer, NoOpSealer, Sealer,
-    SealerError, TpmSealer, METHOD_KEYRING, METHOD_MEMORY, METHOD_NOOP, METHOD_TPM,
+    evict_tpm_key, select_best_sealer, verify_sealer_round_trip, KeyringSealer, MemorySealer,
+    NoOpSealer, Sealer, SealerError, TpmSealer, METHOD_EPHEMERAL, METHOD_KEYRING, METHOD_MEMORY,
+    METHOD_NOOP, METHOD_TPM,
+};
+pub use signed_get::{
+    canonical_prekey_bundle_get_bytes, canonical_wrapped_key_get_bytes, sign_prekey_bundle_get,
+    sign_wrapped_key_get, PREKEY_BUNDLE_GET_DOMAIN, WRAPPED_KEY_GET_DOMAIN,
 };
 pub use storage::{load_identity, save_identity, IdentityOnDisk};
+pub use unregister::{canonical_unregister_bytes, sign_unregister, UNREGISTER_DOMAIN};
+pub use wrapped_key::{
+    canonical_wrapped_key_post_bytes, sign_wrapped_key_post, WrappedKeyUpload,
+    WRAPPED_KEY_POST_DOMAIN,
+};
 
 use thiserror::Error;
 

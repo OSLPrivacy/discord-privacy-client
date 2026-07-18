@@ -1,0 +1,36 @@
+[Unit]
+Description=OSL Monero view-only wallet RPC
+After=network-online.target monerod.service
+Wants=network-online.target monerod.service
+StartLimitIntervalSec=300
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=osl-crypto
+Group=osl-crypto
+UMask=0077
+ExecStart=/usr/local/bin/monero-wallet-rpc --wallet-file /var/lib/osl-crypto/wallets/osl-view-only --password-file /etc/osl-crypto/monero-wallet-password --daemon-address 127.0.0.1:18081 --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18088 --disable-rpc-login --non-interactive
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths=/var/lib/osl-crypto/wallets
+ReadOnlyPaths=/etc/osl-crypto/monero-wallet-password
+
+[Install]
+WantedBy=multi-user.target

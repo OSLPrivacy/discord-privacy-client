@@ -58,11 +58,13 @@ use ipc::peer_map::{load_peer_map_from_path, PeerMapError};
 use ipc::AppState;
 use keystore::{generate_identity, load_identity, save_identity, select_best_sealer};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use store::MessageStore;
 
 /// On-disk schema for `<config_dir>/keyserver.json`. `base_url`
-/// and `user_id` required; `admin_token` optional. Missing or
+/// and `user_id` required; `client_token` optional. The legacy
+/// `admin_token` key is accepted only as a migration alias.
 /// malformed file → bootstrap logs and skips.
 #[derive(Debug, Deserialize)]
 struct KeyserverConfig {
@@ -75,13 +77,13 @@ struct KeyserverConfig {
     /// `"bob"`, the Discord username, whatever). Phase 5
     /// integrates this with Discord OAuth.
     user_id: String,
-    /// Phase B pre-shared admin token. Required for state-mutating
+    /// Coarse pre-shared client token. Required for state-mutating
     /// keyserver routes when the deployed keyserver has
-    /// `OSL_KEYSERVER_ADMIN_TOKEN` set. Leave unset in
+    /// `OSL_KEYSERVER_CLIENT_TOKEN` set. Leave unset in
     /// `keyserver.json` (or set to `null`) when running against an
     /// unsecured local-dev keyserver.
-    #[serde(default)]
-    admin_token: Option<String>,
+    #[serde(default, alias = "admin_token")]
+    client_token: Option<String>,
 }
 
 /// Run the autostart sequence. Logs progress at `info!` (visible
@@ -91,6 +93,17 @@ struct KeyserverConfig {
 ///
 /// Caller: `tauri::Builder::setup` once per app launch.
 pub fn run_autostart(state: &AppState) {
+    run_autostart_mode(state, true);
+}
+
+/// Load every local OSL artifact without waiting on the key-server network.
+/// Desktop shells can render and unlock immediately, then call
+/// [`register_after_local_bootstrap`] from a bounded background worker.
+pub fn run_autostart_local(state: &AppState) {
+    run_autostart_mode(state, false);
+}
+
+fn run_autostart_mode(state: &AppState, register_online: bool) {
     // Multi-account: before resolving the config dir, point it at the
     // persisted active account (if any). With no marker this is a
     // no-op and osl_config_dir() returns the shared base exactly as a
@@ -125,6 +138,21 @@ pub fn run_autostart(state: &AppState) {
     }
     tracing::info!(config_dir = %dir.display(), "OSL bootstrap: starting");
 
+    match ipc::commands::recover_orphaned_account_imports(&dir) {
+        Ok(0) => {}
+        Ok(count) => tracing::warn!(
+            count,
+            "OSL bootstrap: restored account state after interrupted import"
+        ),
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "OSL bootstrap: import recovery failed; refusing to load mixed account state"
+            );
+            return;
+        }
+    }
+
     // Device-level config (keyserver URL/token, license, app prefs,
     // password gate) lives at the shared BASE, not per-account — so a
     // multi-account switch doesn't reset prefs or drop a paid license.
@@ -141,14 +169,19 @@ pub fn run_autostart(state: &AppState) {
     // installs the KeyServerClient and registers its identity
     // pubkeys. Previously this whole block was skipped when
     // keyserver.json was absent, leaving the machine absent from
-    // /v1/pubkeys so no peer could encrypt to it. `admin_token`
+    // /v1/pubkeys so no peer could encrypt to it. `client_token`
     // (and identity seeding) still come from keyserver.json when
     // present. Identity lifecycle is unchanged — register still
     // requires a loaded identity.
-    if identity_loaded {
+    if identity_loaded && register_online {
         let base_url = ipc::commands::resolve_keyserver_base_url(&base);
-        let admin_token = keyserver_cfg.as_ref().and_then(|c| c.admin_token.clone());
-        init_keyserver_and_register(state, &base_url, admin_token);
+        let client_token = keyserver_cfg.as_ref().and_then(|c| c.client_token.clone());
+        init_keyserver_and_register(state, &base_url, client_token);
+    } else if identity_loaded {
+        let base_url = ipc::commands::resolve_keyserver_base_url(&base);
+        let client_token = keyserver_cfg.as_ref().and_then(|c| c.client_token.clone());
+        install_keyserver_without_register(state, &base_url, client_token);
+        tracing::info!("OSL bootstrap: deferred key-server registration until after local launch");
     } else {
         tracing::info!(
             "OSL bootstrap: no identity loaded; skipping init_keyserver \
@@ -319,6 +352,44 @@ pub fn run_autostart(state: &AppState) {
     tracing::info!("OSL bootstrap: done");
 }
 
+/// Perform the network portion omitted by [`run_autostart_local`]. The caller
+/// must run this outside a UI/setup thread.
+pub fn register_after_local_bootstrap(state: &AppState) {
+    if state
+        .identity
+        .lock()
+        .map(|identity| identity.is_none())
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let Ok(base) = keystore::osl_base_dir() else {
+        return;
+    };
+    let keyserver_cfg = read_keyserver_config(&base);
+    let base_url = ipc::commands::resolve_keyserver_base_url(&base);
+    let client_token = keyserver_cfg.and_then(|config| config.client_token);
+    init_keyserver_and_register(state, &base_url, client_token);
+}
+
+fn install_keyserver_without_register(
+    state: &AppState,
+    base_url: &str,
+    client_token: Option<String>,
+) {
+    let client = match keystore::KeyServerClient::new(base_url) {
+        Ok(client) => client.with_client_token(client_token),
+        Err(error) => {
+            tracing::warn!(%error, "OSL bootstrap: deferred key-server client could not be created");
+            return;
+        }
+    };
+    let mut slot = state.keyserver.lock().expect("keyserver mutex poisoned");
+    if slot.is_none() {
+        *slot = Some(client);
+    }
+}
+
 // ============================================================
 // Multi-account (#2): each Discord account gets its own OSL identity +
 // state under `<base>/accounts/<snowflake>/`. The active account is
@@ -348,31 +419,89 @@ fn active_marker_path() -> Option<std::path::PathBuf> {
 
 fn read_active_marker() -> Option<String> {
     let p = active_marker_path()?;
-    let s = std::fs::read_to_string(p).ok()?;
-    let s = s.trim();
-    if s.chars().all(|c| c.is_ascii_digit()) && (17..=20).contains(&s.len()) {
-        Some(s.to_string())
-    } else {
-        None
-    }
+    read_active_marker_at(&p)
 }
 
-fn write_active_marker(snowflake: &str) {
-    if let Some(p) = active_marker_path() {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match std::fs::write(&p, snowflake) {
-            Ok(()) => eprintln!(
-                "[OSL][multi-account] wrote active marker={snowflake} → {}",
-                p.display()
-            ),
-            Err(e) => eprintln!(
-                "[OSL][multi-account] FAILED to write active marker {}: {e}",
-                p.display()
-            ),
-        }
+fn read_active_marker_at(p: &Path) -> Option<String> {
+    if let Some(value) = read_snowflake_marker(&p) {
+        return Some(value);
     }
+
+    // A portable replacement briefly parks the previous marker in .bak.
+    // If the process or machine died in that tiny window, recover the last
+    // complete marker; never interpret the incomplete .tmp file.
+    let backup = p.with_extension("bak");
+    let value = read_snowflake_marker(&backup)?;
+    let _ = std::fs::rename(&backup, &p);
+    Some(value)
+}
+
+fn read_snowflake_marker(path: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(path).ok()?;
+    let s = s.trim();
+    if s.chars().all(|c| c.is_ascii_digit()) && (17..=20).contains(&s.len()) {
+        return Some(s.to_string());
+    }
+    None
+}
+
+fn write_active_marker(snowflake: &str) -> Result<(), String> {
+    let p = active_marker_path().ok_or_else(|| {
+        "OSL: active marker: unable to resolve the OSL base directory".to_string()
+    })?;
+    write_active_marker_at(&p, snowflake)
+        .map_err(|e| format!("OSL: active marker: failed to persist {}: {e}", p.display()))?;
+    eprintln!(
+        "[OSL][multi-account] wrote active marker={snowflake} → {}",
+        p.display()
+    );
+    Ok(())
+}
+
+/// Crash-recoverable, portable marker replacement. `rename(tmp, target)`
+/// cannot replace an existing file on every supported Windows version, so
+/// retain the last complete marker as `.bak` until the new marker is live.
+fn write_active_marker_at(path: &Path, snowflake: &str) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("active marker has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+
+    let tmp = path.with_extension("tmp");
+    let backup = path.with_extension("bak");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp)?;
+    // Keep the legacy digits-only format so downgrading to an older client
+    // cannot make it ignore the per-account directory. Crash safety comes
+    // from temp + backup replacement rather than an incompatible envelope.
+    file.write_all(snowflake.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+
+    if backup.exists() {
+        std::fs::remove_file(&backup)?;
+    }
+    let had_previous = path.exists();
+    if had_previous {
+        std::fs::rename(path, &backup)?;
+    }
+    if let Err(install_error) = std::fs::rename(&tmp, path) {
+        if had_previous {
+            let _ = std::fs::rename(&backup, path);
+        }
+        let _ = std::fs::remove_file(&tmp);
+        return Err(install_error);
+    }
+    if had_previous {
+        // The new marker is already the committed source of truth. A stale
+        // backup is harmless and will be cleaned before the next replacement;
+        // do not report a failed switch after the commit point.
+        let _ = std::fs::remove_file(&backup);
+    }
+    Ok(())
 }
 
 /// At launch, set the config-dir override to the active account's dir
@@ -414,64 +543,179 @@ fn reset_account_scoped_state(state: &AppState) {
     use std::sync::atomic::Ordering;
     *state.identity.lock().expect("identity poisoned") = None;
     *state.keyserver.lock().expect("keyserver poisoned") = None;
+    *state
+        .registration_alert
+        .lock()
+        .expect("registration_alert poisoned") = None;
+    state.sender_pubkey_cache.clear();
     *state.message_store.lock().expect("message_store poisoned") = None;
     *state.peer_map.lock().expect("peer_map poisoned") = Default::default();
     *state.whitelist_state.lock().expect("whitelist poisoned") = Default::default();
-    *state.server_defaults.lock().expect("server_defaults poisoned") = Default::default();
+    *state
+        .server_defaults
+        .lock()
+        .expect("server_defaults poisoned") = Default::default();
     *state.sender_key_state.lock().expect("sender_key poisoned") = Default::default();
     *state.burned_scopes.lock().expect("burned poisoned") = Default::default();
     *state.scope_membership.lock().expect("membership poisoned") = Default::default();
-    *state.channel_members.lock().expect("channel_members poisoned") = Default::default();
+    *state
+        .channel_members
+        .lock()
+        .expect("channel_members poisoned") = Default::default();
     *state.key_change_alerts.lock().expect("key_change poisoned") = Default::default();
     *state.friend_ids.lock().expect("friend_ids poisoned") = Default::default();
     *state.guild_list.lock().expect("guild_list poisoned") = Default::default();
-    *state.recovery_guard.lock().expect("recovery_guard poisoned") = Default::default();
+    *state
+        .recovery_guard
+        .lock()
+        .expect("recovery_guard poisoned") = Default::default();
+    state
+        .mode1_reassembly
+        .lock()
+        .expect("mode1_reassembly poisoned")
+        .clear();
+    *state
+        .recovery_token
+        .lock()
+        .expect("recovery_token poisoned") = None;
+    *state
+        .last_persist_error
+        .lock()
+        .expect("last_persist_error poisoned") = None;
     state
         .identity_regenerated_this_launch
         .store(false, Ordering::SeqCst);
+}
+
+/// Reload the currently selected account after a trusted on-disk restore.
+/// The caller must hold `account_switch_lock` so no switch can interleave the
+/// reset/reload sequence.
+pub fn reload_active_account_state(state: &AppState) -> Result<(), String> {
+    let expected = read_active_marker().or_else(|| {
+        state
+            .identity
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|id| id.discord_snowflake.clone()))
+    });
+    reset_account_scoped_state(state);
+    run_autostart(state);
+    let loaded = state
+        .identity
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|id| id.discord_snowflake.clone()));
+    if expected.is_some() && loaded != expected {
+        return Err(format!(
+            "OSL: account reload mismatch: expected {:?}, loaded {:?}",
+            expected, loaded
+        ));
+    }
+    Ok(())
 }
 
 /// One-time migration: an existing single-account install has its files
 /// flat at the base. Copy them (NON-destructively — the flat originals
 /// remain as a backup) into `accounts/<bound_snowflake>/` and write the
 /// active marker, bringing that account into the multi-account system.
-fn migrate_flat_account_if_needed(bound_snowflake: &str) {
-    let Ok(base) = keystore::osl_base_dir() else {
-        return;
-    };
+fn migrate_flat_account_if_needed(bound_snowflake: &str) -> Result<(), String> {
+    let base = keystore::osl_base_dir()
+        .map_err(|e| format!("OSL: flat-account migration: base dir: {e}"))?;
     // Already migrated (a marker exists) → nothing to do.
     if read_active_marker().is_some() {
-        return;
+        return Ok(());
     }
-    let Ok(adir) = keystore::account_dir(bound_snowflake) else {
-        return;
-    };
+    let adir = keystore::account_dir(bound_snowflake)
+        .map_err(|e| format!("OSL: flat-account migration: account dir: {e}"))?;
     if adir.join("identity.json").exists() {
         // Account dir already populated; just adopt it.
-        write_active_marker(bound_snowflake);
+        validate_account_identity(&adir, bound_snowflake)?;
+        write_active_marker(bound_snowflake)?;
         keystore::set_active_account_dir(Some(adir));
-        return;
+        return Ok(());
     }
-    let _ = std::fs::create_dir_all(adir.join("store"));
-    for rel in ACCOUNT_STATE_FILES {
-        let src = base.join(rel);
-        if src.exists() {
-            let _ = std::fs::copy(&src, adir.join(rel));
+
+    if adir.exists()
+        && std::fs::read_dir(&adir)
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_some()
+    {
+        return Err(format!(
+            "OSL: flat-account migration: {} is partially populated; refusing to overwrite it",
+            adir.display()
+        ));
+    }
+    if adir.exists() {
+        std::fs::remove_dir(&adir)
+            .map_err(|e| format!("OSL: flat-account migration: remove empty target: {e}"))?;
+    }
+    let parent = adir
+        .parent()
+        .ok_or_else(|| "OSL: flat-account migration: account dir has no parent".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("OSL: flat-account migration: create accounts dir: {e}"))?;
+    let stage = parent.join(format!(
+        ".{bound_snowflake}.migrate-{}.tmp",
+        std::process::id()
+    ));
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage)
+            .map_err(|e| format!("OSL: flat-account migration: clear stale stage: {e}"))?;
+    }
+
+    let copy_result = (|| -> Result<(), String> {
+        std::fs::create_dir_all(stage.join("store")).map_err(|e| format!("create stage: {e}"))?;
+        for rel in ACCOUNT_STATE_FILES {
+            let src = base.join(rel);
+            if src.exists() {
+                std::fs::copy(&src, stage.join(rel)).map_err(|e| format!("copy {rel}: {e}"))?;
+            }
         }
-    }
-    // Message store DB lives under store/.
-    for db in ["messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm"] {
-        let src = base.join("store").join(db);
-        if src.exists() {
-            let _ = std::fs::copy(&src, adir.join("store").join(db));
+        for db in [
+            "messages.sqlite",
+            "messages.sqlite-wal",
+            "messages.sqlite-shm",
+        ] {
+            let src = base.join("store").join(db);
+            if src.exists() {
+                std::fs::copy(&src, stage.join("store").join(db))
+                    .map_err(|e| format!("copy store/{db}: {e}"))?;
+            }
         }
+        validate_account_identity(&stage, bound_snowflake)?;
+        std::fs::rename(&stage, &adir).map_err(|e| format!("install stage: {e}"))?;
+        Ok(())
+    })();
+    if let Err(e) = copy_result {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(format!("OSL: flat-account migration failed: {e}"));
     }
-    write_active_marker(bound_snowflake);
+    write_active_marker(bound_snowflake)?;
     keystore::set_active_account_dir(Some(adir));
     tracing::info!(
         snowflake = %bound_snowflake,
         "OSL multi-account: migrated flat install into per-account dir (originals kept as backup)"
     );
+    Ok(())
+}
+
+fn validate_account_identity(dir: &Path, snowflake: &str) -> Result<(), String> {
+    let path = dir.join("identity.json");
+    let sealer = keystore::select_best_sealer();
+    let identity = load_identity(&path, sealer.as_ref())
+        .map_err(|e| format!("identity {} is unreadable: {e}", path.display()))?;
+    let bound = identity
+        .discord_snowflake
+        .as_deref()
+        .unwrap_or(identity.user_id.as_str());
+    if bound != snowflake {
+        return Err(format!(
+            "identity {} is bound to {bound}, not {snowflake}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Instant account switch (#2). Idempotent when `snowflake` is already
@@ -480,10 +724,16 @@ fn migrate_flat_account_if_needed(bound_snowflake: &str) {
 /// there if it's a brand-new account), and re-run the load sequence so
 /// AppState reflects that account. The previous account's files stay on
 /// disk in its own dir, ready to switch back to.
-pub fn switch_account(state: &AppState, snowflake: String) -> Result<(), String> {
+pub fn switch_account(state: &AppState, snowflake: String) -> Result<bool, String> {
     if !snowflake.chars().all(|c| c.is_ascii_digit()) || !(17..=20).contains(&snowflake.len()) {
-        return Err(format!("OSL: switch_account: invalid snowflake '{snowflake}'"));
+        return Err(format!(
+            "OSL: switch_account: invalid snowflake '{snowflake}'"
+        ));
     }
+    let _switch_guard = state
+        .account_switch_lock
+        .lock()
+        .map_err(|_| "OSL: switch_account: switch lock poisoned".to_string())?;
 
     // What account is active right now?
     let current = read_active_marker().or_else(|| {
@@ -502,21 +752,58 @@ pub fn switch_account(state: &AppState, snowflake: String) -> Result<(), String>
 
     // First-run migration: bring the existing flat account into the
     // system under its own snowflake before doing anything else.
+    let mut migrated_flat_account = false;
     if read_active_marker().is_none() {
         if let Some(cur) = current.clone() {
-            migrate_flat_account_if_needed(&cur);
+            // Close SQLite before copying its main/WAL files. Copying a live
+            // WAL database file-by-file can produce an internally inconsistent
+            // account snapshot. Dropping the last connection checkpoints it.
+            let old_store = state
+                .message_store
+                .lock()
+                .map_err(|_| "OSL: switch_account: message_store lock poisoned".to_string())?
+                .take();
+            drop(old_store);
+            if let Err(e) = migrate_flat_account_if_needed(&cur) {
+                // Migration does not flip the marker/override on failure. Reopen
+                // the still-active flat store before returning the error.
+                if let Ok(base) = keystore::osl_base_dir() {
+                    open_message_store(state, &base);
+                }
+                return Err(e);
+            }
+            migrated_flat_account = true;
         }
     }
 
     if current.as_deref() == Some(snowflake.as_str()) {
         // Already this account — just make sure the override points at
         // its dir (post-migration) and we're registered.
-        if let Ok(adir) = keystore::account_dir(&snowflake) {
-            if adir.join("identity.json").exists() {
-                keystore::set_active_account_dir(Some(adir));
+        let adir = keystore::account_dir(&snowflake)
+            .map_err(|e| format!("OSL: switch_account: account_dir: {e}"))?;
+        validate_account_identity(&adir, &snowflake)?;
+        write_active_marker(&snowflake)?;
+        keystore::set_active_account_dir(Some(adir));
+        if migrated_flat_account {
+            // The account did not change, but every state-file consumer and
+            // the SQLite handle must move from the legacy flat directory to
+            // the new per-account directory immediately.
+            reset_account_scoped_state(state);
+            run_autostart(state);
+            let reloaded = state
+                .identity
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().and_then(|id| id.discord_snowflake.clone()))
+                .as_deref()
+                == Some(snowflake.as_str());
+            if !reloaded {
+                return Err(format!(
+                    "OSL: switch_account: migrated account {snowflake} failed to reload"
+                ));
             }
         }
-        return Ok(());
+        return Ok(false);
     }
 
     tracing::info!(
@@ -525,30 +812,69 @@ pub fn switch_account(state: &AppState, snowflake: String) -> Result<(), String>
         "OSL multi-account: switching account"
     );
 
-    // Switch: reset state, flip the active dir, ensure the target
-    // account exists, reload.
-    reset_account_scoped_state(state);
+    // Prepare and validate the target completely before touching the active
+    // marker, process-global directory, or current account's AppState.
     let adir = keystore::account_dir(&snowflake)
         .map_err(|e| format!("OSL: switch_account: account_dir: {e}"))?;
-    let _ = std::fs::create_dir_all(&adir);
-    keystore::set_active_account_dir(Some(adir.clone()));
-    write_active_marker(&snowflake);
+    std::fs::create_dir_all(&adir)
+        .map_err(|e| format!("OSL: switch_account: create account dir: {e}"))?;
 
-    // Brand-new account: generate a fresh seed-phrase identity bound to
-    // this snowflake and save it, so the reload below loads it (and the
-    // user gets a recovery phrase for it).
+    // The Discord web origin may request a switch only to an account already
+    // provisioned on this device. It is not a trusted authority for creating
+    // and registering a cryptographic identity for an arbitrary snowflake.
+    // New-account creation belongs in an explicit trusted-local confirmation
+    // flow (Settings/onboarding).
     if !adir.join("identity.json").exists() {
-        let mut id = keystore::generate_identity(snowflake.clone());
-        id.discord_snowflake = Some(snowflake.clone());
-        let sealer = keystore::select_best_sealer();
-        if let Err(e) = save_identity(&adir.join("identity.json"), &id, sealer.as_ref()) {
-            return Err(format!("OSL: switch_account: save new identity: {e}"));
-        }
+        return Err(format!(
+            "OSL: account {snowflake} is not provisioned on this device. Open OSL Settings to add it; no identity was created."
+        ));
     }
+    validate_account_identity(&adir, &snowflake)?;
+
+    let previous_marker = current.clone();
+    let previous_dir = keystore::active_account_dir();
+    write_active_marker(&snowflake)?;
+    keystore::set_active_account_dir(Some(adir.clone()));
+    reset_account_scoped_state(state);
 
     // Re-run the full, tested load sequence against the new active dir.
     run_autostart(state);
-    Ok(())
+    let loaded_target = state
+        .identity
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|id| id.discord_snowflake.clone()))
+        .as_deref()
+        == Some(snowflake.as_str());
+    if loaded_target {
+        return Ok(true);
+    }
+
+    // The target was valid on disk but failed to load into AppState. Restore
+    // the previous durable/process pointers and reload it before reporting
+    // failure, so an Err never leaves the client half-switched.
+    let marker_error = if let Some(rollback_marker) = previous_marker.as_deref() {
+        write_active_marker(rollback_marker).err()
+    } else if let Some(path) = active_marker_path() {
+        std::fs::remove_file(&path)
+            .err()
+            .map(|e| format!("OSL: switch_account: clear failed target marker: {e}"))
+    } else {
+        Some("OSL: switch_account: no prior marker and marker path unavailable".to_string())
+    };
+    keystore::set_active_account_dir(previous_dir);
+    reset_account_scoped_state(state);
+    run_autostart(state);
+    let restored = previous_marker.as_deref().unwrap_or("legacy base account");
+    if let Some(marker_error) = marker_error {
+        Err(format!(
+            "OSL: switch_account: target {snowflake} failed to load; restored {restored} in memory, but durable marker rollback failed: {marker_error}"
+        ))
+    } else {
+        Err(format!(
+            "OSL: switch_account: target {snowflake} failed to load; restored {restored}"
+        ))
+    }
 }
 
 /// Open the at-rest-encrypted [`MessageStore`] under
@@ -966,20 +1292,77 @@ fn load_or_generate_identity(
 /// the client — exactly as before. Both steps log and continue on
 /// failure; a `register` failure still leaves the client installed so
 /// subsequent `fetch_pubkeys` calls can succeed.
-fn init_keyserver_and_register(
-    state: &AppState,
-    base_url: &str,
-    admin_token: Option<String>,
-) {
-    ipc::commands::ensure_keyserver_registered(state, base_url, admin_token);
+fn init_keyserver_and_register(state: &AppState, base_url: &str, client_token: Option<String>) {
+    ipc::commands::ensure_keyserver_registered(state, base_url, client_token);
 }
 
 /// Convenience: ensure the parent directory of `path` exists
 /// (recursive). No-op if it already does.
-fn ensure_parent_exists(path: &PathBuf) -> std::io::Result<()> {
+fn ensure_parent_exists(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod multi_account_marker_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "osl-bootstrap-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn marker_replacement_leaves_only_a_complete_value() {
+        let dir = temp_dir("replace");
+        let path = dir.join("active");
+        write_active_marker_at(&path, "111111111111111111").expect("first marker");
+        write_active_marker_at(&path, "222222222222222222").expect("replacement marker");
+
+        assert_eq!(
+            read_active_marker_at(&path).as_deref(),
+            Some("222222222222222222")
+        );
+        assert!(!path.with_extension("tmp").exists());
+        assert!(!path.with_extension("bak").exists());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn incomplete_temp_is_never_accepted_and_complete_backup_recovers() {
+        let dir = temp_dir("recovery");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("active");
+        let backup = path.with_extension("bak");
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&backup, "333333333333333333").expect("backup");
+        std::fs::write(&tmp, "4444").expect("partial temp");
+
+        assert_eq!(
+            read_active_marker_at(&path).as_deref(),
+            Some("333333333333333333")
+        );
+        assert!(path.exists(), "backup should be restored to active");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn malformed_marker_is_rejected() {
+        let dir = temp_dir("malformed");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("active");
+        std::fs::write(&path, "not-a-snowflake").expect("write malformed");
+        assert_eq!(read_active_marker_at(&path), None);
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

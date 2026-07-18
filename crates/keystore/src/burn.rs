@@ -9,6 +9,8 @@
 //!
 //!   domain (LP, "discord-privacy-client/burn/v1")
 //!   user_id (LP)
+//!   timestamp_ms decimal string (LP)
+//!   256-bit base64url request_id (LP)
 //!   scope_str (LP, one of "single" | "to_user" | "all")
 //!   target_kind (u8: 0 = none, 1 = content_id, 2 = user_id)
 //!   if target_kind != 0: target_value (LP)
@@ -51,10 +53,17 @@ impl BurnScope {
 
 /// Canonical bytes the burn signature covers. MUST agree with
 /// `canonicalBurnBytes` in `keyserver/src/canonical.js`.
-pub fn canonical_burn_bytes(user_id: &str, scope: &BurnScope) -> Vec<u8> {
+pub fn canonical_burn_bytes(
+    user_id: &str,
+    timestamp_ms: i64,
+    request_id: &str,
+    scope: &BurnScope,
+) -> Vec<u8> {
     let mut buf = Vec::new();
     write_lp(&mut buf, BURN_DOMAIN);
     write_lp(&mut buf, user_id.as_bytes());
+    write_lp(&mut buf, timestamp_ms.to_string().as_bytes());
+    write_lp(&mut buf, request_id.as_bytes());
     write_lp(&mut buf, scope.label().as_bytes());
     match scope {
         BurnScope::Single { content_id } => {
@@ -74,13 +83,19 @@ pub fn canonical_burn_bytes(user_id: &str, scope: &BurnScope) -> Vec<u8> {
 
 /// Sign `canonical_burn_bytes(user_id, scope)` with the identity's
 /// Ed25519 key.
-pub fn sign_burn(identity: &Identity, scope: &BurnScope) -> ed25519::Signature {
-    let bytes = canonical_burn_bytes(&identity.user_id, scope);
+pub fn sign_burn(
+    identity: &Identity,
+    timestamp_ms: i64,
+    request_id: &str,
+    scope: &BurnScope,
+) -> ed25519::Signature {
+    let bytes = canonical_burn_bytes(&identity.user_id, timestamp_ms, request_id, scope);
     ed25519::sign(&identity.ed25519_secret, &bytes)
 }
 
 fn write_lp(buf: &mut Vec<u8>, bytes: &[u8]) {
-    buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    let len = u32::try_from(bytes.len()).expect("canonical field exceeds u32 length");
+    buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(bytes);
 }
 
@@ -93,7 +108,7 @@ mod tests {
         let scope = BurnScope::Single {
             content_id: "abc".to_string(),
         };
-        let bytes = canonical_burn_bytes("alice", &scope);
+        let bytes = canonical_burn_bytes("alice", 1_700_000_000_123, "request", &scope);
 
         // Reconstruct expected layout manually to lock the format.
         let mut want = Vec::new();
@@ -101,6 +116,10 @@ mod tests {
         want.extend_from_slice(BURN_DOMAIN);
         want.extend_from_slice(&5u32.to_be_bytes());
         want.extend_from_slice(b"alice");
+        want.extend_from_slice(&13u32.to_be_bytes());
+        want.extend_from_slice(b"1700000000123");
+        want.extend_from_slice(&7u32.to_be_bytes());
+        want.extend_from_slice(b"request");
         want.extend_from_slice(&6u32.to_be_bytes());
         want.extend_from_slice(b"single");
         want.push(1);
@@ -113,6 +132,8 @@ mod tests {
     fn canonical_bytes_to_user_layout() {
         let bytes = canonical_burn_bytes(
             "alice",
+            1_700_000_000_123,
+            "request",
             &BurnScope::ToUser {
                 user_id: "bob".to_string(),
             },
@@ -126,7 +147,7 @@ mod tests {
 
     #[test]
     fn canonical_bytes_all_has_zero_target_kind() {
-        let bytes = canonical_burn_bytes("alice", &BurnScope::All);
+        let bytes = canonical_burn_bytes("alice", 1_700_000_000_123, "request", &BurnScope::All);
         assert_eq!(*bytes.last().unwrap(), 0u8);
     }
 
@@ -135,8 +156,8 @@ mod tests {
         use crate::generate_identity;
         let id = generate_identity("alice".to_string());
         let scope = BurnScope::All;
-        let sig = sign_burn(&id, &scope);
-        let bytes = canonical_burn_bytes(&id.user_id, &scope);
+        let sig = sign_burn(&id, 1_700_000_000_123, "request", &scope);
+        let bytes = canonical_burn_bytes(&id.user_id, 1_700_000_000_123, "request", &scope);
         assert!(ed25519::verify(&id.ed25519_public, &bytes, &sig).unwrap());
     }
 }

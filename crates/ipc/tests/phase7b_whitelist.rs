@@ -14,9 +14,9 @@ use ipc::whitelist_state::{ScopeState, WhitelistState};
 
 // ---- fixtures ----
 
-const HENRY_DID: &str = "1502770642930634812";
+const HENRY_DID: &str = "900000000000000001";
 const ALICE_DID: &str = "1602770642930634812";
-const LIAM_DID: &str = "1477008451799482419";
+const LIAM_DID: &str = "900000000000000003";
 const GC_ID: &str = "1234567890";
 const SERVER_ID: &str = "9876";
 const CHANNEL_ID: &str = "5432";
@@ -55,6 +55,7 @@ fn add_dm_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     let entry = peer_map.entry(peer_discord.to_string()).or_default();
@@ -77,6 +78,7 @@ fn add_gc_full_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     for m in members {
@@ -101,6 +103,7 @@ fn add_gc_per_user_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     for u in whitelisted {
@@ -126,6 +129,7 @@ fn add_server_channel_per_user_whitelist(
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     for u in whitelisted {

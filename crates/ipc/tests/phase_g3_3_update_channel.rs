@@ -6,9 +6,7 @@
 //! logic + serde shapes are exercised here.
 
 use ipc::app_preferences::{load_app_preferences, UpdateChannel};
-use ipc::commands::{
-    cmd_osl_get_update_channel, cmd_osl_set_update_channel, UpdateInstallResult,
-};
+use ipc::commands::{cmd_osl_get_update_channel, cmd_osl_set_update_channel, UpdateInstallResult};
 use ipc::AppState;
 use tempfile::TempDir;
 
@@ -41,12 +39,8 @@ fn set_channel_updates_in_memory_state() {
 fn set_channel_persists_to_app_preferences_file() {
     let dir = TempDir::new().unwrap();
     let state = AppState::new();
-    cmd_osl_set_update_channel(
-        &state,
-        UpdateChannel::Beta,
-        Some(dir.path().to_path_buf()),
-    )
-    .unwrap();
+    cmd_osl_set_update_channel(&state, UpdateChannel::Beta, Some(dir.path().to_path_buf()))
+        .unwrap();
 
     // Reload straight off disk via the existing persistence layer —
     // no new mechanism introduced.

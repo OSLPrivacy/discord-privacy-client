@@ -5,8 +5,5 @@
   "type": "module",
   "scripts": {
     "check": "node check.js"
-  },
-  "devDependencies": {
-    "playwright": "^1.43.0"
   }
 }

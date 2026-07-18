@@ -269,7 +269,7 @@ fn key_present_writes_round_trip_correctly() {
     let b = maybe_encrypt(plain_bytes).unwrap();
     assert_ne!(a, b, "AEAD nonce randomness expected");
     assert!(has_enc_magic(&a) && has_enc_magic(&b));
-    assert_eq!(get_file_storage_key().is_some(), true);
+    assert!(get_file_storage_key().is_some());
 
     set_file_storage_key(None);
 }

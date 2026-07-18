@@ -25,11 +25,11 @@ import {
   UNREGISTER_FRESHNESS_WINDOW_MS,
 } from "../lib/canonical.js";
 import { verifyEd25519 } from "../lib/crypto.js";
-import { getUserForVerify } from "../lib/db.js";
+import { getUserForVerify, unregisterUserIfCurrent } from "../lib/db.js";
 import {
   badRequest,
+  conflict,
   json,
-  notFound,
   tooMany,
   unauthorized,
 } from "../lib/http.js";
@@ -37,7 +37,7 @@ import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import {
   decodeBase64,
   isNonEmptyBase64,
-  isPlainString,
+  isProtocolId,
 } from "../lib/validation.js";
 
 export async function handleUnregister(
@@ -47,7 +47,7 @@ export async function handleUnregister(
 ): Promise<Response> {
   // Rate-limit at the same threshold as the existing wrapped-keys
   // DELETE — small budget, identity ops are rare.
-  const rl = await checkRateLimit(env, callerIp(request), 10);
+  const rl = await checkRateLimit(env, callerIp(request), 10, "unregister");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
   let body: Record<string, unknown>;
@@ -60,10 +60,15 @@ export async function handleUnregister(
   if (!isNonEmptyBase64(body.signature_b64)) {
     return badRequest("signature_b64 required");
   }
-  const ts = body.timestamp_ms;
-  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) {
+  const timestamp = body.timestamp_ms;
+  if (
+    typeof timestamp !== "number" ||
+    !Number.isSafeInteger(timestamp) ||
+    timestamp <= 0
+  ) {
     return badRequest("timestamp_ms required (positive number)");
   }
+  const ts = timestamp;
   const now = Date.now();
   if (Math.abs(now - ts) > UNREGISTER_FRESHNESS_WINDOW_MS) {
     return badRequest(
@@ -71,7 +76,7 @@ export async function handleUnregister(
     );
   }
 
-  if (!isPlainString(userId)) return badRequest("user_id required");
+  if (!isProtocolId(userId)) return badRequest("user_id must be a bounded identifier");
   const user = await getUserForVerify(env.DB, userId);
   if (!user) {
     // Already absent — idempotent success.
@@ -82,25 +87,37 @@ export async function handleUnregister(
     user_id: userId,
     timestamp_ms: ts,
   });
-  const pubBytes = decodeBase64(user.ik_ed25519_pub);
-  const sigBytes = decodeBase64(body.signature_b64);
+  let pubBytes: Uint8Array;
+  let sigBytes: Uint8Array;
+  try {
+    pubBytes = decodeBase64(user.ik_ed25519_pub);
+    sigBytes = decodeBase64(body.signature_b64);
+  } catch {
+    return badRequest("signature_b64 must be valid base64");
+  }
+  if (pubBytes.length !== 32 || sigBytes.length !== 64) {
+    return badRequest("signature_b64 must decode to 64 bytes");
+  }
   const ok = await verifyEd25519(pubBytes, message, sigBytes);
   if (!ok) return unauthorized("signature verification failed");
 
-  // Cascade the wipe to every table that holds rows owned by this
-  // user_id. Each statement uses parameter binding so user_id can
-  // never inject SQL.
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM users WHERE user_id = ?").bind(userId),
-    env.DB
-      .prepare("DELETE FROM wrapped_keys WHERE recipient_id = ? OR sender_id = ?")
-      .bind(userId, userId),
-    env.DB.prepare("DELETE FROM prekey_bundles WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM opk_pool WHERE user_id = ?").bind(userId),
-  ]);
+  const requestDigest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", message),
+  );
+
+  const result = await unregisterUserIfCurrent(
+    env.DB,
+    userId,
+    user.ik_ed25519_pub,
+    requestDigest,
+    Math.floor(Date.now() / 1000) + 10 * 60,
+  );
+  if (result === "replay") {
+    return conflict("signed unregister request already used");
+  }
+  if (result === "stale_identity") {
+    return conflict("identity key changed during unregister; retry");
+  }
 
   return json({ status: "deleted", user_id: userId });
 }
-
-// Tag this as a no-op reference so the file is treated as a module.
-void notFound;

@@ -1,12 +1,11 @@
-//! Phase 9-A2 Task 7: full DR round-trip through the IPC layer.
+//! DM round-trip through the IPC layer.
 //!
 //! Drives `cmd_osl_encrypt_message_v2` and
 //! `cmd_osl_decrypt_message_v2` directly with two AppStates
 //! representing alice (initiator) and bob (responder). The point
 //! is to prove the IPC layer correctly persists, loads, and
-//! advances DR state across calls — not the ratchet primitives
-//! themselves (those have their own ~30 tests in
-//! `crates/crypto/tests/ratchet_test.rs`).
+//! follows the current stateless v=3 DM policy. The dormant v=4
+//! ratchet primitives have their own focused crypto tests.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -21,8 +20,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
-const ALICE_DID: &str = "1477008451799482419";
-const BOB_DID: &str = "1502770642930634812";
+const ALICE_DID: &str = "900000000000000003";
+const BOB_DID: &str = "900000000000000001";
 
 fn fresh_state_for(name: &str) -> AppState {
     let state = AppState::new();
@@ -171,22 +170,21 @@ fn spawn_fake_keyserver(routes: Vec<(String, String)>) -> String {
             let method = parts.next().unwrap_or("");
             let path = parts.next().unwrap_or("");
 
-            let (status, body): (&str, String) = if method == "GET"
-                && path.starts_with("/v1/pubkeys/")
-            {
-                let id = path.trim_start_matches("/v1/pubkeys/");
-                match routes.iter().find(|(u, _)| u == id) {
-                    Some((_, json)) => ("200 OK", json.clone()),
-                    None => ("404 Not Found", String::new()),
-                }
-            } else if method == "POST" && path == "/v1/register" {
-                (
-                    "200 OK",
-                    "{\"user_id\":\"test\",\"status\":\"noop\"}".to_string(),
-                )
-            } else {
-                ("404 Not Found", String::new())
-            };
+            let (status, body): (&str, String) =
+                if method == "GET" && path.starts_with("/v1/pubkeys/") {
+                    let id = path.trim_start_matches("/v1/pubkeys/");
+                    match routes.iter().find(|(u, _)| u == id) {
+                        Some((_, json)) => ("200 OK", json.clone()),
+                        None => ("404 Not Found", String::new()),
+                    }
+                } else if method == "POST" && path == "/v1/register" {
+                    (
+                        "200 OK",
+                        "{\"user_id\":\"test\",\"status\":\"noop\"}".to_string(),
+                    )
+                } else {
+                    ("404 Not Found", String::new())
+                };
 
             let resp = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
@@ -238,6 +236,7 @@ fn install_dm_whitelist(state: &AppState, peer_did: &str) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
+                channel_whitelisted: false,
             },
         );
     }
@@ -318,7 +317,7 @@ fn peer_ratchet_state_is_set(state: &AppState, peer_did: &str) -> bool {
 }
 
 #[test]
-fn alice_encrypt_v4_bootstrap_bob_decrypt_v4_responder() {
+fn alice_encrypt_v3_bob_decrypts_without_ratchet_state() {
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
     assert!(!peer_ratchet_state_is_set(&alice_state, BOB_DID));
     let wire = alice_sends(&alice_state, "hello bob").unwrap();
@@ -326,33 +325,33 @@ fn alice_encrypt_v4_bootstrap_bob_decrypt_v4_responder() {
         wire.starts_with("DPC0::"),
         "wire must carry the DPC0:: prefix"
     );
-    // Peek the version byte directly to confirm v=4 was chosen.
+    // OPTION B deliberately routes DMs through stateless v=3 to avoid
+    // the historical v=4 ratchet desynchronization failure class.
     let raw = STANDARD
         .decode(wire.strip_prefix("DPC0::").unwrap())
         .unwrap();
-    assert_eq!(raw[0], ipc::wire_v2::WIRE_VERSION_V4);
-    // Alice's peer_map[bob].ratchet_state should now be populated.
+    assert_eq!(raw[0], ipc::wire_v2::WIRE_VERSION_V3);
     assert!(
-        peer_ratchet_state_is_set(&alice_state, BOB_DID),
-        "alice must persist DR state after v=4 send"
+        !peer_ratchet_state_is_set(&alice_state, BOB_DID),
+        "stateless v=3 send must not create dormant v=4 ratchet state"
     );
     let plain = bob_decrypts(&bob_state, &wire).unwrap();
     assert_eq!(plain, "hello bob");
     assert!(
-        peer_ratchet_state_is_set(&bob_state, ALICE_DID),
-        "bob must persist DR state after v=4 receive"
+        !peer_ratchet_state_is_set(&bob_state, ALICE_DID),
+        "stateless v=3 receive must not create dormant v=4 ratchet state"
     );
 }
 
 #[test]
-fn bob_replies_v4_alice_decrypts_advancing_dr() {
+fn bob_replies_v3_alice_decrypts_statelessly() {
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
     let w1 = alice_sends(&alice_state, "ping").unwrap();
     bob_decrypts(&bob_state, &w1).unwrap();
-    // Now bob replies. Should also be v=4 (peer has ratchet state).
+    // Bob's reply uses the same stateless v=3 DM policy.
     let w2 = bob_sends(&bob_state, "pong").unwrap();
     let raw = STANDARD.decode(w2.strip_prefix("DPC0::").unwrap()).unwrap();
-    assert_eq!(raw[0], ipc::wire_v2::WIRE_VERSION_V4);
+    assert_eq!(raw[0], ipc::wire_v2::WIRE_VERSION_V3);
     let plain = alice_decrypts(&alice_state, &w2).unwrap();
     assert_eq!(plain, "pong");
 }
@@ -372,22 +371,15 @@ fn five_message_burst_alice_to_bob_decrypts_in_order() {
 
 #[test]
 fn five_message_burst_arrives_out_of_order_all_decrypt() {
-    // Note: the v=4 bootstrap design in A2 requires the receiver to
-    // see the bootstrap message (alice's first send, flags.bit0=1)
-    // BEFORE any continuation message — that's where the PQXDH
-    // session_key seeding the DR comes from. After bootstrap, out-
-    // of-order delivery within the DR's skipped-key cache works
-    // freely. The realistic delivery model on top of Discord
-    // (HTTP+websocket message stream, single ordered channel)
-    // matches this: the bootstrap message is delivered first.
+    // Stateless v=3 messages are independently decryptable, so arrival
+    // order cannot desynchronize a session.
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
-    let w0 = alice_sends(&alice_state, "a0").unwrap(); // bootstrap=true
+    let w0 = alice_sends(&alice_state, "a0").unwrap();
     let w1 = alice_sends(&alice_state, "a1").unwrap();
     let w2 = alice_sends(&alice_state, "a2").unwrap();
     let w3 = alice_sends(&alice_state, "a3").unwrap();
     let w4 = alice_sends(&alice_state, "a4").unwrap();
-    // Bootstrap lands first; continuation messages then arrive out
-    // of order. The DR's skipped-key cache covers this.
+    // Deliberately deliver out of order.
     assert_eq!(bob_decrypts(&bob_state, &w0).unwrap(), "a0");
     assert_eq!(bob_decrypts(&bob_state, &w2).unwrap(), "a2");
     assert_eq!(bob_decrypts(&bob_state, &w4).unwrap(), "a4");
@@ -396,16 +388,14 @@ fn five_message_burst_arrives_out_of_order_all_decrypt() {
 }
 
 #[test]
-fn dh_step_after_reply_chain_rotates() {
+fn repeated_bidirectional_v3_messages_decrypt() {
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
     // Round trip 1.
     let m1 = alice_sends(&alice_state, "m1").unwrap();
     bob_decrypts(&bob_state, &m1).unwrap();
     let r1 = bob_sends(&bob_state, "r1").unwrap();
     alice_decrypts(&alice_state, &r1).unwrap();
-    // Capture alice's sending counter pre and post DH step.
-    // (Reading via peer_map is the only externally-visible way —
-    // we just confirm sends succeed and Bob keeps decrypting.)
+    // Repeated replies remain independent and decryptable.
     for round in 0..3 {
         let m = alice_sends(&alice_state, &format!("post-rotation-{round}")).unwrap();
         let p = bob_decrypts(&bob_state, &m).unwrap();
@@ -417,15 +407,14 @@ fn dh_step_after_reply_chain_rotates() {
 }
 
 #[test]
-fn post_compromise_security_burst_after_dh_step() {
+fn burst_after_bidirectional_exchange_stays_decryptable() {
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
-    // Initial exchange to establish ratchets.
+    // Initial bidirectional exchange.
     let m1 = alice_sends(&alice_state, "m1").unwrap();
     bob_decrypts(&bob_state, &m1).unwrap();
     let r1 = bob_sends(&bob_state, "r1").unwrap();
     alice_decrypts(&alice_state, &r1).unwrap();
-    // After Bob's reply triggers a DH step on Alice's side, a
-    // 5-message burst from Alice must all decrypt cleanly on Bob.
+    // A later five-message burst must all decrypt cleanly on Bob.
     for i in 0..5 {
         let m = alice_sends(&alice_state, &format!("post-{i}")).unwrap();
         assert_eq!(bob_decrypts(&bob_state, &m).unwrap(), format!("post-{i}"));
@@ -433,7 +422,7 @@ fn post_compromise_security_burst_after_dh_step() {
 }
 
 #[test]
-fn tampered_v4_ciphertext_rejected() {
+fn tampered_v3_ciphertext_rejected() {
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
     let wire = alice_sends(&alice_state, "tamper me").unwrap();
     let mut raw = STANDARD
@@ -447,7 +436,7 @@ fn tampered_v4_ciphertext_rejected() {
 }
 
 #[test]
-fn tampered_v4_header_rejected() {
+fn tampered_v3_header_rejected() {
     let (alice_state, bob_state) = setup_alice_bob_dm_dr_ready();
     let wire = alice_sends(&alice_state, "header tamper").unwrap();
     let mut raw = STANDARD
@@ -455,7 +444,7 @@ fn tampered_v4_header_rejected() {
         .unwrap();
     // Flip the msg_type byte (global header byte 1). The wrap AAD
     // binds the whole global header so this should fail with a
-    // clear AEAD error before the DR step runs.
+    // clear AEAD error before content decryption.
     raw[1] ^= 0xFF;
     let tampered = format!("DPC0::{}", STANDARD.encode(&raw));
     assert!(bob_decrypts(&bob_state, &tampered).is_err());

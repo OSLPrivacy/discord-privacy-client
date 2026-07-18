@@ -7,6 +7,8 @@ use keystore::{
 use tempfile::TempDir;
 
 const T0: u64 = 1_700_000_000;
+const REQUEST_TS: i64 = 1_700_000_000_123;
+const REQUEST_ID: &str = "test-request-id";
 
 // ---- generation + targets ----
 
@@ -31,8 +33,8 @@ fn opk_ids_are_unique_and_monotonic() {
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), ids.len(), "ids must be unique");
-    for i in 0..ids.len() {
-        assert_eq!(ids[i] as usize, i);
+    for (i, id) in ids.iter().enumerate() {
+        assert_eq!(*id as usize, i);
     }
 }
 
@@ -142,8 +144,8 @@ fn canonical_bytes_deterministic_for_identical_input() {
         signature_b64: "spk-sig".into(),
         rotated_at: "2026-05-08T12:00:00Z".into(),
     };
-    let a = canonical_replenish_bytes("alice", Some(&spk), &opks);
-    let b = canonical_replenish_bytes("alice", Some(&spk), &opks);
+    let a = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, Some(&spk), &opks);
+    let b = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, Some(&spk), &opks);
     assert_eq!(a, b);
 }
 
@@ -153,8 +155,8 @@ fn canonical_bytes_change_with_user_id() {
         id: 0,
         pub_b64: "AAA=".into(),
     }];
-    let a = canonical_replenish_bytes("alice", None, &opks);
-    let b = canonical_replenish_bytes("bob", None, &opks);
+    let a = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, None, &opks);
+    let b = canonical_replenish_bytes("bob", REQUEST_TS, REQUEST_ID, None, &opks);
     assert_ne!(a, b);
 }
 
@@ -166,6 +168,8 @@ fn canonical_bytes_change_with_spk_presence() {
     }];
     let with_spk = canonical_replenish_bytes(
         "alice",
+        REQUEST_TS,
+        REQUEST_ID,
         Some(&ReplenishSpk {
             pub_b64: "p".into(),
             signature_b64: "s".into(),
@@ -173,7 +177,7 @@ fn canonical_bytes_change_with_spk_presence() {
         }),
         &opks,
     );
-    let without = canonical_replenish_bytes("alice", None, &opks);
+    let without = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, None, &opks);
     assert_ne!(with_spk, without);
 }
 
@@ -199,8 +203,8 @@ fn canonical_bytes_change_with_opk_order() {
             pub_b64: "A".into(),
         },
     ];
-    let a = canonical_replenish_bytes("alice", None, &a_opks);
-    let b = canonical_replenish_bytes("alice", None, &b_opks);
+    let a = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, None, &a_opks);
+    let b = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, None, &b_opks);
     assert_ne!(a, b);
 }
 
@@ -213,8 +217,8 @@ fn batch_signature_verifies_with_identity_ed25519_pub() {
         id: 0,
         pub_b64: "AAA".into(),
     }];
-    let sig = sign_replenish_batch(&id, "alice", None, &opks);
-    let bytes = canonical_replenish_bytes("alice", None, &opks);
+    let sig = sign_replenish_batch(&id, "alice", REQUEST_TS, REQUEST_ID, None, &opks);
+    let bytes = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, None, &opks);
     assert!(ed25519::verify(&id.ed25519_public, &bytes, &sig).unwrap());
 }
 
@@ -226,8 +230,8 @@ fn batch_signature_invalid_with_other_identity() {
         id: 0,
         pub_b64: "AAA".into(),
     }];
-    let sig = sign_replenish_batch(&alice, "alice", None, &opks);
-    let bytes = canonical_replenish_bytes("alice", None, &opks);
+    let sig = sign_replenish_batch(&alice, "alice", REQUEST_TS, REQUEST_ID, None, &opks);
+    let bytes = canonical_replenish_bytes("alice", REQUEST_TS, REQUEST_ID, None, &opks);
     assert!(!ed25519::verify(&bob.ed25519_public, &bytes, &sig).unwrap());
 }
 

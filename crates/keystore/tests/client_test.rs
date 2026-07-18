@@ -4,7 +4,7 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use keystore::{generate_identity, Error, KeyServerClient};
+use keystore::{generate_identity, Error, KeyServerClient, WrappedKeyUpload};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -55,20 +55,17 @@ fn register_request_carries_correct_base64_keys() {
 #[test]
 fn reg_msg_byte_format_is_pinned_and_mirrored() {
     let msg = keystore::client::reg_msg(
-        "1502770642930634812",
+        "900000000000000001",
         "WdsAAA==",
         "ZWQyNTUx",
         "bWxrZW0=",
         Some("cmF0Y2g="),
     );
-    let expected =
-        "OSL-REGISTER-v1\n1502770642930634812\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=";
+    let expected = "OSL-REGISTER-v1\n900000000000000001\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=";
     assert_eq!(String::from_utf8(msg).unwrap(), expected);
 
     // ratchet absent → empty last component, no trailing newline.
-    let msg_no_ratchet = keystore::client::reg_msg(
-        "u", "x", "e", "m", None,
-    );
+    let msg_no_ratchet = keystore::client::reg_msg("u", "x", "e", "m", None);
     assert_eq!(
         String::from_utf8(msg_no_ratchet).unwrap(),
         "OSL-REGISTER-v1\nu\nx\ne\nm\n"
@@ -131,13 +128,14 @@ fn rotation_request_dual_signs_old_and_new() {
 }
 
 #[test]
-fn new_accepts_https_url() {
-    // Phase B follow-up: HTTPS is required because Railway force-
-    // redirects HTTP→HTTPS at the edge. The pre-Phase-B prototype
-    // rejected `https://` because it had no TLS stack; reqwest +
-    // rustls now handles it.
-    KeyServerClient::new("https://example.com").unwrap();
-    KeyServerClient::new("https://keyserver.example.com:8443/api").unwrap();
+fn new_accepts_only_the_pinned_remote_origin() {
+    KeyServerClient::new("https://keyserver.oslprivacy.com").unwrap();
+    KeyServerClient::new("https://keyserver.oslprivacy.com:443").unwrap();
+    assert!(KeyServerClient::new("http://keyserver.oslprivacy.com").is_err());
+    assert!(KeyServerClient::new("https://keyserver.oslprivacy.com.evil.test").is_err());
+    assert!(KeyServerClient::new("https://example.com").is_err());
+    assert!(KeyServerClient::new("https://keyserver.oslprivacy.com/api").is_err());
+    assert!(KeyServerClient::new("https://user@keyserver.oslprivacy.com").is_err());
 }
 
 #[test]
@@ -145,9 +143,10 @@ fn new_parses_host_port_and_base_path() {
     // We don't expose getters on KeyServerClient — instead exercise
     // construction across several URL shapes and confirm none error.
     KeyServerClient::new("http://127.0.0.1:3000").unwrap();
-    KeyServerClient::new("http://localhost").unwrap();
-    KeyServerClient::new("http://localhost:8080/api").unwrap();
+    KeyServerClient::new("https://127.0.0.1:8443").unwrap();
+    KeyServerClient::new("http://[::1]:8080/api").unwrap();
     KeyServerClient::new("http://127.0.0.1:3000/").unwrap();
+    assert!(KeyServerClient::new("http://localhost:8080").is_err());
     // Wrong scheme rejected.
     assert!(KeyServerClient::new("ftp://x").is_err());
     // Malformed URL rejected at construction (defensive parse).
@@ -272,6 +271,144 @@ fn fetch_pubkeys_url_encodes_special_chars() {
     let req_bytes = rx.recv().unwrap();
     let req_text = std::str::from_utf8(&req_bytes).unwrap();
     assert!(req_text.contains("/v1/pubkeys/liam%40discord"));
+}
+
+fn query_value(target: &str, key: &str) -> String {
+    let url = reqwest::Url::parse(&format!("http://test{target}")).unwrap();
+    url.query_pairs()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_else(|| panic!("missing query key {key}"))
+}
+
+#[test]
+fn prekey_fetch_carries_registered_identity_signature() {
+    let response_body = br#"{"user_id":"bob","ik_x25519_pub":"AA","ik_ed25519_pub":"CC","ik_mlkem768_pub":"BB","ik_ratchet_initial_pub":null,"spk_pub":"DD","spk_signature":"EE","spk_rotated_at":"2026-05-08T11:00:00Z","opk":null,"remaining_opk_count":0}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response
+        .extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(response_body);
+    let (port, rx) = one_shot_server(response);
+
+    let requester = generate_identity("alice".to_string());
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .with_client_token(Some("distributed-client-token".to_string()));
+    client.fetch_prekey_bundle(&requester, "bob").unwrap();
+
+    let request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    let target = request
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    assert!(target.starts_with("/v1/prekey-bundle/bob?"));
+    assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    assert_eq!(query_value(target, "requester_id"), "alice");
+    assert_eq!(query_value(target, "recipient_id"), "bob");
+    let ts = query_value(target, "ts").parse::<i64>().unwrap();
+    let sig = STANDARD.decode(query_value(target, "sig")).unwrap();
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes.copy_from_slice(&sig);
+    let message = keystore::canonical_prekey_bundle_get_bytes("alice", "bob", ts);
+    assert!(crypto::ed25519::verify(
+        &requester.ed25519_public,
+        &message,
+        &crypto::ed25519::Signature::from_bytes(sig_bytes),
+    )
+    .unwrap());
+}
+
+#[test]
+fn wrapped_key_fetch_binds_recipient_and_content_id() {
+    let response_body = br#"{"content_id":"msg-1","content_type":"text","system_message_kind":null,"sender_id":"alice","recipient_id":"bob","session_version":1,"share_index":0,"wrapped_share_blob":"AQ==","blob_version":1,"single_use":true,"display_duration_seconds":10,"expires_at":"2026-05-08T11:05:00Z","created_at":"2026-05-08T11:00:00Z"}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response
+        .extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(response_body);
+    let (port, rx) = one_shot_server(response);
+
+    let recipient = generate_identity("bob".to_string());
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let wrapped = client.fetch_wrapped_key(&recipient, "msg-1").unwrap();
+    assert_eq!(wrapped.recipient_id, "bob");
+    assert!(wrapped.single_use);
+
+    let request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    let target = request
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    assert!(target.starts_with("/v1/wrapped-keys/msg-1?"));
+    let ts = query_value(target, "ts").parse::<i64>().unwrap();
+    let sig = STANDARD.decode(query_value(target, "sig")).unwrap();
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes.copy_from_slice(&sig);
+    let message = keystore::canonical_wrapped_key_get_bytes("bob", "bob", "msg-1", ts);
+    assert!(crypto::ed25519::verify(
+        &recipient.ed25519_public,
+        &message,
+        &crypto::ed25519::Signature::from_bytes(sig_bytes),
+    )
+    .unwrap());
+}
+
+#[test]
+fn wrapped_key_post_carries_sender_identity_signature_without_bearer() {
+    let response_body = br#"{"content_id":"msg-1"}"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
+    response
+        .extend_from_slice(format!("Content-Length: {}\r\n\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(response_body);
+    let (port, rx) = one_shot_server(response);
+
+    let sender = generate_identity("alice".to_string());
+    let upload = WrappedKeyUpload {
+        content_id: "msg-1".into(),
+        content_type: "text".into(),
+        system_message_kind: None,
+        recipient_id: "bob".into(),
+        session_version: 1,
+        share_index: 0,
+        wrapped_share_blob: "AQIDBA==".into(),
+        blob_version: 1,
+        single_use: false,
+        display_duration_seconds: None,
+        expires_at: "2026-07-18T00:00:00.000Z".into(),
+    };
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let result = client.post_wrapped_key(&sender, &upload).unwrap();
+    assert_eq!(result.content_id, "msg-1");
+
+    let request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    assert!(request
+        .to_ascii_lowercase()
+        .starts_with("post /v1/wrapped-keys http/1.1\r\n"));
+    assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    let body = request.split("\r\n\r\n").nth(1).unwrap();
+    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(value["sender_id"], "alice");
+    let timestamp_ms = value["timestamp_ms"].as_i64().unwrap();
+    let signature = STANDARD
+        .decode(value["sender_signature_b64"].as_str().unwrap())
+        .unwrap();
+    let mut signature_bytes = [0u8; 64];
+    signature_bytes.copy_from_slice(&signature);
+    let canonical = keystore::canonical_wrapped_key_post_bytes("alice", &upload, timestamp_ms);
+    assert!(crypto::ed25519::verify(
+        &sender.ed25519_public,
+        &canonical,
+        &crypto::ed25519::Signature::from_bytes(signature_bytes),
+    )
+    .unwrap());
 }
 
 #[test]

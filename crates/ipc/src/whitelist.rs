@@ -46,10 +46,10 @@ use crate::peer_map::{BurnedScope, PeerEntry, PeerMap, WhitelistEntry};
 use crate::scope::{Scope, ScopeKind};
 use crate::whitelist_state::{ServerDefaults, WhitelistState};
 use crate::wire_v2::RecipientV3;
-use std::collections::HashMap;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::{ml_kem_768, x25519};
+use std::collections::HashMap;
 
 /// Can outgoing messages to `recipient_discord_id` in `scope` be
 /// encrypted?
@@ -128,7 +128,9 @@ pub fn should_encrypt_to(
         ScopeKind::ServerChannel => {
             if let (Some(srv), Some(chan)) = (&scope.server_id, &scope.channel_id) {
                 let defaults = ctx.server_defaults.get(srv);
-                let green = defaults.map(|d| d.server_header_whitelisted).unwrap_or(false);
+                let green = defaults
+                    .map(|d| d.server_header_whitelisted)
+                    .unwrap_or(false);
                 let yellow = defaults.map(|d| d.server_dm_whitelisted).unwrap_or(false);
                 let chan_on = ctx
                     .whitelist_state
@@ -147,7 +149,8 @@ pub fn should_encrypt_to(
                 // trusts) is granted regardless of what the oracle knows.
                 let dm_wl = has_dm_whitelist(peer_map, recipient_discord_id);
                 let is_chan_member =
-                    ctx.membership.is_channel_member(srv, chan, recipient_discord_id);
+                    ctx.membership
+                        .is_channel_member(srv, chan, recipient_discord_id);
                 let is_srv_member = ctx.membership.is_server_member(srv, recipient_discord_id);
                 // Per-channel GREEN override: everyone in THIS channel
                 // (observed members), plus DM-whitelisted peers as the
@@ -290,7 +293,10 @@ fn server_channel_candidate_set(
             .get(srv)
             .map(|d| d.server_header_whitelisted)
             .unwrap_or(false);
-        for did in ctx.membership.server_channel_candidates(srv, chan, header_on) {
+        for did in ctx
+            .membership
+            .server_channel_candidates(srv, chan, header_on)
+        {
             set.insert(did);
         }
     }
@@ -326,7 +332,10 @@ fn gc_dynamic_candidate_set(
         return Vec::new();
     }
     let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for did in ctx.membership.members_for_key(&crate::membership::gc_key(&scope.id)) {
+    for did in ctx
+        .membership
+        .members_for_key(&crate::membership::gc_key(&scope.id))
+    {
         set.insert(did);
     }
     for (did, entry) in peer_map.iter() {
@@ -437,8 +446,7 @@ pub fn recipients_for_scope_v3(
     // DPC0::. DM stays strict fail-closed (a single keyless
     // recipient is a surfaced error so the caller can
     // keyserver-refresh + retry); ServerFull untouched.
-    let gc_best_effort =
-        matches!(scope.kind, ScopeKind::Gc | ScopeKind::ServerChannel);
+    let gc_best_effort = matches!(scope.kind, ScopeKind::Gc | ScopeKind::ServerChannel);
 
     // W1 (Option B): server-channel recipients are roster-independent
     // — Discord never hands us a server member list. The candidate
@@ -1148,24 +1156,14 @@ mod should_encrypt_to_tests {
     fn gc_header_on_member_granted() {
         let p = pm(peer(vec![], vec![]));
         let b = gc_build(true, &[PEER]);
-        assert!(should_encrypt_to(
-            &p,
-            &gc_ctx(&b),
-            &Scope::gc(GCID),
-            PEER
-        ));
+        assert!(should_encrypt_to(&p, &gc_ctx(&b), &Scope::gc(GCID), PEER));
     }
 
     #[test]
     fn gc_header_on_non_member_denied() {
         let p = pm(peer(vec![], vec![]));
         let b = gc_build(true, &[]); // PEER never observed in the GC
-        assert!(!should_encrypt_to(
-            &p,
-            &gc_ctx(&b),
-            &Scope::gc(GCID),
-            PEER
-        ));
+        assert!(!should_encrypt_to(&p, &gc_ctx(&b), &Scope::gc(GCID), PEER));
     }
 
     #[test]
@@ -1173,12 +1171,7 @@ mod should_encrypt_to_tests {
         // Flag off, no per-peer entry → deny (legacy behavior).
         let p = pm(peer(vec![], vec![]));
         let b = gc_build(false, &[PEER]);
-        assert!(!should_encrypt_to(
-            &p,
-            &gc_ctx(&b),
-            &Scope::gc(GCID),
-            PEER
-        ));
+        assert!(!should_encrypt_to(&p, &gc_ctx(&b), &Scope::gc(GCID), PEER));
     }
 
     #[test]
@@ -1193,12 +1186,7 @@ mod should_encrypt_to_tests {
             vec![],
         ));
         let b = gc_build(false, &[]);
-        assert!(should_encrypt_to(
-            &p,
-            &gc_ctx(&b),
-            &Scope::gc(GCID),
-            PEER
-        ));
+        assert!(should_encrypt_to(&p, &gc_ctx(&b), &Scope::gc(GCID), PEER));
     }
 
     #[test]
@@ -1211,11 +1199,6 @@ mod should_encrypt_to_tests {
             }],
         ));
         let b = gc_build(true, &[PEER]);
-        assert!(!should_encrypt_to(
-            &p,
-            &gc_ctx(&b),
-            &Scope::gc(GCID),
-            PEER
-        ));
+        assert!(!should_encrypt_to(&p, &gc_ctx(&b), &Scope::gc(GCID), PEER));
     }
 }

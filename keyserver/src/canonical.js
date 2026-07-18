@@ -53,10 +53,17 @@ function u32(buf, v) {
 // The base64-string-not-bytes form is intentional: lets either side
 // construct the encoding without round-tripping through base64
 // decode.
-export function canonicalReplenishBytes({ user_id, spk, opks }) {
+export function canonicalReplenishBytes({ user_id, timestamp_ms, request_id, spk, opks }) {
   const buf = [];
   lpString(buf, REPLENISH_DOMAIN);
   lpString(buf, user_id);
+  // The current client binds freshness and a high-entropy request ID. Keep the
+  // retired localhost prototype able to verify older test fixtures that omit
+  // both fields; production Cloudflare endpoints require them.
+  if (timestamp_ms != null && request_id != null) {
+    lpString(buf, String(timestamp_ms));
+    lpString(buf, request_id);
+  }
   u8(buf, spk ? 1 : 0);
   if (spk) {
     lpString(buf, spk.pub_b64);
@@ -79,10 +86,14 @@ export function canonicalReplenishBytes({ user_id, spk, opks }) {
 //   scope_str (LP, "single" | "to_user" | "all")
 //   target_kind (u8: 0 = none, 1 = content_id, 2 = user_id)
 //   if target_kind != 0: target_value (LP)
-export function canonicalBurnBytes({ user_id, scope, target }) {
+export function canonicalBurnBytes({ user_id, timestamp_ms, request_id, scope, target }) {
   const buf = [];
   lpString(buf, BURN_DOMAIN);
   lpString(buf, user_id);
+  if (timestamp_ms != null && request_id != null) {
+    lpString(buf, String(timestamp_ms));
+    lpString(buf, request_id);
+  }
   lpString(buf, scope);
   if (scope === 'single') {
     u8(buf, 1);

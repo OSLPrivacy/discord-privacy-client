@@ -1,0 +1,88 @@
+:root {
+  font-family: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  color: #e8e8e8;
+  background: transparent;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+body { padding: 0; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.overlay-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 9px;
+  background: rgba(24, 24, 26, .985);
+  box-shadow: none;
+}
+
+.trust-mark {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 22px;
+  border: 1px solid rgba(6, 182, 212, .74);
+  color: #67e8f9;
+  background: rgba(6, 182, 212, .08);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  line-height: 1;
+  user-select: none;
+}
+
+.draft-field { min-width: 0; display: grid; align-content: center; }
+.draft-field textarea {
+  width: 100%;
+  min-height: 25px;
+  max-height: 25px;
+  padding: 2px 0;
+  border: 0;
+  resize: none;
+  overflow: hidden;
+  color: #e8e8e8;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+.draft-field textarea::placeholder { color: #888; }
+.draft-field textarea:focus { outline: none; }
+.overlay-shell:focus-within {
+  border-color: rgba(6, 182, 212, .8);
+  outline: 1px solid rgba(6, 182, 212, .35);
+  outline-offset: -2px;
+}
+
+.draft-status {
+  grid-column: 3;
+  display: block;
+  color: #9aa0a6;
+  font-size: 9px;
+  white-space: nowrap;
+  opacity: .5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; }
+}

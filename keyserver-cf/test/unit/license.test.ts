@@ -26,6 +26,16 @@ describe("license format", () => {
     expect(await hashLicense(plaintext)).toBe(hash);
   });
 
+  it("uses an explicit QA issuer marker and an isolated checksum root", async () => {
+    const { plaintext } = await generateLicenseKey("qa-secret", "qa");
+    expect(plaintext).toMatch(/^OSLQ-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/);
+    expect(normalizeLicense(plaintext)).toBeNull();
+    expect(await validateChecksum(plaintext, "qa-secret")).toBe(false);
+    expect(normalizeLicense(plaintext, "qa")).toBe(plaintext);
+    expect(await validateChecksum(plaintext, "qa-secret", "qa")).toBe(true);
+    expect(await validateChecksum(plaintext, SECRET, "qa")).toBe(false);
+  });
+
   it("generates distinct keys across 1000 iterations", async () => {
     const seen = new Set<string>();
     for (let i = 0; i < 1000; i++) {
@@ -62,7 +72,13 @@ describe("validateChecksum", () => {
   });
 
   it("rejects a license generated under a different secret", async () => {
-    const { plaintext } = await generateLicenseKey(SECRET);
+    // Fixed vector: the 14-character body has checksum `13` under SECRET and
+    // `16` under "different-secret". A freshly generated 10-bit checksum can
+    // legitimately collide under two roots with probability 1/1024, so using
+    // random input here made the isolation test flaky without finding a
+    // production validation weakness.
+    const plaintext = "OSL-2222-3333-4444-5513";
+    expect(await validateChecksum(plaintext, SECRET)).toBe(true);
     expect(await validateChecksum(plaintext, "different-secret")).toBe(false);
   });
 

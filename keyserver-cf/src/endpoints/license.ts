@@ -18,15 +18,29 @@
 import type { Env } from "../env.js";
 import { hashLicense, normalizeLicense, validateChecksum } from "../lib/license.js";
 import { getLicenseByHash, getSubscription } from "../lib/subscriptions.js";
-import { badRequest, json, tooMany } from "../lib/http.js";
+import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 
 export async function handleLicenseValidate(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  const rl = await checkRateLimit(env, callerIp(request), 10);
+  const rl = await checkRateLimit(env, callerIp(request), 10, "license-validate");
   if (!rl.ok) return tooMany(rl.retryAfter);
+  const issuer = env.DEPLOYMENT_ENV === "qa" ? "qa" : "production";
+  const hmacSecret = issuer === "qa"
+    ? env.QA_LICENSE_HMAC_SECRET
+    : env.LICENSE_HMAC_SECRET;
+  if (!hmacSecret) {
+    return serviceUnavailable("license validation is not configured on this deployment");
+  }
+  if (
+    issuer === "qa" &&
+    env.LICENSE_HMAC_SECRET &&
+    env.LICENSE_HMAC_SECRET === env.QA_LICENSE_HMAC_SECRET
+  ) {
+    return serviceUnavailable("QA license trust root is not isolated");
+  }
 
   let body: { license_key?: unknown };
   try {
@@ -38,12 +52,14 @@ export async function handleLicenseValidate(
     return badRequest("license_key required");
   }
 
-  const normalized = normalizeLicense(body.license_key);
+  // The issuer marker is part of the credential format. A production Worker
+  // never falls through to the QA secret, even if a QA hash was accidentally
+  // copied into its database; a QA Worker likewise accepts only OSLQ codes.
+  const normalized = normalizeLicense(body.license_key, issuer);
   if (!normalized) {
     return json({ status: "UNKNOWN", checksum_ok: false });
   }
-  const hmacSecret = env.LICENSE_HMAC_SECRET ?? "osl-license-default-v1";
-  const checksum_ok = await validateChecksum(normalized, hmacSecret);
+  const checksum_ok = await validateChecksum(normalized, hmacSecret, issuer);
   if (!checksum_ok) {
     return json({ status: "UNKNOWN", checksum_ok: false });
   }

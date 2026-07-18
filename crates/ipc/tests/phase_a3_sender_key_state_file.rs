@@ -31,8 +31,10 @@ fn sender_key_state_file_roundtrip_plain_then_encrypted() {
     // ---- Plain (no password) path ----
     let dir = tempdir().unwrap();
     let plain_path = dir.path().join("sender_key_state_plain.json");
-    let mut file = SenderKeyStateFile::default();
-    file.version = 1;
+    let mut file = SenderKeyStateFile {
+        version: 1,
+        ..Default::default()
+    };
     file.states.insert("gc:1234".to_string(), populated_state());
     file.states
         .insert("server_channel:1:2".to_string(), populated_state());
@@ -49,8 +51,10 @@ fn sender_key_state_file_roundtrip_plain_then_encrypted() {
     let key = [0x42u8; 32];
     set_file_storage_key(Some(key));
     let enc_path = dir.path().join("sender_key_state_enc.json");
-    let mut enc_file = SenderKeyStateFile::default();
-    enc_file.version = 1;
+    let mut enc_file = SenderKeyStateFile {
+        version: 1,
+        ..Default::default()
+    };
     enc_file
         .states
         .insert("gc:encrypted".to_string(), populated_state());

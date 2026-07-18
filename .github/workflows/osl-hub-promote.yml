@@ -1,0 +1,63 @@
+name: Promote VM-tested OSL Privacy candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Draft hub-v* release whose exact installer was tested
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote-tested-candidate:
+    runs-on: ubuntu-latest
+    # Configure required human reviewers on this environment. Approval is
+    # intentionally separate from the environment holding signing secrets.
+    environment: hub-vm-qa
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Validate requested candidate tag
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          if [[ ! "$CANDIDATE_TAG" =~ ^hub-v[0-9A-Za-z.+-]{1,64}$ ]]; then
+            echo "candidate_tag must be a bounded hub-v* tag" >&2
+            exit 1
+          fi
+
+      - name: Download draft candidate and two-VM attestation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          test "$(gh release view "$CANDIDATE_TAG" --json isDraft --jq .isDraft)" = "true"
+          mkdir -p candidate
+          gh release download "$CANDIDATE_TAG" --pattern '*.exe' --dir candidate
+          gh release download "$CANDIDATE_TAG" --pattern latest.json --dir candidate
+          gh release download "$CANDIDATE_TAG" --pattern hub-vm-qa-attestation.json --dir candidate
+
+      - name: Verify exact installer and required clean-VM cases
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          python scripts/verify_hub_vm_qa_attestation.py \
+            --tag "$CANDIDATE_TAG" \
+            --candidate-dir candidate \
+            --attestation candidate/hub-vm-qa-attestation.json
+
+      - name: Publish only the attested draft and move OSL Privacy update feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          gh release edit "$CANDIDATE_TAG" --draft=false
+          if ! gh release view hub-latest >/dev/null 2>&1; then
+            gh release create hub-latest \
+              --title "OSL Privacy update feed" \
+              --notes "Stable signed update manifest for OSL Privacy."
+          fi
+          gh release upload hub-latest candidate/latest.json --clobber

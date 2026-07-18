@@ -35,7 +35,7 @@ fn test_fresh_start_wipes_and_regenerates() {
     // peer_map.json with one entry.
     fs::write(
         dir.join("peer_map.json"),
-        r#"{"1477008451799482419":"liam"}"#,
+        r#"{"900000000000000003":"liam"}"#,
     )
     .unwrap();
 
@@ -49,7 +49,7 @@ fn test_fresh_start_wipes_and_regenerates() {
     // whitelist_state.json with one scope.
     fs::write(
         dir.join("whitelist_state.json"),
-        r#"{"dm:1477008451799482419":{"encrypt_toggle":true,"auto_enabled":true}}"#,
+        r#"{"dm:900000000000000003":{"encrypt_toggle":true,"auto_enabled":true}}"#,
     )
     .unwrap();
 

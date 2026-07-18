@@ -68,7 +68,10 @@ export async function upsertSubscription(
     .bind(
       row.subscription_id,
       row.customer_id,
-      row.customer_email,
+      // Stripe already owns receipt delivery and customer contact data. OSL
+      // needs only the opaque customer/subscription IDs for entitlement and
+      // portal lookup, so never duplicate the email address into D1.
+      "",
       row.status,
       row.current_period_end,
       row.cancel_at_period_end,

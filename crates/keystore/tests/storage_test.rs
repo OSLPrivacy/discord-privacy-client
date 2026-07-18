@@ -134,11 +134,8 @@ fn load_rejects_short_inner_field() {
     let on_disk: keystore::IdentityOnDisk = serde_json::from_str(&raw).unwrap();
     let inner_bytes = STANDARD.decode(&on_disk.sealed_b64).unwrap();
     let inner_str = std::str::from_utf8(&inner_bytes).unwrap().to_string();
-    let mutated_inner = mutate_b64_field(
-        &inner_str,
-        "x25519_secret_b64",
-        &STANDARD.encode(&[0u8; 16]),
-    );
+    let mutated_inner =
+        mutate_b64_field(&inner_str, "x25519_secret_b64", &STANDARD.encode([0u8; 16]));
     let new_sealed_b64 = STANDARD.encode(mutated_inner.as_bytes());
     let mutated_outer = raw.replace(&on_disk.sealed_b64, &new_sealed_b64);
     std::fs::write(&path, mutated_outer).unwrap();

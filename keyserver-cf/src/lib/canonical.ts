@@ -9,6 +9,8 @@
 ///   Burn:
 ///     LP(domain)
 ///     LP(user_id)
+///     LP(timestamp_ms decimal string)
+///     LP(request_id base64url string)
 ///     LP(scope_str: "single" | "to_user" | "all")
 ///     target_kind: u8  (0 = none / all, 1 = content_id, 2 = user_id)
 ///     if target_kind != 0: LP(target_value)
@@ -16,6 +18,8 @@
 ///   Replenish:
 ///     LP(domain)
 ///     LP(user_id)
+///     LP(timestamp_ms decimal string)
+///     LP(request_id base64url string)
 ///     spk_present: u8  (0 | 1)
 ///     if spk_present:
 ///       LP(spk.pub_b64 string)        ← NOT decoded; the base64 chars
@@ -34,6 +38,11 @@ const UNREGISTER_DOMAIN = "discord-privacy-client/unregister/v1";
 const CONTROL_INBOX_POST_DOMAIN = "discord-privacy-client/control-inbox-post/v1";
 const CONTROL_INBOX_GET_DOMAIN = "discord-privacy-client/control-inbox-get/v1";
 const CONTROL_INBOX_DELETE_DOMAIN = "discord-privacy-client/control-inbox-delete/v1";
+const PREKEY_BUNDLE_GET_DOMAIN = "discord-privacy-client/prekey-bundle-get/v1";
+const WRAPPED_KEY_GET_DOMAIN = "discord-privacy-client/wrapped-key-get/v1";
+const WRAPPED_KEY_POST_DOMAIN = "discord-privacy-client/wrapped-key-post/v1";
+
+export const SIGNED_COMMAND_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   let total = 0;
@@ -48,6 +57,9 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 }
 
 function u32be(n: number): Uint8Array {
+  if (!Number.isSafeInteger(n) || n < 0 || n > 0xffff_ffff) {
+    throw new RangeError("canonical u32 value out of range");
+  }
   const out = new Uint8Array(4);
   new DataView(out.buffer).setUint32(0, n, false);
   return out;
@@ -72,12 +84,16 @@ export interface BurnTarget {
 
 export function canonicalBurnBytes(args: {
   user_id: string;
+  timestamp_ms: number;
+  request_id: string;
   scope: BurnScope;
   target?: BurnTarget;
 }): Uint8Array {
   const parts: Uint8Array[] = [
     lpString(BURN_DOMAIN),
     lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
     lpString(args.scope),
   ];
   if (args.scope === "single") {
@@ -140,12 +156,16 @@ export interface ReplenishSpk {
 
 export function canonicalReplenishBytes(args: {
   user_id: string;
+  timestamp_ms: number;
+  request_id: string;
   spk: ReplenishSpk | null;
   opks: ReplenishOpk[];
 }): Uint8Array {
   const parts: Uint8Array[] = [
     lpString(REPLENISH_DOMAIN),
     lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
     u8(args.spk ? 1 : 0),
   ];
   if (args.spk) {
@@ -173,6 +193,94 @@ export function canonicalReplenishBytes(args: {
 // at time T (DELETE also pins a specific row id).
 
 export const CONTROL_INBOX_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+
+// ---- authenticated consuming GETs ----
+//
+// A bearer shipped with every client is not an identity credential.
+// These messages are signed by a registered Ed25519 identity and bind
+// the actor, intended recipient, destructive-read target and freshness
+// timestamp. The prekey target is the recipient user id; the wrapped-key
+// target is the content id.
+
+export const CONSUMING_GET_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+export const WRAPPED_KEY_POST_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+
+export interface WrappedKeyPostCanonicalInput {
+  content_id: string;
+  content_type: string;
+  system_message_kind: string | null;
+  sender_id: string;
+  recipient_id: string;
+  session_version: number;
+  share_index: number;
+  wrapped_share_blob: string;
+  blob_version: number;
+  single_use: boolean;
+  display_duration_seconds: number | null;
+  expires_at: string;
+  timestamp_ms: number;
+}
+
+/**
+ * Identity authorization for wrapped-key uploads. Every persisted field and
+ * the freshness timestamp are covered so neither the Worker nor an on-path
+ * caller can retarget, extend, or alter an opaque share after it is signed.
+ * The base64 share is signed as its exact wire string; callers must not
+ * decode/re-encode it between signing and serialization.
+ */
+export function canonicalWrappedKeyPostBytes(
+  args: WrappedKeyPostCanonicalInput,
+): Uint8Array {
+  const parts: Uint8Array[] = [
+    lpString(WRAPPED_KEY_POST_DOMAIN),
+    lpString(args.content_id),
+    lpString(args.content_type),
+    lpString(args.system_message_kind ?? ""),
+    lpString(args.sender_id),
+    lpString(args.recipient_id),
+    u32be(args.session_version),
+    u32be(args.share_index),
+    lpString(args.wrapped_share_blob),
+    u32be(args.blob_version),
+    u8(args.single_use ? 1 : 0),
+    u8(args.display_duration_seconds == null ? 0 : 1),
+  ];
+  if (args.display_duration_seconds != null) {
+    parts.push(u32be(args.display_duration_seconds));
+  }
+  parts.push(lpString(args.expires_at));
+  parts.push(lpString(String(args.timestamp_ms)));
+  return concatBytes(parts);
+}
+
+export function canonicalPrekeyBundleGetBytes(args: {
+  requester_id: string;
+  recipient_id: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return concatBytes([
+    lpString(PREKEY_BUNDLE_GET_DOMAIN),
+    lpString(args.requester_id),
+    lpString(args.recipient_id),
+    lpString(args.recipient_id),
+    lpString(String(args.timestamp_ms)),
+  ]);
+}
+
+export function canonicalWrappedKeyGetBytes(args: {
+  requester_id: string;
+  recipient_id: string;
+  content_id: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return concatBytes([
+    lpString(WRAPPED_KEY_GET_DOMAIN),
+    lpString(args.requester_id),
+    lpString(args.recipient_id),
+    lpString(args.content_id),
+    lpString(String(args.timestamp_ms)),
+  ]);
+}
 
 export function canonicalControlInboxPostBytes(args: {
   sender_id: string;

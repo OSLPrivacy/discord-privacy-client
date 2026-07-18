@@ -141,9 +141,7 @@ impl Scope {
             return Some(Scope::gc(rest));
         }
         if let Some(rest) = key.strip_prefix("server_channel:") {
-            let mut parts = rest.splitn(2, ':');
-            let server_id = parts.next()?;
-            let channel_id = parts.next()?;
+            let (server_id, channel_id) = rest.split_once(':')?;
             if server_id.is_empty() || channel_id.is_empty() {
                 return None;
             }
@@ -254,7 +252,7 @@ mod tests {
     #[test]
     fn storage_key_round_trip() {
         let cases = [
-            Scope::dm("1477008451799482419"),
+            Scope::dm("900000000000000003"),
             Scope::gc("1234567890"),
             Scope::server_channel("9876", "5432"),
             Scope::server_full("9876"),

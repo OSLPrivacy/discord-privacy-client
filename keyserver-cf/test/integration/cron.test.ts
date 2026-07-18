@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { sweepExpired } from "../../src/lib/subscriptions.js";
+import { sweepExpiredPrivacyRows } from "../../src/lib/db.js";
 
 describe("sweepExpired (hourly cron)", () => {
   it("promotes CANCELLED rows past current_period_end to EXPIRED", async () => {
@@ -82,5 +83,86 @@ describe("sweepExpired (hourly cron)", () => {
     const second = await sweepExpired(env.DB);
     expect(first).toBeGreaterThan(0);
     expect(second).toBe(0);
+  });
+});
+
+describe("sweepExpiredPrivacyRows (hourly cron)", () => {
+  it("physically deletes expired wrapped keys and receipts only", async () => {
+    const owner = `retention-owner-${crypto.randomUUID()}`;
+    const nowMs = Date.now();
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const expiredContent = `expired-${crypto.randomUUID()}`;
+    const freshContent = `fresh-${crypto.randomUUID()}`;
+    const expiredIsoWithOffset = new Date(nowMs - 60_000)
+      .toISOString()
+      .replace("Z", "+00:00");
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_keys
+             (content_id, content_type, sender_id, recipient_id, session_version,
+              share_index, wrapped_share_blob, blob_version, single_use,
+              expires_at, created_at)
+           VALUES (?, 'text', ?, 'recipient', 1, 0, 'blob', 1, 0, ?, ?)`,
+        )
+        .bind(expiredContent, owner, expiredIsoWithOffset, new Date(nowMs).toISOString()),
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_keys
+             (content_id, content_type, sender_id, recipient_id, session_version,
+              share_index, wrapped_share_blob, blob_version, single_use,
+              expires_at, created_at)
+           VALUES (?, 'text', ?, 'recipient', 1, 0, 'blob', 1, 0, ?, ?)`,
+        )
+        .bind(
+          freshContent,
+          owner,
+          new Date(nowMs + 60_000).toISOString(),
+          new Date(nowMs).toISOString(),
+        ),
+      env.DB
+        .prepare(
+          `INSERT INTO consuming_get_receipts
+             (requester_id, request_digest, recipient_id, target_id, expires_at)
+           VALUES (?, ?, 'recipient', 'expired', ?)`,
+        )
+        .bind(owner, new Uint8Array(32).fill(1), nowSeconds - 1),
+      env.DB
+        .prepare(
+          `INSERT INTO consuming_get_receipts
+             (requester_id, request_digest, recipient_id, target_id, expires_at)
+           VALUES (?, ?, 'recipient', 'fresh', ?)`,
+        )
+        .bind(owner, new Uint8Array(32).fill(2), nowSeconds + 60),
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_key_post_receipts
+             (sender_id, request_digest, content_id, expires_at)
+           VALUES (?, ?, 'expired-post', ?)`,
+        )
+        .bind(owner, new Uint8Array(32).fill(3), nowSeconds - 1),
+    ]);
+
+    expect(await sweepExpiredPrivacyRows(env.DB, nowMs)).toEqual({
+      wrappedKeys: 1,
+      consumingGetReceipts: 1,
+      wrappedKeyPostReceipts: 1,
+      prekeyReplenishReceipts: 0,
+      wrappedKeyBurnReceipts: 0,
+      unregisterReceipts: 0,
+    });
+
+    const wrapped = await env.DB.prepare(
+      "SELECT content_id FROM wrapped_keys WHERE sender_id = ?",
+    )
+      .bind(owner)
+      .all<{ content_id: string }>();
+    expect(wrapped.results.map((row) => row.content_id)).toEqual([freshContent]);
+    const receipts = await env.DB.prepare(
+      "SELECT target_id FROM consuming_get_receipts WHERE requester_id = ?",
+    )
+      .bind(owner)
+      .all<{ target_id: string }>();
+    expect(receipts.results.map((row) => row.target_id)).toEqual(["fresh"]);
   });
 });

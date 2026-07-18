@@ -106,9 +106,28 @@ pub fn reload_encrypted_state_after_unlock(
                 );
             }
             Ok(None) => {}
+            Err(e) => report.errors.push(format!("{name} quarantine: {e}")),
+        }
+    }
+
+    // app_preferences is device-level in the multi-account layout, so
+    // the generic per-account sweep above only covers the legacy path.
+    // Quarantine the actual base-dir file as well when those paths differ.
+    let legacy_prefs_path = config_dir.join("app_preferences.json");
+    let device_prefs_path = keystore::osl_base_dir()
+        .unwrap_or_else(|_| config_dir.to_path_buf())
+        .join("app_preferences.json");
+    if device_prefs_path != legacy_prefs_path {
+        match quarantine_if_wrong_key(&device_prefs_path) {
+            Ok(Some(q)) => tracing::warn!(
+                quarantined_to = %q.display(),
+                "OSL: device app_preferences sealed by a different key; \
+                 quarantined (rename, not delete)"
+            ),
+            Ok(None) => {}
             Err(e) => report
                 .errors
-                .push(format!("{name} quarantine: {e}")),
+                .push(format!("device app_preferences quarantine: {e}")),
         }
     }
 
@@ -198,9 +217,14 @@ pub fn reload_encrypted_state_after_unlock(
     // and the VPN-warning dismissal. DEVICE-level: lives at the base
     // dir (multi-account), NOT the per-account `config_dir`, matching
     // run_autostart + persist_app_preferences_now.
-    let prefs_path = keystore::osl_base_dir()
-        .unwrap_or_else(|_| config_dir.to_path_buf())
-        .join("app_preferences.json");
+    // Prefer the current device-level location. Fall back to the legacy
+    // per-account path so upgrades do not silently reset tour/update
+    // preferences before the next settings write migrates them.
+    let prefs_path = if device_prefs_path.exists() {
+        device_prefs_path
+    } else {
+        legacy_prefs_path
+    };
     if prefs_path.exists() {
         let prefs = crate::app_preferences::load_app_preferences(&prefs_path);
         report.app_prefs_loaded = true;

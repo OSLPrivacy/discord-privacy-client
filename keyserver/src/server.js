@@ -234,7 +234,6 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
       'ik_x25519_pub',
       'ik_ed25519_pub',
       'ik_mlkem768_pub',
-      'ik_x25519_signature',
     ];
     for (const field of required) {
       if (!(field in body)) {
@@ -260,7 +259,6 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
       'ik_x25519_pub',
       'ik_ed25519_pub',
       'ik_mlkem768_pub',
-      'ik_x25519_signature',
     ]) {
       if (!isNonEmptyBase64(body[k])) {
         return reply.code(400).send({ error: `${k} must be base64` });
@@ -277,7 +275,20 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
         .code(400)
         .send({ error: 'ik_ratchet_initial_pub must be base64 (when present)' });
     }
-    const result = upsertUser(db, body);
+    // Compatibility only: the retired local Fastify prototype keeps
+    // its historical audit column, while current clients send the
+    // self-signed registration proof as `registration_sig`. Old tests
+    // and old local clients may still send `ik_x25519_signature`.
+    // Production registration verification lives in keyserver-cf.
+    const registrationAuditSig =
+      body.registration_sig ?? body.ik_x25519_signature;
+    if (!isNonEmptyBase64(registrationAuditSig)) {
+      return reply.code(400).send({ error: 'registration_sig must be base64' });
+    }
+    const result = upsertUser(db, {
+      ...body,
+      ik_x25519_signature: registrationAuditSig,
+    });
     if (result.isNew) {
       return reply.code(201).send({
         user_id: body.user_id,
@@ -462,6 +473,8 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
     }
     const message = canonicalReplenishBytes({
       user_id: b.user_id,
+      timestamp_ms: b.timestamp_ms,
+      request_id: b.request_id,
       spk: b.spk ?? null,
       opks: b.opks,
     });
@@ -545,6 +558,8 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
     }
     const message = canonicalBurnBytes({
       user_id: b.user_id,
+      timestamp_ms: b.timestamp_ms,
+      request_id: b.request_id,
       scope: b.scope,
       target: target ?? undefined,
     });

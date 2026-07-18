@@ -8,16 +8,28 @@ compatibility_date = "2026-05-13"
 #   1. observability is INTENTIONALLY DISABLED. Cloudflare's
 #      observability tab logs every request URL + status; even with
 #      no app-level logging, a leaked observability slice would
-#      reveal traffic patterns. Keep this commented OUT for prod.
-#      Re-enable temporarily ONLY for active debugging.
+#      reveal traffic patterns. The explicit disabled blocks below are a
+#      release invariant and must not be removed for production debugging.
 #
 #   2. tail / live logging is operator-controlled via `wrangler
 #      tail`. Do not pipe `wrangler tail` to disk in production --
 #      that creates retained logs, which the bucket is meant to
 #      avoid.
 #
-# [observability]
-# enabled = false
+[observability]
+enabled = false
+head_sampling_rate = 0
+
+[observability.logs]
+enabled = false
+head_sampling_rate = 0
+invocation_logs = false
+persist = false
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 0
+persist = false
 
 # D1 database — create with:
 #   wrangler d1 create osl-cipher-store-prod

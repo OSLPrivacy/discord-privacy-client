@@ -6,8 +6,8 @@
 //!   - `refresh_license_state_with_url(state, dir, base_url)`
 //!     — full sync path against an in-process mock keyserver.
 //!     Asserts the cache-write policy, the AppState stamp, and
-//!     the typed-Error dispatch (Transport → grace; HttpStatus
-//!     → no grace).
+//!     the typed-Error dispatch and the shared seven-day stale-entitlement
+//!     ceiling for Transport, HttpStatus, and malformed JSON failures.
 //!
 //! Also: the F2.4 cache-write tidy-up in cmd_osl_validate_license
 //! (UNKNOWN / checksum_ok:false must NOT persist license.json).
@@ -98,6 +98,16 @@ fn http_429_response() -> Vec<u8> {
     let body = r#"{"error":"rate_limited"}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 429 Too Many Requests\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    response.extend_from_slice(body.as_bytes());
+    response
+}
+
+fn malformed_json_response() -> Vec<u8> {
+    let body = r#"{"status": "ACTIVE"#;
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
     response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
     response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
     response.extend_from_slice(body.as_bytes());
@@ -333,11 +343,9 @@ fn refresh_transport_with_expired_cache_returns_free_no_grace() {
 }
 
 #[test]
-fn refresh_http_status_does_not_extend_grace() {
-    // Keyserver answered with 429 → Error::HttpStatus. Per F2.4
-    // spec: reachable rejection does NOT extend grace. Classify
-    // from cache (online mapping only) without offline-grace
-    // overlay.
+fn refresh_http_status_within_grace_returns_bounded_grace() {
+    // A 429 is not an authoritative entitlement result. It may use the recent
+    // cache, but it must not refresh the cache timestamp.
     let response = http_429_response();
     let (port, _rx) = one_shot_server(response);
 
@@ -347,14 +355,62 @@ fn refresh_http_status_does_not_extend_grace() {
 
     let dto =
         refresh_license_state_with_url(&state, dir.path(), &format!("http://127.0.0.1:{port}"));
-    // Cached ACTIVE → classify_state = Paid. NOT
-    // PaidOfflineGrace (only Transport errors get that).
-    assert_eq!(dto.state, LicenseState::Paid);
+    assert_eq!(dto.state, LicenseState::PaidOfflineGrace);
     assert_eq!(dto.raw_status, "ACTIVE");
 
     // Cache untouched on HttpStatus too.
     let cache = read_cache(dir.path());
     assert_eq!(cache.last_validated_status, "ACTIVE");
+}
+
+#[test]
+fn refresh_http_status_past_grace_returns_free() {
+    let (port, _rx) = one_shot_server(http_429_response());
+    let state = AppState::new();
+    let dir = tempdir().unwrap();
+    let last_validated = unix_now() - 8 * 86_400;
+    seed_cache(dir.path(), "ACTIVE", last_validated);
+
+    let dto =
+        refresh_license_state_with_url(&state, dir.path(), &format!("http://127.0.0.1:{port}"));
+    assert_eq!(dto.state, LicenseState::Free);
+    assert_eq!(read_cache(dir.path()).last_validated_at, last_validated);
+}
+
+#[test]
+fn refresh_malformed_json_obeys_same_grace_ceiling() {
+    let state = AppState::new();
+    let fresh = tempdir().unwrap();
+    seed_cache(fresh.path(), "ACTIVE", unix_now() - 60);
+    let (fresh_port, _fresh_rx) = one_shot_server(malformed_json_response());
+    let dto = refresh_license_state_with_url(
+        &state,
+        fresh.path(),
+        &format!("http://127.0.0.1:{fresh_port}"),
+    );
+    assert_eq!(dto.state, LicenseState::PaidOfflineGrace);
+
+    let stale = tempdir().unwrap();
+    let last_validated = unix_now() - 8 * 86_400;
+    seed_cache(stale.path(), "ACTIVE", last_validated);
+    let (stale_port, _stale_rx) = one_shot_server(malformed_json_response());
+    let dto = refresh_license_state_with_url(
+        &state,
+        stale.path(),
+        &format!("http://127.0.0.1:{stale_port}"),
+    );
+    assert_eq!(dto.state, LicenseState::Free);
+    assert_eq!(read_cache(stale.path()).last_validated_at, last_validated);
+}
+
+#[test]
+fn refresh_invalid_endpoint_obeys_same_grace_ceiling() {
+    let state = AppState::new();
+    let dir = tempdir().unwrap();
+    seed_cache(dir.path(), "ACTIVE", unix_now() - 8 * 86_400);
+
+    let dto = refresh_license_state_with_url(&state, dir.path(), "not a valid URL");
+    assert_eq!(dto.state, LicenseState::Free);
 }
 
 #[test]

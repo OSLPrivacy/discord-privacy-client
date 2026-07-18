@@ -3,7 +3,8 @@
 /// 6 states (PENDING, ACTIVE, CANCELLED, GRACE, REVOKED, EXPIRED).
 /// Transitions driven by these Stripe events:
 ///
-///   checkout.session.completed       → upsert PENDING + issue license
+///   checkout.session.completed       → lifetime ACTIVE for paid one-time Pro
+///                                      or legacy subscription fulfillment
 ///   customer.subscription.created    → ACTIVE (or whatever the
 ///                                       initial Stripe status maps to)
 ///   customer.subscription.updated    → derive new state from
@@ -19,15 +20,18 @@
 /// novel event.
 
 import type { Env } from "../env.js";
-import { generateLicenseKey } from "./license.js";
-import { sendLicenseEmail } from "./email.js";
-import { createBillingPortalSession, type StripeEvent } from "./stripe.js";
 import {
-  insertLicense,
+  completeOneTimeStripeCheckoutClaim,
+  completeStripeCheckoutClaim,
+} from "./stripe-checkout-claims.js";
+import {
+  applyLatestSubscriptionObservation,
+  recordAndApplySubscriptionObservation,
+} from "./stripe-subscription-observations.js";
+import { type StripeEvent } from "./stripe.js";
+import {
   revokeLicensesForSubscription,
   type SubscriptionStatus,
-  updateSubscriptionStatus,
-  upsertSubscription,
 } from "./subscriptions.js";
 
 /** Map a raw Stripe subscription status string + cancel flag to our
@@ -81,12 +85,20 @@ interface StripeSubObj {
 
 interface StripeCheckoutSessionObj {
   id: string;
-  customer: string;
+  customer?: string | null;
   customer_details?: { email?: string };
   customer_email?: string;
   subscription?: string;
+  payment_intent?: string;
+  payment_status?: string;
+  amount_total?: number;
+  currency?: string;
   mode?: string;
+  metadata?: Record<string, string>;
 }
+
+/** Retryable ordering gap: Stripe completed before our claim row committed. */
+export class CheckoutClaimNotReadyError extends Error {}
 
 interface StripeInvoiceObj {
   id: string;
@@ -111,6 +123,12 @@ interface StripeDisputeObj {
   /** Stripe surfaces the related sub via `metadata.subscription_id`
    *  when we set it at checkout time. We use that as the dedup key. */
   metadata?: Record<string, string>;
+}
+
+interface StripeChargeObj {
+  id: string;
+  payment_intent?: string;
+  amount_refunded?: number;
 }
 
 /**
@@ -159,20 +177,24 @@ export async function applyEvent(
   fetcher: typeof fetch = fetch,
 ): Promise<HandlerResult> {
   const obj = event.data.object as unknown;
+  const eventCreated = event.created ?? Math.floor(Date.now() / 1000);
   switch (event.type) {
     case "checkout.session.completed":
+    case "checkout.session.async_payment_succeeded":
       return await onCheckoutCompleted(env, obj as StripeCheckoutSessionObj, fetcher);
     case "customer.subscription.created":
     case "customer.subscription.updated":
-      return await onSubscriptionWritten(env, obj as StripeSubObj);
+      return await onSubscriptionWritten(env, obj as StripeSubObj, eventCreated, event.type);
     case "customer.subscription.deleted":
-      return await onSubscriptionDeleted(env, obj as StripeSubObj);
+      return await onSubscriptionDeleted(env, obj as StripeSubObj, eventCreated, event.type);
     case "invoice.payment_failed":
-      return await onInvoiceFailed(env, obj as StripeInvoiceObj);
+      return await onInvoiceFailed(env, obj as StripeInvoiceObj, eventCreated, event.type);
     case "invoice.paid":
-      return await onInvoicePaid(env, obj as StripeInvoiceObj);
+      return await onInvoicePaid(env, obj as StripeInvoiceObj, eventCreated, event.type);
     case "charge.dispute.created":
-      return await onDisputeOpened(env, obj as StripeDisputeObj);
+      return await onDisputeOpened(env, obj as StripeDisputeObj, eventCreated, event.type);
+    case "charge.refunded":
+      return await onChargeRefunded(env, obj as StripeChargeObj, eventCreated, event.type);
     default:
       return { kind: "noop", reason: `unhandled event type: ${event.type}` };
   }
@@ -183,114 +205,142 @@ async function onCheckoutCompleted(
   obj: StripeCheckoutSessionObj,
   fetcher: typeof fetch,
 ): Promise<HandlerResult> {
+  if (obj.mode === "payment") {
+    if (
+      obj.metadata?.osl_plan !== "pro" ||
+      obj.metadata?.osl_purchase !== "one-time" ||
+      obj.metadata?.osl_fulfillment !== "instant-v1"
+    ) {
+      return { kind: "noop", reason: "one-time checkout is not an OSL instant claim" };
+    }
+    if (obj.payment_status !== "paid") {
+      return { kind: "noop", reason: "one-time checkout is not paid" };
+    }
+    if (!obj.payment_intent) {
+      return { kind: "noop", reason: "paid checkout without payment intent" };
+    }
+    if (obj.amount_total !== 500 || obj.currency !== "usd") {
+      return { kind: "noop", reason: "one-time checkout amount does not match $5 USD" };
+    }
+    const completion = await completeOneTimeStripeCheckoutClaim(env.DB, {
+      sessionId: obj.id,
+      paymentIntentId: obj.payment_intent,
+    });
+    if (completion === "missing") {
+      console.error("[checkout] verified payment has no delivery claim");
+      // Checkout Session creation and D1 claim insertion cannot be one atomic
+      // transaction. Returning a non-2xx response makes Stripe retry; the
+      // event lease is released by the webhook handler, so the claim row can
+      // arrive before the next attempt instead of a paid buyer being stranded.
+      throw new CheckoutClaimNotReadyError("checkout delivery claim not committed yet");
+    }
+    return {
+      kind: "applied",
+      summary: `lifetime Pro activation ready for payment=${obj.payment_intent}`,
+    };
+  }
+
+  // Preserve fulfillment for subscription sessions already created before
+  // the public endpoint switched to one-time Pro.
   if (obj.mode && obj.mode !== "subscription") {
-    return { kind: "noop", reason: `non-subscription mode: ${obj.mode}` };
+    return { kind: "noop", reason: `unsupported checkout mode: ${obj.mode}` };
   }
   const subscriptionId = obj.subscription;
   if (!subscriptionId) {
     return { kind: "noop", reason: "checkout.completed without subscription id" };
   }
   const email = obj.customer_details?.email ?? obj.customer_email;
-  if (!email) {
-    return { kind: "noop", reason: "checkout.completed without customer email" };
+  if (!obj.customer || !email) {
+    return { kind: "noop", reason: "legacy subscription checkout lacks customer data" };
   }
 
-  // Upsert PENDING — the actual ACTIVE transition lands when
-  // `customer.subscription.created` arrives (often the same webhook
-  // batch). Treating these as separate events keeps the state
-  // machine readable.
-  await upsertSubscription(env.DB, {
-    subscription_id: subscriptionId,
-    customer_id: obj.customer,
-    customer_email: email,
-    status: "PENDING",
-    current_period_end: null,
-    cancel_at_period_end: 0,
+  void fetcher;
+  const completion = await completeStripeCheckoutClaim(env.DB, {
+    sessionId: obj.id,
+    subscriptionId,
+    customerId: obj.customer,
+    customerEmail: email,
   });
-
-  // Generate + persist + email the license. If email delivery
-  // fails, the license still exists in D1 — user can recover via
-  // Customer Portal "resend".
-  const hmacSecret = env.LICENSE_HMAC_SECRET ?? "osl-license-default-v1";
-  const license = await generateLicenseKey(hmacSecret);
-  await insertLicense(env.DB, {
-    license_hash: license.hash,
-    subscription_id: subscriptionId,
-  });
-
-  if (env.RESEND_API_KEY && env.RESEND_FROM) {
-    let portalUrl: string | undefined;
-    if (env.STRIPE_SECRET_KEY && env.BILLING_PORTAL_RETURN_URL) {
-      try {
-        const portal = await createBillingPortalSession(
-          env.STRIPE_SECRET_KEY,
-          {
-            customerId: obj.customer,
-            returnUrl: env.BILLING_PORTAL_RETURN_URL,
-          },
-          fetcher,
-        );
-        portalUrl = portal.url;
-      } catch (err) {
-        console.warn("[checkout] portal session creation failed:", err);
-      }
-    }
-    const email_send: { to: string; licensePlaintext: string; supportEmail: string; from: string; billingPortalUrl?: string } = {
-      to: email,
-      licensePlaintext: license.plaintext,
-      supportEmail: env.SUPPORT_EMAIL ?? "support@oslprivacy.com",
-      from: env.RESEND_FROM,
-    };
-    if (portalUrl) email_send.billingPortalUrl = portalUrl;
-    const send = await sendLicenseEmail(
-      env.RESEND_API_KEY,
-      email_send,
-      fetcher,
-    );
-    if (send.error) {
-      console.warn(`[checkout] license email failed: ${send.error}`);
-    }
-  } else {
-    console.warn("[checkout] Resend not configured; license issued but not emailed");
+  if (completion === "missing") {
+    // Never mint an unclaimable plaintext license. A missing claim means the
+    // session predates instant fulfillment or was not created by this Worker.
+    console.error("[checkout] verified session has no delivery claim");
+    return { kind: "noop", reason: "checkout completed without delivery claim" };
   }
+  await applyLatestSubscriptionObservation(env.DB, subscriptionId);
 
   return {
     kind: "applied",
-    summary: `PENDING + license issued for sub=${subscriptionId}`,
+    summary: `PENDING + instant activation ready for sub=${subscriptionId}`,
   };
 }
 
-async function onSubscriptionWritten(env: Env, obj: StripeSubObj): Promise<HandlerResult> {
+async function onSubscriptionWritten(
+  env: Env,
+  obj: StripeSubObj,
+  eventCreated: number,
+  eventType: string,
+): Promise<HandlerResult> {
   const newStatus = deriveStatus(obj.status, !!obj.cancel_at_period_end);
-  await updateSubscriptionStatus(env.DB, obj.id, {
+  const accepted = await recordAndApplySubscriptionObservation(env.DB, {
+    subscriptionId: obj.id,
+    customerId: obj.customer,
     status: newStatus,
-    current_period_end: readCurrentPeriodEnd(obj),
-    cancel_at_period_end: obj.cancel_at_period_end ? 1 : 0,
+    currentPeriodEnd: readCurrentPeriodEnd(obj),
+    cancelAtPeriodEnd: !!obj.cancel_at_period_end,
+    eventCreated,
+    eventType,
   });
+  if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   return { kind: "applied", summary: `sub=${obj.id} → ${newStatus}` };
 }
 
-async function onSubscriptionDeleted(env: Env, obj: StripeSubObj): Promise<HandlerResult> {
+async function onSubscriptionDeleted(
+  env: Env,
+  obj: StripeSubObj,
+  eventCreated: number,
+  eventType: string,
+): Promise<HandlerResult> {
   // Stripe fires this when the subscription ends — either at the
   // close of cancel_at_period_end OR on hard-cancel. Treat as
   // EXPIRED regardless; the cron sweep also covers stragglers.
-  await updateSubscriptionStatus(env.DB, obj.id, {
+  const accepted = await recordAndApplySubscriptionObservation(env.DB, {
+    subscriptionId: obj.id,
+    customerId: obj.customer,
     status: "EXPIRED",
+    eventCreated,
+    eventType,
   });
+  if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   return { kind: "applied", summary: `sub=${obj.id} → EXPIRED (deleted)` };
 }
 
-async function onInvoiceFailed(env: Env, obj: StripeInvoiceObj): Promise<HandlerResult> {
+async function onInvoiceFailed(
+  env: Env,
+  obj: StripeInvoiceObj,
+  eventCreated: number,
+  eventType: string,
+): Promise<HandlerResult> {
   if (!obj.subscription) {
     return { kind: "noop", reason: "invoice.payment_failed without subscription id" };
   }
-  await updateSubscriptionStatus(env.DB, obj.subscription, {
+  const accepted = await recordAndApplySubscriptionObservation(env.DB, {
+    subscriptionId: obj.subscription,
+    customerId: obj.customer,
     status: "GRACE",
+    eventCreated,
+    eventType,
   });
+  if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   return { kind: "applied", summary: `sub=${obj.subscription} → GRACE` };
 }
 
-async function onInvoicePaid(env: Env, obj: StripeInvoiceObj): Promise<HandlerResult> {
+async function onInvoicePaid(
+  env: Env,
+  obj: StripeInvoiceObj,
+  eventCreated: number,
+  eventType: string,
+): Promise<HandlerResult> {
   if (!obj.subscription) {
     return { kind: "noop", reason: "invoice.paid without subscription id" };
   }
@@ -299,33 +349,73 @@ async function onInvoicePaid(env: Env, obj: StripeInvoiceObj): Promise<HandlerRe
   // `customer.subscription.created/updated` event still leaves the
   // row with the correct period end after the first paid invoice.
   // When the invoice doesn't carry the field, leave the existing
-  // value alone (updateSubscriptionStatus only writes fields it
-  // receives in `patch`).
+  // value alone; the observation layer preserves an existing period.
   const periodEnd = readPeriodEndFromInvoice(obj);
-  const patch: Parameters<typeof updateSubscriptionStatus>[2] = {
+  const accepted = await recordAndApplySubscriptionObservation(env.DB, {
+    subscriptionId: obj.subscription,
+    customerId: obj.customer,
     status: "ACTIVE",
-  };
-  if (periodEnd !== null) patch.current_period_end = periodEnd;
-  await updateSubscriptionStatus(env.DB, obj.subscription, patch);
+    currentPeriodEnd: periodEnd,
+    eventCreated,
+    eventType,
+  });
+  if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   return { kind: "applied", summary: `sub=${obj.subscription} → ACTIVE` };
 }
 
-async function onDisputeOpened(env: Env, obj: StripeDisputeObj): Promise<HandlerResult> {
-  const subscriptionId = obj.metadata?.subscription_id;
+async function onDisputeOpened(
+  env: Env,
+  obj: StripeDisputeObj,
+  eventCreated: number,
+  eventType: string,
+): Promise<HandlerResult> {
+  const subscriptionId = obj.metadata?.subscription_id ?? obj.payment_intent;
   if (!subscriptionId) {
-    // Without the subscription_id in metadata we can't safely
-    // revoke. Log and noop; manual review picks up from there.
-    console.warn(
-      `[dispute] charge.dispute.created on charge=${obj.charge ?? "?"} without subscription_id metadata; skipping auto-revoke`,
-    );
+    // Legacy subscriptions identify themselves through metadata. One-time
+    // purchases use the PaymentIntent id directly.
+    console.warn("[dispute] missing entitlement reference; skipped auto-revoke");
     return {
       kind: "noop",
       reason: "dispute without subscription_id metadata; manual review required",
     };
   }
-  await updateSubscriptionStatus(env.DB, subscriptionId, {
+  const accepted = await recordAndApplySubscriptionObservation(env.DB, {
+    subscriptionId,
     status: "REVOKED",
+    eventCreated,
+    eventType,
   });
+  if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   await revokeLicensesForSubscription(env.DB, subscriptionId, "chargeback");
   return { kind: "applied", summary: `sub=${subscriptionId} → REVOKED + license revoked` };
+}
+
+async function onChargeRefunded(
+  env: Env,
+  obj: StripeChargeObj,
+  eventCreated: number,
+  eventType: string,
+): Promise<HandlerResult> {
+  if (!obj.payment_intent) {
+    return { kind: "noop", reason: "refund without payment intent" };
+  }
+  if (!Number.isSafeInteger(obj.amount_refunded) || (obj.amount_refunded ?? 0) <= 0) {
+    return { kind: "noop", reason: "refund without a positive refunded amount" };
+  }
+  // One-time entitlements are keyed by PaymentIntent. Any verified refund,
+  // including a partial refund, fails closed until an operator explicitly
+  // resolves it. The legacy schema's `manual` reason is the closest accurate
+  // non-fraud category and avoids a destructive migration solely for a label.
+  const accepted = await recordAndApplySubscriptionObservation(env.DB, {
+    subscriptionId: obj.payment_intent,
+    status: "REVOKED",
+    eventCreated,
+    eventType,
+  });
+  if (!accepted) return { kind: "noop", reason: `stale refund event: ${eventType}` };
+  await revokeLicensesForSubscription(env.DB, obj.payment_intent, "manual");
+  return {
+    kind: "applied",
+    summary: `payment=${obj.payment_intent} → REVOKED after refund`,
+  };
 }

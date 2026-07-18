@@ -1,7 +1,6 @@
-use runtime::{
-    match_recorders, scan_for_recorders, snapshot_running_processes, RecorderScanError,
-    RECORDER_PROCESS_NAMES,
-};
+use runtime::{match_recorders, snapshot_running_processes, RECORDER_PROCESS_NAMES};
+#[cfg(not(windows))]
+use runtime::{scan_for_recorders, RecorderScanError};
 
 // ---- pure match logic ----
 
@@ -50,7 +49,7 @@ fn match_returns_empty_on_innocuous_processes() {
         "notepad.exe",
     ];
     let m = match_recorders(&processes);
-    assert!(m.is_empty(), "false positives: {:?}", m);
+    assert!(m.is_empty(), "false positives: {m:?}");
 }
 
 #[test]

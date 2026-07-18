@@ -8,6 +8,8 @@ export interface BuildEventInput {
   id: string;
   type: string;
   data: { object: Record<string, unknown> };
+  livemode?: boolean;
+  created?: number;
 }
 
 export async function signStripeWebhook(
@@ -50,7 +52,11 @@ export async function postSignedWebhook(
   self: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
   event: BuildEventInput,
 ): Promise<Response> {
-  const body = JSON.stringify(event);
+  const body = JSON.stringify({
+    livemode: true,
+    created: Math.floor(Date.now() / 1000),
+    ...event,
+  });
   const sig = await signStripeWebhook(body);
   return await self.fetch("http://test/v1/stripe/webhook", {
     method: "POST",

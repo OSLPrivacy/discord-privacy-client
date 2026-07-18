@@ -15,7 +15,7 @@ use ipc::wire_v2::{decrypt_v2, encrypt_v2, MSG_TYPE_BURN, MSG_TYPE_CONTENT};
 #[test]
 fn test_burn_marker_serialize_round_trip() {
     let m = BurnMarker {
-        scope: Scope::dm("1502770642930634812"),
+        scope: Scope::dm("900000000000000001"),
         burned_at: 1_700_000_000,
     };
     let bytes = serialize_burn_marker(&m).expect("serialize");
@@ -32,7 +32,7 @@ fn test_encrypt_v2_with_control_message_type_byte_preserved() {
     let (recipient_sk, recipient_pk) = x25519::generate_keypair();
 
     let burn = BurnMarker {
-        scope: Scope::dm("1502770642930634812"),
+        scope: Scope::dm("900000000000000001"),
         burned_at: 1_700_000_000,
     };
     let body = serialize_burn_marker(&burn).unwrap();
@@ -54,7 +54,7 @@ fn test_decrypt_dispatch_on_type() {
     let sender_pk = x25519::derive_public(&sender_sk);
     let (recipient_sk, recipient_pk) = x25519::generate_keypair();
 
-    let scope = Scope::dm("1502770642930634812");
+    let scope = Scope::dm("900000000000000001");
 
     // 0x00 content — body is raw plaintext bytes.
     let content_wire = encrypt_v2(b"hello", &[recipient_pk], MSG_TYPE_CONTENT, &sender_sk).unwrap();

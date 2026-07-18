@@ -41,13 +41,15 @@ fn build_ratchet_state() -> RatchetStateOnDisk {
 
 #[test]
 fn peer_entry_with_ratchet_state_serde_roundtrip() {
-    let mut e = PeerEntry::default();
-    e.pubkey = Some(
-        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gIQ==".to_string(), // dummy 32B b64
-    );
-    e.discord_id = Some("1502770642930634812".to_string());
-    e.ik_ratchet_initial_pub = Some("ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=".to_string());
-    e.ratchet_state = Some(build_ratchet_state());
+    let e = PeerEntry {
+        pubkey: Some(
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gIQ==".to_string(), // dummy 32B b64
+        ),
+        discord_id: Some("900000000000000001".to_string()),
+        ik_ratchet_initial_pub: Some("ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=".to_string()),
+        ratchet_state: Some(build_ratchet_state()),
+        ..Default::default()
+    };
 
     let json = serde_json::to_string(&e).expect("serialize");
     let back: PeerEntry = serde_json::from_str(&json).expect("deserialize");
@@ -67,7 +69,7 @@ fn peer_entry_without_ratchet_state_loads_as_legacy() {
     let json = r#"{
         "osl_user_id": "henry",
         "pubkey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gIQ==",
-        "discord_id": "1502770642930634812",
+        "discord_id": "900000000000000001",
         "first_seen": "2026-05-09T12:00:00Z",
         "incoming_decrypt_accepted": {},
         "outgoing_whitelists": [],
@@ -98,13 +100,17 @@ fn peer_map_file_roundtrip_with_mixed_dm_and_gc_peers() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("peer_map.json");
 
-    let mut dm_peer = PeerEntry::default();
-    dm_peer.discord_id = Some("DM_PEER".to_string());
-    dm_peer.ratchet_state = Some(build_ratchet_state());
+    let dm_peer = PeerEntry {
+        discord_id: Some("DM_PEER".to_string()),
+        ratchet_state: Some(build_ratchet_state()),
+        ..Default::default()
+    };
 
-    let mut gc_peer = PeerEntry::default();
-    gc_peer.discord_id = Some("GC_PEER".to_string());
-    gc_peer.osl_user_id = Some("alice".to_string());
+    let gc_peer = PeerEntry {
+        discord_id: Some("GC_PEER".to_string()),
+        osl_user_id: Some("alice".to_string()),
+        ..Default::default()
+    };
 
     let mut map = std::collections::HashMap::<String, PeerEntry>::new();
     map.insert("DM_PEER".to_string(), dm_peer.clone());
@@ -115,10 +121,6 @@ fn peer_map_file_roundtrip_with_mixed_dm_and_gc_peers() {
     assert!(
         raw.contains("ratchet_state"),
         "DM peer's ratchet_state should serialize"
-    );
-    assert!(
-        !raw.contains("\"GC_PEER\":{\"osl_user_id\":\"alice\"") || true,
-        "(visual sanity only — JSON map order isn't stable)"
     );
 
     let reloaded = ipc::peer_map::load_peer_map_from_path(&path).expect("reload");

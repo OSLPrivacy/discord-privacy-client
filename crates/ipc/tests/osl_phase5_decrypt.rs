@@ -110,12 +110,9 @@ fn no_matching_slot_when_not_recipient() {
     let sender = generate_identity("alice".to_string());
     let recipient = generate_identity("bob".to_string());
 
-    let cover = encrypt_osl_phase4_to_pubkeys(
-        &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
-        "secret",
-    )
-    .expect("encrypt");
+    let cover =
+        encrypt_osl_phase4_to_pubkeys(&sender.x25519_secret, &[recipient.x25519_public], "secret")
+            .expect("encrypt");
 
     // Try up to 50 strangers; expect at least one (in practice
     // ~99.2%) returns NoMatchingSlot. A stranger with a random
@@ -147,7 +144,7 @@ fn message_aead_failed_when_msg_ciphertext_corrupted() {
     let recipient = generate_identity("bob".to_string());
     let cover = encrypt_osl_phase4_to_pubkeys(
         &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
+        &[recipient.x25519_public],
         "untouched",
     )
     .expect("encrypt");
@@ -180,7 +177,7 @@ fn sender_decrypts_own_message_with_auto_appended_slot() {
 
     let cover = encrypt_osl_phase4_to_pubkeys(
         &sender.x25519_secret,
-        &[recipient.x25519_public.clone()],
+        &[recipient.x25519_public],
         "first dogfood message",
     )
     .expect("encrypt");
@@ -209,7 +206,7 @@ fn recipient_uses_sender_pub_not_their_own() {
     let bob = generate_identity("bob".to_string());
     let cover = encrypt_osl_phase4_to_pubkeys(
         &alice.x25519_secret,
-        &[bob.x25519_public.clone()],
+        &[bob.x25519_public],
         "from alice to bob",
     )
     .expect("encrypt");
@@ -240,7 +237,7 @@ fn cache_get_returns_none_for_unknown_user() {
 fn cache_get_returns_inserted_pubkey() {
     let cache = SenderPubkeyCache::default();
     let id = generate_identity("alice".to_string());
-    cache.insert("alice".to_string(), id.x25519_public.clone());
+    cache.insert("alice".to_string(), id.x25519_public);
 
     let got = cache.get("alice").expect("hit");
     assert_eq!(got.as_bytes(), id.x25519_public.as_bytes());
@@ -252,8 +249,8 @@ fn cache_replace_overwrites_prior_entry() {
     let id_old = generate_identity("alice".to_string());
     let id_new = generate_identity("alice".to_string());
 
-    cache.insert("alice".to_string(), id_old.x25519_public.clone());
-    cache.insert("alice".to_string(), id_new.x25519_public.clone());
+    cache.insert("alice".to_string(), id_old.x25519_public);
+    cache.insert("alice".to_string(), id_new.x25519_public);
 
     let got = cache.get("alice").expect("hit");
     assert_eq!(got.as_bytes(), id_new.x25519_public.as_bytes());
@@ -264,8 +261,8 @@ fn cache_replace_overwrites_prior_entry() {
 fn cache_clear_evicts_all() {
     let cache = SenderPubkeyCache::default();
     let id = generate_identity("alice".to_string());
-    cache.insert("alice".to_string(), id.x25519_public.clone());
-    cache.insert("bob".to_string(), id.x25519_public.clone());
+    cache.insert("alice".to_string(), id.x25519_public);
+    cache.insert("bob".to_string(), id.x25519_public);
     assert_eq!(cache.len(), 2);
 
     cache.clear();

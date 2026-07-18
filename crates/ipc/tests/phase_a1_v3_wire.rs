@@ -331,7 +331,6 @@ fn v3_single_recipient_wire_size_is_in_ballpark() {
     // Allow some slack for AEAD padding / metadata.
     assert!(
         raw_len > 1200 && raw_len < 1300,
-        "v=3 single-recipient raw len = {} bytes (expected ~1255)",
-        raw_len
+        "v=3 single-recipient raw len = {raw_len} bytes (expected ~1255)"
     );
 }

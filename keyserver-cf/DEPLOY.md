@@ -1,19 +1,21 @@
-# F1-DEPLOY runbook
+# Keyserver Worker deploy runbook
 
 Walks the keyserver-cf deploy end-to-end: provision resources, set
 secrets, deploy, register the Stripe webhook, smoke-test every
-endpoint, run the canonical end-to-end Stripe-test-mode checkout.
+endpoint, and run one controlled end-to-end live Stripe checkout.
 
 **Secrets handling, non-negotiable:** every credential below goes
 through `wrangler secret put <NAME>` — wrangler prompts
 interactively, you paste the value at that prompt. **Never** put a
 secret into `wrangler.toml`, `.dev.vars`, a `.env` file committed
 to git, a shell variable (history leak), or this document. The
-only file values are the D1 `database_id` and the KV `id`, which
-are resource identifiers, not credentials.
+only persistent file values are the D1 `database_id` and native
+rate-limit namespace IDs, which are resource identifiers, not
+credentials.
 
-**Mode for this entire runbook:** Stripe TEST MODE (`sk_test_…`).
-Do not paste live keys until a separate pre-launch cutover.
+**Mode for this entire runbook:** Stripe LIVE MODE. Use a least-privilege
+restricted key (`rk_live_…`) where possible, or a live secret key
+(`sk_live_…`). Test-mode and publishable keys are rejected by the Worker.
 
 ---
 
@@ -25,7 +27,7 @@ Local checks that must pass before touching production:
 cd keyserver-cf
 npm install
 npx tsc --noEmit               # must be silent
-npx vitest run                  # must be 103 passed
+npx vitest run                  # all tests must pass
 ```
 
 If either fails, fix locally first — do not deploy a red worker.
@@ -45,11 +47,11 @@ not touch the repo.
 
 ---
 
-## §2 Provision D1 + KV
+## §2 Provision D1
 
-These produce **resource IDs** that go into `wrangler.toml` (not
-secrets — IDs identify which D1/KV to bind, but authorization is
-your wrangler token).
+This produces a **resource ID** that goes into `wrangler.toml` (not
+a secret — it identifies which D1 to bind, while authorization is
+provided by your Wrangler login).
 
 ```sh
 npx wrangler d1 create osl-keyserver-prod
@@ -67,21 +69,10 @@ database_id = "<UUID>"
 → Paste the UUID into `wrangler.toml` line 21 (replace
 `REPLACE_WITH_DATABASE_ID`).
 
-```sh
-npx wrangler kv namespace create RATE_LIMIT_KV
-```
-
-Output ends with:
-
-```
-{ binding = "RATE_LIMIT_KV", id = "<KV_ID>" }
-```
-
-→ Paste the id into `wrangler.toml` line 29 (replace
-`REPLACE_WITH_KV_NAMESPACE_ID`).
-
-Commit `wrangler.toml` if you keep this branch on git. The IDs are
-not secret.
+The `[[ratelimits]]` entries are Cloudflare native bindings. Their
+positive-integer namespace IDs must be unique within the Cloudflare
+account, but no KV namespace is created. Commit `wrangler.toml` if
+you keep this branch on git; resource and namespace IDs are not secrets.
 
 ---
 
@@ -99,7 +90,7 @@ Wrangler reports each `00NN_*.sql` as applied. Re-runs are no-ops.
 
 ---
 
-## §4 Generate the two random secrets locally
+## §4 Generate the three random secrets locally
 
 These never leave your machine until you paste them into the
 wrangler prompt. Pick the variant matching your shell:
@@ -110,7 +101,7 @@ wrangler prompt. Pick the variant matching your shell:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Run it twice, once for each random secret. Keep both values open
+Run it twice, once for each random secret. Keep the values open
 in a notepad / password manager that you'll clear at end-of-step.
 
 **PowerShell (Windows native, no openssl required):**
@@ -125,8 +116,10 @@ in a notepad / password manager that you'll clear at end-of-step.
 openssl rand -hex 32
 ```
 
-You'll use the first value for `OSL_KEYSERVER_ADMIN_TOKEN` and the
-second for `LICENSE_HMAC_SECRET`.
+Use separate values for `OSL_KEYSERVER_ADMIN_TOKEN` and
+`LICENSE_HMAC_SECRET`. Public client mutations are authorized by each
+registered identity's Ed25519 key. Do not create or distribute a shared
+client bearer: an open-source desktop binary cannot keep one confidential.
 
 ---
 
@@ -145,42 +138,70 @@ only.
 | Variable | What to paste | Where to get it |
 | --- | --- | --- |
 | `OSL_KEYSERVER_ADMIN_TOKEN` | first 32-byte hex from §4 | generated locally |
-| `OSL_KEYSERVER_ALLOWED_USERS` | CSV of allowlisted Discord snowflakes, e.g. `147700845179948241,<henry's>` | Discord user IDs (not secret, but config) |
 | `LICENSE_HMAC_SECRET` | second 32-byte hex from §4 | generated locally |
-| `STRIPE_SECRET_KEY` | `sk_test_…` value | Stripe Dashboard → Developers → API keys, **toggle "View test data"** |
-| `STRIPE_PRICE_ID_MONTHLY` | `price_…` for the $5/mo product | Stripe Dashboard → Products → your monthly product → Pricing |
-| `STRIPE_PRICE_ID_YEARLY` | `price_…` for the $50/yr product | same screen, yearly product |
-| `CHECKOUT_SUCCESS_URL` | `https://oslprivacy.com/checkout/success` (or wherever your post-checkout page lives) | your site |
-| `CHECKOUT_CANCEL_URL` | `https://oslprivacy.com/checkout/cancel` | your site |
-| `BILLING_PORTAL_RETURN_URL` | `https://oslprivacy.com/account` | your site |
+| `STRIPE_SECRET_KEY` | restricted `rk_live_…` or secret `sk_live_…` key | Stripe Dashboard, live mode API keys |
+| `STRIPE_PRICE_ID_PRO` | `price_…` for the one-time $5 Pro product | Stripe Dashboard → Products → OSL Pro → one-time Pricing |
+| `CHECKOUT_SUCCESS_URL` | `https://oslprivacy.com/success?session_id={CHECKOUT_SESSION_ID}` | your site |
+| `CHECKOUT_CANCEL_URL` | `https://oslprivacy.com/cancel` | your site |
+| `BILLING_PORTAL_RETURN_URL` | `https://oslprivacy.com/pricing` | your site |
 | `RESEND_API_KEY` | `re_…` | Resend Dashboard → API Keys |
 | `RESEND_FROM` | `OSL <noreply@oslprivacy.com>` (or `licenses@`) | your verified Resend domain |
 | `SUPPORT_EMAIL` | `support@oslprivacy.com` | your inbox |
-| `CRYPTO_BTC_ADDRESS` | a BTC address you control | your wallet |
-| `CRYPTO_XMR_ADDRESS` | an XMR integrated address you control | your wallet |
-| `CRYPTO_MONTHLY_USD_CENTS` | `500` | fixed |
-| `CRYPTO_YEARLY_USD_CENTS` | `5000` | fixed |
+| `TELEGRAM_BOT_TOKEN` | BotFather token | install only with `wrangler secret put` |
+| `TELEGRAM_WEBHOOK_SECRET` | at least 32 random characters | use as Telegram's webhook secret token |
+| `TELEGRAM_OPERATOR_CHAT_IDS` | comma-separated private chat IDs and optionally one negative group chat ID | obtain from authenticated bot updates; do not accept IDs from a public request as deployment config |
+| `CRYPTO_WATCHER_URL` | dedicated HTTPS Cloudflare Tunnel hostname for the watch-only watcher | watcher deployment |
+| `CRYPTO_WATCHER_REQUEST_SECRET` | HMAC text used only for Worker invoice requests, at least 32 random characters | `wrangler secret put` |
+| `CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY` | base64 Ed25519 public SPKI DER; never the private key | watcher key-generation step |
+| `CRYPTO_BTC_CONFIRMATIONS` | `2` | fixed |
+| `CRYPTO_XMR_CONFIRMATIONS` | `10` | fixed |
+| `CRYPTO_PRO_USD_CENTS` | `500` | tracked non-secret `wrangler.toml` variable; do not accept browser pricing |
 
 Commands (run sequentially — wrangler prompts each time):
 
 ```sh
 npx wrangler secret put OSL_KEYSERVER_ADMIN_TOKEN
-npx wrangler secret put OSL_KEYSERVER_ALLOWED_USERS
 npx wrangler secret put LICENSE_HMAC_SECRET
 npx wrangler secret put STRIPE_SECRET_KEY
-npx wrangler secret put STRIPE_PRICE_ID_MONTHLY
-npx wrangler secret put STRIPE_PRICE_ID_YEARLY
+npx wrangler secret put STRIPE_PRICE_ID_PRO
 npx wrangler secret put CHECKOUT_SUCCESS_URL
 npx wrangler secret put CHECKOUT_CANCEL_URL
 npx wrangler secret put BILLING_PORTAL_RETURN_URL
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put RESEND_FROM
 npx wrangler secret put SUPPORT_EMAIL
-npx wrangler secret put CRYPTO_BTC_ADDRESS
-npx wrangler secret put CRYPTO_XMR_ADDRESS
-npx wrangler secret put CRYPTO_MONTHLY_USD_CENTS
-npx wrangler secret put CRYPTO_YEARLY_USD_CENTS
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler secret put TELEGRAM_OPERATOR_CHAT_IDS
+npx wrangler secret put CRYPTO_WATCHER_URL
+npx wrangler secret put CRYPTO_WATCHER_REQUEST_SECRET
+npx wrangler secret put CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY
+npx wrangler secret put CRYPTO_BTC_CONFIRMATIONS
+npx wrangler secret put CRYPTO_XMR_CONFIRMATIONS
 ```
+
+For multiple operators, enter a strict comma-separated value such as
+`1122334455,5566778899,-1001234567890`. The Worker permits multiple positive
+private-chat IDs and at most one negative group-chat ID. Empty entries,
+non-decimal values, unsafe integers, or more than one group ID fail closed;
+duplicates are harmless.
+
+Migration from the old single-chat configuration is non-breaking:
+
+1. Leave `TELEGRAM_ADMIN_CHAT_ID` installed and deploy code that understands
+   both settings.
+2. Set `TELEGRAM_OPERATOR_CHAT_IDS` and verify commands and proactive alerts
+   from each intended private chat or the shared group.
+3. Delete the legacy setting with
+   `npx wrangler secret delete TELEGRAM_ADMIN_CHAT_ID`.
+
+When present, `TELEGRAM_OPERATOR_CHAT_IDS` always supersedes the legacy value;
+a malformed new allowlist never falls back to the old ID.
+
+Remove the retired `CRYPTO_WATCHER_SHARED_SECRET`,
+`CRYPTO_MONTHLY_USD_CENTS`, and `CRYPTO_YEARLY_USD_CENTS` bindings only after
+the watcher and Worker have both been updated. The private Ed25519 PKCS#8 key
+stays solely in the watcher's mode-0600 file.
 
 `STRIPE_WEBHOOK_SECRET` is set in §7 after the worker is deployed
 and the webhook endpoint is registered with Stripe — chicken-and-egg.
@@ -216,12 +237,14 @@ will accept events.
 3. **Events to send** (select these specific ones — don't pick "all
    events"):
    - `checkout.session.completed`
+   - `checkout.session.async_payment_succeeded`
    - `customer.subscription.created`
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
    - `invoice.payment_failed`
    - `invoice.paid`
    - `charge.dispute.created`
+   - `charge.refunded`
 4. Click **Add endpoint**.
 5. On the new endpoint's page, click **Reveal signing secret**.
 6. Paste the `whsec_…` value into wrangler:
@@ -243,19 +266,19 @@ secret-put time.)
 
 ## §8 Smoke test matrix (curl)
 
-Set the URL once **without echoing the admin token to your
+Set the URL once **without echoing the client token to your
 shell**. Use `read -s` so the token never enters shell history or
 your screen buffer:
 
 ```sh
 KS=https://oslprivacy-keyserver.<your-subdomain>.workers.dev
-read -rs -p "Admin token: " TOKEN; echo
-# Now $TOKEN exists for this shell session only. When you exit the
+read -rs -p "Client token: " CLIENT_TOKEN; echo
+# Now $CLIENT_TOKEN exists for this shell session only. When you exit the
 # shell it's gone. It does not appear in `history`.
 ```
 
 When you're done with the smoke test, close the shell or run
-`unset TOKEN`.
+`unset CLIENT_TOKEN`.
 
 ### 8.1 Health (public)
 
@@ -282,40 +305,13 @@ curl -s -w "\n%{http_code}\n" "$KS/v1/selector-manifest"
 #   503
 ```
 
-### 8.4 Mutation without token → 401
+### 8.4–8.6 Signed identity routes
 
-```sh
-curl -s -i -X POST "$KS/v1/register" \
-  -H "content-type: application/json" \
-  -d '{"user_id":"x","ik_x25519_pub":"x","ik_ed25519_pub":"x","ik_mlkem768_pub":"x","ik_x25519_signature":"x"}' \
-  | head -1
-# expected: HTTP/2 401
-```
-
-### 8.5 Mutation with token + disallowed user → 403
-
-```sh
-curl -s -i -X POST "$KS/v1/register" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"user_id":"mallory","ik_x25519_pub":"eA==","ik_ed25519_pub":"eA==","ik_mlkem768_pub":"eA==","ik_x25519_signature":"eA=="}' \
-  | head -1
-# expected: HTTP/2 403
-```
-
-### 8.6 Register an allowlisted snowflake → 201
-
-Replace `ALLOWED` with one of the snowflakes you put in
-`OSL_KEYSERVER_ALLOWED_USERS`:
-
-```sh
-ALLOWED=147700845179948241
-curl -s -X POST "$KS/v1/register" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d "{\"user_id\":\"$ALLOWED\",\"ik_x25519_pub\":\"AAAA\",\"ik_ed25519_pub\":\"AAAA\",\"ik_mlkem768_pub\":\"AAAA\",\"ik_x25519_signature\":\"AAAA\"}"
-# expected: {"user_id":"…","registered_at":"2026-…Z"}
-```
+Registration and consuming GETs require canonical Ed25519 signatures;
+an ad-hoc placeholder `curl` is intentionally rejected. Exercise these
+with the integration suite or an actual OSL client. Registration proves
+key possession but does **not yet** prove ownership of the claimed Discord
+snowflake; Discord OAuth binding remains a release gate.
 
 ### 8.7 Fetch pubkeys
 
@@ -347,7 +343,7 @@ NOW=$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 CID="smoke-$(date +%s)"
 
 curl -s -X POST "$KS/v1/wrapped-keys" \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $CLIENT_TOKEN" \
   -H "content-type: application/json" \
   -d "{\"content_id\":\"$CID\",\"content_type\":\"text\",\"sender_id\":\"$ALLOWED\",\"recipient_id\":\"$ALLOWED\",\"session_version\":1,\"share_index\":0,\"wrapped_share_blob\":\"AAAA\",\"blob_version\":1,\"single_use\":false,\"expires_at\":\"$NOW\"}"
 # expected: {"content_id":"smoke-…"}
@@ -358,16 +354,9 @@ curl -s "$KS/v1/wrapped-keys/$CID"
 
 ### 8.10 Checkout session
 
-```sh
-curl -s -X POST "$KS/v1/checkout-session" \
-  -H "content-type: application/json" \
-  -d '{"plan":"monthly","email":"smoketest@example.com"}'
-# expected: {"url":"https://checkout.stripe.com/c/pay/cs_test_…",
-#            "session_id":"cs_test_…"}
-```
-
-Open the `url` in a browser — confirms Stripe Checkout renders
-correctly. **Do not pay yet**; that's §9.
+Use the website checkout. It generates the browser-only claim capability and
+RSA delivery key required by the endpoint, then sends `plan: "pro"`. Direct
+email or recurring-plan requests are intentionally rejected.
 
 ### 8.11 License validate on a nonexistent key
 
@@ -381,17 +370,14 @@ curl -s -X POST "$KS/v1/license/validate" \
 
 ### 8.12 Crypto quote
 
-```sh
-curl -s -X POST "$KS/v1/crypto/quote" \
-  -H "content-type: application/json" \
-  -d '{"plan":"monthly","payment_method":"btc","email":"smoketest@example.com"}'
-# expected: {"payment_id":"cpay_…","address":"<your BTC addr>",
-#            "amount_native":"…","amount_usd_cents":500,
-#            "price_locked_at":"YYYY-MM-DD","expires_at":…}
-```
+Keep public BTC/XMR controls disabled. Use the private canary client, which
+generates the required browser-held RSA delivery key, and submit only
+`plan: "pro"`, `payment_method`, and `delivery_public_key_spki`. The Worker
+rejects email, recurring plan names, and browser-provided price or amount.
 
-If you see `503 no recent price snapshot`, the daily cron hasn't
-run yet. Either wait for the next 00:00 UTC tick, or seed today's
+If you see `503 no recent price snapshot`, the five-minute price cron has not
+completed successfully. Diagnose the scheduled handler; for a bounded canary
+only, seed today's
 price manually:
 
 ```sh
@@ -404,37 +390,27 @@ After seeding, re-run the quote curl.
 
 ---
 
-## §9 End-to-end Stripe test-mode checkout (the canonical proof)
+## §9 End-to-end live Stripe checkout (the canonical proof)
 
-This walks the pipeline checkout → webhook → license → email →
-validate. Use Stripe's test card `4242 4242 4242 4242` — no real
-money moves.
+This walks the pipeline checkout → webhook → browser-bound license →
+validate. Use one controlled real $5 payment. The Worker deliberately rejects
+Stripe test keys and signed test-mode events.
 
-### 9.1 Mint a checkout session
+### 9.1 Use the website checkout
 
 ```sh
-EMAIL="<an email inbox you can read>"
-RESP=$(curl -s -X POST "$KS/v1/checkout-session" \
-  -H "content-type: application/json" \
-  -d "{\"plan\":\"monthly\",\"email\":\"$EMAIL\"}")
-echo "$RESP"
-# Pull the URL out:
-URL=$(echo "$RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["url"])')
-echo "Open: $URL"
+Open `https://oslprivacy.com/pricing` in a current browser and choose the
+one-time Pro purchase. The browser generates the claim capability and RSA delivery key
+that the API now requires. A direct email-only curl request is intentionally
+rejected.
 ```
 
 ### 9.2 Complete the Stripe Checkout
 
-Open `$URL` in a browser. On the Stripe page:
-
-- **Email:** `$EMAIL` (pre-filled)
-- **Card number:** `4242 4242 4242 4242`
-- **Expiry:** any future month/year, e.g. `12/30`
-- **CVC:** any 3 digits, e.g. `123`
-- **Name on card:** anything
-- **Billing address:** anything; ZIP `12345` works
-
-Click **Subscribe**. You're redirected to `CHECKOUT_SUCCESS_URL`.
+This deployment rejects Stripe test keys and signed test mode events. Use a
+real card for a controlled live canary. Complete one $5 payment, confirm
+the activation code appears in the same browser tab, then refund the canary in
+Stripe if appropriate.
 
 ### 9.3 Verify Stripe fired the webhook
 
@@ -442,29 +418,22 @@ In Stripe Dashboard → Developers → Webhooks → your endpoint, the
 event list should show:
 
 - `checkout.session.completed` — **succeeded** (200 from worker)
-- `customer.subscription.created` — succeeded
-- `invoice.paid` — succeeded
 
 If any show non-200, click it to see the worker's response body.
 
-### 9.4 Verify license email landed
+### 9.4 Verify instant activation delivery
 
-Check `$EMAIL` inbox. Expected subject: `Your OSL license key`,
-body containing `OSL-XXXX-XXXX-XXXX-XXXX`.
-
-If the email didn't arrive:
-- Check spam.
-- Check Resend Dashboard → Emails for delivery status / bounce.
-- The license still exists in D1 (§9.5) — recovery path is the
-  Customer Portal "resend" button (F2 wires this into the OSL
-  client).
+The success page should show `OSL-XXXX-XXXX-XXXX-XXXX` after the signed live
+webhook completes. No OSL email is required. If the browser tab that created
+checkout is lost, use the Stripe receipt and the manual support recovery path.
 
 ### 9.5 Inspect D1 directly
 
 ```sh
-# Subscriptions — most recent row should be your test purchase:
+# Entitlements — the legacy table name is subscriptions, but one-time rows
+# contain no customer id, email, recurrence, or expiry:
 npx wrangler d1 execute osl-keyserver-prod --remote \
-  --command "SELECT subscription_id, customer_email, status, current_period_end, datetime(created_at,'unixepoch') AS created FROM subscriptions ORDER BY created_at DESC LIMIT 5"
+  --command "SELECT subscription_id, status, current_period_end, datetime(created_at,'unixepoch') AS created FROM subscriptions ORDER BY created_at DESC LIMIT 5"
 
 # Licenses — one row per subscription:
 npx wrangler d1 execute osl-keyserver-prod --remote \
@@ -556,7 +525,7 @@ curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+0+*+*+*"
 
 ```sh
 # Don't leak the admin token to history:
-unset TOKEN
+unset CLIENT_TOKEN
 unset KS
 # Close the notepad / clear the clipboard that held the
 # random secrets from §4.
@@ -580,7 +549,7 @@ and flip Railway to redirect mode.
 | --- | --- | --- |
 | `name`, `main`, `compatibility_date` | config | worker metadata |
 | `[[d1_databases]] database_id` | resource ID | identifies which D1 to bind; access gated by your wrangler OAuth token |
-| `[[kv_namespaces]] id` | resource ID | same — identifier, not authorization |
+| `[[ratelimits]] namespace_id` | counter namespace | positive integer identifier, not authorization |
 | `[[routes]]` | config | public DNS pattern |
 | `[triggers] crons` | config | cron schedule |
 
@@ -595,10 +564,7 @@ git, etc.) treat it as compromised:
 
 1. Rotate it (regenerate, paste new value via `wrangler secret put`).
 2. For Stripe / Resend: revoke the leaked key in their dashboards.
-3. For `OSL_KEYSERVER_ADMIN_TOKEN`: existing client `keyserver.json`
-   files become invalid until you push out new tokens; for the
-   beta this means coordinating directly with the affected user.
-4. For `LICENSE_HMAC_SECRET`: rotating invalidates *every existing
+3. For `LICENSE_HMAC_SECRET`: rotating invalidates *every existing
    license's checksum*. All issued licenses still validate via the
    DB lookup (which doesn't use the HMAC), but client-side typo
    detection will break for them. Avoid unless truly compromised.
@@ -612,20 +578,20 @@ The deployed worker exposes:
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET | `/v1/healthz` | public |
-| POST | `/v1/register` | admin token + allowlist |
+| POST | `/v1/register` | Ed25519 self/rotation proof; Discord ownership not yet bound |
 | GET | `/v1/pubkeys/:user_id` | public |
-| POST | `/v1/wrapped-keys` | admin token |
-| GET | `/v1/wrapped-keys/:content_id` | public |
-| DELETE | `/v1/wrapped-keys` | admin token + Ed25519 sig |
-| GET | `/v1/prekey-bundle/:user_id` | public |
-| POST | `/v1/prekey-bundle/replenish` | admin token + Ed25519 sig |
+| POST | `/v1/wrapped-keys` | fresh registered-sender Ed25519 signature |
+| GET | `/v1/wrapped-keys/:content_id` | public reusable / signed recipient for one-use |
+| DELETE | `/v1/wrapped-keys` | registered-sender Ed25519 signature |
+| GET | `/v1/prekey-bundle/:user_id` | registered-requester Ed25519 signature |
+| POST | `/v1/prekey-bundle/replenish` | registered-owner Ed25519 signature |
 | GET | `/v1/selector-manifest` | public |
 | POST | `/v1/checkout-session` | public (rate-limited) |
 | POST | `/v1/stripe/webhook` | Stripe HMAC signature |
 | POST | `/v1/license/validate` | public (rate-limited) |
 | POST | `/v1/billing-portal-session` | license-gated |
 | POST | `/v1/crypto/quote` | public (rate-limited) |
-| POST | `/v1/crypto/submit` | public (rate-limited) |
-| POST | `/v1/admin/crypto/confirm` | admin token |
+| POST | `/v1/crypto/status` | anonymous claim token (rate-limited) |
+| POST | `/v1/internal/crypto/settle` | timestamped watcher Ed25519 signature |
 
 Plus `scheduled()` handler driven by `[triggers] crons`.

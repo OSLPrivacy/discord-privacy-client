@@ -1,8 +1,8 @@
 /// IP-based rate limiting via Workers KV.
 ///
 /// Phase 1 stopgap until Phase 6 lands Privacy Pass. Keys are
-/// SHA-256 hashes of the client IP + route bucket, so even the KV
-/// dump never contains a raw IP. KV entries auto-expire after the
+/// server-keyed hashes of the client IP + route bucket, so even a KV
+/// dump cannot be used to enumerate likely IPv4 addresses. Entries expire after the
 /// window so there's no retained log of who hit us.
 ///
 /// Budgets (per IP, per rolling window):
@@ -42,13 +42,26 @@ const BUDGETS: Record<Bucket, number> = {
 };
 
 async function bucketKey(
+  secret: string,
   ip: string,
   bucket: Bucket,
   windowStart: number,
 ): Promise<string> {
-  const buf = new TextEncoder().encode(`${bucket}|${ip}`);
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  const bytes = new Uint8Array(hash);
+  if (secret.length < 32) throw new Error("rate-limit hash key unavailable");
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${bucket}|${ip}`),
+  );
+  const bytes = new Uint8Array(mac);
   let hex = "";
   for (const b of bytes) hex += b.toString(16).padStart(2, "0");
   // Truncate to 32 hex chars (128 bits) -- collision-safe for the
@@ -70,14 +83,8 @@ export async function rateLimit(
   // an aligned windowStart makes the count reset every WINDOW_SECONDS.
   const now = Math.floor(Date.now() / 1000);
   const windowStart = now - (now % WINDOW_SECONDS);
-  const key = await bucketKey(ip, bucket, windowStart);
-  // FAIL OPEN on any KV error. The free-tier KV write quota is
-  // 1,000/day per account; once exhausted, `get`/`put` throw and the
-  // upload endpoint started 500ing on every request ("server
-  // failure"), which the send gate turns into a fail-closed abort —
-  // i.e. nothing sends. Rate limiting is defence-in-depth, not a
-  // correctness gate, so on KV failure we allow the request.
   try {
+    const key = await bucketKey(env.RATE_LIMIT_HASH_KEY, ip, bucket, windowStart);
     const cur = await env.RATE_LIMIT.get(key);
     const used = cur ? parseInt(cur, 10) || 0 : 0;
     const budget = BUDGETS[bucket];
@@ -94,8 +101,12 @@ export async function rateLimit(
       expirationTtl: WINDOW_SECONDS * 2,
     });
     return { allowed: true, remaining: budget - used - 1 };
-  } catch (err) {
-    console.error("[rate-limit] KV error, failing open:", err);
-    return { allowed: true, remaining: 0 };
+  } catch {
+    // Reads may remain available during a limiter outage. Anonymous writes
+    // fail closed so a KV outage cannot become an unbounded D1 storage or
+    // deletion-abuse window.
+    const allowed = bucket === "fetch";
+    console.error("[rate-limit] limiter unavailable");
+    return { allowed, remaining: 0 };
   }
 }

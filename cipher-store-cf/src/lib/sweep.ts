@@ -1,10 +1,9 @@
 /// TTL sweep: deletes all blobs whose expires_at is in the past.
 ///
 /// Runs every 5 minutes from the [triggers].crons in wrangler.toml.
-/// Reports only the aggregate row count to console.log -- never
-/// individual IDs, sizes, or timestamps -- so the wrangler-tail
-/// stream (transient operator-visible log) reveals nothing useful
-/// about traffic patterns.
+/// Returns the aggregate row count to the in-process caller for tests and local
+/// diagnostics. Production scheduling deliberately does not log the count:
+/// even identifier-free counts reveal traffic volume and timing.
 
 import type { Env } from "../env.js";
 

@@ -26,8 +26,8 @@ use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
 use keystore::{generate_identity, Identity};
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 const DM_CHANNEL_ID: &str = "5550000000000000001";
 
 fn fresh_state_with_identity(name: &str, self_did: &str) -> AppState {
@@ -50,7 +50,7 @@ fn install_peer_full(state: &AppState, peer_did: &str, peer_id: &Identity) {
     let mut pm = state.peer_map.lock().unwrap();
     let pe = pm.entry(peer_did.to_string()).or_default();
     pe.pubkey = Some(STANDARD.encode(peer_id.x25519_public.as_bytes()));
-    pe.ik_mlkem768_pub = Some(STANDARD.encode(&peer_id.mlkem_public_bytes));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(peer_id.mlkem_public_bytes));
     pe.discord_id = Some(peer_did.to_string());
 }
 
@@ -62,6 +62,7 @@ fn install_dm_scope(state: &AppState, peer_did: &str) {
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     drop(ws);

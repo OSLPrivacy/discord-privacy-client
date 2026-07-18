@@ -9,10 +9,11 @@
 ///
 /// scheduled() handler: every 5 minutes, sweep expired rows.
 ///
-/// Subpoena-resistance posture:
-///   * No identity binding. No user_id, no auth header (Phase 1).
-///   * No app-level request logging beyond the aggregate sweep
-///     count emitted by scheduled().
+/// Data-minimisation posture:
+///   * No identity binding. No user_id or account credential. A per-upload
+///     opaque token gates fetch/delete but does not authenticate a person.
+///   * No variable app-level request logging. Fixed failure event names carry
+///     no identifiers, URLs, sizes, row counts, or timing details.
 ///   * Short blob TTLs (24h / 72h / 7d) enforced server-side.
 ///   * IP-based rate limit lives in KV with short TTL — never
 ///     persisted to D1.
@@ -37,8 +38,8 @@ export default {
     void ctx;
     try {
       return await dispatch(request, env);
-    } catch (err) {
-      console.error("[fetch] unhandled error:", err);
+    } catch {
+      console.error("[fetch] unhandled failure");
       return serverError();
     }
   },
@@ -49,11 +50,9 @@ export default {
     _ctx: ExecutionContext
   ): Promise<void> {
     try {
-      const deleted = await sweepExpired(env);
-      // Aggregate only -- never per-row.
-      console.log(`[sweep] deleted ${deleted} expired blobs`);
-    } catch (err) {
-      console.error("[sweep] error:", err);
+      await sweepExpired(env);
+    } catch {
+      console.error("[sweep] failed");
     }
   },
 };

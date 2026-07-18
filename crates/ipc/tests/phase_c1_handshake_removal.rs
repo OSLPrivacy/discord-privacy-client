@@ -17,7 +17,7 @@ use ipc::state::AppState;
 use ipc::wire_v2::{encrypt_v2, MSG_TYPE_CONTENT};
 use keystore::generate_identity;
 
-const HENRY_DID: &str = "1502770642930634812";
+const HENRY_DID: &str = "900000000000000001";
 
 fn fresh_state_with_self_identity() -> AppState {
     let state = AppState::new();

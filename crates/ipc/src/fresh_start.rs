@@ -36,8 +36,8 @@
 use crate::peer_map::write_peer_map;
 use crate::whitelist_state::write_whitelist_state;
 use keystore::{
-    generate_identity, load_identity, pending_rotation_from, save_identity,
-    save_pending_rotation, select_best_sealer, Identity,
+    generate_identity, load_identity, pending_rotation_from, save_identity, save_pending_rotation,
+    select_best_sealer, Identity,
 };
 use std::path::{Path, PathBuf};
 
@@ -172,8 +172,7 @@ pub fn cmd_osl_fresh_start(
     // older key -- so the keyserver would 403 it. Better to bail.
     if let Some(ref old) = old_identity {
         let pending_path = config_dir.join("pending_rotation.json");
-        if let Ok(Some(existing)) =
-            keystore::load_pending_rotation(&pending_path, sealer.as_ref())
+        if let Ok(Some(existing)) = keystore::load_pending_rotation(&pending_path, sealer.as_ref())
         {
             use base64::engine::general_purpose::STANDARD as B64;
             use base64::Engine as _;
@@ -201,11 +200,12 @@ pub fn cmd_osl_fresh_start(
     if let Some(ref old) = old_identity {
         let pending = pending_rotation_from(old, &identity);
         let pending_path = config_dir.join("pending_rotation.json");
-        save_pending_rotation(&pending_path, &pending, sealer.as_ref())
-            .map_err(|source| FreshStartError::PendingRotationSaveFailed {
+        save_pending_rotation(&pending_path, &pending, sealer.as_ref()).map_err(|source| {
+            FreshStartError::PendingRotationSaveFailed {
                 path: pending_path.clone(),
                 source,
-            })?;
+            }
+        })?;
         tracing::info!(
             "OSL: fresh_start: persisted pre-signed Case-C rotation \
              proof BEFORE wipe — post-burn register will present it \

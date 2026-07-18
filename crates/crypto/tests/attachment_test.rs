@@ -299,6 +299,17 @@ fn header_rejects_unknown_bucket_size() {
 }
 
 #[test]
+fn header_rejects_plaintext_length_overflow_before_allocation() {
+    let key = random_aead_key();
+    let (_enc, mut header_bytes) = StreamEncryptor::new(key, 100, b"cid".to_vec(), 0).unwrap();
+    // plaintext_len follows magic(7), version(4), and bucket_size(8).
+    let plaintext_len_off = 7 + 4 + 8;
+    header_bytes[plaintext_len_off..plaintext_len_off + 8].copy_from_slice(&u64::MAX.to_be_bytes());
+
+    assert!(StreamHeader::deserialize(&header_bytes).is_err());
+}
+
+#[test]
 fn finalize_errors_if_declared_length_not_filled() {
     let key = random_aead_key();
     let (mut enc, _) = StreamEncryptor::new(key, 100, b"cid".to_vec(), 0).unwrap();

@@ -39,6 +39,8 @@
     "allow-osl-get-guild-list",
     "allow-osl-bulk-set-dm-whitelist",
     "allow-osl-bulk-set-whitelist",
+    "allow-osl-set-channel-whitelist",
+    "allow-osl-set-server-header-whitelist",
     "allow-osl-set-server-default",
     "allow-osl-get-server-defaults",
     "allow-osl-apply-server-default-to-existing-channels",

@@ -13,8 +13,8 @@ use ipc::peer_map::PeerEntry;
 use ipc::state::AppState;
 use keystore::generate_identity;
 
-const SELF_DID: &str = "1477008451799482419";
-const PEER_DID: &str = "1502770642930634812";
+const SELF_DID: &str = "900000000000000003";
+const PEER_DID: &str = "900000000000000001";
 
 fn fresh_state_with_identity(snowflake: Option<&str>) -> AppState {
     let state = AppState::new();

@@ -27,6 +27,11 @@ const GC_ID: &str = "9000000000000000001";
 
 fn fresh_state(name: &str) -> AppState {
     let s = AppState::new();
+    // Production keeps v5 off until sender chains are keyed by a signed
+    // physical device id. This suite exercises the retained v5 machinery
+    // directly, so opt in explicitly.
+    s.sender_keys_enabled
+        .store(true, std::sync::atomic::Ordering::Release);
     *s.identity.lock().unwrap() = Some(generate_identity(name.to_string()));
     s
 }
@@ -139,6 +144,20 @@ fn setup_three_member_gc() -> (AppState, AppState, AppState) {
 }
 
 fn send_from(sender_state: &AppState, sender_did: &str, plaintext: &str) -> Vec<String> {
+    send_from_with_members(
+        sender_state,
+        sender_did,
+        plaintext,
+        &[ALICE_DID, BOB_DID, CAROL_DID],
+    )
+}
+
+fn send_from_with_members(
+    sender_state: &AppState,
+    sender_did: &str,
+    plaintext: &str,
+    members: &[&str],
+) -> Vec<String> {
     // cmd_osl_encrypt_message_v2 returns ONE wire (the data-plane
     // v=5 message). SKDMs are sent as side effects directly to
     // peer state — in this integration test those side effects
@@ -160,11 +179,7 @@ fn send_from(sender_state: &AppState, sender_did: &str, plaintext: &str) -> Vec<
         sender_state,
         plaintext.to_string(),
         ScopeInput::from(&Scope::gc(GC_ID)),
-        vec![
-            ALICE_DID.to_string(),
-            BOB_DID.to_string(),
-            CAROL_DID.to_string(),
-        ],
+        members.iter().map(|id| (*id).to_string()).collect(),
         sender_did.to_string(),
     )
     .expect("encrypt")
@@ -261,6 +276,28 @@ fn alice_v5_install_then_bob_and_carol_decrypt() {
 }
 
 #[test]
+fn production_default_routes_group_content_through_stateless_v3() {
+    let (alice, bob, carol) = setup_three_member_gc();
+    alice
+        .sender_keys_enabled
+        .store(false, std::sync::atomic::Ordering::Release);
+
+    let wire = &send_from(&alice, ALICE_DID, "multi-device safe group")[0];
+    let raw = STANDARD
+        .decode(wire.strip_prefix("DPC0::").unwrap())
+        .unwrap();
+    assert_eq!(raw[0], ipc::wire_v2::WIRE_VERSION_V3);
+    assert_eq!(
+        decrypt_at(&bob, ALICE_DID, wire).unwrap(),
+        "multi-device safe group"
+    );
+    assert_eq!(
+        decrypt_at(&carol, ALICE_DID, wire).unwrap(),
+        "multi-device safe group"
+    );
+}
+
+#[test]
 fn decrypt_v5_errors_when_no_skdm_yet() {
     let (alice, bob, _carol) = setup_three_member_gc();
     let wires = send_from(&alice, ALICE_DID, "you can't read this yet");
@@ -340,7 +377,12 @@ fn membership_change_triggers_rotation_on_next_send() {
     install_peer(&alice, dave_did, &dave_pub);
     install_gc_full_whitelist(&alice, GC_ID, &[ALICE_DID, BOB_DID, CAROL_DID, dave_did]);
 
-    let _ = send_from(&alice, ALICE_DID, "m1-after-dave");
+    let _ = send_from_with_members(
+        &alice,
+        ALICE_DID,
+        "m1-after-dave",
+        &[ALICE_DID, BOB_DID, CAROL_DID, dave_did],
+    );
     let post_chain_id = {
         let g = alice.sender_key_state.lock().unwrap();
         let dump = crypto::sender_keys::SenderKeyState::try_from(

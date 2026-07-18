@@ -1,0 +1,1234 @@
+//! Trusted-local People, friend-code, and scope-security backend for the app.
+//!
+//! The platform webviews do not receive this API. Friend codes contain public
+//! identity material only and are signed by the exporting identity. A valid
+//! signature proves that the code is internally authentic; the separate
+//! `safety_number_verified` bit records the user's out-of-band confirmation.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Mutex;
+
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::Engine as _;
+use ipc::peer_map::{PeerEntry, WhitelistEntry};
+use ipc::scope::{Scope, ScopeInput, ScopeKind};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::core_bridge::HubCoreState;
+
+const FRIEND_CODE_PREFIX: &str = "OSLFR1.";
+const FRIEND_CODE_VERSION: u32 = 1;
+const MAX_FRIEND_CODE_BYTES: usize = 8 * 1024;
+const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
+const PEOPLE_FILE: &str = "hub_people.json";
+const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
+const MAX_ALIAS_BYTES: usize = 80;
+const MAX_ALIAS_CHARS: usize = 48;
+const MAX_VISIBLE_WHITELIST_SCOPES: usize = 512;
+const X25519_PUBLIC_BYTES: usize = 32;
+const ED25519_PUBLIC_BYTES: usize = 32;
+const ED25519_SIGNATURE_BYTES: usize = 64;
+const MLKEM768_PUBLIC_BYTES: usize = 1184;
+const RATCHET_PUBLIC_BYTES: usize = 32;
+
+#[derive(Debug, Default)]
+pub struct HubSecurityState {
+    transition: Mutex<()>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendCodeExport {
+    pub friend_code: String,
+    pub osl_user_id: String,
+    pub safety_number: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddFriendDisposition {
+    Added,
+    AlreadyPresent,
+    KeyChangeRequiresVerification,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddFriendResult {
+    pub disposition: AddFriendDisposition,
+    pub person_id: String,
+    pub osl_user_id: String,
+    pub safety_number: String,
+    pub code_signature_valid: bool,
+    pub safety_number_verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonDto {
+    pub person_id: String,
+    pub osl_user_id: String,
+    pub alias: Option<String>,
+    pub safety_number: String,
+    pub safety_number_verified: bool,
+    pub whitelist_count: usize,
+    pub whitelisted_scopes: Vec<PersonWhitelistScopeDto>,
+    pub whitelisted_scopes_truncated: bool,
+    pub pending_key_change: bool,
+}
+
+/// A local-only description of one approved encryption scope. It deliberately
+/// contains no service or account handle: current friend codes do not prove
+/// either relationship, so OSL must not infer one from a conversation id.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonWhitelistScopeDto {
+    pub kind: String,
+    pub context_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeSecurityDto {
+    pub storage_key: String,
+    pub ttl_seconds: u32,
+    pub decrypt_display_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubScopeBurnResult {
+    pub storage_key: String,
+    pub rows_destroyed: usize,
+    pub channels_destroyed: usize,
+    pub whitelist_entries_removed: usize,
+    pub remote_blobs_deleted: usize,
+    pub remote_blob_deletions_failed: usize,
+    pub remote_cleanup_complete: bool,
+    pub local_cleanup_complete: bool,
+    pub channel_coverage_complete: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FriendCodeUnsigned {
+    version: u32,
+    osl_user_id: String,
+    x25519_public: String,
+    ed25519_public: String,
+    mlkem768_public: String,
+    ratchet_initial_public: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedFriendCode {
+    payload: FriendCodeUnsigned,
+    signature: String,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct PersonMetadata {
+    osl_user_id: String,
+    ed25519_public: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alias: Option<String>,
+    #[serde(default)]
+    safety_number_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_ed25519_public: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_key_bundle: Option<FriendCodeUnsigned>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PeopleFile {
+    version: u32,
+    #[serde(default)]
+    people: BTreeMap<String, PersonMetadata>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct SecurityPreferences {
+    version: u32,
+    #[serde(default)]
+    decrypt_display_by_scope: BTreeMap<String, bool>,
+}
+
+pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, String> {
+    require_unlocked()?;
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    let payload = FriendCodeUnsigned {
+        version: FRIEND_CODE_VERSION,
+        osl_user_id: identity.user_id.clone(),
+        x25519_public: STANDARD.encode(identity.x25519_public.as_bytes()),
+        ed25519_public: STANDARD.encode(identity.ed25519_public.as_bytes()),
+        mlkem768_public: STANDARD.encode(identity.mlkem_public_bytes),
+        ratchet_initial_public: identity
+            .ratchet_initial_pub
+            .map(|key| STANDARD.encode(key.as_bytes())),
+    };
+    let canonical = serde_json::to_vec(&payload)
+        .map_err(|_| "OSL friend code could not be encoded".to_owned())?;
+    let signature = crypto::ed25519::sign(&identity.ed25519_secret, &canonical);
+    let signed = SignedFriendCode {
+        payload,
+        signature: URL_SAFE_NO_PAD.encode(signature.as_bytes()),
+    };
+    let encoded = serde_json::to_vec(&signed)
+        .map_err(|_| "OSL friend code could not be encoded".to_owned())?;
+    Ok(FriendCodeExport {
+        friend_code: format!("{FRIEND_CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(encoded)),
+        osl_user_id: identity.user_id,
+        safety_number: ipc::tofu::safety_number(&signed.payload.ed25519_public),
+    })
+}
+
+pub fn add_friend_code(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    friend_code: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    require_unlocked()?;
+    let alias = normalise_alias(alias.as_deref())?;
+    let parsed = parse_friend_code(&friend_code)?;
+    let self_user_id = active_user_id(core)?;
+    if parsed.payload.osl_user_id == self_user_id {
+        return Err("OSL refuses to add the active identity as a friend".to_owned());
+    }
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+
+    if let Some(existing_id) = people
+        .people
+        .iter()
+        .find(|(_, value)| value.osl_user_id == parsed.payload.osl_user_id)
+        .map(|(person_id, _)| person_id.clone())
+    {
+        let existing = people
+            .people
+            .get_mut(&existing_id)
+            .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+        if existing.ed25519_public != parsed.payload.ed25519_public {
+            existing.pending_ed25519_public = Some(parsed.payload.ed25519_public.clone());
+            existing.pending_key_bundle = Some(parsed.payload.clone());
+            existing.safety_number_verified = false;
+            write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+            return Ok(AddFriendResult {
+                disposition: AddFriendDisposition::KeyChangeRequiresVerification,
+                person_id: existing_id,
+                osl_user_id: parsed.payload.osl_user_id.clone(),
+                safety_number: ipc::tofu::safety_number(&parsed.payload.ed25519_public),
+                code_signature_valid: true,
+                safety_number_verified: false,
+            });
+        }
+        let safety_number_verified = existing.safety_number_verified;
+        if alias.is_some() {
+            existing.alias = alias;
+            write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+        }
+        return Ok(AddFriendResult {
+            disposition: AddFriendDisposition::AlreadyPresent,
+            person_id: existing_id,
+            osl_user_id: parsed.payload.osl_user_id.clone(),
+            safety_number: ipc::tofu::safety_number(&parsed.payload.ed25519_public),
+            code_signature_valid: true,
+            safety_number_verified,
+        });
+    }
+
+    let person_id = person_id(&parsed.payload.ed25519_public);
+    let peer = peer_entry(&parsed.payload)?;
+    let mut peer_map = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    peer_map.insert(person_id.clone(), peer);
+    write_encrypted_json(&dir.join("peer_map.json"), &peer_map)
+        .map_err(|_| "OSL friend keys could not be persisted".to_owned())?;
+    people.people.insert(
+        person_id.clone(),
+        PersonMetadata {
+            osl_user_id: parsed.payload.osl_user_id.clone(),
+            ed25519_public: parsed.payload.ed25519_public.clone(),
+            alias,
+            safety_number_verified: false,
+            pending_ed25519_public: None,
+            pending_key_bundle: None,
+        },
+    );
+    if let Err(error) = write_encrypted_json(&dir.join(PEOPLE_FILE), &people) {
+        peer_map.remove(&person_id);
+        let _ = write_encrypted_json(&dir.join("peer_map.json"), &peer_map);
+        return Err(error);
+    }
+    *core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())? = peer_map;
+    Ok(AddFriendResult {
+        disposition: AddFriendDisposition::Added,
+        person_id,
+        osl_user_id: parsed.payload.osl_user_id.clone(),
+        safety_number: ipc::tofu::safety_number(&parsed.payload.ed25519_public),
+        code_signature_valid: true,
+        safety_number_verified: false,
+    })
+}
+
+pub fn verify_friend_safety_number(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    safety_number: String,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let metadata = people
+        .people
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    let expected_key = metadata
+        .pending_key_bundle
+        .as_ref()
+        .map(|payload| payload.ed25519_public.as_str())
+        .or(metadata.pending_ed25519_public.as_deref())
+        .unwrap_or(&metadata.ed25519_public);
+    let expected = ipc::tofu::safety_number(expected_key);
+    if normalise_safety_number(&safety_number) != normalise_safety_number(&expected) {
+        return Err("OSL safety number does not match".to_owned());
+    }
+    if metadata.pending_key_bundle.is_none() && metadata.pending_ed25519_public.is_some() {
+        return Err(
+            "Re-import this friend's current signed code before accepting the key change"
+                .to_owned(),
+        );
+    }
+    let pending = metadata.pending_key_bundle.clone();
+    if let Some(payload) = pending.as_ref() {
+        let previous_peers = core
+            .osl
+            .peer_map
+            .lock()
+            .map_err(|_| "OSL peer state is unavailable".to_owned())?
+            .clone();
+        let mut peers = previous_peers.clone();
+        let previous = peers
+            .get(&person_id)
+            .cloned()
+            .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+        let mut replacement = peer_entry(payload)?;
+        replacement.outgoing_whitelists = previous.outgoing_whitelists;
+        replacement.burned_scopes = previous.burned_scopes;
+        replacement.discord_id = previous.discord_id;
+        replacement.is_self = previous.is_self;
+        replacement.first_seen = previous.first_seen;
+        peers.insert(person_id.clone(), replacement);
+        write_encrypted_json(&dir.join("peer_map.json"), &peers)
+            .map_err(|_| "OSL changed friend keys could not be persisted".to_owned())?;
+        metadata.ed25519_public = payload.ed25519_public.clone();
+        metadata.pending_ed25519_public = None;
+        metadata.pending_key_bundle = None;
+        metadata.safety_number_verified = true;
+        if let Err(error) = write_encrypted_json(&dir.join(PEOPLE_FILE), &people) {
+            let _ = write_encrypted_json(&dir.join("peer_map.json"), &previous_peers);
+            return Err(error);
+        }
+        *core
+            .osl
+            .peer_map
+            .lock()
+            .map_err(|_| "OSL peer state is unavailable".to_owned())? = peers;
+        return person_dto(core, &person_id, &people.people[&person_id]);
+    }
+    metadata.safety_number_verified = true;
+    let metadata = metadata.clone();
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    person_dto(core, &person_id, &metadata)
+}
+
+pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
+    require_unlocked()?;
+    let people = load_encrypted_json::<PeopleFile>(&config_dir()?.join(PEOPLE_FILE))?;
+    people
+        .people
+        .iter()
+        .map(|(person_id, metadata)| person_dto(core, person_id, metadata))
+        .collect()
+}
+
+/// Set or clear a user-owned nickname for one friend. The nickname is written
+/// only to the encrypted device-local People file; it is never included in a
+/// friend code, peer key lookup, or Cloudflare request.
+pub fn set_friend_alias(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    alias: Option<String>,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let alias = normalise_alias(alias.as_deref())?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let metadata = people
+        .people
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    metadata.alias = alias;
+    let updated = metadata.clone();
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    person_dto(core, &person_id, &updated)
+}
+
+pub fn set_friend_scope_permission(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    scope_input: ScopeInput,
+    enabled: bool,
+    broadened: bool,
+) -> Result<(), String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL scope is invalid".to_owned())?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    if enabled {
+        let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+        let metadata = people
+            .people
+            .get(&person_id)
+            .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+        ensure_friend_can_be_enabled(metadata)?;
+    }
+    let previous_peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    let mut peers = previous_peers.clone();
+    let peer = peers
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    peer.outgoing_whitelists
+        .retain(|entry| !whitelist_matches(entry, &scope));
+    if enabled {
+        peer.outgoing_whitelists
+            .push(whitelist_entry(&scope, broadened));
+    }
+    let mut whitelist_state = core
+        .osl
+        .whitelist_state
+        .lock()
+        .map_err(|_| "OSL whitelist state is unavailable".to_owned())?
+        .clone();
+    if enabled {
+        let scope_state = whitelist_state.entry(scope.storage_key()).or_default();
+        scope_state.encrypt_toggle = true;
+        scope_state.auto_enabled = true;
+    } else {
+        let another_approved_friend = peers.values().any(|candidate| {
+            candidate
+                .outgoing_whitelists
+                .iter()
+                .any(|entry| whitelist_matches(entry, &scope))
+        });
+        revoke_auto_scope_if_uncovered(
+            &mut whitelist_state,
+            &scope.storage_key(),
+            another_approved_friend,
+        );
+    }
+    let server_defaults = core
+        .osl
+        .server_defaults
+        .lock()
+        .map_err(|_| "OSL server-default state is unavailable".to_owned())?
+        .clone();
+    let whitelist_document = ipc::whitelist_state::WhitelistStateFile {
+        migrated_c1: true,
+        scopes: whitelist_state.clone(),
+        server_defaults,
+    };
+    write_encrypted_json(&dir.join("peer_map.json"), &peers)
+        .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
+    // The legacy IPC convenience writer drops server_defaults and its raw
+    // rename cannot replace an existing destination on Windows. OSL Privacy writes
+    // the complete envelope through its authenticated, recoverable path.
+    if write_encrypted_json(&dir.join("whitelist_state.json"), &whitelist_document).is_err() {
+        let _ = write_encrypted_json(&dir.join("peer_map.json"), &previous_peers);
+        return Err("OSL whitelist could not be persisted".to_owned());
+    }
+    *core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())? = peers;
+    *core
+        .osl
+        .whitelist_state
+        .lock()
+        .map_err(|_| "OSL whitelist state is unavailable".to_owned())? = whitelist_state;
+    Ok(())
+}
+
+fn ensure_friend_can_be_enabled(metadata: &PersonMetadata) -> Result<(), String> {
+    if !metadata.safety_number_verified {
+        return Err("Verify this friend's safety number before enabling encryption".to_owned());
+    }
+    if metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some() {
+        return Err(
+            "Resolve this friend's pending key change before enabling encryption".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn revoke_auto_scope_if_uncovered(
+    whitelist_state: &mut ipc::whitelist_state::WhitelistState,
+    storage_key: &str,
+    another_approved_friend: bool,
+) {
+    if another_approved_friend {
+        return;
+    }
+    // Revoke only a toggle that the whitelist enabled. An explicit user
+    // toggle remains their choice, but removing the last friend must not
+    // leave an apparently approved auto-encryption scope.
+    if let Some(scope_state) = whitelist_state.get_mut(storage_key) {
+        if scope_state.auto_enabled {
+            scope_state.encrypt_toggle = false;
+            scope_state.auto_enabled = false;
+        }
+    }
+}
+
+pub fn scope_security(scope_input: ScopeInput) -> Result<ScopeSecurityDto, String> {
+    require_unlocked()?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL scope is invalid".to_owned())?;
+    let dir = config_dir()?;
+    let storage_key = scope.storage_key();
+    let ttl_file = ipc::scope_ttl_file::load_scope_ttls(&dir.join("scope_ttl.json"));
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    Ok(ScopeSecurityDto {
+        ttl_seconds: ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &storage_key),
+        decrypt_display_enabled: prefs
+            .decrypt_display_by_scope
+            .get(&storage_key)
+            .copied()
+            .unwrap_or(true),
+        storage_key,
+    })
+}
+
+pub fn set_scope_security(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    ttl_seconds: u32,
+    decrypt_display_enabled: bool,
+) -> Result<ScopeSecurityDto, String> {
+    require_unlocked()?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL scope is invalid".to_owned())?;
+    let storage_key = scope.storage_key();
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut ttl_file = ipc::scope_ttl_file::load_scope_ttls(&dir.join("scope_ttl.json"));
+    let effective_ttl =
+        ipc::scope_ttl_file::set_scope_ttl(&mut ttl_file, storage_key.clone(), ttl_seconds);
+    ipc::scope_ttl_file::write_scope_ttls(&dir.join("scope_ttl.json"), &ttl_file)?;
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    prefs.version = 1;
+    prefs
+        .decrypt_display_by_scope
+        .insert(storage_key.clone(), decrypt_display_enabled);
+    write_encrypted_json(&dir.join(SECURITY_PREFS_FILE), &prefs)?;
+    Ok(ScopeSecurityDto {
+        storage_key,
+        ttl_seconds: effective_ttl,
+        decrypt_display_enabled,
+    })
+}
+
+/// Burn all OSL Privacy history in one scope and delete every recorded remote
+/// cipher-store blob. A full-space/server burn requires the trusted adapter to
+/// provide a complete channel enumeration; partial coverage is rejected before
+/// any destructive mutation.
+pub fn burn_scope(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    known_channel_ids: Vec<String>,
+    channel_enumeration_complete: bool,
+    burned_message_ids: Vec<String>,
+) -> Result<HubScopeBurnResult, String> {
+    require_unlocked()?;
+    let scope: Scope = scope_input
+        .clone()
+        .try_into()
+        .map_err(|_| "OSL scope is invalid".to_owned())?;
+    validate_burn_ids(&known_channel_ids, 512, "channel")?;
+    validate_burn_ids(&burned_message_ids, 10_000, "message")?;
+    let channels = burn_channels(&scope, known_channel_ids, channel_enumeration_complete)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let blobs_path = dir.join("scope_blobs.json");
+    // Validate the encrypted remote-deletion ledger before destroying
+    // anything. Losing this ledger could strand server-held ciphertext.
+    let mut blobs_file = load_scope_blobs_strict(&blobs_path)?;
+
+    let rows_destroyed = {
+        let store = core
+            .osl
+            .message_store
+            .lock()
+            .map_err(|_| "OSL message store is unavailable".to_owned())?;
+        match store.as_ref() {
+            Some(store) => {
+                let mut rows = 0usize;
+                for channel_id in &channels {
+                    rows =
+                        rows.saturating_add(store.delete_messages_in_channel(channel_id).map_err(
+                            |_| "OSL scope history could not be securely deleted".to_owned(),
+                        )?);
+                }
+                rows
+            }
+            None => 0,
+        }
+    };
+    ipc::commands::cmd_osl_apply_burn(&core.osl, scope_input.clone())?;
+
+    let mut peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    let mut whitelist_entries_removed = 0usize;
+    for peer in peers.values_mut() {
+        let before = peer.outgoing_whitelists.len();
+        peer.outgoing_whitelists
+            .retain(|entry| !whitelist_matches(entry, &scope));
+        whitelist_entries_removed = whitelist_entries_removed
+            .saturating_add(before.saturating_sub(peer.outgoing_whitelists.len()));
+    }
+    write_encrypted_json(&dir.join("peer_map.json"), &peers)
+        .map_err(|_| "OSL burned whitelist state could not be persisted".to_owned())?;
+    *core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())? = peers;
+
+    *core
+        .osl
+        .last_persist_error
+        .lock()
+        .map_err(|_| "OSL persistence state is unavailable".to_owned())? = None;
+    let (scope_kind, server_id, channel_id) = burn_scope_fields(&scope);
+    ipc::commands::cmd_osl_mark_scope_burned(
+        &core.osl,
+        scope_kind,
+        scope.id.clone(),
+        server_id,
+        channel_id,
+        burned_message_ids,
+    )?;
+    if core
+        .osl
+        .last_persist_error
+        .lock()
+        .map_err(|_| "OSL persistence state is unavailable".to_owned())?
+        .take()
+        .is_some()
+    {
+        return Err("OSL burned-scope ledger could not be persisted".to_owned());
+    }
+
+    let blob_ids = ipc::scope_blobs_file::take_blobs(&mut blobs_file, &scope.storage_key());
+    let mut failed_blob_ids = Vec::new();
+    let mut remote_blobs_deleted = 0usize;
+    for blob_id in blob_ids {
+        match ipc::prose_token::prose_token_burn_id(&dir, &scope_input, &blob_id) {
+            Ok(()) => remote_blobs_deleted += 1,
+            Err(_) => failed_blob_ids.push(blob_id),
+        }
+    }
+    for blob_id in &failed_blob_ids {
+        ipc::scope_blobs_file::record_blob(&mut blobs_file, scope.storage_key(), blob_id.clone());
+    }
+    ipc::scope_blobs_file::write(&blobs_path, &blobs_file)?;
+    let remote_blob_deletions_failed = failed_blob_ids.len();
+    Ok(HubScopeBurnResult {
+        storage_key: scope.storage_key(),
+        rows_destroyed,
+        channels_destroyed: channels.len(),
+        whitelist_entries_removed,
+        remote_blobs_deleted,
+        remote_blob_deletions_failed,
+        remote_cleanup_complete: remote_blob_deletions_failed == 0,
+        local_cleanup_complete: true,
+        channel_coverage_complete: true,
+    })
+}
+
+fn parse_friend_code(value: &str) -> Result<SignedFriendCode, String> {
+    if value.len() > MAX_FRIEND_CODE_BYTES {
+        return Err("OSL friend code is too large".to_owned());
+    }
+    let encoded = value
+        .strip_prefix(FRIEND_CODE_PREFIX)
+        .ok_or_else(|| "OSL friend code has an unsupported version".to_owned())?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "OSL friend code is malformed".to_owned())?;
+    let signed: SignedFriendCode =
+        serde_json::from_slice(&bytes).map_err(|_| "OSL friend code is malformed".to_owned())?;
+    if signed.payload.version != FRIEND_CODE_VERSION
+        || signed.payload.osl_user_id.is_empty()
+        || signed.payload.osl_user_id.len() > 160
+    {
+        return Err("OSL friend code payload is invalid".to_owned());
+    }
+    let ed = decode_key_exact::<ED25519_PUBLIC_BYTES>(&signed.payload.ed25519_public, "Ed25519")?;
+    let signature =
+        decode_transport_exact::<ED25519_SIGNATURE_BYTES>(&signed.signature, "signature")?;
+    decode_key_exact::<X25519_PUBLIC_BYTES>(&signed.payload.x25519_public, "X25519")?;
+    decode_key_exact::<MLKEM768_PUBLIC_BYTES>(&signed.payload.mlkem768_public, "ML-KEM")?;
+    if let Some(value) = signed.payload.ratchet_initial_public.as_deref() {
+        decode_key_exact::<RATCHET_PUBLIC_BYTES>(value, "ratchet")?;
+    }
+    let canonical = serde_json::to_vec(&signed.payload)
+        .map_err(|_| "OSL friend code could not be verified".to_owned())?;
+    let public = crypto::ed25519::PublicKey::from_bytes(ed);
+    let signature = crypto::ed25519::Signature::from_bytes(signature);
+    if !crypto::ed25519::verify(&public, &canonical, &signature)
+        .map_err(|_| "OSL friend code signature is invalid".to_owned())?
+    {
+        return Err("OSL friend code signature is invalid".to_owned());
+    }
+    Ok(signed)
+}
+
+fn peer_entry(payload: &FriendCodeUnsigned) -> Result<PeerEntry, String> {
+    Ok(PeerEntry {
+        osl_user_id: Some(payload.osl_user_id.clone()),
+        pubkey: Some(standard_base64(&payload.x25519_public)?),
+        ik_mlkem768_pub: Some(standard_base64(&payload.mlkem768_public)?),
+        ik_ratchet_initial_pub: payload
+            .ratchet_initial_public
+            .as_deref()
+            .map(standard_base64)
+            .transpose()?,
+        tofu_ed25519_pub: Some(standard_base64(&payload.ed25519_public)?),
+        first_seen: Some(ipc::main_password::now_unix_secs_pub().to_string()),
+        ..PeerEntry::default()
+    })
+}
+
+fn standard_base64(value: &str) -> Result<String, String> {
+    let decoded = STANDARD
+        .decode(value)
+        .map_err(|_| "OSL friend code key is malformed".to_owned())?;
+    Ok(STANDARD.encode(decoded))
+}
+
+fn decode_key_exact<const N: usize>(value: &str, label: &str) -> Result<[u8; N], String> {
+    let decoded = STANDARD
+        .decode(value)
+        .map_err(|_| format!("OSL friend code {label} key is malformed"))?;
+    decoded
+        .try_into()
+        .map_err(|_| format!("OSL friend code {label} key has the wrong length"))
+}
+
+fn decode_transport_exact<const N: usize>(value: &str, label: &str) -> Result<[u8; N], String> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| format!("OSL friend code {label} is malformed"))?;
+    decoded
+        .try_into()
+        .map_err(|_| format!("OSL friend code {label} has the wrong length"))
+}
+
+fn person_dto(
+    core: &HubCoreState,
+    person_id: &str,
+    metadata: &PersonMetadata,
+) -> Result<PersonDto, String> {
+    let peer_map = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?;
+    let whitelists = peer_map
+        .get(person_id)
+        .map(|entry| entry.outgoing_whitelists.as_slice())
+        .unwrap_or(&[]);
+    let whitelist_count = whitelists.len();
+    let whitelisted_scopes = whitelists
+        .iter()
+        .take(MAX_VISIBLE_WHITELIST_SCOPES)
+        .map(whitelist_scope_dto)
+        .collect();
+    Ok(PersonDto {
+        person_id: person_id.to_owned(),
+        osl_user_id: metadata.osl_user_id.clone(),
+        alias: metadata.alias.clone(),
+        safety_number: ipc::tofu::safety_number(
+            metadata
+                .pending_key_bundle
+                .as_ref()
+                .map(|payload| payload.ed25519_public.as_str())
+                .or(metadata.pending_ed25519_public.as_deref())
+                .unwrap_or(&metadata.ed25519_public),
+        ),
+        safety_number_verified: metadata.safety_number_verified,
+        whitelist_count,
+        whitelisted_scopes,
+        whitelisted_scopes_truncated: whitelist_count > MAX_VISIBLE_WHITELIST_SCOPES,
+        pending_key_change: metadata.pending_ed25519_public.is_some()
+            || metadata.pending_key_bundle.is_some(),
+    })
+}
+
+fn whitelist_scope_dto(entry: &WhitelistEntry) -> PersonWhitelistScopeDto {
+    match entry {
+        WhitelistEntry::Dm { .. } => PersonWhitelistScopeDto {
+            kind: "dm".to_owned(),
+            context_id: None,
+        },
+        WhitelistEntry::Gc { id, .. } => PersonWhitelistScopeDto {
+            kind: "group".to_owned(),
+            context_id: bounded_context_id(id),
+        },
+        WhitelistEntry::ServerChannel {
+            server_id,
+            channel_id,
+            ..
+        } => PersonWhitelistScopeDto {
+            kind: "channel".to_owned(),
+            context_id: bounded_context_id(&format!("{server_id}:{channel_id}")),
+        },
+        WhitelistEntry::ServerFull { server_id, .. } => PersonWhitelistScopeDto {
+            kind: "space".to_owned(),
+            context_id: bounded_context_id(server_id),
+        },
+    }
+}
+
+fn bounded_context_id(value: &str) -> Option<String> {
+    if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+        None
+    } else {
+        Some(value.to_owned())
+    }
+}
+
+fn person_id(ed25519_public: &str) -> String {
+    let digest = Sha256::digest(ed25519_public.as_bytes());
+    format!("hub-person-{}", URL_SAFE_NO_PAD.encode(&digest[..18]))
+}
+
+fn validate_person_id(value: &str) -> Result<(), String> {
+    if !value.starts_with("hub-person-")
+        || value.len() > 80
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL person id is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn normalise_alias(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = value else { return Ok(None) };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let forbidden = |character: char| {
+        character.is_control()
+            || matches!(
+                character,
+                '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
+                    | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+    };
+    if value.len() > MAX_ALIAS_BYTES
+        || value.chars().count() > MAX_ALIAS_CHARS
+        || value.contains('<')
+        || value.contains('>')
+        || value.chars().any(forbidden)
+    {
+        return Err("OSL friend nickname is invalid".to_owned());
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn normalise_safety_number(value: &str) -> String {
+    value.chars().filter(char::is_ascii_digit).collect()
+}
+
+fn whitelist_matches(entry: &WhitelistEntry, scope: &Scope) -> bool {
+    match (entry, scope.kind) {
+        (WhitelistEntry::Dm { .. }, ScopeKind::Dm) => true,
+        (WhitelistEntry::Gc { id, .. }, ScopeKind::Gc) => id == &scope.id,
+        (
+            WhitelistEntry::ServerChannel {
+                server_id,
+                channel_id,
+                ..
+            },
+            ScopeKind::ServerChannel,
+        ) => {
+            scope.server_id.as_ref() == Some(server_id)
+                && scope.channel_id.as_ref() == Some(channel_id)
+        }
+        (WhitelistEntry::ServerFull { server_id, .. }, ScopeKind::ServerFull) => {
+            scope.server_id.as_ref() == Some(server_id)
+        }
+        _ => false,
+    }
+}
+
+fn whitelist_entry(scope: &Scope, broadened: bool) -> WhitelistEntry {
+    match scope.kind {
+        ScopeKind::Dm => WhitelistEntry::Dm {
+            broadened,
+            enabled_at: Some(ipc::main_password::now_unix_secs_pub().to_string()),
+        },
+        ScopeKind::Gc => WhitelistEntry::Gc {
+            id: scope.id.clone(),
+            user_specific: true,
+        },
+        ScopeKind::ServerChannel => WhitelistEntry::ServerChannel {
+            server_id: scope.server_id.clone().unwrap_or_default(),
+            channel_id: scope.channel_id.clone().unwrap_or_default(),
+            user_specific: true,
+        },
+        ScopeKind::ServerFull => WhitelistEntry::ServerFull {
+            server_id: scope.server_id.clone().unwrap_or_default(),
+            user_specific: true,
+        },
+    }
+}
+
+fn burn_channels(
+    scope: &Scope,
+    known_channel_ids: Vec<String>,
+    channel_enumeration_complete: bool,
+) -> Result<Vec<String>, String> {
+    let channels = match scope.kind {
+        ScopeKind::Dm | ScopeKind::Gc => vec![scope.id.clone()],
+        ScopeKind::ServerChannel => vec![scope
+            .channel_id
+            .clone()
+            .ok_or_else(|| "OSL channel scope is incomplete".to_owned())?],
+        ScopeKind::ServerFull => {
+            if !channel_enumeration_complete {
+                return Err(
+                    "OSL full-space burn requires a complete trusted channel enumeration"
+                        .to_owned(),
+                );
+            }
+            known_channel_ids
+        }
+    };
+    if channels.is_empty() {
+        return Err("OSL scope burn has no channels to delete".to_owned());
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    unique.extend(channels);
+    Ok(unique.into_iter().collect())
+}
+
+fn validate_burn_ids(values: &[String], maximum: usize, label: &str) -> Result<(), String> {
+    if values.len() > maximum {
+        return Err(format!("OSL scope burn has too many {label} ids"));
+    }
+    if values
+        .iter()
+        .any(|value| value.is_empty() || value.len() > 160 || value.chars().any(char::is_control))
+    {
+        return Err(format!("OSL scope burn contains an invalid {label} id"));
+    }
+    if values.iter().map(String::len).sum::<usize>() > 2 * 1024 * 1024 {
+        return Err(format!("OSL scope burn {label} ids are too large"));
+    }
+    Ok(())
+}
+
+fn burn_scope_fields(scope: &Scope) -> (String, Option<String>, Option<String>) {
+    match scope.kind {
+        ScopeKind::Dm => ("dm".to_owned(), None, Some(scope.id.clone())),
+        ScopeKind::Gc => ("gc".to_owned(), None, Some(scope.id.clone())),
+        ScopeKind::ServerChannel => (
+            "server_channel".to_owned(),
+            scope.server_id.clone(),
+            scope.channel_id.clone(),
+        ),
+        ScopeKind::ServerFull => ("server_full".to_owned(), scope.server_id.clone(), None),
+    }
+}
+
+fn active_user_id(core: &HubCoreState) -> Result<String, String> {
+    core.osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())
+}
+
+fn require_unlocked() -> Result<[u8; 32], String> {
+    ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL main password must be unlocked".to_owned())
+}
+
+fn config_dir() -> Result<std::path::PathBuf, String> {
+    keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())
+}
+
+fn load_encrypted_json<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+    let key = require_unlocked()?;
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        path,
+        MAX_SECURITY_STATE_BYTES,
+        "OSL encrypted state",
+    )?
+    else {
+        return Ok(T::default());
+    };
+    if !ipc::main_password::has_enc_magic(&bytes) {
+        return Err("OSL Privacy security state is not encrypted".to_owned());
+    }
+    let plain = ipc::main_password::decrypt_at_rest(&bytes, &key)
+        .map_err(|_| "OSL encrypted state could not be opened".to_owned())?;
+    serde_json::from_slice(&plain).map_err(|_| "OSL encrypted state is malformed".to_owned())
+}
+
+fn load_scope_blobs_strict(path: &Path) -> Result<ipc::scope_blobs_file::ScopeBlobsFile, String> {
+    let key = require_unlocked()?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || metadata.len() > MAX_SECURITY_STATE_BYTES =>
+        {
+            return Err("OSL scope blob ledger is not a bounded regular file".to_owned())
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ipc::scope_blobs_file::ScopeBlobsFile::default())
+        }
+        Err(_) => return Err("OSL scope blob ledger metadata could not be read".to_owned()),
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Err("OSL scope blob ledger could not be read".to_owned()),
+    };
+    if !ipc::main_password::has_enc_magic(&bytes) {
+        return Err("OSL scope blob ledger is not encrypted".to_owned());
+    }
+    let plain = ipc::main_password::decrypt_at_rest(&bytes, &key)
+        .map_err(|_| "OSL scope blob ledger could not be opened".to_owned())?;
+    serde_json::from_slice(&plain).map_err(|_| "OSL scope blob ledger is malformed".to_owned())
+}
+
+fn write_encrypted_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let key = require_unlocked()?;
+    let body = serde_json::to_vec(value)
+        .map_err(|_| "OSL security state could not be encoded".to_owned())?;
+    let sealed = ipc::main_password::encrypt_at_rest(&body, &key)
+        .map_err(|_| "OSL security state could not be encrypted".to_owned())?;
+    if sealed.len() as u64 > MAX_SECURITY_STATE_BYTES {
+        return Err("OSL security state exceeds its storage limit".to_owned());
+    }
+    crate::atomic_file::write_recoverable(path, &sealed, "OSL security state")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signed_friend_code_rejects_tampering() {
+        let identity = keystore::generate_identity("osl-test".to_owned());
+        let payload = FriendCodeUnsigned {
+            version: FRIEND_CODE_VERSION,
+            osl_user_id: identity.user_id.clone(),
+            x25519_public: STANDARD.encode(identity.x25519_public.as_bytes()),
+            ed25519_public: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            mlkem768_public: STANDARD.encode(identity.mlkem_public_bytes),
+            ratchet_initial_public: None,
+        };
+        let canonical = serde_json::to_vec(&payload).unwrap();
+        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &canonical);
+        let mut signed = SignedFriendCode {
+            payload,
+            signature: URL_SAFE_NO_PAD.encode(signature.as_bytes()),
+        };
+        signed.payload.osl_user_id.push_str("-tampered");
+        let code = format!(
+            "{FRIEND_CODE_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&signed).unwrap())
+        );
+        let error = match parse_friend_code(&code) {
+            Ok(_) => panic!("tampered friend code accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("signature"));
+    }
+
+    #[test]
+    fn scope_match_is_service_neutral() {
+        let scope = Scope::server_channel("space", "conversation");
+        let entry = whitelist_entry(&scope, false);
+        assert!(whitelist_matches(&entry, &scope));
+        assert!(!whitelist_matches(&entry, &Scope::gc("conversation")));
+    }
+
+    #[test]
+    fn person_ids_do_not_expose_keys() {
+        let id = person_id("sensitive-public-key-material");
+        assert!(id.starts_with("hub-person-"));
+        assert!(!id.contains("sensitive"));
+    }
+
+    #[test]
+    fn friend_nicknames_are_trimmed_bounded_and_reject_invisible_controls() {
+        assert_eq!(
+            normalise_alias(Some("  Rose  ")).unwrap(),
+            Some("Rose".to_owned())
+        );
+        assert_eq!(normalise_alias(Some("   ")).unwrap(), None);
+        assert!(normalise_alias(Some(&"a".repeat(MAX_ALIAS_BYTES + 1))).is_err());
+        assert!(normalise_alias(Some("Rose\u{202e}hidden")).is_err());
+        assert!(normalise_alias(Some("Rose\nOther")).is_err());
+    }
+
+    #[test]
+    fn whitelist_descriptions_do_not_invent_service_or_account_links() {
+        assert_eq!(
+            whitelist_scope_dto(&WhitelistEntry::Dm {
+                broadened: false,
+                enabled_at: None
+            }),
+            PersonWhitelistScopeDto {
+                kind: "dm".to_owned(),
+                context_id: None
+            }
+        );
+        assert_eq!(
+            whitelist_scope_dto(&WhitelistEntry::Gc {
+                id: "gc-1".to_owned(),
+                user_specific: true
+            }),
+            PersonWhitelistScopeDto {
+                kind: "group".to_owned(),
+                context_id: Some("gc-1".to_owned())
+            }
+        );
+        assert_eq!(bounded_context_id(&"x".repeat(513)), None);
+        assert_eq!(bounded_context_id("unsafe\ncontext"), None);
+    }
+
+    #[test]
+    fn full_space_burn_rejects_partial_channel_coverage() {
+        let scope = Scope::server_full("space");
+        assert!(burn_channels(&scope, vec!["one".to_owned()], false).is_err());
+        assert_eq!(
+            burn_channels(
+                &scope,
+                vec!["two".to_owned(), "one".to_owned(), "one".to_owned()],
+                true,
+            )
+            .unwrap(),
+            vec!["one".to_owned(), "two".to_owned()]
+        );
+    }
+
+    #[test]
+    fn enabling_friend_scope_requires_verified_stable_keys() {
+        let mut metadata = PersonMetadata::default();
+        assert!(ensure_friend_can_be_enabled(&metadata).is_err());
+        metadata.safety_number_verified = true;
+        assert!(ensure_friend_can_be_enabled(&metadata).is_ok());
+        metadata.pending_ed25519_public = Some("changed-key".to_owned());
+        assert!(ensure_friend_can_be_enabled(&metadata).is_err());
+    }
+
+    #[test]
+    fn removing_last_auto_approved_friend_can_disable_scope_without_erasing_manual_choice() {
+        let mut scopes = ipc::whitelist_state::WhitelistState::new();
+        scopes.insert(
+            "dm:friend".to_owned(),
+            ipc::whitelist_state::ScopeState {
+                encrypt_toggle: true,
+                auto_enabled: true,
+                ..Default::default()
+            },
+        );
+        revoke_auto_scope_if_uncovered(&mut scopes, "dm:friend", false);
+        assert!(!scopes["dm:friend"].encrypt_toggle);
+        assert!(!scopes["dm:friend"].auto_enabled);
+
+        scopes.insert(
+            "dm:manual".to_owned(),
+            ipc::whitelist_state::ScopeState {
+                encrypt_toggle: true,
+                auto_enabled: false,
+                ..Default::default()
+            },
+        );
+        revoke_auto_scope_if_uncovered(&mut scopes, "dm:manual", false);
+        assert!(scopes["dm:manual"].encrypt_toggle);
+    }
+}

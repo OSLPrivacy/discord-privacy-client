@@ -25,8 +25,8 @@ use keystore::generate_identity;
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 const CAROL_DID: &str = "1610000000000000000";
 const GC_ID: &str = "1234567890";
 
@@ -138,13 +138,8 @@ fn local_and_in_discord_share_peer_map_and_whitelist_state() {
     .expect("in-Discord unwhitelist ok");
     assert!(!wire.is_empty(), "burn path must produce a wire");
 
-    cmd_osl_local_unwhitelist_scope(
-        &b,
-        HENRY_DID.to_string(),
-        si(&Scope::gc(GC_ID)),
-        false,
-    )
-    .expect("local unwhitelist ok");
+    cmd_osl_local_unwhitelist_scope(&b, HENRY_DID.to_string(), si(&Scope::gc(GC_ID)), false)
+        .expect("local unwhitelist ok");
 
     // Compare the load-bearing local effects (ignore the ISO
     // burned_at instant, which is wall-clock and may straddle a
@@ -204,7 +199,8 @@ fn state_with_store(dir: &std::path::Path) -> AppState {
 
 fn seed_message(state: &AppState, channel_id: &str, msg_id: &str) {
     let g = state.message_store.lock().unwrap();
-    g.as_ref().unwrap()
+    g.as_ref()
+        .unwrap()
         .put(&StoredMessage {
             discord_message_id: msg_id.to_string(),
             channel_id: channel_id.to_string(),
@@ -248,7 +244,10 @@ fn local_unwhitelist_preserves_local_decrypt() {
         pm.entry(HENRY_DID.to_string())
             .or_default()
             .outgoing_whitelists
-            .push(WhitelistEntry::Dm { broadened: false, enabled_at: None });
+            .push(WhitelistEntry::Dm {
+                broadened: false,
+                enabled_at: None,
+            });
     }
     seed_message(&state, HENRY_DID, "old-1");
     assert!(still_readable(&state, "old-1"), "precondition: readable");
@@ -266,15 +265,17 @@ fn local_unwhitelist_preserves_local_decrypt() {
         let pm = state.peer_map.lock().unwrap();
         let henry = pm.get(HENRY_DID).unwrap();
         assert!(
-            !henry.outgoing_whitelists.iter().any(
-                |w| matches!(w, WhitelistEntry::Dm { .. })
-            ),
+            !henry
+                .outgoing_whitelists
+                .iter()
+                .any(|w| matches!(w, WhitelistEntry::Dm { .. })),
             "DM whitelist entry removed"
         );
         assert!(
-            henry.burned_scopes.iter().any(
-                |b| matches!(b, BurnedScope::Dm { .. })
-            ),
+            henry
+                .burned_scopes
+                .iter()
+                .any(|b| matches!(b, BurnedScope::Dm { .. })),
             "BurnedScope kept (outbound bookkeeping; does not gate decrypt)"
         );
     }
@@ -366,13 +367,9 @@ fn summary_is_unknown_when_roster_empty_and_resolved_once_populated() {
     let scope = si(&Scope::gc(GC_ID));
 
     // Roster empty (pre-fix symptom: gateway never populated it).
-    let empty = cmd_osl_get_scope_whitelist_summary(
-        &state,
-        scope.clone(),
-        vec![],
-        LIAM_DID.to_string(),
-    )
-    .unwrap();
+    let empty =
+        cmd_osl_get_scope_whitelist_summary(&state, scope.clone(), vec![], LIAM_DID.to_string())
+            .unwrap();
     assert_eq!(empty.state, "unknown", "no roster → unknown (the bug)");
 
     // Roster populated (post-fix: chunk ingestion fed members in).

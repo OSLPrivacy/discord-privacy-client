@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>OSL Privacy prototype</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div class="prototype-banner" role="status">
+    <strong>Prototype - simulated data only</strong>
+    <span>No real accounts, encryption, scanning, sending or deletion.</span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">O</div>
+        <div><strong>OSL</strong><span>Privacy OSL Privacy</span></div>
+      </div>
+
+      <nav class="nav-list">
+        <button class="nav-item active" data-page-target="home" aria-current="page">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/></svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" data-page-target="inbox">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v12H8l-4 4Zm0 0 8 7 8-7"/></svg>
+          <span>Inbox</span>
+        </button>
+        <button class="nav-item" data-page-target="people">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7M17 4a4 4 0 0 1 0 8m1 3c2.3.8 4 3 4 6"/></svg>
+          <span>People</span>
+        </button>
+        <button class="nav-item" data-page-target="composer">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 15 3-3 3 2 4-5M7 8h4"/></svg>
+          <span>Secure Composer</span>
+          <span class="nav-dot" aria-label="Ready"></span>
+        </button>
+        <button class="nav-item" data-page-target="privacy">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3 9 8 11 5-2 8-6 8-11V5Z"/><path d="m9 12 2 2 4-5"/></svg>
+          <span>Privacy</span>
+        </button>
+        <button class="nav-item" data-page-target="connections">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 12h8M5 8a4 4 0 0 0 0 8h3M19 8a4 4 0 0 1 0 8h-3"/></svg>
+          <span>Connections</span>
+          <span class="nav-count">9</span>
+        </button>
+        <button class="nav-item" data-page-target="activity">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4v16h16M7 15l3-4 3 2 5-7"/></svg>
+          <span>Activity</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-page-target="settings">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.5-.8-1.8 1-1.8-2.1-2.1-1.8 1L11.5 4 11 2H8l-.5 2-1.8.8-1.8-1-2.1 2.1 1 1.8L2 10.5v3l2 .5.8 1.8-1 1.8 2.1 2.1 1.8-1 1.8.8.5 2h3l.5-2 1.8-.8 1.8 1 2.1-2.1-1-1.8Z"/></svg>
+          <span>Settings</span>
+        </button>
+        <div class="privacy-note"><span class="status-dot good"></span><span>Local engine ready</span></div>
+      </div>
+    </aside>
+
+    <main id="main-content" tabindex="-1">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="page-eyebrow">OSL Privacy</p>
+          <h1 id="page-title">Good evening, Liam</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="active-identity" aria-live="polite">
+            <span class="service-avatar" id="header-avatar">D</span>
+            <span><small>Active account</small><strong id="header-account">Discord · Personal · @rose.test</strong></span>
+          </div>
+          <div class="tier-switch" role="group" aria-label="Preview plan">
+            <button class="tier-button active" data-tier="free" aria-pressed="true">Free</button>
+            <button class="tier-button" data-tier="pro" aria-pressed="false">Pro preview</button>
+          </div>
+          <button class="icon-button" id="theme-toggle" aria-label="Switch to light theme" title="Change theme">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="4"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <section class="page active" data-page="home" aria-labelledby="home-heading">
+        <div class="hero-card">
+          <div>
+            <span class="state-label"><span class="status-dot good"></span> Protected</span>
+            <h2 id="home-heading">Your text protection is ready</h2>
+            <p>All nine launch companions keep their native features. Choose Native for ordinary service messaging or OSL Protected for a verified OSL recipient.</p>
+          </div>
+          <button class="primary-button" data-go="composer">Try Secure Composer</button>
+        </div>
+
+        <div class="dashboard-grid">
+          <article class="panel attention-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Recommended next</p><h3>Review three sensitive-history findings</h3></div><span class="count-badge">3</span></div>
+            <p>A local preview may contain an old address. Nothing has been removed.</p>
+            <button class="secondary-button" data-go="privacy" data-trigger-scan="true">Review findings</button>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">This week</p><h3>Protection activity</h3></div></div>
+            <dl class="metric-row"><div><dt>Checks</dt><dd>42</dd></div><div><dt>Links cleaned</dt><dd>11</dd></div><div><dt>Verified removals</dt><dd>0</dd></div></dl>
+            <p class="quiet">Simulated values. Requests are never counted as verified removal.</p>
+          </article>
+        </div>
+
+        <div class="section-heading"><div><p class="eyebrow">Connections</p><h2>Protection at a glance</h2></div><button class="text-button" data-go="connections">Manage all</button></div>
+        <div class="service-strip" id="home-services"></div>
+
+        <article class="data-promise">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          <div><strong>Your drafts stay here</strong><p>This prototype makes no network requests. Production OSL servers must never retain plaintext messages, social credentials, scan findings or cleanup receipts.</p></div>
+        </article>
+      </section>
+
+      <section class="page" data-page="inbox" aria-labelledby="inbox-heading">
+        <div class="section-heading"><div><p class="eyebrow">Unified view · optional</p><h2 id="inbox-heading">Inbox</h2></div><button class="primary-button">New OSL chat</button></div>
+        <div class="split-view">
+          <div class="conversation-list" id="conversation-list"></div>
+          <article class="conversation-preview">
+            <div class="conversation-header"><span class="avatar">R</span><div><h3>Rose</h3><p>OSL Chat · End-to-end encrypted</p></div><span class="state-label compact"><span class="status-dot good"></span> Verified</span></div>
+            <div class="message-stack"><p class="bubble incoming">did the prototype work?</p><p class="bubble outgoing">testing it now</p><p class="conversation-boundary">Simulated conversation · no messages were loaded</p></div>
+            <button class="secondary-button" data-go="composer">Open Secure Composer</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" data-page="people" aria-labelledby="people-heading">
+        <div class="section-heading"><div><p class="eyebrow">Identity and trust</p><h2 id="people-heading">People</h2></div><button class="primary-button">Add person</button></div>
+        <div class="people-grid">
+          <article class="person-card"><span class="avatar large">R</span><div><h3>Rose</h3><p>Verified OSL identity</p><div class="tag-row"><span class="tag">Discord · @rose.test</span><span class="tag">Instagram · @rose.private</span></div></div><button class="secondary-button">Manage</button></article>
+          <article class="person-card"><span class="avatar large">O</span><div><h3>OSL test</h3><p>Two identities need review</p><div class="tag-row"><span class="tag">Discord · @osl.test</span><span class="tag warning">X · unverified</span></div></div><button class="secondary-button">Verify</button></article>
+        </div>
+        <article class="panel"><h3>Trust is specific</h3><p>A trusted person may receive OSL E2EE without bypassing file warnings, cleanup scope or account separation. OSL never merges identities from similar names or avatars.</p></article>
+      </section>
+
+      <section class="page" data-page="composer" aria-labelledby="composer-heading">
+        <div class="section-heading"><div><p class="eyebrow">Mode laboratory</p><h2 id="composer-heading">Message Composer</h2></div><span class="state-label" id="layout-state"><span class="status-dot good"></span> Layout matched · 98%</span></div>
+        <div class="composer-layout">
+          <article class="platform-stage" id="platform-stage">
+            <div class="mock-app-bar"><div class="mock-service"><span class="service-avatar" id="mock-avatar">D</span><div><strong id="mock-service-name">Discord</strong><small id="mock-account-name">Personal · @rose.test</small></div></div><div class="mock-actions"><span></span><span></span><span></span></div></div>
+            <div class="mock-messages"><p class="bubble incoming">This is a simulated platform window.</p><p class="bubble outgoing">OSL sits over its composer, not inside its process.</p><div id="sent-messages"></div></div>
+            <div class="composer-anchor">
+              <textarea id="native-composer" aria-label="Platform native composer" placeholder="Native platform composer"></textarea>
+              <div class="secure-composer" id="secure-composer-box">
+                <div class="secure-composer-head"><span><span class="lock-mark" aria-hidden="true"></span><strong>OSL Protected</strong></span><button class="icon-button small" id="composer-collapse" aria-label="Collapse quick settings" aria-expanded="true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></button></div>
+                <label class="sr-only" for="secure-text">OSL Secure Composer</label>
+                <textarea id="secure-text" aria-label="OSL Secure Composer" placeholder="Type privately here..."></textarea>
+                <div class="composer-actions">
+                  <div class="quick-toggles">
+                    <span class="chip active mode-lock">E2EE required</span>
+                    <button class="chip" id="translate-toggle" aria-pressed="false">Translate</button>
+                    <button class="chip" id="timer-toggle" aria-pressed="false">Timer: Off</button>
+                    <button class="chip pro-media" id="media-toggle" aria-pressed="false">Image <span class="pro-label">Pro</span></button>
+                  </div>
+                  <button class="primary-button compact-button" id="handoff-button">Protect and hand off</button>
+                </div>
+                <div class="composer-detail" id="composer-detail"><span>Simulated true E2EE · verified OSL recipient</span><button class="text-button" id="check-button">Check before send</button></div>
+              </div>
+            </div>
+            <div class="native-action-row"><span id="handoff-status">Plaintext has not entered the platform.</span><button class="native-send" id="native-send" disabled>Native Send</button></div>
+          </article>
+
+          <aside class="composer-controls" aria-label="Composer simulation controls">
+            <fieldset class="mode-picker">
+              <legend>Conversation mode</legend>
+              <div class="mode-options">
+                <label class="mode-option" id="mode-native-option"><input type="radio" name="conversation-mode" value="native" aria-describedby="mode-explanation"/><span><strong>Native</strong><small>All service features</small></span></label>
+                <label class="mode-option" id="mode-protected-option"><input type="radio" name="conversation-mode" value="protected" aria-describedby="mode-explanation"/><span><strong>OSL Protected</strong><small>Verified recipients only</small></span></label>
+              </div>
+              <p class="mode-explanation" id="mode-explanation" aria-live="polite"></p>
+            </fieldset>
+            <div class="control-group"><label for="service-select">Service</label><select id="service-select"></select></div>
+            <div class="control-group"><label for="account-select">Account</label><select id="account-select"></select><p id="account-safety" class="field-note">Switching clears the previous account's plaintext.</p></div>
+            <div class="capability-box"><span class="state-label compact" id="capability-state"><span class="status-dot warn"></span> User-assisted handoff</span><p id="capability-copy">OSL prepares protected text. You press the real platform Send button.</p></div>
+            <div class="control-group"><span class="label-text">Self-healing preview</span><button class="secondary-button full" id="layout-change">Simulate layout change</button><button class="secondary-button full" id="low-confidence">Simulate low confidence</button></div>
+            <div class="control-group"><span class="label-text">Account safety preview</span><button class="secondary-button full" id="platform-challenge">Simulate platform challenge</button></div>
+            <p class="field-note">No network or platform calls are made. Timer support is simulated; current production TTL contracts still need alignment.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page" data-page="privacy" aria-labelledby="privacy-heading">
+        <div class="section-heading"><div><p class="eyebrow">Simple by default</p><h2 id="privacy-heading">Privacy</h2></div><span class="state-label"><span class="status-dot good"></span> Balanced</span></div>
+        <div class="preset-row" role="radiogroup" aria-label="Protection preset">
+          <label class="preset-card"><input type="radio" name="preset" value="basic"/><span><strong>Basic</strong><small>Health, links and local warnings</small></span></label>
+          <label class="preset-card selected"><input type="radio" name="preset" value="balanced" checked/><span><strong>Balanced</strong><small>Recommended protection without automatic deletion</small></span></label>
+          <label class="preset-card"><input type="radio" name="preset" value="maximum"/><span><strong>Maximum</strong><small>Strict public-post checks and verified-contact rules</small></span></label>
+        </div>
+
+        <div class="privacy-grid">
+          <article class="panel scan-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Local scan</p><h3>Sensitive-history scan</h3></div><span class="free-label">Included in Free</span></div>
+            <p>Look for user-selected sensitive details in the selected test account. Findings stay on this device.</p>
+            <div class="scan-scope"><span>Scope</span><strong id="scan-scope">Discord · Personal · @rose.test</strong></div>
+            <button class="primary-button" id="scan-button">Run simulated scan</button>
+            <div id="scan-results" class="scan-results" hidden></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">After I send</p><h3>Retention</h3></div><span class="pro-label">Pro cleanup</span></div>
+            <div class="setting-row"><div><strong>Automatic deletion</strong><p>Off by default on every connected account</p></div><label class="switch"><input type="checkbox" aria-label="Automatic deletion" disabled/><span></span></label></div>
+            <div class="setting-row"><div><strong>OSL text expiry</strong><p>Simulated in this prototype</p></div><button class="text-button">Review</button></div>
+            <div class="setting-row"><div><strong>Always-On Retention Agent</strong><p>Customer-controlled PC, NAS or cloud VM</p></div><button class="text-button pro-action">Preview Pro</button></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" data-page="connections" aria-labelledby="connections-heading">
+        <div class="section-heading"><div><p class="eyebrow">Unlimited accounts in Free</p><h2 id="connections-heading">Connections</h2></div><button class="primary-button">Add test account</button></div>
+        <p class="page-intro">Every account has isolated drafts, findings, policies and health. Expand a service to switch accounts.</p>
+        <div class="connections-grid" id="connections-grid"></div>
+      </section>
+
+      <section class="page" data-page="activity" aria-labelledby="activity-heading">
+        <div class="section-heading"><div><p class="eyebrow">Proof, not promises</p><h2 id="activity-heading">Activity</h2></div><button class="secondary-button">Export local copy</button></div>
+        <div class="activity-list">
+          <article class="activity-item"><span class="activity-icon good"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 12 4 4 8-9"/></svg></span><div><strong>Link tracking parameters removed</strong><p>Discord · Personal · Today 8:42 PM</p></div><span class="state-label compact"><span class="status-dot good"></span> Local</span></article>
+          <article class="activity-item"><span class="activity-icon warn"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 8v5m0 3h.01M4 20h16L12 4Z"/></svg></span><div><strong>Instagram layout recipe changed</strong><p>Work · Composer moved to sidecar and recovered · Today 7:16 PM</p></div><span class="state-label compact"><span class="status-dot good"></span> Recovered</span></article>
+          <article class="activity-item"><span class="activity-icon neutral"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg></span><div><strong>Cleanup request not started</strong><p>Facebook Messenger · Personal · User action required</p></div><span class="state-label compact"><span class="status-dot warn"></span> Held</span></article>
+        </div>
+        <article class="receipt-note"><strong>Removal guarantees stay separate</strong><p>Platform removal, OSL cryptographic expiry and local cache removal are shown as different results. Recipient captures are never reported as deleted.</p></article>
+      </section>
+
+      <section class="page" data-page="settings" aria-labelledby="settings-heading">
+        <div class="section-heading"><div><p class="eyebrow">Local preferences</p><h2 id="settings-heading">Settings</h2></div></div>
+        <div class="settings-list">
+          <article class="setting-row card-row"><div><strong>Theme</strong><p>Match system by default</p></div><button class="secondary-button" id="settings-theme">Toggle theme</button></article>
+          <article class="setting-row card-row"><div><strong>Diagnostics</strong><p>Content, tokens and recipient identities excluded</p></div><button class="secondary-button">Review data</button></article>
+          <article class="setting-row card-row"><div><strong>Advanced</strong><p>Connector recipes, capabilities and local storage</p></div><button class="secondary-button">Open</button></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="warning-dialog" aria-labelledby="warning-title">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 8v5m0 3h.01M4 20h16L12 4Z"/></svg></div>
+      <div><p class="eyebrow">Local check</p><h2 id="warning-title">Check before sending</h2><p>This draft may include a home address. Review the highlighted text before handing it to the platform.</p><div class="highlight-preview">meet me at <mark>1450 Cedar Street</mark> after 8</div></div>
+      <div class="dialog-actions"><button value="cancel" class="secondary-button">Edit draft</button><button value="audience" class="secondary-button">Change audience</button><button value="send" class="primary-button">Continue anyway</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="pro-dialog" aria-labelledby="pro-title">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-icon pro"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8h16v11H4Zm3 0V5h10v3M8 13h8"/></svg></div>
+      <div><p class="eyebrow">Pro preview</p><h2 id="pro-title">Guided cleanup is a Pro tool</h2><p>The Free scan and summary stay available. Pro organizes exact links, deletion steps and receipts without running hidden account automation.</p></div>
+      <div class="dialog-actions"><button value="cancel" class="secondary-button">Stay on Free</button><button value="preview" class="primary-button" id="dialog-pro-preview">Preview Pro</button></div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

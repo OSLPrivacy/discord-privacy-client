@@ -20,12 +20,9 @@ use crate::identity::Identity;
 use crypto::ed25519;
 use sha2::{Digest, Sha256};
 
-pub const CONTROL_INBOX_POST_DOMAIN: &[u8] =
-    b"discord-privacy-client/control-inbox-post/v1";
-pub const CONTROL_INBOX_GET_DOMAIN: &[u8] =
-    b"discord-privacy-client/control-inbox-get/v1";
-pub const CONTROL_INBOX_DELETE_DOMAIN: &[u8] =
-    b"discord-privacy-client/control-inbox-delete/v1";
+pub const CONTROL_INBOX_POST_DOMAIN: &[u8] = b"discord-privacy-client/control-inbox-post/v1";
+pub const CONTROL_INBOX_GET_DOMAIN: &[u8] = b"discord-privacy-client/control-inbox-get/v1";
+pub const CONTROL_INBOX_DELETE_DOMAIN: &[u8] = b"discord-privacy-client/control-inbox-delete/v1";
 
 /// Canonical bytes the POST signature covers. Must agree byte-for-
 /// byte with `canonicalControlInboxPostBytes` in the keyserver TS.
@@ -103,10 +100,7 @@ pub fn sign_control_inbox_post(
     ed25519::sign(&identity.ed25519_secret, &bytes)
 }
 
-pub fn sign_control_inbox_get(
-    identity: &Identity,
-    timestamp_ms: i64,
-) -> ed25519::Signature {
+pub fn sign_control_inbox_get(identity: &Identity, timestamp_ms: i64) -> ed25519::Signature {
     let bytes = canonical_control_inbox_get_bytes(&identity.user_id, timestamp_ms);
     ed25519::sign(&identity.ed25519_secret, &bytes)
 }
@@ -116,11 +110,7 @@ pub fn sign_control_inbox_delete(
     inbox_id_hex: &str,
     timestamp_ms: i64,
 ) -> ed25519::Signature {
-    let bytes = canonical_control_inbox_delete_bytes(
-        &identity.user_id,
-        inbox_id_hex,
-        timestamp_ms,
-    );
+    let bytes = canonical_control_inbox_delete_bytes(&identity.user_id, inbox_id_hex, timestamp_ms);
     ed25519::sign(&identity.ed25519_secret, &bytes)
 }
 

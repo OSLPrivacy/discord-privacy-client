@@ -1,16 +1,13 @@
-/// BTC/XMR price snapshot via CoinGecko free tier (no auth).
+/// BTC/XMR price snapshots via Kraken's public spot ticker.
 ///
-/// Daily 00:00 UTC cron fetches /api/v3/simple/price?ids=bitcoin,
-/// monero&vs_currencies=usd, inserts one row per asset into
-/// crypto_price_snapshots. Quote endpoint reads the most recent
-/// snapshot (today preferred; falls back to the prior day on
-/// fetch failure so a CoinGecko outage doesn't block the quote
-/// form).
+/// A five-minute cron refreshes both assets. Quotes fail closed when the
+/// newest snapshot is more than fifteen minutes old, so an upstream price
+/// outage cannot silently produce a materially stale invoice.
 
 import type { Env } from "../env.js";
 
-const COINGECKO_URL =
-  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,monero&vs_currencies=usd";
+const KRAKEN_TICKER_URL =
+  "https://api.kraken.com/0/public/Ticker?pair=XBTUSD%2CXMRUSD&assetVersion=1";
 
 export interface PriceSnapshot {
   asset: "btc" | "xmr";
@@ -19,47 +16,54 @@ export interface PriceSnapshot {
   fetched_at: number;
 }
 
+export const PRICE_REFRESH_SECONDS = 5 * 60;
+export const MAX_PRICE_AGE_SECONDS = 15 * 60;
+const MAX_FUTURE_SKEW_SECONDS = 60;
+
 function todayUtcDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function yesterdayUtcDate(): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
-/** Hit CoinGecko + persist. Idempotent: re-runs on the same date
- *  overwrite via ON CONFLICT. Logged + swallowed on failure so the
- *  cron handler doesn't crash; the prior day's snapshot remains
- *  available as fallback. */
-export async function runDailyPriceSnapshot(
+/** Fetch and persist both assets. Repeated refreshes update the day's row. */
+export async function refreshPriceSnapshots(
   env: Env,
   fetcher: typeof fetch = fetch,
 ): Promise<{ btc?: string; xmr?: string }> {
   let res: Response;
   try {
-    res = await fetcher(COINGECKO_URL, { method: "GET" });
-  } catch (err) {
-    console.error("[crypto-prices] CoinGecko fetch failed:", err);
+    res = await fetcher(KRAKEN_TICKER_URL, {
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+  } catch {
+    console.error("[crypto-prices] Kraken fetch failed");
     return {};
   }
   if (!res.ok) {
-    console.error(`[crypto-prices] CoinGecko ${res.status}: ${await res.text()}`);
+    console.error(`[crypto-prices] Kraken failed (${res.status})`);
     return {};
   }
-  let body: { bitcoin?: { usd?: number }; monero?: { usd?: number } };
+  let body: {
+    error?: unknown;
+    result?: Record<string, { a?: unknown; b?: unknown }>;
+  };
   try {
     body = await res.json();
   } catch {
-    console.error("[crypto-prices] CoinGecko returned non-JSON");
+    console.error("[crypto-prices] Kraken returned non-JSON");
+    return {};
+  }
+  if (!Array.isArray(body.error) || body.error.length !== 0 || !body.result) {
+    console.error("[crypto-prices] Kraken returned an API error");
     return {};
   }
   const out: { btc?: string; xmr?: string } = {};
   const date = todayUtcDate();
   const now = Math.floor(Date.now() / 1000);
-  if (typeof body.bitcoin?.usd === "number") {
-    const price = body.bitcoin.usd.toString();
+  const btcPrice = conservativeBid(body.result["BTC/USD"]);
+  const xmrPrice = conservativeBid(body.result["XMR/USD"]);
+  if (btcPrice) {
+    const price = btcPrice;
     out.btc = price;
     await persistSnapshot(env.DB, {
       asset: "btc",
@@ -68,8 +72,8 @@ export async function runDailyPriceSnapshot(
       fetched_at: now,
     });
   }
-  if (typeof body.monero?.usd === "number") {
-    const price = body.monero.usd.toString();
+  if (xmrPrice) {
+    const price = xmrPrice;
     out.xmr = price;
     await persistSnapshot(env.DB, {
       asset: "xmr",
@@ -79,6 +83,27 @@ export async function runDailyPriceSnapshot(
     });
   }
   return out;
+}
+
+/** Require a sane two-sided market and value incoming coin at the bid, which
+ * is conservative for a merchant that may later sell the received asset. */
+function conservativeBid(ticker: { a?: unknown; b?: unknown } | undefined): string | null {
+  if (!ticker || !Array.isArray(ticker.a) || !Array.isArray(ticker.b)) return null;
+  const askText = ticker.a[0];
+  const bidText = ticker.b[0];
+  if (
+    typeof askText !== "string" ||
+    typeof bidText !== "string" ||
+    !/^\d+(?:\.\d+)?$/.test(askText) ||
+    !/^\d+(?:\.\d+)?$/.test(bidText)
+  ) {
+    return null;
+  }
+  const ask = Number(askText);
+  const bid = Number(bidText);
+  if (!Number.isFinite(ask) || !Number.isFinite(bid) || bid <= 0 || ask < bid) return null;
+  if ((ask - bid) / bid > 0.05) return null;
+  return bidText;
 }
 
 async function persistSnapshot(db: D1Database, snap: PriceSnapshot): Promise<void> {
@@ -94,27 +119,32 @@ async function persistSnapshot(db: D1Database, snap: PriceSnapshot): Promise<voi
     .run();
 }
 
-/** Return today's price if available, else yesterday's, else null. */
+/** Return only a recent snapshot. Future-dated rows also fail closed. */
 export async function getLatestSnapshot(
   db: D1Database,
   asset: "btc" | "xmr",
+  nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<PriceSnapshot | null> {
-  const today = todayUtcDate();
-  const yest = yesterdayUtcDate();
-  // ORDER BY snapshot_date DESC + LIMIT 1 would also work; using a
-  // bounded `IN (...)` keeps the index path simple.
   const row = await db
     .prepare(
       `SELECT asset, snapshot_date, price_usd, fetched_at
          FROM crypto_price_snapshots
         WHERE asset = ?
-          AND snapshot_date IN (?, ?)
-        ORDER BY snapshot_date DESC
+        ORDER BY fetched_at DESC
         LIMIT 1`,
     )
-    .bind(asset, today, yest)
+    .bind(asset)
     .first<PriceSnapshot>();
-  return row ?? null;
+  if (!row) return null;
+  const age = nowSeconds - Number(row.fetched_at);
+  if (
+    !Number.isSafeInteger(Number(row.fetched_at)) ||
+    age < -MAX_FUTURE_SKEW_SECONDS ||
+    age > MAX_PRICE_AGE_SECONDS
+  ) {
+    return null;
+  }
+  return row;
 }
 
 /** Convert USD cents → native asset amount (string, 8 dp for BTC,

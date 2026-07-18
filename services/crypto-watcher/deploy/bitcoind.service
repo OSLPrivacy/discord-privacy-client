@@ -1,0 +1,37 @@
+[Unit]
+Description=OSL pruned Bitcoin Core watch-only node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=bitcoin
+Group=bitcoin
+RuntimeDirectory=bitcoind
+RuntimeDirectoryMode=0750
+UMask=0027
+ExecStart=/usr/local/bin/bitcoind -conf=/etc/bitcoin/bitcoin.conf -datadir=/var/lib/bitcoind -printtoconsole "-startupnotify=/usr/bin/systemd-notify --ready"
+ExecStop=/usr/local/bin/bitcoin-cli -datadir=/var/lib/bitcoind -rpccookiefile=/run/bitcoind/.cookie stop
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=600
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/bitcoind /run/bitcoind
+
+[Install]
+WantedBy=multi-user.target

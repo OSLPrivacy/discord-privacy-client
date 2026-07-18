@@ -59,7 +59,6 @@ fn reload_repopulates_app_preferences_from_disk() {
             skipped: false,
             last_slide: 9,
         },
-        vpn_warning_dismissed_forever: true,
         update_channel: ipc::app_preferences::UpdateChannel::Stable,
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs).unwrap();
@@ -79,7 +78,6 @@ fn reload_repopulates_app_preferences_from_disk() {
     assert!(g.tour.completed);
     assert_eq!(g.tour.last_slide, 9);
     assert_eq!(g.stego_mode, StegoMode::Mode1);
-    assert!(g.vpn_warning_dismissed_forever);
 
     set_file_storage_key(None);
 }
@@ -119,6 +117,7 @@ fn reload_repopulates_whitelist_state_from_disk() {
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: false,
+            ..ScopeState::default()
         },
     );
     scopes.insert(
@@ -126,6 +125,7 @@ fn reload_repopulates_whitelist_state_from_disk() {
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     let mut server_defaults = HashMap::new();
@@ -133,6 +133,8 @@ fn reload_repopulates_whitelist_state_from_disk() {
         "777777".to_string(),
         ServerDefaults {
             encrypt_by_default: true,
+            server_header_whitelisted: false,
+            server_dm_whitelisted: false,
         },
     );
     let envelope = WhitelistStateFile {
@@ -326,7 +328,6 @@ fn reload_overwrites_bootstrap_defaults() {
             skipped: false,
             last_slide: 9,
         },
-        vpn_warning_dismissed_forever: false,
         update_channel: ipc::app_preferences::UpdateChannel::Stable,
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs_on_disk).unwrap();

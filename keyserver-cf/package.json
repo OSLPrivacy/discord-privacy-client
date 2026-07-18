@@ -6,7 +6,7 @@
   "description": "OSL keyserver on Cloudflare Workers + D1. F1.1 baseline: ports the existing keyserver/ (Fastify + better-sqlite3) endpoint surface 1:1. F1.2 layers Stripe + license issuance on top.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.node.config.ts",
     "test:watch": "vitest",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -14,10 +14,11 @@
     "db:migrate:prod": "wrangler d1 migrations apply osl-keyserver-prod --remote"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.5.0",
-    "@cloudflare/workers-types": "^4.20240909.0",
-    "typescript": "^5.5.0",
-    "vitest": "2.1.0",
-    "wrangler": "^3.78.0"
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/workers-types": "^5.20260714.1",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.110.0"
   }
 }

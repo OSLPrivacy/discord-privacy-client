@@ -16,12 +16,12 @@ use base64::Engine;
 use ipc::commands::{cmd_osl_set_whitelist, populate_peer_from_fetch_response};
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
-use ipc::whitelist::{recipients_for_scope_v3, RecipientsV3Error};
+use ipc::whitelist::{recipients_for_scope_v3, RecipientsV3Error, ScopeAuthCtx};
 use keystore::client::PubkeysResponse;
 use keystore::generate_identity;
 
-const SELF_DID: &str = "1477008451799482419";
-const PEER_DID: &str = "1502770642930634812";
+const SELF_DID: &str = "900000000000000003";
+const PEER_DID: &str = "900000000000000001";
 
 fn fresh_state() -> AppState {
     let state = AppState::new();
@@ -58,8 +58,13 @@ fn whitelisting_a_peer_seeds_osl_user_id() {
     // No keyserver installed → the whitelist-time fetch is
     // best-effort and fails silently; the whitelist op must still
     // succeed AND seed osl_user_id (== the snowflake in V2).
-    cmd_osl_set_whitelist(&state, PEER_DID.to_string(), si(&Scope::dm(PEER_DID)), false)
-        .expect("whitelist must succeed even with no keyserver");
+    cmd_osl_set_whitelist(
+        &state,
+        PEER_DID.to_string(),
+        si(&Scope::dm(PEER_DID)),
+        false,
+    )
+    .expect("whitelist must succeed even with no keyserver");
 
     let pm = state.peer_map.lock().unwrap();
     let pe = pm.get(PEER_DID).expect("peer entry created");
@@ -69,10 +74,9 @@ fn whitelisting_a_peer_seeds_osl_user_id() {
         "whitelisting must seed osl_user_id with the peer snowflake"
     );
     assert!(
-        pe.outgoing_whitelists.iter().any(|w| matches!(
-            w,
-            ipc::peer_map::WhitelistEntry::Dm { .. }
-        )),
+        pe.outgoing_whitelists
+            .iter()
+            .any(|w| matches!(w, ipc::peer_map::WhitelistEntry::Dm { .. })),
         "DM whitelist entry recorded"
     );
 }
@@ -80,15 +84,30 @@ fn whitelisting_a_peer_seeds_osl_user_id() {
 #[test]
 fn recipients_v3_does_not_silently_drop_a_keyless_whitelisted_peer() {
     let state = fresh_state();
-    cmd_osl_set_whitelist(&state, PEER_DID.to_string(), si(&Scope::dm(PEER_DID)), false).unwrap();
+    cmd_osl_set_whitelist(
+        &state,
+        PEER_DID.to_string(),
+        si(&Scope::dm(PEER_DID)),
+        false,
+    )
+    .unwrap();
 
     let id = state.identity.lock().unwrap();
     let id = id.as_ref().unwrap();
     let self_mlkem = id.mlkem_encapsulation_key();
     let pm = state.peer_map.lock().unwrap();
+    let ws = state.whitelist_state.lock().unwrap();
+    let sd = state.server_defaults.lock().unwrap();
+    let membership = state.scope_membership.lock().unwrap();
+    let auth_ctx = ScopeAuthCtx {
+        whitelist_state: &ws,
+        server_defaults: &sd,
+        membership: &membership,
+    };
 
     let res = recipients_for_scope_v3(
         &pm,
+        &auth_ctx,
         &Scope::dm(PEER_DID),
         &[SELF_DID.to_string(), PEER_DID.to_string()],
         SELF_DID,
@@ -113,7 +132,13 @@ fn recipients_v3_does_not_silently_drop_a_keyless_whitelisted_peer() {
 #[test]
 fn recipients_v3_includes_a_keycomplete_peer_not_self_only() {
     let state = fresh_state();
-    cmd_osl_set_whitelist(&state, PEER_DID.to_string(), si(&Scope::dm(PEER_DID)), false).unwrap();
+    cmd_osl_set_whitelist(
+        &state,
+        PEER_DID.to_string(),
+        si(&Scope::dm(PEER_DID)),
+        false,
+    )
+    .unwrap();
     // Simulate the keyserver fetch having populated the peer.
     populate_peer_from_fetch_response(&state, PEER_DID, &peer_pubkeys_response())
         .expect("populate ok");
@@ -122,9 +147,18 @@ fn recipients_v3_includes_a_keycomplete_peer_not_self_only() {
     let id = id.as_ref().unwrap();
     let self_mlkem = id.mlkem_encapsulation_key();
     let pm = state.peer_map.lock().unwrap();
+    let ws = state.whitelist_state.lock().unwrap();
+    let sd = state.server_defaults.lock().unwrap();
+    let membership = state.scope_membership.lock().unwrap();
+    let auth_ctx = ScopeAuthCtx {
+        whitelist_state: &ws,
+        server_defaults: &sd,
+        membership: &membership,
+    };
 
     let recips = recipients_for_scope_v3(
         &pm,
+        &auth_ctx,
         &Scope::dm(PEER_DID),
         &[SELF_DID.to_string(), PEER_DID.to_string()],
         SELF_DID,
@@ -143,7 +177,13 @@ fn recipients_v3_includes_a_keycomplete_peer_not_self_only() {
 fn populate_sets_osl_user_id_and_ratchet_and_no_false_tofu_alert() {
     let state = fresh_state();
     // Keyless entry (as a wiped+rewhitelisted entry would be).
-    cmd_osl_set_whitelist(&state, PEER_DID.to_string(), si(&Scope::dm(PEER_DID)), false).unwrap();
+    cmd_osl_set_whitelist(
+        &state,
+        PEER_DID.to_string(),
+        si(&Scope::dm(PEER_DID)),
+        false,
+    )
+    .unwrap();
 
     populate_peer_from_fetch_response(&state, PEER_DID, &peer_pubkeys_response())
         .expect("populate ok");

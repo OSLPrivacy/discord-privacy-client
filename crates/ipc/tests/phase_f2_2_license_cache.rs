@@ -31,6 +31,7 @@ use tempfile::tempdir;
 /// One-shot mock HTTP server. Copy of the harness in
 /// `crates/keystore/tests/client_test.rs`. Returns the bound port
 /// + a channel that yields the captured request bytes once the
+///
 /// server fulfils the handshake.
 fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

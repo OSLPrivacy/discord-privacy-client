@@ -653,7 +653,7 @@ pub fn cmd_osl_seal_attachment(
     let sealed = seal_attachment(key, &original_bytes, &original_filename)
         .map_err(|e| format!("OSL: seal_attachment: {e}"))?;
     let file_blob_b64 = base64::engine::general_purpose::STANDARD.encode(&sealed);
-    let att_key_b64 = base64::engine::general_purpose::STANDARD.encode(&key_arr);
+    let att_key_b64 = base64::engine::general_purpose::STANDARD.encode(key_arr);
     let random_filename = random_upload_filename();
     Ok(SealedAttachment {
         file_blob_b64,

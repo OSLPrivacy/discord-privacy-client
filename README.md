@@ -14,6 +14,11 @@ channels, including images and edits. It has been tested between a small number
 of machines. Treat it as beta software: keep a backup plan and do not rely on it
 for anything where a failure would be serious.
 
+This README describes the original Discord-specific client. The newer
+multi-service standalone shell under `apps/osl-hub*` is a separate pre-release
+preview; its service-neutral encrypted transport and native composer adapters
+remain fail-closed until their recipient and composer bindings are proven.
+
 ## What it protects and what it does not
 
 OSL hides the content of your messages from Discord, from your network, and from

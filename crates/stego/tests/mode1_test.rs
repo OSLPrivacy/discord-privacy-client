@@ -65,9 +65,10 @@ fn cross_cipher_decode_does_not_recover_payload() {
     let b = cipher(b"alice-carol-session");
     let payload = b"the secret is forty two";
     let encoded = encode_mode1(&a, payload).unwrap();
-    match decode_mode1(&b, &encoded) {
-        Ok(got) => assert_ne!(got, payload),
-        Err(_) => {} // also acceptable
+    // A cross-seed decode may either fail authentication or decode to
+    // different bytes; it must never reproduce the original payload.
+    if let Ok(got) = decode_mode1(&b, &encoded) {
+        assert_ne!(got, payload);
     }
 }
 

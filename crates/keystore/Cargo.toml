@@ -50,12 +50,14 @@ subtle = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 
-# Cross-platform fallback when TPM is unavailable (or on non-Windows
-# dev environments). Defaults: Windows Credential Manager, macOS
-# Keychain, Linux Secret Service via DBus. On Linux WSL without
-# DBus the runtime calls fail and `KeyringSealer::new` falls through
-# to the next-best sealer; this is a deliberate degradation path.
-keyring = { workspace = true }
+# OS credential-store fallback when TPM is unavailable. Native keyring
+# backends are opt-in features; this Windows build uses Credential Manager.
+# Other targets fail the persistence self-probe and deliberately fall through
+# to process-ephemeral encryption until their native backend is enabled.
+# `keyring` 3.x has no native platform backend enabled by default. Without
+# this feature Windows silently gets the in-memory mock backend: a write can
+# appear to succeed while a fresh Entry immediately returns `NoEntry`.
+keyring = { workspace = true, features = ["windows-native"] }
 
 [target.'cfg(windows)'.dependencies]
 # B1 Windows path: NCryptOpenStorageProvider("Microsoft Platform
@@ -72,6 +74,7 @@ windows = { version = "=0.56.0", features = [
 ] }
 
 [dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # tempfile 3.27 pulls in getrandom 0.4.2 which needs edition-2024
 # (rustc 1.85+); pin to a 3.x that pre-dates that bump.
 tempfile = "=3.13"

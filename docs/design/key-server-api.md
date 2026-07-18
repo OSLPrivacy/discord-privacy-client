@@ -15,40 +15,35 @@ Schema versioned via `wrapped_share_blob_version` and
 `bundle_format_version` fields in payloads, plus an `X-Schema-Version`
 response header. Mismatch returns 4xx with explicit upgrade guidance.
 
-## Phase B authentication (closed-beta deployable)
+## Current authentication boundary
 
-The Phase B keyserver bridges the gap between v1-alpha-prototype
-(no auth at all) and v1-stable (Discord OAuth gate). It uses two
-defence-in-depth layers, both controlled by env vars at the
-deployed instance:
+The Cloudflare Worker separates operator authority from client traffic:
 
-1. **Pre-shared admin token** (`OSL_KEYSERVER_ADMIN_TOKEN`).
-   State-mutating routes — `POST /v1/register`,
-   `POST /v1/wrapped-keys`, `POST /v1/prekey-bundle/replenish`,
-   `DELETE /v1/wrapped-keys` — require
-   `Authorization: Bearer <token>`. Token comparison is
-   constant-time (SHA-256 + `crypto.timingSafeEqual`). Missing or
-   wrong header → 401 with the attempted user_id logged at
-   `warn` level.
-2. **User-id allowlist** (`OSL_KEYSERVER_ALLOWED_USERS`,
-   comma-separated). Only listed user_ids may register; others
-   get 403. Defence-in-depth: even if the admin token leaks, the
-   attacker still needs to know an allowlisted user_id to forge an
-   identity. Order of checks on `POST /v1/register`: token → 401
-   first, then allowlist → 403. So a leaked-token attempt logs as
-   "allowlist failed (token was valid)" — useful operator signal.
+1. `OSL_KEYSERVER_ADMIN_TOKEN` is operator-only and currently gates the
+   crypto-payment confirmation endpoint.
+2. Public-client mutations never use a distributed bearer secret: an
+   open-source desktop binary could not keep one confidential. They use
+   canonical signatures from the registered identity instead.
+3. Identity-sensitive operations use canonical Ed25519 signatures. This
+   includes registration/rotation, prekey replenishment, consuming prekey
+   and one-use wrapped-key GETs, control-inbox operations, unregister, and
+   burn. D1 compare-and-swap/transactions bind verification to the key row
+   used by the mutation and make consuming reads single-use.
+4. Cloudflare native rate-limit bindings add abuse resistance. Cloudflare
+   documents these counters as permissive/eventually consistent, so they
+   are never treated as authorization or exact accounting.
 
-GET routes serving public keys (`/v1/pubkeys/:user_id`,
-`/v1/prekey-bundle/:user_id`, `/v1/wrapped-keys/:content_id`,
-`/v1/healthz`, `/v1/selector-manifest`) stay unauthenticated. The
-recipient-public-key lookup IS the public-side of the design.
+Public-key and reusable-blob lookups remain public by design. A one-use
+wrapped key requires a fresh signature from its intended recipient; a
+prekey bundle requires a fresh signature from a registered requester.
 
-**Local-dev mode** (env vars unset): no auth, no allowlist, no
-rate limit. Identical to v1-alpha behaviour.
-
-A light `@fastify/rate-limit` is auto-enabled at the entrypoint
-when the admin token is set: 10 req/min/IP per mutation route, 429
-with `Retry-After` on overflow. GETs are not rate-limited.
+**Unresolved release gate:** registration self-signatures prove possession
+of the submitted key, but do not prove that the submitter owns the claimed
+Discord snowflake. A first registrant can still preclaim another Discord
+ID. Production onboarding therefore requires a Discord OAuth authorization
+code flow (state + PKCE) whose `identify` result is checked by the server
+before binding that snowflake. Until that is implemented, use only isolated
+test identities and do not treat the build as safe for real accounts.
 
 ### Transport (client side)
 
@@ -92,20 +87,9 @@ This isolation is not free — it adds first-contact friction
 new client-side state file. v1 ships the simpler model
 deliberately, with the upgrade path documented here.
 
-What Phase B does **not** add (v1-stable scope):
-
-- TLS at the application layer (rely on Cloudflare/Railway).
-- Discord OAuth proof of `user_id` ownership.
-- Real verification of `ik_x25519_signature` on register (still
-  mocked client-side as `b64("PROTOTYPE_NO_SIG")`).
-- Per-user-id rate limits (current limit is per-IP only; a single
-  IP holding the admin token can still register up to 10 user_ids
-  per minute against the allowlist).
-
-Burn (`DELETE /v1/wrapped-keys`) and replenish
-(`POST /v1/prekey-bundle/replenish`) DO verify Ed25519 signatures
-by the registered identity-key, in addition to the admin token —
-two-factor authorization for those routes.
+TLS terminates at Cloudflare and the Rust client trusts the standard
+public-CA chain; certificate pinning remains deferred. Discord OAuth
+ownership proof is the only known identity-binding gap described above.
 
 ## Endpoints
 
@@ -120,8 +104,11 @@ Request:
 {
   "user_id": "discord_user_id_or_pseudonym",
   "ik_x25519_pub": "...",
+  "ik_ed25519_pub": "...",
   "ik_mlkem768_pub": "...",
-  "ik_x25519_signature": "..."   // self-signature; binds user_id to keys
+  "ik_ratchet_initial_pub": "...",
+  "registration_sig": "...",     // Ed25519(REG_MSG, submitted identity key)
+  "rotation": null                // or old-key authorization for a key change
 }
 Response: 201 Created (initial)
         | 200 OK with key-rotation event recorded (re-registration)
@@ -195,8 +182,11 @@ hex digits separated for readability (Signal-style safety numbers).
 
 ### `GET /v1/prekey-bundle/:user_id`
 
-Fetch a prekey bundle. Server pops one OPK atomically. See
-`prekey-infrastructure.md`.
+Fetch a prekey bundle. The caller supplies its registered requester ID,
+the recipient ID, a fresh timestamp, and an Ed25519 signature over the
+canonical tuple. After verification and an identity-key CAS, the server
+pops one OPK atomically and records the request digest against replay.
+See `prekey-infrastructure.md`.
 
 ### `POST /v1/prekey-bundle/replenish`
 
@@ -241,12 +231,15 @@ authoritative check is client-side.
 
 ### `GET /v1/wrapped-keys/:content_id`
 
-Fetch one wrapped key. v2.3+: anonymous-credential auth. Supports
-batched fetch with decoys (see `bucket-fetching.md` in v2.2).
+Fetch one wrapped key. Reusable records are public. A `single_use=true`
+record requires a fresh canonical request signed by the registered key
+of the row's intended recipient; the recipient identity is rechecked in
+the consuming D1 transaction. v2.3 plans anonymous-credential auth and
+v2.2 plans batched fetch with decoys (see `bucket-fetching.md`).
 
-`single_use=true` records: server atomically returns the blob and
-deletes the record in the same transaction. Subsequent fetches return
-`404 Not Found`.
+For `single_use=true`, the server atomically returns and deletes the blob
+and stores a replay receipt in the same transaction. Subsequent use of
+the same signed request is rejected; later fetches return `404 Not Found`.
 
 **404 fallback semantics** (per content_type):
 

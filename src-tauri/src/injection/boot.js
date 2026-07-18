@@ -698,7 +698,7 @@
      *
      *   await window.__OSL_DEBUG_DECRYPT__(
      *     "DPC0::AQFC...",          // raw cover string
-     *     "1477008451799482419",    // sender Discord user_id
+     *     "900000000000000003",    // sender Discord user_id
      *     "1502771310428819569"     // optional channel_id; defaults
      *                               // to current URL if omitted
      *   );
@@ -1115,8 +1115,8 @@
                     // PHASE 2 prose-token pivot: the cipher itself
                     // never appears on the wire — we upload it to
                     // the ephemeral cipher-store, get back an 8-byte
-                    // blob ID, and encode that ID as ~5 sentences of
-                    // chat-style prose. The cover_text is what posts
+                    // blob ID, and encode that ID as compact chat-style
+                    // cover text. The cover_text is what posts
                     // to Discord. The receive-side hook in
                     // recvHandleDiv recovers the wire from the cover
                     // via `osl_prose_token_recv` before the existing
@@ -2637,6 +2637,31 @@
         }, 0);
     }
 
+    // Attachment transport changes must fail closed while the active
+    // composer is encrypted.  Discord has moved uploads between XHR,
+    // fetch, JSON, and multipart implementations before; treating an
+    // unknown request shape as plaintext would silently disclose the
+    // file while the lock still appears enabled.
+    function oslAttachmentEncryptionIsOn(channelId) {
+        const composerToggle = document.querySelector(
+            "[" + COMPOSER_TOGGLE_DATA_ATTR + "='1']"
+        );
+        if (
+            !composerToggle ||
+            composerToggle.getAttribute("data-osl-encrypt-state") !== "on"
+        ) {
+            return false;
+        }
+        try {
+            const ctx = oslCurrentChannelContext();
+            return !!ctx && ctx.channelId === channelId;
+        } catch (_) {
+            // An ON lock with an unresolvable context is not evidence that
+            // plaintext is safe.  Fail closed until the selector recovers.
+            return true;
+        }
+    }
+
     /**
      * 8c step 1: pre-process the POST /channels/{cid}/attachments
      * request when encrypt is ON for the channel's scope. Modifies
@@ -2652,7 +2677,13 @@
         try {
             body = JSON.parse(bodyString);
         } catch (e) {
-            console.log("[OSL] step1: body not JSON, passthrough");
+            if (oslAttachmentEncryptionIsOn(channelId)) {
+                oslToast(
+                    "Discord changed its upload format. Encryption stopped this file from being sent in plaintext."
+                );
+                return oslAbortXhr(xhr, "step1: encrypted body not JSON", channelId);
+            }
+            console.log("[OSL] step1: body not JSON, plaintext scope passthrough");
             return Reflect.apply(origSend, xhr, args);
         }
         if (!body || !Array.isArray(body.files) || body.files.length === 0) {
@@ -2690,13 +2721,17 @@
             ctx = oslCurrentChannelContext();
         } catch (_) {}
         if (!ctx || ctx.channelId !== channelId) {
-            console.log("[OSL] step1: scope unresolvable, passthrough");
-            return Reflect.apply(origSend, xhr, args);
+            oslToast(
+                "Could not verify this channel's encryption state. Attachment was not sent."
+            );
+            return oslAbortXhr(xhr, "step1: encrypted scope unresolvable", channelId);
         }
         const scope = oslScopeForCurrentContext(ctx);
         if (!scope) {
-            console.log("[OSL] step1: scope unresolvable, passthrough");
-            return Reflect.apply(origSend, xhr, args);
+            oslToast(
+                "Could not verify this channel's encryption state. Attachment was not sent."
+            );
+            return oslAbortXhr(xhr, "step1: encrypted scope missing", channelId);
         }
         // 9-A1c: auto-unburn removed. Burned scopes are permanent
         // until the user manually re-engages via the composer toggle.
@@ -3020,11 +3055,15 @@
                 !(body instanceof ArrayBuffer) &&
                 !ArrayBuffer.isView(body))
         ) {
-            console.warn(
-                "[OSL] step2: unexpected body type, passthrough; type=" +
+            window.__oslPendingUploads.delete(uploadId);
+            oslToast(
+                "Discord changed its upload format. Encryption stopped this file from being sent in plaintext."
+            );
+            return oslAbortXhr(
+                xhr,
+                "step2: encrypted upload has unexpected body type=" +
                     (body && body.constructor && body.constructor.name)
             );
-            return Reflect.apply(origSend, xhr, args);
         }
 
         // Read the original file bytes.
@@ -6064,39 +6103,13 @@
     }
 
     async function oslAccountBurnExecute() {
-        // 7d-D Task 5: close the settings window first so it doesn't
-        // end up orphaned reading from now-wiped state files.
-        try {
-            await oslInvoke("osl_close_settings_window_if_open", {});
-        } catch (_) {}
-        const result = await oslInvoke("osl_burn_engage", {});
+        // Discord may request the trusted local confirmation window,
+        // but this origin never receives destructive burn authority.
+        const result = await oslInvoke("osl_open_account_burn_window", {});
         if (!result.ok) {
-            console.error(
-                "[OSL] account burn: osl_burn_engage failed: " + result.error
-            );
-            oslToast("Burn failed: " + result.error);
-            return;
+            console.error("[OSL] account burn window failed: " + result.error);
+            oslToast("Could not open burn confirmation: " + result.error);
         }
-        // Wipe any client-side caches that live OUTSIDE the OSL
-        // config dir (Rust-side wipes already cleared identity.json,
-        // peer_map, channels, whitelist, sqlite store). localStorage
-        // lives in the WebView2 user-data dir, so the Rust burn
-        // didn't touch it — purge here.
-        oslPurgeBlankCache();
-        // Phase 4b: set the decommission flag so the post-burn page
-        // load exits at the very top of boot.js (sync check). The
-        // Rust side already wrote decommissioned.flag during
-        // osl_burn_engage as the durable source of truth; this is
-        // the fast-path. Different localStorage key than
-        // oslPurgeBlankCache's target so the line above doesn't
-        // wipe it.
-        try {
-            localStorage.setItem("__OSL_DECOMMISSIONED__", "1");
-        } catch (_) {}
-        // Same post-burn navigation as the gate-side burn flow:
-        // bounce to plain discord.com so the freshly-wiped on-disk
-        // state has no UI re-attaching to it on this tick.
-        window.location.href = "https://discord.com/app";
     }
 
     function oslAccountBurnOnActivate(btn) {
@@ -7608,6 +7621,10 @@
             );
             if (!div) return;
             const messageId = recvMessageIdOf(div);
+            // Capture the fallback before deleting the account-scoped map.
+            // The old order deleted first and therefore could never use the
+            // documented recvCovers fallback when the DOM attribute was absent.
+            const lastCover = recvCovers.get(messageId);
             loadedHistory.delete(messageId);
             recvPlaintext.delete(messageId);
             recvDone.delete(messageId);
@@ -7631,7 +7648,6 @@
             // us repaint even if this is the first burn observation in
             // this session. Falls back to recvCovers, then to blank.
             const origCipher = div.getAttribute("data-osl-orig-cipher");
-            const lastCover = recvCovers.get(messageId);
             const span = document.createElement("span");
             if (typeof origCipher === "string" && origCipher.length > 0) {
                 span.textContent = origCipher;
@@ -10379,6 +10395,134 @@
         return null;
     }
 
+    /**
+     * Remove every webview value that can contain account-specific plaintext,
+     * Discord authorization state, membership, or in-flight crypto work. Rust
+     * has already committed the new account before this runs. Repainting first
+     * prevents even a delayed/blocked reload from showing account A's plaintext
+     * while account B is active.
+     */
+    function oslClearAccountScopedWebviewState() {
+        try {
+            const divs = document.querySelectorAll(
+                '[id^="' + RECV_MESSAGE_ID_PREFIX + '"]'
+            );
+            divs.forEach(function (div) {
+                const messageId = recvMessageIdOf(div);
+                const hadPlaintext =
+                    recvPlaintext.has(messageId) ||
+                    loadedHistory.has(messageId) ||
+                    selfSentPlaintext.has(messageId);
+                if (!hadPlaintext) return;
+                const cipher = div.getAttribute("data-osl-orig-cipher");
+                const cover = recvCovers.get(messageId);
+                const span = document.createElement("span");
+                span.textContent =
+                    typeof cipher === "string" && cipher.length > 0
+                        ? cipher
+                        : typeof cover === "string"
+                          ? cover
+                          : "";
+                div.replaceChildren(span);
+            });
+        } catch (err) {
+            console.warn("[OSL] account switch repaint failed:", err);
+        }
+
+        // Revoke decrypted attachment object URLs before discarding them.
+        try {
+            if (window.__oslAttachmentDecrypted) {
+                for (const cached of window.__oslAttachmentDecrypted.values()) {
+                    if (cached && Array.isArray(cached.blobUrls)) {
+                        for (const url of cached.blobUrls) {
+                            try {
+                                URL.revokeObjectURL(url);
+                            } catch (_) {}
+                        }
+                    }
+                }
+            }
+            document
+                .querySelectorAll('[data-osl-injected="1"]')
+                .forEach(function (el) {
+                    try {
+                        el.remove();
+                    } catch (_) {}
+                });
+        } catch (_) {}
+
+        const localCaches = [
+            loadedHistory,
+            recvPlaintext,
+            recvDone,
+            selfSentPlaintext,
+            recvCovers,
+            recvRetries,
+            recvInFlight,
+            recvAuthorRetryCount,
+            recvRecoveryCooldown,
+            recvUnmappedLogged,
+            recvRejectionsLogged,
+            selfSentAuthors,
+            oslSentWireToPlaintext,
+            editOverlayLocallyApplied,
+            oslSidebarLockCache,
+            oslAttScannedEmpty,
+            oslAttDecryptFailed,
+            oslSkdmHiddenMsgIds,
+            oslBurnedScopesLoggedChannels,
+        ];
+        for (const cache of localCaches) {
+            try {
+                cache.clear();
+            } catch (_) {}
+        }
+        try {
+            for (const entry of editOverlayActive.values()) {
+                if (entry && entry.overlayEl) entry.overlayEl.remove();
+                if (entry && entry.hiddenSpan) entry.hiddenSpan.style.display = "";
+            }
+            editOverlayActive.clear();
+        } catch (_) {}
+
+        for (const name of [
+            "__oslAttachmentUrlCache",
+            "__oslAttachmentDecrypted",
+            "__OSL_CHANNEL_MEMBERS__",
+            "__oslCoverToBlobId",
+            "__oslPendingUploads",
+            "__oslBurnedScopes",
+            "__oslProseWireByMsgId",
+            "__oslProseInFlight",
+            "__oslProseRetryCount",
+            "__oslMsgIdToBlobId",
+            "__oslPlaintextWarned",
+        ]) {
+            try {
+                const value = window[name];
+                if (value && typeof value.clear === "function") value.clear();
+            } catch (_) {}
+        }
+        try {
+            window.__OSL_GUILD_CACHE__ = {};
+        } catch (_) {}
+        try {
+            oslPurgeBlankCache();
+        } catch (_) {}
+        try {
+            oslSidebarLockCache.clear();
+        } catch (_) {}
+
+        // These hold the prior Discord session's credential-derived and
+        // navigation state. The reload below will reacquire only the new
+        // account's values from Discord itself.
+        editOverlayAuthToken = null;
+        _lastTokenLogged = null;
+        lastLoadedChannelId = null;
+        oslSelfDiscordIdCache = null;
+        oslSelfDiscordIdLastError = null;
+    }
+
     async function oslEnsureSelfSnowflakeRegistered() {
         if (oslSnowflakeBootstrapDone) return;
 
@@ -10462,6 +10606,19 @@
             try {
                 await oslInvoke("osl_ensure_recovery_phrase", {});
             } catch (_) {}
+            if (reg.value === true) {
+                oslClearAccountScopedWebviewState();
+                try {
+                    oslToast("OSL switched accounts securely; reloading Discord…");
+                } catch (_) {}
+                // A real account transition gets one clean webview lifecycle.
+                // This repopulates Discord gateway/member caches for the new
+                // login and cancels old-account async closures. Idempotent
+                // switch calls return false, preventing a reload loop.
+                window.setTimeout(function () {
+                    window.location.reload();
+                }, 50);
+            }
         } else {
             oslTrace("[F0-FIX3-TRACE] switch_account failed: " + (reg.error || "?"));
             console.warn("[OSL] account switch failed:", reg.error);
@@ -10724,10 +10881,38 @@
 
         safeListen("osl:password_state_changed", function () {
             console.log("[OSL] event: password_state_changed");
+            if (oslTourAwaitingPassword) {
+                oslInvoke("osl_password_status", {}).then(async function (status) {
+                    if (status.ok && status.value && status.value.is_set) {
+                        oslTourAwaitingPassword = false;
+                        oslTourPasswordResume = null;
+                        await oslInvoke("osl_tour_complete", {});
+                        oslTourActive = false;
+                        oslToast("Welcome to OSL — your keys are now encrypted.");
+                    }
+                });
+            }
         });
 
+        safeListen("osl:account_burned", function () {
+            // This handler runs on the Discord origin, so it clears
+            // the origin-specific cache the local confirmation page
+            // cannot access and installs the synchronous fast-path.
+            try {
+                oslPurgeBlankCache();
+                localStorage.setItem("__OSL_DECOMMISSIONED__", "1");
+            } catch (_) {}
+            window.location.href = "https://discord.com/app";
+        });
         safeListen("osl:settings_window_closed", function () {
             console.log("[OSL] event: settings_window_closed");
+            if (oslTourAwaitingPassword && oslTourPasswordResume) {
+                oslInvoke("osl_password_status", {}).then(function (status) {
+                    if (!(status.ok && status.value && status.value.is_set)) {
+                        oslTourPasswordResume();
+                    }
+                });
+            }
             try {
                 oslRefreshHeaderState();
             } catch (_) {}
@@ -12676,8 +12861,18 @@
                     GCS_UPLOAD_RE.test(url) &&
                     window.__oslPendingUploads.size > 0
                 ) {
-                    console.warn(
-                        "[OSL] GCS PUT via fetch detected; pending uploads exist but fetch-side interception is not wired. Add it if this fires."
+                    console.error(
+                        "[OSL] blocked GCS PUT via fetch: encrypted upload interception is not yet wired"
+                    );
+                    try {
+                        oslToast(
+                            "Discord changed its upload transport. Encryption stopped this file from being sent in plaintext."
+                        );
+                    } catch (_) {}
+                    return Promise.reject(
+                        new Error(
+                            "OSL blocked an encrypted attachment because Discord moved the upload to fetch"
+                        )
                     );
                 }
 
@@ -13004,13 +13199,21 @@
                         });
                         return undefined;
                     }
-                    // Body isn't a string — Discord might one day
-                    // ship FormData here; passthrough so the user
-                    // sees plain attachments rather than a silent
-                    // break.
-                    console.log(
-                        "[OSL] step1: non-string body, passthrough"
-                    );
+                    // Body isn't a string — Discord may have moved
+                    // this endpoint to FormData.  Never let that
+                    // transport migration silently upload plaintext
+                    // while the composer lock is ON.
+                    if (oslAttachmentEncryptionIsOn(attMatch[1])) {
+                        oslToast(
+                            "Discord changed its upload format. Encryption stopped this file from being sent in plaintext."
+                        );
+                        return oslAbortXhr(
+                            thisArg,
+                            "step1: encrypted non-string body",
+                            attMatch[1]
+                        );
+                    }
+                    console.log("[OSL] step1: non-string body, plaintext scope passthrough");
                     return Reflect.apply(target, thisArg, args);
                 }
 
@@ -17473,6 +17676,8 @@
         // Slide 9 (password form) is constructed dynamically — it
         // embeds an HTMLFormElement in the spotlight card.
     };
+    let oslTourAwaitingPassword = false;
+    let oslTourPasswordResume = null;
 
     function oslTourWaitForElement(selector, timeoutMs) {
         const deadline = Date.now() + (timeoutMs || 10000);
@@ -17663,45 +17868,39 @@
 
         function renderPasswordSlide() {
             close();
-            const form = oslTourBuildPasswordForm();
+            oslTourPasswordResume = renderPasswordSlide;
             const opts = {
                 title: "Set your password",
                 body:
-                    "This password protects everything OSL stores on your computer. Make it strong. Write it down somewhere safe.",
-                buttonLabel: "Encrypt my keys →",
+                    "Password setup runs in OSL's trusted Settings window, outside Discord's web content. Make it strong and write it down somewhere safe.",
+                buttonLabel: "Open trusted Settings →",
                 target: null,
-                formContent: form,
                 onAdvance: async function () {
-                    const pwValue = form.__oslSubmit && form.__oslSubmit();
-                    if (!pwValue) {
-                        // Validation failed — re-render the slide.
-                        renderPasswordSlide();
-                        return;
-                    }
-                    // 9-D-FIX2: stuck-tour recovery. If a previous
-                    // tour attempt set the password but the next
-                    // launch couldn't read `tour.completed=true`
-                    // (encrypted app_preferences read before gate),
-                    // the tour replays and slide 9 would loop forever
-                    // because `osl_set_main_password` refuses to
-                    // overwrite an existing marker. Detect that case
-                    // and treat it as a clean completion.
-                    const statusRes = await oslInvoke("osl_password_status", {});
-                    if (statusRes.ok && statusRes.value && statusRes.value.is_set) {
+                    const status = await oslInvoke("osl_password_status", {});
+                    if (status.ok && status.value && status.value.is_set) {
+                        oslTourAwaitingPassword = false;
+                        oslTourPasswordResume = null;
                         await persistComplete();
+                        oslTourActive = false;
                         oslToast("Tour complete — your keys are already encrypted.");
                         return;
                     }
-                    const res = await oslInvoke("osl_set_main_password", {
-                        password: pwValue,
-                    });
+                    const res = await oslInvoke("osl_open_settings_window", {});
                     if (!res.ok) {
-                        oslToast("Setting password failed: " + res.error);
+                        oslToast("Opening trusted Settings failed: " + res.error);
                         renderPasswordSlide();
                         return;
                     }
-                    await persistComplete();
-                    oslToast("Welcome to OSL — your keys are now encrypted.");
+                    await persistAdvance(9);
+                    oslTourAwaitingPassword = true;
+                    try {
+                        const event = window.__TAURI__ && window.__TAURI__.event;
+                        if (event && typeof event.emit === "function") {
+                            await event.emit("osl:settings_navigate", { page: "passwords" });
+                        }
+                    } catch (_) {}
+                    close();
+                    oslToast("Set your main password in the trusted Settings window.");
                 },
             };
             currentSpotlight = oslSpotlight(opts);

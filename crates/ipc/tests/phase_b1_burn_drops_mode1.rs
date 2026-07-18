@@ -14,8 +14,8 @@ use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
 use keystore::{generate_identity, Identity};
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 const DM_CHANNEL_ID: &str = HENRY_DID; // DM scope_id == peer DID == channel_id
 
 fn fresh_state() -> AppState {
@@ -31,7 +31,7 @@ fn fresh_state() -> AppState {
     let mut pm = s.peer_map.lock().unwrap();
     let pe = pm.entry(HENRY_DID.to_string()).or_default();
     pe.pubkey = Some(STANDARD.encode(henry_id.x25519_public.as_bytes()));
-    pe.ik_mlkem768_pub = Some(STANDARD.encode(&henry_id.mlkem_public_bytes));
+    pe.ik_mlkem768_pub = Some(STANDARD.encode(henry_id.mlkem_public_bytes));
     pe.discord_id = Some(HENRY_DID.to_string());
     pe.outgoing_whitelists.push(WhitelistEntry::Dm {
         broadened: false,
@@ -46,6 +46,7 @@ fn fresh_state() -> AppState {
         ScopeState {
             encrypt_toggle: true,
             auto_enabled: true,
+            ..ScopeState::default()
         },
     );
     drop(ws);

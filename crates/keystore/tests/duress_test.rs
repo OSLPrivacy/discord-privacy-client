@@ -408,7 +408,7 @@ fn wipe_step_ordered_covers_all_variants() {
     assert_eq!(listed.len(), expected.len());
 }
 
-fn outcome_for<'a>(steps: &'a [(WipeStep, StepOutcome)], target: WipeStep) -> &'a StepOutcome {
+fn outcome_for(steps: &[(WipeStep, StepOutcome)], target: WipeStep) -> &StepOutcome {
     &steps
         .iter()
         .find(|(s, _)| *s == target)

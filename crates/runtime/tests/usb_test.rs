@@ -184,7 +184,7 @@ fn terminal_at_input_range_boundary_is_capture() {
             video_streaming_present: true,
             input_terminal_types: vec![t],
         };
-        assert!(is_capture_device(&d), "boundary terminal {:#x}", t);
+        assert!(is_capture_device(&d), "boundary terminal {t:#x}");
     }
 }
 

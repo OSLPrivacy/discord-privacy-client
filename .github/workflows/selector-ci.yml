@@ -1,5 +1,9 @@
 name: Selector CI
 
+permissions:
+  contents: read
+  issues: write
+
 on:
   schedule:
     - cron: '0 */6 * * *'   # every 6 hours
@@ -9,17 +13,31 @@ jobs:
   selector-check:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install
         working-directory: selector-ci
         run: npm ci
       - name: Run selector check
         working-directory: selector-ci
         run: npm run check
-      # TODO: alert on failure (issue, Discord webhook, email).
+      - name: Open or update selector failure issue
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $title = "Selector CI is failing"
+          $runUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          $body = "Discord selector verification failed at commit ``${{ github.sha }}``. Run: $runUrl"
+          $number = gh issue list --state open --search "$title in:title" --json number --jq '.[0].number'
+          if ($number) {
+            gh issue comment $number --body $body
+          } else {
+            gh issue create --title $title --body $body --label bug
+          }
       # TODO: drive WebView2 directly rather than vanilla Chromium —
       # Playwright drives Edge, but our actual runtime is WebView2.
       # See docs/design/key-server-api.md selector-resilience section.

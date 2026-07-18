@@ -40,8 +40,9 @@ ciborium = "0.2"
 #   generation. `serde` feature off — phrases never serialize.
 argon2 = "0.5"
 aes-gcm = "0.10"
-bip39 = { version = "2", default-features = false, features = ["std"] }
+bip39 = { version = "2", default-features = false, features = ["std", "zeroize"] }
 subtle = { workspace = true }
+zeroize = { workspace = true }
 # 7d-B4 (scoped): HKDF-SHA256 single-block expansion for the
 # at-rest file_storage_key derivation. RustCrypto `hmac` paired
 # with the existing workspace `sha2`.

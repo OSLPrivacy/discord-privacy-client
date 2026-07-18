@@ -27,8 +27,8 @@ use ipc::state::AppState;
 use ipc::whitelist_state::ScopeState;
 use keystore::{generate_identity, Identity};
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 const MSG_ID_BURNED: &str = "1700000000000000001";
 const MSG_ID_FRESH: &str = "1700000000000000002";
 
@@ -100,6 +100,7 @@ fn install_dm_whitelist(state: &AppState, peer_discord_id: &str) {
             ScopeState {
                 encrypt_toggle: true,
                 auto_enabled: true,
+                ..ScopeState::default()
             },
         );
     }
@@ -317,8 +318,10 @@ fn decrypt_allowed_for_message_not_in_kill_list() {
 
 #[test]
 fn kill_list_persists_through_serde_roundtrip() {
-    let mut file = BurnedScopesFile::default();
-    file.version = 1;
+    let mut file = BurnedScopesFile {
+        version: 1,
+        ..Default::default()
+    };
     file.scopes.push(BurnedScopeEntry {
         scope_kind: "dm".to_string(),
         scope_id: HENRY_DID.to_string(),
@@ -341,8 +344,8 @@ fn empty_kill_list_loads_from_legacy_record_without_field() {
         "version": 1,
         "scopes": [{
             "scope_kind": "dm",
-            "scope_id": "1502770642930634812",
-            "channel_id": "1502770642930634812",
+            "scope_id": "900000000000000001",
+            "channel_id": "900000000000000001",
             "burned_at": 1700000000
         }]
     }"#;

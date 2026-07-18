@@ -22,6 +22,14 @@ async function post(body: unknown) {
 }
 
 describe("POST /v1/register — OPEN + Ed25519-signed", () => {
+  it("rejects overlong or control-character identity ids", async () => {
+    for (const userId of ["x".repeat(257), "scope\nforged"]) {
+      const pair = await generateEd25519Pair();
+      const res = await post(await signedRegisterBody(userId, pair));
+      expect(res.status).toBe(400);
+    }
+  });
+
   it("Case A: 201 on first registration with a valid signature (NO admin token)", async () => {
     const pair = await generateEd25519Pair();
     const userId = uid();

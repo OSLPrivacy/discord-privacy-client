@@ -47,8 +47,8 @@ pub fn load(path: &Path) -> ScopeBlobsFile {
 }
 
 pub fn write(path: &Path, file: &ScopeBlobsFile) -> Result<(), String> {
-    let body = serde_json::to_vec_pretty(file)
-        .map_err(|e| format!("OSL: serialize scope_blobs: {e}"))?;
+    let body =
+        serde_json::to_vec_pretty(file).map_err(|e| format!("OSL: serialize scope_blobs: {e}"))?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt scope_blobs: {e}"))?;
     let tmp = path.with_extension("json.tmp");
@@ -91,7 +91,7 @@ mod tests {
         record_blob(&mut f, "dm:2".into(), "cc22".into());
         let gc_blobs = take_blobs(&mut f, "gc:1");
         assert_eq!(gc_blobs, vec!["aa00".to_string(), "bb11".to_string()]);
-        assert!(f.entries.get("gc:1").is_none());
+        assert!(!f.entries.contains_key("gc:1"));
         // Untouched entry survives.
         assert_eq!(count_for(&f, "dm:2"), 1);
     }

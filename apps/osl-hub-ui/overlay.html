@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OSL private composer</title>
+  </head>
+  <body>
+    <main class="overlay-shell" aria-label="OSL private composer">
+      <span class="trust-mark" title="This field belongs to OSL, not the app underneath" aria-label="OSL-owned field">OSL</span>
+      <label class="draft-field" for="protected-draft">
+        <span class="sr-only">Private message</span>
+        <textarea id="protected-draft" rows="1" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes" placeholder="Private message"></textarea>
+      </label>
+      <div class="draft-status">
+        <span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true">0 / 1000 bytes</span>
+      </div>
+    </main>
+    <script type="module" src="/src/overlay.ts"></script>
+  </body>
+</html>

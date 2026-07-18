@@ -12,8 +12,8 @@ use ipc::scope::Scope;
 use ipc::state::AppState;
 use keystore::generate_identity;
 
-const LIAM_DID: &str = "1477008451799482419";
-const HENRY_DID: &str = "1502770642930634812";
+const LIAM_DID: &str = "900000000000000003";
+const HENRY_DID: &str = "900000000000000001";
 const ALICE_DID: &str = "1602770642930634812";
 const BOB_DID: &str = "1702770642930634812";
 

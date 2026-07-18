@@ -30,7 +30,7 @@ export async function handleBillingPortal(
   env: Env,
   fetcher: typeof fetch = fetch,
 ): Promise<Response> {
-  const rl = await checkRateLimit(env, callerIp(request), 10);
+  const rl = await checkRateLimit(env, callerIp(request), 10, "billing-portal");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
   if (!env.STRIPE_SECRET_KEY || !env.BILLING_PORTAL_RETURN_URL) {
@@ -56,6 +56,9 @@ export async function handleBillingPortal(
   }
   const sub = await getSubscription(env.DB, license.subscription_id);
   if (!sub) return forbidden("license has no active subscription");
+  if (!sub.customer_id) {
+    return forbidden("one-time license has no billing profile");
+  }
 
   try {
     const session = await createBillingPortalSession(
@@ -64,8 +67,8 @@ export async function handleBillingPortal(
       fetcher,
     );
     return json({ url: session.url });
-  } catch (err) {
-    console.error("[portal] Stripe error:", err);
+  } catch {
+    console.error("[portal] creation failed");
     return serverError("portal session creation failed");
   }
 }

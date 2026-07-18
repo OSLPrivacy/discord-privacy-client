@@ -3,13 +3,14 @@
 /// pubkeys, signs canonical byte strings.
 ///
 /// REGISTER-FIX: /v1/register is now OPEN + Ed25519-signed (no admin
-/// token). `TEST_ADMIN_TOKEN` remains for the still-gated routes
-/// (wrapped-keys, prekey-bundle/replenish, crypto-admin) and to keep
-/// checkRateLimit enabled in tests.
+/// token). `TEST_ADMIN_TOKEN` remains for operator-only routes. Public
+/// encrypted-key mutations authenticate with registered-identity signatures.
 
 import { buildRegMsg } from "../../src/lib/signed-request.js";
 
 export const TEST_ADMIN_TOKEN = "test-admin-token-do-not-ship";
+export const TEST_CLIENT_TOKEN = "test-client-token-do-not-ship";
+let registrationIpOctet = 1;
 
 /** Stable bytes for the non-Ed25519 fields the API requires. */
 export const STUB_X25519_PUB_B64 = base64Encode(new Uint8Array(32).fill(0x11));
@@ -93,7 +94,14 @@ export async function registerTestUser(
   const pair = await generateEd25519Pair();
   const res = await self.fetch("http://test/v1/register", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // Registration is deliberately capped at five attempts per
+      // source IP. Helpers create independent simulated clients, so
+      // give each one a documentation-range address instead of
+      // accidentally exhausting a shared `unknown` bucket.
+      "x-forwarded-for": `192.0.2.${registrationIpOctet++}`,
+    },
     body: JSON.stringify(await signedRegisterBody(userId, pair)),
   });
   if (res.status !== 201 && res.status !== 200) {
@@ -105,6 +113,8 @@ export async function registerTestUser(
 }
 
 export const ADMIN_HEADERS = {
-  authorization: `Bearer ${TEST_ADMIN_TOKEN}`,
+  // Historical fixture name retained for tests that explicitly prove a
+  // bearer cannot replace an identity signature.
+  authorization: `Bearer ${TEST_CLIENT_TOKEN}`,
   "content-type": "application/json",
 } as const;

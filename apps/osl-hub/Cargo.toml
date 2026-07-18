@@ -1,0 +1,49 @@
+[package]
+name = "osl-privacy-hub"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+publish = false
+
+[build-dependencies]
+tauri-build = "=2.6.1"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+tauri = { version = "=2.11.1", features = ["unstable"], optional = true }
+tauri-plugin-updater = { version = "=2.9.0", optional = true }
+tauri-plugin-single-instance = { version = "=2.4.2", optional = true }
+tokio = { version = "=1.49.0", features = ["sync"], optional = true }
+ipc = { path = "../../crates/ipc", optional = true }
+keystore = { path = "../../crates/keystore", optional = true }
+crypto = { path = "../../crates/crypto", optional = true }
+store = { path = "../../crates/store", optional = true }
+runtime = { path = "../../crates/runtime", optional = true }
+sha2 = "=0.10.9"
+tracing = { version = "=0.1.44", optional = true }
+bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
+base64 = { version = "=0.22.1", optional = true }
+url = "=2.5.8"
+zeroize = "=1.9.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
+
+[features]
+default = []
+core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:store", "dep:tracing"]
+desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
+
+[[bin]]
+name = "osl-privacy-hub"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+# Keep this preview crate isolated from the production workspace until its
+# architecture and security boundaries have been reviewed. This also lets it
+# be checked with `cargo check --manifest-path apps/osl-hub/Cargo.toml`
+# without editing the repository's root workspace manifest.
+[workspace]
+resolver = "2"

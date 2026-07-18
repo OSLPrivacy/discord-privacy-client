@@ -64,6 +64,7 @@ impl Drop for ServerHandle {
     }
 }
 
+#[allow(clippy::zombie_processes)] // ServerHandle::drop kills and waits for the child.
 fn spawn_keyserver() -> ServerHandle {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -27,10 +27,10 @@
 //!
 //! ```json
 //! {
-//!   "1477008451799482419": {
+//!   "900000000000000003": {
 //!     "osl_user_id": "liam",
 //!     "pubkey": null,
-//!     "discord_id": "1477008451799482419",
+//!     "discord_id": "900000000000000003",
 //!     "first_seen": "2026-05-09T12:34:56Z",
 //!     "outgoing_whitelists": [],
 //!     "burned_scopes": []
@@ -230,14 +230,14 @@ pub enum BurnedScope {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum PeerEntryRepr {
-    Modern(PeerEntry),
+    Modern(Box<PeerEntry>),
     Legacy(String),
 }
 
 impl From<PeerEntryRepr> for PeerEntry {
     fn from(repr: PeerEntryRepr) -> Self {
         match repr {
-            PeerEntryRepr::Modern(e) => e,
+            PeerEntryRepr::Modern(e) => *e,
             PeerEntryRepr::Legacy(osl_id) => PeerEntry {
                 osl_user_id: Some(osl_id),
                 ..PeerEntry::default()
@@ -457,13 +457,13 @@ mod tests {
         let path = dir.path().join("peer_map.json");
         fs::write(
             &path,
-            r#"{"1477008451799482419":"liam","1502770642930634812":"henry"}"#,
+            r#"{"900000000000000003":"liam","900000000000000001":"henry"}"#,
         )
         .unwrap();
         let map = load_peer_map_from_path(&path).expect("legacy format should load");
         assert_eq!(map.len(), 2);
-        assert_eq!(osl_user_id_for(&map, "1477008451799482419"), Some("liam"));
-        assert_eq!(osl_user_id_for(&map, "1502770642930634812"), Some("henry"));
+        assert_eq!(osl_user_id_for(&map, "900000000000000003"), Some("liam"));
+        assert_eq!(osl_user_id_for(&map, "900000000000000001"), Some("henry"));
         // File should now be in v=2 format with object values.
         let after = fs::read_to_string(&path).unwrap();
         assert!(
@@ -486,11 +486,11 @@ mod tests {
         fs::write(
             &path,
             r#"{
-              "1477008451799482419": {
+              "900000000000000003": {
                 "osl_user_id": "liam",
-                "discord_id": "1477008451799482419",
+                "discord_id": "900000000000000003",
                 "first_seen": "2026-05-09T12:00:00Z",
-                "incoming_decrypt_accepted": { "dm:1477008451799482419": true },
+                "incoming_decrypt_accepted": { "dm:900000000000000003": true },
                 "outgoing_whitelists": [
                   { "scope": "dm", "broadened": true, "enabled_at": "2026-05-09T12:00:00Z" }
                 ],
@@ -500,7 +500,7 @@ mod tests {
         )
         .unwrap();
         let map = load_peer_map_from_path(&path).expect("modern format should load");
-        let entry = map.get("1477008451799482419").unwrap();
+        let entry = map.get("900000000000000003").unwrap();
         assert_eq!(entry.osl_user_id.as_deref(), Some("liam"));
         assert_eq!(entry.outgoing_whitelists.len(), 1);
         match &entry.outgoing_whitelists[0] {
@@ -513,7 +513,7 @@ mod tests {
     fn malformed_json_is_parse_failed() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("peer_map.json");
-        fs::write(&path, r#"{"1477008451799482419":"liam",}"#).unwrap();
+        fs::write(&path, r#"{"900000000000000003":"liam",}"#).unwrap();
         let err = load_peer_map_from_path(&path).expect_err("trailing comma should fail");
         assert!(
             matches!(err, PeerMapError::ParseFailed { .. }),

@@ -1,8 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Permissions granted to the discord.com main webview for OSL contextual hooks (encrypt/decrypt, channel-header toggle + tri-state whitelist icon + burn, profile-popup whitelist, gateway membership cache push). Tauri 2 blocks IPC from remote URLs by default; the `remote.urls` glob extends this capability to discord.com. Phase 7d-C: password management, recovery phrase, stealth/burn password operations are NOT reachable from this origin — they live on the trusted local settings window (osl-gate://localhost/settings) under `settings-window.json`. Whitelist/scope/burn commands stay here because the channel-header burn button + tri-state whitelist icon + profile-popup whitelist button are contextual to Discord UI. 9-C1 removed the invitation handshake (allow-osl-send-whitelist-invitation, -response, -accept-invitation, -decline-invitation, -list-pending-invitations); 9-C1 Stage 3 added bulk-set/unset-whitelist + tri-state summary + gateway membership tap.",
+  "description": "Permissions granted to the discord.com main webview for OSL's contextual message, attachment, membership, whitelist, and session hooks. Tauri blocks remote IPC by default; remote.urls deliberately extends only this listed surface to Discord. Account-wide destruction and password/recovery-phrase disclosure stay on trusted local windows, but this origin still has broad conversation and identity-session authority. Treat a Discord-origin compromise as an architectural release risk until the remote page is reduced to a narrow local broker and Discord identity is OAuth-bound.",
   "windows": ["main"],
+  "local": false,
   "remote": {
     "urls": [
       "https://discord.com/*",
@@ -39,7 +40,6 @@
     "allow-osl-list-all-whitelists",
     "allow-osl-password-status",
     "allow-osl-burn-scope-data",
-    "allow-osl-burn-engage",
     "allow-osl-control-inbox-post",
     "allow-osl-control-inbox-drain",
     "allow-osl-attachment-cache-put",
@@ -61,6 +61,7 @@
     "allow-osl-scope-burn-blobs",
     "allow-osl-is-decommissioned",
     "allow-osl-open-settings-window",
+    "allow-osl-open-account-burn-window",
     "allow-osl-close-settings-window-if-open",
     "allow-osl-register-self-snowflake",
     "allow-osl-switch-account",
@@ -69,7 +70,6 @@
     "allow-osl-tour-advance",
     "allow-osl-tour-complete",
     "allow-osl-tour-skip",
-    "allow-osl-set-main-password",
     "allow-osl-take-last-persist-error",
     "allow-osl-take-registration-alert",
     "allow-osl-list-key-change-alerts",

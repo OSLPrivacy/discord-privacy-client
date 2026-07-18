@@ -144,7 +144,7 @@ export async function handleUpdateManifest(
   currentVersion: string,
 ): Promise<Response> {
   const ip = callerIp(request);
-  const rl = await checkRateLimit(env, ip, 10);
+  const rl = await checkRateLimit(env, ip, 10, "update-manifest");
   if (!rl.ok) return tooMany(rl.retryAfter);
 
   const channel = parseChannel(new URL(request.url).searchParams.get("channel"));
@@ -152,9 +152,6 @@ export async function handleUpdateManifest(
 
   const current = parseSemver(currentVersion);
   if (!current) {
-    console.log(
-      `[update-manifest] reject malformed version ip=${ip} target=${target} arch=${arch} channel=${channel} current=${currentVersion}`,
-    );
     return badRequest("current_version must be semver MAJOR.MINOR.PATCH");
   }
 
@@ -162,9 +159,6 @@ export async function handleUpdateManifest(
 
   // current >= offered → nothing newer to offer on this channel.
   if (compareSemver(current, offered) >= 0) {
-    console.log(
-      `[update-manifest] up-to-date ip=${ip} target=${target} arch=${arch} channel=${channel} current=${currentVersion} offered=${release.version}`,
-    );
     return new Response(null, { status: 204 });
   }
 
@@ -179,9 +173,6 @@ export async function handleUpdateManifest(
   // safely instead of 5xx-ing.
   const signature = signatureFor(release.version);
 
-  console.log(
-    `[update-manifest] offer ip=${ip} platform=${platformKey} channel=${channel} current=${currentVersion} -> ${release.version}`,
-  );
   return json({
     version: release.version,
     notes: release.notes,

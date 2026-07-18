@@ -39,11 +39,7 @@ fn malformed_keyserver_json_resolves_to_default() {
 #[test]
 fn keyserver_json_without_base_url_resolves_to_default() {
     let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("keyserver.json"),
-        br#"{"user_id":"alice"}"#,
-    )
-    .unwrap();
+    fs::write(dir.path().join("keyserver.json"), br#"{"user_id":"alice"}"#).unwrap();
     assert_eq!(
         resolve_keyserver_base_url(dir.path()),
         DEFAULT_KEYSERVER_BASE_URL,
@@ -70,16 +66,36 @@ fn bootstrap_and_license_share_one_resolver_default() {
 }
 
 #[test]
-fn keyserver_json_base_url_overrides_default() {
-    // Dev/staging override path must still win.
+fn numeric_loopback_override_is_available_in_debug_tests() {
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("keyserver.json"),
-        br#"{"base_url":"http://localhost:8787","user_id":"dev"}"#,
+        br#"{"base_url":"http://127.0.0.1:8787","user_id":"dev"}"#,
     )
     .unwrap();
     assert_eq!(
         resolve_keyserver_base_url(dir.path()),
-        "http://localhost:8787",
+        "http://127.0.0.1:8787",
     );
+}
+
+#[test]
+fn remote_and_plain_http_overrides_never_replace_production() {
+    for value in [
+        "http://keyserver.oslprivacy.com",
+        "https://attacker.example",
+        "http://localhost:8787",
+        "http://127.0.0.1.evil.example:8787",
+    ] {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("keyserver.json"),
+            format!(r#"{{"base_url":"{value}"}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_keyserver_base_url(dir.path()),
+            DEFAULT_KEYSERVER_BASE_URL,
+        );
+    }
 }

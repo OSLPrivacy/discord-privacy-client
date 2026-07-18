@@ -50,10 +50,19 @@ CAPABILITIES_DIR = REPO_ROOT / "src-tauri" / "capabilities"
 # boot.js is injected into the main Discord window (label "main").
 # password_gate.html is loaded in the main window before the gate
 # resolves. settings_window.html runs in the "settings" window.
-JS_INVOKER_WINDOWS: dict[str, str] = {
-    "src-tauri/src/injection/boot.js": "main",
-    "src-tauri/assets/password_gate.html": "main",
-    "src-tauri/assets/settings_window.html": "settings",
+JS_INVOKER_CAPABILITIES: dict[str, str] = {
+    "src-tauri/src/injection/boot.js": "main-capability",
+    "src-tauri/assets/password_gate.html": "password-gate-capability",
+    "src-tauri/assets/account_burn.html": "account-burn-capability",
+    "src-tauri/assets/settings_window.html": "settings-window-capability",
+}
+
+# Commands that must never be callable by remote Discord content. These
+# mutate device credentials or irreversibly destroy local state and must
+# remain on a bundled `osl-gate://` page.
+REMOTE_MAIN_FORBIDDEN_PERMISSIONS = {
+    "allow-osl-burn-engage",
+    "allow-osl-set-main-password",
 }
 
 # Commands that intentionally exist without an `allow-*` permission
@@ -201,44 +210,46 @@ def extract_invoke_calls(path: Path) -> set[str]:
 
 
 def cross_window_check(commands: list[tuple[str, int]]) -> list[str]:
-    """TD2.1: cross-validate each command's invoker windows against
-    the capability JSONs that grant it. Returns a list of ERROR lines
-    (empty when clean)."""
-    # window -> {commands invoked from that window}
-    invokers_by_window: dict[str, set[str]] = {}
-    for rel, window in JS_INVOKER_WINDOWS.items():
-        called = extract_invoke_calls(REPO_ROOT / rel)
-        invokers_by_window.setdefault(window, set()).update(called)
+    """Validate callers against their exact origin capability.
 
-    # Flat command -> set of windows that call it (for nice errors).
-    callers_by_cmd: dict[str, set[str]] = {}
-    for window, cmds in invokers_by_window.items():
-        for c in cmds:
-            callers_by_cmd.setdefault(c, set()).add(window)
+    Window-label unions are insufficient because the main window hosts
+    both remote Discord and bundled local gate pages. A local grant must
+    never satisfy a command invoked by remote boot.js.
+    """
+    capabilities: dict[str, set[str]] = {}
+    for path in CAPABILITIES_DIR.glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        identifier = data.get("identifier")
+        if isinstance(identifier, str):
+            capabilities[identifier] = set(data.get("permissions") or [])
 
     declared = {name for name, _ in commands}
     errors: list[str] = []
 
-    for cmd, calling_windows in sorted(callers_by_cmd.items()):
+    for rel, capability_id in JS_INVOKER_CAPABILITIES.items():
+        granted = capabilities.get(capability_id)
+        if granted is None:
+            errors.append(f"{rel}: missing capability {capability_id}")
+            continue
+        for cmd in sorted(extract_invoke_calls(REPO_ROOT / rel)):
         # Skip invokes of names that aren't actually declared as
         # tauri::command in main.rs — those are caught by the
         # generate_handler cross-check elsewhere or are typos. Surface
         # as a separate error so the audit fails loudly either way.
-        if cmd not in declared:
-            errors.append(
-                f"{cmd}: invoked from JS ({sorted(calling_windows)}) but no "
-                f"#[tauri::command] fn with that name in main.rs"
-            )
-            continue
-        permission_id = f"allow-{cmd.replace('_', '-')}"
-        granted_windows = windows_granting_permission(permission_id)
-        missing = calling_windows - granted_windows
-        if missing:
-            errors.append(
-                f"{cmd}: invoked from {sorted(calling_windows)} but capability "
-                f"JSONs grant {permission_id} only to {sorted(granted_windows) or '[]'}; "
-                f"missing window(s): {sorted(missing)}"
-            )
+            if cmd not in declared:
+                errors.append(
+                    f"{cmd}: invoked from {rel} but no #[tauri::command] fn in main.rs"
+                )
+                continue
+            permission_id = f"allow-{cmd.replace('_', '-')}"
+            if permission_id not in granted:
+                errors.append(
+                    f"{cmd}: invoked from {rel}, but {capability_id} does not grant "
+                    f"{permission_id}"
+                )
 
     return errors
 
@@ -307,6 +318,25 @@ def audit() -> int:
 
     # TD2.1: cross-window capability validation.
     xwindow_errors = cross_window_check(commands)
+
+    for capability_path in CAPABILITIES_DIR.glob("*.json"):
+        try:
+            capability = json.loads(capability_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            xwindow_errors.append(f"cannot read {capability_path.name}: {exc}")
+            continue
+        remote_urls = (capability.get("remote") or {}).get("urls") or []
+        if not any("discord.com" in str(url) for url in remote_urls):
+            continue
+        if capability.get("local", True) is not False:
+            xwindow_errors.append(
+                f"{capability_path.name}: Discord remote capability must set local=false"
+            )
+        permissions = set(capability.get("permissions") or [])
+        for permission in sorted(permissions & REMOTE_MAIN_FORBIDDEN_PERMISSIONS):
+            xwindow_errors.append(
+                f"{capability_path.name}: Discord remote capability grants forbidden {permission}"
+            )
 
     if warnings:
         print("=== Warnings ===")

@@ -6,8 +6,8 @@
 //!   * Sender: existing PQXDH+ratchet encryption produces a v=4/v=5
 //!     wire `DPC0::<base64(cipher)>`. We strip the prefix, decode the
 //!     base64, upload the raw bytes to the cipher-store (returns an
-//!     8-byte ID), and encode that ID as ~5 sentences of natural
-//!     English prose via `encode_token`. The cover prose is what
+//!     8-byte ID), and encode that ID as compact chat-like cover text
+//!     via `encode_token`. The cover text is what
 //!     gets posted to Discord — no `DPC0::` marker, no high-entropy
 //!     base64 blob.
 //!   * Receiver: every incoming Discord message in an OSL-enabled
@@ -22,8 +22,8 @@
 //! is public (anyone with scope IDs can derive the same MAC key) —
 //! the HMAC's role is "tag this 8-byte payload as 'looks like an
 //! OSL token' so receivers don't mistake plain English for one",
-//! not "prevent forgery." Phase 6 hardening will rekey this from
-//! the ratchet root for genuine sender authentication.
+//! not "prevent forgery." Genuine sender authentication would require
+//! rekeying this from secret conversation state such as the ratchet root.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -38,8 +38,7 @@ use crate::scope::ScopeInput;
 
 const DPC0_PREFIX: &str = "DPC0::";
 const MAC_KEY_LEN: usize = 32;
-pub const PROSE_TOKEN_MAC_HKDF_INFO: &[u8] =
-    b"discord-privacy-client/prose-token/mac-key/v1";
+pub const PROSE_TOKEN_MAC_HKDF_INFO: &[u8] = b"discord-privacy-client/prose-token/mac-key/v1";
 
 /// Phase 6 capability-token domain separator. The token is
 /// HMAC-SHA256(mac_key, FETCH_TOKEN_INFO || blob_id_bytes)[..16];
@@ -53,8 +52,8 @@ fn derive_fetch_token(
     mac_key: &[u8; MAC_KEY_LEN],
     blob_id: &[u8; stego::TOKEN_ID_BYTES],
 ) -> [u8; FETCH_TOKEN_BYTES] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(mac_key)
-        .expect("HMAC-SHA256 accepts any key length");
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(mac_key).expect("HMAC-SHA256 accepts any key length");
     mac.update(FETCH_TOKEN_INFO);
     mac.update(blob_id);
     let result = mac.finalize().into_bytes();
@@ -126,19 +125,15 @@ fn prose_token_salt(scope: &crate::scope::Scope) -> String {
             //     storage_key() to preserve pre-fix behaviour for
             //     those legacy callsites (mostly profile-action and
             //     recovery paths that don't drive content encrypt).
-            Some(ch) if !ch.is_empty() && ch != &scope.id => format!("dm:{}", ch),
+            Some(ch) if !ch.is_empty() && ch != &scope.id => format!("dm:{ch}"),
             _ => scope.storage_key(),
         },
-        ScopeKind::Gc | ScopeKind::ServerChannel | ScopeKind::ServerFull => {
-            scope.storage_key()
-        }
+        ScopeKind::Gc | ScopeKind::ServerChannel | ScopeKind::ServerFull => scope.storage_key(),
     }
 }
 
 fn id_hex_to_bytes(id_hex: &str) -> Result<[u8; stego::TOKEN_ID_BYTES], ProseTokenError> {
-    if id_hex.len() != stego::TOKEN_ID_BYTES * 2
-        || !id_hex.chars().all(|c| c.is_ascii_hexdigit())
-    {
+    if id_hex.len() != stego::TOKEN_ID_BYTES * 2 || !id_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ProseTokenError::BadIdHex(id_hex.to_string()));
     }
     let mut bytes = [0u8; stego::TOKEN_ID_BYTES];
@@ -152,7 +147,7 @@ fn id_hex_to_bytes(id_hex: &str) -> Result<[u8; stego::TOKEN_ID_BYTES], ProseTok
 fn bytes_to_id_hex(bytes: &[u8; stego::TOKEN_ID_BYTES]) -> String {
     let mut s = String::with_capacity(16);
     for b in bytes {
-        s.push_str(&format!("{:02x}", b));
+        s.push_str(&format!("{b:02x}"));
     }
     s
 }
@@ -182,7 +177,7 @@ pub struct ProseTokenRecvOutput {
 /// Encrypt-and-upload: takes a `DPC0::<base64>` wire string produced
 /// by the existing encrypt pipeline, uploads the underlying cipher
 /// bytes to the cipher-store with the chosen TTL, and encodes the
-/// returned blob ID as natural-English prose.
+/// returned blob ID as marker-free, chat-like cover text.
 pub fn prose_token_send(
     config_dir: &std::path::Path,
     scope_input: &ScopeInput,
@@ -209,10 +204,11 @@ pub fn prose_token_send(
     //   HMAC tag is derived). So per-blob granularity wouldn't add
     //   any access-control distinction inside the scope — anyone with
     //   read access to one blob has read access to all blobs.
-    // - The threat the token defends against is link-leak: a third
-    //   party who learns a blob_id outside the conversation context
-    //   (screenshot, message-id leak, accidental share). Without
-    //   mac_key they can't compute the token and the worker 403s.
+    // - The token blocks fetch/delete by a bare leaked blob_id. It is
+    //   not an identity or membership credential: mac_key is derived
+    //   from public scope metadata, so a party that also knows the scope
+    //   can compute it. The worker returns 403 only when the token is
+    //   absent or different.
     // - It does NOT defend against a compromised cipher-store
     //   operator who can read DB rows directly. That requires
     //   Privacy-Pass-style blind tokens (deferred).
@@ -362,14 +358,14 @@ mod tests {
         // Desktop's view: peer = LAPTOP_ID
         let desktop_view = ScopeInput {
             kind: crate::scope::ScopeKind::Dm,
-            id: "1502770642930634812".to_string(), // laptop user id
+            id: "900000000000000001".to_string(), // synthetic device A id
             server_id: None,
             channel_id: Some("9999999999999999".to_string()), // DM channel
         };
         // Laptop's view: peer = DESKTOP_ID
         let laptop_view = ScopeInput {
             kind: crate::scope::ScopeKind::Dm,
-            id: "1500650102635630622".to_string(), // desktop user id
+            id: "900000000000000002".to_string(), // synthetic device B id
             server_id: None,
             channel_id: Some("9999999999999999".to_string()), // DM channel
         };

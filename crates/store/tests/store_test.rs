@@ -46,7 +46,7 @@ fn roundtrip_put_get_returns_same_plaintext() {
     let msg = sample(
         "1502771310428819569",
         "1502771310428819560",
-        "1477008451799482419",
+        "900000000000000003",
         "liam",
         "hello phase 5b",
         1_700_000_000,
@@ -70,7 +70,7 @@ fn roundtrip_unicode_and_long_plaintext() {
     let msg = sample(
         "1502771310428819570",
         "1502771310428819560",
-        "1477008451799482419",
+        "900000000000000003",
         "liam",
         &plaintext,
         1_700_000_001,
@@ -134,8 +134,38 @@ fn mark_burned_makes_get_return_none() {
         .put(&sample("vanish", "ch", "s", "alice", "to be burned", 1))
         .unwrap();
     assert!(store.get("vanish").unwrap().is_some());
+    let db_path = tmp.path().join("messages.sqlite");
+    let before: (Vec<u8>, Vec<u8>) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row(
+            "SELECT ciphertext, nonce FROM messages WHERE discord_message_id = 'vanish'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
     store.mark_burned("vanish").unwrap();
     assert!(store.get("vanish").unwrap().is_none());
+    let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row(
+            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE discord_message_id = 'vanish'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap()
+    };
+    assert_ne!(after.0, before.0, "burn must overwrite local ciphertext");
+    assert_ne!(after.1, before.1, "burn must overwrite the AEAD nonce");
+    assert!(after.0.iter().all(|byte| *byte == 0));
+    assert!(after.1.iter().all(|byte| *byte == 0));
+    assert!(after.2.is_none());
+    assert_eq!(after.3, 1);
+    let wal = db_path.with_extension("sqlite-wal");
+    assert!(
+        !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
+        "burn must truncate WAL page images"
+    );
 }
 
 #[test]
@@ -309,10 +339,7 @@ fn attachment_put_get_roundtrip() {
 fn attachment_get_miss_is_none() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
-    assert!(store
-        .get_attachment("nope", "nope.bin")
-        .unwrap()
-        .is_none());
+    assert!(store.get_attachment("nope", "nope.bin").unwrap().is_none());
 }
 
 #[test]
@@ -337,7 +364,15 @@ fn attachment_wrong_secret_cannot_unseal() {
     {
         let store = open_a(tmp.path());
         store
-            .put_attachment("msg1", "f.bin", "image/jpeg", b"secret bytes", None, None, None)
+            .put_attachment(
+                "msg1",
+                "f.bin",
+                "image/jpeg",
+                b"secret bytes",
+                None,
+                None,
+                None,
+            )
             .unwrap();
     }
     // A different secret fails the canary at open(), so we never

@@ -49,7 +49,7 @@ pub fn classify(baseline: Option<&str>, fetched: &str) -> TofuOutcome {
         // that ever carried `Some("")` would raise a false
         // "security key changed" alert on its very first real key.
         None => TofuOutcome::FirstUse,
-        Some(b) if b.is_empty() => TofuOutcome::FirstUse,
+        Some("") => TofuOutcome::FirstUse,
         Some(b) if b == fetched => TofuOutcome::Unchanged,
         Some(b) => TofuOutcome::Changed { old: b.to_string() },
     }
@@ -113,7 +113,9 @@ mod tests {
     fn changed_when_different_carries_old() {
         assert_eq!(
             classify(Some("OLD"), "NEW"),
-            TofuOutcome::Changed { old: "OLD".to_string() }
+            TofuOutcome::Changed {
+                old: "OLD".to_string()
+            }
         );
     }
 

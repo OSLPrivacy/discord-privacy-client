@@ -15,9 +15,8 @@
 --     blobs have a non-NULL token and require matching proof on
 --     fetch + delete.
 --
--- Defends against the link-leak threat (blob_id alone shared outside
--- the conversation context) but NOT against a compromised cipher-store
--- operator who can read DB rows directly. That requires Privacy-Pass-
--- style blind tokens (deferred work).
+-- Separates bare blob_id knowledge from fetch/delete authority, but does
+-- NOT protect against a compromised cipher-store operator who can read DB
+-- rows directly. That requires Privacy-Pass-style blind tokens (deferred).
 
 ALTER TABLE blobs ADD COLUMN fetch_token TEXT;

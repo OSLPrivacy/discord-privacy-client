@@ -142,14 +142,22 @@ impl RecoveryGuard {
 mod tests {
     use super::*;
 
-    const P: &str = "1502770642930634812";
+    const P: &str = "900000000000000001";
 
     #[test]
     fn emit_throttle_blocks_within_interval() {
         let mut g = RecoveryGuard::default();
         assert!(g.should_emit(P, RecoveryKind::SkdmRequest, 1000));
-        assert!(!g.should_emit(P, RecoveryKind::SkdmRequest, 1000 + RECOVERY_MIN_INTERVAL_SECS - 1));
-        assert!(g.should_emit(P, RecoveryKind::SkdmRequest, 1000 + RECOVERY_MIN_INTERVAL_SECS));
+        assert!(!g.should_emit(
+            P,
+            RecoveryKind::SkdmRequest,
+            1000 + RECOVERY_MIN_INTERVAL_SECS - 1
+        ));
+        assert!(g.should_emit(
+            P,
+            RecoveryKind::SkdmRequest,
+            1000 + RECOVERY_MIN_INTERVAL_SECS
+        ));
     }
 
     #[test]
@@ -166,9 +174,21 @@ mod tests {
     fn inbound_rejects_stale_and_future() {
         let mut g = RecoveryGuard::default();
         let n = [1u8; 16];
-        assert!(!g.accept_inbound(P, RecoveryKind::SessionReset, &n, 0, RECOVERY_FRESHNESS_SECS + 1));
+        assert!(!g.accept_inbound(
+            P,
+            RecoveryKind::SessionReset,
+            &n,
+            0,
+            RECOVERY_FRESHNESS_SECS + 1
+        ));
         let n2 = [2u8; 16];
-        assert!(!g.accept_inbound(P, RecoveryKind::SessionReset, &n2, RECOVERY_FRESHNESS_SECS + 2, 1));
+        assert!(!g.accept_inbound(
+            P,
+            RecoveryKind::SessionReset,
+            &n2,
+            RECOVERY_FRESHNESS_SECS + 2,
+            1
+        ));
     }
 
     #[test]
@@ -178,7 +198,13 @@ mod tests {
         assert!(g.accept_inbound(P, RecoveryKind::SkdmRequest, &n, 1000, 1000));
         // Same nonce again (even far enough that honor-throttle would
         // otherwise allow it) is rejected as a replay.
-        assert!(!g.accept_inbound(P, RecoveryKind::SkdmRequest, &n, 1000, 1000 + RECOVERY_MIN_INTERVAL_SECS + 1));
+        assert!(!g.accept_inbound(
+            P,
+            RecoveryKind::SkdmRequest,
+            &n,
+            1000,
+            1000 + RECOVERY_MIN_INTERVAL_SECS + 1
+        ));
     }
 
     #[test]

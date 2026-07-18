@@ -47,12 +47,12 @@ fn unmapped_discord_id_returns_unknown_sender() {
     let err = cmd_osl_decrypt_message(
         &state,
         "channel-id".to_string(),
-        "1477008451799482419".to_string(),
+        "900000000000000003".to_string(),
         "DPC0::doesnt-matter-we-error-before-decoding".to_string(),
     )
     .expect_err("unmapped discord_id should error");
     assert!(
-        err.contains("no peer mapping for discord_id=1477008451799482419"),
+        err.contains("no peer mapping for discord_id=900000000000000003"),
         "expected UnknownSender, got: {err}"
     );
 }
@@ -65,7 +65,7 @@ fn unmapped_discord_id_does_not_consult_keyserver() {
     // would surface "key-server not initialised" rather than
     // UnknownSender — proving the resolution gate runs first.
     let state = fresh_state_with_identity("liam");
-    install_peer_map(&state, &[("1502770642930634812", "henry")]);
+    install_peer_map(&state, &[("900000000000000001", "henry")]);
     let err = cmd_osl_decrypt_message(
         &state,
         "channel-id".to_string(),
@@ -87,7 +87,7 @@ fn unmapped_discord_id_does_not_consult_keyserver() {
 fn empty_peer_map_returns_unknown_sender_for_every_id() {
     let state = fresh_state_with_identity("liam");
     // Default-constructed AppState has an empty peer_map.
-    for discord_id in &["1", "1477008451799482419", ""] {
+    for discord_id in &["1", "900000000000000003", ""] {
         let err = cmd_osl_decrypt_message(
             &state,
             "ch".to_string(),
@@ -109,11 +109,11 @@ fn missing_identity_errors_before_peer_map_consulted() {
     // No identity loaded — cmd should reject with "identity not
     // loaded" *before* it gets to peer_map resolution.
     let state = AppState::new();
-    install_peer_map(&state, &[("1477008451799482419", "liam")]);
+    install_peer_map(&state, &[("900000000000000003", "liam")]);
     let err = cmd_osl_decrypt_message(
         &state,
         "ch".to_string(),
-        "1477008451799482419".to_string(),
+        "900000000000000003".to_string(),
         "DPC0::body".to_string(),
     )
     .expect_err("no identity should error");
@@ -128,18 +128,18 @@ fn missing_identity_errors_before_peer_map_consulted() {
 #[test]
 fn peer_map_lookup_is_exact_match_no_trim_no_case_fold() {
     let state = fresh_state_with_identity("liam");
-    install_peer_map(&state, &[("1477008451799482419", "henry")]);
+    install_peer_map(&state, &[("900000000000000003", "henry")]);
 
     // Trailing whitespace in the lookup key — should NOT match.
     let err = cmd_osl_decrypt_message(
         &state,
         "ch".to_string(),
-        " 1477008451799482419 ".to_string(),
+        " 900000000000000003 ".to_string(),
         "DPC0::body".to_string(),
     )
     .expect_err("trimmed key should not match exact entry");
     assert!(
-        err.contains("no peer mapping for discord_id= 1477008451799482419 "),
+        err.contains("no peer mapping for discord_id= 900000000000000003 "),
         "expected exact-match miss, got: {err}"
     );
 }

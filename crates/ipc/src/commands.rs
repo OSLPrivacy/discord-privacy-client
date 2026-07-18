@@ -13,9 +13,9 @@ use base64::Engine;
 use crypto::{aead, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{StoreError, StoredMessage};
+use store::{MessageStore, StoreError, StoredMessage};
 
 // 9-TD2.3: F0-FIX3 trace logs.
 //
@@ -255,11 +255,7 @@ pub fn cmd_osl_reset_v5_sender_key(
             .iter()
             .filter(|(did, entry)| {
                 entry.is_self != Some(true)
-                    && crate::whitelist::can_encrypt_to(
-                        &pm,
-                        &scope,
-                        did.as_str(),
-                    )
+                    && crate::whitelist::can_encrypt_to(&pm, &scope, did.as_str())
             })
             .map(|(did, _)| did.clone())
             .collect();
@@ -485,10 +481,7 @@ pub fn cmd_osl_build_session_reset(
 /// passive receiver was stranded forever. Returns whether the local
 /// entry changed. A keyserver error is surfaced (boot.js cooldown-
 /// logs it); a stale identity is never silently accepted.
-pub fn cmd_osl_recover_peer_identity(
-    state: &AppState,
-    discord_id: String,
-) -> Result<bool, String> {
+pub fn cmd_osl_recover_peer_identity(state: &AppState, discord_id: String) -> Result<bool, String> {
     let changed = refresh_peer_pubkeys_from_keyserver(state, &discord_id)?;
     if changed {
         persist_peer_map_now(state);
@@ -573,7 +566,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         );
         snapshot.discord_snowflake = Some(snowflake.clone());
         snapshot.ratchet_initial_secret = identity.ratchet_initial_secret.clone();
-        snapshot.ratchet_initial_pub = identity.ratchet_initial_pub.clone();
+        snapshot.ratchet_initial_pub = identity.ratchet_initial_pub;
         // Preserve the recovery-phrase entropy through the from_bytes
         // copy so the new account is transferable (the phrase is
         // revealable in Settings).
@@ -621,15 +614,14 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         ensure_keyserver_registered(
             state,
             &resolve_keyserver_base_url(dir),
-            read_keyserver_admin_token(dir),
+            read_keyserver_client_token(dir),
         );
         return run_verify(state);
     }
 
     enum Step {
-        Save(keystore::Identity),
+        Save(Box<keystore::Identity>),
         AlreadySet,
-        DiscordAccountSwitched(String), // carries the OLD snowflake for logging
     }
     let step = {
         let mut guard = state.identity.lock().expect("identity mutex poisoned");
@@ -647,20 +639,24 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         let bound_to = id
             .discord_snowflake
             .clone()
-            .unwrap_or_else(|| id.user_id.clone());
+            .or_else(|| {
+                // Only legacy identities whose user_id is itself a
+                // Discord snowflake were implicitly bound that way.
+                // Older test/dev identities used names such as
+                // "alice" and still need their first explicit bind.
+                (id.user_id.chars().all(|c| c.is_ascii_digit())
+                    && (17..=20).contains(&id.user_id.len()))
+                .then(|| id.user_id.clone())
+            })
+            .unwrap_or_default();
         if !bound_to.is_empty() && bound_to != snowflake {
-            // Discord account-switch detected. The user logged into
-            // a different Discord account on this machine, so the
-            // locally-stored OSL identity (bound to `bound_to`) is
-            // wrong for the NEW one. Trigger an auto-burn +
-            // fresh-register flow below — same outcome the user
-            // would get from Settings → Account → Account Burn.
-            //
-            // Trade-off: the OLD account's local OSL state
-            // (peer_map, channels, message store, etc.) is
-            // destroyed. Per-user-id config dirs would preserve
-            // both, but that's a structural change for later.
-            Step::DiscordAccountSwitched(bound_to)
+            // This command is callable by the remote Discord origin.
+            // A reported account mismatch must therefore never erase,
+            // unregister, or rotate the locally bound identity. Account
+            // changes require an explicit trusted-local flow.
+            return Err(format!(
+                "OSL: register_self_snowflake: snowflake mismatch with identity bound to {bound_to}"
+            ));
         } else if id.discord_snowflake.is_some() {
             Step::AlreadySet
         } else {
@@ -675,7 +671,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
                 id.mlkem_public_bytes,
             );
             snapshot.discord_snowflake = Some(snowflake.clone());
-            Step::Save(snapshot)
+            Step::Save(Box::new(snapshot))
         }
     };
 
@@ -688,99 +684,11 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             ensure_keyserver_registered(
                 state,
                 &resolve_keyserver_base_url(dir),
-                read_keyserver_admin_token(dir),
+                read_keyserver_client_token(dir),
             );
             return run_verify(state);
         }
-        Step::DiscordAccountSwitched(old_snowflake) => {
-            tracing::warn!(
-                old_snowflake = %old_snowflake,
-                new_snowflake = %snowflake,
-                "OSL: register_self_snowflake: Discord account switch \
-                 detected — auto-burning OLD identity and regenerating \
-                 under NEW snowflake. Old account's local state will be \
-                 destroyed; keyserver row for OLD will be unregistered."
-            );
-            // Sign + send unregister for the OLD identity (must use
-            // the OLD ed25519_secret; gone after fresh_start below).
-            let unregister_req: Option<(String, String, i64)> = {
-                let guard = state.identity.lock().expect("identity mutex poisoned");
-                guard.as_ref().map(|id| {
-                    let ts: i64 = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0);
-                    let sig = keystore::sign_unregister(id, ts);
-                    use base64::engine::general_purpose::STANDARD as B64;
-                    use base64::Engine as _;
-                    (
-                        id.user_id.clone(),
-                        B64.encode(sig.as_bytes()),
-                        ts,
-                    )
-                })
-            };
-            if let Some((old_user_id, sig_b64, ts)) = unregister_req {
-                let base = resolve_keyserver_base_url(dir);
-                let admin = read_keyserver_admin_token(dir);
-                if let Ok(c) = keystore::client::KeyServerClient::new(base) {
-                    let client = c.with_admin_token(admin);
-                    if let Err(e) = client.unregister_signed(&old_user_id, &sig_b64, ts) {
-                        tracing::warn!(
-                            old_user_id = %old_user_id,
-                            error = %e,
-                            "OSL: account-switch: OLD keyserver unregister \
-                             failed; continuing with local switch anyway"
-                        );
-                    }
-                }
-            }
-            // Release SQLite handle so fresh_start can wipe it (same
-            // reason burn_engage does this; see commit message there).
-            {
-                let taken = state
-                    .message_store
-                    .lock()
-                    .expect("message_store mutex poisoned")
-                    .take();
-                drop(taken);
-            }
-            // fresh_start with the NEW snowflake as user_id —
-            // generates a new identity bound to the NEW Discord
-            // account.
-            let new_identity = crate::fresh_start::cmd_osl_fresh_start(
-                dir,
-                snowflake.clone(),
-            )
-            .map_err(|e| format!("OSL: account-switch fresh_start failed: {e}"))?;
-            // Place the new identity in AppState.
-            *state.identity.lock().expect("identity mutex poisoned") =
-                Some(new_identity);
-            // Clear peer ratchet state (old session keys are dead).
-            clear_all_peer_ratchet_state(state);
-            // Wipe auxiliary files (same set burn_engage_finish wipes).
-            for name in [
-                "password_marker.json",
-                "lockout_state.json",
-                "burned_scopes.json",
-                "app_preferences.json",
-                "sender_key_state.json",
-                "membership.json",
-            ] {
-                let path = dir.join(name);
-                if path.exists() {
-                    let _ = std::fs::remove_file(&path);
-                }
-            }
-            // Register the NEW identity on the keyserver.
-            ensure_keyserver_registered(
-                state,
-                &resolve_keyserver_base_url(dir),
-                read_keyserver_admin_token(dir),
-            );
-            return run_verify(state);
-        }
-        Step::Save(snapshot) => snapshot,
+        Step::Save(snapshot) => *snapshot,
     };
 
     let path = dir.join("identity.json");
@@ -803,7 +711,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
     ensure_keyserver_registered(
         state,
         &resolve_keyserver_base_url(dir),
-        read_keyserver_admin_token(dir),
+        read_keyserver_client_token(dir),
     );
     run_verify(state)
 }
@@ -1407,7 +1315,7 @@ pub fn encrypt_osl_phase4_to_pubkeys(
         let bytes = *pk.as_bytes();
         if !seen_keys.iter().any(|b| b == &bytes) {
             seen_keys.push(bytes);
-            effective.push(pk.clone());
+            effective.push(*pk);
         }
     }
     let sender_bytes = *sender_pub.as_bytes();
@@ -1964,7 +1872,7 @@ pub fn cmd_osl_decrypt_message_with_id(
         drop(ks_guard);
         state
             .sender_pubkey_cache
-            .insert(osl_user_id.clone(), pub_key.clone());
+            .insert(osl_user_id.clone(), pub_key);
         pub_key
     };
 
@@ -2944,8 +2852,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                          NOT sent)"
                     ));
                 }
-                let fresh_recipients = resolve_recipients()
-                    .map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
+                let fresh_recipients =
+                    resolve_recipients().map_err(|e| format!("OSL: v=4 recipient refresh: {e}"))?;
                 // v=4 keeps its own peer_did (derive_v4_peer_discord_id,
                 // untouched); only the keys are extracted from the pair.
                 let fresh_peer = &fresh_recipients
@@ -2980,7 +2888,19 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     // off for group scopes above). With 0 resolvable OSL peers it
     // falls through to v=3 self-only (non-OSL members see DPC0::,
     // per decision (a)). Anything else falls through to v=3.
-    if !non_self_peers.is_empty() && scope_is_group_or_server(&scope) {
+    // MULTI-DEVICE SAFETY: v=5 sender chains are mutable local state
+    // indexed by (scope, sender Discord id). Two installations of the
+    // same Discord account therefore advance independent chains under
+    // the same logical sender and can make alternating GC/server
+    // messages undecryptable. Until the wire protocol carries a signed
+    // device id and receivers key chains by (account, device), route
+    // group/server content through stateless v=3 just like DMs. This is
+    // less wire-efficient, but every message is independently
+    // decryptable on every device holding the transferred account keys.
+    let v5_group_enabled = state
+        .sender_keys_enabled
+        .load(std::sync::atomic::Ordering::Acquire);
+    if v5_group_enabled && !non_self_peers.is_empty() && scope_is_group_or_server(&scope) {
         return encrypt_v5_send(
             state,
             &sender_sk,
@@ -3118,8 +3038,7 @@ fn encrypt_v5_send(
     // Tracking the recipient set means whitelisting a peer changes the
     // set → rotate → SKDM re-distributed to everyone on the very next
     // send.
-    let recipient_ids: Vec<String> =
-        non_self_peers.iter().map(|p| p.0.clone()).collect();
+    let recipient_ids: Vec<String> = non_self_peers.iter().map(|p| p.0.clone()).collect();
 
     // Decide install / rotate / continue.
     let needs_install = sks.sender_chain().is_none();
@@ -3234,16 +3153,18 @@ fn encrypt_v5_send(
     let mut skdm_wires: Vec<String> = Vec::new();
     let mut skdm_peer_status: Vec<SkdmPeerStatus> = Vec::new();
     let _ = send_skdm; // retained for self-receiver gate above; no longer gates bundle emit
-    // Phase 6.2: gate the periodic self-heal emit. Always emit on
-    // install/rotate (the chain is fresh, every receiver needs it).
-    // Otherwise emit only if SKDM_PERIODIC_EMIT_INTERVAL_SECS have
-    // elapsed since the last emit. The 0-default on legacy on-disk
-    // records (pre-6.2 SenderChainOnDisk) forces a one-time emit on
-    // load, which is the right thing -- it primes receivers who
-    // might have missed the prior chain.
-    let last_emit_at = sks.sender_chain().map(|c| c.last_skdm_emit_at()).unwrap_or(0);
-    let periodic_due =
-        now.saturating_sub(last_emit_at) >= SKDM_PERIODIC_EMIT_INTERVAL_SECS;
+                       // Phase 6.2: gate the periodic self-heal emit. Always emit on
+                       // install/rotate (the chain is fresh, every receiver needs it).
+                       // Otherwise emit only if SKDM_PERIODIC_EMIT_INTERVAL_SECS have
+                       // elapsed since the last emit. The 0-default on legacy on-disk
+                       // records (pre-6.2 SenderChainOnDisk) forces a one-time emit on
+                       // load, which is the right thing -- it primes receivers who
+                       // might have missed the prior chain.
+    let last_emit_at = sks
+        .sender_chain()
+        .map(|c| c.last_skdm_emit_at())
+        .unwrap_or(0);
+    let periodic_due = now.saturating_sub(last_emit_at) >= SKDM_PERIODIC_EMIT_INTERVAL_SECS;
     let should_emit_bundle = needs_install || needs_rotate || periodic_due;
     if !non_self_peers.is_empty() && should_emit_bundle {
         // Include self as a recipient so the sender's own DOM
@@ -3397,6 +3318,7 @@ fn dm_conversation_id(self_did: &str, peer_did: &str) -> Vec<u8> {
 /// Phase 9-A2: v=4 send. Loads peer's ratchet state (bootstrap iff
 /// None), runs `DoubleRatchet::encrypt`, persists the advanced DR
 /// state, and ships the wire blob.
+#[allow(clippy::too_many_arguments)]
 fn encrypt_v4_send(
     state: &AppState,
     sender_sk: &crypto::x25519::SecretKey,
@@ -4183,14 +4105,13 @@ pub fn cmd_osl_send_burn_marker(
             server_defaults: &sd_guard,
             membership: &mem_guard,
         };
-        let mut out: Vec<crypto::x25519::PublicKey> =
-            crate::whitelist::recipients_for_scope(
-                &pm_guard,
-                &scope,
-                &channel_members,
-                &self_discord_id,
-                &self_pk,
-            );
+        let mut out: Vec<crypto::x25519::PublicKey> = crate::whitelist::recipients_for_scope(
+            &pm_guard,
+            &scope,
+            &channel_members,
+            &self_discord_id,
+            &self_pk,
+        );
         let mut seen: std::collections::HashSet<[u8; 32]> =
             out.iter().map(|pk| *pk.as_bytes()).collect();
         match crate::whitelist::recipients_for_scope_v3(
@@ -4553,7 +4474,7 @@ pub fn cmd_osl_decrypt_message_v2(
                 })
                 .collect();
             let json = serde_json::json!({ "attachments": attachments_json });
-            Ok(format!("{}{}", OSL_RESULT_ATTACHMENT_PREFIX, json))
+            Ok(format!("{OSL_RESULT_ATTACHMENT_PREFIX}{json}"))
         }
         crate::wire_v2::MSG_TYPE_SKDM_REQUEST => {
             let _ = scope_opt;
@@ -5410,7 +5331,7 @@ pub fn cmd_osl_control_inbox_drain(
                         Ok(ping_wire) => {
                             if let Some(b64) = ping_wire.strip_prefix("DPC0::") {
                                 if let Ok(ping_bundle) = STANDARD.decode(b64) {
-                                    let scope_id = format!("dm:{}", sender_discord_id);
+                                    let scope_id = format!("dm:{sender_discord_id}");
                                     match client.post_control_inbox(
                                         &identity,
                                         &item.sender_id,
@@ -5489,7 +5410,10 @@ pub fn cmd_osl_control_inbox_drain(
                     error = %e,
                     "[OSL] control_inbox item dispatch failed (leaving row in place)"
                 );
-                errors.push(format!("from={} scope={}: {e}", item.sender_id, item.scope_id));
+                errors.push(format!(
+                    "from={} scope={}: {e}",
+                    item.sender_id, item.scope_id
+                ));
             }
         }
     }
@@ -5718,15 +5642,10 @@ pub fn populate_peer_from_fetch_response(
     // reclassifies as `Unchanged` and the live keys flow through.
     let tofu_outcome_peek = {
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
-        let baseline = pm
-            .get(discord_id)
-            .and_then(|e| e.tofu_ed25519_pub.clone());
+        let baseline = pm.get(discord_id).and_then(|e| e.tofu_ed25519_pub.clone());
         crate::tofu::classify(baseline.as_deref(), &resp.ik_ed25519_pub)
     };
-    let live_writable = !matches!(
-        tofu_outcome_peek,
-        crate::tofu::TofuOutcome::Changed { .. }
-    );
+    let live_writable = !matches!(tofu_outcome_peek, crate::tofu::TofuOutcome::Changed { .. });
     let mut mlkem_added = false;
     if !resp.ik_mlkem768_pub.is_empty() {
         let mlkem_vec = STANDARD
@@ -5808,21 +5727,19 @@ pub fn populate_peer_from_fetch_response(
 /// user accepts/declines) and clear it again once the key matches.
 /// Pure decision logic lives in `crate::tofu`; this is the AppState
 /// + peer_map + persistence wiring.
+///
 /// On a TOFU `Changed`, the peer's `ratchet_state` must be dropped
 /// EXACTLY ONCE — on first detection of a given new key. This fn
 /// decides "is this a newly-observed change?":
-/// - no pending alert            → yes (first detection: drop once)
-/// - pending alert, SAME new key → no  (already handled: keep ratchet
-///                                       so a re-bootstrapped session
-///                                       can survive and deliver while
-///                                       the user verifies)
-/// - pending alert, DIFFERENT key→ yes (the key changed AGAIN: the
-///                                       old session is invalid; drop)
+///
+/// - no pending alert → yes (first detection: drop once)
+/// - pending alert, SAME new key → no (already handled: keep ratchet so a
+///   re-bootstrapped session can survive and deliver while the user verifies)
+/// - pending alert, DIFFERENT key → yes (the key changed AGAIN: the old
+///   session is invalid; drop)
+///
 /// Pure so it is unit-tested without an `AppState`.
-fn tofu_change_is_newly_observed(
-    pending_alert_new_key: Option<&str>,
-    fetched: &str,
-) -> bool {
+fn tofu_change_is_newly_observed(pending_alert_new_key: Option<&str>, fetched: &str) -> bool {
     match pending_alert_new_key {
         Some(k) => k != fetched,
         None => true,
@@ -5935,13 +5852,10 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
                     .key_change_alerts
                     .lock()
                     .expect("key_change_alerts mutex poisoned");
-                g.get(discord_id)
-                    .map(|a| a.new_ed25519_pub.clone())
+                g.get(discord_id).map(|a| a.new_ed25519_pub.clone())
             };
-            let newly_observed = tofu_change_is_newly_observed(
-                pending_same.as_deref(),
-                fetched_ed25519_b64,
-            );
+            let newly_observed =
+                tofu_change_is_newly_observed(pending_same.as_deref(), fetched_ed25519_b64);
             if !newly_observed {
                 // Same change we already alerted on — do NOT re-nuke
                 // a (possibly freshly re-bootstrapped) ratchet, do
@@ -5967,9 +5881,7 @@ fn tofu_observe_peer(state: &AppState, discord_id: &str, fetched_ed25519_b64: &s
                 old_ed25519_pub: old,
                 new_ed25519_pub: fetched_ed25519_b64.to_string(),
                 new_safety_number: safety_number(fetched_ed25519_b64),
-                first_observed: keystore::iso_8601_from_unix_seconds(
-                    now_unix_secs().max(0) as u64,
-                ),
+                first_observed: keystore::iso_8601_from_unix_seconds(now_unix_secs().max(0) as u64),
             };
             tracing::error!(
                 discord_id = %discord_id,
@@ -6021,10 +5933,7 @@ pub fn cmd_osl_list_key_change_alerts(
 /// User ACCEPTED a peer's new identity key: adopt it as the new
 /// trusted TOFU baseline, persist, and clear the alert. (User did
 /// the out-of-band safety-number check, or accepts the risk.)
-pub fn cmd_osl_accept_key_change(
-    state: &AppState,
-    discord_id: String,
-) -> Result<(), String> {
+pub fn cmd_osl_accept_key_change(state: &AppState, discord_id: String) -> Result<(), String> {
     let new_key = {
         let g = state
             .key_change_alerts
@@ -6063,10 +5972,7 @@ pub fn cmd_osl_accept_key_change(
 /// User DECLINED a peer's new identity key: clear the alert but keep
 /// the OLD trusted baseline. The alert re-raises on the next fetch
 /// while the key stays changed (so it can't be silently forgotten).
-pub fn cmd_osl_decline_key_change(
-    state: &AppState,
-    discord_id: String,
-) -> Result<(), String> {
+pub fn cmd_osl_decline_key_change(state: &AppState, discord_id: String) -> Result<(), String> {
     let removed = state
         .key_change_alerts
         .lock()
@@ -6087,10 +5993,7 @@ pub fn cmd_osl_decline_key_change(
 /// Safety number for a peer's CURRENT trusted Ed25519 baseline
 /// (peer_map `tofu_ed25519_pub`). For out-of-band verification in
 /// the whitelist/peer UI. Errors if the peer has no recorded key.
-pub fn cmd_osl_peer_safety_number(
-    state: &AppState,
-    discord_id: String,
-) -> Result<String, String> {
+pub fn cmd_osl_peer_safety_number(state: &AppState, discord_id: String) -> Result<String, String> {
     let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
     let entry = pm
         .get(&discord_id)
@@ -6106,7 +6009,9 @@ pub fn cmd_osl_peer_safety_number(
 /// read it out to a peer for mutual out-of-band verification.
 pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
     let g = state.identity.lock().expect("identity mutex poisoned");
-    let id = g.as_ref().ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let id = g
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
     let b64 = STANDARD.encode(id.ed25519_public.as_bytes());
     Ok(crate::tofu::safety_number(&b64))
 }
@@ -6446,6 +6351,7 @@ pub fn cmd_osl_local_unwhitelist_scope(
 ///   2. `wipe_local_decrypt`: `true` for the in-Discord burn path
 ///      (preserves today's behaviour exactly), `false` for the
 ///      settings local path (operator keeps local read history).
+///
 /// Everything else is shared and cannot diverge.
 fn local_unwhitelist_apply(
     state: &AppState,
@@ -6687,9 +6593,7 @@ pub fn cmd_osl_set_whitelist(
             .whitelist_state
             .lock()
             .expect("whitelist_state mutex poisoned");
-        let ws = ws_guard
-            .entry(scope.storage_key())
-            .or_insert_with(crate::whitelist_state::ScopeState::default);
+        let ws = ws_guard.entry(scope.storage_key()).or_default();
         ws.encrypt_toggle = true;
         ws.auto_enabled = true;
     }
@@ -6815,9 +6719,7 @@ pub fn cmd_osl_bulk_set_whitelist(
             .whitelist_state
             .lock()
             .expect("whitelist_state mutex poisoned");
-        let ws = ws_guard
-            .entry(scope.storage_key())
-            .or_insert_with(crate::whitelist_state::ScopeState::default);
+        let ws = ws_guard.entry(scope.storage_key()).or_default();
         ws.encrypt_toggle = true;
         ws.auto_enabled = true;
     }
@@ -6943,6 +6845,7 @@ fn burn_matches_scope(b: &crate::peer_map::BurnedScope, s: &crate::scope::Scope)
 /// - `encrypt_toggle`: the user's current ON/OFF state for
 ///   encryption in this scope. Drives the icon's "open lock vs
 ///   closed lock" visual.
+///
 /// 9-C1: `has_whitelist` retained for backwards-compat with boot.js
 /// callers. New code should consume
 /// [`cmd_osl_get_scope_whitelist_summary`] for the tri-state icon.
@@ -7069,9 +6972,7 @@ pub fn cmd_osl_toggle_scope_encryption(
         .whitelist_state
         .lock()
         .expect("whitelist_state mutex poisoned");
-    let entry = ws_guard
-        .entry(key)
-        .or_insert_with(crate::whitelist_state::ScopeState::default);
+    let entry = ws_guard.entry(key).or_default();
     // 7d-PIVOT: encrypt_toggle is now independent of whitelist
     // existence. Toggling ON with no whitelist is the
     // "encrypt-to-self-only" mode — your messages encrypt and
@@ -7107,9 +7008,7 @@ pub fn cmd_osl_set_scope_encrypt(
         .whitelist_state
         .lock()
         .expect("whitelist_state mutex poisoned");
-    let entry = ws_guard
-        .entry(key)
-        .or_insert_with(crate::whitelist_state::ScopeState::default);
+    let entry = ws_guard.entry(key).or_default();
     if entry.encrypt_toggle == enabled {
         return Ok(enabled);
     }
@@ -7328,13 +7227,12 @@ fn validate_err(v: ValidateLicenseError) -> String {
 /// the real `%APPDATA%\osl` / `keyserver.oslprivacy.com`.
 ///
 /// Cache-write policy (load-bearing for F2.4):
-///   - Ok(response)               → save cache, bump
-///                                  last_validated_at to now()
-///   - Err(Transport)             → DO NOT touch cache (keyserver
-///                                  unreachable; F2.4 honours the
-///                                  stale cache during 7-day grace)
-///   - Err(HttpStatus / Json)     → DO NOT touch cache (keyserver
-///                                  answered, treat cache as stale)
+///
+/// - Ok(response) → save cache, bump `last_validated_at` to now()
+/// - Err(Transport) → DO NOT touch cache (keyserver unreachable; F2.4
+///   honours the stale cache during 7-day grace)
+/// - Err(HttpStatus / Json) → DO NOT touch cache (keyserver answered,
+///   treat cache as stale)
 ///
 /// Error shape (F3.2): all rejection paths return
 /// `Err(format!("OSL-VALIDATE-ERR:{json}"))` where the JSON
@@ -7531,11 +7429,7 @@ pub struct TierGateStatusDto {
     pub raw_license_state: String,
 }
 
-/// Built-in production keyserver. Used when `keyserver.json` is
-/// absent or carries no `base_url` (the fresh-install case — the
-/// installer/onboarding never writes that file). `keyserver.json`
-/// remains an OVERRIDE for dev/staging; it is no longer required
-/// for the client to function.
+/// The only remote keyserver origin trusted by a release client.
 pub const DEFAULT_KEYSERVER_BASE_URL: &str = "https://keyserver.oslprivacy.com";
 
 /// Best-effort read of `<config_dir>/keyserver.json` → `base_url`.
@@ -7549,25 +7443,82 @@ fn read_keyserver_base_url(dir: &std::path::Path) -> Option<String> {
     v.get("base_url")?.as_str().map(|s| s.to_string())
 }
 
-/// Resolve the keyserver base URL: the `keyserver.json` override
-/// when present and well-formed, otherwise the built-in production
-/// default. This is the function the license paths use so a fresh
-/// install (no `keyserver.json`) still reaches prod instead of
-/// failing closed with "keyserver not configured".
-pub fn resolve_keyserver_base_url(dir: &std::path::Path) -> String {
-    read_keyserver_base_url(dir).unwrap_or_else(|| DEFAULT_KEYSERVER_BASE_URL.to_string())
+fn is_loopback_keyserver_override(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    url.host_str()
+        .and_then(|host| {
+            host.trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .ok()
+        })
+        .is_some_and(|ip| ip.is_loopback())
 }
 
-/// Best-effort read of `<config_dir>/keyserver.json` → `admin_token`.
+fn resolve_keyserver_base_url_with_policy(
+    dir: &std::path::Path,
+    allow_debug_override: bool,
+) -> String {
+    if allow_debug_override {
+        if let Some(value) = read_keyserver_base_url(dir) {
+            let canonical = value.trim_end_matches('/');
+            if is_loopback_keyserver_override(canonical) {
+                return canonical.to_string();
+            }
+        }
+    }
+    DEFAULT_KEYSERVER_BASE_URL.to_string()
+}
+
+/// Resolve the keyserver base URL. Release builds always return the exact
+/// pinned production HTTPS origin and never read a user-controlled remote
+/// override. Debug/test builds may use an explicit `keyserver.json` override,
+/// but only when it is an HTTP(S) numeric loopback URL.
+pub fn resolve_keyserver_base_url(dir: &std::path::Path) -> String {
+    resolve_keyserver_base_url_with_policy(dir, cfg!(debug_assertions))
+}
+
+#[cfg(test)]
+mod keyserver_origin_policy_tests {
+    use super::{resolve_keyserver_base_url_with_policy, DEFAULT_KEYSERVER_BASE_URL};
+
+    #[test]
+    fn release_policy_ignores_even_a_well_formed_local_override() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("keyserver.json"),
+            br#"{"base_url":"http://127.0.0.1:8787"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_keyserver_base_url_with_policy(dir.path(), false),
+            DEFAULT_KEYSERVER_BASE_URL,
+        );
+    }
+}
+
+/// Best-effort read of `<config_dir>/keyserver.json` → `client_token`.
 /// `keyserver.json` is an OVERRIDE only (dev/staging); a fresh
 /// production install has no such file and registers against an
 /// unsecured-route prod keyserver with no token. Empty string is
-/// treated as absent (mirrors `KeyServerClient::with_admin_token`).
-fn read_keyserver_admin_token(dir: &std::path::Path) -> Option<String> {
+/// The old `admin_token` field is a read-only migration alias; deployed
+/// clients must never receive the operator token again.
+fn read_keyserver_client_token(dir: &std::path::Path) -> Option<String> {
     let path = dir.join("keyserver.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    v.get("admin_token")?
+    v.get("client_token")
+        .or_else(|| v.get("admin_token"))?
         .as_str()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -7610,15 +7561,12 @@ fn read_keyserver_admin_token(dir: &std::path::Path) -> Option<String> {
 /// running and the next unlock / next launch retries (chosen over an
 /// in-call retry loop so we neither block the unlock UI nor spam the
 /// keyserver).
-pub fn ensure_keyserver_registered(
-    state: &AppState,
-    base_url: &str,
-    admin_token: Option<String>,
-) {
+pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_token: Option<String>) {
     // Identity gate — nothing to register until one exists.
     {
         let id_guard = state.identity.lock().expect("identity mutex poisoned");
         if id_guard.is_none() {
+            state.set_cloud_registration_state(crate::state::CloudRegistrationState::NotAttempted);
             tracing::info!(
                 "OSL: ensure_keyserver_registered: no identity in state; \
                  skipping register (will retry on next unlock once the \
@@ -7627,13 +7575,15 @@ pub fn ensure_keyserver_registered(
             return;
         }
     }
+    state.set_cloud_registration_state(crate::state::CloudRegistrationState::Pending);
 
     // Pure construction (no IO) — safe to build even when a client is
     // already installed; we use it for the register attempt and only
     // conditionally adopt it as the installed client below.
     let client = match KeyServerClient::new(base_url) {
-        Ok(c) => c.with_admin_token(admin_token.clone()),
+        Ok(c) => c.with_client_token(client_token.clone()),
         Err(e) => {
+            state.set_cloud_registration_state(crate::state::CloudRegistrationState::Offline);
             tracing::warn!(
                 error = %e,
                 base_url = %base_url,
@@ -7662,25 +7612,24 @@ pub fn ensure_keyserver_registered(
             None
         }
     };
-    let pending_rotation: Option<keystore::PendingRotation> =
-        match pending_rotation_path.as_ref() {
-            Some(path) => {
-                let sealer = keystore::select_best_sealer();
-                match keystore::load_pending_rotation(path, sealer.as_ref()) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "OSL: ensure_keyserver_registered: failed to load \
-                             pending_rotation.json (proceeding without it; \
-                             plain register fallback)"
-                        );
-                        None
-                    }
+    let pending_rotation: Option<keystore::PendingRotation> = match pending_rotation_path.as_ref() {
+        Some(path) => {
+            let sealer = keystore::select_best_sealer();
+            match keystore::load_pending_rotation(path, sealer.as_ref()) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "OSL: ensure_keyserver_registered: failed to load \
+                         pending_rotation.json (proceeding without it; \
+                         plain register fallback)"
+                    );
+                    None
                 }
             }
-            None => None,
-        };
+        }
+        None => None,
+    };
 
     // Register while holding only the identity lock (mirrors the
     // boot path's lock discipline — identity scope, then keyserver
@@ -7727,6 +7676,7 @@ pub fn ensure_keyserver_registered(
         // success path so the Case-C and Case-C→fallback branches
         // can't drift.
         let clear_success = |resp: &keystore::RegisterResponse| {
+            state.set_cloud_registration_state(crate::state::CloudRegistrationState::Registered);
             tracing::info!(
                 user_id = %resp.user_id,
                 initial = resp.registered_at.is_some(),
@@ -7776,6 +7726,9 @@ pub fn ensure_keyserver_registered(
                     match client.register(id) {
                         Ok(resp) => clear_success(&resp),
                         Err(keystore::Error::HttpStatus { status: 403, body }) => {
+                            state.set_cloud_registration_state(
+                                crate::state::CloudRegistrationState::Conflict,
+                            );
                             let msg = format!(
                                 "Your OSL identity could not be registered: the keyserver \
                                  reports this account is already registered with a DIFFERENT \
@@ -7795,77 +7748,98 @@ pub fn ensure_keyserver_registered(
                                 .lock()
                                 .expect("registration_alert mutex poisoned") = Some(msg);
                         }
-                        Err(e) => tracing::warn!(
-                            error = %e,
-                            "OSL: ensure_keyserver_registered: plain register \
-                             fallback failed (non-fatal; proof kept, retried \
-                             on next unlock / launch)"
-                        ),
+                        Err(e) => {
+                            state.set_cloud_registration_state(
+                                crate::state::CloudRegistrationState::Offline,
+                            );
+                            tracing::warn!(
+                                error = %e,
+                                "OSL: ensure_keyserver_registered: plain register \
+                                 fallback failed (non-fatal; proof kept, retried \
+                                 on next unlock / launch)"
+                            )
+                        }
                     }
                 }
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "OSL: ensure_keyserver_registered: register_with_rotation \
-                     failed (non-fatal; proof kept, retried on next unlock / \
-                     launch)"
-                ),
+                Err(e) => {
+                    state.set_cloud_registration_state(
+                        crate::state::CloudRegistrationState::Offline,
+                    );
+                    tracing::warn!(
+                        error = %e,
+                        "OSL: ensure_keyserver_registered: register_with_rotation \
+                         failed (non-fatal; proof kept, retried on next unlock / \
+                         launch)"
+                    )
+                }
             }
         } else {
-        match client.register(id) {
-            Ok(resp) => {
-                tracing::info!(
-                    user_id = %resp.user_id,
-                    initial = resp.registered_at.is_some(),
-                    status = resp.status.as_deref().unwrap_or(
-                        if resp.registered_at.is_some() { "registered" } else { "ok" }
-                    ),
-                    "OSL: ensure_keyserver_registered: registered with key-server"
-                );
-                // B: a successful register (registered / noop, no 403)
-                // is authoritative proof there is NO key conflict.
-                // Clear any stale 403 alert so a successfully-
-                // registered client shows no alarm — symmetric to
-                // tofu_observe_peer clearing key_change_alerts on
-                // Unchanged/FirstUse. (Known follow-up, deliberately
-                // not done here: a banner already painted in THIS
-                // session from a 403 polled before this success is
-                // not retracted — needs the JS auto-dismiss change.)
-                *state
-                    .registration_alert
-                    .lock()
-                    .expect("registration_alert mutex poisoned") = None;
-            }
-            // REGISTER-FIX: the ONE response we must NOT warn-swallow.
-            // 403 = our user_id is held by a DIFFERENT Ed25519 key
-            // (someone squatted our snowflake, or we lost our key).
-            // Peers will fetch the other key and be unable to talk to
-            // us / could be MITM'd. Raise a blocking, user-visible
-            // alert + log at error, not warn.
-            Err(keystore::Error::HttpStatus { status: 403, body }) => {
-                let msg = format!(
-                    "Your OSL identity could not be registered: the keyserver \
+            match client.register(id) {
+                Ok(resp) => {
+                    state.set_cloud_registration_state(
+                        crate::state::CloudRegistrationState::Registered,
+                    );
+                    tracing::info!(
+                        user_id = %resp.user_id,
+                        initial = resp.registered_at.is_some(),
+                        status = resp.status.as_deref().unwrap_or(
+                            if resp.registered_at.is_some() { "registered" } else { "ok" }
+                        ),
+                        "OSL: ensure_keyserver_registered: registered with key-server"
+                    );
+                    // B: a successful register (registered / noop, no 403)
+                    // is authoritative proof there is NO key conflict.
+                    // Clear any stale 403 alert so a successfully-
+                    // registered client shows no alarm — symmetric to
+                    // tofu_observe_peer clearing key_change_alerts on
+                    // Unchanged/FirstUse. (Known follow-up, deliberately
+                    // not done here: a banner already painted in THIS
+                    // session from a 403 polled before this success is
+                    // not retracted — needs the JS auto-dismiss change.)
+                    *state
+                        .registration_alert
+                        .lock()
+                        .expect("registration_alert mutex poisoned") = None;
+                }
+                // REGISTER-FIX: the ONE response we must NOT warn-swallow.
+                // 403 = our user_id is held by a DIFFERENT Ed25519 key
+                // (someone squatted our snowflake, or we lost our key).
+                // Peers will fetch the other key and be unable to talk to
+                // us / could be MITM'd. Raise a blocking, user-visible
+                // alert + log at error, not warn.
+                Err(keystore::Error::HttpStatus { status: 403, body }) => {
+                    state.set_cloud_registration_state(
+                        crate::state::CloudRegistrationState::Conflict,
+                    );
+                    let msg = format!(
+                        "Your OSL identity could not be registered: the keyserver \
                      reports this account is already registered with a DIFFERENT \
                      security key. This can mean someone else claimed your \
                      identity, or you lost your previous key. Encrypted messaging \
                      to you may be unsafe until resolved. (server: {body})"
-                );
-                tracing::error!(
-                    detail = %body,
-                    "OSL: ensure_keyserver_registered: REGISTRATION CONFLICT \
-                     (403) — user_id held by a different key; surfacing blocking \
-                     alert (NOT swallowed)"
-                );
-                *state
-                    .registration_alert
-                    .lock()
-                    .expect("registration_alert mutex poisoned") = Some(msg);
+                    );
+                    tracing::error!(
+                        detail = %body,
+                        "OSL: ensure_keyserver_registered: REGISTRATION CONFLICT \
+                         (403) — user_id held by a different key; surfacing blocking \
+                         alert (NOT swallowed)"
+                    );
+                    *state
+                        .registration_alert
+                        .lock()
+                        .expect("registration_alert mutex poisoned") = Some(msg);
+                }
+                Err(e) => {
+                    state.set_cloud_registration_state(
+                        crate::state::CloudRegistrationState::Offline,
+                    );
+                    tracing::warn!(
+                        error = %e,
+                        "OSL: ensure_keyserver_registered: key-server register \
+                         failed (non-fatal; retried on next unlock / launch)"
+                    )
+                }
             }
-            Err(e) => tracing::warn!(
-                error = %e,
-                "OSL: ensure_keyserver_registered: key-server register \
-                 failed (non-fatal; retried on next unlock / launch)"
-            ),
-        }
         }
     }
 
@@ -8245,6 +8219,53 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     let mut recovered = keystore::identity_from_entropy(entropy, snowflake.clone());
     recovered.discord_snowflake = Some(snowflake.clone());
 
+    // A legacy identity can have recovery_entropy added later without its
+    // original random keys becoming phrase-derived.  Do not let such a
+    // phrase silently replace that identity.  A locally matching key is the
+    // normal seed-restore case; otherwise require the authoritative
+    // keyserver row to match the phrase-derived Ed25519 key before touching
+    // disk.  In particular, a network failure is not permission to replace
+    // conflicting local evidence.
+    let local_ed_matches = {
+        let g = state.identity.lock().expect("identity mutex poisoned");
+        g.as_ref()
+            .map(|id| recovery_identity_key_matches(id, &recovered))
+            .unwrap_or(false)
+    };
+    if !local_ed_matches {
+        let client = {
+            let g = state.keyserver.lock().expect("keyserver mutex poisoned");
+            g.clone()
+        }
+        .ok_or_else(|| {
+            "OSL: can't verify this recovery phrase because the keyserver is unavailable; \
+             refusing to replace a different local identity. Use a full account export or retry \
+             after the keyserver connects."
+                .to_string()
+        })?;
+        match client.fetch_pubkeys(&snowflake) {
+            Ok(row) => {
+                let recovered_ed = STANDARD.encode(recovered.ed25519_public.as_bytes());
+                if row.ik_ed25519_pub != recovered_ed {
+                    return Err(
+                        "OSL: this phrase does not match the identity already registered for \
+                         this Discord account. Legacy/random-key accounts must be moved with a \
+                         full account export; the local identity was not changed."
+                            .to_string(),
+                    );
+                }
+            }
+            Err(keystore::Error::HttpStatus { status: 404, .. }) => {}
+            Err(e) => {
+                return Err(format!(
+                    "OSL: can't verify this recovery phrase against the existing account \
+                     ({e}); refusing to replace a different local identity. Use a full account \
+                     export or retry when the keyserver is reachable."
+                ));
+            }
+        }
+    }
+
     let path = dir.join("identity.json");
     let sealer = keystore::select_best_sealer();
     if let Some(parent) = path.parent() {
@@ -8263,9 +8284,16 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     ensure_keyserver_registered(
         state,
         &resolve_keyserver_base_url(dir),
-        read_keyserver_admin_token(dir),
+        read_keyserver_client_token(dir),
     );
     verify_and_persist_peer_map_self_entry(state).map(|_| ())
+}
+
+fn recovery_identity_key_matches(
+    existing: &keystore::Identity,
+    recovered: &keystore::Identity,
+) -> bool {
+    existing.ed25519_public.as_bytes() == recovered.ed25519_public.as_bytes()
 }
 
 /// Legacy-account upgrade: if the active identity has no recovery
@@ -8343,6 +8371,336 @@ fn require_recovery_entropy(state: &AppState, why: &str) -> Result<[u8; 16], Str
     id.recovery_entropy.ok_or_else(|| format!("OSL: {why}"))
 }
 
+fn decode_export_identity(
+    idobj: &serde_json::Value,
+    entropy: [u8; 16],
+) -> Result<keystore::Identity, String> {
+    let dec = |k: &str, n: usize| -> Result<Vec<u8>, String> {
+        let s = idobj
+            .get(k)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("OSL: import: identity.{k} missing"))?;
+        let b = STANDARD
+            .decode(s)
+            .map_err(|e| format!("OSL: import: identity.{k} b64: {e}"))?;
+        if b.len() != n {
+            return Err(format!("OSL: import: identity.{k} wrong length"));
+        }
+        Ok(b)
+    };
+    let x_sec: [u8; 32] = dec("x25519_secret", 32)?.try_into().unwrap();
+    let x_pub: [u8; 32] = dec("x25519_public", 32)?.try_into().unwrap();
+    let ed_sec: [u8; 32] = dec("ed25519_secret", 32)?.try_into().unwrap();
+    let ed_pub: [u8; 32] = dec("ed25519_public", 32)?.try_into().unwrap();
+    let mlkem_sec: [u8; crypto::ml_kem_768::DECAPSULATION_KEY_SIZE] =
+        dec("mlkem_secret", crypto::ml_kem_768::DECAPSULATION_KEY_SIZE)?
+            .try_into()
+            .unwrap();
+    let mlkem_pub: [u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE] =
+        dec("mlkem_public", crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE)?
+            .try_into()
+            .unwrap();
+    let snowflake = idobj
+        .get("snowflake")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "OSL: import: identity.snowflake missing".to_string())?;
+    let x_secret = crypto::x25519::SecretKey::from_bytes(x_sec);
+    if crypto::x25519::derive_public(&x_secret).as_bytes() != &x_pub {
+        return Err("OSL: import: X25519 public key does not match its secret".to_string());
+    }
+    let ed_secret = crypto::ed25519::SecretKey::from_bytes(ed_sec);
+    if crypto::ed25519::derive_public(&ed_secret).as_bytes() != &ed_pub {
+        return Err("OSL: import: Ed25519 public key does not match its secret".to_string());
+    }
+    let mut id = keystore::Identity::from_bytes(
+        snowflake.to_string(),
+        x_sec,
+        x_pub,
+        ed_sec,
+        ed_pub,
+        mlkem_sec,
+        mlkem_pub,
+    );
+    id.discord_snowflake = Some(snowflake.to_string());
+    id.recovery_entropy = Some(entropy);
+    Ok(id)
+}
+
+/// Decode and normalize every import entry before any live path is touched.
+/// JSON state is always written through the destination's at-rest policy;
+/// SQLite files deliberately remain opaque bytes.
+fn decode_export_files(
+    files: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut decoded = Vec::with_capacity(files.len());
+    for (rel, value) in files {
+        if !OSL_EXPORT_FILES.contains(&rel.as_str()) {
+            return Err(format!("OSL: import: disallowed file path {rel}"));
+        }
+        let encoded = value
+            .as_str()
+            .ok_or_else(|| format!("OSL: import: file {rel} is not base64 text"))?;
+        let mut bytes = STANDARD
+            .decode(encoded)
+            .map_err(|e| format!("OSL: import: file {rel} b64: {e}"))?;
+        if rel.ends_with(".json") {
+            // New exports carry plaintext inside their outer AEAD.  Accept a
+            // previously-normalized entry only by unwrapping it first, never
+            // by feeding OSL-ENC1 back into maybe_encrypt.
+            if crate::main_password::has_enc_magic(&bytes) {
+                bytes = crate::main_password::maybe_decrypt(&bytes)
+                    .map_err(|e| format!("OSL: import: decrypt {rel}: {e}"))?;
+            }
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .map_err(|e| format!("OSL: import: file {rel} is invalid JSON: {e}"))?;
+            bytes = crate::main_password::maybe_encrypt(&bytes)
+                .map_err(|e| format!("OSL: import: encrypt {rel}: {e}"))?;
+        }
+        decoded.push((rel.clone(), bytes));
+    }
+    Ok(decoded)
+}
+
+/// Commit a fully validated/staged account import with rollback. Existing
+/// targets are first moved into the stage directory, which also removes any
+/// destination files omitted by the source export (preventing stale state
+/// from a different account surviving the restore). Because all paths live
+/// on one filesystem, each rename is atomic and works on Windows where
+/// `rename(new, existing)` would otherwise fail.
+fn commit_staged_account_import(
+    dir: &Path,
+    stage: &Path,
+    files: &[(String, Vec<u8>)],
+) -> Result<(), String> {
+    let backup_root = stage.join(".backup");
+    let mut targets: Vec<&str> = OSL_EXPORT_FILES.to_vec();
+    targets.push("identity.json");
+    let mut backed_up: Vec<(&str, PathBuf)> = Vec::new();
+    let mut installed: Vec<PathBuf> = Vec::new();
+
+    let rollback = |backed_up: &[(&str, PathBuf)], installed: &[PathBuf]| -> Result<(), String> {
+        let mut errors = Vec::new();
+        for live in installed.iter().rev() {
+            if let Err(e) = std::fs::remove_file(live) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    errors.push(format!("remove installed {}: {e}", live.display()));
+                }
+            }
+        }
+        for (rel, backup) in backed_up.iter().rev() {
+            let live = dir.join(rel);
+            if let Some(parent) = live.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    errors.push(format!("restore mkdir {}: {e}", parent.display()));
+                    continue;
+                }
+            }
+            if let Err(e) = std::fs::rename(backup, &live) {
+                errors.push(format!(
+                    "restore {} from {}: {e}",
+                    live.display(),
+                    backup.display()
+                ));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    };
+
+    let fail = |reason: String, backed_up: &[(&str, PathBuf)], installed: &[PathBuf]| match rollback(
+        backed_up, installed,
+    ) {
+        Ok(()) => reason,
+        Err(rollback_error) => format!(
+            "{reason}; ROLLBACK INCOMPLETE: {rollback_error}. Recovery files were retained in {}",
+            stage.display()
+        ),
+    };
+
+    for rel in &targets {
+        let live = dir.join(rel);
+        if !live.exists() {
+            continue;
+        }
+        let backup = backup_root.join(rel);
+        if let Some(parent) = backup.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err(fail(
+                    format!("OSL: import: backup mkdir {rel}: {e}"),
+                    &backed_up,
+                    &installed,
+                ));
+            }
+        }
+        if let Err(e) = std::fs::rename(&live, &backup) {
+            return Err(fail(
+                format!("OSL: import: backup existing {rel}: {e}"),
+                &backed_up,
+                &installed,
+            ));
+        }
+        backed_up.push((rel, backup));
+    }
+
+    let mut staged_rel: Vec<&str> = files.iter().map(|(rel, _)| rel.as_str()).collect();
+    staged_rel.push("identity.json");
+    for rel in staged_rel {
+        let live = dir.join(rel);
+        if let Some(parent) = live.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err(fail(
+                    format!("OSL: import: destination mkdir {rel}: {e}"),
+                    &backed_up,
+                    &installed,
+                ));
+            }
+        }
+        if let Err(e) = std::fs::rename(stage.join(rel), &live) {
+            return Err(fail(
+                format!("OSL: import: install {rel}: {e}"),
+                &backed_up,
+                &installed,
+            ));
+        }
+        installed.push(live);
+    }
+    Ok(())
+}
+
+/// Restore any account import interrupted between per-file atomic renames.
+/// A successful import normally deletes its stage immediately. If the process
+/// dies first, preferring the complete pre-import backup is safer than loading
+/// a mixed generation of identity, policy, and SQLite files.
+pub fn recover_orphaned_account_imports(dir: &Path) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("OSL: import recovery: read dir: {e}")),
+    };
+    let mut recovered = 0;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("OSL: import recovery: entry: {e}"))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(".osl-import-") || !entry.path().is_dir() {
+            continue;
+        }
+        let stage = entry.path();
+        let backup_root = stage.join(".backup");
+        if !backup_root.exists() {
+            std::fs::remove_dir_all(&stage).map_err(|e| {
+                format!(
+                    "OSL: import recovery: remove uncommitted stage {}: {e}",
+                    stage.display()
+                )
+            })?;
+            continue;
+        }
+
+        let mut targets: Vec<&str> = OSL_EXPORT_FILES.to_vec();
+        targets.push("identity.json");
+        for rel in targets {
+            let live = dir.join(rel);
+            let backup = backup_root.join(rel);
+            let staged = stage.join(rel);
+            if backup.exists() {
+                if live.exists() {
+                    std::fs::remove_file(&live).map_err(|e| {
+                        format!("OSL: import recovery: remove {}: {e}", live.display())
+                    })?;
+                }
+                if let Some(parent) = live.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!("OSL: import recovery: mkdir {}: {e}", parent.display())
+                    })?;
+                }
+                std::fs::rename(&backup, &live).map_err(|e| {
+                    format!(
+                        "OSL: import recovery: restore {} from {}: {e}",
+                        live.display(),
+                        backup.display()
+                    )
+                })?;
+            } else if !staged.exists() && live.exists() {
+                // This target was absent before import and the staged file was
+                // already installed. Rollback removes that newly-created file.
+                std::fs::remove_file(&live).map_err(|e| {
+                    format!(
+                        "OSL: import recovery: remove new file {}: {e}",
+                        live.display()
+                    )
+                })?;
+            }
+        }
+        std::fs::remove_dir_all(&stage).map_err(|e| {
+            format!(
+                "OSL: import recovery: remove recovered stage {}: {e}",
+                stage.display()
+            )
+        })?;
+        recovered += 1;
+    }
+    Ok(recovered)
+}
+
+/// Temporarily closes the live SQLite connection for a byte-level account
+/// snapshot/restore. Dropping the last connection checkpoints WAL. The guard
+/// reopens only when a store was open before the operation, including errors.
+struct MessageStorePause<'a> {
+    state: &'a AppState,
+    dir: PathBuf,
+    was_open: bool,
+}
+
+impl<'a> MessageStorePause<'a> {
+    fn new(state: &'a AppState, dir: &Path) -> Result<Self, String> {
+        let store = state
+            .message_store
+            .lock()
+            .map_err(|_| "OSL: message_store lock poisoned".to_string())?
+            .take();
+        let was_open = store.is_some();
+        drop(store);
+        Ok(Self {
+            state,
+            dir: dir.to_path_buf(),
+            was_open,
+        })
+    }
+}
+
+impl Drop for MessageStorePause<'_> {
+    fn drop(&mut self) {
+        if !self.was_open {
+            return;
+        }
+        let secret = self
+            .state
+            .identity
+            .lock()
+            .ok()
+            .and_then(|identity| identity.as_ref().map(|id| *id.x25519_secret.as_bytes()));
+        let Some(secret) = secret else {
+            return;
+        };
+        match MessageStore::open(&self.dir.join("store"), &secret) {
+            Ok(store) => {
+                if let Ok(mut slot) = self.state.message_store.lock() {
+                    *slot = Some(store);
+                }
+            }
+            Err(e) => tracing::error!(
+                error = %e,
+                path = %self.dir.display(),
+                "OSL: failed to reopen message store after account I/O"
+            ),
+        }
+    }
+}
+
 /// Device transfer: export this account's DATA (contacts, whitelists,
 /// group keys, message history) as a single blob, encrypted under a key
 /// derived from the recovery-phrase entropy. Returns the blob base64 so
@@ -8350,17 +8708,33 @@ fn require_recovery_entropy(state: &AppState, why: &str) -> Result<[u8; 16], Str
 /// that recovers the identity on the new device also decrypts this — so
 /// the export file is safe to move between devices.
 pub fn cmd_osl_export_data(state: &AppState) -> Result<String, String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    cmd_osl_export_data_with_dir(state, &dir)
+}
+
+fn cmd_osl_export_data_with_dir(state: &AppState, dir: &Path) -> Result<String, String> {
     let entropy = require_recovery_entropy(
         state,
         "this account has no recovery phrase, so its data can't be exported \
          (only seed-phrase accounts are transferable — make a fresh account)",
     )?;
-    let dir =
-        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let _store_pause = MessageStorePause::new(state, dir)?;
     let mut files = serde_json::Map::new();
     for rel in OSL_EXPORT_FILES {
         let p = dir.join(rel);
         if let Ok(bytes) = std::fs::read(&p) {
+            // The outer export AEAD is the cross-device protection.  Do not
+            // carry a source device's password-derived OSL-ENC1 wrapper into
+            // it: the destination has a different file key.  Failure to
+            // unwrap a protected file means the source is locked/corrupt, so
+            // fail the whole export rather than create a deceptive backup.
+            let bytes = if crate::main_password::has_enc_magic(&bytes) {
+                crate::main_password::maybe_decrypt(&bytes)
+                    .map_err(|e| format!("OSL: export: decrypt {rel}: {e}"))?
+            } else {
+                bytes
+            };
             files.insert(
                 (*rel).to_string(),
                 serde_json::Value::String(STANDARD.encode(&bytes)),
@@ -8389,7 +8763,8 @@ pub fn cmd_osl_export_data(state: &AppState) -> Result<String, String> {
         })
     };
     let bundle = serde_json::json!({ "version": 1, "files": files, "identity": identity_obj });
-    let plaintext = serde_json::to_vec(&bundle).map_err(|e| format!("OSL: export serialize: {e}"))?;
+    let plaintext =
+        serde_json::to_vec(&bundle).map_err(|e| format!("OSL: export serialize: {e}"))?;
 
     let key = export_aead_key(&entropy)?;
     let nonce_bytes = crypto::random::random_bytes(crypto::aead::NONCE_SIZE);
@@ -8418,6 +8793,17 @@ pub fn cmd_osl_recover_account_from_export(
     blob_b64: String,
     phrase: String,
 ) -> Result<(), String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    cmd_osl_recover_account_from_export_with_dir(state, blob_b64, phrase, &dir)
+}
+
+fn cmd_osl_recover_account_from_export_with_dir(
+    state: &AppState,
+    blob_b64: String,
+    phrase: String,
+    dir: &Path,
+) -> Result<(), String> {
     // Phrase -> entropy -> export-decryption key.
     let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, phrase.trim())
         .map_err(|_| "OSL: that isn't a valid 12-word recovery phrase.".to_string())?;
@@ -8439,90 +8825,255 @@ pub fn cmd_osl_recover_account_from_export(
     na.copy_from_slice(&raw[OSL_EXPORT_MAGIC.len()..prefix]);
     let nonce = crypto::aead::Nonce::from_bytes(na);
     let key = export_aead_key(&entropy)?;
-    let plaintext = crypto::aead::open(&key, &nonce, OSL_EXPORT_MAGIC, &raw[prefix..])
-        .map_err(|_| {
+    let plaintext =
+        crypto::aead::open(&key, &nonce, OSL_EXPORT_MAGIC, &raw[prefix..]).map_err(|_| {
             "OSL: couldn't decrypt — the phrase doesn't match this export file, \
              or the file is corrupt."
                 .to_string()
         })?;
     let bundle: serde_json::Value =
         serde_json::from_slice(&plaintext).map_err(|e| format!("OSL: import parse: {e}"))?;
-
-    let dir =
-        keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    // Release the SQLite handle so the store file can be overwritten.
-    {
-        let taken = state
-            .message_store
-            .lock()
-            .expect("message_store mutex poisoned")
-            .take();
-        drop(taken);
+    if bundle.get("version").and_then(|v| v.as_u64()) != Some(1) {
+        return Err("OSL: import: unsupported or missing export version".to_string());
     }
 
-    // Reconstruct + re-seal the identity from the bundle's raw keys.
-    if let Some(idobj) = bundle.get("identity").filter(|v| v.is_object()) {
-        let dec = |k: &str, n: usize| -> Result<Vec<u8>, String> {
-            let s = idobj
-                .get(k)
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("OSL: import: identity.{k} missing"))?;
-            let b = STANDARD
-                .decode(s)
-                .map_err(|e| format!("OSL: import: identity.{k} b64: {e}"))?;
-            if b.len() != n {
-                return Err(format!("OSL: import: identity.{k} wrong length"));
-            }
-            Ok(b)
-        };
-        let to_arr = |v: Vec<u8>| {
-            let mut a = vec![0u8; v.len()];
-            a.copy_from_slice(&v);
-            a
-        };
-        let x_sec: [u8; 32] = to_arr(dec("x25519_secret", 32)?).try_into().unwrap();
-        let x_pub: [u8; 32] = to_arr(dec("x25519_public", 32)?).try_into().unwrap();
-        let ed_sec: [u8; 32] = to_arr(dec("ed25519_secret", 32)?).try_into().unwrap();
-        let ed_pub: [u8; 32] = to_arr(dec("ed25519_public", 32)?).try_into().unwrap();
-        let mlkem_sec: [u8; crypto::ml_kem_768::DECAPSULATION_KEY_SIZE] =
-            to_arr(dec("mlkem_secret", crypto::ml_kem_768::DECAPSULATION_KEY_SIZE)?)
-                .try_into()
-                .unwrap();
-        let mlkem_pub: [u8; crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE] =
-            to_arr(dec("mlkem_public", crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE)?)
-                .try_into()
-                .unwrap();
-        let mut id =
-            keystore::Identity::from_bytes(String::new(), x_sec, x_pub, ed_sec, ed_pub, mlkem_sec, mlkem_pub);
-        if let Some(sf) = idobj.get("snowflake").and_then(|v| v.as_str()) {
-            id.user_id = sf.to_string();
-            id.discord_snowflake = Some(sf.to_string());
-        }
-        // The phrase entropy IS the recovery entropy for this account.
-        id.recovery_entropy = Some(entropy);
-        let sealer = keystore::select_best_sealer();
-        keystore::save_identity(&dir.join("identity.json"), &id, sealer.as_ref())
-            .map_err(|e| format!("OSL: import: save identity: {e}"))?;
-        *state.identity.lock().expect("identity mutex poisoned") = Some(id);
+    // Validate every field and decode every file before releasing the SQLite
+    // handle or replacing any live state.  This is deliberately strict: a
+    // partial/malformed bundle must be a no-op.
+    let idobj = bundle
+        .get("identity")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| "OSL: import: identity missing".to_string())?;
+    let id = decode_export_identity(idobj, entropy)?;
+    let imported_snowflake = id.discord_snowflake.as_deref().unwrap_or_default();
+    let active_snowflake = state
+        .identity
+        .lock()
+        .expect("identity mutex poisoned")
+        .as_ref()
+        .and_then(|current| current.discord_snowflake.as_deref())
+        .map(str::to_string);
+    if active_snowflake.as_deref() != Some(imported_snowflake) {
+        return Err(format!(
+            "OSL: import belongs to Discord account {imported_snowflake}, not the currently active account. Switch Discord accounts first; nothing was changed."
+        ));
     }
+    let files = bundle
+        .get("files")
+        .and_then(|f| f.as_object())
+        .ok_or_else(|| "OSL: import: files missing".to_string())?;
+    let files = decode_export_files(files)?;
 
-    // Write the data files back.
-    if let Some(files) = bundle.get("files").and_then(|f| f.as_object()) {
-        for (rel, v) in files {
-            if !OSL_EXPORT_FILES.contains(&rel.as_str()) {
-                continue; // no path traversal
-            }
-            let bytes = STANDARD
-                .decode(v.as_str().unwrap_or(""))
-                .map_err(|e| format!("OSL: import: file {rel} b64: {e}"))?;
-            let p = dir.join(rel);
+    // Stage the complete replacement first.  Renames are atomic per path;
+    // malformed data cannot reach a live path because all validation and all
+    // staging writes finish before this point.
+    std::fs::create_dir_all(dir).map_err(|e| format!("OSL: import: mkdir: {e}"))?;
+    let stage = dir.join(format!(
+        ".osl-import-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    ));
+    std::fs::create_dir(&stage).map_err(|e| format!("OSL: import: stage: {e}"))?;
+    let stage_result = (|| -> Result<(), String> {
+        for (rel, bytes) in &files {
+            let p = stage.join(rel);
             if let Some(parent) = p.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("OSL: import: stage mkdir {rel}: {e}"))?;
             }
-            std::fs::write(&p, &bytes).map_err(|e| format!("OSL: import: write {rel}: {e}"))?;
+            std::fs::write(&p, bytes)
+                .map_err(|e| format!("OSL: import: stage write {rel}: {e}"))?;
         }
+        let sealer = keystore::select_best_sealer();
+        keystore::save_identity(&stage.join("identity.json"), &id, sealer.as_ref())
+            .map_err(|e| format!("OSL: import: stage identity: {e}"))?;
+        Ok(())
+    })();
+    if let Err(e) = stage_result {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(e);
     }
+
+    let _store_pause = MessageStorePause::new(state, dir)?;
+    if let Err(e) = commit_staged_account_import(dir, &stage, &files) {
+        // Keep the stage on every commit failure. It may contain the only
+        // remaining rollback copy if Windows/AV held a destination file.
+        return Err(e);
+    }
+    let _ = std::fs::remove_dir_all(&stage);
+    *state.identity.lock().expect("identity mutex poisoned") = Some(id);
     Ok(())
+}
+
+#[cfg(test)]
+mod account_transfer_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    static FILE_KEY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn state_with_entropy(entropy: [u8; 16]) -> AppState {
+        let state = AppState::new();
+        *state.identity.lock().unwrap() =
+            Some(keystore::identity_from_entropy(entropy, "42".into()));
+        state
+    }
+
+    fn open_export(encoded: &str, entropy: [u8; 16]) -> serde_json::Value {
+        let raw = STANDARD.decode(encoded).unwrap();
+        let offset = OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE;
+        let mut nonce = [0; crypto::aead::NONCE_SIZE];
+        nonce.copy_from_slice(&raw[OSL_EXPORT_MAGIC.len()..offset]);
+        let plaintext = crypto::aead::open(
+            &export_aead_key(&entropy).unwrap(),
+            &crypto::aead::Nonce::from_bytes(nonce),
+            OSL_EXPORT_MAGIC,
+            &raw[offset..],
+        )
+        .unwrap();
+        serde_json::from_slice(&plaintext).unwrap()
+    }
+
+    #[test]
+    fn encrypted_export_is_normalized_to_plaintext_inside_outer_aead() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let entropy = [7; 16];
+        let key = [3; 32];
+        std::fs::write(
+            dir.path().join("peer_map.json"),
+            crate::main_password::encrypt_at_rest(br#"{"peer":"ok"}"#, &key).unwrap(),
+        )
+        .unwrap();
+        crate::main_password::set_file_storage_key(Some(key));
+        let encoded =
+            cmd_osl_export_data_with_dir(&state_with_entropy(entropy), dir.path()).unwrap();
+        crate::main_password::set_file_storage_key(None);
+        let bundle = open_export(&encoded, entropy);
+        let peer = bundle["files"]["peer_map.json"].as_str().unwrap();
+        assert_eq!(STANDARD.decode(peer).unwrap(), br#"{"peer":"ok"}"#);
+    }
+
+    #[test]
+    fn locked_export_of_encrypted_state_fails() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("peer_map.json"),
+            crate::main_password::encrypt_at_rest(b"{}", &[3; 32]).unwrap(),
+        )
+        .unwrap();
+        crate::main_password::set_file_storage_key(None);
+        let err =
+            cmd_osl_export_data_with_dir(&state_with_entropy([8; 16]), dir.path()).unwrap_err();
+        assert!(err.contains("decrypt peer_map.json"), "{err}");
+    }
+
+    #[test]
+    fn import_reencrypts_state_json_for_destination_key() {
+        let _guard = FILE_KEY_TEST_LOCK.lock().unwrap();
+        crate::main_password::set_file_storage_key(Some([9; 32]));
+        let mut files = serde_json::Map::new();
+        files.insert(
+            "peer_map.json".into(),
+            serde_json::Value::String(STANDARD.encode(b"{}")),
+        );
+        let decoded = decode_export_files(&files).unwrap();
+        crate::main_password::set_file_storage_key(None);
+        assert!(crate::main_password::has_enc_magic(&decoded[0].1));
+        assert_eq!(
+            crate::main_password::decrypt_at_rest(&decoded[0].1, &[9; 32]).unwrap(),
+            b"{}"
+        );
+    }
+
+    #[test]
+    fn staged_import_replaces_existing_files_and_removes_omitted_stale_state() {
+        let dir = TempDir::new().unwrap();
+        let stage = dir.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(dir.path().join("peer_map.json"), b"old-peer").unwrap();
+        std::fs::write(dir.path().join("membership.json"), b"stale-membership").unwrap();
+        std::fs::write(dir.path().join("identity.json"), b"old-identity").unwrap();
+        std::fs::write(stage.join("peer_map.json"), b"new-peer").unwrap();
+        std::fs::write(stage.join("identity.json"), b"new-identity").unwrap();
+        let files = vec![("peer_map.json".to_string(), b"new-peer".to_vec())];
+
+        commit_staged_account_import(dir.path(), &stage, &files).unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.path().join("peer_map.json")).unwrap(),
+            b"new-peer"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("identity.json")).unwrap(),
+            b"new-identity"
+        );
+        assert!(!dir.path().join("membership.json").exists());
+    }
+
+    #[test]
+    fn malformed_import_does_not_overwrite_live_files() {
+        let dir = TempDir::new().unwrap();
+        let live = dir.path().join("peer_map.json");
+        std::fs::write(&live, b"old").unwrap();
+        let entropy = [4; 16];
+        let bundle = serde_json::json!({"version": 1, "identity": {}, "files": {"peer_map.json": STANDARD.encode(b"{}")}});
+        let plaintext = serde_json::to_vec(&bundle).unwrap();
+        let nonce = crypto::aead::Nonce::from_bytes([2; crypto::aead::NONCE_SIZE]);
+        let ct = crypto::aead::seal(
+            &export_aead_key(&entropy).unwrap(),
+            &nonce,
+            OSL_EXPORT_MAGIC,
+            &plaintext,
+        )
+        .unwrap();
+        let mut raw = OSL_EXPORT_MAGIC.to_vec();
+        raw.extend_from_slice(nonce.as_bytes());
+        raw.extend_from_slice(&ct);
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+        assert!(cmd_osl_recover_account_from_export_with_dir(
+            &AppState::new(),
+            STANDARD.encode(raw),
+            phrase,
+            dir.path()
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&live).unwrap(), b"old");
+    }
+
+    #[test]
+    fn legacy_phrase_only_identity_is_not_a_key_match() {
+        let dir = TempDir::new().unwrap();
+        let mut legacy = keystore::generate_identity("42".into());
+        legacy.discord_snowflake = Some("42".into());
+        let before = *legacy.ed25519_public.as_bytes();
+        let state = AppState::new();
+        *state.identity.lock().unwrap() = Some(legacy);
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &[5; 16])
+            .unwrap()
+            .to_string();
+        let err =
+            cmd_osl_recover_identity_from_phrase_with_dir(&state, phrase, dir.path()).unwrap_err();
+        assert!(err.contains("full account export"), "{err}");
+        assert_eq!(
+            state
+                .identity
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .ed25519_public
+                .as_bytes(),
+            &before
+        );
+        assert!(!dir.path().join("identity.json").exists());
+    }
 }
 
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
@@ -8684,7 +9235,7 @@ pub fn cmd_osl_verify_gate_password(
             ensure_keyserver_registered(
                 state,
                 &resolve_keyserver_base_url(&dir),
-                read_keyserver_admin_token(&dir),
+                read_keyserver_client_token(&dir),
             );
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
@@ -8855,7 +9406,7 @@ pub fn cmd_osl_mark_scope_burned(
         scope_id: scope_id.clone(),
         server_id,
         channel_id,
-        burned_at: now as i64,
+        burned_at: now,
         burned_message_ids: burned_message_ids.clone(),
     };
     {
@@ -9020,15 +9571,13 @@ pub fn cmd_osl_note_scope_membership(
             .lock()
             .expect("scope_membership mutex poisoned");
         match scope.kind {
-            crate::scope::ScopeKind::ServerChannel => {
-                match (&scope.server_id, &scope.channel_id) {
-                    (Some(srv), Some(chan)) => {
-                        m.note_server_channel_members(srv, chan, &member_ids);
-                        true
-                    }
-                    _ => false,
+            crate::scope::ScopeKind::ServerChannel => match (&scope.server_id, &scope.channel_id) {
+                (Some(srv), Some(chan)) => {
+                    m.note_server_channel_members(srv, chan, &member_ids);
+                    true
                 }
-            }
+                _ => false,
+            },
             crate::scope::ScopeKind::Gc => {
                 m.note_gc_members(&scope.id, &member_ids);
                 true
@@ -9183,18 +9732,14 @@ pub fn cmd_osl_set_channel_whitelist(
         scope.kind,
         crate::scope::ScopeKind::ServerChannel | crate::scope::ScopeKind::Gc
     ) {
-        return Err(
-            "OSL: set_channel_whitelist requires a server_channel or gc scope".to_string(),
-        );
+        return Err("OSL: set_channel_whitelist requires a server_channel or gc scope".to_string());
     }
     {
         let mut ws = state
             .whitelist_state
             .lock()
             .expect("whitelist_state mutex poisoned");
-        let entry = ws
-            .entry(scope.storage_key())
-            .or_insert_with(crate::whitelist_state::ScopeState::default);
+        let entry = ws.entry(scope.storage_key()).or_default();
         entry.channel_whitelisted = on;
         if on {
             entry.encrypt_toggle = true;
@@ -9306,9 +9851,7 @@ pub fn cmd_osl_bulk_set_dm_whitelist(
                 pe.burned_scopes.retain(|b| !burn_matches_scope(b, &scope));
                 affected += 1;
             }
-            let entry = ws_guard
-                .entry(scope.storage_key())
-                .or_insert_with(crate::whitelist_state::ScopeState::default);
+            let entry = ws_guard.entry(scope.storage_key()).or_default();
             entry.encrypt_toggle = true;
             entry.auto_enabled = true;
         }
@@ -9357,9 +9900,7 @@ pub fn cmd_osl_set_server_default(
             .server_defaults
             .lock()
             .expect("server_defaults mutex poisoned");
-        sd.entry(server_id.clone())
-            .or_insert_with(crate::whitelist_state::ServerDefaults::default)
-            .encrypt_by_default = encrypt_by_default;
+        sd.entry(server_id.clone()).or_default().encrypt_by_default = encrypt_by_default;
     }
     persist_whitelist_state_now(state);
     Ok(())
@@ -9413,9 +9954,7 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
             .expect("whitelist_state mutex poisoned");
         for ch_id in &channel_ids {
             let scope = crate::scope::Scope::server_channel(&server_id, ch_id);
-            let entry = ws
-                .entry(scope.storage_key())
-                .or_insert_with(crate::whitelist_state::ScopeState::default);
+            let entry = ws.entry(scope.storage_key()).or_default();
             if !entry.encrypt_toggle {
                 entry.encrypt_toggle = true;
                 entry.auto_enabled = true;
@@ -9773,10 +10312,10 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
     // retry the keyserver part later.
     if let Some((user_id, sig_b64, timestamp_ms)) = unregister_request {
         let base_url = resolve_keyserver_base_url(&dir);
-        let admin_token = read_keyserver_admin_token(&dir);
+        let client_token = read_keyserver_client_token(&dir);
         match keystore::client::KeyServerClient::new(base_url) {
             Ok(c) => {
-                let client = c.with_admin_token(admin_token);
+                let client = c.with_client_token(client_token);
                 match client.unregister_signed(&user_id, &sig_b64, timestamp_ms) {
                     Ok(()) => {
                         tracing::info!(
@@ -9832,7 +10371,7 @@ fn cmd_osl_burn_engage_finish(
     // Case-C rotation proof is minted+persisted while the old Ed25519
     // secret still exists in memory. This is the WHOLE POINT of the
     // a4dfc44 forward fix; without this routing it never ran.
-    let new_identity = crate::fresh_start::cmd_osl_fresh_start(&dir, preserved_user_id)
+    let new_identity = crate::fresh_start::cmd_osl_fresh_start(dir, preserved_user_id)
         .map_err(|e| format!("OSL: burn fresh-start failed: {e}"))?;
 
     // Burn-only additional wipes that `fresh_start` does not cover.
@@ -9927,7 +10466,8 @@ fn cmd_osl_burn_engage_finish(
     *state
         .app_preferences
         .lock()
-        .expect("app_preferences mutex poisoned") = crate::app_preferences::AppPreferences::default();
+        .expect("app_preferences mutex poisoned") =
+        crate::app_preferences::AppPreferences::default();
     state
         .mode1_reassembly
         .lock()
