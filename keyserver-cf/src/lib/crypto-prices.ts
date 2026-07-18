@@ -34,6 +34,7 @@ export async function refreshPriceSnapshots(
     res = await fetcher(KRAKEN_TICKER_URL, {
       method: "GET",
       headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
     });
   } catch {
     console.error("[crypto-prices] Kraken fetch failed");

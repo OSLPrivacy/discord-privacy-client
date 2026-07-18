@@ -1,3 +1,4 @@
+import "@fontsource-variable/inter/wght.css";
 import "./overlay.css";
 import { boundedProtectedDraft, utf8Length } from "./overlay-state";
 

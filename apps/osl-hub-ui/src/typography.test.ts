@@ -7,9 +7,10 @@ const overlayStyles = readFileSync(new URL("./overlay.css", import.meta.url), "u
 const allStyles = `${styles}\n${sheetStyles}\n${overlayStyles}`;
 
 describe("professional typography", () => {
-  it("uses a native Windows UI family and reserves mono for machine data", () => {
-    expect(styles).toContain('--font-ui: "Segoe UI Variable Text"');
-    expect(styles).toContain('--font-display: "Segoe UI Variable Display"');
+  it("self-hosts Inter and reserves mono for machine data", () => {
+    expect(styles).toContain('--font-ui: "Inter Variable"');
+    expect(styles).toContain('--font-display: "Inter Variable"');
+    expect(readFileSync(new URL("./main.ts", import.meta.url), "utf8")).toContain('@fontsource-variable/inter/wght.css');
     expect(styles).toContain('--font-mono: "Cascadia Mono"');
     expect(styles).toContain("font-family: var(--font-ui)");
     expect(styles).toContain(".identity-row small { font-family: var(--font-mono); }");

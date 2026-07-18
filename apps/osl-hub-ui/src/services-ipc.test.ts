@@ -70,6 +70,24 @@ describe("embedded service IPC", () => {
     await expect(openEmbeddedServiceAccount("instagram", "../profile")).rejects.toThrow();
   });
 
+  it("opens the exact locally selected profile when more than one exists", async () => {
+    const services = [{
+      id: "instagram", displayName: "Instagram", sidebarGlyph: "IG", sidebarOrder: 1,
+      category: "consumer", launchState: "available", supportsNativePreview: true,
+      supportsProtectedPreview: false,
+      accounts: [
+        { id: "acct-a", label: "Personal", displayHandle: "Sign in", state: "notLinked", provider: null },
+        { id: "acct-b", label: "Work", displayHandle: "Sign in", state: "notLinked", provider: null },
+      ],
+    }] as LinkedService[];
+    mocks.invoke.mockResolvedValueOnce({ serviceId: "instagram", accountId: "acct-b", generation: 3 });
+    await expect(openEmbeddedHomeApp({ ...instagramApp, linked: true, accountCount: 2 }, services, "acct-b"))
+      .resolves.toMatchObject({ accountId: "acct-b" });
+    expect(mocks.invoke).toHaveBeenCalledWith("open_service_host", {
+      serviceId: "instagram", accountId: "acct-b",
+    });
+  });
+
   it("removes only one exact owned profile through the narrow command", async () => {
     mocks.invoke.mockResolvedValueOnce({
       serviceId: "instagram", accountId: "acct-a", profileExisted: true,

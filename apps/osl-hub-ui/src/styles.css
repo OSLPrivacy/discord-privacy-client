@@ -1,6 +1,6 @@
 :root {
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-ui: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: "Inter Variable", Inter, "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
   font-family: var(--font-ui);
   color: #e8e8e8;
@@ -767,6 +767,78 @@ code {
 .onboarding-app.selected { border-left: 3px solid var(--brand); background: var(--panel-2); }
 .onboarding-app .app-logo-plate { width: 42px; height: 42px; }
 .onboarding-app strong { max-width: 100%; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+.saved-account-animation {
+  width: min(360px, 100%);
+  min-height: 86px;
+  margin: 4px auto 22px;
+  display: grid;
+  grid-template-columns: 64px minmax(90px, 1fr) 64px;
+  align-items: center;
+}
+.saved-account-source,
+.saved-account-destination {
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.saved-account-destination { border-color: color-mix(in srgb, var(--brand) 70%, var(--line)); color: var(--brand); }
+.saved-account-flow { position: relative; height: 1px; background: var(--line); }
+.saved-account-flow::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  background: var(--brand);
+  animation: saved-account-travel 1.8s var(--ease-standard) 1 both;
+}
+.saved-account-animation[data-mode="clean"] .saved-account-flow::after { animation-name: saved-account-return; background: var(--muted); }
+.saved-account-animation[data-mode="ask"] .saved-account-flow::after { animation-play-state: paused; opacity: .35; }
+.saved-account-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.saved-account-truth { margin: 12px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
+.saved-account-advanced,
+.saved-account-settings { margin-top: 14px; border-top: 1px solid var(--line); }
+.saved-account-advanced > summary,
+.saved-account-settings > summary { min-height: 44px; display: flex; align-items: center; color: var(--muted); cursor: pointer; }
+.saved-account-apps,
+.saved-account-advanced > div { display: grid; gap: 6px; }
+.saved-account-app {
+  min-height: 48px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.saved-account-app > span { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.saved-account-app .company-logo { width: 25px; height: 25px; }
+.saved-account-app strong,
+.saved-account-app small { display: block; }
+.saved-account-app small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.saved-account-app input { width: 20px; min-height: 20px; }
+.saved-account-app.unavailable { opacity: .45; }
+.saved-account-settings > p { color: var(--muted); font-size: 11px; }
+
+@keyframes saved-account-travel {
+  0% { left: 0; opacity: 0; transform: scale(.7); }
+  18%, 78% { opacity: 1; }
+  100% { left: calc(100% - 9px); opacity: 0; transform: scale(1); }
+}
+
+@keyframes saved-account-return {
+  0% { left: calc(100% - 9px); opacity: 0; transform: scale(.7); }
+  18%, 78% { opacity: .8; }
+  100% { left: 0; opacity: 0; transform: scale(1); }
+}
 
 .unlock-error {
   min-height: 20px;
@@ -3352,6 +3424,28 @@ code {
 .native-app-card h1, .native-app-card p { margin: 0; }
 .native-app-action { min-width: 180px; }
 .native-app-truth { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--line); }
+.service-account-picker { width: min(500px, 100%); }
+.service-account-choices { width: 100%; display: grid; gap: 7px; }
+.service-account-choice {
+  width: 100%;
+  min-height: 58px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 0 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.service-account-choice:hover { border-left: 3px solid var(--brand); background: var(--panel-3); }
+.service-account-choice > span { grid-row: 1 / 3; display: grid; place-items: center; }
+.service-account-choice .company-logo { width: 25px; height: 25px; }
+.service-account-choice strong,
+.service-account-choice small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service-account-choice small { color: var(--muted); font-size: 11px; }
 
 @media (prefers-reduced-motion: reduce) {
   .app-tile, .app-tile > button:first-child { transition: none !important; transform: none !important; }
@@ -3383,6 +3477,40 @@ code {
 .onboarding-skip-dock:hover { color: var(--text); }
 .onboarding-actions { justify-content: center; }
 .onboarding-actions .button { min-width: 170px; }
+.manual-send-demo {
+  width: min(560px, 100%);
+  margin: 0 auto 18px;
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) minmax(18px, 42px) minmax(72px, 1fr) minmax(18px, 42px) minmax(72px, 1fr) minmax(18px, 42px) minmax(72px, 1fr);
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+.manual-send-demo span {
+  min-height: 54px;
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+}
+.manual-send-demo i {
+  height: 1px;
+  overflow: hidden;
+  background: var(--line);
+}
+.manual-send-demo i::after {
+  width: 100%;
+  height: 100%;
+  display: block;
+  content: "";
+  transform: translateX(-100%);
+  background: var(--brand);
+  animation: manual-send-flow 1.8s var(--ease-standard) 1 both;
+}
+.manual-send-demo i:nth-of-type(2)::after { animation-delay: .18s; }
+.manual-send-demo i:nth-of-type(3)::after { animation-delay: .36s; }
+@keyframes manual-send-flow { to { transform: translateX(0); } }
 .onboarding-app-grid { grid-template-columns: repeat(auto-fit, minmax(82px, 1fr)); gap: 10px; }
 .onboarding-app {
   min-height: 104px;
@@ -3481,6 +3609,12 @@ code {
 .password-role form input { width: 100%; min-width: 0; padding: 0 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
 .password-role form > .button { min-width: 120px; }
 .password-role-note { grid-column: 1 / -1; margin: 0; color: var(--warn); font-size: 11px; }
+.password-role.unavailable { padding: 12px; border: 1px solid var(--line-soft); color: var(--muted); }
+.password-role.unavailable > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.password-role.unavailable strong,
+.password-role.unavailable small { display: block; }
+.password-role.unavailable small { color: var(--warn); font-size: 11px; }
+.password-role.unavailable p { max-width: 58ch; margin: 7px 0 0; color: var(--subtle); font-size: 12px; line-height: 1.5; }
 
 .home-header {
   height: 72px;
@@ -3515,6 +3649,8 @@ code {
 .app-logo-plate .company-logo { width: 35px; height: 35px; }
 .app-tile-copy strong { font-size: 12px; text-align: center; }
 .app-tile-copy small { font-size: 11px; text-align: center; }
+.app-tile.pending .app-logo-plate,
+.app-launcher.pending { border-color: var(--brand); background: var(--brand-wash); }
 .home-module.module-unavailable { opacity: .33; }
 .home-dashboard.editing .app-tile { cursor: grab; outline: 1px dashed color-mix(in srgb, var(--brand) 30%, var(--line)); outline-offset: -3px; }
 .home-dashboard.editing .app-tile.dragging { opacity: .35; }
@@ -3534,6 +3670,9 @@ code {
 .guide-card-simple { width: min(520px, 100%); min-height: auto; }
 .guide-card-simple > header { display: flex; justify-content: flex-start; }
 .guide-card-simple > footer { justify-content: center; }
+.guide-card-simple > .guide-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.guide-card-simple > .guide-actions .button { width: 100%; }
+.guide-native-note { margin: 10px auto 0; color: var(--muted); font-size: 11px; text-align: center; }
 .guide-card > header { grid-template-columns: auto 1fr; }
 .guide-card > header .guide-progress { justify-self: center; }
 .guide-logo { width: 78px; height: 78px; }
@@ -3556,8 +3695,13 @@ code {
   .home-brand-home .osl-logo { width: 49px; height: 49px; }
   .app-grid { grid-template-columns: repeat(3, minmax(74px, 1fr)); }
   .home-primary { padding: 18px 14px; }
+  .manual-send-demo { grid-template-columns: 1fr; gap: 6px; }
+  .manual-send-demo i { width: 1px; height: 14px; margin: 0 auto; }
+  .manual-send-demo i::after { transform: translateY(-100%); }
+  @keyframes manual-send-flow { to { transform: translateY(0); } }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .demo-message { animation: none !important; opacity: 1; transform: none; }
+  .manual-send-demo i::after { animation: none !important; transform: none; }
 }

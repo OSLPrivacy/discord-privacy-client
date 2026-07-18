@@ -19,9 +19,20 @@ describe("simplified truthful settings", () => {
   });
 
   it("does not advertise automatic sending as functional", () => {
-    expect(source).toContain("Automatic sending is not available yet");
-    expect(source).toContain("Use each app normally until OSL can confirm the right chat.");
+    expect(source).toContain("Automatic sending is not available in this build.");
+    expect(source).toContain("Review encrypted text, then copy, paste, and send it yourself.");
+    expect(source).not.toMatch(/Advanced sending preview|data-send-mode|data-placement/);
     expect(source).not.toContain("Composer adapter required");
+  });
+
+  it("does not let users create inactive stealth or burn passwords", () => {
+    const start = source.indexOf("function passwordSecuritySettingsContent");
+    const end = source.indexOf("function accountAdvancedSettingsContent", start);
+    const security = source.slice(start, end);
+    expect(security).toContain("if (!wired)");
+    expect(security).toContain('aria-disabled="true"');
+    expect(security).toContain("OSL will not let you create or rely on it.");
+    expect(security.indexOf("if (!wired)")).toBeLessThan(security.indexOf('data-password-role="${role}"'));
   });
 
   it("keeps full local cleanup in collapsed Account advanced settings", () => {
@@ -58,6 +69,17 @@ describe("simplified truthful settings", () => {
     expect(source).not.toContain('data-firefox-launch=');
     expect(source).not.toContain('data-install-firefox');
     expect(source).not.toContain("downloadSetupCsv");
+  });
+
+  it("keeps saved-account behavior editable per installed app", () => {
+    const start = source.indexOf("function serviceAccountsSettingsContent");
+    const end = source.indexOf("function privacySettingsContent", start);
+    const apps = source.slice(start, end);
+    expect(apps).toContain("Saved account behavior");
+    expect(apps).toContain('data-saved-account-mode="use"');
+    expect(apps).toContain('data-saved-account-mode="clean"');
+    expect(apps).toContain('data-saved-native="${app.id}"');
+    expect(apps).toContain("Browser sign-ins stay separate");
   });
 
   it("leaves app ordering to Home edit mode", () => {

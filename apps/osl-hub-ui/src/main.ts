@@ -1,19 +1,17 @@
+import "@fontsource-variable/inter/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  canCompleteSetup,
-  needsRiskAcceptance,
   parseSetupState,
-  type PlacementMode,
-  type SendMode,
   type SetupState,
 } from "./state";
-import { loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
+import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
   configuredTopStripApps,
+  embeddedAccountsForHomeApp,
   homeAppsFromServices,
   installNativeApp,
   launchNativeApp,
@@ -60,7 +58,6 @@ import { activateLocalLoopbackContext, addOslFriend, burnActiveHubContext, burnH
 import { blankLocalProtectedModel, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
-import { LatestOnlyRunner } from "./latest";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
 import { withNativeDeadline } from "./native-deadline";
@@ -68,9 +65,10 @@ import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 
 type Route = "onboarding" | "home" | "service" | "settings";
-type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "tutorial" | "sending" | "scrub";
+type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "tutorial" | "apps" | "sending" | "scrub";
 type SettingsSection = "account" | "apps" | "scrub" | "notifications" | "appearance" | "about";
 type ThemeChoice = "system" | "dark" | "light";
+type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
   tone: "success" | "warning" | "error";
@@ -88,39 +86,8 @@ function requireRoot(): HTMLDivElement {
 }
 const root = requireRoot();
 
-const sendModes: Array<{ id: SendMode; title: string; detail: string }> = [
-  { id: "manual", title: "Review & send", detail: "Review it, then send it yourself." },
-  { id: "clipboard", title: "Copy & paste", detail: "OSL copies it. You paste and send." },
-  { id: "double", title: "Double Enter", detail: "First Enter prepares. Second Enter sends." },
-  { id: "single", title: "Single Enter", detail: "One Enter prepares and sends. Experimental." },
-];
-
-const placementModes: Array<{ id: PlacementMode; title: string; detail: string }> = [
-  { id: "atomic", title: "Paste at once", detail: "The encrypted text appears in one step." },
-  { id: "compatibility", title: "Type it", detail: "OSL types the same text one key at a time." },
-];
-
-function placementOptionsMarkup(interactive: boolean): string {
-  return placementModes.map((mode) => {
-    const selected = setup.placementMode === mode.id;
-    const tag = interactive ? "button" : "div";
-    const attributes = interactive
-      ? `type="button" data-placement="${mode.id}" aria-pressed="${selected}"`
-      : `aria-label="${mode.title}${selected ? ", selected" : ""}"`;
-    return `<${tag} class="setting-option placement-option ${selected ? "selected" : ""}" ${attributes}><strong>${mode.title}</strong><small>${mode.detail}</small></${tag}>`;
-  }).join("");
-}
-
-function placementComparisonMarkup(): string {
-  return `<div class="placement-demo" role="img" aria-label="Paste at once places the encrypted text in one step. Type it enters the same encrypted text key by key."><article aria-hidden="true"><header><strong>Paste at once</strong></header><div class="placement-demo-field"><code class="placement-demo-copy">encrypted text</code><span class="placement-demo-caret"></span></div></article><article aria-hidden="true"><header><strong>Type it</strong></header><div class="placement-demo-field"><code class="placement-demo-typing">encrypted text</code><span class="placement-demo-caret"></span></div></article></div>`;
-}
-
-function sendModeAnimationMarkup(): string {
-  return `<div class="send-mode-demo" aria-label="Animated sending-mode comparison">
-    <article data-demo="clipboard"><span class="demo-key">Copy</span><span class="demo-message">encrypted text</span><span class="demo-key">Paste</span></article>
-    <article data-demo="double"><span class="demo-key">↵</span><span class="demo-message">prepare</span><span class="demo-key">↵</span><span class="demo-message">send</span></article>
-    <article data-demo="single"><span class="demo-key">↵</span><span class="demo-message">prepare + send</span></article>
-  </div>`;
+function manualSendingAnimationMarkup(): string {
+  return `<div class="manual-send-demo" role="img" aria-label="OSL encrypts a message on this device. You review it, copy it, and paste it into the app yourself."><span>Write</span><i aria-hidden="true"></i><span>Encrypt</span><i aria-hidden="true"></i><span>Copy</span><i aria-hidden="true"></i><span>Send</span></div>`;
 }
 
 function passwordEyeIcon(visible = false): string {
@@ -137,12 +104,15 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let settingsSection: SettingsSection = "account";
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
+let appLaunchPendingId: HomeAppId | null = null;
+let nativeAccountChoiceAppId: NativeAppId | null = null;
 let nativeApps: NativeApp[] = [];
+let savedAccountMode: SavedAccountMode = "ask";
+let savedNativeApps = new Set<NativeAppId>();
 let nativeActionBusy = false;
-let onboardingFirstAppId: HomeAppId | null = null;
 let onboardingServiceSetup = false;
-let sendingSetupStep: "send" | "placement" = "send";
 let activeEmbeddedHost: EmbeddedServiceHost | null = null;
+let serviceAccountPickerOpen = false;
 let timer = "72h";
 let toastTimer: number | undefined;
 let updateStatus: UpdateStatus = { state: "unavailable" };
@@ -180,6 +150,7 @@ let scrubReviewPage = 0;
 let scrubReviewConfirmed = false;
 let lastFocusKey = "";
 let lastWorkspaceMarkup: string | null = null;
+let lastWorkspaceViewKey = "";
 let deferredBackgroundRender = false;
 let serviceGuideStep: ServiceGuideStep | null = null;
 let friendsDialogOpen = false;
@@ -193,9 +164,8 @@ let serviceBurnReadinessBusy = false;
 let ownedConfirmation: OwnedConfirmation | null = null;
 let ownedConfirmationBusy = false;
 let ownedConfirmationError = "";
-const setupPersistRunner = new LatestOnlyRunner();
 let navigationIntentEpoch = 0;
-let setupPersistEpoch = 0;
+let bootstrapEpoch = 0;
 
 const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
@@ -208,13 +178,23 @@ const scrubSignalsStorageKey = "osl-hub-scrub-signals-v1";
 const serviceGuideStorageKey = "osl-hub-service-guide-v1";
 const homeTileOrderStorageKey = "osl-home-tile-order-v1";
 const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
+const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
+const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
+const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp"]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
 const scrubResultsPageSize = 50;
 const scrubReviewPageSize = 20;
+const bootCoreDeadlineMs = 4_000;
+const bootPreferenceDeadlineMs = 1_500;
+const bootSupportDeadlineMs = 2_000;
 
 function parseTheme(raw: string | null): ThemeChoice {
   return raw === "light" || raw === "dark" || raw === "system" ? raw : "system";
+}
+
+function parseSavedAccountMode(raw: string | null): SavedAccountMode {
+  return raw === "use" || raw === "clean" ? raw : "ask";
 }
 
 function applyTheme(choice: ThemeChoice): void {
@@ -250,13 +230,17 @@ function loadUiPreferences(): void {
     if (typeof notificationApps === "object" && notificationApps !== null && !Array.isArray(notificationApps)) {
       notificationAppPreferences = Object.fromEntries(Object.entries(notificationApps).filter(([, enabled]) => typeof enabled === "boolean").slice(0, 20)) as Partial<Record<ServiceId, boolean>>;
     }
+    const savedApps = JSON.parse(localStorage.getItem(savedNativeAppsStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(savedApps)) savedNativeApps = new Set(savedApps.filter((id): id is NativeAppId => typeof id === "string" && supportedNativeAppIds.has(id as NativeAppId)));
   } catch {
     sidebarOrder = [];
     hiddenServices.clear();
     homeTileOrder = [];
     hiddenHomeTiles.clear();
     notificationAppPreferences = {};
+    savedNativeApps.clear();
   }
+  savedAccountMode = parseSavedAccountMode(localStorage.getItem(savedAccountModeStorageKey));
   notificationsEnabled = localStorage.getItem(notificationsStorageKey) === "true";
   notificationPreviewContent = localStorage.getItem(notificationPreviewStorageKey) === "true";
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
@@ -337,8 +321,63 @@ function renderWhenIdle(): void {
 function showRenderRecovery(): void {
   renderScheduler.cancel();
   lastWorkspaceMarkup = null;
+  lastWorkspaceViewKey = "";
   root.innerHTML = `<main class="ui-recovery" role="alert" aria-labelledby="ui-recovery-title"><img src="${oslLogoUrl}" alt=""/><h1 id="ui-recovery-title">OSL paused this view</h1><p>No error details were displayed or sent.</p><button class="button primary" id="ui-recovery-reload">Reload interface</button></main>`;
   document.querySelector("#ui-recovery-reload")?.addEventListener("click", () => window.location.reload());
+}
+
+type WorkspaceFieldSnapshot = {
+  id: string;
+  value?: string;
+  checked?: boolean;
+  selectionStart?: number | null;
+  selectionEnd?: number | null;
+};
+
+type WorkspaceFocusSnapshot = {
+  focusedId: string | null;
+  fields: WorkspaceFieldSnapshot[];
+};
+
+function workspaceViewKey(): string {
+  if (route === "settings") return `${route}:${settingsSection}`;
+  if (route === "service") return `${route}:${activeService?.id ?? "none"}:${activeHomeAppId ?? "none"}:${serviceGuideStep ?? "app"}`;
+  return route;
+}
+
+/** Preserve only ordinary form state during a same-view patch. Passwords and files are never copied. */
+function captureWorkspaceFocus(surface: HTMLElement): WorkspaceFocusSnapshot {
+  const active = document.activeElement;
+  const focusedId = active instanceof HTMLElement && surface.contains(active) && active.id ? active.id : null;
+  const fields = [...surface.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[id], textarea[id], select[id]")]
+    .filter((field) => !(field instanceof HTMLInputElement) || (field.type !== "password" && field.type !== "file" && field.type !== "hidden"))
+    .map((field): WorkspaceFieldSnapshot => {
+      if (field instanceof HTMLInputElement && (field.type === "checkbox" || field.type === "radio")) {
+        return { id: field.id, checked: field.checked };
+      }
+      const selection = field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement;
+      return {
+        id: field.id,
+        value: field.value,
+        selectionStart: selection ? field.selectionStart : null,
+        selectionEnd: selection ? field.selectionEnd : null,
+      };
+    });
+  return { focusedId, fields };
+}
+
+function restoreWorkspaceFocus(snapshot: WorkspaceFocusSnapshot): void {
+  for (const field of snapshot.fields) {
+    const element = document.getElementById(field.id);
+    if (element instanceof HTMLInputElement && typeof field.checked === "boolean") element.checked = field.checked;
+    else if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) && field.value !== undefined) {
+      element.value = field.value;
+      if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && field.selectionStart !== undefined) {
+        try { element.setSelectionRange(field.selectionStart ?? 0, field.selectionEnd ?? field.selectionStart ?? 0); } catch { /* Some input types do not expose a selection. */ }
+      }
+    }
+  }
+  if (snapshot.focusedId) document.getElementById(snapshot.focusedId)?.focus({ preventScroll: true });
 }
 
 function containBackgroundFailure(): void {
@@ -367,9 +406,10 @@ function bindDesktopTitlebar(): void {
 }
 
 function renderOnboarding(): void {
-  const canSkipSetup = onboardingRoute === "tutorial" || onboardingRoute === "sending" || onboardingRoute === "scrub";
+  const canSkipSetup = onboardingRoute === "tutorial" || onboardingRoute === "apps" || onboardingRoute === "sending" || onboardingRoute === "scrub";
   const markup = `<div class="app-frame">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}</main>${canSkipSetup ? '<button class="onboarding-skip-dock" id="skip-onboarding">Skip · manual setup</button>' : ""}</div>${scrubReviewDialogMarkup()}</div>`;
   lastWorkspaceMarkup = null;
+  lastWorkspaceViewKey = "";
   root.innerHTML = markup;
   bindOnboarding();
   openScrubReviewDialogAfterRender();
@@ -395,19 +435,51 @@ function onboardingContent(): string {
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
   if (onboardingRoute === "tutorial") return tutorialContent();
+  if (onboardingRoute === "apps") return onboardingAppsContent();
   if (onboardingRoute === "scrub") return onboardingScrubContent();
 
   return sendingSetupContent();
 }
 
 function tutorialContent(): string {
-  const apps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const selected = apps.some((app) => app.id === onboardingFirstAppId) ? onboardingFirstAppId : apps[0]?.id ?? null;
-  onboardingFirstAppId = selected;
+  const installed = nativeApps.filter((app) => app.availability === "installed");
+  const nativeRows = nativeApps.map((app) => {
+    const available = app.availability === "installed";
+    return `<label class="saved-account-app ${available ? "" : "unavailable"}"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${available ? "Installed" : app.availability === "installable" ? "Install later" : "Unavailable"}</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""} ${available ? "" : "disabled"}/></label>`;
+  }).join("");
+  return `<h1 id="route-heading" tabindex="-1">Use saved accounts?</h1><div class="saved-account-animation" data-mode="${savedAccountMode}" aria-label="OSL can open accounts already signed in to installed Windows apps. Separate OSL profiles start signed out."><span class="saved-account-source">APP</span><span class="saved-account-flow"></span><span class="saved-account-destination">OSL</span></div><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use available</strong><small>${installed.length ? `${installed.length} installed ${installed.length === 1 ? "app" : "apps"}` : "No installed apps found"}</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start clean</strong><small>Separate signed-out profiles</small></button></div><p class="saved-account-truth">Browser accounts need one manual sign-in. OSL never copies browser passwords or cookies.</p><details class="saved-account-advanced"><summary>Advanced</summary><div>${nativeRows}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-account-setup" ${savedAccountMode === "ask" ? "disabled" : ""}>Continue</button></div>`;
+}
+
+function onboardingAppsContent(): string {
+  const apps = homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available");
   const choices = apps.length
-    ? `<div class="onboarding-app-grid" role="list">${apps.map((app) => `<button type="button" class="onboarding-app ${selected === app.id ? "selected" : ""}" data-first-app="${app.id}" aria-pressed="${selected === app.id}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
-    : `<div class="empty-state"><strong>Apps are still loading</strong><p>You can continue and choose one from Home.</p></div>`;
-  return `<h1 id="route-heading" tabindex="-1">Connect an app</h1>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="connect-first-app" ${selected ? "" : "disabled"}>Continue</button></div>`;
+    ? `<div class="onboarding-app-grid" role="list">${apps.map((app) => `<button type="button" class="onboarding-app" data-onboarding-app="${app.id}" aria-label="Connect ${escapeHtml(app.displayName)} inside OSL"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
+    : `<div class="empty-state"><strong>Apps are unavailable</strong><p>Skip for now and add one from Home.</p></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Connect one app</h1>${choices}`;
+}
+
+function persistSavedAccountPreferences(): void {
+  localStorage.setItem(savedAccountModeStorageKey, savedAccountMode);
+  localStorage.setItem(savedNativeAppsStorageKey, JSON.stringify([...savedNativeApps]));
+}
+
+function bindSavedAccountControls(): void {
+  document.querySelectorAll<HTMLButtonElement>("[data-saved-account-mode]").forEach((button) => button.addEventListener("click", () => {
+    savedAccountMode = parseSavedAccountMode(button.dataset.savedAccountMode ?? null);
+    if (savedAccountMode === "use" && savedNativeApps.size === 0) {
+      savedNativeApps = new Set(nativeApps.filter((app) => app.availability === "installed").map((app) => app.id));
+    }
+    persistSavedAccountPreferences();
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-saved-native]").forEach((input) => input.addEventListener("change", () => {
+    const appId = input.dataset.savedNative as NativeAppId;
+    if (!supportedNativeAppIds.has(appId)) return;
+    if (input.checked) savedNativeApps.add(appId);
+    else savedNativeApps.delete(appId);
+    persistSavedAccountPreferences();
+  }));
 }
 
 function importIdentityForm(): string {
@@ -427,11 +499,7 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
 }
 
 function sendingSetupContent(): string {
-  if (sendingSetupStep === "send") {
-    const canContinue = !needsRiskAcceptance(setup.sendMode) || (setup.acceptedRisk && setup.acceptedRiskForMode === setup.sendMode);
-    return `<h1 id="route-heading" tabindex="-1">Choose how to send</h1><div class="settings-options send-mode-options">${sendModes.map((mode) => `<button class="setting-option ${setup.sendMode === mode.id ? "selected" : ""}" data-send-mode="${mode.id}" aria-pressed="${setup.sendMode === mode.id}"><strong>${mode.title}</strong><small>${mode.detail}</small></button>`).join("")}</div>${sendModeAnimationMarkup()}${needsRiskAcceptance(setup.sendMode) ? `<label class="risk-consent"><input id="risk-accept" type="checkbox" ${setup.acceptedRisk ? "checked" : ""}/><span class="risk-triangle" aria-hidden="true">!</span><span>Experimental. The app may restrict your account.</span></label>` : ""}<div class="setup-footer"><button class="button primary" id="finish-onboarding" ${canContinue ? "" : "disabled"}>Continue</button></div>`;
-  }
-  return `<button class="text-back" id="sending-setup-back">← Back</button><h1 id="route-heading" tabindex="-1">Choose how text appears</h1><section class="placement-picker" aria-labelledby="placement-heading"><div class="placement-row">${placementOptionsMarkup(true)}</div>${placementComparisonMarkup()}</section><div class="setup-footer"><button class="button primary" id="finish-onboarding" ${canCompleteSetup(setup) ? "" : "disabled"}>Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Send with copy & paste</h1>${manualSendingAnimationMarkup()}<p class="saved-account-truth">OSL prepares encrypted text. You review, copy, paste, and send it yourself.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding">Continue</button></div>`;
 }
 
 function scrubCategoryChooserMarkup(compact = false): string {
@@ -442,15 +510,14 @@ function onboardingScrubContent(): string {
   if (scrubReviewConfirmed) {
     return `<p class="eyebrow">Scrub</p><h1 id="route-heading" tabindex="-1">Your list is confirmed</h1><p class="compact-lead scrub-local-promise"><strong>Your messages never leave this device.</strong> Find each checked message in its original app and decide whether to delete it there.</p><ol class="scrub-manual-directions"><li>Open the app and chat shown for each suggestion.</li><li>Check that you sent the exact message.</li><li>Delete it yourself only if you still want to.</li></ol><aside class="scrub-pro-compact"><span>PRO · COMING SOON</span><strong>AutoScrub assistant</strong><p>Schedules local scans and prepares a list. You still review and confirm every batch.</p></aside><div class="setup-footer"><button class="button primary" id="complete-onboarding">Done</button></div>`;
   }
-  const hasConnectedApp = homeAppsFromServices(services).some((app) => app.linked);
-  const scanAction = `<button class="button primary" id="onboarding-start-scrub" ${hasConnectedApp ? "" : "disabled"}>${privacyScanBusy ? "Scanning…" : "Scan this device"}</button>`;
+  const scanAction = `<label class="button ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose message export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>`;
   const results = privacyScanResult ? privacyScanResultsMarkup() : "";
-  return `<h1 id="route-heading" tabindex="-1">Scrub</h1><p class="compact-lead scrub-local-promise"><strong>Your messages never leave this device.</strong> Review everything before deleting.</p><div class="onboarding-scrub-actions">${scanAction}</div>${hasConnectedApp ? "" : '<p class="scrub-waiting">Connect an app before scanning.</p>'}${scrubCategoryChooserMarkup(true)}${results}<div class="setup-footer"><button class="button ghost" id="complete-onboarding">Done</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Try Scrub</h1><p class="compact-lead scrub-local-promise"><strong>Optional. Your messages never leave this device.</strong> Choose a supported export only if you have one.</p><div class="onboarding-scrub-actions">${scanAction}</div>${privacyScanResult ? scrubCategoryChooserMarkup(true) : ""}${results}<div class="setup-footer onboarding-actions"><button class="button primary" id="complete-onboarding">Finish setup</button></div>`;
 }
 
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboarding as OnboardingRoute; render(); }));
-  document.querySelectorAll<HTMLButtonElement>("[data-first-app]").forEach((button) => button.addEventListener("click", () => { onboardingFirstAppId = button.dataset.firstApp as HomeAppId; render(); }));
+  bindSavedAccountControls();
   bindPasswordVisibility();
   bindPasswordForm();
   bindImportForm();
@@ -458,10 +525,19 @@ function bindOnboarding(): void {
   const recoveryContinue = document.querySelector<HTMLButtonElement>("#recovery-continue");
   recoverySaved?.addEventListener("change", () => { if (recoveryContinue) recoveryContinue.disabled = !recoverySaved.checked; });
   recoveryContinue?.addEventListener("click", () => { recoveryBundle = null; onboardingRoute = "tutorial"; render(); });
-  document.querySelector<HTMLButtonElement>("#connect-first-app")?.addEventListener("click", () => {
-    const app = homeAppsFromServices(services).find((candidate) => candidate.id === onboardingFirstAppId);
+  document.querySelector<HTMLButtonElement>("#continue-account-setup")?.addEventListener("click", () => {
+    if (savedAccountMode === "ask") return;
+    persistSavedAccountPreferences();
+    onboardingRoute = "apps";
+    render();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app]").forEach((button) => button.addEventListener("click", () => {
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === button.dataset.onboardingApp);
     const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
-    if (!app || !service) { showToast("Choose an available app"); return; }
+    if (!app || !service || app.launchState !== "available") {
+      showToast("This app is unavailable right now");
+      return;
+    }
     onboardingServiceSetup = true;
     activeService = service;
     activeHomeAppId = app.id;
@@ -469,32 +545,20 @@ function bindOnboarding(): void {
     serviceGuideStep = 0;
     persistServiceGuideState();
     render();
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-send-mode]").forEach((button) => button.addEventListener("click", () => {
-    const next = button.dataset.sendMode as SendMode;
-    if (next !== setup.sendMode) { setup.acceptedRisk = false; setup.acceptedRiskForMode = null; }
-    setup.sendMode = next;
-    render();
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-placement]").forEach((button) => button.addEventListener("click", () => { setup.placementMode = button.dataset.placement as PlacementMode; render(); }));
-  document.querySelector<HTMLInputElement>("#risk-accept")?.addEventListener("change", (event) => { setup.acceptedRisk = (event.currentTarget as HTMLInputElement).checked; setup.acceptedRiskForMode = setup.acceptedRisk ? setup.sendMode : null; render(); });
-  document.querySelector("#skip-onboarding")?.addEventListener("click", () => { onboardingServiceSetup = false; void completeOnboarding(false); });
+  document.querySelector("#skip-onboarding")?.addEventListener("click", () => { onboardingServiceSetup = false; void completeOnboarding(); });
   document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
     if (onboardingRoute !== "sending") return;
-    if (sendingSetupStep === "send") {
-      if (needsRiskAcceptance(setup.sendMode) && (!setup.acceptedRisk || setup.acceptedRiskForMode !== setup.sendMode)) return;
-      sendingSetupStep = "placement";
-      render();
-      return;
-    }
-    if (canCompleteSetup(setup)) { onboardingRoute = "scrub"; render(); }
+    setup.sendMode = "manual";
+    setup.placementMode = "atomic";
+    setup.acceptedRisk = false;
+    setup.acceptedRiskForMode = null;
+    onboardingRoute = "scrub";
+    render();
   });
-  document.querySelector("#sending-setup-back")?.addEventListener("click", () => { sendingSetupStep = "send"; render(); });
-  document.querySelector("#skip-scrub-onboarding")?.addEventListener("click", () => void completeOnboarding(false));
-  document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding(false));
-  document.querySelector<HTMLButtonElement>("#onboarding-start-scrub")?.addEventListener("click", () => {
-    showToast("Local app scanning becomes available after a supported app connection is verified");
-  });
+  document.querySelector("#skip-scrub-onboarding")?.addEventListener("click", () => void completeOnboarding());
+  document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding());
+  document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
   bindScrubControls();
 }
 
@@ -510,7 +574,7 @@ function bindPasswordVisibility(): void {
   }));
 }
 
-async function completeOnboarding(startGuide: boolean): Promise<void> {
+async function completeOnboarding(): Promise<void> {
   try {
     const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true });
     setup = saved.setup;
@@ -520,19 +584,7 @@ async function completeOnboarding(startGuide: boolean): Promise<void> {
     // tells the user to unlock again.
     await refreshIdentityScopedState();
     nativeApps = await loadNativeApps().catch(() => nativeApps);
-    const selectedApp = homeAppsFromServices(services).find((app) => app.id === onboardingFirstAppId) ?? null;
-    const firstService = startGuide && selectedApp?.serviceId
-      ? services.find((service) => service.id === selectedApp.serviceId) ?? null
-      : null;
-    if (firstService && selectedApp) {
-      activeService = firstService;
-      activeHomeAppId = selectedApp.id;
-      route = "service";
-      serviceGuideStep = 0;
-      persistServiceGuideState();
-    } else {
-      route = "home";
-    }
+    route = "home";
     clearPrivacyScanState();
     render();
   } catch {
@@ -597,11 +649,40 @@ function bindPasswordForm(): void {
       render();
     } catch (failure) {
       secret = "";
-      core = await loadCoreIntegration().catch(() => core);
-      error.textContent = form.dataset.passwordMode === "setup" && core.readiness.identityLoaded
-        ? `The identity was created, but password setup did not finish. ${localActionError(failure, "Retry Create to finish protecting it.")}`
-        : localActionError(failure, "The local OSL account action failed.");
-      submit.disabled = true;
+      const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check OSL account", bootPreferenceDeadlineMs).catch(() => null);
+      if (!refreshedCore) {
+        error.textContent = "OSL could not verify the account state. Try again.";
+        submit.disabled = false;
+        password.focus();
+        return;
+      }
+      core = refreshedCore;
+      const readiness = core.readiness;
+      if (readiness.bootstrapStatus === "ready" && readiness.unlocked) {
+        services = await loadLinkedServices().catch(() => services);
+        passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
+        if (form.dataset.passwordMode === "setup" || !onboardingComplete) {
+          onboardingRoute = "tutorial";
+          route = "onboarding";
+          showToast("Password is configured. Continue setup.");
+        } else {
+          route = "home";
+        }
+        render();
+        return;
+      }
+      if (form.dataset.passwordMode === "setup" && readiness.bootstrapStatus === "passwordRequired") {
+        onboardingRoute = "unlock";
+        showToast("Password is configured. Unlock to continue.");
+        render();
+        return;
+      }
+      if (form.dataset.passwordMode === "setup" && readiness.bootstrapStatus === "setupRequired" && readiness.identityLoaded) {
+        error.textContent = "Account created. Create its password to continue.";
+      } else {
+        error.textContent = localActionError(failure, "The OSL account action failed. Try again.");
+      }
+      submit.disabled = false;
       password.focus();
     }
   });
@@ -644,11 +725,30 @@ function bindImportForm(): void {
     } catch (failure) {
       phraseSecret = "";
       passwordSecret = "";
-      core = await loadCoreIntegration().catch(() => core);
-      error.textContent = core.readiness.identityLoaded
-        ? `The identity was restored, but password setup did not finish. ${localActionError(failure, "Continue with Create to set it.")}`
-        : localActionError(failure, "Recovery was rejected or local secure storage is unavailable.");
-      submit.disabled = true;
+      const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check recovered account", bootPreferenceDeadlineMs).catch(() => null);
+      if (!refreshedCore) {
+        error.textContent = "OSL could not verify the recovered account. Try again.";
+        submit.disabled = false;
+        phrase.focus();
+        return;
+      }
+      core = refreshedCore;
+      if (core.readiness.bootstrapStatus === "ready" && core.readiness.unlocked) {
+        onboardingRoute = "tutorial";
+        showToast("Account recovered. Continue setup.");
+        render();
+        return;
+      }
+      if (core.readiness.bootstrapStatus === "passwordRequired") {
+        onboardingRoute = "unlock";
+        showToast("Account recovered. Unlock to continue.");
+        render();
+        return;
+      }
+      error.textContent = core.readiness.bootstrapStatus === "setupRequired" && core.readiness.identityLoaded
+        ? "Account recovered. Create its password to continue."
+        : localActionError(failure, "Recovery was rejected or secure storage is unavailable.");
+      submit.disabled = false;
       phrase.focus();
     }
   });
@@ -656,28 +756,47 @@ function bindImportForm(): void {
 
 function renderWorkspace(): void {
   const protectedSheet = activeEmbeddedHost ? localProtectedSheetMarkup(localProtectedSheet) : "";
-  const markup = `<div class="app-frame">${desktopTitlebar()}<div class="hub-layout"><section class="hub-workspace">${trustedHeader()}${workspaceContent()}</section></div>${protectedSheet}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}</div>`;
-  if (lastWorkspaceMarkup === markup && root.querySelector(".hub-workspace")) return;
+  const markup = `<div class="hub-layout"><section class="hub-workspace">${trustedHeader()}${workspaceContent()}</section></div>${protectedSheet}${peopleDialogMarkup()}${friendsDialogMarkup()}${nativeAccountChoiceMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+  let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
+  if (!surface) {
+    root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<div id="workspace-render-surface"></div></div>`;
+    surface = root.querySelector<HTMLElement>("#workspace-render-surface");
+    lastWorkspaceMarkup = null;
+    lastWorkspaceViewKey = "";
+  }
+  if (!surface || (lastWorkspaceMarkup === markup && surface.querySelector(".hub-workspace"))) return;
+  const nextViewKey = workspaceViewKey();
+  const focusSnapshot = nextViewKey === lastWorkspaceViewKey ? captureWorkspaceFocus(surface) : null;
   lastWorkspaceMarkup = markup;
-  root.innerHTML = markup;
+  lastWorkspaceViewKey = nextViewKey;
+  surface.innerHTML = markup;
   bindWorkspace();
+  if (focusSnapshot) restoreWorkspaceFocus(focusSnapshot);
   if (friendsDialogOpen) requestAnimationFrame(() => {
     const dialog = document.querySelector<HTMLDialogElement>("#friends-dialog");
     if (dialog && !dialog.open) dialog.showModal();
   });
   openScrubReviewDialogAfterRender();
   requestAnimationFrame(() => {
-    for (const selector of ["#burn-dialog", "#owned-confirmation-dialog"]) {
+    for (const selector of ["#native-account-choice", "#burn-dialog", "#owned-confirmation-dialog"]) {
       const dialog = document.querySelector<HTMLDialogElement>(selector);
       if (dialog && !dialog.open) dialog.showModal();
     }
   });
 }
 
+function nativeAccountChoiceMarkup(): string {
+  if (!nativeAccountChoiceAppId) return "";
+  const app = nativeApps.find((candidate) => candidate.id === nativeAccountChoiceAppId);
+  if (!app || app.availability !== "installed") return "";
+  const name = escapeHtml(app.displayName);
+  return `<dialog class="owned-confirmation-dialog native-account-dialog" id="native-account-choice" aria-labelledby="native-account-choice-title"><section class="owned-confirmation-card"><header><h2 id="native-account-choice-title">Use saved ${name} account?</h2><button class="icon-button" id="native-account-choice-close" aria-label="Cancel">×</button></header><p>Open your signed-in Windows app, or start signed out in a separate OSL profile.</p><footer><button class="button" id="native-account-choice-new">Start separate</button><button class="button primary" id="native-account-choice-existing">Use saved account</button></footer></section></dialog>`;
+}
+
 function appLauncherStrip(): string {
   const configured = configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)
     .filter((app) => !hiddenServices.has(app.serviceId ?? ""));
-  return `<nav class="app-launcher-strip" aria-label="Your apps">${configured.map((app) => `<button class="app-launcher ${activeHomeAppId === app.id ? "active" : ""}" data-home-app="${app.id}" aria-label="Open ${escapeHtml(app.displayName)}" title="${escapeHtml(app.displayName)}">${homeAppLogo(app)}</button>`).join("")}</nav>`;
+  return `<nav class="app-launcher-strip" aria-label="Your apps">${configured.map((app) => `<button class="app-launcher ${activeHomeAppId === app.id ? "active" : ""} ${appLaunchPendingId === app.id ? "pending" : ""}" data-home-app="${app.id}" aria-label="Open ${escapeHtml(app.displayName)}" title="${escapeHtml(app.displayName)}" ${appLaunchPendingId ? "disabled" : ""}>${homeAppLogo(app)}</button>`).join("")}</nav>`;
 }
 
 function simpleDeviceStatusMarkup(): string {
@@ -734,7 +853,8 @@ function workspaceContent(): string {
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
     const state = app.linked ? "Open in OSL" : app.launchState === "available" ? "Set up" : "Coming later";
-    return `<article class="app-tile ${hidden ? "tile-hidden" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}"><button type="button" data-home-app="${app.id}" aria-label="${escapeHtml(`${app.displayName}, ${state}`)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong></span></button>${controls}</article>`;
+    const pending = appLaunchPendingId === app.id;
+    return `<article class="app-tile ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}"><button type="button" data-home-app="${app.id}" aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${appLaunchPendingId ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
@@ -908,18 +1028,39 @@ function serviceContent(): string {
   const name = escapeHtml(activeHomeAppName());
   if (activeService && serviceGuideStep !== null) return serviceGuideContent(activeService, serviceGuideStep);
   if (activeEmbeddedHost) return `<main class="content-viewport host-viewport host-open" id="route-heading" tabindex="-1" aria-label="${name} is open inside OSL"><div class="loading-host" aria-hidden="true"><span class="host-skeleton logo"></span><span class="host-skeleton title"></span></div></main>`;
+  if (serviceAccountPickerOpen) return serviceAccountPickerContent();
   return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>The real service opens inside OSL in its own isolated profile.</p><button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-truth"><span class="status-tag">Encrypted overlay coming later</span><small>OSL stores this profile's login session locally so you stay signed in. OSL never receives the password you type into the service.</small></div><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
+}
+
+function activeNativeApp(): NativeApp | null {
+  if (!activeHomeAppId) return null;
+  return nativeApps.find((app) => app.id === activeHomeAppId) ?? null;
+}
+
+function serviceAccountPickerContent(): string {
+  const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
+  const accounts = app ? embeddedAccountsForHomeApp(app, services) : [];
+  const name = escapeHtml(activeHomeAppName());
+  const choices = accounts.map((account) => `<button class="service-account-choice" data-service-account="${escapeHtml(account.id)}"><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>${escapeHtml(account.label)}</strong><small>OSL profile</small></button>`).join("");
+  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card service-account-picker"><button class="text-back" id="native-app-back">← Apps</button><h1>Choose ${name} profile</h1><div class="service-account-choices">${choices}</div><button class="button" id="add-service-profile">Add another profile</button></section></main>`;
 }
 
 function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): string {
   const name = escapeHtml(activeHomeAppName());
   void step;
-  const details = `<details class="guide-details"><summary>Privacy</summary><p>Your sign-in stays in this app profile. Encryption remains off until you approve a chat.</p></details>`;
+  const nativeApp = activeNativeApp();
+  const installedAction = nativeApp?.availability === "installed"
+    ? `<button class="button" data-native-launch="${nativeApp.id}" ${nativeActionBusy ? "disabled" : ""}>Open installed ${name}</button>`
+    : nativeApp?.availability === "installable"
+      ? `<button class="button" data-native-install="${nativeApp.id}" ${nativeActionBusy ? "disabled" : ""}>Install ${name}</button>`
+      : "";
+  const details = `<details class="guide-details"><summary>Sign-in privacy</summary><p>Open in OSL keeps a separate local session. OSL does not copy passwords from your browser or installed app.</p></details>`;
   const selectedApp = homeAppsFromServices(services).find((app) => app.id === activeHomeAppId);
   const openAction = selectedApp?.launchState === "available"
     ? `<button class="button primary" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name} in OSL`}</button>`
     : `<button class="button" disabled>Coming later</button>`;
-  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>Connect ${name}</h1><p>Sign in normally.</p></div>${details}<footer>${openAction}</footer></section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
+  const nativeNote = nativeApp?.availability === "installed" ? `<p class="guide-native-note">Installed app uses its existing login. OSL protection requires the OSL profile for now.</p>` : "";
+  return `<main class="content-viewport service-guide" id="route-heading" tabindex="-1"><section class="guide-card guide-card-simple"><header><button class="text-back" id="service-guide-exit">← Apps</button></header><div class="guide-hero"><span class="guide-logo" data-guide-service="${service.id}">${serviceLogo(service.id)}</span><h1>Connect ${name}</h1><p>Choose where to open it.</p></div><footer class="guide-actions">${openAction}${installedAction}</footer>${nativeNote}${details}</section>${onboardingServiceSetup ? '<button class="onboarding-skip-dock" id="service-guide-skip">Skip · manual setup</button>' : ""}</main>`;
 }
 
 function settingsContent(): string {
@@ -949,12 +1090,15 @@ function passwordSecuritySettingsContent(): string {
   const roleForm = (role: "stealth" | "burn", configured: boolean, wired: boolean): string => {
     const title = role === "stealth" ? "Stealth password" : "Burn password";
     const consequence = role === "stealth" ? "decoy screen" : "account burn";
-    return `<details class="password-role"><summary><span><strong>${title}</strong><small>${configured ? "Configured" : "Not set"}</small></span><span>›</span></summary><form data-password-role="${role}" data-password-remove="${configured}"><label>Current password<div class="password-input-row"><input id="${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div></label>${configured ? "" : `<label>New ${role} password<div class="password-input-row"><input id="${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div></label>`}<button class="button ${configured ? "danger" : "primary"}" type="submit">${configured ? "Remove" : "Set password"}</button><p class="password-role-note">${wired ? `Active at login for ${consequence}.` : `Saved securely. The ${consequence} action is not enabled yet.`}</p></form></details>`;
+    if (!wired) {
+      return `<section class="password-role unavailable" aria-disabled="true"><div><strong>${title}</strong><small>${configured ? "Stored but inactive" : "Unavailable"}</small></div><p>The ${consequence} login action is not available in this build. OSL will not let you create or rely on it.</p></section>`;
+    }
+    return `<details class="password-role"><summary><span><strong>${title}</strong><small>${configured ? "Configured" : "Not set"}</small></span><span>›</span></summary><form data-password-role="${role}" data-password-remove="${configured}"><label>Current password<div class="password-input-row"><input id="${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div></label>${configured ? "" : `<label>New ${role} password<div class="password-input-row"><input id="${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div></label>`}<button class="button ${configured ? "danger" : "primary"}" type="submit">${configured ? "Remove" : "Set password"}</button><p class="password-role-note">Active at login for ${consequence}.</p></form></details>`;
   };
   const roles = passwordRoleStatus
     ? `<div class="security-shortcuts">${roleForm("stealth", passwordRoleStatus.stealthPasswordSet, passwordRoleStatus.stealthActionWired)}${roleForm("burn", passwordRoleStatus.burnPasswordSet, passwordRoleStatus.burnActionWired)}</div>`
     : `<div class="settings-unavailable"><strong>Password roles unavailable</strong><span>Unlock OSL and reopen Settings.</span></div>`;
-  return `<h2>Password & security</h2><p>Unlocks encrypted storage on this device.</p><div class="settings-actions">${passwordAction}</div>${roles}<div class="warning compact-warning"><span class="risk-triangle" aria-hidden="true">!</span><p>Alternate passwords do nothing at login until their action says Active.</p></div>`;
+  return `<h2>Password & security</h2><p>Unlocks encrypted storage on this device.</p><div class="settings-actions">${passwordAction}</div>${roles}`;
 }
 
 function accountAdvancedSettingsContent(): string {
@@ -965,11 +1109,13 @@ function serviceAccountsSettingsContent(): string {
   const rows = homeAppsFromServices(services).filter((app) => app.visibility === "launch").map((app) => {
     const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : "Coming later";
     const action = app.launchState === "available"
-      ? `<button class="button compact" data-home-app="${app.id}">${app.linked ? "Open" : "Set up"}</button>`
+      ? `<button class="button compact" data-home-app="${app.id}" ${appLaunchPendingId ? "disabled" : ""}>${appLaunchPendingId === app.id ? "Opening…" : app.linked ? "Open" : "Set up"}</button>`
       : `<button class="button compact" disabled>Coming later</button>`;
     return `<article><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${state}</small></span></div>${action}</article>`;
   }).join("");
-  return `<h2>Apps</h2><p>Each account has its own local sign-in profile inside OSL.</p><div class="account-settings-list">${rows}</div><div class="warning"><strong>Local sessions</strong><p>Service cookies stay in the matching OSL profile so you remain signed in. Your typed service password is not sent to OSL.</p></div>`;
+  const installedChoices = nativeApps.map((app) => `<label class="saved-account-app ${app.availability === "installed" ? "" : "unavailable"}"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed" : "Not installed"}</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""} ${app.availability === "installed" ? "" : "disabled"}/></label>`).join("");
+  const savedAccountSettings = `<details class="saved-account-settings"><summary>Saved account behavior</summary><div class="saved-account-choices"><button class="setting-option ${savedAccountMode === "use" ? "selected" : ""}" data-saved-account-mode="use"><strong>Use available</strong><small>Only selected installed apps</small></button><button class="setting-option ${savedAccountMode === "clean" ? "selected" : ""}" data-saved-account-mode="clean"><strong>Start clean</strong><small>Separate signed-out profiles</small></button></div><div class="saved-account-apps">${installedChoices}</div><p>Browser sign-ins stay separate and require one manual login.</p></details>`;
+  return `<h2>Apps</h2><p>Each account has its own local sign-in profile inside OSL.</p>${savedAccountSettings}<div class="account-settings-list">${rows}</div><div class="warning"><strong>Local sessions</strong><p>Service cookies stay in the matching OSL profile so you remain signed in. Your typed service password is not sent to OSL.</p></div>`;
 }
 
 async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
@@ -1009,7 +1155,7 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
 }
 
 function sendingSettingsContent(): string {
-  return `<h2>Sending</h2><p>Automatic sending is not available yet. Use each app normally until OSL can confirm the right chat.</p><details class="sending-details"><summary>Advanced sending preview</summary><div class="settings-options preview-options" aria-disabled="true">${sendModes.map((mode) => `<div class="setting-option ${setup.sendMode === mode.id ? "selected" : ""}"><strong>${mode.title}</strong><small>${mode.detail}</small></div>`).join("")}</div><section class="placement-picker settings-placement" aria-labelledby="settings-placement-heading"><div class="placement-heading"><h3 id="settings-placement-heading">Copy or Keystrokes</h3><p>Both use the same encrypted message.</p></div><div class="placement-row preview-options" aria-disabled="true">${placementOptionsMarkup(false)}</div>${placementComparisonMarkup()}</section><p>OSL keeps sending off until it can confirm the service, account, chat, and people.</p></details>`;
+  return `<h2>Sending</h2><div class="setting-status"><span class="dot"></span>Copy & paste</div><p>Review encrypted text, then copy, paste, and send it yourself. Automatic sending is not available in this build.</p>`;
 }
 
 function privacySettingsContent(): string {
@@ -1376,6 +1522,7 @@ function bindLocalProtectedSheet(): void {
 function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
+  bindSavedAccountControls();
   if (!activeContextToken) {
     const encryptedMode = document.querySelector<HTMLButtonElement>('[data-mode="protected"]');
     if (encryptedMode) {
@@ -1401,23 +1548,20 @@ function bindWorkspace(): void {
     route = button.dataset.route as Route;
     activeService = null;
     activeHomeAppId = null;
+    appLaunchPendingId = null;
+    nativeAccountChoiceAppId = null;
+    serviceAccountPickerOpen = false;
     render();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-service]").forEach((button) => button.addEventListener("click", () => { const service = services.find((item) => item.id === button.dataset.service); if (service) openServiceRoute(service, null); }));
-  document.querySelectorAll<HTMLButtonElement>("[data-home-app]").forEach((button) => button.addEventListener("click", async () => {
-    let app = homeAppsFromServices(services).find((item) => item.id === button.dataset.homeApp);
-    if (!app?.serviceId) return;
-    let service = services.find((item) => item.id === app?.serviceId);
-    if (!service) {
-      services = await loadLinkedServices().catch(() => services);
-      app = homeAppsFromServices(services).find((item) => item.id === button.dataset.homeApp);
-      service = services.find((item) => item.id === app?.serviceId);
-    }
-    if (service && app) {
-      if (app.linked) void openEmbeddedApp(app, service);
-      else openServiceRoute(service, app.provider, app.id, true);
-    }
-    else showToast("App launcher is temporarily unavailable");
+  document.querySelectorAll<HTMLButtonElement>("[data-home-app]").forEach((button) => button.addEventListener("click", () => {
+    if (appLaunchPendingId) return;
+    const appId = button.dataset.homeApp as HomeAppId;
+    if (!homeAppsFromServices(services).some((candidate) => candidate.id === appId)) return;
+    const intent = ++navigationIntentEpoch;
+    appLaunchPendingId = appId;
+    renderNow();
+    void openHomeAppFromLauncher(appId, intent);
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-settings]").forEach((button) => button.addEventListener("click", () => {
     const next = button.dataset.settings as SettingsSection;
@@ -1428,9 +1572,6 @@ function bindWorkspace(): void {
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
-  document.querySelectorAll<HTMLButtonElement>("[data-send-mode]").forEach((button) => button.addEventListener("click", () => { const next = button.dataset.sendMode as SendMode; if (next !== setup.sendMode) { setup.acceptedRisk = false; setup.acceptedRiskForMode = null; } setup.sendMode = next; if (canCompleteSetup(setup)) void persistSetup(); render(); }));
-  document.querySelectorAll<HTMLButtonElement>("[data-placement]").forEach((button) => button.addEventListener("click", () => { setup.placementMode = button.dataset.placement as PlacementMode; void persistSetup(); render(); }));
-  document.querySelector<HTMLInputElement>("#settings-risk-accept")?.addEventListener("change", (event) => { setup.acceptedRisk = (event.currentTarget as HTMLInputElement).checked; setup.acceptedRiskForMode = setup.acceptedRisk ? setup.sendMode : null; if (canCompleteSetup(setup)) void persistSetup(); render(); });
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
@@ -1463,7 +1604,13 @@ function bindWorkspace(): void {
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
-  document.querySelector<HTMLButtonElement>("#embedded-service-setup")?.addEventListener("click", () => void setupEmbeddedApp());
+  document.querySelector<HTMLButtonElement>("#embedded-service-setup")?.addEventListener("click", () => void setupEmbeddedApp(false));
+  document.querySelector<HTMLButtonElement>("#add-service-profile")?.addEventListener("click", () => void setupEmbeddedApp(true));
+  document.querySelectorAll<HTMLButtonElement>("[data-service-account]").forEach((button) => button.addEventListener("click", () => {
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
+    const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
+    if (app && service) void openEmbeddedApp(app, service, button.dataset.serviceAccount);
+  }));
   document.querySelector<HTMLButtonElement>("#onboarding-service-continue")?.addEventListener("click", () => void continueOnboardingFromService());
   document.querySelector("#service-guide-back")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(previousServiceGuideStep(serviceGuideStep));
@@ -1472,7 +1619,7 @@ function bindWorkspace(): void {
     if (onboardingServiceSetup) {
       onboardingServiceSetup = false;
       clearServiceGuide();
-      void completeOnboarding(false);
+      void completeOnboarding();
       return;
     }
     clearServiceGuide();
@@ -1512,11 +1659,30 @@ function bindWorkspace(): void {
     route = "home";
     activeService = null;
     activeHomeAppId = null;
+    serviceAccountPickerOpen = false;
     render();
   });
-  document.querySelector("#native-app-back")?.addEventListener("click", () => { void closeEmbeddedServiceHost().catch(() => undefined); activeEmbeddedHost = null; resetLocalProtectedSheet(); route = "home"; activeService = null; activeHomeAppId = null; render(); });
+  document.querySelector("#native-app-back")?.addEventListener("click", () => { void closeEmbeddedServiceHost().catch(() => undefined); activeEmbeddedHost = null; serviceAccountPickerOpen = false; resetLocalProtectedSheet(); route = "home"; activeService = null; activeHomeAppId = null; render(); });
   document.querySelectorAll<HTMLButtonElement>("[data-native-launch]").forEach((button) => button.addEventListener("click", () => void runNativeAppAction(button.dataset.nativeLaunch as NativeAppId, false)));
   document.querySelectorAll<HTMLButtonElement>("[data-native-install]").forEach((button) => button.addEventListener("click", () => void runNativeAppAction(button.dataset.nativeInstall as NativeAppId, true)));
+  document.querySelector<HTMLButtonElement>("#native-account-choice-close")?.addEventListener("click", () => { nativeAccountChoiceAppId = null; render(); });
+  document.querySelector<HTMLDialogElement>("#native-account-choice")?.addEventListener("close", () => { if (nativeAccountChoiceAppId) { nativeAccountChoiceAppId = null; render(); } });
+  document.querySelector<HTMLButtonElement>("#native-account-choice-existing")?.addEventListener("click", () => {
+    const appId = nativeAccountChoiceAppId;
+    nativeAccountChoiceAppId = null;
+    if (appId) void runNativeAppAction(appId, false);
+  });
+  document.querySelector<HTMLButtonElement>("#native-account-choice-new")?.addEventListener("click", () => {
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
+    const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
+    nativeAccountChoiceAppId = null;
+    if (!app || !service) { showToast("App launcher is temporarily unavailable"); render(); return; }
+    activeService = service;
+    activeHomeAppId = app.id;
+    route = "service";
+    serviceGuideStep = null;
+    void setupEmbeddedApp(true);
+  });
   document.querySelector("#edit-home")?.addEventListener("click", () => { homeEditMode = !homeEditMode; render(); });
   document.querySelectorAll<HTMLButtonElement>("[data-tile-move]").forEach((button) => button.addEventListener("click", () => moveHomeTile(button.dataset.tileMove ?? "")));
   document.querySelectorAll<HTMLButtonElement>("[data-tile-toggle]").forEach((button) => button.addEventListener("click", () => toggleHomeTile(button.dataset.tileToggle ?? "")));
@@ -1574,6 +1740,47 @@ function bindWorkspace(): void {
   bindUpdateControls();
 }
 
+async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promise<void> {
+  try {
+    const refreshed = await withNativeDeadline(loadLinkedServices(), "Refresh apps", 450).catch(() => null);
+    if (intent !== navigationIntentEpoch) return;
+    if (refreshed) services = refreshed;
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === appId);
+    const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
+    if (!app || !service) {
+      showToast("This app is unavailable right now");
+      return;
+    }
+    appLaunchPendingId = null;
+    const installedNative = nativeApps.find((candidate) => candidate.id === app.id && candidate.availability === "installed");
+    if (!app.linked && installedNative) {
+      if (savedAccountMode === "use" && savedNativeApps.has(installedNative.id)) {
+        void runNativeAppAction(installedNative.id, false);
+      } else if (savedAccountMode !== "ask") {
+        activeService = service;
+        activeHomeAppId = app.id;
+        route = "service";
+        serviceGuideStep = null;
+        void setupEmbeddedApp(true);
+      } else {
+        activeService = service;
+        activeHomeAppId = app.id;
+        nativeAccountChoiceAppId = installedNative.id;
+        render();
+      }
+    } else if (app.linked) {
+      void openEmbeddedApp(app, service);
+    } else {
+      openServiceRoute(service, app.provider, app.id, true);
+    }
+  } finally {
+    if (intent === navigationIntentEpoch && appLaunchPendingId === appId) {
+      appLaunchPendingId = null;
+      render();
+    }
+  }
+}
+
 async function runNativeAppAction(appId: NativeAppId, install: boolean): Promise<void> {
   if (nativeActionBusy) return;
   const app = nativeApps.find((candidate) => candidate.id === appId);
@@ -1600,7 +1807,7 @@ async function runNativeAppAction(appId: NativeAppId, install: boolean): Promise
   }
 }
 
-async function setupEmbeddedApp(): Promise<void> {
+async function setupEmbeddedApp(forceNewProfile = false): Promise<void> {
   if (nativeActionBusy || !activeHomeAppId) return;
   const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
   if (!app?.serviceId || app.launchState !== "available") return;
@@ -1608,10 +1815,12 @@ async function setupEmbeddedApp(): Promise<void> {
   resetLocalProtectedSheet();
   render();
   try {
-    const opened = app.linked
+    const existingProfiles = embeddedAccountsForHomeApp(app, services);
+    const opened = app.linked && !forceNewProfile
       ? { host: await openEmbeddedHomeApp(app, services) }
-      : await setupEmbeddedHomeApp(app);
+      : await setupEmbeddedHomeApp(app, existingProfiles.length === 0 ? "Personal" : `Profile ${existingProfiles.length + 1}`);
     activeEmbeddedHost = opened.host;
+    serviceAccountPickerOpen = false;
     services = await loadLinkedServices().catch(() => services);
     serviceGuideStep = null;
     localStorage.removeItem(serviceGuideStorageKey);
@@ -1624,18 +1833,26 @@ async function setupEmbeddedApp(): Promise<void> {
   }
 }
 
-async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService): Promise<void> {
+async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService, accountId?: string): Promise<void> {
   if (nativeActionBusy) return;
   navigationIntentEpoch += 1;
   resetLocalProtectedSheet();
-  nativeActionBusy = true;
   activeService = service;
   activeHomeAppId = app.id;
   route = "service";
   serviceGuideStep = null;
+  const accounts = embeddedAccountsForHomeApp(app, services);
+  if (!accountId && accounts.length > 1) {
+    activeEmbeddedHost = null;
+    serviceAccountPickerOpen = true;
+    render();
+    return;
+  }
+  nativeActionBusy = true;
+  serviceAccountPickerOpen = false;
   render();
   try {
-    activeEmbeddedHost = await openEmbeddedHomeApp(app, services);
+    activeEmbeddedHost = await openEmbeddedHomeApp(app, services, accountId);
   } catch (failure) {
     activeEmbeddedHost = null;
     resetLocalProtectedSheet();
@@ -2077,6 +2294,7 @@ function openServiceRoute(service: LinkedService, _provider: EmailProvider | nul
   navigationIntentEpoch += 1;
   activeService = service;
   activeHomeAppId = appId ?? service.id as HomeAppId;
+  serviceAccountPickerOpen = false;
   route = "service";
   const saved = parseServiceGuideState(localStorage.getItem(serviceGuideStorageKey));
   serviceGuideStep = forceGuide ? 0 : saved?.serviceId === service.id ? saved.step : null;
@@ -2098,19 +2316,6 @@ function setServiceGuideStep(step: ServiceGuideStep): void {
 function clearServiceGuide(): void {
   serviceGuideStep = null;
   localStorage.removeItem(serviceGuideStorageKey);
-}
-
-async function persistSetup(): Promise<void> {
-  const intent = ++setupPersistEpoch;
-  const requested = structuredClone(setup);
-  await setupPersistRunner.request(async () => {
-    try {
-      const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup: requested, showPlaintextPreview: true });
-      if (intent === setupPersistEpoch) setup = saved.setup;
-    } catch {
-      if (intent === setupPersistEpoch) showToast("Could not save local sending settings");
-    }
-  });
 }
 
 function updateBannerMarkup(): string {
@@ -2188,22 +2393,72 @@ function localActionError(failure: unknown, fallback: string): string {
   return cleaned && cleaned.length <= 240 ? cleaned : fallback;
 }
 
+function showBootstrapRecovery(): void {
+  renderScheduler.cancel();
+  lastWorkspaceMarkup = null;
+  lastWorkspaceViewKey = "";
+  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="ui-recovery" role="alert" aria-labelledby="boot-recovery-title"><img src="${oslLogoUrl}" alt=""/><h1 id="boot-recovery-title">Couldn’t open OSL</h1><p>The local security core did not respond.</p><button class="button primary" id="boot-retry">Retry</button></main></div>`;
+  bindDesktopTitlebar();
+  document.querySelector<HTMLButtonElement>("#boot-retry")?.addEventListener("click", (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    button.disabled = true;
+    button.textContent = "Retrying…";
+    void bootstrap();
+  });
+}
+
+function usableBootCore(value: CoreIntegration): boolean {
+  if (!isTauriRuntime()) return true;
+  const status = value.readiness.bootstrapStatus;
+  return value.readiness.originalCoreLinked && status !== "notAttempted" && status !== "inProgress" && status !== "failed";
+}
+
+function startReadyWorkspaceLoads(): void {
+  if (screenshotProtectionEnabled) {
+    void setScreenshotProtection(true).then((applied) => {
+      if (applied) return;
+      screenshotProtectionEnabled = false;
+      localStorage.setItem(screenshotProtectionStorageKey, "false");
+      if (route === "settings" && settingsSection === "scrub") render();
+      showToast("Windows capture resistance could not be restored");
+    });
+  }
+  if (route === "onboarding") return;
+  void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
+  void refreshUpdateStatus(true);
+  void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
+  void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
+  if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
+    appNotifications = enabled ? await loadAppNotifications() : null;
+    if (route === "home") renderWhenIdle();
+  });
+  void refreshIdentitySlots().then(() => { if (route === "settings" && settingsSection === "account") renderWhenIdle(); });
+}
+
 async function bootstrap(): Promise<void> {
+  const attempt = ++bootstrapEpoch;
   applyTheme(themeChoice);
   loadUiPreferences();
-  root.innerHTML = `<main class="loading-screen"><img class="osl-logo loading-logo" src="${oslLogoUrl}" alt="OSL Privacy"/><div class="loading-lines" aria-hidden="true"><span></span><span></span></div><p>Opening local workspace…</p></main>`;
+  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><img class="osl-logo loading-logo" src="${oslLogoUrl}" alt="OSL Privacy"/><div class="loading-lines" aria-hidden="true"><span></span><span></span></div><span class="sr-only">Opening OSL</span></main></div>`;
+  bindDesktopTitlebar();
+  const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
+  const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
+  const nativeAppsRequest = withNativeDeadline(loadNativeApps(), "Load installed apps", bootSupportDeadlineMs).catch(() => null);
+  const licenseRequest = withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs).catch(() => null);
   try {
-    const [preferences, linkedServices, nativeCatalog, coreIntegration, currentLicenseState] = await Promise.all([
-      loadOnboardingPreferences(),
-      loadLinkedServices().catch(() => []),
-      loadNativeApps().catch(() => []),
-      loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
-      loadHubLicenseState().catch(() => structuredClone(unconfiguredLicenseState)),
-    ]);
-    services = linkedServices;
-    nativeApps = nativeCatalog;
+    const coreIntegration = await withNativeDeadline(loadCoreIntegration(), "Start OSL", bootCoreDeadlineMs);
+    if (attempt !== bootstrapEpoch) return;
+    if (!usableBootCore(coreIntegration)) {
+      showBootstrapRecovery();
+      return;
+    }
     core = coreIntegration;
-    licenseState = currentLicenseState;
+    const preferences = await preferencesRequest ?? {
+      onboardingComplete: core.readiness.bootstrapStatus === "ready",
+      setup: parseSetupState(null),
+      showPlaintextPreview: true,
+    };
+    if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
     onboardingComplete = preferences.onboardingComplete;
     if (core.readiness.bootstrapStatus === "setupRequired") {
@@ -2216,30 +2471,18 @@ async function bootstrap(): Promise<void> {
       route = preferences.onboardingComplete ? "home" : "onboarding";
     }
   } catch {
-    setup = parseSetupState(null);
-    route = "onboarding";
+    if (attempt === bootstrapEpoch) showBootstrapRecovery();
+    return;
   }
-  render();
-  if (screenshotProtectionEnabled) {
-    void setScreenshotProtection(true).then((applied) => {
-      if (applied) return;
-      screenshotProtectionEnabled = false;
-      localStorage.setItem(screenshotProtectionStorageKey, "false");
-      if (route === "settings" && settingsSection === "scrub") render();
-      showToast("Windows capture resistance could not be restored");
-    });
-  }
-  if (route !== "onboarding") {
-    void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
-    void refreshUpdateStatus(true);
-    void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
-    void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
-    if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
-      appNotifications = enabled ? await loadAppNotifications() : null;
-      if (route === "home") renderWhenIdle();
-    });
-    void refreshIdentitySlots().then(() => { if (route === "settings" && settingsSection === "account") renderWhenIdle(); });
-  }
+  renderNow();
+  startReadyWorkspaceLoads();
+  void Promise.all([servicesRequest, nativeAppsRequest, licenseRequest]).then(([linkedServices, nativeCatalog, currentLicenseState]) => {
+    if (attempt !== bootstrapEpoch) return;
+    if (linkedServices) services = linkedServices;
+    if (nativeCatalog) nativeApps = nativeCatalog;
+    if (currentLicenseState) licenseState = currentLicenseState;
+    route === "onboarding" ? render() : renderWhenIdle();
+  });
 }
 
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });

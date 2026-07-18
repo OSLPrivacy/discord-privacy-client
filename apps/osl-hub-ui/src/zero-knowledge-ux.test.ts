@@ -16,7 +16,7 @@ describe("zero-knowledge Scrub review", () => {
   it("shows the local-only promise before every scan action", () => {
     const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
     const settings = functionSource("privacySettingsContent", "privacyScanResultsMarkup");
-    expect(onboarding.indexOf("Your messages never leave this device.")).toBeLessThan(onboarding.indexOf("onboarding-start-scrub"));
+    expect(onboarding).toMatch(/return `<h1[^`]*Your messages never leave this device\.<\/strong>[^`]*\$\{scanAction\}/);
     expect(settings).toMatch(/return `<h2>Scrub<\/h2><p class="scrub-local-promise"><strong>Your messages never leave this device\.<\/strong>[\s\S]*\$\{scanActions\}/);
   });
 
@@ -29,12 +29,12 @@ describe("zero-knowledge Scrub review", () => {
     expect(categories).toContain("scrubSignalDefinitions.map(({ id }) => id)");
   });
 
-  it("uses one seamless scan action and one Done action", () => {
+  it("offers only a real local export scan and one finish action", () => {
     const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
-    expect(onboarding).toContain("Scan this device");
-    expect(onboarding).not.toContain('type="file"');
-    expect(onboarding).toContain('id="complete-onboarding">Done');
-    expect(onboarding).not.toContain("Finish setup");
+    expect(onboarding).toContain("Choose message export");
+    expect(onboarding).toContain('type="file"');
+    expect(onboarding).toContain('id="complete-onboarding">Finish setup');
+    expect(onboarding).not.toContain("Scan this device");
     expect(onboarding).not.toContain("Not now");
   });
 

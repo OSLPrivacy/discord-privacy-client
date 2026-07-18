@@ -127,11 +127,26 @@ export async function createWatcherInvoice(
     signal: AbortSignal.timeout(5_000),
   });
   if (!response.ok) throw new Error(`crypto watcher returned ${response.status}`);
-  const result = (await response.json()) as { address?: unknown };
-  if (typeof result.address !== "string" || result.address.length < 20 || result.address.length > 128) {
+  const result = (await response.json()) as { invoice_id?: unknown; address?: unknown };
+  if (result.invoice_id !== body.invoice_id) {
+    throw new Error("crypto watcher returned a mismatched invoice id");
+  }
+  if (typeof result.address !== "string" || !validPaymentAddress(result.address, body.payment_method)) {
     throw new Error("crypto watcher returned an invalid address");
   }
   return { address: result.address };
+}
+
+function validPaymentAddress(address: string, asset: CryptoAsset): boolean {
+  if (asset === "btc") {
+    // Production invoices use Bitcoin mainnet native SegWit addresses. This
+    // validates the network and Bech32/Bech32m character shape; Bitcoin Core
+    // remains the checksum authority that generated the address.
+    return /^bc1[023456789acdefghjklmnpqrstuvwxyz]{11,87}$/.test(address);
+  }
+  // Monero mainnet primary addresses start with 4 and subaddresses with 8.
+  // Wallet RPC is still the checksum authority; reject other networks/shapes.
+  return /^[48][123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{94}$/.test(address);
 }
 
 export async function insertAnonymousInvoice(

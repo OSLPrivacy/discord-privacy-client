@@ -111,11 +111,15 @@ async function quote(
       payment_method: asset,
       delivery_public_key_spki: publicKey,
     }),
-  }), env as Env, async () => Response.json({
-    address: asset === "btc"
-      ? "bc1q000000000000000000000000000000000test"
-      : "4".repeat(95),
-  }));
+  }), env as Env, async (_input, init) => {
+    const watcherInvoice = JSON.parse(String(init?.body)) as { invoice_id: string };
+    return Response.json({
+      invoice_id: watcherInvoice.invoice_id,
+      address: asset === "btc"
+        ? `bc1q${"q".repeat(38)}`
+        : `8${"1".repeat(94)}`,
+    });
+  });
   expect(response.status).toBe(200);
   return await response.json() as {
     invoice_id: string; claim_token: string; amount_atomic: string; expires_at: number;
@@ -169,7 +173,11 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       body: JSON.stringify({ plan: "pro", payment_method: "btc", delivery_public_key_spki: keys.publicKey }),
     }), env as Env, async (_input, init) => {
       watcherBody = String(init?.body ?? "");
-      return Response.json({ address: "bc1q111111111111111111111111111111111test" });
+      const watcherInvoice = JSON.parse(String(init?.body)) as { invoice_id: string };
+      return Response.json({
+        invoice_id: watcherInvoice.invoice_id,
+        address: `bc1q${"q".repeat(38)}`,
+      });
     });
     expect(response.status).toBe(200);
     const invoice = await response.json() as { invoice_id: string; amount_usd_cents: number };

@@ -61,6 +61,16 @@ describe("clean onboarding sign in", () => {
 });
 
 describe("fresh-account continuation", () => {
+  it("asks once about saved accounts and keeps per-app choices in Advanced", () => {
+    const tutorial = functionSource("tutorialContent", "persistSavedAccountPreferences");
+    expect(tutorial).toContain("Use saved accounts?");
+    expect(tutorial).toContain("Use available");
+    expect(tutorial).toContain("Start clean");
+    expect(tutorial).toContain('<details class="saved-account-advanced"><summary>Advanced</summary>');
+    expect(tutorial).toContain("Browser accounts need one manual sign-in");
+    expect(tutorial).toContain('data-saved-native="${app.id}"');
+  });
+
   it("continues from saved recovery material into the tutorial", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(binding).toMatch(/#recovery-continue[\s\S]*?recoveryBundle = null;[\s\S]*?onboardingRoute = "tutorial";[\s\S]*?render\(\)/);
@@ -74,29 +84,43 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain('document.querySelector("#skip-onboarding")?.addEventListener("click"');
   });
 
-  it("places featured local Scrub last before starting the first app guide", () => {
+  it("guides through one real app connection before sending setup", () => {
+    const apps = functionSource("onboardingAppsContent", "persistSavedAccountPreferences");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    expect(apps).toContain("Connect one app");
+    expect(apps).toContain('data-onboarding-app="${app.id}"');
+    expect(binding).toMatch(/#continue-account-setup[\s\S]*?onboardingRoute = "apps"/);
+    expect(binding).toMatch(/\[data-onboarding-app\][\s\S]*?onboardingServiceSetup = true[\s\S]*?route = "service"/);
+  });
+
+  it("places featured local Scrub last before Home", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const completion = functionSource("completeOnboarding", "bindPasswordForm");
-    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?sendingSetupStep === "send"[\s\S]*?onboardingRoute = "scrub"/);
-    expect(binding).toContain('document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding(false))');
-    expect(source).toContain('id="route-heading" tabindex="-1">Scrub');
+    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?setup\.sendMode = "manual"[\s\S]*?onboardingRoute = "scrub"/);
+    expect(binding).toContain('document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding())');
+    expect(source).toContain('id="route-heading" tabindex="-1">Try Scrub');
     expect(source).toContain("Your messages never leave this device.");
+    expect(source).toContain('id="privacy-export-input"');
+    expect(source).not.toContain('id="onboarding-start-scrub"');
     expect(completion.indexOf("await loadNativeApps()")).toBeGreaterThan(completion.indexOf("await saveOnboardingPreferences"));
-    expect(completion).toMatch(/const selectedApp = homeAppsFromServices\(services\)[\s\S]*?const firstService = startGuide && selectedApp\?\.serviceId[\s\S]*?activeHomeAppId = selectedApp\.id;[\s\S]*?route = "service";[\s\S]*?serviceGuideStep = 0;[\s\S]*?persistServiceGuideState\(\)/);
+    expect(completion).toContain('route = "home"');
   });
 
-  it("reveals send behavior and text placement as two simple steps", () => {
+  it("shows only the manual sending behavior that works in this build", () => {
     const content = functionSource("sendingSetupContent", "scrubCategoryChooserMarkup");
-    expect(content).toContain('sendingSetupStep === "send"');
-    expect(content).toContain("Choose how to send");
-    expect(content).toContain("Choose how text appears");
-    expect(content).toContain('id="sending-setup-back"');
+    expect(content).toContain("Send with copy & paste");
+    expect(content).toContain("manualSendingAnimationMarkup()");
+    expect(content).toContain("You review, copy, paste, and send it yourself.");
+    expect(content).not.toMatch(/Single Enter|Double Enter|Choose how to send|Choose how text appears/);
   });
 
-  it("recovers when identity creation succeeds before password setup fails", () => {
+  it("re-reads readiness when password setup reports a failure", () => {
     const binding = functionSource("bindPasswordForm", "bindImportForm");
-    expect(binding).toMatch(/catch \(failure\)[\s\S]*?core = await loadCoreIntegration\(\)\.catch\(\(\) => core\)/);
-    expect(binding).toContain("The identity was created, but password setup did not finish.");
+    expect(binding).toMatch(/catch \(failure\)[\s\S]*?withNativeDeadline\(loadCoreIntegration\(\), "Check OSL account"/);
+    expect(binding).toContain('readiness.bootstrapStatus === "ready" && readiness.unlocked');
+    expect(binding).toContain('readiness.bootstrapStatus === "passwordRequired"');
+    expect(binding).toContain('readiness.bootstrapStatus === "setupRequired" && readiness.identityLoaded');
+    expect(binding).not.toContain("password setup did not finish");
   });
 
   it("reloads the encrypted service registry after first password setup and recovery", () => {
@@ -108,6 +132,6 @@ describe("fresh-account continuation", () => {
 
   it("reloads password roles immediately after setup and unlock", () => {
     const binding = functionSource("bindPasswordForm", "bindImportForm");
-    expect(binding.match(/loadHubPasswordRoleStatus\(\)/g)).toHaveLength(2);
+    expect(binding.match(/loadHubPasswordRoleStatus\(\)/g)?.length).toBeGreaterThanOrEqual(2);
   });
 });

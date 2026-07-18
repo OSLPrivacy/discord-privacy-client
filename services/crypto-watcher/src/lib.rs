@@ -40,8 +40,10 @@ pub enum WatcherError {
     Rpc(String),
     #[error("storage failed: {0}")]
     Store(String),
-    #[error("callback failed: {0}")]
-    Callback(String),
+    #[error("retryable callback failed: {0}")]
+    CallbackRetryable(String),
+    #[error("terminal callback rejected: {0}")]
+    CallbackTerminal(String),
     #[error("request rejected: {0}")]
     Request(String),
 }
@@ -187,12 +189,15 @@ pub struct StoredInvoice {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PaymentReference {
     pub txid: String,
+    #[serde(default)]
+    pub output_identity: String,
     pub amount_atomic: u128,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PaymentObservation {
     pub txid: String,
+    pub output_identity: String,
     pub amount_atomic: u128,
     pub confirmations: u32,
 }
@@ -320,6 +325,7 @@ struct BitcoinTransactionDetail {
     address: Option<String>,
     category: String,
     amount: Value,
+    vout: u32,
     #[serde(default)]
     abandoned: bool,
 }
@@ -412,27 +418,23 @@ impl WalletRpc for CoreWalletRpc {
                     if transaction.confirmations < 0 || !transaction.walletconflicts.is_empty() {
                         continue;
                     }
-                    let amount_atomic = transaction
-                        .details
-                        .iter()
-                        .filter(|detail| {
-                            detail.category == "receive"
-                                && detail.address.as_deref() == Some(invoice.address.as_str())
-                                && !detail.abandoned
-                        })
-                        .try_fold(0_u128, |total, detail| {
-                            total
-                                .checked_add(btc_value_to_sats(&detail.amount)?)
-                                .ok_or_else(|| WatcherError::Rpc("Bitcoin amount overflow".into()))
-                        })?;
-                    if amount_atomic == 0 {
-                        continue;
+                    for detail in transaction.details.iter().filter(|detail| {
+                        detail.category == "receive"
+                            && detail.address.as_deref() == Some(invoice.address.as_str())
+                            && !detail.abandoned
+                    }) {
+                        let amount_atomic = btc_value_to_sats(&detail.amount)?;
+                        if amount_atomic == 0 {
+                            continue;
+                        }
+                        payments.push(PaymentObservation {
+                            txid: txid.clone(),
+                            output_identity: format!("btc:{txid}:{}", detail.vout),
+                            amount_atomic,
+                            confirmations: u32::try_from(transaction.confirmations)
+                                .unwrap_or(u32::MAX),
+                        });
                     }
-                    payments.push(PaymentObservation {
-                        txid,
-                        amount_atomic,
-                        confirmations: u32::try_from(transaction.confirmations).unwrap_or(u32::MAX),
-                    });
                 }
                 Ok(Observation { payments })
             }
@@ -483,10 +485,15 @@ fn monero_payment_observations(
                 && !transfer.double_spend_seen
         }) {
             validate_txid(&transfer.txid)?;
+            let output_identity = format!(
+                "xmr:{}:{}:{}",
+                transfer.txid, transfer.subaddr_index.major, transfer.subaddr_index.minor
+            );
             let entry = payments
-                .entry(transfer.txid.clone())
+                .entry(output_identity.clone())
                 .or_insert(PaymentObservation {
                     txid: transfer.txid,
+                    output_identity,
                     amount_atomic: 0,
                     confirmations: transfer.confirmations,
                 });
@@ -516,7 +523,12 @@ fn indexed_payments(
     let mut payments = BTreeMap::new();
     for payment in &observation.payments {
         validate_txid(&payment.txid)?;
-        if payment.amount_atomic == 0 || payments.insert(payment.txid.as_str(), payment).is_some() {
+        validate_output_identity(&payment.output_identity, &payment.txid)?;
+        if payment.amount_atomic == 0
+            || payments
+                .insert(payment.output_identity.as_str(), payment)
+                .is_some()
+        {
             return Err(WatcherError::Rpc(
                 "wallet returned duplicate or zero-value payment references".into(),
             ));
@@ -545,6 +557,7 @@ fn select_payment_refs(
             .ok_or_else(|| WatcherError::Rpc("payment amount overflow".into()))?;
         selected.push(PaymentReference {
             txid: payment.txid.clone(),
+            output_identity: payment.output_identity.clone(),
             amount_atomic: payment.amount_atomic,
         });
         if total >= required_amount {
@@ -568,10 +581,27 @@ fn confirmed_locked_observation(
     let mut amount = 0_u128;
     for reference in locked {
         validate_txid(&reference.txid)?;
-        let Some(payment) = current.get(reference.txid.as_str()) else {
+        let payment = if reference.output_identity.is_empty() {
+            // Compatibility with encrypted rows created before exact output
+            // identities were persisted. Only recover an unambiguous match.
+            let mut matches = current
+                .values()
+                .copied()
+                .filter(|payment| payment.txid == reference.txid);
+            let first = matches.next();
+            if matches.next().is_some() {
+                return Ok(None);
+            }
+            first
+        } else {
+            validate_output_identity(&reference.output_identity, &reference.txid)?;
+            current.get(reference.output_identity.as_str()).copied()
+        };
+        let Some(payment) = payment else {
             return Ok(None);
         };
-        if payment.amount_atomic != reference.amount_atomic
+        if payment.txid != reference.txid
+            || payment.amount_atomic != reference.amount_atomic
             || payment.confirmations < required_confirmations
         {
             return Ok(None);
@@ -585,6 +615,35 @@ fn confirmed_locked_observation(
         return Ok(None);
     }
     Ok(Some(Observation { payments }))
+}
+
+fn validate_output_identity(identity: &str, txid: &str) -> Result<(), WatcherError> {
+    let valid = if let Some(rest) = identity.strip_prefix("btc:") {
+        rest.strip_prefix(txid)
+            .and_then(|value| value.strip_prefix(':'))
+            .is_some_and(|vout| !vout.is_empty() && vout.bytes().all(|b| b.is_ascii_digit()))
+    } else if let Some(rest) = identity.strip_prefix("xmr:") {
+        rest.strip_prefix(txid)
+            .and_then(|value| value.strip_prefix(':'))
+            .is_some_and(|indices| {
+                let Some((major, minor)) = indices.split_once(':') else {
+                    return false;
+                };
+                !major.is_empty()
+                    && !minor.is_empty()
+                    && major.bytes().all(|b| b.is_ascii_digit())
+                    && minor.bytes().all(|b| b.is_ascii_digit())
+            })
+    } else {
+        false
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(WatcherError::Rpc(
+            "wallet returned a malformed output identity".into(),
+        ))
+    }
 }
 
 fn observation_totals(observation: &Observation) -> Result<(u128, u32), WatcherError> {
@@ -851,44 +910,64 @@ impl AppState {
         // that may fail and short-circuit this polling pass.
         let _ = self.store.cleanup(now)?;
         let mut settled = 0;
-        for mut invoice in self.store.pending(now)? {
-            let required = match invoice.payment_method {
-                Asset::Btc => self.config.btc_confirmations,
-                Asset::Xmr => self.config.xmr_confirmations,
-            };
-            let observation = self.wallets.observe(&invoice, required).await?;
-            let required_amount: u128 = invoice
-                .amount_atomic
-                .parse()
-                .map_err(|_| WatcherError::Store("stored amount malformed".into()))?;
-            if invoice.locked_payment_refs.is_empty() && now <= invoice.expires_at {
-                if let Some(payment_refs) = select_payment_refs(&observation, required_amount)? {
-                    invoice.observed_at = Some(now);
-                    invoice.locked_payment_refs = payment_refs;
-                    self.store.update(&invoice)?;
+        for invoice in self.store.pending(now)? {
+            match self.poll_invoice(invoice, now).await {
+                Ok(true) => settled += 1,
+                Ok(false) => {}
+                Err(WatcherError::CallbackTerminal(error)) => {
+                    // Never discard a paid invoice merely because the keyserver
+                    // rejected one callback. Keep it for bounded retries while
+                    // allowing every other invoice in this pass to progress.
+                    tracing::warn!(%error, "settlement callback rejected");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "invoice poll failed");
                 }
             }
-            let Some(confirmed) = confirmed_locked_observation(
-                &observation,
-                &invoice.locked_payment_refs,
-                required,
-                required_amount,
-            )?
-            else {
-                continue;
-            };
-            let observed_at = invoice
-                .observed_at
-                .ok_or_else(|| WatcherError::Store("locked payment time missing".into()))?;
-            self.callback(&invoice, &confirmed, observed_at, now)
-                .await?;
-            self.store.settle(
-                &invoice.invoice_id,
-                now + self.config.invoice_retention_seconds,
-            )?;
-            settled += 1;
         }
         Ok(settled)
+    }
+
+    async fn poll_invoice(
+        &self,
+        mut invoice: StoredInvoice,
+        now: i64,
+    ) -> Result<bool, WatcherError> {
+        let required = match invoice.payment_method {
+            Asset::Btc => self.config.btc_confirmations,
+            Asset::Xmr => self.config.xmr_confirmations,
+        };
+        let observation = self.wallets.observe(&invoice, required).await?;
+        let required_amount: u128 = invoice
+            .amount_atomic
+            .parse()
+            .map_err(|_| WatcherError::Store("stored amount malformed".into()))?;
+        if invoice.locked_payment_refs.is_empty() && now <= invoice.expires_at {
+            if let Some(payment_refs) = select_payment_refs(&observation, required_amount)? {
+                invoice.observed_at = Some(now);
+                invoice.locked_payment_refs = payment_refs;
+                self.store.update(&invoice)?;
+            }
+        }
+        let Some(confirmed) = confirmed_locked_observation(
+            &observation,
+            &invoice.locked_payment_refs,
+            required,
+            required_amount,
+        )?
+        else {
+            return Ok(false);
+        };
+        let observed_at = invoice
+            .observed_at
+            .ok_or_else(|| WatcherError::Store("locked payment time missing".into()))?;
+        self.callback(&invoice, &confirmed, observed_at, now)
+            .await?;
+        self.store.settle(
+            &invoice.invoice_id,
+            now + self.config.invoice_retention_seconds,
+        )?;
+        Ok(true)
     }
 
     async fn callback(
@@ -900,7 +979,7 @@ impl AppState {
     ) -> Result<(), WatcherError> {
         let (amount_atomic, confirmations) = observation_totals(observation)?;
         let payment_reference_commitment =
-            payment_reference_commitment(&invoice.locked_payment_refs)?;
+            payment_reference_commitment(observation, invoice.payment_method)?;
         let event_hash = hex::encode(Sha256::digest(
             format!(
                 "{}:{}:{}",
@@ -920,7 +999,7 @@ impl AppState {
             payment_reference_commitment,
         };
         let body = serde_json::to_string(&evidence)
-            .map_err(|error| WatcherError::Callback(error.to_string()))?;
+            .map_err(|error| WatcherError::CallbackRetryable(error.to_string()))?;
         let signature = sign_settlement(
             &self.config.settlement_signing_key,
             "POST",
@@ -937,12 +1016,42 @@ impl AppState {
             .body(body)
             .send()
             .await
-            .map_err(|e| WatcherError::Callback(e.to_string()))?;
+            .map_err(|e| WatcherError::CallbackRetryable(e.to_string()))?;
         if !response.status().is_success() {
-            return Err(WatcherError::Callback(format!(
-                "HTTP {}",
-                response.status()
-            )));
+            let status = response.status();
+            let message = format!("HTTP {status}");
+            return if status.is_client_error() && !matches!(status.as_u16(), 408 | 409 | 425 | 429)
+            {
+                Err(WatcherError::CallbackTerminal(message))
+            } else {
+                Err(WatcherError::CallbackRetryable(message))
+            };
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > 16 * 1024)
+        {
+            return Err(WatcherError::CallbackRetryable(
+                "settlement acknowledgement is too large".into(),
+            ));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| WatcherError::CallbackRetryable(e.to_string()))?;
+        if bytes.len() > 16 * 1024 {
+            return Err(WatcherError::CallbackRetryable(
+                "settlement acknowledgement is too large".into(),
+            ));
+        }
+        let acknowledgement: SettlementAcknowledgement =
+            serde_json::from_slice(&bytes).map_err(|_| {
+                WatcherError::CallbackRetryable("settlement acknowledgement is malformed".into())
+            })?;
+        if !acknowledgement.ok || acknowledgement.status != "delivery_ready" {
+            return Err(WatcherError::CallbackRetryable(
+                "settlement acknowledgement did not confirm delivery".into(),
+            ));
         }
         Ok(())
     }
@@ -959,6 +1068,12 @@ struct SettlementEvidence {
     payment_reference_commitment: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SettlementAcknowledgement {
+    ok: bool,
+    status: String,
+}
+
 fn asset_name(asset: Asset) -> &'static str {
     match asset {
         Asset::Btc => "btc",
@@ -966,16 +1081,29 @@ fn asset_name(asset: Asset) -> &'static str {
     }
 }
 
-fn payment_reference_commitment(payment_refs: &[PaymentReference]) -> Result<String, WatcherError> {
-    if payment_refs.is_empty() {
+fn payment_reference_commitment(
+    observation: &Observation,
+    asset: Asset,
+) -> Result<String, WatcherError> {
+    if observation.payments.is_empty() {
         return Err(WatcherError::Store("payment references are missing".into()));
     }
-    let mut sorted = payment_refs.to_vec();
-    sorted.sort_by(|left, right| left.txid.cmp(&right.txid));
+    let mut sorted = observation.payments.clone();
+    sorted.sort_by(|left, right| left.output_identity.cmp(&right.output_identity));
     let mut canonical = String::new();
     for reference in sorted {
         validate_txid(&reference.txid)?;
-        canonical.push_str(&reference.txid);
+        validate_output_identity(&reference.output_identity, &reference.txid)?;
+        let expected_prefix = match asset {
+            Asset::Btc => "btc:",
+            Asset::Xmr => "xmr:",
+        };
+        if !reference.output_identity.starts_with(expected_prefix) {
+            return Err(WatcherError::Rpc(
+                "wallet returned an output identity for the wrong asset".into(),
+            ));
+        }
+        canonical.push_str(&reference.output_identity);
         canonical.push(':');
         canonical.push_str(&reference.amount_atomic.to_string());
         canonical.push('\n');
@@ -1175,8 +1303,19 @@ mod tests {
     }
 
     fn payment(txid_byte: char, amount_atomic: u128, confirmations: u32) -> PaymentObservation {
+        payment_at(txid_byte, 0, amount_atomic, confirmations)
+    }
+
+    fn payment_at(
+        txid_byte: char,
+        vout: u32,
+        amount_atomic: u128,
+        confirmations: u32,
+    ) -> PaymentObservation {
+        let txid = txid_byte.to_string().repeat(64);
         PaymentObservation {
-            txid: txid_byte.to_string().repeat(64),
+            output_identity: format!("btc:{txid}:{vout}"),
+            txid,
             amount_atomic,
             confirmations,
         }
@@ -1188,7 +1327,61 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(
                 listener,
-                Router::new().route("/settle", post(|| async { StatusCode::NO_CONTENT })),
+                Router::new().route(
+                    "/settle",
+                    post(|| async { Json(json!({"ok":true,"status":"delivery_ready"})) }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        Url::parse(&format!("http://{address}/settle")).unwrap()
+    }
+
+    async fn callback_url_reject_first() -> Url {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            let calls = calls.clone();
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/settle",
+                    post(move || {
+                        let calls = calls.clone();
+                        async move {
+                            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                                (
+                                    StatusCode::BAD_REQUEST,
+                                    Json(json!({"error":"terminal test rejection"})),
+                                )
+                                    .into_response()
+                            } else {
+                                Json(json!({"ok":true,"status":"delivery_ready"})).into_response()
+                            }
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        Url::parse(&format!("http://{address}/settle")).unwrap()
+    }
+
+    async fn callback_url_with_invalid_acknowledgement() -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/settle",
+                    post(|| async { Json(json!({"ok":false,"status":"delivery_ready"})) }),
+                ),
             )
             .await
             .unwrap();
@@ -1294,9 +1487,109 @@ mod tests {
             client: reqwest::Client::new(),
         };
 
-        assert!(state.poll_once(now).await.is_err());
+        assert_eq!(state.poll_once(now).await.unwrap(), 0);
         assert!(store.get(&stale.invoice_id).unwrap().is_none());
         assert!(store.get(&active.invoice_id).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn one_terminal_callback_cannot_starve_other_invoices() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(InvoiceStore::open(&dir.path().join("db"), &[3; 32]).unwrap());
+        let wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![
+                ("bc1qfirst".into(), None),
+                ("bc1qsecond".into(), None),
+            ]),
+            observation: Mutex::new(Observation {
+                payments: vec![payment('a', 100, 2)],
+            }),
+        });
+        let mut test_config = (*config()).clone();
+        test_config.callback_url = callback_url_reject_first().await;
+        let state = AppState {
+            config: Arc::new(test_config),
+            wallets: wallet,
+            store,
+            client: reqwest::Client::new(),
+        };
+        let expires_at = unix_now() + 60;
+        for byte in ['1', '2'] {
+            state
+                .create_invoice(CreateInvoiceRequest {
+                    invoice_id: format!("cpay_{}", byte.to_string().repeat(32)),
+                    payment_method: Asset::Btc,
+                    amount_atomic: "100".into(),
+                    expires_at,
+                })
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 1);
+        // The rejected paid invoice remains recoverable and settles on retry.
+        assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_success_response_never_marks_payment_settled() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(InvoiceStore::open(&dir.path().join("db"), &[3; 32]).unwrap());
+        let wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![("bc1qinvalidack".into(), None)]),
+            observation: Mutex::new(Observation {
+                payments: vec![payment('b', 100, 2)],
+            }),
+        });
+        let mut test_config = (*config()).clone();
+        test_config.callback_url = callback_url_with_invalid_acknowledgement().await;
+        let state = AppState {
+            config: Arc::new(test_config),
+            wallets: wallet,
+            store,
+            client: reqwest::Client::new(),
+        };
+        let expires_at = unix_now() + 60;
+        state
+            .create_invoice(CreateInvoiceRequest {
+                invoice_id: format!("cpay_{}", "3".repeat(32)),
+                payment_method: Asset::Btc,
+                amount_atomic: "100".into(),
+                expires_at,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 0);
+        assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn exact_output_identity_prevents_same_tx_same_amount_collisions() {
+        let first = Observation {
+            payments: vec![payment_at('c', 0, 100, 2)],
+        };
+        let second = Observation {
+            payments: vec![payment_at('c', 1, 100, 2)],
+        };
+        assert_ne!(
+            payment_reference_commitment(&first, Asset::Btc).unwrap(),
+            payment_reference_commitment(&second, Asset::Btc).unwrap(),
+        );
+
+        let txid = "d".repeat(64);
+        let xmr = |minor| Observation {
+            payments: vec![PaymentObservation {
+                output_identity: format!("xmr:{txid}:0:{minor}"),
+                txid: txid.clone(),
+                amount_atomic: 100,
+                confirmations: 10,
+            }],
+        };
+        assert_ne!(
+            payment_reference_commitment(&xmr(4), Asset::Xmr).unwrap(),
+            payment_reference_commitment(&xmr(5), Asset::Xmr).unwrap(),
+        );
     }
     #[test]
     fn monero_primary_address_must_be_operator_pinned_and_well_formed() {
@@ -1349,6 +1642,7 @@ mod tests {
             observed_at: Some(unix_now()),
             locked_payment_refs: vec![PaymentReference {
                 txid: "f".repeat(64),
+                output_identity: format!("xmr:{}:0:4", "f".repeat(64)),
                 amount_atomic: 100,
             }],
         };
@@ -1673,6 +1967,15 @@ mod tests {
             4,
         )
         .unwrap();
-        assert_eq!(payments, vec![payment('1', 100, 12)]);
+        let txid = "1".repeat(64);
+        assert_eq!(
+            payments,
+            vec![PaymentObservation {
+                output_identity: format!("xmr:{txid}:0:4"),
+                txid,
+                amount_atomic: 100,
+                confirmations: 12,
+            }]
+        );
     }
 }

@@ -26,6 +26,25 @@ describe("FrameRenderScheduler", () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a 500-interaction burst to one render commit", () => {
+    const callbacks = new Map<number, FrameRequestCallback>();
+    const commit = vi.fn();
+    const scheduler = new FrameRenderScheduler(
+      (callback) => {
+        callbacks.set(1, callback);
+        return 1;
+      },
+      (handle) => callbacks.delete(handle),
+      commit,
+    );
+
+    for (let interaction = 0; interaction < 500; interaction += 1) scheduler.request();
+
+    expect(callbacks.size).toBe(1);
+    callbacks.get(1)?.(0);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
   it("allows one new commit after the pending frame completes", () => {
     const callbacks: FrameRequestCallback[] = [];
     const commit = vi.fn();

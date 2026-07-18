@@ -110,7 +110,7 @@ describe("home interaction regressions", () => {
     expect(source).toMatch(/function scheduleBackgroundRender\(\): void \{\s*render\(\);\s*\}/);
     expect(source).toMatch(/function renderWhenIdle[\s\S]*?scheduleBackgroundRender\(\)/);
     expect(source).toContain("lastWorkspaceMarkup === markup");
-    expect(source).toContain('root.querySelector(".hub-workspace")');
+    expect(source).toContain('root.querySelector<HTMLElement>("#workspace-render-surface")');
   });
 
   it("has no background polling or interval leak", () => {
@@ -145,15 +145,23 @@ describe("home interaction regressions", () => {
 
   it("uses isolated embedded app profiles without tile subtitles", () => {
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
-    expect(source).toContain("setupEmbeddedHomeApp(app)");
+    expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).not.toContain("Firefox workspace");
     expect(source).not.toContain("launchFirefoxService(serviceId)");
     expect(source).not.toContain("setup-needed");
     expect(home).toContain("<small>${module.state}</small>");
-    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong></span>');
+    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span>');
     expect(home).toContain("Social</h2>");
     expect(home).toContain("Email</h2>");
     expect(home).toContain("OSL</h2>");
+  });
+
+  it("acknowledges app clicks immediately and bounds the profile refresh", () => {
+    const binding = functionSource(source, "bindWorkspace", "openHomeAppFromLauncher");
+    const opening = functionSource(source, "openHomeAppFromLauncher", "runNativeAppAction");
+    expect(binding).toMatch(/appLaunchPendingId = appId;[\s\S]*?renderNow\(\);[\s\S]*?openHomeAppFromLauncher/);
+    expect(opening).toContain('withNativeDeadline(loadLinkedServices(), "Refresh apps", 450)');
+    expect(opening).toContain("intent !== navigationIntentEpoch");
   });
 
   it("loads the new identity's friend profile before first Home render", () => {
@@ -168,7 +176,7 @@ describe("home interaction regressions", () => {
     const opening = functionSource(source, "openServiceRoute", "persistServiceGuideState");
     expect(binding).toContain("openServiceRoute(service, app.provider, app.id, true)");
     expect(opening).toContain("activeHomeAppId = appId");
-    expect(source).toContain("setupEmbeddedHomeApp(app)");
+    expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
   });
 
@@ -188,6 +196,22 @@ describe("home interaction regressions", () => {
     expect(source).toContain("launchNativeApp(appId)");
     expect(source).toContain("installNativeApp(appId)");
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
-    expect(source).toContain("setupEmbeddedHomeApp(app)");
+    expect(source).toContain("setupEmbeddedHomeApp(app,");
+    expect(source).toContain('data-native-launch="${nativeApp.id}"');
+    expect(source).toContain("Installed app uses its existing login");
+    expect(source).toContain("Use saved ${name} account?");
+    expect(source).toContain('id="native-account-choice-existing"');
+    expect(source).toContain('id="native-account-choice-new"');
+    expect(source).toContain("!app.linked && installedNative");
+    expect(source).toContain('savedAccountMode === "use" && savedNativeApps.has(installedNative.id)');
+    expect(source).toContain('savedAccountMode !== "ask"');
+  });
+
+  it("refreshes profiles before routing and asks which local profile to open", () => {
+    const binding = functionSource(source, "bindWorkspace", "ttlSeconds");
+    expect(binding).toContain("services = await loadLinkedServices().catch(() => services)");
+    expect(source).toContain("embeddedAccountsForHomeApp(app, services)");
+    expect(source).toContain("serviceAccountPickerOpen = true");
+    expect(source).toContain("data-service-account");
   });
 });

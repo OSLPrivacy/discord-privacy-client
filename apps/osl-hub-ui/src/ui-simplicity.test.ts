@@ -12,17 +12,11 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("radically simple onboarding", () => {
-  it("shows four plain-language choices without recommending Manual", () => {
+  it("shows one truthful sending path instead of unavailable automation", () => {
     const sending = functionSource("sendingSetupContent", "scrubCategoryChooserMarkup");
-    expect(sending).toContain("Choose how to send");
-    expect(sending).toContain("Choose how text appears");
-    expect(source).toContain('title: "Review & send"');
-    expect(source).toContain('title: "Copy & paste"');
-    expect(sending).not.toContain("Recommended");
-    expect(sending).toContain("sendModeAnimationMarkup()");
-    expect(sending).toContain("placementComparisonMarkup()");
-    expect(sending).toContain("needsRiskAcceptance(setup.sendMode)");
-    expect(sending).toContain('class="risk-triangle"');
+    expect(sending).toContain("Send with copy & paste");
+    expect(sending).toContain("manualSendingAnimationMarkup()");
+    expect(sending).not.toMatch(/Single Enter|Double Enter|Keystrokes|Experimental|Recommended/);
   });
 });
 
@@ -46,8 +40,9 @@ describe("one-step app guide", () => {
     const guide = functionSource("serviceGuideContent", "settingsContent");
     expect(guide).not.toContain("Step ${step + 1} of 3");
     expect(guide).toContain("Open ${name} in OSL");
-    expect(guide).toContain("Sign in normally.");
-    expect(guide).toContain('<details class="guide-details"><summary>Privacy</summary>');
+    expect(guide).toContain("Choose where to open it.");
+    expect(guide).toContain("Open installed ${name}");
+    expect(guide).toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
     expect(guide).not.toMatch(/adapter|scope|auto-whitelist/i);
   });
 });

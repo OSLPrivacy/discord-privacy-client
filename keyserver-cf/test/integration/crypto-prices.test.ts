@@ -15,13 +15,17 @@ describe("crypto price freshness", () => {
   it("refreshes both positive prices and returns a current snapshot", async () => {
     const prices = await refreshPriceSnapshots(
       env as Env,
-      async () => Response.json({
-        error: [],
-        result: {
-          "BTC/USD": { a: ["60010.0"], b: ["60000.0"] },
-          "XMR/USD": { a: ["151.0"], b: ["150.0"] },
-        },
-      }),
+      async (_input, init) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        expect(init?.signal?.aborted).toBe(false);
+        return Response.json({
+          error: [],
+          result: {
+            "BTC/USD": { a: ["60010.0"], b: ["60000.0"] },
+            "XMR/USD": { a: ["151.0"], b: ["150.0"] },
+          },
+        });
+      },
     );
     expect(prices).toEqual({ btc: "60000.0", xmr: "150.0" });
     expect((await getLatestSnapshot(env.DB, "btc"))?.price_usd).toBe("60000.0");
