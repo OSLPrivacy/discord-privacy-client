@@ -44,8 +44,8 @@ body { padding: 0; }
   border: 1px solid rgba(6, 182, 212, .74);
   color: #67e8f9;
   background: rgba(6, 182, 212, .08);
-  font-size: 9px;
-  font-weight: 750;
+  font-size: 11px;
+  font-weight: 700;
   letter-spacing: .08em;
   line-height: 1;
   user-select: none;
@@ -78,7 +78,7 @@ body { padding: 0; }
   grid-column: 3;
   display: block;
   color: #9aa0a6;
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
   opacity: .5;
 }
