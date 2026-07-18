@@ -76,6 +76,8 @@ export interface CommerceSummary {
   successful_payments: number;
   gross_cents: number;
   refunds_and_disputes_cents: number;
+  verified_donations: number;
+  donation_gross_cents: number;
   active_subscriptions: number;
   download_starts: number;
   download_starts_24h: number;
@@ -83,7 +85,7 @@ export interface CommerceSummary {
 
 export async function getCommerceSummary(db: D1Database): Promise<CommerceSummary> {
   const now = Math.floor(Date.now() / 1000);
-  const [payments, losses, subscriptions, downloads] = await Promise.all([
+  const [payments, losses, donations, subscriptions, downloads] = await Promise.all([
     db.prepare(
       `SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents), 0) AS cents
          FROM commerce_events
@@ -99,6 +101,10 @@ export async function getCommerceSummary(db: D1Database): Promise<CommerceSummar
         WHERE event_type IN ('charge.refunded', 'charge.dispute.created')`,
     ).first<{ cents: number }>(),
     db.prepare(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(amount_usd_cents), 0) AS cents
+         FROM donation_events WHERE provider = 'stripe'`,
+    ).first<{ count: number; cents: number }>(),
+    db.prepare(
       `SELECT COUNT(*) AS count FROM subscriptions WHERE status = 'ACTIVE'`,
     ).first<{ count: number }>(),
     db.prepare(
@@ -111,6 +117,8 @@ export async function getCommerceSummary(db: D1Database): Promise<CommerceSummar
     successful_payments: payments?.count ?? 0,
     gross_cents: payments?.cents ?? 0,
     refunds_and_disputes_cents: losses?.cents ?? 0,
+    verified_donations: donations?.count ?? 0,
+    donation_gross_cents: donations?.cents ?? 0,
     active_subscriptions: subscriptions?.count ?? 0,
     download_starts: downloads?.count ?? 0,
     download_starts_24h: downloads?.recent ?? 0,

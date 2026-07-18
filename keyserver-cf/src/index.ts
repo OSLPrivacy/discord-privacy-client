@@ -13,6 +13,7 @@
 ///
 /// F1.2 (Stripe + licenses):
 ///   POST   /v1/checkout-session
+///   POST   /v1/donations/stripe/session
 ///   POST   /v1/stripe/webhook        (HMAC-signed, no admin token)
 ///   POST   /v1/license/validate
 ///   POST   /v1/billing-portal-session
@@ -27,6 +28,7 @@
 
 import type { Env } from "./env.js";
 import { handleCheckout } from "./endpoints/checkout.js";
+import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
 import { handleCompBatchIssue, handleCompBatchRevoke } from "./endpoints/comp-batches.js";
 import { handleCryptoQuote } from "./endpoints/crypto-checkout.js";
@@ -198,11 +200,11 @@ async function dispatch(
   const path = url.pathname;
   const method = request.method;
 
-  // CORS preflight — only the two browser-callable Stripe
-  // endpoints. Everything else falls through to 405.
+  // CORS preflight — only explicitly browser-callable commerce endpoints.
   if (method === "OPTIONS") {
     if (
       path === "/v1/checkout-session" ||
+      path === "/v1/donations/stripe/session" ||
       path === "/v1/checkout/claim" ||
       path === "/v1/billing-portal-session" ||
       path === "/v1/crypto/quote" ||
@@ -258,6 +260,9 @@ async function dispatch(
     }
     if (path === "/v1/checkout-session") {
       return withCors(await handleCheckout(request, env), request);
+    }
+    if (path === "/v1/donations/stripe/session") {
+      return withCors(await handleStripeDonationSession(request, env), request);
     }
     if (path === "/v1/checkout/claim") {
       return withCors(await handleCheckoutClaim(request, env), request);

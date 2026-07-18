@@ -38,6 +38,9 @@ export interface Env {
   CHECKOUT_SUCCESS_URL?: string;
   /** Where Stripe Checkout returns the user on cancel. */
   CHECKOUT_CANCEL_URL?: string;
+  /** Where fixed-tier donation Checkout returns after success or cancel. */
+  DONATION_SUCCESS_URL?: string;
+  DONATION_CANCEL_URL?: string;
   /** Where the Stripe Customer Portal returns the user. */
   BILLING_PORTAL_RETURN_URL?: string;
 

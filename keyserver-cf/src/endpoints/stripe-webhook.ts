@@ -12,12 +12,16 @@
 import type { Env } from "../env.js";
 import { applyEvent } from "../lib/subscription-state.js";
 import { recordVerifiedStripeMetric } from "../lib/commerce-metrics.js";
+import { recordVerifiedStripeDonation } from "../lib/donations.js";
 import {
   claimStripeEvent,
   completeStripeEvent,
   releaseStripeEvent,
 } from "../lib/stripe-event-claims.js";
-import { notifyTelegramForStripeEvent } from "../lib/telegram.js";
+import {
+  notifyTelegramForDonation,
+  notifyTelegramForStripeEvent,
+} from "../lib/telegram.js";
 import {
   parseEvent,
   verifyWebhookSignature,
@@ -66,13 +70,25 @@ export async function handleStripeWebhook(
   }
 
   try {
+    const donation = await recordVerifiedStripeDonation(env.DB, event);
     const result = await applyEvent(env, event, fetcher);
-    await recordVerifiedStripeMetric(env.DB, event);
+    // Donation totals live in their own privacy-minimal ledger. Keeping them
+    // out of the purchase ledger avoids counting the same money twice in the
+    // operator report, including malformed donation-shaped events.
+    if (donation.kind === "not_donation") {
+      await recordVerifiedStripeMetric(env.DB, event);
+    }
     await completeStripeEvent(env.DB, event.id, event.type);
     if (ctx) {
-      ctx.waitUntil(notifyTelegramForStripeEvent(env, event, fetcher).catch(() => {
-        console.error("[telegram] payment notification failed");
-      }));
+      if (donation.kind === "inserted") {
+        ctx.waitUntil(notifyTelegramForDonation(env, donation.donation, fetcher).catch(() => {
+          console.error("[telegram] donation notification failed");
+        }));
+      } else if (donation.kind === "not_donation") {
+        ctx.waitUntil(notifyTelegramForStripeEvent(env, event, fetcher).catch(() => {
+          console.error("[telegram] payment notification failed");
+        }));
+      }
     }
     return json({ received: true, ...result });
   } catch {

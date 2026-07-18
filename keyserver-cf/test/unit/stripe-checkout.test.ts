@@ -31,4 +31,31 @@ describe("privacy-minimal one-time Stripe Checkout", () => {
     }, fetcher)).resolves.toMatchObject({ id: "cs_live_one_time" });
     expect(fetcher).toHaveBeenCalledOnce();
   });
+
+  it("copies non-personal donation metadata and sends a stable idempotency key", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body));
+      const headers = new Headers(init?.headers);
+      expect(form.get("metadata[osl_kind]")).toBe("donation");
+      expect(form.get("payment_intent_data[metadata][osl_kind]")).toBe("donation");
+      expect(form.has("customer")).toBe(false);
+      expect(form.has("customer_email")).toBe(false);
+      expect(form.has("payment_intent_data[setup_future_usage]")).toBe(false);
+      expect(headers.get("idempotency-key")).toBe("stable-donation-request");
+      return Response.json({
+        id: "cs_live_donation",
+        url: "https://checkout.stripe.com/c/pay/cs_live_donation",
+      });
+    });
+
+    await createCheckoutSession("sk_live_restricted", {
+      priceId: "price_donation_2000",
+      successUrl: "https://oslprivacy.com/donate?status=thanks",
+      cancelUrl: "https://oslprivacy.com/donate",
+      metadata: { osl_kind: "donation" },
+      paymentIntentMetadata: { osl_kind: "donation" },
+      idempotencyKey: "stable-donation-request",
+    }, fetcher);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
 });

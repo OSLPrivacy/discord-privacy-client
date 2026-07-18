@@ -1,5 +1,9 @@
 import type { Env } from "../env.js";
 import { getCommerceSummary, type CommerceSummary } from "./commerce-metrics.js";
+import {
+  getDonationSummary,
+  type VerifiedDonation,
+} from "./donations.js";
 import { isLiveStripeSecretKey, type StripeEvent } from "./stripe.js";
 
 interface TelegramUpdate {
@@ -207,6 +211,7 @@ export function formatOperatorStats(
     `Payments: ${summary.successful_payments}`,
     `Gross verified: ${money(summary.gross_cents)}`,
     `Refunds/disputes: ${money(summary.refunds_and_disputes_cents)}`,
+    `Donations: ${summary.verified_donations} (${money(summary.donation_gross_cents)})`,
     `Active Pro: ${summary.active_subscriptions}`,
     `Download requests: ${summary.download_starts} (${summary.download_starts_24h} in 24h)`,
   ];
@@ -256,6 +261,25 @@ export async function notifyTelegramForStripeEvent(
   await sendTelegramOperatorMessage(
     env,
     `OSL payment verified\n${money(amount, currency)}\nMode: LIVE`,
+    fetcher,
+  );
+}
+
+export async function notifyTelegramForDonation(
+  env: Env,
+  donation: VerifiedDonation,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  const summary = await getDonationSummary(env.DB);
+  await sendTelegramOperatorMessage(
+    env,
+    [
+      "OSL donation verified",
+      `${money(donation.amountUsdCents)} via Stripe`,
+      `Verified donations: ${summary.verified} / ${money(summary.grossUsdCents)}`,
+      "Mode: LIVE",
+    ].join("\n"),
     fetcher,
   );
 }

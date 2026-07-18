@@ -206,6 +206,9 @@ async function onCheckoutCompleted(
   fetcher: typeof fetch,
 ): Promise<HandlerResult> {
   if (obj.mode === "payment") {
+    if (obj.metadata?.osl_kind === "donation") {
+      return { kind: "noop", reason: "donation checkout has no entitlement" };
+    }
     if (
       obj.metadata?.osl_plan !== "pro" ||
       obj.metadata?.osl_purchase !== "one-time" ||

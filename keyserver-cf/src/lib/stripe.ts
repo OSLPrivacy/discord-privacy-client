@@ -23,12 +23,23 @@ export function isLiveStripeSecretKey(value: string): boolean {
 }
 
 export interface CheckoutSessionInput {
-  priceId: string;
+  /** Existing Stripe Price ID, used by the fixed Pro checkout. */
+  priceId?: string;
+  /** Server-owned inline one-time amount, used by fixed donation tiers. */
+  inlinePrice?: {
+    currency: "usd";
+    unitAmount: number;
+    productName: string;
+  };
   /** Public OSL checkout is a one-time purchase, never a subscription. */
   successUrl: string;
   cancelUrl: string;
   /** Non-personal metadata stored on the Checkout Session. */
   metadata?: Record<string, string>;
+  /** Non-personal metadata copied onto the resulting PaymentIntent. */
+  paymentIntentMetadata?: Record<string, string>;
+  /** Stable, non-identifying key used to dedupe session creation retries. */
+  idempotencyKey?: string;
 }
 
 export interface CheckoutSession {
@@ -49,7 +60,21 @@ export async function createCheckoutSession(
   // an email, Customer id, or future-use instruction.
   form.set("customer_creation", "if_required");
   form.set("payment_method_types[0]", "card");
-  form.set("line_items[0][price]", input.priceId);
+  if (input.priceId && !input.inlinePrice) {
+    form.set("line_items[0][price]", input.priceId);
+  } else if (input.inlinePrice && !input.priceId) {
+    form.set("line_items[0][price_data][currency]", input.inlinePrice.currency);
+    form.set(
+      "line_items[0][price_data][unit_amount]",
+      String(input.inlinePrice.unitAmount),
+    );
+    form.set(
+      "line_items[0][price_data][product_data][name]",
+      input.inlinePrice.productName,
+    );
+  } else {
+    throw new StripeError("Stripe checkout requires exactly one price source");
+  }
   form.set("line_items[0][quantity]", "1");
   form.set("success_url", input.successUrl);
   form.set("cancel_url", input.cancelUrl);
@@ -58,13 +83,21 @@ export async function createCheckoutSession(
       form.set(`metadata[${k}]`, v);
     }
   }
+  if (input.paymentIntentMetadata) {
+    for (const [k, v] of Object.entries(input.paymentIntentMetadata)) {
+      form.set(`payment_intent_data[metadata][${k}]`, v);
+    }
+  }
+
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${secretKey}`,
+    "content-type": "application/x-www-form-urlencoded",
+  };
+  if (input.idempotencyKey) headers["idempotency-key"] = input.idempotencyKey;
 
   const res = await fetcher(`${STRIPE_API}/checkout/sessions`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${secretKey}`,
-      "content-type": "application/x-www-form-urlencoded",
-    },
+    headers,
     body: form.toString(),
   });
   if (!res.ok) {

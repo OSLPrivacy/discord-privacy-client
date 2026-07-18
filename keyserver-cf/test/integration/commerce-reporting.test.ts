@@ -42,6 +42,8 @@ describe("privacy minimal commerce reporting", () => {
       successful_payments: 7,
       gross_cents: 3500,
       refunds_and_disputes_cents: -500,
+      verified_donations: 3,
+      donation_gross_cents: 4500,
       active_subscriptions: 6,
       download_starts: 91,
       download_starts_24h: 4,
@@ -51,6 +53,7 @@ describe("privacy minimal commerce reporting", () => {
     });
     expect(report).toContain("Payments: 7");
     expect(report).toContain("Gross verified: $35.00");
+    expect(report).toContain("Donations: 3 ($45.00)");
     expect(report).toContain("Download requests: 91 (4 in 24h)");
     expect(report).toContain("Mode: LIVE");
     expect(report).not.toMatch(/email|customer|card|license|wallet/i);
