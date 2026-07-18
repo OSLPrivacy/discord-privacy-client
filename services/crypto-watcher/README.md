@@ -64,9 +64,11 @@ The systemd process reads these environment variables from a root-owned file:
 
 | Variable | Example / meaning |
 |---|---|
+| `CRYPTO_BTC_ENABLED` | Exact `true` enables BTC; absent or `false` keeps it unavailable |
 | `BITCOIN_RPC_URL` | `http://127.0.0.1:8332/` |
 | `BITCOIN_COOKIE_FILE` | `/run/bitcoind/.cookie` |
 | `BITCOIN_WATCH_WALLET` | `osl-watch` |
+| `CRYPTO_XMR_ENABLED` | Exact `true` enables XMR; absent or `false` keeps it unavailable |
 | `MONERO_WALLET_RPC_URL` | `http://127.0.0.1:18088/` |
 | `MONERO_ACCOUNT_INDEX` | `0` |
 | `MONERO_PRIMARY_ADDRESS` | Public 95-character primary address of the offline-created view-only wallet |

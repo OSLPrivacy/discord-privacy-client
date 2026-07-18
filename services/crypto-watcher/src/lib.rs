@@ -49,13 +49,23 @@ pub enum WatcherError {
 }
 
 #[derive(Clone)]
-pub struct Config {
+pub struct BitcoinConfig {
     pub bitcoin_rpc_url: Url,
     pub bitcoin_cookie_file: String,
     pub bitcoin_wallet: String,
+}
+
+#[derive(Clone)]
+pub struct MoneroConfig {
     pub monero_wallet_rpc_url: Url,
     pub monero_account_index: u32,
     pub monero_primary_address: String,
+}
+
+#[derive(Clone)]
+pub struct Config {
+    pub bitcoin: Option<BitcoinConfig>,
+    pub monero: Option<MoneroConfig>,
     pub callback_url: Url,
     pub request_secret: Vec<u8>,
     pub settlement_signing_key: SigningKey,
@@ -65,26 +75,47 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn asset_enabled(&self, asset: Asset) -> bool {
+        match asset {
+            Asset::Btc => self.bitcoin.is_some(),
+            Asset::Xmr => self.monero.is_some(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), WatcherError> {
-        require_loopback_http(&self.bitcoin_rpc_url)?;
-        require_loopback_http(&self.monero_wallet_rpc_url)?;
-        if self.monero_account_index != 0 {
+        if self.bitcoin.is_none() && self.monero.is_none() {
             return Err(WatcherError::Config(
-                "Monero account index must be 0 for primary-address pinning".into(),
+                "at least one payment asset must be explicitly enabled".into(),
             ));
         }
-        validate_monero_address(&self.monero_primary_address)?;
+        if let Some(bitcoin) = &self.bitcoin {
+            require_loopback_http(&bitcoin.bitcoin_rpc_url)?;
+            if self.btc_confirmations == 0 {
+                return Err(WatcherError::Config(
+                    "Bitcoin confirmations must be positive".into(),
+                ));
+            }
+        }
+        if let Some(monero) = &self.monero {
+            require_loopback_http(&monero.monero_wallet_rpc_url)?;
+            if monero.monero_account_index != 0 {
+                return Err(WatcherError::Config(
+                    "Monero account index must be 0 for primary-address pinning".into(),
+                ));
+            }
+            validate_monero_address(&monero.monero_primary_address)?;
+            if self.xmr_confirmations == 0 {
+                return Err(WatcherError::Config(
+                    "Monero confirmations must be positive".into(),
+                ));
+            }
+        }
         if self.callback_url.scheme() != "https" || self.callback_url.host_str().is_none() {
             return Err(WatcherError::Config("callback URL must be HTTPS".into()));
         }
         if self.request_secret.len() < 32 {
             return Err(WatcherError::Config(
                 "request secret must be at least 32 bytes".into(),
-            ));
-        }
-        if self.btc_confirmations == 0 || self.xmr_confirmations == 0 {
-            return Err(WatcherError::Config(
-                "confirmations must be positive".into(),
             ));
         }
         if !(1..=MAX_INVOICE_RETENTION_SECONDS).contains(&self.invoice_retention_seconds) {
@@ -240,16 +271,20 @@ impl CoreWalletRpc {
         method: &str,
         params: Value,
     ) -> Result<T, WatcherError> {
-        let cookie = std::fs::read_to_string(&self.config.bitcoin_cookie_file)
+        let config = self
+            .config
+            .bitcoin
+            .as_ref()
+            .ok_or_else(|| WatcherError::Config("Bitcoin payments are not enabled".into()))?;
+        let cookie = std::fs::read_to_string(&config.bitcoin_cookie_file)
             .map_err(|e| WatcherError::Rpc(format!("Bitcoin cookie unavailable: {e}")))?;
         let (user, password) = cookie
             .trim()
             .split_once(':')
             .ok_or_else(|| WatcherError::Rpc("Bitcoin cookie malformed".into()))?;
-        let url = self
-            .config
+        let url = config
             .bitcoin_rpc_url
-            .join(&format!("wallet/{}", self.config.bitcoin_wallet))
+            .join(&format!("wallet/{}", config.bitcoin_wallet))
             .map_err(|e| WatcherError::Rpc(e.to_string()))?;
         rpc_call(
             self.client.post(url).basic_auth(user, Some(password)),
@@ -264,8 +299,12 @@ impl CoreWalletRpc {
         method: &str,
         params: Value,
     ) -> Result<T, WatcherError> {
-        let url = self
+        let config = self
             .config
+            .monero
+            .as_ref()
+            .ok_or_else(|| WatcherError::Config("Monero payments are not enabled".into()))?;
+        let url = config
             .monero_wallet_rpc_url
             .join("json_rpc")
             .map_err(|e| WatcherError::Rpc(e.to_string()))?;
@@ -364,20 +403,24 @@ struct SubaddressIndex {
 #[async_trait]
 impl WalletRpc for CoreWalletRpc {
     async fn validate_watch_only(&self) -> Result<(), WatcherError> {
-        let info: BitcoinWalletInfo = self.bitcoin("getwalletinfo", json!([])).await?;
-        if info.private_keys_enabled || !info.descriptors {
-            return Err(WatcherError::Rpc(
-                "Bitcoin wallet is not a descriptor watch-only wallet".into(),
-            ));
+        if self.config.bitcoin.is_some() {
+            let info: BitcoinWalletInfo = self.bitcoin("getwalletinfo", json!([])).await?;
+            if info.private_keys_enabled || !info.descriptors {
+                return Err(WatcherError::Rpc(
+                    "Bitcoin wallet is not a descriptor watch-only wallet".into(),
+                ));
+            }
         }
-        let _: Value = self.monero("get_version", json!({})).await?;
-        let monero: MoneroAccountAddress = self
-            .monero(
-                "get_address",
-                json!({"account_index": self.config.monero_account_index}),
-            )
-            .await?;
-        verify_monero_wallet_identity(&self.config.monero_primary_address, &monero.address)?;
+        if let Some(config) = &self.config.monero {
+            let _: Value = self.monero("get_version", json!({})).await?;
+            let monero: MoneroAccountAddress = self
+                .monero(
+                    "get_address",
+                    json!({"account_index": config.monero_account_index}),
+                )
+                .await?;
+            verify_monero_wallet_identity(&config.monero_primary_address, &monero.address)?;
+        }
         Ok(())
     }
 
@@ -388,7 +431,15 @@ impl WalletRpc for CoreWalletRpc {
                 Ok((address, None))
             }
             Asset::Xmr => {
-                let result: MoneroAddress = self.monero("create_address", json!({"account_index":self.config.monero_account_index,"label":"","count":1})).await?;
+                let config = self.config.monero.as_ref().ok_or_else(|| {
+                    WatcherError::Config("Monero payments are not enabled".into())
+                })?;
+                let result: MoneroAddress = self
+                    .monero(
+                        "create_address",
+                        json!({"account_index":config.monero_account_index,"label":"","count":1}),
+                    )
+                    .await?;
                 Ok((result.address, Some(result.address_index)))
             }
         }
@@ -439,14 +490,17 @@ impl WalletRpc for CoreWalletRpc {
                 Ok(Observation { payments })
             }
             Asset::Xmr => {
+                let config = self.config.monero.as_ref().ok_or_else(|| {
+                    WatcherError::Config("Monero payments are not enabled".into())
+                })?;
                 let minor = invoice
                     .subaddress_index
                     .ok_or_else(|| WatcherError::Store("missing Monero subaddress index".into()))?;
-                let transfers: MoneroTransfers = self.monero("get_transfers", json!({"in":true,"pool":true,"account_index":self.config.monero_account_index,"subaddr_indices":[minor]})).await?;
+                let transfers: MoneroTransfers = self.monero("get_transfers", json!({"in":true,"pool":true,"account_index":config.monero_account_index,"subaddr_indices":[minor]})).await?;
                 Ok(Observation {
                     payments: monero_payment_observations(
                         transfers,
-                        self.config.monero_account_index,
+                        config.monero_account_index,
                         minor,
                     )?,
                 })
@@ -869,6 +923,12 @@ impl AppState {
         request: CreateInvoiceRequest,
     ) -> Result<CreateInvoiceResponse, WatcherError> {
         validate_invoice_request(&request)?;
+        if !self.config.asset_enabled(request.payment_method) {
+            return Err(WatcherError::Config(format!(
+                "{} payments are not enabled",
+                asset_name(request.payment_method)
+            )));
+        }
         if let Some(existing) = self.store.get(&request.invoice_id)? {
             if existing.payment_method == request.payment_method
                 && existing.amount_atomic == request.amount_atomic
@@ -1403,12 +1463,16 @@ mod tests {
 
     fn config() -> Arc<Config> {
         Arc::new(Config {
-            bitcoin_rpc_url: Url::parse("http://127.0.0.1:8332/").unwrap(),
-            bitcoin_cookie_file: "cookie".into(),
-            bitcoin_wallet: "osl-watch".into(),
-            monero_wallet_rpc_url: Url::parse("http://127.0.0.1:18088/").unwrap(),
-            monero_account_index: 0,
-            monero_primary_address: "4".repeat(95),
+            bitcoin: Some(BitcoinConfig {
+                bitcoin_rpc_url: Url::parse("http://127.0.0.1:8332/").unwrap(),
+                bitcoin_cookie_file: "cookie".into(),
+                bitcoin_wallet: "osl-watch".into(),
+            }),
+            monero: Some(MoneroConfig {
+                monero_wallet_rpc_url: Url::parse("http://127.0.0.1:18088/").unwrap(),
+                monero_account_index: 0,
+                monero_primary_address: "4".repeat(95),
+            }),
             callback_url: Url::parse("https://keyserver.example/v1/internal/crypto/settle")
                 .unwrap(),
             request_secret: vec![7; 32],
@@ -1438,9 +1502,9 @@ mod tests {
     #[test]
     fn wallet_rpc_endpoints_must_be_loopback() {
         let mut c = (*config()).clone();
-        c.bitcoin_rpc_url = Url::parse("http://node.example/").unwrap();
+        c.bitcoin.as_mut().unwrap().bitcoin_rpc_url = Url::parse("http://node.example/").unwrap();
         assert!(c.validate().is_err());
-        c.bitcoin_rpc_url = Url::parse("http://127.0.0.1:8332/").unwrap();
+        c.bitcoin.as_mut().unwrap().bitcoin_rpc_url = Url::parse("http://127.0.0.1:8332/").unwrap();
         c.invoice_retention_seconds = 0;
         assert!(c.validate().is_err());
         c.invoice_retention_seconds = -1;
@@ -1451,6 +1515,25 @@ mod tests {
         assert!(c.validate().is_ok());
         c.invoice_retention_seconds = MAX_INVOICE_RETENTION_SECONDS + 1;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn payment_assets_are_explicit_and_fail_closed() {
+        let mut c = (*config()).clone();
+        c.bitcoin = None;
+        c.monero = None;
+        assert!(c.validate().is_err());
+
+        c.bitcoin = config().bitcoin.clone();
+        assert!(c.validate().is_ok());
+        assert!(c.asset_enabled(Asset::Btc));
+        assert!(!c.asset_enabled(Asset::Xmr));
+
+        c.bitcoin = None;
+        c.monero = config().monero.clone();
+        assert!(c.validate().is_ok());
+        assert!(!c.asset_enabled(Asset::Btc));
+        assert!(c.asset_enabled(Asset::Xmr));
     }
 
     #[tokio::test]
@@ -1594,21 +1677,18 @@ mod tests {
     #[test]
     fn monero_primary_address_must_be_operator_pinned_and_well_formed() {
         let mut c = (*config()).clone();
-        c.monero_primary_address.clear();
+        c.monero.as_mut().unwrap().monero_primary_address.clear();
         assert!(c.validate().is_err());
-        c.monero_primary_address = "0".repeat(95);
+        c.monero.as_mut().unwrap().monero_primary_address = "0".repeat(95);
         assert!(c.validate().is_err());
-        c.monero_primary_address = "4".repeat(95);
+        c.monero.as_mut().unwrap().monero_primary_address = "4".repeat(95);
         assert!(c.validate().is_ok());
-        c.monero_account_index = 1;
+        c.monero.as_mut().unwrap().monero_account_index = 1;
         assert!(c.validate().is_err());
-        c.monero_account_index = 0;
-        assert!(verify_monero_wallet_identity(
-            &c.monero_primary_address,
-            &c.monero_primary_address
-        )
-        .is_ok());
-        assert!(verify_monero_wallet_identity(&c.monero_primary_address, &"5".repeat(95)).is_err());
+        c.monero.as_mut().unwrap().monero_account_index = 0;
+        let expected = c.monero.as_ref().unwrap().monero_primary_address.clone();
+        assert!(verify_monero_wallet_identity(&expected, &expected).is_ok());
+        assert!(verify_monero_wallet_identity(&expected, &"5".repeat(95)).is_err());
     }
     #[test]
     fn credential_files_must_be_private_regular_files() {
@@ -1683,6 +1763,34 @@ mod tests {
         let second = state.create_invoice(request).await.unwrap();
         assert_eq!(first.address, "bc1qunique");
         assert_eq!(first.address, second.address);
+    }
+
+    #[tokio::test]
+    async fn disabled_asset_is_rejected_before_wallet_allocation() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(InvoiceStore::open(&dir.path().join("db"), &[3; 32]).unwrap());
+        let wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![]),
+            observation: Mutex::new(Observation { payments: vec![] }),
+        });
+        let mut btc_only = (*config()).clone();
+        btc_only.monero = None;
+        let state = AppState {
+            config: Arc::new(btc_only),
+            wallets: wallet,
+            store,
+            client: reqwest::Client::new(),
+        };
+        let error = state
+            .create_invoice(CreateInvoiceRequest {
+                invoice_id: format!("cpay_{}", "c".repeat(32)),
+                payment_method: Asset::Xmr,
+                amount_atomic: "1".into(),
+                expires_at: unix_now() + 60,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, WatcherError::Config(_)));
     }
     #[test]
     fn signed_requests_reject_tampering_and_stale_time() {

@@ -91,8 +91,12 @@ export interface Env {
   CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY?: string;
   /** Minimum node-verified Bitcoin confirmations (defaults to 2). */
   CRYPTO_BTC_CONFIRMATIONS?: string;
+  /** Exact "true" enables new Bitcoin invoices; absent/other values fail closed. */
+  CRYPTO_BTC_ENABLED?: string;
   /** Minimum node-verified Monero confirmations (defaults to 10). */
   CRYPTO_XMR_CONFIRMATIONS?: string;
+  /** Exact "true" enables new Monero invoices; absent/other values fail closed. */
+  CRYPTO_XMR_ENABLED?: string;
   /** Exact one-time lifetime Pro price. Production must be the literal "500". */
   CRYPTO_PRO_USD_CENTS?: string;
 }

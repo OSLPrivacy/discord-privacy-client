@@ -154,7 +154,9 @@ only.
 | `CRYPTO_WATCHER_REQUEST_SECRET` | HMAC text used only for Worker invoice requests, at least 32 random characters | `wrangler secret put` |
 | `CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY` | base64 Ed25519 public SPKI DER; never the private key | watcher key-generation step |
 | `CRYPTO_BTC_CONFIRMATIONS` | `2` | fixed |
+| `CRYPTO_BTC_ENABLED` | exact `true` only after BTC go-live gates pass; otherwise `false` | tracked non-secret kill switch |
 | `CRYPTO_XMR_CONFIRMATIONS` | `10` | fixed |
+| `CRYPTO_XMR_ENABLED` | exact `true` only after XMR go-live gates pass; otherwise `false` | tracked non-secret kill switch |
 | `CRYPTO_PRO_USD_CENTS` | `500` | tracked non-secret `wrangler.toml` variable; do not accept browser pricing |
 
 Commands (run sequentially — wrangler prompts each time):

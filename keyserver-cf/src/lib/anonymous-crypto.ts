@@ -4,6 +4,12 @@ import { signedWatcherRequestHeaders, sha256Hex } from "./crypto-watcher-auth.js
 export type CryptoAsset = "btc" | "xmr";
 export type CryptoPlan = "pro";
 
+export function cryptoAssetEnabled(env: Env, asset: CryptoAsset): boolean {
+  return asset === "btc"
+    ? env.CRYPTO_BTC_ENABLED === "true"
+    : env.CRYPTO_XMR_ENABLED === "true";
+}
+
 export interface AnonymousInvoiceRow {
   invoice_id: string;
   claim_hash: string;

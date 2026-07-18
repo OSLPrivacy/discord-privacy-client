@@ -29,6 +29,8 @@ enabled = false
 DEPLOYMENT_ENV = "production"
 WINDOWS_INSTALLER_URL = "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi"
 CRYPTO_PRO_USD_CENTS = "500"
+CRYPTO_BTC_ENABLED = "false"
+CRYPTO_XMR_ENABLED = "false"
 DONATION_SUCCESS_URL = "https://oslprivacy.com/donate?donation=complete"
 DONATION_CANCEL_URL = "https://oslprivacy.com/donate?donation=cancelled"
 

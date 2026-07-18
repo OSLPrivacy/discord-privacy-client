@@ -99,6 +99,13 @@ async function deliveryKeys(): Promise<{ publicKey: string; privateKey: CryptoKe
   };
 }
 
+function checkoutEnv(overrides: Partial<Env> = {}): Env {
+  return Object.assign(Object.create(env), {
+    CRYPTO_BTC_ENABLED: "true",
+    CRYPTO_XMR_ENABLED: "true",
+  }, overrides) as Env;
+}
+
 async function quote(
   asset: "btc" | "xmr",
   publicKey: string,
@@ -111,7 +118,7 @@ async function quote(
       payment_method: asset,
       delivery_public_key_spki: publicKey,
     }),
-  }), env as Env, async (_input, init) => {
+  }), checkoutEnv(), async (_input, init) => {
     const watcherInvoice = JSON.parse(String(init?.body)) as { invoice_id: string };
     return Response.json({
       invoice_id: watcherInvoice.invoice_id,
@@ -160,7 +167,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         method: "POST",
         headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.92" },
         body: JSON.stringify(body),
-      }), env as Env, async () => {
+      }), checkoutEnv(), async () => {
         throw new Error("watcher must not be called");
       });
       expect(response.status).toBe(400);
@@ -171,7 +178,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       method: "POST",
       headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.93" },
       body: JSON.stringify({ plan: "pro", payment_method: "btc", delivery_public_key_spki: keys.publicKey }),
-    }), env as Env, async (_input, init) => {
+    }), checkoutEnv(), async (_input, init) => {
       watcherBody = String(init?.body ?? "");
       const watcherInvoice = JSON.parse(String(init?.body)) as { invoice_id: string };
       return Response.json({
@@ -195,10 +202,38 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         method: "POST",
         headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.94" },
         body,
-      }), env as Env, async () => {
+      }), checkoutEnv(), async () => {
         throw new Error("watcher must not be called");
       });
       expect(response.status).toBe(400);
+    }
+  });
+
+  it("fails closed per asset before contacting the watcher", async () => {
+    const keys = await deliveryKeys();
+    for (const [asset, override] of [
+      ["btc", { CRYPTO_BTC_ENABLED: undefined }],
+      ["xmr", { CRYPTO_XMR_ENABLED: "false" }],
+    ] as const) {
+      let watcherCalls = 0;
+      const disabledEnv = checkoutEnv(override);
+      const response = await handleCryptoQuote(new Request("http://test/v1/crypto/quote", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": `192.0.2.${asset === "btc" ? 95 : 96}`,
+        },
+        body: JSON.stringify({
+          plan: "pro",
+          payment_method: asset,
+          delivery_public_key_spki: keys.publicKey,
+        }),
+      }), disabledEnv, async () => {
+        watcherCalls += 1;
+        throw new Error("disabled asset must not reach watcher");
+      });
+      expect(response.status).toBe(503);
+      expect(watcherCalls).toBe(0);
     }
   });
 

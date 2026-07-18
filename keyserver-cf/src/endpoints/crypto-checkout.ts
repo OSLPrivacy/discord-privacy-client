@@ -4,6 +4,7 @@
 import type { Env } from "../env.js";
 import {
   createWatcherInvoice,
+  cryptoAssetEnabled,
   insertAnonymousInvoice,
   newClaimToken,
   usdCentsToAtomic,
@@ -48,6 +49,9 @@ export async function handleCryptoQuote(
   }
   if (body.payment_method !== "btc" && body.payment_method !== "xmr") {
     return badRequest('payment_method must be "btc" or "xmr"');
+  }
+  if (!cryptoAssetEnabled(env, body.payment_method)) {
+    return serviceUnavailable(`${body.payment_method} payments are not enabled`);
   }
   if (typeof body.delivery_public_key_spki !== "string") {
     return badRequest("delivery_public_key_spki required");

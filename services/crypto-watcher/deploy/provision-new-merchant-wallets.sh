@@ -386,9 +386,11 @@ chmod 600 "$MONERO_RECEIPT"
 
 WATCHER_ENV=$(jq -nr --arg address "$MONERO_ADDRESS" '
   ["BITCOIN_RPC_URL=http://127.0.0.1:8332/",
+   "CRYPTO_BTC_ENABLED=true",
    "BITCOIN_COOKIE_FILE=/run/bitcoind/.cookie",
    "BITCOIN_WATCH_WALLET=osl-watch",
    "MONERO_WALLET_RPC_URL=http://127.0.0.1:18088/",
+   "CRYPTO_XMR_ENABLED=true",
    "MONERO_ACCOUNT_INDEX=0",
    "MONERO_PRIMARY_ADDRESS=" + $address,
    "CRYPTO_SETTLEMENT_CALLBACK_URL=https://keyserver.oslprivacy.com/v1/internal/crypto/settle",
@@ -437,14 +439,18 @@ ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS" '
   test "$(sudo -n stat -c "%a %U %G %F" /etc/osl-crypto/watcher.env.new)" = \
     "640 root osl-crypto regular file"
   sudo -n grep -Ec "^[A-Z0-9_]+=.*$" /etc/osl-crypto/watcher.env.new \
-    | grep -Fxq 13
+    | grep -Fxq 15
   ! sudo -n cut -d= -f1 /etc/osl-crypto/watcher.env.new \
     | sort | uniq -d | grep -q .
   sudo -n grep -Fxq "BITCOIN_COOKIE_FILE=/run/bitcoind/.cookie" \
     /etc/osl-crypto/watcher.env.new
   sudo -n grep -Fxq "CRYPTO_BTC_CONFIRMATIONS=2" \
     /etc/osl-crypto/watcher.env.new
+  sudo -n grep -Fxq "CRYPTO_BTC_ENABLED=true" \
+    /etc/osl-crypto/watcher.env.new
   sudo -n grep -Fxq "CRYPTO_XMR_CONFIRMATIONS=10" \
+    /etc/osl-crypto/watcher.env.new
+  sudo -n grep -Fxq "CRYPTO_XMR_ENABLED=true" \
     /etc/osl-crypto/watcher.env.new
   if sudo -n test -e /etc/osl-crypto/watcher.env; then
     sudo -n cp --preserve=mode,ownership,timestamps \

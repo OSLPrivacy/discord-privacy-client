@@ -6,8 +6,8 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey};
 use osl_crypto_watcher::{
-    create_invoice_handler, read_secret_file, AppState, Config, CoreWalletRpc, InvoiceStore,
-    WalletRpc,
+    create_invoice_handler, read_secret_file, AppState, BitcoinConfig, Config, CoreWalletRpc,
+    InvoiceStore, MoneroConfig, WalletRpc,
 };
 use std::{env, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use url::Url;
@@ -22,6 +22,15 @@ fn credential(file_name: &str, legacy_name: &str) -> String {
             .unwrap_or_else(|_| panic!("invalid credential file configured by {file_name}")),
         Err(env::VarError::NotPresent) => required(legacy_name),
         Err(env::VarError::NotUnicode(_)) => panic!("invalid {file_name}"),
+    }
+}
+
+fn explicitly_enabled(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) if value == "true" => true,
+        Ok(value) if value == "false" => false,
+        Err(env::VarError::NotPresent) => false,
+        _ => panic!("{name} must be exactly true or false"),
     }
 }
 
@@ -49,16 +58,22 @@ async fn main() {
         .expect("db key base64")
         .try_into()
         .expect("db key must be 32 bytes");
-    let config = Arc::new(Config {
+    let bitcoin = explicitly_enabled("CRYPTO_BTC_ENABLED").then(|| BitcoinConfig {
         bitcoin_rpc_url: Url::parse(&required("BITCOIN_RPC_URL")).expect("bitcoin URL"),
         bitcoin_cookie_file: required("BITCOIN_COOKIE_FILE"),
         bitcoin_wallet: required("BITCOIN_WATCH_WALLET"),
+    });
+    let monero = explicitly_enabled("CRYPTO_XMR_ENABLED").then(|| MoneroConfig {
         monero_wallet_rpc_url: Url::parse(&required("MONERO_WALLET_RPC_URL")).expect("monero URL"),
         monero_account_index: env::var("MONERO_ACCOUNT_INDEX")
             .unwrap_or_else(|_| "0".into())
             .parse()
             .expect("account index"),
         monero_primary_address: required("MONERO_PRIMARY_ADDRESS"),
+    });
+    let config = Arc::new(Config {
+        bitcoin,
+        monero,
         callback_url: Url::parse(&required("CRYPTO_SETTLEMENT_CALLBACK_URL"))
             .expect("callback URL"),
         request_secret,
