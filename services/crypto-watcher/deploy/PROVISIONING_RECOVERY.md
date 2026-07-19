@@ -1,40 +1,64 @@
-# Merchant wallet provisioning recovery
+# Watch-only provisioning recovery
 
-`provision-new-merchant-wallets.sh` is intentionally an initial-only,
-fail-closed ceremony. It never deletes a spending wallet or rolls back to an
-older address index automatically.
+The supported flow has two boundaries:
 
-If the script exits after either wallet is created:
+1. `generate-offline-merchant-wallets.sh` creates and proves encrypted spending
+   wallets on a permanently offline machine.
+2. `provision-watch-only-wallets.sh` imports only the completed Bitcoin public
+   descriptor and Monero address/private view key into the online VPS.
 
-1. Do not rerun it and do not delete any local or VPS wallet file.
-2. Keep `osl-crypto-watcher.service` stopped, disabled, and runtime-masked.
-   Public crypto checkout must continue returning `503`.
-3. Preserve these local directories as one incident set:
-   - `~/.local/share/osl-crypto/merchant-backups`
-   - `~/.local/share/osl-crypto/merchant-receipts`
-   - `~/.local/share/osl-crypto/wallets/osl-merchant-spend-v1*`
-4. Preserve, without starting the watcher:
-   - `/var/lib/bitcoind/wallets/osl-watch`
-   - `/var/lib/bitcoind/watch-wallet-backups`
-   - `/var/lib/osl-crypto/wallets/osl-view-only*`
-   - `/var/lib/osl-crypto/watch-wallet-backups`
-   - `/etc/osl-crypto/watcher.env.new`, if present
-   - `/etc/osl-crypto/monero-view-only-creation.receipt`, if present
-5. Inventory the stage using read-only wallet calls. Compare the external BTC
-   descriptor and index-0 derived address with the local public receipt. Compare
-   the Monero primary address with the local public receipt. Never export a
-   private Bitcoin descriptor, Monero spend key, or seed during recovery.
-6. Resume only the missing forward steps after an operator review. If the
-   remote watch/view material already matches the local receipts, preserve it
-   and continue with address-pin validation, atomic configuration commit, and
-   new coordinated backups. Do not re-import at index zero and do not replace a
-   matching wallet with a blank wallet.
-7. If any descriptor, primary address, network, or receipt hash differs, leave
-   checkout disabled and treat both wallet sets as quarantined until a manual
-   recovery proves which local spending wallet controls the remote addresses.
+Never copy an xprv, Monero spend key, recovery words, encrypted spending-wallet
+backup, or wallet passphrase to the VPS or an online workstation.
 
-Before activation, copy the encrypted local spending-wallet backups and the
-coordinated VPS watch-state backup set to separate encrypted offline media.
-Restore both spending wallets in a clean environment and verify their first
-addresses. Then run tiny BTC and XMR payment, replay, underpayment, expiry, and
-spend-back canaries. A same-disk copy is not a disaster-recovery backup.
+## Interrupted offline ceremony
+
+Both output directories begin with `CEREMONY-INCOMPLETE`. If the ceremony exits
+before success:
+
+- keep the machine offline;
+- do not fund, import, merge, or reuse either partial output;
+- quarantine both directories as sensitive material;
+- preserve them until an operator has accounted for every backup copy; and
+- rerun the ceremony from the beginning with two new empty directories.
+
+Only a transfer directory with no incomplete marker and an exact
+`CEREMONY-COMPLETE` receipt bound to its verified `SHA256SUMS` is importable.
+
+## Interrupted online import
+
+Leave public BTC/XMR flags disabled. Keep `osl-crypto-watcher.service` stopped
+and disabled until the entire state is revalidated.
+
+The importer is designed to be rerun with the same completed bundle:
+
+- A successful Bitcoin descriptor import is intentionally not rolled back.
+  A rerun continues only if `osl-watch` contains that one exact public ranged
+  descriptor at index zero and still has private keys disabled.
+- Monero files created by a failed invocation are removed by its failure trap.
+  Existing Monero files are accepted only with a matching root-owned creation
+  receipt binding the address, restore height, view material, and BTC descriptor.
+- The importer restores the prior service enable/active state after a failure.
+- `watcher.env` is committed last and is never overwritten when its contents
+  differ from the expected fail-closed configuration.
+
+Before retrying, use read-only checks to verify:
+
+- Bitcoin Core is mainnet, fully synchronized, and `blocks == headers`;
+- `osl-watch` has `private_keys_enabled=false`, descriptors enabled, and no
+  unexpected descriptor or transaction;
+- Monero is mainnet and synchronized;
+- the transfer bundle still passes its four-file manifest and completion receipt;
+- the watcher and Monero wallet RPC are not publicly bound; and
+- no invoice database exists unless a prior canary was intentionally started.
+
+If any descriptor, address, receipt hash, network, or ownership check differs,
+do not delete or overwrite it. Preserve the affected watch-state backups and
+keep checkout disabled until an operator proves which offline wallet controls
+the address.
+
+## After a successful import
+
+Keep the watcher disabled while verifying the pinned primary address and exact
+Bitcoin descriptor. Run paid BTC and XMR canaries, replay, underpayment, expiry,
+delivery acknowledgement, and callback-idempotency checks before enabling either
+public asset flag. Narrow the temporary provisioning sudo grant after launch.
