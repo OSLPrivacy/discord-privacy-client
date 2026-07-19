@@ -30,7 +30,7 @@ grep -Fq 'ulimit -c 0' "${SCRIPT}" || fail 'core-dump refusal is missing'
 grep -Fq 'IFS= read -r -s TOKEN </dev/tty' "${SCRIPT}" || fail 'hidden terminal prompt is missing'
 grep -Fq 'openssl rand -hex 32' "${SCRIPT}" || fail 'strong webhook-secret generation is missing'
 grep -Fq 'curl -q --config "${CURL_CONFIG}"' "${SCRIPT}" || fail 'curl config isolation is missing'
-grep -Fq '"${WRANGLER}" secret put "${name}"' "${SCRIPT}" || fail 'Wrangler stdin path is missing'
+grep -Fq '"${WRANGLER}" secret bulk' "${SCRIPT}" || fail 'atomic Wrangler stdin path is missing'
 grep -Fq 'drop_pending_updates=true' "${SCRIPT}" || fail 'pending updates are not dropped'
 grep -Fq 'https://keyserver.oslprivacy.com/v1/telegram/webhook' "${SCRIPT}" || fail 'exact webhook URL is missing'
 grep -Fq 'shred -u' "${SCRIPT}" || fail 'secure temporary-file cleanup is missing'
@@ -55,9 +55,9 @@ chmod 700 -- "${TEST_DIR}/keyserver-cf/scripts/configure-telegram-reporting-bot.
 cat >"${TEST_DIR}/keyserver-cf/node_modules/.bin/wrangler" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$#" -eq 3 && "$1" == 'secret' && "$2" == 'put' ]] || exit 70
+[[ "$#" -eq 2 && "$1" == 'secret' && "$2" == 'bulk' ]] || exit 70
 printf '%s\n' "$*" >>"${OSL_TEST_CAPTURE_DIR}/wrangler-argv"
-cat >"${OSL_TEST_CAPTURE_DIR}/wrangler-${3}"
+cat >"${OSL_TEST_CAPTURE_DIR}/wrangler-bulk.json"
 SH
 chmod 700 -- "${TEST_DIR}/keyserver-cf/node_modules/.bin/wrangler"
 
@@ -166,11 +166,24 @@ if not sent or status is None or not os.WIFEXITED(status) or os.WEXITSTATUS(stat
     raise SystemExit("rotation helper failed")
 PY
 
-BOT_CAPTURE="${TEST_DIR}/capture/wrangler-TELEGRAM_BOT_TOKEN"
-WEBHOOK_CAPTURE="${TEST_DIR}/capture/wrangler-TELEGRAM_WEBHOOK_SECRET"
-[[ -f "${BOT_CAPTURE}" && -f "${WEBHOOK_CAPTURE}" ]] || fail 'both rotating secrets were not sent to Wrangler'
-[[ "$(cat -- "${BOT_CAPTURE}")" == "${TOKEN}" ]] || fail 'Wrangler did not receive the exact bot token on stdin'
-WEBHOOK_SECRET="$(cat -- "${WEBHOOK_CAPTURE}")"
+WRANGLER_CAPTURE="${TEST_DIR}/capture/wrangler-bulk.json"
+[[ -f "${WRANGLER_CAPTURE}" ]] || fail 'the atomic secret bundle was not sent to Wrangler'
+WEBHOOK_SECRET="$(python3 - "${WRANGLER_CAPTURE}" "${TOKEN}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+if sorted(payload) != ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"]:
+    raise SystemExit(1)
+if payload["TELEGRAM_BOT_TOKEN"] != sys.argv[2]:
+    raise SystemExit(1)
+secret = payload["TELEGRAM_WEBHOOK_SECRET"]
+if not isinstance(secret, str):
+    raise SystemExit(1)
+print(secret)
+PY
+)"
 [[ "${WEBHOOK_SECRET}" =~ ^[0-9a-f]{64}$ ]] || fail 'generated webhook secret is not 256 bits of hex'
 [[ "$(printf '%s' "${WEBHOOK_SECRET}" | sha256sum | cut -d' ' -f1)" == "$(cat "${TEST_DIR}/capture/set-webhook-secret.sha256")" ]] || fail 'Telegram and Wrangler received different webhook secrets'
 

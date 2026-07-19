@@ -178,18 +178,16 @@ if not isinstance(payload, dict) or payload.get("ok") is not True or payload.get
 PY
 }
 
-put_worker_secret() {
-  local name="$1"
-  local value="$2"
-
+put_worker_secrets() {
   : >"${WRANGLER_ERROR}"
-  if ! printf '%s' "${value}" | (
+  if ! printf '{"TELEGRAM_BOT_TOKEN":"%s","TELEGRAM_WEBHOOK_SECRET":"%s"}' \
+    "${TOKEN}" "${WEBHOOK_SECRET}" | (
     cd -- "${WORKER_DIR}"
-    "${WRANGLER}" secret put "${name}" >/dev/null 2>"${WRANGLER_ERROR}"
+    "${WRANGLER}" secret bulk >/dev/null 2>"${WRANGLER_ERROR}"
   ); then
-    fail "Cloudflare rejected ${name}"
+    fail 'Cloudflare rejected the Telegram credential rotation'
   fi
-  printf 'Stored Cloudflare secret: %s\n' "${name}"
+  printf '%s\n' 'Stored both Telegram credentials atomically.'
 }
 
 telegram_request getMe
@@ -201,8 +199,7 @@ printf '%s\n' 'Existing webhook status checked.'
 
 # Deliberately update only the two rotating credentials. Operator and viewer
 # allowlists remain exactly as they are already configured in Cloudflare.
-put_worker_secret TELEGRAM_BOT_TOKEN "${TOKEN}"
-put_worker_secret TELEGRAM_WEBHOOK_SECRET "${WEBHOOK_SECRET}"
+put_worker_secrets
 
 telegram_request setWebhook \
   "url=${WEBHOOK_URL_FORM}&secret_token=${WEBHOOK_SECRET}&drop_pending_updates=true&allowed_updates=%5B%22message%22%5D"
