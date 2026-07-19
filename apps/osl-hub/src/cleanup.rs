@@ -544,16 +544,18 @@ mod tests {
     }
 
     #[test]
-    fn shared_firefox_profile_is_inside_full_cleanup_target() {
+    fn owner_scoped_firefox_profiles_are_inside_full_cleanup_target() {
         let config = temp_root("firefox-config");
         let local = temp_root("firefox-local");
-        let firefox = local.join(crate::native_apps::firefox_profile_relative_path());
+        let firefox = local.join(crate::native_apps::firefox_profile_relative_path("owner-a"));
+        let other = local.join(crate::native_apps::firefox_profile_relative_path("owner-b"));
         let service_profiles = cleanup_targets(&config, &local)
             .into_iter()
             .find(|target| target.id == "service_profiles")
             .expect("service profile cleanup target exists");
         assert!(firefox.starts_with(&service_profiles.path));
         assert_ne!(firefox, service_profiles.path);
+        assert_ne!(firefox, other);
     }
 
     #[test]

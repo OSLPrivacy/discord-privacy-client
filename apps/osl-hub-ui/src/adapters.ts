@@ -25,6 +25,24 @@ export interface LocalLoopbackContext {
   accountId: string;
   conversationId: string;
 }
+export interface ManualPeerContext {
+  contextToken: string;
+  serviceId: string;
+  accountId: string;
+  personId: string;
+  peerOslUserId: string;
+  scopeApproved: boolean;
+}
+export interface PreparedPeerProseText {
+  coverText: string;
+  expiresAt: number;
+  personToPersonE2ee: true;
+}
+export interface OpenedPeerProseText {
+  plaintext: string;
+  contextVerified: true;
+  personToPersonE2ee: true;
+}
 export interface PreparedHubAttachment {
   sealedB64: string;
   transportFilename: string;
@@ -148,6 +166,57 @@ export async function activateLocalLoopbackContext(
       && parsed.conversationId === conversationId
       ? parsed
       : null;
+  } catch { return null; }
+}
+
+export async function activateManualPeerContext(
+  serviceId: string,
+  accountId: string,
+  personId: string,
+): Promise<ManualPeerContext | null> {
+  if (!isTauriRuntime() || !safeId(serviceId, 32) || !isContextId(accountId) || !safe(personId, 180)) return null;
+  try {
+    const parsed = parseManualPeerContext(await invoke<unknown>("activate_manual_peer_context", {
+      serviceId,
+      accountId,
+      personId,
+    }));
+    return parsed?.serviceId === serviceId
+      && parsed.accountId === accountId
+      && parsed.personId === personId
+      ? parsed
+      : null;
+  } catch { return null; }
+}
+
+export async function preparePeerProseText(
+  contextToken: string,
+  plaintext: string,
+): Promise<PreparedPeerProseText | null> {
+  if (!isTauriRuntime() || !safeContextToken(contextToken) || !isHubPlaintext(plaintext)) return null;
+  try {
+    return parsePreparedPeerProseText(await invoke<unknown>("prepare_peer_prose_text", {
+      contextToken,
+      plaintext,
+    }));
+  } catch { return null; }
+}
+
+export async function openPeerProseText(
+  contextToken: string,
+  senderPersonId: string,
+  coverText: string,
+): Promise<OpenedPeerProseText | null> {
+  if (!isTauriRuntime()
+    || !safeContextToken(contextToken)
+    || !safe(senderPersonId, 180)
+    || !boundedUtf8Text(coverText, HUB_CAPSULE_MAX_BYTES)) return null;
+  try {
+    return parseOpenedPeerProseText(await invoke<unknown>("open_peer_prose_text", {
+      contextToken,
+      senderPersonId,
+      coverText,
+    }));
   } catch { return null; }
 }
 
@@ -305,9 +374,9 @@ export async function verifyHubPerson(personId: string, safetyNumber: string): P
   catch { return false; }
 }
 
-export async function setActiveHubFriendPermission(contextToken: string, personId: string, enabled: boolean): Promise<boolean> {
-  if (!isTauriRuntime() || !safe(contextToken, 180) || !safe(personId, 180)) return false;
-  try { await invoke("set_active_hub_friend_permission", { contextToken, personId, enabled, broadened: false }); return true; }
+export async function setActiveHubFriendPermission(contextToken: string, personId: string, enabled: boolean, broadened = false): Promise<boolean> {
+  if (!isTauriRuntime() || !safe(contextToken, 180) || !safe(personId, 180) || typeof broadened !== "boolean") return false;
+  try { await invoke("set_active_hub_friend_permission", { contextToken, personId, enabled, broadened }); return true; }
   catch { return false; }
 }
 
@@ -532,6 +601,34 @@ export function parseLocalLoopbackContext(raw: unknown): LocalLoopbackContext | 
     || !isContextId(raw.accountId)
     || !isContextId(raw.conversationId)) return null;
   return raw as unknown as LocalLoopbackContext;
+}
+
+export function parseManualPeerContext(raw: unknown): ManualPeerContext | null {
+  if (!isRecord(raw) || !exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved"])) return null;
+  if (!safeContextToken(raw.contextToken)
+    || !safeId(raw.serviceId, 32)
+    || !isContextId(raw.accountId)
+    || !safe(raw.personId, 180)
+    || !isContextId(raw.peerOslUserId)
+    || typeof raw.scopeApproved !== "boolean") return null;
+  return raw as unknown as ManualPeerContext;
+}
+
+export function parsePreparedPeerProseText(raw: unknown): PreparedPeerProseText | null {
+  if (!isRecord(raw) || !exact(raw, ["coverText", "expiresAt", "personToPersonE2ee"])) return null;
+  if (!boundedUtf8Text(raw.coverText, HUB_CAPSULE_MAX_BYTES)
+    || !Number.isSafeInteger(raw.expiresAt)
+    || Number(raw.expiresAt) <= 0
+    || raw.personToPersonE2ee !== true) return null;
+  return raw as unknown as PreparedPeerProseText;
+}
+
+export function parseOpenedPeerProseText(raw: unknown): OpenedPeerProseText | null {
+  if (!isRecord(raw) || !exact(raw, ["plaintext", "contextVerified", "personToPersonE2ee"])) return null;
+  if (!isHubPlaintext(raw.plaintext)
+    || raw.contextVerified !== true
+    || raw.personToPersonE2ee !== true) return null;
+  return raw as unknown as OpenedPeerProseText;
 }
 
 export function parseDecryptedLocalProtectedText(raw: unknown): DecryptedLocalProtectedText | null {

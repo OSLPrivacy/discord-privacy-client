@@ -209,9 +209,24 @@ description = "After an explicit click, open one detected browser's fixed passwo
 commands.allow = ["open_browser_import"]
 
 [[permission]]
+identifier = "allow-get-firefox-status"
+description = "Report only whether Firefox is installed in a fixed Windows location or can be installed through the verified Microsoft App Installer package."
+commands.allow = ["get_firefox_status"]
+
+[[permission]]
+identifier = "allow-install-firefox"
+description = "After explicit local consent, start only the fixed Mozilla.Firefox package through the verified Microsoft App Installer executable."
+commands.allow = ["install_firefox"]
+
+[[permission]]
 identifier = "allow-begin-browser-account-import"
 description = "After explicit local consent, open Firefox's fixed migration wizard in OSL's isolated Firefox profile; browser detection, profile path, executable, and arguments are native fixed values."
 commands.allow = ["begin_browser_account_import"]
+
+[[permission]]
+identifier = "allow-launch-firefox-service"
+description = "Open one reviewed service origin in the active identity's OSL-owned Firefox profile; callers cannot provide a URL, path, or browser argument."
+commands.allow = ["launch_firefox_service"]
 
 [[permission]]
 identifier = "allow-host-native-app-window"
@@ -252,6 +267,21 @@ commands.allow = ["set_local_protected_sheet_open"]
 identifier = "allow-activate-local-loopback-context"
 description = "Create a local-only self-recipient context from the unlocked owner, one owned active service account, its current host generation, and a bounded opaque conversation id."
 commands.allow = ["activate_local_loopback_context"]
+
+[[permission]]
+identifier = "allow-activate-manual-peer-context"
+description = "Activate one renderer-selected existing friend for the exact active owned service account; recipient keys and the symmetric manual-DM binding are derived locally without inspecting the remote service page."
+commands.allow = ["activate_manual_peer_context"]
+
+[[permission]]
+identifier = "allow-prepare-peer-prose-text"
+description = "Prepare marker-free encrypted copy text for the exact active manual peer context without placing or sending it through the hosted service."
+commands.allow = ["prepare_peer_prose_text"]
+
+[[permission]]
+identifier = "allow-open-peer-prose-text"
+description = "Open one bounded manually pasted peer ciphertext in the trusted local UI for the exact active manual peer context."
+commands.allow = ["open_peer_prose_text"]
 
 [[permission]]
 identifier = "allow-place-prepared-capsule"

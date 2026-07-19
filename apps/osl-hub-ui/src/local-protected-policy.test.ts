@@ -22,6 +22,11 @@ describe("local protected context policy", () => {
     const prepare = functionSource("prepareLocalProtectedDraft", "openLocalProtectedCapsule");
     expect(prepare).toContain("saveActiveContextSecurity(contextToken, ttlSeconds, localProtectedSheet.decryptDisplayEnabled)");
     expect(prepare).not.toContain("saveActiveContextSecurity(contextToken, ttlSeconds, true)");
+    expect(prepare).toContain("!policy || !isLocalTtlSeconds(policy.ttlSeconds)");
+    expect(prepare).toContain("localProtectedSheet.ttlSeconds = policy.ttlSeconds");
+    expect(prepare.indexOf("localProtectedSheet.ttlSeconds = policy.ttlSeconds"))
+      .toBeLessThan(prepare.indexOf("prepareLocalProtectedText(contextToken"));
+    expect(prepare).not.toContain("localProtectedSheet.ttlSeconds = ttlSeconds");
     expect(prepare).toContain("localProtectedSheet.draft = plaintext");
     expect(prepare).toContain("navigator.clipboard.writeText(prepared.capsule)");
     expect(prepare.indexOf("hasExperimentalSendConsent")).toBeLessThan(prepare.indexOf("prepareLocalProtectedText(contextToken"));

@@ -26,6 +26,12 @@ describe("truthful Burn UI", () => {
   it("states deletion limits before typed local confirmation", () => {
     const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
     expect(dialog).toContain("local decrypt material and caches");
+    expect(dialog).toContain("revokes local approval, display, and expiry settings");
+    expect(dialog).toContain("attempts to delete sent relay blobs");
+    expect(dialog).toContain("local settings and caches");
+    expect(dialog).toContain("indexed");
+    expect(dialog).not.toContain("removes local decrypt keys for this app + friend");
+    expect(dialog).not.toContain("Incoming OSL messages are already included");
     expect(dialog).toContain("Messages and history in the service remain");
     expect(dialog).toContain("Screenshots, exports, backups, and copies");
     expect(source).toContain("BURN CHAT");
@@ -51,7 +57,11 @@ describe("truthful Burn UI", () => {
     expect(execute).toContain("burnActiveHubContext(contextToken)");
     expect(execute).toContain("burnHubServiceAccount");
     expect(execute).toContain("readiness?.coverageComplete");
-    expect(execute).toContain("login profile, cookies, and service history remain");
+    expect(execute).toContain("Local approval, display, and expiry settings");
+    expect(execute).toContain("Sent relay cleanup was acknowledged");
+    expect(execute).toContain("Login profile, cookies, provider history, and other copies remain");
+    expect(execute).not.toContain("Local decrypt keys for this app + friend");
+    expect(execute).not.toContain("Local OSL decrypt material and caches for ${result.scopesBurned}");
     expect(execute).toContain("executeHubFullCleanup()");
     expect(execute).toContain("localCleanupComplete");
     expect(execute).toContain("no remote deletion success is being claimed");

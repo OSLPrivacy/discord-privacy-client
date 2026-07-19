@@ -10,11 +10,13 @@ vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import {
   activateLocalLoopbackContext,
+  activateManualPeerContext,
   decryptHubCapsule,
   decryptLocalProtectedText,
   isHubPlaintext,
   isLocalProtectedPlaintext,
   openHubAttachment,
+  openPeerProseText,
   parseDecryptedLocalProtectedText,
   parseDecryptedHubPlaintext,
   parseFriendProfile,
@@ -25,14 +27,19 @@ import {
   parseLocalPrivacyScan,
   parseLocalLoopbackContext,
   parseLocalProtectedText,
+  parseManualPeerContext,
   parseNotifications,
   parseOpenedHubAttachment,
+  parseOpenedPeerProseText,
   parsePreparedEncryptedText,
   parsePreparedHubAttachment,
+  parsePreparedPeerProseText,
   prepareHubAttachment,
   prepareLocalProtectedText,
+  preparePeerProseText,
   prepareEncryptedText,
   setHubFriendNickname,
+  setActiveHubFriendPermission,
   setLocalProtectedSheetOpen,
 } from "./adapters";
 
@@ -168,6 +175,76 @@ describe("optional OSL Privacy adapters", () => {
       "account-1",
       "local-00112233445566778899aabbccddeeff",
     )).resolves.toBeNull();
+  });
+
+  it("binds manual peer protection only to the exact requested friend and explicit approval", async () => {
+    const context = {
+      contextToken: "ctx.peer-1",
+      serviceId: "discord",
+      accountId: "account-1",
+      personId: "person-1",
+      peerOslUserId: "osl-user-2",
+      scopeApproved: false,
+    };
+    mocks.invoke.mockResolvedValueOnce(context).mockResolvedValueOnce(undefined);
+
+    await expect(activateManualPeerContext("discord", "account-1", "person-1")).resolves.toEqual(context);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "activate_manual_peer_context", {
+      serviceId: "discord",
+      accountId: "account-1",
+      personId: "person-1",
+    });
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+
+    await expect(setActiveHubFriendPermission(context.contextToken, context.personId, true, false)).resolves.toBe(true);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "set_active_hub_friend_permission", {
+      contextToken: context.contextToken,
+      personId: context.personId,
+      enabled: true,
+      broadened: false,
+    });
+    expect(parseManualPeerContext({ ...context, exactConversationVerified: true })).toBeNull();
+    expect(parseManualPeerContext({ ...context, scopeApproved: "yes" })).toBeNull();
+  });
+
+  it("accepts only explicit person-to-person prepare and open claims", async () => {
+    const prepared = {
+      coverText: "OSL1.PEER.protected",
+      expiresAt: 1_787_000_000,
+      personToPersonE2ee: true,
+    } as const;
+    const opened = {
+      plaintext: "hello",
+      contextVerified: true,
+      personToPersonE2ee: true,
+    } as const;
+    mocks.invoke.mockResolvedValueOnce(prepared).mockResolvedValueOnce(opened);
+
+    await expect(preparePeerProseText("ctx.peer-1", "hello")).resolves.toEqual(prepared);
+    await expect(openPeerProseText("ctx.peer-1", "person-1", prepared.coverText)).resolves.toEqual(opened);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "prepare_peer_prose_text", {
+      contextToken: "ctx.peer-1",
+      plaintext: "hello",
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "open_peer_prose_text", {
+      contextToken: "ctx.peer-1",
+      senderPersonId: "person-1",
+      coverText: prepared.coverText,
+    });
+    expect(parsePreparedPeerProseText({ ...prepared, personToPersonE2ee: false })).toBeNull();
+    expect(parsePreparedPeerProseText({ ...prepared, expiresAt: -1 })).toBeNull();
+    expect(parseOpenedPeerProseText({ ...opened, contextVerified: false })).toBeNull();
+    expect(parseOpenedPeerProseText({ ...opened, personToPersonE2ee: false })).toBeNull();
+    expect(parseOpenedPeerProseText({ ...opened, providerMessageDeleted: true })).toBeNull();
+  });
+
+  it("rejects malformed manual peer inputs before IPC", async () => {
+    await expect(activateManualPeerContext("discord", "../account", "person-1")).resolves.toBeNull();
+    await expect(activateManualPeerContext("Discord!", "account-1", "person-1")).resolves.toBeNull();
+    await expect(preparePeerProseText("../context", "hello")).resolves.toBeNull();
+    await expect(preparePeerProseText("ctx.peer-1", `${"🙂".repeat(251)}x`)).resolves.toBeNull();
+    await expect(openPeerProseText("ctx.peer-1", "<person>", "OSL1.PEER.protected")).resolves.toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it("prepares and opens bounded attachments without inventing upload authority", async () => {

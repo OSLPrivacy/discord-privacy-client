@@ -44,7 +44,8 @@ describe("one-step app guide", () => {
     expect(guide).not.toContain("Step ${step + 1} of 3");
     expect(guide).toContain("Connect ${name}");
     expect(guide).toContain('nativeInstalled ? "Open app in OSL" : "Open in OSL"');
-    expect(guide).toContain("OSL never closes or borrows the normal ${name} window.");
+    expect(guide).toContain("separate local app profile");
+    expect(guide).toContain("normal app and account stay untouched");
     expect(guide).toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
     expect(guide).not.toContain("Choose which account to use.");
     expect(guide).not.toMatch(/adapter|scope|auto-whitelist/i);
@@ -66,6 +67,14 @@ describe("quiet settings and status", () => {
     expect(appearance).toContain("Arrange apps with Edit on Home.");
     expect(appearance).toContain("data-theme-choice");
     expect(appearance).not.toMatch(/data-sidebar|Move or hide apps|serviceRows/);
+  });
+
+  it("parses only supported theme choices and delegates first-run migration", () => {
+    const parser = functionSource("parseTheme", "parseSavedAccountMode");
+    expect(parser).toContain('? raw : "dark"');
+    expect(parser).toContain('raw === "system"');
+    expect(source).toContain("initializeThemePreference(localStorage)");
+    expect(source).toContain("localStorage.setItem(themeStorageKey, next)");
   });
 
   it("uses notification language people can understand", () => {

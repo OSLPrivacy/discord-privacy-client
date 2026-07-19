@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coreReadinessLabel, isActivationCode, isCoreProtectionReady, isRecoveryPhrase, isValidMainPassword, isValidNewMainPassword, parseCoreFeatures, parseCoreReadiness, parseHubLicenseState, parseHubPasswordRoleStatus, parseIdentitySetupResult, parseMainPasswordSetupResult } from "./core";
+import { coreReadinessLabel, isActivationCode, isCoreProtectionReady, isRecoveryPhrase, isValidMainPassword, isValidNewMainPassword, loadCoreIntegrationFromNative, parseCoreFeatures, parseCoreReadiness, parseHubLicenseState, parseHubPasswordRoleStatus, parseIdentitySetupResult, parseMainPasswordSetupResult } from "./core";
 
 describe("original OSL core bridge", () => {
   it("accepts the exact non-sensitive readiness contract", () => {
@@ -66,6 +66,50 @@ describe("original OSL core bridge", () => {
     });
     expect(parsed.bootstrapStatus).toBe("setupRequired");
     expect(isCoreProtectionReady(parsed)).toBe(false);
+  });
+
+  it("does not request the nonessential feature manifest during fresh setup", async () => {
+    const invoked: string[] = [];
+    const integration = await loadCoreIntegrationFromNative(async (command) => {
+      invoked.push(command);
+      expect(command).toBe("get_core_readiness");
+      return {
+        originalCoreLinked: true,
+        identityLoaded: false,
+        keyserverInitialised: false,
+        cloudRegistrationState: "notAttempted",
+        groupSenderKeysEnabled: false,
+        remoteServiceHasNativeAccess: false,
+        bootstrapAttempted: true,
+        passwordGateRequired: false,
+        unlocked: true,
+        activeOslUserId: null,
+        bootstrapStatus: "setupRequired",
+      };
+    });
+    expect(integration.readiness.bootstrapStatus).toBe("setupRequired");
+    expect(integration.readiness.originalCoreLinked).toBe(true);
+    expect(integration.features).toEqual([]);
+    expect(invoked).toEqual(["get_core_readiness"]);
+  });
+
+  it("keeps malformed boot readiness fail closed", async () => {
+    const integration = await loadCoreIntegrationFromNative(async () => ({
+      originalCoreLinked: true,
+      identityLoaded: false,
+      keyserverInitialised: false,
+      groupSenderKeysEnabled: false,
+      remoteServiceHasNativeAccess: false,
+      bootstrapAttempted: true,
+      passwordGateRequired: false,
+      unlocked: true,
+      activeOslUserId: null,
+      bootstrapStatus: "setupRequired",
+      unexpectedAuthority: true,
+    }));
+
+    expect(integration.readiness.originalCoreLinked).toBe(false);
+    expect(integration.readiness.bootstrapStatus).toBe("notAttempted");
   });
 
   it("fails closed on partial extensions, unknown status, or impossible unlock state", () => {

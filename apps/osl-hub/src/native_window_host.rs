@@ -136,15 +136,22 @@ impl NativeWindowHostState {
         &self,
         id: NativeAppId,
         osl_profile_root: &Path,
+        owner_osl_user_id: &str,
         trusted_parent: isize,
     ) -> NativeWindowHostResult {
         #[cfg(target_os = "windows")]
         {
-            windows::host(self, id, osl_profile_root, trusted_parent)
+            windows::host(
+                self,
+                id,
+                osl_profile_root,
+                owner_osl_user_id,
+                trusted_parent,
+            )
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (osl_profile_root, trusted_parent);
+            let _ = (osl_profile_root, owner_osl_user_id, trusted_parent);
             NativeWindowHostResult::unsupported(id, NativeWindowHostReason::PlatformUnsupported)
         }
     }
@@ -207,8 +214,17 @@ fn profile_component(id: NativeAppId) -> &'static str {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn profile_relative_components(id: NativeAppId) -> [&'static str; 2] {
-    [PROFILE_NAMESPACE, profile_component(id)]
+fn profile_relative_components(
+    owner_osl_user_id: &str,
+    id: NativeAppId,
+) -> Result<[String; 3], NativeWindowHostReason> {
+    let owner_namespace = crate::service_host::owner_profile_namespace(owner_osl_user_id)
+        .map_err(|_| NativeWindowHostReason::ProfileUnavailable)?;
+    Ok([
+        PROFILE_NAMESPACE.to_owned(),
+        owner_namespace,
+        profile_component(id).to_owned(),
+    ])
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -305,6 +321,7 @@ mod windows {
         state: &NativeWindowHostState,
         id: NativeAppId,
         root: &Path,
+        owner_osl_user_id: &str,
         parent: isize,
     ) -> NativeWindowHostResult {
         if parent == 0 {
@@ -320,7 +337,7 @@ mod windows {
             );
         }
 
-        let spec = match build_launch_spec(id, root) {
+        let spec = match build_launch_spec(id, root, owner_osl_user_id) {
             Ok(spec) => spec,
             Err(reason) => return NativeWindowHostResult::failed(id, reason),
         };
@@ -476,8 +493,9 @@ mod windows {
     fn build_launch_spec(
         id: NativeAppId,
         root: &Path,
+        owner_osl_user_id: &str,
     ) -> Result<LaunchSpec, NativeWindowHostReason> {
-        let profile = prepare_profile(root, id)?;
+        let profile = prepare_profile(root, owner_osl_user_id, id)?;
         let (executable, arguments) = match fixed_secondary_launch(id) {
             FixedSecondaryLaunch::DiscordUserDataDir => {
                 let executable =
@@ -518,28 +536,7 @@ mod windows {
 
     fn newest_discord_executable() -> Option<std::path::PathBuf> {
         let install_root = known_folder(&FOLDERID_LocalAppData)?.join("Discord");
-        let mut candidates = fs::read_dir(install_root)
-            .ok()?
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let name = entry.file_name();
-                let name = name.to_str()?;
-                let version = name.strip_prefix("app-")?;
-                if version.is_empty()
-                    || !version
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || byte == b'.' || byte == b'-')
-                {
-                    return None;
-                }
-                let executable = entry.path().join("Discord.exe");
-                executable
-                    .is_file()
-                    .then_some((name.to_owned(), executable))
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| left.0.cmp(&right.0));
-        candidates.pop().map(|(_, executable)| executable)
+        crate::native_apps::newest_discord_executable_under(&install_root)
     }
 
     fn telegram_executable() -> Option<std::path::PathBuf> {
@@ -589,6 +586,7 @@ mod windows {
 
     fn prepare_profile(
         root: &Path,
+        owner_osl_user_id: &str,
         id: NativeAppId,
     ) -> Result<std::path::PathBuf, NativeWindowHostReason> {
         if !root.is_absolute() {
@@ -599,7 +597,7 @@ mod windows {
             .canonicalize()
             .map_err(|_| NativeWindowHostReason::ProfileUnavailable)?;
         let mut profile = canonical_root.clone();
-        for component in profile_relative_components(id) {
+        for component in profile_relative_components(owner_osl_user_id, id)? {
             profile.push(component);
             ensure_plain_profile_directory(&profile)?;
         }
@@ -877,13 +875,41 @@ mod tests {
             NativeAppId::Whatsapp,
         ];
         for id in ids {
-            let components = profile_relative_components(id);
+            let components = profile_relative_components("owner-a", id).unwrap();
             assert_eq!(components[0], PROFILE_NAMESPACE);
-            assert!(!components[1].is_empty());
+            assert!(components[1].starts_with("owner-"));
+            assert!(!components[2].is_empty());
             assert!(components.iter().all(|component| {
-                !component.contains(['/', '\\']) && *component != "." && *component != ".."
+                !component.contains(['/', '\\'])
+                    && component.as_str() != "."
+                    && component.as_str() != ".."
             }));
         }
+    }
+
+    #[test]
+    fn native_profiles_are_namespaced_by_osl_owner() {
+        let owner_a = profile_relative_components("owner-a", NativeAppId::Telegram).unwrap();
+        let owner_b = profile_relative_components("owner-b", NativeAppId::Telegram).unwrap();
+        let path_a: std::path::PathBuf = owner_a.iter().collect();
+        let path_b: std::path::PathBuf = owner_b.iter().collect();
+
+        assert_eq!(owner_a[0], owner_b[0]);
+        assert_ne!(owner_a[1], owner_b[1]);
+        assert_eq!(owner_a[2], owner_b[2]);
+        assert_ne!(path_a, path_b);
+    }
+
+    #[test]
+    fn invalid_native_profile_owner_fails_closed() {
+        assert_eq!(
+            profile_relative_components("", NativeAppId::Telegram),
+            Err(NativeWindowHostReason::ProfileUnavailable)
+        );
+        assert_eq!(
+            profile_relative_components(&"x".repeat(129), NativeAppId::Telegram),
+            Err(NativeWindowHostReason::ProfileUnavailable)
+        );
     }
 
     #[test]
@@ -919,7 +945,12 @@ mod tests {
     fn off_windows_host_actions_are_explicitly_unsupported() {
         let state = NativeWindowHostState::default();
         for result in [
-            state.host(NativeAppId::Discord, Path::new("/trusted/osl-data"), 1),
+            state.host(
+                NativeAppId::Discord,
+                Path::new("/trusted/osl-data"),
+                "owner-a",
+                1,
+            ),
             state.resize(1),
             state.focus(),
             state.detach(),

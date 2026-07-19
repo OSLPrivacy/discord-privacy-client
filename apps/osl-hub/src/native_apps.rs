@@ -8,11 +8,21 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::os::windows::ffi::OsStringExt;
 #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+#[cfg(any(target_os = "windows", test))]
+use std::sync::Mutex;
+#[cfg(target_os = "windows")]
+use std::thread;
+#[cfg(any(target_os = "windows", test))]
+use std::time::{Duration, Instant};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -65,6 +75,9 @@ pub struct NativeAppStatus {
     pub id: NativeAppId,
     pub display_name: &'static str,
     pub availability: NativeAppAvailability,
+    /// True only when the current integration has a verified secondary-instance
+    /// switch that keeps writable state inside an OSL-owned profile.
+    pub isolated_profile_available: bool,
     /// Remains false until a service-specific Windows accessibility adapter
     /// can prove the exact account, conversation, recipients, and composer.
     pub supports_overlay: bool,
@@ -189,16 +202,57 @@ const SIGNAL_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
     relative_path: r"Programs\signal-desktop\Signal.exe",
 }];
 
-const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[
-    ExecutableCandidate {
-        folder: KnownFolder::Local,
-        relative_path: r"Microsoft\WindowsApps\WhatsApp.exe",
-    },
-    ExecutableCandidate {
-        folder: KnownFolder::Local,
-        relative_path: r"WhatsApp\WhatsApp.exe",
-    },
-];
+const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
+    folder: KnownFolder::Local,
+    relative_path: r"WhatsApp\WhatsApp.exe",
+}];
+
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_APPS_DIRECTORY: &str = "WindowsApps";
+
+#[cfg(any(target_os = "windows", test))]
+const DESKTOP_APP_INSTALLER_PREFIX: &str = "microsoft.desktopappinstaller_";
+
+#[cfg(any(target_os = "windows", test))]
+const DESKTOP_APP_INSTALLER_PUBLISHER_ID: &str = "_8wekyb3d8bbwe";
+
+#[cfg(any(target_os = "windows", test))]
+const INSTALLER_FAILURE_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+#[cfg(target_os = "windows")]
+// A cold Windows PowerShell/AppX query can exceed three seconds on small VMs
+// or immediately after sign-in. Keep this below the setup UI's eight-second
+// decision budget so native availability remains truthful without blocking
+// startup.
+const APP_INSTALLER_PROBE_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Windows PowerShell's redirected text encoding varies by host/version. Write
+/// the AppX location as explicit UTF-8 bytes so Rust never has to guess.
+#[cfg(any(target_os = "windows", test))]
+const APP_INSTALLER_LOCATION_SCRIPT: &str = concat!(
+    "$location = Get-AppxPackage -Name Microsoft.DesktopAppInstaller ",
+    "-ErrorAction SilentlyContinue | Select-Object -First 1 ",
+    "-ExpandProperty InstallLocation; ",
+    "if (-not [string]::IsNullOrWhiteSpace([string]$location)) { ",
+    "$utf8 = [System.Text.UTF8Encoding]::new($false); ",
+    "$bytes = $utf8.GetBytes([string]$location); ",
+    "$stdout = [Console]::OpenStandardOutput(); ",
+    "$stdout.Write($bytes, 0, $bytes.Length); $stdout.Flush() }"
+);
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Default)]
+struct InstallerAvailabilityCache {
+    verified: bool,
+    retry_after_failure: Option<Instant>,
+}
+
+#[cfg(target_os = "windows")]
+static VERIFIED_INSTALLER_AVAILABLE: Mutex<InstallerAvailabilityCache> =
+    Mutex::new(InstallerAvailabilityCache {
+        verified: false,
+        retry_after_failure: None,
+    });
 
 #[cfg(any(target_os = "windows", test))]
 const MULLVAD_PACKAGE_ID: &str = "MullvadVPN.MullvadVPN";
@@ -369,13 +423,14 @@ const BROWSER_IMPORTS: &[BrowserImportManifest] = &[
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_PACKAGE_ID: &str = "Mozilla.Firefox";
 
-/// One per-Windows-user browsing profile for the initial native-browser
-/// prototype. It lives inside Tauri's app-local-data service-profile target,
-/// so full OSL cleanup removes its cookies without touching Firefox's default
-/// profile. A later multi-identity design must split this namespace by a
-/// validated OSL identity identifier before advertising account isolation.
+/// Firefox data shares the same owner-hashed namespace as every embedded
+/// service profile. The browser itself receives only the resulting local path;
+/// neither the OSL user id nor a caller-controlled component reaches it.
 #[cfg(any(target_os = "windows", test))]
-const FIREFOX_PROFILE_COMPONENTS: &[&str] = &["service-profiles-v2", "firefox-shared"];
+const FIREFOX_PROFILE_BASE_COMPONENT: &str = "service-profiles-v2";
+
+#[cfg(any(target_os = "windows", test))]
+const FIREFOX_PROFILE_COMPONENT: &str = "firefox-browser";
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_CANDIDATES: &[ExecutableCandidate] = &[
@@ -429,13 +484,17 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
 }
 
 pub fn list_native_apps() -> Vec<NativeAppStatus> {
-    NATIVE_APPS
+    list_native_apps_with_installer_probe(installer_available_for_listing)
+}
+
+fn list_native_apps_with_installer_probe(
+    mut installer_available: impl FnMut() -> bool,
+) -> Vec<NativeAppStatus> {
+    let mut statuses: Vec<_> = NATIVE_APPS
         .iter()
         .map(|app| {
             let availability = if installed_executable(app).is_some() {
                 NativeAppAvailability::Installed
-            } else if installer_executable().is_some() {
-                NativeAppAvailability::Installable
             } else {
                 NativeAppAvailability::Unavailable
             };
@@ -443,10 +502,30 @@ pub fn list_native_apps() -> Vec<NativeAppStatus> {
                 id: app.id,
                 display_name: app.display_name,
                 availability,
+                isolated_profile_available: matches!(
+                    app.id,
+                    NativeAppId::Telegram | NativeAppId::Signal
+                ),
                 supports_overlay: false,
             }
         })
-        .collect()
+        .collect();
+
+    // Resolving the signed App Installer package launches a bounded PowerShell
+    // query on Windows. Skip it when every app is present; otherwise do it once
+    // per refresh and reuse the result across all missing app tiles.
+    if statuses
+        .iter()
+        .any(|status| status.availability == NativeAppAvailability::Unavailable)
+        && installer_available()
+    {
+        for status in &mut statuses {
+            if status.availability == NativeAppAvailability::Unavailable {
+                status.availability = NativeAppAvailability::Installable;
+            }
+        }
+    }
+    statuses
 }
 
 /// Reports only whether one of six fixed browsers exists in a standard
@@ -505,6 +584,7 @@ pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, S
 /// requests OS/browser authorization, and owns any CSV file picker.
 pub fn begin_browser_account_import(
     app_local_data_dir: &std::path::Path,
+    owner_osl_user_id: &str,
 ) -> Result<BrowserAccountImportResult, String> {
     #[cfg(target_os = "windows")]
     {
@@ -518,7 +598,7 @@ pub fn begin_browser_account_import(
         let firefox = firefox_executable().ok_or_else(|| {
             "Firefox is required for OSL's browser-owned account migration".to_owned()
         })?;
-        let profile = ensure_firefox_profile(app_local_data_dir)?;
+        let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
         spawn_firefox_migration_wizard(&firefox, &profile)
             .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
         Ok(BrowserAccountImportResult {
@@ -534,7 +614,7 @@ pub fn begin_browser_account_import(
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = app_local_data_dir;
+        let _ = (app_local_data_dir, owner_osl_user_id);
         Err("Browser account migration is available only on Windows".to_owned())
     }
 }
@@ -619,7 +699,7 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
 pub fn get_mullvad_status() -> MullvadStatus {
     let availability = if mullvad_executable().is_some() {
         NativeAppAvailability::Installed
-    } else if installer_executable().is_some() {
+    } else if installer_available_for_listing() {
         NativeAppAvailability::Installable
     } else {
         NativeAppAvailability::Unavailable
@@ -693,7 +773,7 @@ fn mullvad_executable() -> Option<std::path::PathBuf> {
 pub fn get_firefox_status() -> FirefoxStatus {
     let availability = if firefox_executable().is_some() {
         NativeAppAvailability::Installed
-    } else if installer_executable().is_some() {
+    } else if installer_available_for_listing() {
         NativeAppAvailability::Installable
     } else {
         NativeAppAvailability::Unavailable
@@ -709,13 +789,14 @@ pub fn get_firefox_status() -> FirefoxStatus {
 /// embeds or controls the resulting page.
 pub fn launch_firefox_service(
     app_local_data_dir: &std::path::Path,
+    owner_osl_user_id: &str,
     service_id: FirefoxServiceId,
 ) -> Result<FirefoxLaunchResult, String> {
     #[cfg(target_os = "windows")]
     {
         let firefox = firefox_executable()
             .ok_or_else(|| "Firefox is not installed in a supported Windows location".to_owned())?;
-        let profile = ensure_firefox_profile(app_local_data_dir)?;
+        let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
         let url = firefox_service_url(service_id);
         spawn_firefox_tab(&firefox, &profile, url)
             .map_err(|_| "Firefox could not be launched".to_owned())?;
@@ -726,7 +807,7 @@ pub fn launch_firefox_service(
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = app_local_data_dir;
+        let _ = (app_local_data_dir, owner_osl_user_id);
         let _ = service_id;
         Err("Firefox service launching is available only on Windows".to_owned())
     }
@@ -779,7 +860,10 @@ fn firefox_executable() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_firefox_profile(app_local_data_dir: &Path) -> Result<PathBuf, String> {
+fn ensure_firefox_profile(
+    app_local_data_dir: &Path,
+    owner_osl_user_id: &str,
+) -> Result<PathBuf, String> {
     if !app_local_data_dir.is_absolute() || app_local_data_dir.parent().is_none() {
         return Err("The OSL app-local-data directory is invalid".to_owned());
     }
@@ -788,8 +872,14 @@ fn ensure_firefox_profile(app_local_data_dir: &Path) -> Result<PathBuf, String> 
     let canonical_base = base
         .canonicalize()
         .map_err(|_| "The OSL app-local-data directory could not be verified".to_owned())?;
+    let owner_namespace = crate::service_host::owner_profile_namespace(owner_osl_user_id)
+        .map_err(|_| "The active OSL identity is invalid".to_owned())?;
     let mut profile = base;
-    for component in FIREFOX_PROFILE_COMPONENTS {
+    for component in [
+        FIREFOX_PROFILE_BASE_COMPONENT,
+        owner_namespace.as_str(),
+        FIREFOX_PROFILE_COMPONENT,
+    ] {
         profile.push(component);
         ensure_plain_directory(&profile)?;
     }
@@ -803,8 +893,16 @@ fn ensure_firefox_profile(app_local_data_dir: &Path) -> Result<PathBuf, String> 
 }
 
 #[cfg(test)]
-pub(crate) fn firefox_profile_relative_path() -> std::path::PathBuf {
-    FIREFOX_PROFILE_COMPONENTS.iter().collect()
+pub(crate) fn firefox_profile_relative_path(owner_osl_user_id: &str) -> std::path::PathBuf {
+    let owner_namespace = crate::service_host::owner_profile_namespace(owner_osl_user_id)
+        .expect("test owner must be valid");
+    [
+        FIREFOX_PROFILE_BASE_COMPONENT,
+        owner_namespace.as_str(),
+        FIREFOX_PROFILE_COMPONENT,
+    ]
+    .iter()
+    .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -850,11 +948,46 @@ fn firefox_executable() -> Option<std::path::PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn installed_executable(app: &NativeAppManifest) -> Option<PathBuf> {
+    if app.id == NativeAppId::Discord {
+        let install_root = known_folder(KnownFolder::Local)?.join("Discord");
+        return newest_discord_executable_under(&install_root);
+    }
     app.candidates.iter().find_map(|candidate| {
         let root = known_folder(candidate.folder)?;
         let executable = root.join(candidate.relative_path);
         executable.is_file().then_some(executable)
     })
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn newest_discord_executable_under(install_root: &Path) -> Option<PathBuf> {
+    let mut candidates = std::fs::read_dir(install_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let version = discord_version_key(name)?;
+            let executable = entry.path().join("Discord.exe");
+            executable.is_file().then_some((version, executable))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    candidates.pop().map(|(_, executable)| executable)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn discord_version_key(directory_name: &str) -> Option<Vec<u64>> {
+    let version = directory_name.strip_prefix("app-")?;
+    let components = version
+        .split('.')
+        .map(|component| {
+            (!component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| component.parse::<u64>().ok())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (components.len() >= 2).then_some(components)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -864,13 +997,195 @@ fn installed_executable(_app: &NativeAppManifest) -> Option<std::path::PathBuf> 
 
 #[cfg(target_os = "windows")]
 fn installer_executable() -> Option<PathBuf> {
-    let executable = known_folder(KnownFolder::Local)?.join(r"Microsoft\WindowsApps\winget.exe");
+    let program_files = known_folder(KnownFolder::ProgramFiles)?;
+    let executable = resolve_winget_executable(&app_installer_winget_candidates(), &program_files)?;
     executable.is_file().then_some(executable)
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn cached_installer_availability(
+    cache: &Mutex<InstallerAvailabilityCache>,
+    mut now: impl FnMut() -> Instant,
+    probe: impl FnOnce() -> bool,
+) -> bool {
+    let mut state = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.verified {
+        return true;
+    }
+    if state
+        .retry_after_failure
+        .is_some_and(|retry_after| now() < retry_after)
+    {
+        return false;
+    }
+    if !probe() {
+        state.retry_after_failure = Some(now() + INSTALLER_FAILURE_RETRY_DELAY);
+        return false;
+    }
+    state.verified = true;
+    state.retry_after_failure = None;
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn installer_available_for_listing() -> bool {
+    cached_installer_availability(&VERIFIED_INSTALLER_AVAILABLE, Instant::now, || {
+        installer_executable().is_some()
+    })
+}
+
 #[cfg(not(target_os = "windows"))]
-fn installer_executable() -> Option<std::path::PathBuf> {
-    None
+fn installer_available_for_listing() -> bool {
+    false
+}
+
+/// Asks Windows for the signed App Installer package location. OSL never
+/// executes the user-writable `winget.exe` App Execution Alias. The returned
+/// path is data only and must pass `is_trusted_winget_path` before launch.
+#[cfg(target_os = "windows")]
+fn app_installer_winget_candidates() -> Vec<PathBuf> {
+    let Some(system_directory) = system_directory() else {
+        return Vec::new();
+    };
+    let powershell = system_directory
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    if !powershell.is_file() {
+        return Vec::new();
+    }
+    let mut command = Command::new(powershell);
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            APP_INSTALLER_LOCATION_SCRIPT,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command_output_with_timeout(command, APP_INSTALLER_PROBE_TIMEOUT)
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| decode_app_installer_locations(&output.stdout))
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_app_installer_locations(stdout: &[u8]) -> Vec<PathBuf> {
+    let Ok(stdout) = std::str::from_utf8(stdout) else {
+        return Vec::new();
+    };
+    if stdout.contains('\0') {
+        return Vec::new();
+    }
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .map(|directory| directory.join("winget.exe"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output(),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "App Installer probe timed out",
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn system_directory() -> Option<PathBuf> {
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    (length > 0 && length < buffer.len())
+        .then(|| PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])))
+        .filter(|path| path.is_absolute())
+}
+
+/// Selects only App Installer's package executable from Windows' protected
+/// application directory. User-profile aliases and PATH results are rejected.
+#[cfg(any(target_os = "windows", test))]
+fn resolve_winget_executable(candidates: &[PathBuf], program_files: &Path) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|candidate| is_trusted_winget_path(candidate, program_files))
+        .cloned()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_trusted_winget_path(path: &Path, program_files: &Path) -> bool {
+    if path_has_parent_component(path) {
+        return false;
+    }
+
+    let Some(package_directory) = path.parent() else {
+        return false;
+    };
+    let Some(windows_apps) = package_directory.parent() else {
+        return false;
+    };
+    path_file_name_eq(path, "winget.exe")
+        && path_file_name_eq(windows_apps, WINDOWS_APPS_DIRECTORY)
+        && path_eq_ignore_ascii_case(
+            windows_apps.parent().unwrap_or(Path::new("")),
+            program_files,
+        )
+        && package_directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_desktop_app_installer_directory)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn path_has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn path_eq_ignore_ascii_case(left: &Path, right: &Path) -> bool {
+    left.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn path_file_name_eq(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_desktop_app_installer_directory(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with(DESKTOP_APP_INSTALLER_PREFIX)
+        && name.ends_with(DESKTOP_APP_INSTALLER_PUBLISHER_ID)
 }
 
 #[cfg(target_os = "windows")]
@@ -963,7 +1278,19 @@ fn spawn_firefox_migration_wizard(executable: &Path, profile: &Path) -> std::io:
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    fn unique_discord_test_root(label: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "osl-native-apps-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     #[test]
     fn manifest_is_exhaustive_unique_and_uses_fixed_packages() {
@@ -1062,17 +1389,20 @@ mod tests {
         assert_eq!(FIREFOX_SERVICES.len(), 11);
         assert_eq!(FIREFOX_PACKAGE_ID, "Mozilla.Firefox");
         assert_eq!(FIREFOX_CANDIDATES.len(), 4);
-        assert_eq!(
-            FIREFOX_PROFILE_COMPONENTS,
-            ["service-profiles-v2", "firefox-shared"]
-        );
-        assert!(firefox_profile_relative_path().starts_with("service-profiles-v2"));
-        assert!(FIREFOX_PROFILE_COMPONENTS.iter().all(|component| {
-            !component.is_empty()
-                && *component != "."
-                && *component != ".."
-                && !component.contains(['/', '\\'])
-        }));
+        assert_eq!(FIREFOX_PROFILE_BASE_COMPONENT, "service-profiles-v2");
+        assert_eq!(FIREFOX_PROFILE_COMPONENT, "firefox-browser");
+        let owner_a = firefox_profile_relative_path("owner-a");
+        let owner_b = firefox_profile_relative_path("owner-b");
+        assert!(owner_a.starts_with("service-profiles-v2"));
+        assert_ne!(owner_a, owner_b);
+        assert!([FIREFOX_PROFILE_BASE_COMPONENT, FIREFOX_PROFILE_COMPONENT]
+            .iter()
+            .all(|component| {
+                !component.is_empty()
+                    && *component != "."
+                    && *component != ".."
+                    && !component.contains(['/', '\\'])
+            }));
         for (index, (service_id, url)) in FIREFOX_SERVICES.iter().enumerate() {
             assert_eq!(firefox_service_url(*service_id), *url);
             assert!(url.starts_with("https://"));
@@ -1164,6 +1494,161 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_packaged_app_installer_winget_is_trusted() {
+        let program_files = Path::new("C:/Program Files");
+        let packaged_winget = program_files.join(
+            "WindowsApps/Microsoft.DesktopAppInstaller_1.29.279.0_x64__8wekyb3d8bbwe/winget.exe",
+        );
+        let alias = PathBuf::from("C:/Users/alice/AppData/Local/Microsoft/WindowsApps/winget.exe");
+
+        assert!(!is_trusted_winget_path(&alias, program_files));
+        assert!(is_trusted_winget_path(&packaged_winget, program_files));
+        assert_eq!(
+            resolve_winget_executable(std::slice::from_ref(&packaged_winget), program_files),
+            Some(packaged_winget)
+        );
+    }
+
+    #[test]
+    fn app_installer_probe_emits_and_decodes_utf8_deterministically() {
+        assert!(APP_INSTALLER_LOCATION_SCRIPT.contains("UTF8Encoding"));
+        assert!(APP_INSTALLER_LOCATION_SCRIPT.contains("OpenStandardOutput"));
+
+        let location = "C:/Program Files/WindowsApps/Microsoft.DesktopAppInstaller_1.29.279.0_x64__8wekyb3d8bbwe";
+        assert_eq!(
+            decode_app_installer_locations(location.as_bytes()),
+            vec![PathBuf::from(location).join("winget.exe")]
+        );
+
+        let utf16_stdout = location
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert!(decode_app_installer_locations(&utf16_stdout).is_empty());
+    }
+
+    #[test]
+    fn discord_update_stub_without_a_versioned_executable_is_not_installed() {
+        let root = unique_discord_test_root("discord-stub");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Update.exe"), b"stale updater").unwrap();
+
+        assert_eq!(newest_discord_executable_under(&root), None);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn discord_detection_selects_the_newest_valid_versioned_executable() {
+        let root = unique_discord_test_root("discord-versions");
+        let older = root.join("app-1.0.9012");
+        let newer = root.join("app-1.0.9189");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(older.join("Discord.exe"), b"older").unwrap();
+        std::fs::write(newer.join("Discord.exe"), b"newer").unwrap();
+        std::fs::create_dir_all(root.join("app-current")).unwrap();
+        std::fs::write(root.join("app-current/Discord.exe"), b"invalid").unwrap();
+
+        assert_eq!(
+            newest_discord_executable_under(&root),
+            Some(newer.join("Discord.exe"))
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn discord_detection_compares_version_components_numerically() {
+        let root = unique_discord_test_root("discord-numeric-versions");
+        let older = root.join("app-1.0.99");
+        let newer = root.join("app-1.0.100");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(older.join("Discord.exe"), b"older").unwrap();
+        std::fs::write(newer.join("Discord.exe"), b"newer").unwrap();
+
+        assert_eq!(
+            newest_discord_executable_under(&root),
+            Some(newer.join("Discord.exe"))
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn native_app_refresh_probes_app_installer_once() {
+        let calls = Cell::new(0);
+        let statuses = list_native_apps_with_installer_probe(|| {
+            calls.set(calls.get() + 1);
+            true
+        });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+        #[cfg(not(target_os = "windows"))]
+        assert!(statuses
+            .iter()
+            .all(|status| status.availability == NativeAppAvailability::Installable));
+    }
+
+    #[test]
+    fn listing_probe_coalesces_failure_briefly_then_caches_success() {
+        assert_eq!(INSTALLER_FAILURE_RETRY_DELAY, Duration::from_millis(250));
+        let cache = Mutex::new(InstallerAvailabilityCache::default());
+        let calls = Cell::new(0);
+        let failure_completed = Instant::now();
+
+        assert!(!cached_installer_availability(
+            &cache,
+            || failure_completed,
+            || {
+                calls.set(calls.get() + 1);
+                false
+            }
+        ));
+        assert!(!cached_installer_availability(
+            &cache,
+            || failure_completed + INSTALLER_FAILURE_RETRY_DELAY / 2,
+            || {
+                calls.set(calls.get() + 1);
+                true
+            }
+        ));
+        assert!(cached_installer_availability(
+            &cache,
+            || failure_completed + INSTALLER_FAILURE_RETRY_DELAY,
+            || {
+                calls.set(calls.get() + 1);
+                true
+            }
+        ));
+        assert!(cached_installer_availability(&cache, Instant::now, || {
+            calls.set(calls.get() + 1);
+            false
+        }));
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn winget_resolution_rejects_untrusted_paths() {
+        let program_files = Path::new("C:/Program Files");
+        let untrusted = [
+            PathBuf::from("C:/Windows/System32/winget.exe"),
+            PathBuf::from("C:/Users/alice/AppData/Local/Microsoft/WindowsApps/winget.exe"),
+            PathBuf::from("C:/Users/alice/AppData/Local/Microsoft/WindowsApps/attacker/winget.exe"),
+            program_files.join("WindowsApps/Microsoft.DesktopAppInstaller_1.25.390.0_x64__8wekyb3d8bbwe/cmd.exe"),
+            program_files.join("WindowsApps/Contoso.AppInstaller_1.0_x64__8wekyb3d8bbwe/winget.exe"),
+            program_files.join("WindowsApps/Microsoft.DesktopAppInstaller_1.25.390.0_x64__8wekyb3d8bbwe/../winget.exe"),
+        ];
+
+        assert!(untrusted
+            .iter()
+            .all(|candidate| !is_trusted_winget_path(candidate, program_files)));
+        assert_eq!(resolve_winget_executable(&untrusted, program_files), None);
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn process_actions_fail_closed_off_windows() {
@@ -1184,6 +1669,7 @@ mod tests {
         );
         assert!(launch_firefox_service(
             std::path::Path::new("/trusted/app-local-data"),
+            "owner-test",
             FirefoxServiceId::Instagram
         )
         .is_err());
@@ -1192,6 +1678,10 @@ mod tests {
             .iter()
             .all(|browser| !browser.installed));
         assert!(open_browser_import(BrowserImportId::Chrome).is_err());
-        assert!(begin_browser_account_import(std::path::Path::new("/trusted/osl-data")).is_err());
+        assert!(begin_browser_account_import(
+            std::path::Path::new("/trusted/osl-data"),
+            "owner-test"
+        )
+        .is_err());
     }
 }

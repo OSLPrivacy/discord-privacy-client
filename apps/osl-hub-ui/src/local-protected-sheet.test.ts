@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   blankLocalProtectedModel,
+  LOCAL_TTL_OPTIONS,
   loadOrCreateLocalConversationId,
   localConversationStorageKey,
   localProtectedSheetMarkup,
@@ -15,6 +16,25 @@ class MemoryStorage {
 }
 
 describe("local protected side sheet", () => {
+  it("offers exactly the enforced timers and defaults to one hour", () => {
+    expect(LOCAL_TTL_OPTIONS).toEqual([3_600, 86_400, 259_200, 604_800]);
+    const model = blankLocalProtectedModel(true);
+    expect(model.ttlSeconds).toBe(3_600);
+    const markup = localProtectedSheetMarkup({
+      ...model,
+      context: {
+        contextToken: "ctx-1-abc",
+        serviceId: "discord",
+        accountId: "account-1",
+        conversationId: "local-abababababababababababababababab",
+      },
+    });
+    expect(markup.match(/<option /gu)).toHaveLength(4);
+    expect(markup).toContain('<option value="3600" selected>1 hour</option>');
+    expect(markup).not.toContain('value="0"');
+    expect(markup).not.toContain("No timer");
+  });
+
   it("persists only an opaque random context id, never the chat label", () => {
     const storage = new MemoryStorage();
     const random = (bytes: Uint8Array): Uint8Array => { bytes.fill(0xab); return bytes; };

@@ -147,13 +147,16 @@ const bridgeStates: CoreFeature["bridgeState"][] = [
 
 export async function loadCoreIntegration(): Promise<CoreIntegration> {
   if (!isTauriRuntime()) return structuredClone(unavailableCoreIntegration);
-  const [rawReadiness, rawFeatures] = await Promise.all([
-    invoke<unknown>("get_core_readiness"),
-    invoke<unknown>("list_core_features"),
-  ]);
+  return loadCoreIntegrationFromNative((command) => invoke<unknown>(command));
+}
+
+type NativeCoreInvoke = (command: string) => Promise<unknown>;
+
+export async function loadCoreIntegrationFromNative(nativeInvoke: NativeCoreInvoke): Promise<CoreIntegration> {
+  const rawReadiness = await nativeInvoke("get_core_readiness");
   return {
     readiness: parseCoreReadiness(rawReadiness),
-    features: parseCoreFeatures(rawFeatures),
+    features: [],
   };
 }
 

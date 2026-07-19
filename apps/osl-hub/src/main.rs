@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use osl_privacy_hub::broker::{
-    self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment, PreparedCoreMessage,
-    PreparedHubAttachment, PreparedLocalProtectedMessage,
+    self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
+    OpenedPeerProseMessage, PreparedCoreMessage, PreparedHubAttachment,
+    PreparedLocalProtectedMessage, PreparedPeerProseMessage,
 };
 use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
 use osl_privacy_hub::core_bridge::{
@@ -20,6 +21,7 @@ use osl_privacy_hub::models::{
 };
 use osl_privacy_hub::native_apps::{
     self, BrowserAccountImportResult, BrowserImportId, BrowserImportResult, BrowserImportStatus,
+    FirefoxInstallResult, FirefoxLaunchResult, FirefoxServiceId, FirefoxStatus,
     MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
 };
 use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
@@ -607,14 +609,44 @@ fn open_browser_import(browser_id: BrowserImportId) -> Result<BrowserImportResul
 }
 
 #[tauri::command]
-fn begin_browser_account_import(
+fn get_firefox_status() -> FirefoxStatus {
+    native_apps::get_firefox_status()
+}
+
+#[tauri::command]
+fn install_firefox() -> Result<FirefoxInstallResult, String> {
+    native_apps::install_firefox()
+}
+
+#[tauri::command]
+async fn begin_browser_account_import(
     app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
 ) -> Result<BrowserAccountImportResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
     let app_local_data_dir = app
         .path()
         .app_local_data_dir()
         .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
-    native_apps::begin_browser_account_import(&app_local_data_dir)
+    native_apps::begin_browser_account_import(&app_local_data_dir, &owner)
+}
+
+#[tauri::command]
+async fn launch_firefox_service(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: FirefoxServiceId,
+) -> Result<FirefoxLaunchResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
+    native_apps::launch_firefox_service(&app_local_data_dir, &owner, service_id)
 }
 
 #[cfg(target_os = "windows")]
@@ -634,8 +666,12 @@ fn main_window_hwnd(_app: &tauri::AppHandle) -> Result<isize, String> {
 #[tauri::command]
 async fn host_native_app_window(
     app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
     app_id: NativeAppId,
 ) -> Result<NativeWindowHostResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
     let parent = main_window_hwnd(&app)?;
     let profile_root = app
         .path()
@@ -645,7 +681,7 @@ async fn host_native_app_window(
     tauri::async_runtime::spawn_blocking(move || {
         operation_app
             .state::<NativeWindowHostState>()
-            .host(app_id, &profile_root, parent)
+            .host(app_id, &profile_root, &owner, parent)
     })
     .await
     .map_err(|_| "The experimental native host operation was interrupted".to_owned())
@@ -820,7 +856,19 @@ struct LocalLoopbackContextLease {
     conversation_id: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualPeerContextLease {
+    context_token: String,
+    service_id: String,
+    account_id: String,
+    person_id: String,
+    peer_osl_user_id: String,
+    scope_approved: bool,
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn activate_local_loopback_context(
     broker: State<'_, HubBrokerState>,
     host: State<'_, ServiceHostState>,
@@ -848,6 +896,129 @@ async fn activate_local_loopback_context(
         account_id: lease.account_id,
         conversation_id,
     })
+}
+
+/// Activate only a renderer-selected existing friend. Recipient keys, the
+/// participant set, and the symmetric manual-DM binding are derived locally;
+/// this command does not inspect or claim proof of a service-page conversation.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn activate_manual_peer_context(
+    broker: State<'_, HubBrokerState>,
+    host: State<'_, ServiceHostState>,
+    registry: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: String,
+    account_id: String,
+    person_id: String,
+) -> Result<ManualPeerContextLease, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let binding = security::manual_peer_binding(&core, person_id)?;
+    let activated = broker::activate_owned_manual_peer_context(
+        &broker,
+        &registry,
+        &host,
+        &owner,
+        &service_id,
+        &account_id,
+        binding,
+    )?;
+    let scope_approved = security::manual_peer_scope_approved(
+        &core,
+        &activated.lease.service_id,
+        &activated.lease.account_id,
+        activated.person_id.clone(),
+        activated.scope,
+    )?;
+    Ok(ManualPeerContextLease {
+        context_token: activated.lease.context_token,
+        service_id: activated.lease.service_id,
+        account_id: activated.lease.account_id,
+        person_id: activated.person_id,
+        peer_osl_user_id: activated.peer_osl_user_id,
+        scope_approved,
+    })
+}
+
+/// Produce marker-free encrypted copy text for manual user placement. Nothing
+/// is placed into or sent through the hosted service by this command.
+#[tauri::command]
+async fn prepare_peer_prose_text(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    context_token: String,
+    plaintext: String,
+) -> Result<PreparedPeerProseMessage, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let security_state = app.state::<HubSecurityState>();
+        let broker_state = app.state::<HubBrokerState>();
+        let host_state = app.state::<ServiceHostState>();
+        let active = host_state
+            .current()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
+        broker_state.validate_active_host(&context_token, &active)?;
+        let prepared = with_indexed_context_write(&app, &broker_state, &context_token, || {
+            broker::prepare_peer_prose_text(
+                &core,
+                &security_state,
+                &broker_state,
+                &context_token,
+                plaintext,
+            )
+        })?;
+        let still_active = host_state
+            .current()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "OSL broker service host closed during preparation".to_owned())?;
+        broker_state.validate_active_host(&context_token, &still_active)?;
+        Ok(prepared)
+    })
+    .await
+    .map_err(|error| format!("OSL broker worker failed: {error}"))?
+}
+
+/// Open manually pasted marker-free encrypted text in the trusted local UI.
+#[tauri::command]
+async fn open_peer_prose_text(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    context_token: String,
+    sender_person_id: String,
+    cover_text: String,
+) -> Result<OpenedPeerProseMessage, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let broker_state = app.state::<HubBrokerState>();
+        let host_state = app.state::<ServiceHostState>();
+        let active = host_state
+            .current()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
+        broker_state.validate_active_host(&context_token, &active)?;
+        let opened = with_indexed_context_write(&app, &broker_state, &context_token, || {
+            broker::open_peer_prose_text(
+                &core,
+                &broker_state,
+                &context_token,
+                sender_person_id,
+                cover_text,
+            )
+        })?;
+        let still_active = host_state
+            .current()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "OSL broker service host closed during decryption".to_owned())?;
+        broker_state.validate_active_host(&context_token, &still_active)?;
+        Ok(opened)
+    })
+    .await
+    .map_err(|error| format!("OSL broker worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -995,16 +1166,17 @@ async fn set_active_hub_friend_permission(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "OSL People requires an active service host".to_owned())?;
     broker_state.validate_active_host(&context_token, &active)?;
-    broker_state.require_peer_messaging_context(&context_token)?;
+    let person_id = broker_state.manual_permission_target(&context_token, &person_id, broadened)?;
     let scope = broker_state.scope_for_context(&context_token)?;
     with_indexed_context_write(&app, &broker_state, &context_token, || {
-        security::set_friend_scope_permission(
+        security::set_manual_peer_scope_permission(
             &core,
             &security_state,
+            &active.service_id,
+            &active.account_id,
             person_id,
             scope,
             enabled,
-            broadened,
         )
     })
 }
@@ -1424,14 +1596,25 @@ fn burn_indexed_service_manifest(
     let mut remote_blobs_deleted = 0usize;
     let mut remote_blob_deletions_failed = 0usize;
     for indexed in index.pending_scopes(manifest)? {
-        let result = security::burn_scope(
-            &app.state::<HubCoreState>(),
-            &app.state::<HubSecurityState>(),
-            indexed.scope.clone(),
-            indexed.canonical_channel_ids.clone(),
-            true,
-            Vec::new(),
-        )?;
+        let result = if let Some(person_id) = indexed.manual_peer_person_id.as_deref() {
+            security::burn_manual_peer_scope(
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+                &manifest.service_id,
+                &manifest.account_id,
+                person_id,
+                indexed.scope.clone(),
+            )?
+        } else {
+            security::burn_scope(
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+                indexed.scope.clone(),
+                indexed.canonical_channel_ids.clone(),
+                true,
+                Vec::new(),
+            )?
+        };
         broker::burn_indexed_local_protected_binding(
             &app.state::<HubCoreState>(),
             &indexed.local_context_binding_sha256,
@@ -1486,16 +1669,27 @@ async fn burn_active_hub_context(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "OSL burn requires an active service host".to_owned())?;
         broker_state.validate_active_host(&context_token, &active)?;
-        let scope_input = broker_state.scope_for_context(&context_token)?;
-        let known_channel_ids = scope_input.channel_id.clone().into_iter().collect();
-        let result = security::burn_scope(
-            &app.state::<HubCoreState>(),
-            &app.state::<HubSecurityState>(),
-            scope_input,
-            known_channel_ids,
-            true,
-            Vec::new(),
-        )?;
+        let result = if let Some(manual) = broker_state.manual_burn_target(&context_token)? {
+            security::burn_manual_peer_scope(
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+                &manual.service_id,
+                &manual.account_id,
+                &manual.person_id,
+                manual.scope,
+            )?
+        } else {
+            let scope_input = broker_state.scope_for_context(&context_token)?;
+            let known_channel_ids = scope_input.channel_id.clone().into_iter().collect();
+            security::burn_scope(
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+                scope_input,
+                known_channel_ids,
+                true,
+                Vec::new(),
+            )?
+        };
         broker::burn_local_protected_context(
             &app.state::<HubCoreState>(),
             &broker_state,
@@ -1617,7 +1811,10 @@ fn main() {
             open_mullvad,
             list_browser_imports,
             open_browser_import,
+            get_firefox_status,
+            install_firefox,
             begin_browser_account_import,
+            launch_firefox_service,
             host_native_app_window,
             resize_native_app_window,
             focus_native_app_window,
@@ -1628,8 +1825,11 @@ fn main() {
             set_local_protected_sheet_open,
             remove_service_account,
             activate_local_loopback_context,
+            activate_manual_peer_context,
             prepare_encrypted_text,
             decrypt_hub_capsule,
+            prepare_peer_prose_text,
+            open_peer_prose_text,
             prepare_local_protected_text_with_policy,
             decrypt_local_protected_capsule,
             prepare_hub_attachment,

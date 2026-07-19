@@ -27,6 +27,7 @@ import {
   installMullvad,
   loadFirefoxStatus,
   loadLinkedServices,
+  launchFirefoxService,
   loadMullvadStatus,
   loadNativeApps,
   openMullvad,
@@ -73,8 +74,9 @@ import {
 } from "./core";
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
 import { serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, listHubIdentities, listHubPeople, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, prepareLocalProtectedText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult } from "./adapters";
-import { blankLocalProtectedModel, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
+import { activateLocalLoopbackContext, activateManualPeerContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, listHubIdentities, listHubPeople, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openPeerProseText, prepareLocalProtectedText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult } from "./adapters";
+import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
+import { blankPeerProtectedModel, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
@@ -84,11 +86,11 @@ import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { getScrubIndexStatus, initializeScrubIndex, type ScrubAccountSelection, type ScrubIndexStatus } from "./scrub-index";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
+import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 
 type Route = "onboarding" | "home" | "service" | "settings";
 type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "tutorial" | "detected" | "install" | "apps" | "browser" | "mullvad" | "sending" | "passwords" | "burnpass" | "privacy" | "scrub" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
-type ThemeChoice = "system" | "dark" | "light";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -130,14 +132,15 @@ let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
 let nativeApps: NativeApp[] = [];
+let nativeCatalogBusy = false;
 let mullvadStatus: MullvadStatus = { availability: "unavailable" };
 let mullvadBusy = false;
 let mullvadConnectedConfirmed = false;
 let browserImports: BrowserImportStatus[] = [];
 let browserAccountImport: BrowserAccountImportAction | null = null;
 let browserImportBusy = false;
+let browserReadinessBusy = false;
 let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
-let firefoxInstallBusy = false;
 let browserMigrationAwaitingConfirmation = false;
 let savedAccountsReady = false;
 let savedAccountMode: SavedAccountMode = "ask";
@@ -157,7 +160,7 @@ let toastTimer: number | undefined;
 let updateStatus: UpdateStatus = { state: "unavailable" };
 let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null = null;
 let decryptDisplay = true;
-let themeChoice: ThemeChoice = parseTheme(localStorage.getItem("osl-hub-theme"));
+let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -173,6 +176,9 @@ let notificationPreviewContent = false;
 let notificationScopeSuggestions = true;
 let activeContextToken: string | null = null;
 let localProtectedSheet: LocalProtectedSheetModel = blankLocalProtectedModel();
+let peerProtectedSheet: PeerProtectedSheetModel = blankPeerProtectedModel();
+let protectedSheetMode: "peer" | "local" = "peer";
+let activeProtectedContextKind: "peer" | "local" | null = null;
 let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
 let hubIdentities: HubIdentitySlot[] = [];
@@ -221,8 +227,14 @@ const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
 const savedAccountsReadyStorageKey = "osl-browser-accounts-ready-v1";
+const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
+const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
+const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp"]);
+const importedFirefoxHomeAppIds = new Set<HomeAppId>([
+  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
+]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
 const scrubResultsPageSize = 50;
@@ -230,6 +242,23 @@ const scrubReviewPageSize = 20;
 const bootCoreDeadlineMs = 4_000;
 const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
+const nativeCatalogDecisionDeadlineMs = 8_000;
+
+type OnboardingBranch = {
+  detected: boolean;
+  install: boolean;
+};
+
+function loadOnboardingBranch(): OnboardingBranch {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(onboardingBranchStorageKey) ?? "null") as Partial<OnboardingBranch> | null;
+    return { detected: parsed?.detected === true, install: parsed?.install === true };
+  } catch {
+    return { detected: false, install: false };
+  }
+}
+
+let onboardingBranch = loadOnboardingBranch();
 
 function experimentalSendConsentId(mode: SendMode, serviceId: string, accountId: string): string {
   return `${mode}:${serviceId}:${accountId}`;
@@ -257,11 +286,45 @@ function rememberExperimentalSendConsent(mode: SendMode, serviceId: string, acco
 }
 
 function parseTheme(raw: string | null): ThemeChoice {
-  return raw === "light" || raw === "dark" || raw === "system" ? raw : "system";
+  return raw === "light" || raw === "dark" || raw === "system" ? raw : "dark";
 }
 
 function parseSavedAccountMode(raw: string | null): SavedAccountMode {
   return raw === "use" || raw === "clean" ? raw : "ask";
+}
+
+function pendingOnboardingRoute(): OnboardingRoute | null {
+  return localStorage.getItem(onboardingResumeStorageKey) === "browser" ? "browser" : null;
+}
+
+function beginServiceOnboarding(): void {
+  onboardingServiceSetup = true;
+  localStorage.removeItem(onboardingResumeStorageKey);
+}
+
+function markServiceOnboardingOpened(): void {
+  if (!onboardingServiceSetup) return;
+  localStorage.setItem(onboardingResumeStorageKey, "browser");
+}
+
+function clearServiceOnboardingResume(): void {
+  onboardingServiceSetup = false;
+  localStorage.removeItem(onboardingResumeStorageKey);
+}
+
+function persistOnboardingBranch(): void {
+  localStorage.setItem(onboardingBranchStorageKey, JSON.stringify(onboardingBranch));
+}
+
+function resetOnboardingBranch(): void {
+  onboardingBranch = { detected: false, install: false };
+  localStorage.removeItem(onboardingBranchStorageKey);
+}
+
+function markOnboardingBranch(route: OnboardingRoute): void {
+  if (route === "detected") onboardingBranch.detected = true;
+  if (route === "install") onboardingBranch.install = true;
+  persistOnboardingBranch();
 }
 
 function applyTheme(choice: ThemeChoice): void {
@@ -308,12 +371,29 @@ function loadUiPreferences(): void {
     savedNativeApps.clear();
   }
   savedAccountMode = parseSavedAccountMode(localStorage.getItem(savedAccountModeStorageKey));
-  savedAccountsReady = localStorage.getItem(savedAccountsReadyStorageKey) === "true";
+  savedAccountsReady = false;
   notificationsEnabled = localStorage.getItem(notificationsStorageKey) === "true";
   notificationPreviewContent = localStorage.getItem(notificationPreviewStorageKey) === "true";
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
   screenshotProtectionEnabled = localStorage.getItem(screenshotProtectionStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
+}
+
+function activeBrowserAccountsReadyStorageKey(): string | null {
+  const owner = core.readiness.activeOslUserId;
+  return owner ? `${savedAccountsReadyStorageKey}:${encodeURIComponent(owner)}` : null;
+}
+
+function activeBrowserImportPendingStorageKey(): string | null {
+  const owner = core.readiness.activeOslUserId;
+  return owner ? `${browserImportPendingStorageKey}:${encodeURIComponent(owner)}` : null;
+}
+
+function refreshActiveBrowserAccountsReady(): void {
+  const key = activeBrowserAccountsReadyStorageKey();
+  savedAccountsReady = key !== null && localStorage.getItem(key) === "true";
+  const pendingKey = activeBrowserImportPendingStorageKey();
+  browserMigrationAwaitingConfirmation = !savedAccountsReady && pendingKey !== null && localStorage.getItem(pendingKey) === "true";
 }
 
 function saveHomeTilePreferences(): void {
@@ -330,6 +410,7 @@ function compactFriendId(value: string): string {
 
 function commitRender(): void {
   try {
+    refreshActiveBrowserAccountsReady();
     if (route === "onboarding") renderOnboarding();
     else renderWorkspace();
     bindDesktopTitlebar();
@@ -528,21 +609,74 @@ function tutorialContent(): string {
   const choices = apps.length
     ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="Services to set up">${apps.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
     : `<div class="empty-state"><strong>No apps are available</strong><p>You can continue and add apps later from Home.</p></div>`;
-  return `<h1 id="route-heading" tabindex="-1">Choose your apps</h1><p class="compact-lead onboarding-centered-copy">Pick the services you want available in OSL. This does not sign in or discover accounts.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose your apps</h1><p class="compact-lead onboarding-centered-copy">Pick the services you want available in OSL. This does not sign in or discover accounts.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${selectedOnboardingApps.size && !nativeCatalogBusy ? "" : "disabled"}>${nativeCatalogBusy ? "Checking Windows…" : "Continue"}</button></div>`;
 }
 
 function selectedNativeApps(): NativeApp[] {
   return nativeApps.filter((app) => selectedOnboardingApps.has(app.id));
 }
 
+function hasSelectedNativeAppChoice(): boolean {
+  return [...selectedOnboardingApps].some((appId) => supportedNativeAppIds.has(appId as NativeAppId));
+}
+
+function isCompleteNativeCatalog(catalog: NativeApp[]): boolean {
+  const ids = new Set(catalog.map((app) => app.id));
+  return catalog.length === supportedNativeAppIds.size
+    && ids.size === supportedNativeAppIds.size
+    && [...supportedNativeAppIds].every((appId) => ids.has(appId));
+}
+
+function hasSelectedInstalledNativeApps(): boolean {
+  return selectedNativeApps().some((app) => app.availability === "installed" && app.isolatedProfileAvailable);
+}
+
+function hasSelectedMissingNativeApps(): boolean {
+  return selectedNativeApps().some((app) => app.availability !== "installed");
+}
+
+function routeAfterAppChoice(): OnboardingRoute {
+  if (hasSelectedInstalledNativeApps()) return "detected";
+  return hasSelectedMissingNativeApps() ? "install" : "apps";
+}
+
+function selectSoleConnectApp(): void {
+  const choices = homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available")
+    .filter((app) => selectedOnboardingApps.size === 0 || selectedOnboardingApps.has(app.id));
+  onboardingConnectAppId = choices.length === 1 ? choices[0].id : null;
+}
+
+async function ensureNativeCatalogForAppChoice(): Promise<boolean> {
+  if (!hasSelectedNativeAppChoice()) return true;
+  if (nativeCatalogBusy) return false;
+  nativeCatalogBusy = true;
+  renderNow();
+  try {
+    const catalog = await withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs);
+    if (!isCompleteNativeCatalog(catalog)) {
+      showToast("Couldn’t check Windows apps. Try again.");
+      return false;
+    }
+    nativeApps = catalog;
+    return true;
+  } catch {
+    showToast("Couldn’t check Windows apps. Try again.");
+    return false;
+  } finally {
+    nativeCatalogBusy = false;
+    render();
+  }
+}
+
 function selectedInstalledNativeApp(appId: HomeAppId): NativeApp | undefined {
   const nativeId = appId as NativeAppId;
   if (savedAccountMode !== "use" || !supportedNativeAppIds.has(nativeId) || !savedNativeApps.has(nativeId)) return undefined;
-  return nativeApps.find((candidate) => candidate.id === nativeId && candidate.availability === "installed");
+  return nativeApps.find((candidate) => candidate.id === nativeId && candidate.availability === "installed" && candidate.isolatedProfileAvailable);
 }
 
 function detectedAppsContent(): string {
-  const installed = selectedNativeApps().filter((app) => app.availability === "installed");
+  const installed = selectedNativeApps().filter((app) => app.availability === "installed" && app.isolatedProfileAvailable);
   const rows = installed.length
     ? installed.map((app) => `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed on this PC</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""}/></label>`).join("")
     : `<div class="empty-state"><strong>No selected desktop apps were detected</strong><p>OSL can still use isolated web profiles.</p></div>`;
@@ -584,20 +718,20 @@ function browserImportContent(): string {
   const selectedRoute = browserAccountImport
     ? `<p class="saved-account-truth">Recommended source: ${escapeHtml(browserAccountImport.preferredSource)}. Firefox keeps the final source and confirmation visible among ${browserAccountImport.detectedSources.length} detected browser${browserAccountImport.detectedSources.length === 1 ? "" : "s"}.</p>`
     : "";
-  const buttonLabel = browserImportBusy
-    ? "Opening Firefox…"
+  const buttonLabel = browserReadinessBusy
+    ? "Checking browsers…"
+    : browserImportBusy
+    ? firefoxStatus.availability === "installed" ? "Opening Firefox…" : "Preparing Firefox…"
     : browserMigrationAwaitingConfirmation
       ? "I finished the Firefox import"
       : savedAccountsReady
         ? "Import marked complete"
         : "Import saved accounts";
-  const firefoxAction = firefoxStatus.availability === "installed"
-    ? ""
-    : firefoxStatus.availability === "installable"
-      ? `<button class="button" id="install-firefox" type="button" ${firefoxInstallBusy ? "disabled" : ""}>${firefoxInstallBusy ? "Installing Firefox…" : "Install Firefox"}</button>`
-      : `<p class="saved-account-truth">Firefox is required for this visible import and could not be installed automatically on this PC.</p>`;
-  const disabled = browserImportBusy || savedAccountsReady || installed.length === 0 || firefoxStatus.availability !== "installed";
-  return `<h1 id="route-heading" tabindex="-1">Import browser accounts</h1><p class="compact-lead onboarding-centered-copy">${installed.length ? `Found ${names}.` : "No supported browser was found."} Import stays in Firefox's visible, browser-owned flow.</p><section class="saved-account-browser-note"><strong>Local-only consent</strong><small>Firefox performs the migration into OSL's isolated Firefox profile. Your browser or Windows keeps every confirmation visible. OSL does not scrape or decrypt browser databases, discover accounts, receive passwords, or upload account data.</small></section>${ready}${selectedRoute}${firefoxAction}<button class="button" id="import-saved-accounts" type="button" ${disabled ? "disabled" : ""}>${buttonLabel}</button>${browserMigrationAwaitingConfirmation && !savedAccountsReady ? `<p class="saved-account-truth">Finish the temporary Firefox wizard, return to OSL, then confirm with the same button.</p>` : ""}${chromeNote}<details class="saved-account-advanced"><summary>Advanced browser export</summary><p>Use these only if Firefox asks for a manual export.</p><div class="browser-import-actions">${advancedButtons || "No browser export shortcut is available."}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-browser-import" type="button">Continue</button></div>`;
+  const firefoxNote = !browserReadinessBusy && firefoxStatus.availability === "unavailable"
+    ? `<p class="saved-account-truth">Firefox is required for this visible import and could not be installed automatically on this PC.</p>`
+    : "";
+  const disabled = browserReadinessBusy || browserImportBusy || savedAccountsReady || installed.length === 0 || firefoxStatus.availability === "unavailable";
+  return `<h1 id="route-heading" tabindex="-1">Import browser accounts</h1><p class="compact-lead onboarding-centered-copy">${installed.length ? `Found ${names}.` : "No supported browser was found."} Import stays in Firefox's visible, browser-owned flow.</p><section class="saved-account-browser-note"><strong>Local-only consent</strong><small>Firefox performs the migration into this OSL identity's isolated Firefox profile. Supported web apps then open there in a separate Firefox window. Firefox windows are outside OSL capture resistance. OSL does not scrape or decrypt browser databases, discover accounts, receive passwords, or upload account data.</small></section>${ready}${selectedRoute}${firefoxNote}<button class="button" id="import-saved-accounts" type="button" ${disabled ? "disabled" : ""}>${buttonLabel}</button>${browserMigrationAwaitingConfirmation && !savedAccountsReady ? `<p class="saved-account-truth">Finish the temporary Firefox wizard, return to OSL, then confirm with the same button.</p>` : ""}${chromeNote}<details class="saved-account-advanced"><summary>Advanced browser export</summary><p>Use these only if Firefox asks for a manual export.</p><div class="browser-import-actions">${advancedButtons || "No browser export shortcut is available."}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-browser-import" type="button" ${browserImportBusy ? "disabled" : ""}>Continue</button></div>`;
 }
 
 function persistSavedAccountPreferences(): void {
@@ -609,7 +743,7 @@ function bindSavedAccountControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-saved-account-mode]").forEach((button) => button.addEventListener("click", () => {
     savedAccountMode = parseSavedAccountMode(button.dataset.savedAccountMode ?? null);
     if (savedAccountMode === "use" && savedNativeApps.size === 0) {
-      savedNativeApps = new Set(nativeApps.filter((app) => app.availability === "installed").map((app) => app.id));
+      savedNativeApps = new Set(nativeApps.filter((app) => app.availability === "installed" && app.isolatedProfileAvailable).map((app) => app.id));
     }
     persistSavedAccountPreferences();
     render();
@@ -636,21 +770,42 @@ function bindBrowserImportControls(): void {
   document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", async () => {
     if (browserImportBusy || savedAccountsReady) return;
     if (browserMigrationAwaitingConfirmation) {
-      const completed = window.confirm("Confirm only if the Firefox migration window reports that the import finished. OSL does not inspect the imported passwords.");
-      if (!completed) return;
       savedAccountsReady = true;
       browserMigrationAwaitingConfirmation = false;
-      localStorage.setItem(savedAccountsReadyStorageKey, "true");
+      const readyKey = activeBrowserAccountsReadyStorageKey();
+      const pendingKey = activeBrowserImportPendingStorageKey();
+      if (!readyKey) throw new Error("Unlock an OSL identity before finishing browser import");
+      localStorage.setItem(readyKey, "true");
+      if (pendingKey) localStorage.removeItem(pendingKey);
       showToast("Saved accounts ready in OSL Firefox");
+      onboardingRoute = "mullvad";
       render();
+      void refreshMullvadSetup();
       return;
     }
-    const consented = window.confirm("Import saved accounts locally? Firefox will detect supported browsers and open a temporary migration window in OSL's isolated Firefox profile. Browser and Windows confirmations stay visible. OSL never receives or uploads your passwords.");
-    if (!consented) return;
     browserImportBusy = true;
     render();
     try {
+      if (firefoxStatus.availability === "installable") {
+        await withNativeDeadline(installFirefox(), "Start Firefox install");
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 3_000));
+          if (route !== "onboarding" || onboardingRoute !== "browser") return;
+          firefoxStatus = await loadFirefoxStatus().catch(() => firefoxStatus);
+          if (firefoxStatus.availability === "installed") break;
+        }
+        if (firefoxStatus.availability !== "installed") {
+          throw new Error("Firefox is still installing in Windows");
+        }
+      }
+      if (firefoxStatus.availability !== "installed") {
+        throw new Error("Firefox is unavailable on this PC");
+      }
+      if (route !== "onboarding" || onboardingRoute !== "browser") return;
       browserAccountImport = await withNativeDeadline(beginBrowserAccountImport(), "Open Firefox account migration", 5_000);
+      const pendingKey = activeBrowserImportPendingStorageKey();
+      if (!pendingKey) throw new Error("Unlock an OSL identity before starting browser import");
+      localStorage.setItem(pendingKey, "true");
       browserMigrationAwaitingConfirmation = true;
       showToast(browserAccountImport.manualExportRequired
         ? "Firefox opened — follow its browser-owned export and import steps"
@@ -675,33 +830,33 @@ function bindBrowserImportControls(): void {
     }
   }));
   document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", () => {
+    const pendingKey = activeBrowserImportPendingStorageKey();
+    if (pendingKey) localStorage.removeItem(pendingKey);
+    browserMigrationAwaitingConfirmation = false;
+    browserAccountImport = null;
     onboardingRoute = "mullvad";
     render();
+    void refreshMullvadSetup();
   });
-  document.querySelector<HTMLButtonElement>("#install-firefox")?.addEventListener("click", () => void runFirefoxInstall());
 }
 
-async function runFirefoxInstall(): Promise<void> {
-  if (firefoxInstallBusy || firefoxStatus.availability !== "installable") return;
-  firefoxInstallBusy = true;
-  render();
+async function refreshBrowserImportReadiness(): Promise<void> {
+  if (browserReadinessBusy) return;
+  browserReadinessBusy = true;
+  if (route === "onboarding" && onboardingRoute === "browser") render();
+  const [catalog, currentFirefoxStatus] = await Promise.all([
+    withNativeDeadline(loadBrowserImports(), "Refresh browsers", nativeCatalogDecisionDeadlineMs).catch(() => null),
+    withNativeDeadline(loadFirefoxStatus(), "Refresh Firefox", nativeCatalogDecisionDeadlineMs).catch(() => null),
+  ]);
   try {
-    await withNativeDeadline(installFirefox(), "Start Firefox install");
-    showToast("Firefox is installing in Windows");
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 3_000));
-      firefoxStatus = await loadFirefoxStatus().catch(() => firefoxStatus);
-      if (firefoxStatus.availability === "installed") {
-        showToast("Firefox is ready");
-        return;
-      }
-    }
-    showToast("Firefox is still installing in Windows");
-  } catch (failure) {
-    showToast(localActionError(failure, "Firefox installation could not start"));
+    if (catalog) browserImports = catalog;
+    if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
+    if (!catalog && !currentFirefoxStatus) throw new Error("browser readiness unavailable");
+  } catch {
+    showToast("Couldn’t check browser import. Try again.");
   } finally {
-    firefoxInstallBusy = false;
-    render();
+    browserReadinessBusy = false;
+    if (route === "onboarding" && onboardingRoute === "browser") render();
   }
 }
 
@@ -712,12 +867,12 @@ function importIdentityForm(): string {
 function recoveryContent(): string {
   if (!recoveryBundle) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="tutorial">Continue</button>`;
   const accountRecovery = recoveryBundle.identityPhrase ? `<code>${escapeHtml(recoveryBundle.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
-  return `<p class="eyebrow">One-time recovery</p><h1 id="route-heading" tabindex="-1">Save your recovery kit</h1><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article><details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><label class="check"><input id="recovery-saved" type="checkbox"/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" disabled>Continue</button></section>`;
+  return `<p class="eyebrow">One-time recovery</p><h1 id="route-heading" tabindex="-1">Save your recovery kit</h1><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article><details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox"/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" disabled>Continue</button></section>`;
 }
 
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
   const setup = mode === "setup";
-  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><span class="unlock-logo-ring"></span><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><svg class="security-motion unlock-security-motion" viewBox="0 0 120 120"><g class="security-center"><path d="M49 46h22v7H56v14h15v7H49Z"/></g><g class="security-key"><circle cx="44" cy="60" r="6"/><path d="M50 60h24m-7 0v7m-7-7v5"/></g><g class="security-lock"><path class="security-shackle" d="M47 55V44a13 13 0 0 1 26 0v11"/><path class="security-lock-body" d="M42 55h36v28H42Z"/></g></svg></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
+  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
   return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
@@ -795,8 +950,12 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   const routes: Partial<Record<OnboardingRoute, OnboardingRoute>> = {
     tutorial: "recovery",
     detected: "tutorial",
-    install: "detected",
-    apps: "install",
+    install: onboardingBranch.detected ? "detected" : "tutorial",
+    apps: onboardingBranch.install
+      ? "install"
+      : onboardingBranch.detected
+        ? "detected"
+        : "tutorial",
     browser: "apps",
     mullvad: "browser",
     sending: "mullvad",
@@ -817,8 +976,24 @@ function bindOnboarding(): void {
   bindImportForm();
   const recoverySaved = document.querySelector<HTMLInputElement>("#recovery-saved");
   const recoveryContinue = document.querySelector<HTMLButtonElement>("#recovery-continue");
+  document.querySelector<HTMLButtonElement>("#copy-recovery-kit")?.addEventListener("click", async () => {
+    if (!recoveryBundle) return;
+    const kit = [
+      recoveryBundle.identityPhrase ? `Account recovery\n${recoveryBundle.identityPhrase}` : "Account recovery\nUse the account recovery phrase you imported.",
+      `Password recovery\n${recoveryBundle.passwordPhrase}`,
+      `Account details\n${recoveryBundle.userId}`,
+    ].join("\n\n");
+    try {
+      await navigator.clipboard.writeText(kit);
+      if (recoverySaved) recoverySaved.checked = true;
+      if (recoveryContinue) recoveryContinue.disabled = false;
+      showToast("Recovery kit copied — save it somewhere private");
+    } catch {
+      showToast("Couldn’t copy the recovery kit");
+    }
+  });
   recoverySaved?.addEventListener("change", () => { if (recoveryContinue) recoveryContinue.disabled = !recoverySaved.checked; });
-  recoveryContinue?.addEventListener("click", () => { recoveryBundle = null; onboardingRoute = "tutorial"; render(); });
+  recoveryContinue?.addEventListener("click", () => { recoveryBundle = null; resetOnboardingBranch(); onboardingRoute = "tutorial"; render(); });
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
     if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
@@ -826,17 +1001,37 @@ function bindOnboarding(): void {
     onboardingConnectAppId = null;
     render();
   }));
-  document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", () => { onboardingRoute = "detected"; render(); });
+  document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", async () => {
+    if (!await ensureNativeCatalogForAppChoice()) return;
+    resetOnboardingBranch();
+    const next = routeAfterAppChoice();
+    markOnboardingBranch(next);
+    if (next === "apps") selectSoleConnectApp();
+    onboardingRoute = next;
+    render();
+  });
   document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
     if (savedAccountMode === "ask") savedAccountMode = savedNativeApps.size ? "use" : "clean";
     persistSavedAccountPreferences();
-    onboardingRoute = "install";
+    const next = hasSelectedMissingNativeApps() ? "install" : "apps";
+    markOnboardingBranch(next);
+    if (next === "apps") selectSoleConnectApp();
+    onboardingRoute = next;
     render();
   });
   document.querySelector<HTMLButtonElement>("#continue-install-apps")?.addEventListener("click", () => {
     const selectedInstalls = [...selectedFirstInstallApps];
     selectedFirstInstallApps.clear();
-    if (selectedInstalls.length) enqueueBackgroundInstalls(selectedInstalls);
+    if (selectedInstalls.length) {
+      savedAccountMode = "use";
+      selectedInstalls.forEach((appId) => savedNativeApps.add(appId));
+      persistSavedAccountPreferences();
+      enqueueBackgroundInstalls(selectedInstalls);
+    } else if (!hasSelectedInstalledNativeApps() && savedAccountMode === "ask") {
+      savedAccountMode = "clean";
+      persistSavedAccountPreferences();
+    }
+    selectSoleConnectApp();
     onboardingRoute = "apps";
     render();
   });
@@ -851,7 +1046,7 @@ function bindOnboarding(): void {
       showToast("This app is unavailable right now");
       return;
     }
-    onboardingServiceSetup = true;
+    beginServiceOnboarding();
     activeService = service;
     activeHomeAppId = app.id;
     route = "service";
@@ -859,9 +1054,14 @@ function bindOnboarding(): void {
     persistServiceGuideState();
     render();
   });
-  document.querySelector("#onboarding-back")?.addEventListener("click", () => { onboardingRoute = previousSetupRoute(onboardingRoute); render(); });
+  document.querySelector("#onboarding-back")?.addEventListener("click", () => {
+    onboardingRoute = previousSetupRoute(onboardingRoute);
+    render();
+    if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
+    if (onboardingRoute === "mullvad") void refreshMullvadSetup();
+  });
   document.querySelector("#skip-onboarding")?.addEventListener("click", () => {
-    onboardingServiceSetup = false;
+    clearServiceOnboardingResume();
     if (onboardingRoute === "scrub") void completeOnboarding();
     else { onboardingRoute = "scrub"; render(); void refreshScrubIndexStatus(); }
   });
@@ -989,6 +1189,8 @@ async function completeOnboarding(): Promise<void> {
     const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true });
     setup = saved.setup;
     onboardingComplete = true;
+    clearServiceOnboardingResume();
+    resetOnboardingBranch();
     // A newly-created identity is already unlocked. Load its signed invite and
     // local People state before Home renders so friend setup never incorrectly
     // tells the user to unlock again.
@@ -1105,7 +1307,7 @@ function bindPasswordForm(): void {
           core = structuredClone(unavailableCoreIntegration);
           route = "onboarding";
           onboardingRoute = "welcome";
-          showToast(gate.burn?.localCleanupComplete ? "OSL data erased from this device" : "OSL cleanup needs attention");
+          showToast(gate.burn?.localCleanupComplete ? "Verified local OSL cleanup completed" : "OSL cleanup needs attention");
           render();
           return;
         }
@@ -1120,10 +1322,11 @@ function bindPasswordForm(): void {
           void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") render(); });
           void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") render(); });
         }
-        else onboardingRoute = "tutorial";
+        else onboardingRoute = pendingOnboardingRoute() ?? "tutorial";
       }
       secret = "";
       render();
+      if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
     } catch (failure) {
       secret = "";
       const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check OSL account", bootPreferenceDeadlineMs).catch(() => null);
@@ -1139,13 +1342,14 @@ function bindPasswordForm(): void {
         services = await loadLinkedServices().catch(() => services);
         passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
         if (form.dataset.passwordMode === "setup" || !onboardingComplete) {
-          onboardingRoute = "tutorial";
+          onboardingRoute = pendingOnboardingRoute() ?? "tutorial";
           route = "onboarding";
           showToast("Password is configured. Continue setup.");
         } else {
           route = "home";
         }
         render();
+        if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
         return;
       }
       if (form.dataset.passwordMode === "setup" && readiness.bootstrapStatus === "passwordRequired") {
@@ -1211,6 +1415,7 @@ function bindImportForm(): void {
       }
       core = refreshedCore;
       if (core.readiness.bootstrapStatus === "ready" && core.readiness.unlocked) {
+        resetOnboardingBranch();
         onboardingRoute = "tutorial";
         showToast("Account recovered. Continue setup.");
         render();
@@ -1232,7 +1437,11 @@ function bindImportForm(): void {
 }
 
 function renderWorkspace(): void {
-  const protectedSheet = activeEmbeddedHost ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode) : "";
+  const protectedSheet = activeEmbeddedHost
+    ? protectedSheetMode === "local"
+      ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
+      : peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
+    : "";
   const markup = `<div class="hub-layout"><section class="hub-workspace">${trustedHeader()}${workspaceContent()}</section></div>${protectedSheet}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
@@ -1280,7 +1489,7 @@ function trustedHeader(): string {
     return `<div class="trusted-stack home-trusted-stack"><header class="home-header guide-header"><button class="home-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span class="home-brand-copy"><strong>OSL Privacy</strong></span></button><div class="guide-header-service">${serviceLogo(activeService.id)}<span><strong>${escapeHtml(activeService.displayName)}</strong><small>${isCoreProtectionReady(core.readiness) ? "Ready" : "Needs attention"}</small></span></div>${settingsButtonMarkup()}</header></div>`;
   }
   const localProtection = route === "service" && activeEmbeddedHost
-    ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open}">Protect locally</button>`
+    ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open || peerProtectedSheet.open}">Protect</button>`
     : "";
   const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : activeNativeHostId ? "OSL app window" : "Needs setup"}</small></span>${localProtection}</div>` : "";
   const onboardingContinue = route === "service" && onboardingServiceSetup && (activeEmbeddedHost || activeNativeHostId)
@@ -1318,6 +1527,7 @@ function workspaceContent(): string {
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
+    if (module?.state === "Coming later" && !homeEditMode) return "";
     if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${module.state}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small>${module.state}</small></span></button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
@@ -1330,6 +1540,7 @@ function workspaceContent(): string {
   const socialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
+  const oslSection = oslTiles ? `<section class="home-app-section"><h2>OSL</h2><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
   const friendCount = hubPeople.length;
   const friendId = friendDisplayId ? compactFriendId(friendDisplayId) : null;
   const activity = notificationsEnabled
@@ -1337,7 +1548,7 @@ function workspaceContent(): string {
     : "";
   return `<main class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}">
     <section class="home-primary">
-      <section class="home-apps" aria-labelledby="route-heading"><header><h1 id="route-heading" class="sr-only" tabindex="-1">Apps</h1><button class="button compact" id="edit-home">${homeEditMode ? "Done" : "Edit"}</button></header><div class="home-app-groups"><section class="home-app-section"><h2>Social</h2><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section><section class="home-app-section"><h2>Email</h2><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section><section class="home-app-section"><h2>OSL</h2><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section></div></section>
+      <section class="home-apps" aria-labelledby="route-heading"><header><h1 id="route-heading" class="sr-only" tabindex="-1">Apps</h1><button class="button compact" id="edit-home">${homeEditMode ? "Done" : "Edit"}</button></header><div class="home-app-groups"><section class="home-app-section"><h2>Social</h2><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section><section class="home-app-section"><h2>Email</h2><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>${oslSection}</div></section>
     </section>
     <aside class="friends-rail" aria-labelledby="friends-heading"><header><h2 id="friends-heading">Friends <span>${friendCount}</span></h2><button class="friends-add" data-open-friends aria-label="Add an OSL friend">+</button></header><div class="friends-rail-list">${peopleListMarkup("home", 8)}</div>${activity}<footer>${friendId ? `<span>Your friend ID</span><code>${escapeHtml(friendId)}</code><button class="text-button" data-open-friends>Share invite</button>` : `<p>Unlock OSL to create your invite.</p>`}</footer></aside>
   </main>`;
@@ -1368,7 +1579,7 @@ function friendScopeLabel(scope: HubPersonWhitelistScope): string {
 }
 
 function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): string {
-  if (!hubPeople.length) return `<div class="empty-state"><strong>No OSL friends yet</strong><p>Add an invite, then compare its verification code another way.</p></div>`;
+  if (!hubPeople.length) return `<div class="empty-state"><strong>No friends yet</strong><p>Add one with an invite.</p></div>`;
   const end = limit === undefined ? undefined : offset + limit;
   return hubPeople.slice(offset, end).map((person) => {
     const nickname = person.alias ?? "Unnamed friend";
@@ -1462,8 +1673,8 @@ function burnDialogMarkup(): string {
   }
 
   const cards: Array<{ scope: BurnScope; title: string; detail: string }> = [
-    { scope: "chat", title: "This chat", detail: "Forget this exact OSL conversation on this device." },
-    { scope: "app", title: "This app", detail: "Forget every OSL conversation for the current app." },
+    { scope: "chat", title: "This chat", detail: activeProtectedContextKind === "peer" ? "Revoke this app account + friend scope." : "Forget this exact OSL conversation on this device." },
+    { scope: "app", title: "This app", detail: "Remove indexed local OSL data and request relay cleanup." },
     { scope: "account", title: "Entire OSL account", detail: "Remove every OSL identity and local setting on this computer." },
   ];
   const selectedReason = burnScopeReason(burnScope);
@@ -1473,14 +1684,16 @@ function burnDialogMarkup(): string {
     return `<button class="burn-scope-card ${burnScope === card.scope ? "selected" : ""}" type="button" data-burn-scope="${card.scope}" ${reason ? "disabled" : ""} aria-pressed="${burnScope === card.scope}"><strong>${card.title}</strong><small>${card.detail}</small>${reason ? `<span>${escapeHtml(reason)}</span>` : ""}</button>`;
   }).join("");
   const effects = burnScope === "chat"
-    ? "OSL destroys local decrypt material and caches for this exact chat."
+    ? activeProtectedContextKind === "peer"
+      ? "OSL revokes local approval, display, and expiry settings for this app account + friend, then attempts to delete sent relay blobs. Provider messages and opened copies remain."
+      : "OSL destroys local decrypt material and caches for this exact chat."
     : burnScope === "account"
       ? "OSL removes every local identity, decrypt key, cache, and preference on this computer."
       : serviceBurnReadiness?.coverageComplete
-        ? `OSL destroys local decrypt material and caches for all ${serviceBurnReadiness.indexedScopes} indexed OSL ${serviceBurnReadiness.indexedScopes === 1 ? "chat" : "chats"} in this connected account. Its login profile and cookies stay.`
+        ? `OSL removes local settings and caches for ${serviceBurnReadiness.indexedScopes} indexed ${serviceBurnReadiness.indexedScopes === 1 ? "scope" : "scopes"} in this connected account, then attempts to delete their sent relay blobs. Login profile, cookies, provider history, and other copies remain.`
         : "OSL must prove complete local coverage before app-wide burn is available.";
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><h2 id="burn-dialog-title">Burn local data</h2><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div><section class="burn-truth"><strong>Before you continue</strong><ul><li>${effects}</li><li>Messages and history in the service remain.</li><li>Screenshots, exports, backups, and copies held by other people cannot be retracted.</li></ul></section><details class="burn-more"><summary>Other options</summary><div class="burn-options"><label class="setting-line unavailable"><span><strong>Also forget messages they sent me</strong><small>Incoming OSL messages are already included in local chat and account burns.</small></span><input type="checkbox" checked disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div></details><form id="burn-confirm-form" class="burn-confirm"><label for="burn-confirm-input">Type <code>${phrase}</code> to continue</label><input id="burn-confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false" ${selectedReason ? "disabled" : ""}/><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "This cannot be undone."}</p><footer><button class="button ghost" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
+  return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><h2 id="burn-dialog-title">Burn local data</h2><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div><section class="burn-truth"><strong>Before you continue</strong><ul><li>${effects}</li><li>Messages and history in the service remain.</li><li>Screenshots, exports, backups, and copies held by other people cannot be retracted.</li></ul></section><details class="burn-more"><summary>Other options</summary><div class="burn-options"><label class="setting-line unavailable"><span><strong>Provider messages</strong><small>Not removed. Burn changes only indexed local OSL data and sent relay records.</small></span><input type="checkbox" disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div></details><form id="burn-confirm-form" class="burn-confirm"><label for="burn-confirm-input">Type <code>${phrase}</code> to continue</label><input id="burn-confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false" ${selectedReason ? "disabled" : ""}/><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "This cannot be undone."}</p><footer><button class="button ghost" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
 }
 
 function ownedConfirmationMarkup(): string {
@@ -1630,7 +1843,8 @@ function serviceAccountsSettingsContent(): string {
     return `<article><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${state}</small></span></div>${action}</article>`;
   }).join("");
   const installedChoices = nativeApps.map((app) => {
-    if (app.availability === "installed") return `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Ready for OSL</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""}/></label>`;
+    if (app.availability === "installed" && app.isolatedProfileAvailable) return `<label class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Ready for an isolated OSL profile</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${savedNativeApps.has(app.id) ? "checked" : ""}/></label>`;
+    if (app.availability === "installed") return `<div class="saved-account-app unavailable"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed · isolated web profile only</small></span></span></div>`;
     if (app.availability === "installable") return `<div class="saved-account-app"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${backgroundInstallIds.has(app.id) ? "Installing…" : "Optional Windows app"}</small></span></span><button class="button compact" type="button" data-background-install="${app.id}" ${backgroundInstallIds.has(app.id) ? "disabled" : ""}>${backgroundInstallIds.has(app.id) ? "Installing…" : "Background install"}</button></div>`;
     return `<div class="saved-account-app unavailable"><span>${serviceLogo(app.id)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Embedded web only</small></span></span></div>`;
   }).join("");
@@ -1931,7 +2145,10 @@ function bindOwnedConfirmation(): void {
 
 function resetLocalProtectedSheet(): void {
   activeContextToken = null;
+  activeProtectedContextKind = null;
   localProtectedSheet = blankLocalProtectedModel();
+  peerProtectedSheet = blankPeerProtectedModel();
+  protectedSheetMode = "peer";
   void setLocalProtectedSheetOpen(false);
 }
 
@@ -1945,18 +2162,220 @@ async function closeActiveServiceSurface(): Promise<void> {
 
 async function toggleLocalProtectedSheet(): Promise<void> {
   if (!activeEmbeddedHost) return;
-  if (localProtectedSheet.open) {
+  if (localProtectedSheet.open || peerProtectedSheet.open) {
     localProtectedSheet = blankLocalProtectedModel();
+    peerProtectedSheet = blankPeerProtectedModel();
+    protectedSheetMode = "peer";
     activeContextToken = null;
+    activeProtectedContextKind = null;
     render();
     await setLocalProtectedSheetOpen(false);
     return;
   }
   if (!(await setLocalProtectedSheetOpen(true))) {
-    showToast("Local protection could not open safely");
+    showToast("Protection could not open safely");
     return;
   }
+  protectedSheetMode = "peer";
+  peerProtectedSheet = blankPeerProtectedModel(true);
+  localProtectedSheet = blankLocalProtectedModel();
+  activeContextToken = null;
+  activeProtectedContextKind = null;
+  render();
+}
+
+function showLocalProtectedChoice(): void {
+  protectedSheetMode = "local";
+  peerProtectedSheet = blankPeerProtectedModel();
   localProtectedSheet = blankLocalProtectedModel(true);
+  activeContextToken = null;
+  activeProtectedContextKind = null;
+  render();
+}
+
+function showPeerProtectedChoice(): void {
+  protectedSheetMode = "peer";
+  peerProtectedSheet = blankPeerProtectedModel(true);
+  localProtectedSheet = blankLocalProtectedModel();
+  activeContextToken = null;
+  activeProtectedContextKind = null;
+  render();
+}
+
+function isCurrentPeerContext(contextToken: string): boolean {
+  return protectedSheetMode === "peer"
+    && peerProtectedSheet.open
+    && peerProtectedSheet.context?.contextToken === contextToken;
+}
+
+async function choosePeerProtectedFriend(personId: string): Promise<void> {
+  if (!activeEmbeddedHost || peerProtectedSheet.busy) return;
+  const host = activeEmbeddedHost;
+  const person = hubPeople.find((candidate) => candidate.personId === personId
+    && candidate.safetyNumberVerified
+    && !candidate.pendingKeyChange);
+  if (!person) {
+    peerProtectedSheet.status = "Verify this friend first.";
+    render();
+    return;
+  }
+  peerProtectedSheet.busy = true;
+  peerProtectedSheet.status = "";
+  render();
+  const context = await activateManualPeerContext(
+    host.serviceId,
+    host.accountId,
+    person.personId,
+  );
+  if (protectedSheetMode !== "peer"
+    || !peerProtectedSheet.open
+    || activeEmbeddedHost?.serviceId !== host.serviceId
+    || activeEmbeddedHost.accountId !== host.accountId) return;
+  peerProtectedSheet.busy = false;
+  if (!context) {
+    peerProtectedSheet.status = "This app + friend could not be activated safely.";
+    render();
+    return;
+  }
+  peerProtectedSheet.context = context;
+  peerProtectedSheet.personId = person.personId;
+  peerProtectedSheet.displayName = person.alias ?? "Verified friend";
+  activeContextToken = context.contextToken;
+  activeProtectedContextKind = "peer";
+  const security = await loadActiveContextSecurity(context.contextToken);
+  if (!isCurrentPeerContext(context.contextToken)) return;
+  if (security && isLocalTtlSeconds(security.ttlSeconds)) {
+    peerProtectedSheet.ttlSeconds = security.ttlSeconds;
+    peerProtectedSheet.decryptDisplayEnabled = security.decryptDisplayEnabled;
+  }
+  peerProtectedSheet.status = context.scopeApproved ? "Ready." : "";
+  render();
+}
+
+async function approvePeerProtectedDm(): Promise<void> {
+  const context = peerProtectedSheet.context;
+  if (!context || context.scopeApproved || peerProtectedSheet.busy) return;
+  peerProtectedSheet.busy = true;
+  peerProtectedSheet.status = "";
+  render();
+  const saved = await setActiveHubFriendPermission(context.contextToken, context.personId, true, false);
+  if (!isCurrentPeerContext(context.contextToken)) return;
+  peerProtectedSheet.busy = false;
+  if (!saved) {
+    peerProtectedSheet.status = "Approval could not be saved.";
+    render();
+    return;
+  }
+  peerProtectedSheet.context = { ...context, scopeApproved: true };
+  peerProtectedSheet.status = "Approved for this app + friend.";
+  hubPeople = await listHubPeople() ?? hubPeople;
+  render();
+}
+
+async function preparePeerProtectedDraft(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const context = peerProtectedSheet.context;
+  const draft = document.querySelector<HTMLTextAreaElement>("#peer-protected-draft");
+  const ttl = document.querySelector<HTMLSelectElement>("#peer-protected-ttl");
+  const plaintext = draft?.value ?? "";
+  const requestedTtl = Number(ttl?.value ?? 3_600);
+  if (!context?.scopeApproved || !isHubPlaintext(plaintext) || !isLocalTtlSeconds(requestedTtl)) {
+    peerProtectedSheet.status = "Write a message first.";
+    render();
+    return;
+  }
+  peerProtectedSheet.busy = true;
+  peerProtectedSheet.draft = plaintext;
+  peerProtectedSheet.status = "";
+  render();
+  const policy = await saveActiveContextSecurity(context.contextToken, requestedTtl, peerProtectedSheet.decryptDisplayEnabled);
+  if (!isCurrentPeerContext(context.contextToken)) return;
+  if (!policy || !isLocalTtlSeconds(policy.ttlSeconds)) {
+    peerProtectedSheet.busy = false;
+    peerProtectedSheet.status = "Encryption failed closed. Nothing was copied.";
+    render();
+    return;
+  }
+  peerProtectedSheet.ttlSeconds = policy.ttlSeconds;
+  const prepared = await preparePeerProseText(context.contextToken, plaintext);
+  if (!isCurrentPeerContext(context.contextToken)) return;
+  peerProtectedSheet.busy = false;
+  if (!prepared) {
+    peerProtectedSheet.status = "Encryption failed closed. Nothing was copied.";
+    render();
+    return;
+  }
+  peerProtectedSheet.coverText = prepared.coverText;
+  try {
+    await navigator.clipboard.writeText(prepared.coverText);
+    peerProtectedSheet.status = "Encrypted and copied. OSL did not press Send.";
+  } catch {
+    peerProtectedSheet.status = "Encrypted. Select the protected text to copy it.";
+  }
+  render();
+}
+
+async function openPeerProtectedText(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const context = peerProtectedSheet.context;
+  const input = document.querySelector<HTMLTextAreaElement>("#peer-cover-input");
+  const coverText = input?.value.trim() ?? "";
+  if (!context?.scopeApproved || !coverText) {
+    peerProtectedSheet.status = "Paste protected text first.";
+    render();
+    return;
+  }
+  if (!peerProtectedSheet.decryptDisplayEnabled) {
+    peerProtectedSheet.status = "Decrypted display is off for this app + friend.";
+    render();
+    return;
+  }
+  peerProtectedSheet.busy = true;
+  peerProtectedSheet.openedPlaintext = "";
+  peerProtectedSheet.status = "";
+  render();
+  const opened = await openPeerProseText(context.contextToken, context.personId, coverText);
+  if (!isCurrentPeerContext(context.contextToken)) return;
+  peerProtectedSheet.busy = false;
+  if (!opened) {
+    peerProtectedSheet.status = "This protected text could not be opened here.";
+    render();
+    return;
+  }
+  peerProtectedSheet.openedPlaintext = opened.plaintext;
+  peerProtectedSheet.status = "Opened here.";
+  render();
+}
+
+async function changePeerDecryptDisplay(input: HTMLInputElement): Promise<void> {
+  const context = peerProtectedSheet.context;
+  if (!context?.scopeApproved) {
+    input.checked = peerProtectedSheet.decryptDisplayEnabled;
+    return;
+  }
+  const saved = await saveActiveContextSecurity(context.contextToken, peerProtectedSheet.ttlSeconds, input.checked);
+  if (!isCurrentPeerContext(context.contextToken)) return;
+  if (!saved || !isLocalTtlSeconds(saved.ttlSeconds)) {
+    input.checked = peerProtectedSheet.decryptDisplayEnabled;
+    peerProtectedSheet.status = "This app + friend setting could not be saved.";
+    render();
+    return;
+  }
+  peerProtectedSheet.ttlSeconds = saved.ttlSeconds;
+  peerProtectedSheet.decryptDisplayEnabled = saved.decryptDisplayEnabled;
+  if (!saved.decryptDisplayEnabled) peerProtectedSheet.openedPlaintext = "";
+  peerProtectedSheet.status = saved.decryptDisplayEnabled ? "Decrypted display is on." : "Decrypted display is off.";
+  render();
+}
+
+async function copyPeerProtectedText(): Promise<void> {
+  if (!peerProtectedSheet.coverText) return;
+  try {
+    await navigator.clipboard.writeText(peerProtectedSheet.coverText);
+    peerProtectedSheet.status = "Copied. Paste and send it yourself.";
+  } catch {
+    peerProtectedSheet.status = "Copy failed. Select the protected text manually.";
+  }
   render();
 }
 
@@ -1988,6 +2407,7 @@ async function startLocalProtectedContext(event: SubmitEvent): Promise<void> {
     if (!context) throw new Error("local context unavailable");
     localProtectedSheet.context = context;
     activeContextToken = context.contextToken;
+    activeProtectedContextKind = "local";
     const security = await loadActiveContextSecurity(context.contextToken);
     if (security) {
       localProtectedSheet.ttlSeconds = security.ttlSeconds;
@@ -2009,8 +2429,8 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   const ttl = document.querySelector<HTMLSelectElement>("#local-protected-ttl");
   const viewOnce = document.querySelector<HTMLInputElement>("#local-protected-view-once");
   const plaintext = draft?.value ?? "";
-  const ttlSeconds = Number(ttl?.value ?? 0);
-  if (!contextToken || !plaintext.trim() || ![0, 3_600, 86_400, 259_200, 604_800].includes(ttlSeconds)) {
+  const ttlSeconds = Number(ttl?.value ?? 3_600);
+  if (!contextToken || !plaintext.trim() || !isLocalTtlSeconds(ttlSeconds)) {
     localProtectedSheet.status = "Write a message first.";
     render();
     return;
@@ -2030,14 +2450,18 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   }
   localProtectedSheet.busy = true;
   localProtectedSheet.draft = plaintext;
-  localProtectedSheet.ttlSeconds = ttlSeconds;
   localProtectedSheet.viewOnce = viewOnce?.checked === true;
   localProtectedSheet.status = "";
   render();
   const policy = await saveActiveContextSecurity(contextToken, ttlSeconds, localProtectedSheet.decryptDisplayEnabled);
-  const prepared = policy
-    ? await prepareLocalProtectedText(contextToken, plaintext, localProtectedSheet.viewOnce)
-    : null;
+  if (!policy || !isLocalTtlSeconds(policy.ttlSeconds)) {
+    localProtectedSheet.busy = false;
+    localProtectedSheet.status = "Encryption failed closed. Nothing was sent.";
+    render();
+    return;
+  }
+  localProtectedSheet.ttlSeconds = policy.ttlSeconds;
+  const prepared = await prepareLocalProtectedText(contextToken, plaintext, localProtectedSheet.viewOnce);
   localProtectedSheet.busy = false;
   if (!prepared) {
     localProtectedSheet.status = "Encryption failed closed. Nothing was sent.";
@@ -2120,6 +2544,20 @@ async function copyLocalProtectedCapsule(): Promise<void> {
 function bindLocalProtectedSheet(): void {
   document.querySelector<HTMLButtonElement>("#local-protected-toggle")?.addEventListener("click", () => void toggleLocalProtectedSheet());
   document.querySelector<HTMLButtonElement>("#local-protected-close")?.addEventListener("click", () => void toggleLocalProtectedSheet());
+  document.querySelector<HTMLButtonElement>("#protect-local-only")?.addEventListener("click", showLocalProtectedChoice);
+  document.querySelector<HTMLButtonElement>("#peer-protected-back")?.addEventListener("click", showPeerProtectedChoice);
+  document.querySelector<HTMLButtonElement>("#peer-approve")?.addEventListener("click", () => void approvePeerProtectedDm());
+  document.querySelectorAll<HTMLButtonElement>("[data-peer-person]").forEach((button) => button.addEventListener("click", () => void choosePeerProtectedFriend(button.dataset.peerPerson ?? "")));
+  document.querySelector<HTMLFormElement>("#peer-protect-form")?.addEventListener("submit", (event) => void preparePeerProtectedDraft(event));
+  document.querySelector<HTMLFormElement>("#peer-open-form")?.addEventListener("submit", (event) => void openPeerProtectedText(event));
+  document.querySelector<HTMLButtonElement>("#peer-cover-copy")?.addEventListener("click", () => void copyPeerProtectedText());
+  document.querySelector<HTMLInputElement>("#peer-decrypt-display")?.addEventListener("change", (event) => void changePeerDecryptDisplay(event.currentTarget as HTMLInputElement));
+  document.querySelectorAll<HTMLButtonElement>("[data-peer-pane]").forEach((button) => button.addEventListener("click", () => {
+    peerProtectedSheet.pane = button.dataset.peerPane as PeerProtectedPane;
+    peerProtectedSheet.openedPlaintext = "";
+    peerProtectedSheet.status = "";
+    render();
+  }));
   document.querySelector<HTMLFormElement>("#local-context-form")?.addEventListener("submit", (event) => void startLocalProtectedContext(event));
   document.querySelector<HTMLFormElement>("#local-protect-form")?.addEventListener("submit", (event) => void prepareLocalProtectedDraft(event));
   document.querySelector<HTMLFormElement>("#local-open-form")?.addEventListener("submit", (event) => void openLocalProtectedCapsule(event));
@@ -2150,12 +2588,19 @@ function bindWorkspace(): void {
   }
   document.querySelectorAll<HTMLButtonElement>("[data-route]").forEach((button) => button.addEventListener("click", async () => {
     const intent = ++navigationIntentEpoch;
+    const requestedRoute = button.dataset.route as Route;
     await Promise.resolve();
     if (intent !== navigationIntentEpoch) return;
     if (activeEmbeddedHost || activeNativeHostId) await closeActiveServiceSurface();
     if (route === "settings" && settingsSection === "scrub") clearPrivacyScanState();
     if (route === "settings" && settingsSection === "account") newIdentityRecoveryPhrase = null;
-    route = button.dataset.route as Route;
+    if (onboardingServiceSetup && requestedRoute === "home") {
+      clearServiceGuide();
+      route = "onboarding";
+      onboardingRoute = "browser";
+    } else {
+      route = requestedRoute;
+    }
     activeService = null;
     activeHomeAppId = null;
     appLaunchPendingId = null;
@@ -2210,7 +2655,7 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => {
     const next = parseTheme(button.dataset.themeChoice ?? null);
     themeChoice = next;
-    localStorage.setItem("osl-hub-theme", next);
+    localStorage.setItem(themeStorageKey, next);
     applyTheme(next);
     render();
   }));
@@ -2230,7 +2675,6 @@ function bindWorkspace(): void {
   });
   document.querySelector("#service-guide-skip")?.addEventListener("click", () => {
     if (onboardingServiceSetup) {
-      onboardingServiceSetup = false;
       clearServiceGuide();
       route = "onboarding";
       onboardingRoute = "browser";
@@ -2244,7 +2688,6 @@ function bindWorkspace(): void {
   });
   document.querySelector("#service-guide-finish")?.addEventListener("click", () => {
     if (onboardingServiceSetup) {
-      onboardingServiceSetup = false;
       clearServiceGuide();
       route = "onboarding";
       onboardingRoute = "browser";
@@ -2258,7 +2701,7 @@ function bindWorkspace(): void {
   });
   document.querySelector("#service-guide-exit")?.addEventListener("click", async () => {
     if (onboardingServiceSetup) {
-      onboardingServiceSetup = false;
+      clearServiceOnboardingResume();
       clearServiceGuide();
       route = "onboarding";
       onboardingRoute = "apps";
@@ -2348,14 +2791,22 @@ async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promis
     const native = selectedInstalledNativeApp(app.id);
     if (native) {
       void openNativeHostedApp(app, service, native.id);
-    } else if (app.linked && savedAccountMode !== "clean") {
+    } else if (savedAccountsReady && firefoxStatus.availability === "installed" && importedFirefoxHomeAppIds.has(app.id)) {
+      try {
+        await launchFirefoxService(app.id);
+        showToast(`${app.displayName} opened in your isolated OSL Firefox profile`);
+      } catch {
+        if (app.linked) void openEmbeddedApp(app, service);
+        else openServiceRoute(service, app.provider, app.id, true);
+      }
+    } else if (app.linked) {
       void openEmbeddedApp(app, service);
     } else if (savedAccountMode !== "ask") {
       activeService = service;
       activeHomeAppId = app.id;
       route = "service";
       serviceGuideStep = null;
-      void setupEmbeddedApp(true);
+      void setupEmbeddedApp();
     } else {
       openServiceRoute(service, app.provider, app.id, true);
     }
@@ -2379,10 +2830,11 @@ async function startBackgroundInstall(appId: NativeAppId): Promise<void> {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 3_000));
       nativeApps = await loadNativeApps().catch(() => nativeApps);
-      if (nativeApps.some((candidate) => candidate.id === appId && candidate.availability === "installed")) {
-        savedNativeApps.add(appId);
+      const installed = nativeApps.find((candidate) => candidate.id === appId && candidate.availability === "installed");
+      if (installed) {
+        if (installed.isolatedProfileAvailable) savedNativeApps.add(appId);
         persistSavedAccountPreferences();
-        showToast(`${app.displayName} is ready`);
+        showToast(installed.isolatedProfileAvailable ? `${app.displayName} is ready` : `${app.displayName} installed; OSL will use an isolated web profile`);
         return;
       }
     }
@@ -2412,10 +2864,11 @@ function nativeHostFailureMessage(reason: string, name: string): string {
 
 async function openSafeEmbeddedFallback(app: HomeAppCatalogEntry): Promise<void> {
   const existingProfiles = embeddedAccountsForHomeApp(app, services);
-  const opened = existingProfiles.length > 0 && savedAccountMode !== "clean"
+  const opened = existingProfiles.length > 0
     ? { host: await openEmbeddedHomeApp(app, services) }
     : await setupEmbeddedHomeApp(app, existingProfiles.length === 0 ? "Personal" : `Profile ${existingProfiles.length + 1}`);
   activeEmbeddedHost = opened.host;
+  markServiceOnboardingOpened();
   activeNativeHostId = null;
   serviceAccountPickerOpen = false;
   services = await loadLinkedServices().catch(() => services);
@@ -2460,6 +2913,7 @@ async function openNativeHostedApp(app: HomeAppCatalogEntry, service: LinkedServ
       return;
     }
     activeNativeHostId = appId;
+    markServiceOnboardingOpened();
     showToast(`${app.displayName} opened in a separate OSL profile`);
   } catch (failure) {
     activeNativeHostId = null;
@@ -2492,6 +2946,7 @@ async function setupEmbeddedApp(forceNewProfile = false): Promise<void> {
       ? { host: await openEmbeddedHomeApp(app, services) }
       : await setupEmbeddedHomeApp(app, existingProfiles.length === 0 ? "Personal" : `Profile ${existingProfiles.length + 1}`);
     activeEmbeddedHost = opened.host;
+    markServiceOnboardingOpened();
     serviceAccountPickerOpen = false;
     services = await loadLinkedServices().catch(() => services);
     serviceGuideStep = null;
@@ -2531,6 +2986,7 @@ async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService,
       return;
     }
     activeEmbeddedHost = await openEmbeddedHomeApp(app, services, accountId);
+    markServiceOnboardingOpened();
   } catch (failure) {
     activeEmbeddedHost = null;
     resetLocalProtectedSheet();
@@ -2544,12 +3000,12 @@ async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService,
 
 async function continueOnboardingFromService(): Promise<void> {
   await closeActiveServiceSurface();
-  onboardingServiceSetup = false;
   route = "onboarding";
   onboardingRoute = "browser";
   activeService = null;
   activeHomeAppId = null;
   render();
+  void refreshBrowserImportReadiness();
 }
 
 function currentHomeTileIds(): string[] {
@@ -2872,6 +3328,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
 
   if (burnScope === "chat") {
     const contextToken = activeContextToken;
+    const contextKind = activeProtectedContextKind;
     if (!contextToken || !(await burnActiveHubContext(contextToken))) {
       burnBusy = false;
       burnResult = { tone: "error", message: "The chat burn failed closed. No deletion success is being claimed.", showUninstall: false };
@@ -2879,7 +3336,14 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
       return;
     }
     burnBusy = false;
-    burnResult = { tone: "success", message: "Local OSL decrypt material and caches for this chat were removed. Native app history was not deleted.", showUninstall: false };
+    resetLocalProtectedSheet();
+    burnResult = {
+      tone: "success",
+      message: contextKind === "peer"
+        ? "Local approval, display, and expiry settings for this app account + friend were revoked. OSL attempted relay cleanup. Provider messages and opened copies remain."
+        : "Local OSL decrypt material and caches for this chat were removed. Native app history was not deleted.",
+      showUninstall: false,
+    };
     render();
     return;
   }
@@ -2904,8 +3368,8 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
     burnResult = {
       tone: result.remoteCleanupComplete ? "success" : "warning",
       message: result.remoteCleanupComplete
-        ? `Local OSL decrypt material and caches for ${result.scopesBurned} ${result.scopesBurned === 1 ? "chat" : "chats"} were removed. The login profile, cookies, and service history remain.`
-        : `Local OSL cleanup completed for ${result.scopesBurned} ${result.scopesBurned === 1 ? "chat" : "chats"}, but ${result.remoteBlobDeletionsFailed} remote blob ${result.remoteBlobDeletionsFailed === 1 ? "deletion was" : "deletions were"} not acknowledged. The login profile, cookies, and service history remain.`,
+        ? `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed. Sent relay cleanup was acknowledged. Login profile, cookies, provider history, and other copies remain.`
+        : `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed, but ${result.remoteBlobDeletionsFailed} sent relay blob ${result.remoteBlobDeletionsFailed === 1 ? "deletion was" : "deletions were"} not acknowledged. Login profile, cookies, provider history, and other copies remain.`,
       showUninstall: false,
     };
     render();
@@ -3115,15 +3579,8 @@ async function bootstrap(): Promise<void> {
   const attempt = ++bootstrapEpoch;
   applyTheme(themeChoice);
   loadUiPreferences();
-  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><span class="loading-seal-ring"></span><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><svg class="security-motion lock-security-motion" viewBox="0 0 120 120"><g class="security-center"><path d="M49 46h22v7H56v14h15v7H49Z"/></g><g class="security-key"><circle cx="44" cy="60" r="6"/><path d="M50 60h24m-7 0v7m-7-7v5"/></g><g class="security-lock loading-seal-lock"><path class="security-shackle" d="M47 55V44a13 13 0 0 1 26 0v11"/><path class="security-lock-body" d="M42 55h36v28H42Z"/></g></svg></div><span class="sr-only">Opening OSL</span></main></div>`;
+  root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><span class="sr-only">Opening OSL</span></main></div>`;
   bindDesktopTitlebar();
-  const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
-  const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
-  const nativeAppsRequest = withNativeDeadline(loadNativeApps(), "Load installed apps", bootSupportDeadlineMs).catch(() => null);
-  const mullvadRequest = withNativeDeadline(loadMullvadStatus(), "Check Mullvad", bootSupportDeadlineMs).catch(() => null);
-  const browserImportsRequest = withNativeDeadline(loadBrowserImports(), "Load browsers", bootSupportDeadlineMs).catch(() => null);
-  const firefoxRequest = withNativeDeadline(loadFirefoxStatus(), "Check Firefox", bootSupportDeadlineMs).catch(() => null);
-  const licenseRequest = withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs).catch(() => null);
   try {
     const coreIntegration = await withNativeDeadline(loadCoreIntegration(), "Start OSL", bootCoreDeadlineMs);
     if (attempt !== bootstrapEpoch) return;
@@ -3132,6 +3589,16 @@ async function bootstrap(): Promise<void> {
       return;
     }
     core = coreIntegration;
+    refreshActiveBrowserAccountsReady();
+    const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
+    const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
+    const nativeAppsRequest = savedAccountMode === "use"
+      ? withNativeDeadline(loadNativeApps(), "Load selected Windows apps", bootSupportDeadlineMs).catch(() => null)
+      : Promise.resolve(null);
+    const firefoxRequest = savedAccountsReady
+      ? withNativeDeadline(loadFirefoxStatus(), "Check selected Firefox profile", bootSupportDeadlineMs).catch(() => null)
+      : Promise.resolve(null);
+    const licenseRequest = withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs).catch(() => null);
     const preferences = await preferencesRequest ?? {
       onboardingComplete: core.readiness.bootstrapStatus === "ready",
       setup: parseSetupState(null),
@@ -3148,23 +3615,26 @@ async function bootstrap(): Promise<void> {
       route = "onboarding";
     } else {
       route = preferences.onboardingComplete ? "home" : "onboarding";
+      if (!preferences.onboardingComplete) onboardingRoute = pendingOnboardingRoute() ?? onboardingRoute;
     }
+    renderNow();
+    if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
+    if (route === "onboarding" && onboardingRoute === "mullvad") void refreshMullvadSetup();
+    startReadyWorkspaceLoads();
+    void Promise.all([servicesRequest, nativeAppsRequest, firefoxRequest, licenseRequest]).then(([linkedServices, nativeCatalog, currentFirefoxStatus, currentLicenseState]) => {
+      if (attempt !== bootstrapEpoch) return;
+      if (linkedServices) services = linkedServices;
+      if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog)) {
+        nativeApps = nativeCatalog;
+      }
+      if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
+      if (currentLicenseState) licenseState = currentLicenseState;
+      route === "onboarding" ? render() : renderWhenIdle();
+    });
   } catch {
     if (attempt === bootstrapEpoch) showBootstrapRecovery();
     return;
   }
-  renderNow();
-  startReadyWorkspaceLoads();
-  void Promise.all([servicesRequest, nativeAppsRequest, mullvadRequest, browserImportsRequest, firefoxRequest, licenseRequest]).then(([linkedServices, nativeCatalog, currentMullvadStatus, browserCatalog, currentFirefoxStatus, currentLicenseState]) => {
-    if (attempt !== bootstrapEpoch) return;
-    if (linkedServices) services = linkedServices;
-    if (nativeCatalog) nativeApps = nativeCatalog;
-    if (currentMullvadStatus) mullvadStatus = currentMullvadStatus;
-    if (browserCatalog) browserImports = browserCatalog;
-    if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
-    if (currentLicenseState) licenseState = currentLicenseState;
-    route === "onboarding" ? render() : renderWhenIdle();
-  });
 }
 
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });

@@ -5,7 +5,7 @@
 //! signature proves that the code is internally authentic; the separate
 //! `safety_number_verified` bit records the user's out-of-band confirmation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -97,6 +97,17 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+/// The minimum friend state needed to create a manual peer-messaging lease.
+/// Key material stays in the original core; callers receive only stable local
+/// and public identity identifiers.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ManualPeerBinding {
+    pub person_id: String,
+    pub peer_osl_user_id: String,
+    pub peer_x25519_public: [u8; X25519_PUBLIC_BYTES],
+    pub peer_mlkem768_public: [u8; MLKEM768_PUBLIC_BYTES],
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubScopeBurnResult {
@@ -155,6 +166,10 @@ struct SecurityPreferences {
     version: u32,
     #[serde(default)]
     decrypt_display_by_scope: BTreeMap<String, bool>,
+    #[serde(default)]
+    manual_approved_scopes: BTreeSet<String>,
+    #[serde(default)]
+    burned_manual_scopes: BTreeSet<String>,
 }
 
 pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, String> {
@@ -506,6 +521,255 @@ pub fn set_friend_scope_permission(
     Ok(())
 }
 
+/// Resolve one existing, verified friend for manual peer messaging. This is
+/// deliberately re-run by every prepare/open operation rather than treating
+/// activation as a durable authorization decision.
+pub fn manual_peer_binding(
+    core: &HubCoreState,
+    person_id: String,
+) -> Result<ManualPeerBinding, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let dir = config_dir()?;
+    let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let metadata = people
+        .people
+        .get(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    let peer = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .get(&person_id)
+        .cloned()
+        .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+    ensure_manual_peer_available(metadata, true)?;
+    if peer.osl_user_id.as_deref() != Some(metadata.osl_user_id.as_str()) {
+        return Err("OSL friend identity state does not match".to_owned());
+    }
+    let peer_x25519_public = strict_peer_x25519_public(&peer)?;
+    let peer_mlkem768_public = strict_peer_mlkem768_public(&peer)?;
+    let self_x25519_public = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .map(|identity| *identity.x25519_public.as_bytes())
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    if constant_time_eq_32(&peer_x25519_public, &self_x25519_public) {
+        return Err("OSL friend key cannot be the active identity key".to_owned());
+    }
+    Ok(ManualPeerBinding {
+        person_id,
+        peer_osl_user_id: metadata.osl_user_id.clone(),
+        peer_x25519_public,
+        peer_mlkem768_public,
+    })
+}
+
+/// Return whether this exact friend has explicitly approved the supplied
+/// manual DM scope and the scope remains enabled. Friend verification and key
+/// stability are validated even when the answer is false.
+pub fn manual_peer_scope_approved(
+    core: &HubCoreState,
+    service_id: &str,
+    account_id: &str,
+    person_id: String,
+    scope_input: ScopeInput,
+) -> Result<bool, String> {
+    let binding = manual_peer_binding(core, person_id)?;
+    manual_peer_scope_approved_for_binding(service_id, account_id, &binding, scope_input)
+}
+
+fn manual_peer_scope_approved_for_binding(
+    service_id: &str,
+    account_id: &str,
+    binding: &ManualPeerBinding,
+    scope_input: ScopeInput,
+) -> Result<bool, String> {
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    if scope.kind != ScopeKind::Dm
+        || scope.id != manual_peer_scope_id(service_id, account_id, &binding.person_id)?
+        || scope.channel_id.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("OSL manual peer scope is invalid".to_owned());
+    }
+    let dir = config_dir()?;
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    let storage_key = scope.storage_key();
+    Ok(manual_scope_preference_approved(&prefs, &storage_key))
+}
+
+fn manual_scope_preference_approved(prefs: &SecurityPreferences, storage_key: &str) -> bool {
+    prefs.manual_approved_scopes.contains(storage_key)
+        && !prefs.burned_manual_scopes.contains(storage_key)
+}
+
+pub fn require_manual_peer_scope_approved(
+    core: &HubCoreState,
+    service_id: &str,
+    account_id: &str,
+    person_id: String,
+    scope_input: ScopeInput,
+) -> Result<ManualPeerBinding, String> {
+    let binding = manual_peer_binding(core, person_id)?;
+    if !manual_peer_scope_approved_for_binding(service_id, account_id, &binding, scope_input)? {
+        return Err("Approve encryption for this friend before continuing".to_owned());
+    }
+    Ok(binding)
+}
+
+pub fn manual_peer_scope_id(
+    service_id: &str,
+    account_id: &str,
+    person_id: &str,
+) -> Result<String, String> {
+    crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
+    crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())?;
+    validate_person_id(person_id)?;
+    let mut hash = Sha256::new();
+    for part in [
+        "OSL-MANUAL-LOCAL-SCOPE-v2",
+        service_id,
+        account_id,
+        person_id,
+    ] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    Ok(format!(
+        "manual-scope-{}",
+        URL_SAFE_NO_PAD.encode(&hash.finalize()[..18])
+    ))
+}
+
+pub fn set_manual_peer_scope_permission(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
+    person_id: String,
+    scope_input: ScopeInput,
+    enabled: bool,
+) -> Result<(), String> {
+    let binding = manual_peer_binding(core, person_id)?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    if scope.kind != ScopeKind::Dm
+        || scope.id != manual_peer_scope_id(service_id, account_id, &binding.person_id)?
+        || scope.channel_id.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("OSL manual peer scope is invalid".to_owned());
+    }
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let storage_key = scope.storage_key();
+    if enabled && prefs.burned_manual_scopes.contains(&storage_key) {
+        return Err("This manual conversation was burned and cannot be reapproved".to_owned());
+    }
+    prefs.version = 2;
+    if enabled {
+        prefs.manual_approved_scopes.insert(storage_key);
+    } else {
+        prefs.manual_approved_scopes.remove(&storage_key);
+    }
+    write_encrypted_json(&path, &prefs)
+}
+
+/// Persist one uploaded prose-token blob in the encrypted burn ledger. The
+/// caller must delete the remote blob and fail the send if this returns an
+/// error, so a successful manual send can never orphan remote ciphertext.
+pub fn record_peer_prose_blob(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    blob_id: String,
+) -> Result<(), String> {
+    let file_key = require_unlocked()?;
+    if blob_id.len() != 16 || !blob_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("OSL remote message identifier is invalid".to_owned());
+    }
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    let dir = config_dir()?;
+    record_peer_prose_blob_at_path(
+        security,
+        &dir.join("scope_blobs.json"),
+        scope,
+        blob_id,
+        &file_key,
+    )
+}
+
+fn record_peer_prose_blob_at_path(
+    security: &HubSecurityState,
+    path: &Path,
+    scope: Scope,
+    blob_id: String,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security state is unavailable".to_owned())?;
+    let mut blobs = load_scope_blobs_strict_with_key(path, file_key)?;
+    ipc::scope_blobs_file::record_blob(&mut blobs, scope.storage_key(), blob_id);
+    write_scope_blobs_with_key(path, &blobs, file_key)
+}
+
+fn ensure_manual_peer_available(
+    metadata: &PersonMetadata,
+    peer_map_entry_exists: bool,
+) -> Result<(), String> {
+    ensure_friend_can_be_enabled(metadata)?;
+    if !peer_map_entry_exists {
+        return Err("OSL friend key state is missing".to_owned());
+    }
+    Ok(())
+}
+
+fn strict_peer_x25519_public(peer: &PeerEntry) -> Result<[u8; X25519_PUBLIC_BYTES], String> {
+    strict_peer_public_key(peer.pubkey.as_deref(), "X25519")
+}
+
+fn strict_peer_mlkem768_public(peer: &PeerEntry) -> Result<[u8; MLKEM768_PUBLIC_BYTES], String> {
+    strict_peer_public_key(peer.ik_mlkem768_pub.as_deref(), "ML-KEM-768")
+}
+
+fn strict_peer_public_key<const N: usize>(
+    encoded: Option<&str>,
+    label: &str,
+) -> Result<[u8; N], String> {
+    let encoded = encoded.ok_or_else(|| format!("OSL friend {label} key state is missing"))?;
+    let decoded = STANDARD
+        .decode(encoded)
+        .map_err(|_| format!("OSL friend {label} key state is malformed"))?;
+    if STANDARD.encode(&decoded) != encoded {
+        return Err(format!("OSL friend {label} key state is malformed"));
+    }
+    decoded
+        .try_into()
+        .map_err(|_| format!("OSL friend {label} key state has the wrong length"))
+}
+
+fn constant_time_eq_32(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut difference = 0u8;
+    for index in 0..32 {
+        difference |= left[index] ^ right[index];
+    }
+    difference == 0
+}
+
 fn ensure_friend_can_be_enabled(metadata: &PersonMetadata) -> Result<(), String> {
     if !metadata.safety_number_verified {
         return Err("Verify this friend's safety number before enabling encryption".to_owned());
@@ -544,7 +808,8 @@ pub fn scope_security(scope_input: ScopeInput) -> Result<ScopeSecurityDto, Strin
         .map_err(|_| "OSL scope is invalid".to_owned())?;
     let dir = config_dir()?;
     let storage_key = scope.storage_key();
-    let ttl_file = ipc::scope_ttl_file::load_scope_ttls(&dir.join("scope_ttl.json"));
+    let ttl_file =
+        load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&dir.join("scope_ttl.json"))?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     Ok(ScopeSecurityDto {
         ttl_seconds: ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &storage_key),
@@ -564,6 +829,7 @@ pub fn set_scope_security(
     decrypt_display_enabled: bool,
 ) -> Result<ScopeSecurityDto, String> {
     require_unlocked()?;
+    validate_hub_ttl(ttl_seconds)?;
     let scope: Scope = scope_input
         .try_into()
         .map_err(|_| "OSL scope is invalid".to_owned())?;
@@ -573,16 +839,21 @@ pub fn set_scope_security(
         .lock()
         .map_err(|_| "OSL security settings are unavailable".to_owned())?;
     let dir = config_dir()?;
-    let mut ttl_file = ipc::scope_ttl_file::load_scope_ttls(&dir.join("scope_ttl.json"));
+    let prefs_path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
+    if prefs.burned_manual_scopes.contains(&storage_key) {
+        return Err("This manual conversation was burned and cannot be changed".to_owned());
+    }
+    let ttl_path = dir.join("scope_ttl.json");
+    let mut ttl_file = load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&ttl_path)?;
     let effective_ttl =
         ipc::scope_ttl_file::set_scope_ttl(&mut ttl_file, storage_key.clone(), ttl_seconds);
-    ipc::scope_ttl_file::write_scope_ttls(&dir.join("scope_ttl.json"), &ttl_file)?;
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
-    prefs.version = 1;
+    write_encrypted_json(&ttl_path, &ttl_file)?;
+    prefs.version = 2;
     prefs
         .decrypt_display_by_scope
         .insert(storage_key.clone(), decrypt_display_enabled);
-    write_encrypted_json(&dir.join(SECURITY_PREFS_FILE), &prefs)?;
+    write_encrypted_json(&prefs_path, &prefs)?;
     Ok(ScopeSecurityDto {
         storage_key,
         ttl_seconds: effective_ttl,
@@ -701,7 +972,7 @@ pub fn burn_scope(
     for blob_id in &failed_blob_ids {
         ipc::scope_blobs_file::record_blob(&mut blobs_file, scope.storage_key(), blob_id.clone());
     }
-    ipc::scope_blobs_file::write(&blobs_path, &blobs_file)?;
+    write_scope_blobs(&blobs_path, &blobs_file)?;
     let remote_blob_deletions_failed = failed_blob_ids.len();
     Ok(HubScopeBurnResult {
         storage_key: scope.storage_key(),
@@ -714,6 +985,94 @@ pub fn burn_scope(
         local_cleanup_complete: true,
         channel_coverage_complete: true,
     })
+}
+
+/// Burn only one Hub-owned manual app+friend scope. This deliberately avoids
+/// the generic DM peer-map and burned-scope machinery, whose DM keys are
+/// friend-global and cannot represent an app-specific manual conversation.
+pub fn burn_manual_peer_scope(
+    _core: &HubCoreState,
+    security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
+    person_id: &str,
+    scope_input: ScopeInput,
+) -> Result<HubScopeBurnResult, String> {
+    require_unlocked()?;
+    let scope: Scope = scope_input
+        .clone()
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    if scope.kind != ScopeKind::Dm
+        || scope.id != manual_peer_scope_id(service_id, account_id, person_id)?
+        || scope.channel_id.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("OSL manual peer scope is invalid".to_owned());
+    }
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer burn state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let prefs_path = dir.join(SECURITY_PREFS_FILE);
+    let ttl_path = dir.join("scope_ttl.json");
+    let blobs_path = dir.join("scope_blobs.json");
+    let storage_key = scope.storage_key();
+
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
+    let mut ttl = load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&ttl_path)?;
+    let mut blobs = load_scope_blobs_strict(&blobs_path)?;
+    let blob_ids = revoke_manual_scope_state(&mut prefs, &mut ttl, &mut blobs, &storage_key);
+    write_encrypted_json(&prefs_path, &prefs)?;
+    write_encrypted_json(&ttl_path, &ttl)?;
+
+    // Manual copy/paste send/open passes no service message id and does not
+    // persist plaintext rows. Its relay channel binding is intentionally
+    // symmetric across the two users and may also be shared by another local
+    // account for the same app+friend. Never delete MessageStore rows by that
+    // shared channel during a local app+account burn.
+    let rows_destroyed = 0;
+
+    let mut failed_blob_ids = Vec::new();
+    let mut remote_blobs_deleted = 0usize;
+    for blob_id in blob_ids {
+        match ipc::prose_token::prose_token_burn_id(&dir, &scope_input, &blob_id) {
+            Ok(()) => remote_blobs_deleted = remote_blobs_deleted.saturating_add(1),
+            Err(_) => failed_blob_ids.push(blob_id),
+        }
+    }
+    for blob_id in &failed_blob_ids {
+        ipc::scope_blobs_file::record_blob(&mut blobs, storage_key.clone(), blob_id.clone());
+    }
+    write_scope_blobs(&blobs_path, &blobs)?;
+    let remote_blob_deletions_failed = failed_blob_ids.len();
+    Ok(HubScopeBurnResult {
+        storage_key,
+        rows_destroyed,
+        channels_destroyed: 1,
+        whitelist_entries_removed: 0,
+        remote_blobs_deleted,
+        remote_blob_deletions_failed,
+        remote_cleanup_complete: remote_blob_deletions_failed == 0,
+        local_cleanup_complete: true,
+        channel_coverage_complete: true,
+    })
+}
+
+fn revoke_manual_scope_state(
+    prefs: &mut SecurityPreferences,
+    ttl: &mut ipc::scope_ttl_file::ScopeTtlFile,
+    blobs: &mut ipc::scope_blobs_file::ScopeBlobsFile,
+    storage_key: &str,
+) -> Vec<String> {
+    prefs.version = 2;
+    prefs.manual_approved_scopes.remove(storage_key);
+    prefs.burned_manual_scopes.insert(storage_key.to_owned());
+    prefs
+        .decrypt_display_by_scope
+        .insert(storage_key.to_owned(), false);
+    ttl.entries.remove(storage_key);
+    ipc::scope_blobs_file::take_blobs(blobs, storage_key)
 }
 
 fn parse_friend_code(value: &str) -> Result<SignedFriendCode, String> {
@@ -1032,12 +1391,27 @@ fn require_unlocked() -> Result<[u8; 32], String> {
         .ok_or_else(|| "OSL main password must be unlocked".to_owned())
 }
 
+fn validate_hub_ttl(ttl_seconds: u32) -> Result<(), String> {
+    if matches!(ttl_seconds, 3_600 | 86_400 | 259_200 | 604_800) {
+        Ok(())
+    } else {
+        Err("OSL message lifetime is unsupported".to_owned())
+    }
+}
+
 fn config_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())
 }
 
 fn load_encrypted_json<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let key = require_unlocked()?;
+    load_encrypted_json_with_key(path, &key)
+}
+
+fn load_encrypted_json_with_key<T: Default + for<'de> Deserialize<'de>>(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<T, String> {
     let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
         path,
         MAX_SECURITY_STATE_BYTES,
@@ -1049,13 +1423,20 @@ fn load_encrypted_json<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> R
     if !ipc::main_password::has_enc_magic(&bytes) {
         return Err("OSL Privacy security state is not encrypted".to_owned());
     }
-    let plain = ipc::main_password::decrypt_at_rest(&bytes, &key)
+    let plain = ipc::main_password::decrypt_at_rest(&bytes, key)
         .map_err(|_| "OSL encrypted state could not be opened".to_owned())?;
     serde_json::from_slice(&plain).map_err(|_| "OSL encrypted state is malformed".to_owned())
 }
 
 fn load_scope_blobs_strict(path: &Path) -> Result<ipc::scope_blobs_file::ScopeBlobsFile, String> {
     let key = require_unlocked()?;
+    load_scope_blobs_strict_with_key(path, &key)
+}
+
+fn load_scope_blobs_strict_with_key(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<ipc::scope_blobs_file::ScopeBlobsFile, String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata)
             if metadata.file_type().is_symlink()
@@ -1077,16 +1458,41 @@ fn load_scope_blobs_strict(path: &Path) -> Result<ipc::scope_blobs_file::ScopeBl
     if !ipc::main_password::has_enc_magic(&bytes) {
         return Err("OSL scope blob ledger is not encrypted".to_owned());
     }
-    let plain = ipc::main_password::decrypt_at_rest(&bytes, &key)
+    let plain = ipc::main_password::decrypt_at_rest(&bytes, key)
         .map_err(|_| "OSL scope blob ledger could not be opened".to_owned())?;
     serde_json::from_slice(&plain).map_err(|_| "OSL scope blob ledger is malformed".to_owned())
 }
 
 fn write_encrypted_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let key = require_unlocked()?;
+    write_encrypted_json_with_key(path, value, &key)
+}
+
+fn write_scope_blobs(
+    path: &Path,
+    value: &ipc::scope_blobs_file::ScopeBlobsFile,
+) -> Result<(), String> {
+    let key = require_unlocked()?;
+    write_scope_blobs_with_key(path, value, &key)
+}
+
+fn write_scope_blobs_with_key(
+    path: &Path,
+    value: &ipc::scope_blobs_file::ScopeBlobsFile,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    write_encrypted_json_with_key(path, value, key)
+        .map_err(|_| "OSL remote-message burn ledger could not be persisted".to_owned())
+}
+
+fn write_encrypted_json_with_key<T: Serialize>(
+    path: &Path,
+    value: &T,
+    key: &[u8; 32],
+) -> Result<(), String> {
     let body = serde_json::to_vec(value)
         .map_err(|_| "OSL security state could not be encoded".to_owned())?;
-    let sealed = ipc::main_password::encrypt_at_rest(&body, &key)
+    let sealed = ipc::main_password::encrypt_at_rest(&body, key)
         .map_err(|_| "OSL security state could not be encrypted".to_owned())?;
     if sealed.len() as u64 > MAX_SECURITY_STATE_BYTES {
         return Err("OSL security state exceeds its storage limit".to_owned());
@@ -1203,6 +1609,298 @@ mod tests {
         assert!(ensure_friend_can_be_enabled(&metadata).is_ok());
         metadata.pending_ed25519_public = Some("changed-key".to_owned());
         assert!(ensure_friend_can_be_enabled(&metadata).is_err());
+    }
+
+    #[test]
+    fn manual_peer_rejects_unverified_pending_and_missing_key_state() {
+        let mut metadata = PersonMetadata {
+            osl_user_id: "peer-osl".to_owned(),
+            ..Default::default()
+        };
+        assert!(ensure_manual_peer_available(&metadata, true).is_err());
+        metadata.safety_number_verified = true;
+        assert!(ensure_manual_peer_available(&metadata, false).is_err());
+        assert!(ensure_manual_peer_available(&metadata, true).is_ok());
+        metadata.pending_key_bundle = Some(FriendCodeUnsigned {
+            version: FRIEND_CODE_VERSION,
+            osl_user_id: "peer-osl".to_owned(),
+            x25519_public: String::new(),
+            ed25519_public: String::new(),
+            mlkem768_public: String::new(),
+            ratchet_initial_public: None,
+        });
+        assert!(ensure_manual_peer_available(&metadata, true).is_err());
+    }
+
+    #[test]
+    fn manual_approval_is_exact_to_app_and_friend_and_burn_is_terminal() {
+        let discord_a =
+            Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-a").unwrap())
+                .storage_key();
+        let discord_a_other_account =
+            Scope::dm(manual_peer_scope_id("discord", "account-two", "hub-person-a").unwrap())
+                .storage_key();
+        let instagram_a =
+            Scope::dm(manual_peer_scope_id("instagram", "account-one", "hub-person-a").unwrap())
+                .storage_key();
+        let discord_b =
+            Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-b").unwrap())
+                .storage_key();
+        let mut prefs = SecurityPreferences::default();
+        prefs.manual_approved_scopes.insert(discord_a.clone());
+        assert!(manual_scope_preference_approved(&prefs, &discord_a));
+        assert!(!manual_scope_preference_approved(&prefs, &instagram_a));
+        assert!(!manual_scope_preference_approved(&prefs, &discord_b));
+        assert!(!manual_scope_preference_approved(
+            &prefs,
+            &discord_a_other_account
+        ));
+        prefs.burned_manual_scopes.insert(discord_a.clone());
+        assert!(!manual_scope_preference_approved(&prefs, &discord_a));
+    }
+
+    #[test]
+    fn manual_burn_preserves_other_apps_friends_and_generic_peer_state() {
+        let discord_a =
+            Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-a").unwrap())
+                .storage_key();
+        let instagram_a =
+            Scope::dm(manual_peer_scope_id("instagram", "account-one", "hub-person-a").unwrap())
+                .storage_key();
+        let discord_b =
+            Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-b").unwrap())
+                .storage_key();
+        let discord_a_other_account =
+            Scope::dm(manual_peer_scope_id("discord", "account-two", "hub-person-a").unwrap())
+                .storage_key();
+        let mut prefs = SecurityPreferences::default();
+        prefs.manual_approved_scopes.extend([
+            discord_a.clone(),
+            instagram_a.clone(),
+            discord_b.clone(),
+            discord_a_other_account.clone(),
+        ]);
+        prefs.decrypt_display_by_scope.extend([
+            (discord_a.clone(), true),
+            (instagram_a.clone(), true),
+            (discord_b.clone(), true),
+            (discord_a_other_account.clone(), true),
+        ]);
+        let mut ttl = ipc::scope_ttl_file::ScopeTtlFile::default();
+        ttl.entries.insert(discord_a.clone(), 3_600);
+        ttl.entries.insert(instagram_a.clone(), 86_400);
+        ttl.entries.insert(discord_b.clone(), 259_200);
+        ttl.entries.insert(discord_a_other_account.clone(), 604_800);
+        let mut blobs = ipc::scope_blobs_file::ScopeBlobsFile::default();
+        ipc::scope_blobs_file::record_blob(
+            &mut blobs,
+            discord_a.clone(),
+            "0011223344556677".to_owned(),
+        );
+        ipc::scope_blobs_file::record_blob(
+            &mut blobs,
+            instagram_a.clone(),
+            "1122334455667788".to_owned(),
+        );
+        ipc::scope_blobs_file::record_blob(
+            &mut blobs,
+            discord_b.clone(),
+            "2233445566778899".to_owned(),
+        );
+        ipc::scope_blobs_file::record_blob(
+            &mut blobs,
+            discord_a_other_account.clone(),
+            "3344556677889900".to_owned(),
+        );
+        let generic_peer = PeerEntry {
+            outgoing_whitelists: vec![WhitelistEntry::Dm {
+                broadened: true,
+                enabled_at: None,
+            }],
+            ..PeerEntry::default()
+        };
+        let generic_before = generic_peer.clone();
+        let indexed_manual = crate::service_scope_index::IndexedServiceScope {
+            storage_key: discord_a.clone(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: discord_a.trim_start_matches("dm:").to_owned(),
+                server_id: None,
+                channel_id: Some("manual-dm-indexed-shared".to_owned()),
+            },
+            canonical_channel_ids: vec!["manual-dm-indexed-shared".to_owned()],
+            local_context_binding_sha256: "a".repeat(64),
+            manual_peer_person_id: Some("hub-person-a".to_owned()),
+        };
+        assert_eq!(
+            indexed_manual.manual_peer_person_id.as_deref(),
+            Some("hub-person-a")
+        );
+        assert_eq!(
+            revoke_manual_scope_state(
+                &mut prefs,
+                &mut ttl,
+                &mut blobs,
+                &indexed_manual.storage_key,
+            ),
+            ["0011223344556677"]
+        );
+        assert!(!manual_scope_preference_approved(&prefs, &discord_a));
+        assert!(manual_scope_preference_approved(&prefs, &instagram_a));
+        assert!(manual_scope_preference_approved(&prefs, &discord_b));
+        assert!(manual_scope_preference_approved(
+            &prefs,
+            &discord_a_other_account
+        ));
+        assert!(!ttl.entries.contains_key(&discord_a));
+        assert_eq!(ttl.entries.get(&instagram_a), Some(&86_400));
+        assert_eq!(ttl.entries.get(&discord_b), Some(&259_200));
+        assert_eq!(ttl.entries.get(&discord_a_other_account), Some(&604_800));
+        assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &discord_a), 0);
+        assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &instagram_a), 1);
+        assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &discord_b), 1);
+        assert_eq!(
+            ipc::scope_blobs_file::count_for(&blobs, &discord_a_other_account),
+            1
+        );
+        assert_eq!(generic_peer, generic_before);
+
+        let source = include_str!("security.rs");
+        let manual_burn = source
+            .split("pub fn burn_manual_peer_scope")
+            .nth(1)
+            .unwrap()
+            .split("fn revoke_manual_scope_state")
+            .next()
+            .unwrap();
+        assert!(!manual_burn.contains("delete_messages_in_channel"));
+        assert!(manual_burn.contains("let rows_destroyed = 0"));
+    }
+
+    #[test]
+    fn peer_x25519_key_requires_exact_canonical_base64() {
+        let canonical = STANDARD.encode([7u8; X25519_PUBLIC_BYTES]);
+        let peer = PeerEntry {
+            pubkey: Some(canonical.clone()),
+            ..PeerEntry::default()
+        };
+        assert_eq!(strict_peer_x25519_public(&peer).unwrap(), [7u8; 32]);
+        let noncanonical = PeerEntry {
+            pubkey: Some(canonical.trim_end_matches('=').to_owned()),
+            ..PeerEntry::default()
+        };
+        assert!(strict_peer_x25519_public(&noncanonical).is_err());
+        let wrong_length = PeerEntry {
+            pubkey: Some(STANDARD.encode([7u8; 31])),
+            ..PeerEntry::default()
+        };
+        assert!(strict_peer_x25519_public(&wrong_length).is_err());
+        let mlkem = PeerEntry {
+            ik_mlkem768_pub: Some(STANDARD.encode([9u8; MLKEM768_PUBLIC_BYTES])),
+            ..PeerEntry::default()
+        };
+        assert_eq!(
+            strict_peer_mlkem768_public(&mlkem).unwrap(),
+            [9u8; MLKEM768_PUBLIC_BYTES]
+        );
+    }
+
+    #[test]
+    fn hub_ttl_accepts_only_the_four_presented_lifetimes() {
+        for accepted in [3_600, 86_400, 259_200, 604_800] {
+            assert!(validate_hub_ttl(accepted).is_ok());
+        }
+        for rejected in [0, 3_599, 3_601, 604_799, 604_801] {
+            assert!(validate_hub_ttl(rejected).is_err());
+        }
+    }
+
+    #[test]
+    fn repeated_ttl_saves_use_encrypted_recoverable_replacement() {
+        let file_key = [0x5d; 32];
+        let path = std::env::temp_dir().join(format!(
+            "osl-scope-ttl-replacement-{}-{}.json",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        let mut ttl = ipc::scope_ttl_file::ScopeTtlFile::default();
+        ipc::scope_ttl_file::set_scope_ttl(&mut ttl, "dm:test".to_owned(), 3_600);
+        write_encrypted_json_with_key(&path, &ttl, &file_key).unwrap();
+        ipc::scope_ttl_file::set_scope_ttl(&mut ttl, "dm:test".to_owned(), 86_400);
+        write_encrypted_json_with_key(&path, &ttl, &file_key).unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        assert!(ipc::main_password::has_enc_magic(&on_disk));
+        let loaded: ipc::scope_ttl_file::ScopeTtlFile =
+            load_encrypted_json_with_key(&path, &file_key).unwrap();
+        assert_eq!(
+            ipc::scope_ttl_file::get_scope_ttl(&loaded, "dm:test"),
+            86_400
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn repeated_peer_prose_records_and_burns_use_windows_safe_encrypted_replacement() {
+        let file_key = [0x6c; 32];
+        let path = std::env::temp_dir().join(format!(
+            "osl-peer-prose-blobs-{}-{}.json",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        let security = HubSecurityState::default();
+        let scope = Scope {
+            kind: ScopeKind::Dm,
+            id: "hub-person-peer".to_owned(),
+            server_id: None,
+            channel_id: Some("manual-dm-shared".to_owned()),
+        };
+        record_peer_prose_blob_at_path(
+            &security,
+            &path,
+            scope.clone(),
+            "0011223344556677".to_owned(),
+            &file_key,
+        )
+        .unwrap();
+        record_peer_prose_blob_at_path(
+            &security,
+            &path,
+            scope.clone(),
+            "8899aabbccddeeff".to_owned(),
+            &file_key,
+        )
+        .unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        assert!(ipc::main_password::has_enc_magic(&on_disk));
+        let ledger = load_scope_blobs_strict_with_key(&path, &file_key).unwrap();
+        assert_eq!(
+            ipc::scope_blobs_file::count_for(&ledger, &scope.storage_key()),
+            2
+        );
+        let mut burned = ledger;
+        assert_eq!(
+            ipc::scope_blobs_file::take_blobs(&mut burned, &scope.storage_key()).len(),
+            2
+        );
+        write_scope_blobs_with_key(&path, &burned, &file_key).unwrap();
+        let cleared = load_scope_blobs_strict_with_key(&path, &file_key).unwrap();
+        assert_eq!(
+            ipc::scope_blobs_file::count_for(&cleared, &scope.storage_key()),
+            0
+        );
+        let mut retried = cleared;
+        ipc::scope_blobs_file::record_blob(
+            &mut retried,
+            scope.storage_key(),
+            "fedcba9876543210".to_owned(),
+        );
+        write_scope_blobs_with_key(&path, &retried, &file_key).unwrap();
+        let final_ledger = load_scope_blobs_strict_with_key(&path, &file_key).unwrap();
+        assert_eq!(
+            ipc::scope_blobs_file::count_for(&final_ledger, &scope.storage_key()),
+            1
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

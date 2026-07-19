@@ -331,9 +331,10 @@ impl ScrubIndexState {
         if let Some(root) = &self.root_override {
             return Ok(root.clone());
         }
-        keystore::active_account_dir()
-            .map(|path| path.join(INDEX_DIR))
-            .ok_or_else(|| "Unlock an OSL identity before using Scrub".to_owned())
+        // Fresh single-identity installs intentionally have no active-account
+        // override. `osl_config_dir` resolves that valid case to the OSL base
+        // directory while still honoring an explicit multi-identity slot.
+        scrub_index_root(keystore::osl_config_dir().ok())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
@@ -371,6 +372,12 @@ impl ScrubIndexState {
             use_key_override: true,
         }
     }
+}
+
+fn scrub_index_root(config_dir: Option<PathBuf>) -> Result<PathBuf, String> {
+    config_dir
+        .map(|path| path.join(INDEX_DIR))
+        .ok_or_else(|| "OSL account storage is unavailable for Scrub".to_owned())
 }
 
 #[cfg(test)]
@@ -809,6 +816,13 @@ mod tests {
         );
         assert!(result.unwrap_err().contains("Unlock"));
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn index_root_accepts_the_resolved_single_identity_base_directory() {
+        let base = root("single-identity");
+        assert_eq!(scrub_index_root(Some(base.clone())).unwrap(), base.join(INDEX_DIR));
+        assert!(scrub_index_root(None).unwrap_err().contains("unavailable"));
     }
 
     #[cfg(unix)]

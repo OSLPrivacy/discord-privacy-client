@@ -99,7 +99,10 @@ describe("bundled preview security boundary", () => {
       "allow-open-mullvad",
       "allow-list-browser-imports",
       "allow-open-browser-import",
+      "allow-get-firefox-status",
+      "allow-install-firefox",
       "allow-begin-browser-account-import",
+      "allow-launch-firefox-service",
       "allow-host-native-app-window",
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
@@ -110,6 +113,9 @@ describe("bundled preview security boundary", () => {
       "allow-set-local-protected-sheet-open",
       "allow-remove-service-account",
       "allow-activate-local-loopback-context",
+      "allow-activate-manual-peer-context",
+      "allow-prepare-peer-prose-text",
+      "allow-open-peer-prose-text",
       "allow-prepare-encrypted-text",
       "allow-decrypt-hub-capsule",
       "allow-prepare-local-protected-text-with-policy",
@@ -143,6 +149,17 @@ describe("bundled preview security boundary", () => {
 
     const hubMain = readRelative("../../osl-hub/src/main.rs");
     const handler = hubMain.slice(hubMain.indexOf("tauri::generate_handler!["));
+    const permissions = readRelative("../../osl-hub/permissions/hub.toml");
+    for (const [permission, command] of [
+      ["allow-get-firefox-status", "get_firefox_status"],
+      ["allow-install-firefox", "install_firefox"],
+      ["allow-launch-firefox-service", "launch_firefox_service"],
+    ] as const) {
+      expect(handler).toContain(`${command},`);
+      expect(permissions).toContain(`identifier = "${permission}"`);
+      expect(permissions).toContain(`commands.allow = ["${command}"]`);
+      expect(capability.permissions).toContain(permission);
+    }
     for (const command of [
       "set_service_host_layout",
       "reset_service_account",

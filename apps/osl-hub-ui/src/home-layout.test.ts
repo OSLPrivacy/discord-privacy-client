@@ -43,6 +43,21 @@ describe("home workspace hierarchy", () => {
     expect(source).not.toContain("Choose an app");
   });
 
+  it("keeps default Home focused on usable modules without removing edit controls", () => {
+    expect(home).toContain('if (module?.state === "Coming later" && !homeEditMode) return "";');
+    expect(home).toContain("const oslSection = oslTiles ?");
+    expect(home).toContain("${oslSection}");
+    expect(home).toContain("data-tile-move");
+    expect(home).toContain("data-tile-toggle");
+  });
+
+  it("removes tile and logo-plate chrome while retaining visible keyboard focus", () => {
+    expect(styles).toMatch(/\.app-tile\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/s);
+    expect(styles).toMatch(/\.app-tile:hover\s*\{[^}]*border-color:\s*transparent[^}]*background:\s*transparent/s);
+    expect(styles).toMatch(/\.app-logo-plate\s*\{[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s);
+    expect(styles).toMatch(/\.app-tile > button:first-child:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--brand\)/s);
+  });
+
   it("puts only configured OSL profiles in the trusted top strip", () => {
     const strip = functionSource(source, "appLauncherStrip", "simpleDeviceStatusMarkup");
     expect(strip).toContain("configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)");
@@ -93,6 +108,7 @@ describe("home workspace hierarchy", () => {
 
 describe("home interaction regressions", () => {
   const source = readRelative("./main.ts");
+  const styles = readRelative("./styles.css");
   const home = functionSource(source, "workspaceContent", "peopleListMarkup");
 
   it("binds every friends entry point without duplicate IDs", () => {
@@ -136,6 +152,12 @@ describe("home interaction regressions", () => {
     expect(source).toMatch(/function friendsDialogMarkup[\s\S]*?route !== "home" \|\| !friendsDialogOpen/);
   });
 
+  it("uses concise empty Friends copy", () => {
+    expect(source).toContain("<strong>No friends yet</strong><p>Add one with an invite.</p>");
+    expect(source).not.toContain("No OSL friends yet");
+    expect(styles).toMatch(/\.friends-rail-list \.empty-state\s*\{[^}]*border:\s*0/s);
+  });
+
   it("bounds and pages the expanded friends view and caps visible scopes", () => {
     expect(source).toContain("const friendsDialogPageSize = 24");
     expect(source).toContain("const friendScopeRenderLimit = 16");
@@ -153,11 +175,22 @@ describe("home interaction regressions", () => {
     expect(source).not.toContain("linkedInstagram");
   });
 
-  it("uses isolated embedded app profiles without tile subtitles", () => {
+  it("uses imported Firefox only for supported web apps while Discord stays native or embedded", () => {
+    const importedAppsStart = source.indexOf("const importedFirefoxHomeAppIds");
+    const importedAppsEnd = source.indexOf("]);", importedAppsStart);
+    const importedApps = source.slice(importedAppsStart, importedAppsEnd);
+    const opening = functionSource(source, "openHomeAppFromLauncher", "startBackgroundInstall");
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).not.toContain("Firefox workspace");
-    expect(source).not.toContain("launchFirefoxService(serviceId)");
+    expect(importedApps).toContain('"instagram"');
+    expect(importedApps).toContain('"gmail"');
+    expect(importedApps).not.toContain('"discord"');
+    expect(opening).toMatch(/selectedInstalledNativeApp\(app\.id\)[\s\S]*?if \(native\)[\s\S]*?openNativeHostedApp/);
+    expect(opening).toContain("importedFirefoxHomeAppIds.has(app.id)");
+    expect(opening).toContain("await launchFirefoxService(app.id)");
+    expect(opening.indexOf("if (native)")).toBeLessThan(opening.indexOf("launchFirefoxService(app.id)"));
+    expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
     expect(home).toContain("<small>${module.state}</small>");
     expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span>');
@@ -172,6 +205,18 @@ describe("home interaction regressions", () => {
     expect(binding).toMatch(/appLaunchPendingId = appId;[\s\S]*?renderNow\(\);[\s\S]*?openHomeAppFromLauncher/);
     expect(opening).toContain('withNativeDeadline(loadLinkedServices(), "Refresh apps", 450)');
     expect(opening).toContain("intent !== navigationIntentEpoch");
+  });
+
+  it("reopens the linked isolated profile instead of creating one per click", () => {
+    const opening = functionSource(source, "openHomeAppFromLauncher", "startBackgroundInstall");
+    const fallback = functionSource(source, "openSafeEmbeddedFallback", "openNativeHostedApp");
+    expect(opening).toContain("else if (app.linked)");
+    expect(opening).toContain("void openEmbeddedApp(app, service)");
+    expect(opening).toContain("void setupEmbeddedApp()");
+    expect(opening).not.toContain('app.linked && savedAccountMode !== "clean"');
+    expect(opening).not.toContain("setupEmbeddedApp(true)");
+    expect(fallback).toContain("existingProfiles.length > 0");
+    expect(fallback).not.toContain('savedAccountMode !== "clean"');
   });
 
   it("loads the new identity's friend profile before first Home render", () => {

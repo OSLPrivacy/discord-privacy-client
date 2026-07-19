@@ -42,6 +42,8 @@ pub struct ServiceScopeRegistration {
     pub scope: ScopeInput,
     pub canonical_channel_ids: Vec<String>,
     pub local_context_binding_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_peer_person_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,6 +53,8 @@ pub struct IndexedServiceScope {
     pub scope: ScopeInput,
     pub canonical_channel_ids: Vec<String>,
     pub local_context_binding_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_peer_person_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -456,6 +460,7 @@ fn indexed_scope(registration: &ServiceScopeRegistration) -> Result<IndexedServi
         scope: registration.scope.clone(),
         canonical_channel_ids: channels.into_iter().collect(),
         local_context_binding_sha256: registration.local_context_binding_sha256.clone(),
+        manual_peer_person_id: registration.manual_peer_person_id.clone(),
     })
 }
 
@@ -475,7 +480,54 @@ fn validate_registration(value: &ServiceScopeRegistration) -> Result<(), String>
     {
         return Err("OSL service scope registration is incomplete".to_owned());
     }
-    indexed_scope(value).map(|_| ())
+    let indexed = indexed_scope(value)?;
+    validate_indexed_scope(&indexed, &value.service_id, &value.account_id)
+}
+
+fn validate_indexed_scope(
+    indexed: &IndexedServiceScope,
+    service_id: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    let scope: Scope = indexed
+        .scope
+        .clone()
+        .try_into()
+        .map_err(|_| "OSL indexed service scope is invalid".to_owned())?;
+    if indexed.storage_key != scope.storage_key()
+        || indexed.canonical_channel_ids.is_empty()
+        || indexed.canonical_channel_ids.len() > MAX_CHANNELS_PER_SCOPE
+        || indexed
+            .canonical_channel_ids
+            .iter()
+            .any(|id| !valid_opaque(id, 160))
+        || !valid_hex(&indexed.local_context_binding_sha256, 64)
+    {
+        return Err("OSL indexed service scope metadata is invalid".to_owned());
+    }
+    if let Some(person_id) = indexed.manual_peer_person_id.as_deref() {
+        let channel_id = indexed
+            .scope
+            .channel_id
+            .as_deref()
+            .ok_or_else(|| "OSL indexed manual scope has no channel binding".to_owned())?;
+        let expected_id = crate::security::manual_peer_scope_id(service_id, account_id, person_id)?;
+        if indexed.scope.kind != ipc::scope::ScopeKind::Dm
+            || indexed.scope.server_id.is_some()
+            || indexed.scope.id != expected_id
+            || channel_id == indexed.scope.id
+            || indexed.canonical_channel_ids != [channel_id]
+        {
+            return Err("OSL indexed manual scope metadata does not match its binding".to_owned());
+        }
+    } else if indexed.scope.kind == ipc::scope::ScopeKind::Dm
+        && indexed.scope.id.starts_with("manual-scope-")
+    {
+        return Err(
+            "OSL indexed manual scope is missing its authenticated discriminator".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_account_binding(owner: &str, service: &str, account: &str) -> Result<(), String> {
@@ -527,6 +579,9 @@ fn build_manifest(
     generation: u64,
 ) -> Result<ImmutableServiceBurnManifest, String> {
     let scopes: Vec<_> = indexed.scopes.values().cloned().collect();
+    for scope in &scopes {
+        validate_indexed_scope(scope, &indexed.service_id, &indexed.account_id)?;
+    }
     let manifest_digest = manifest_digest(
         &indexed.owner_osl_user_id,
         &indexed.service_id,
@@ -554,6 +609,9 @@ fn build_manifest(
 }
 
 fn verify_manifest(manifest: &ImmutableServiceBurnManifest) -> Result<(), String> {
+    for scope in &manifest.scopes {
+        validate_indexed_scope(scope, &manifest.service_id, &manifest.account_id)?;
+    }
     let expected = manifest_digest(
         &manifest.owner_osl_user_id,
         &manifest.service_id,
@@ -657,17 +715,36 @@ mod tests {
             },
             canonical_channel_ids: vec!["hub-aabbccdd".to_owned()],
             local_context_binding_sha256: "a".repeat(64),
+            manual_peer_person_id: None,
         }
+    }
+
+    fn manual_registration() -> ServiceScopeRegistration {
+        let mut value = registration();
+        value.scope = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: crate::security::manual_peer_scope_id(
+                "discord",
+                "account-test-1",
+                "hub-person-peer-1",
+            )
+            .unwrap(),
+            server_id: None,
+            channel_id: Some("manual-dm-shared-1".to_owned()),
+        };
+        value.canonical_channel_ids = vec!["manual-dm-shared-1".to_owned()];
+        value.manual_peer_person_id = Some("hub-person-peer-1".to_owned());
+        value
     }
 
     #[test]
     fn clean_account_registration_is_write_ahead_and_encrypted() {
-        let (state, path) = state();
-        state
+        let (index_state, path) = state();
+        index_state
             .initialize_clean_account("identity-test-1", "discord", "account-test-1")
             .unwrap();
         let observed = std::sync::atomic::AtomicBool::new(false);
-        state
+        index_state
             .with_registered_write(registration(), || {
                 let bytes = std::fs::read(&path).unwrap();
                 assert!(ipc::main_password::has_enc_magic(&bytes));
@@ -678,7 +755,7 @@ mod tests {
             .unwrap();
         assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(
-            state
+            index_state
                 .coverage("identity-test-1", "discord", "account-test-1")
                 .unwrap(),
             CoverageState::CleanPostIndex
@@ -736,6 +813,54 @@ mod tests {
             .is_ok());
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("bak"));
+    }
+
+    #[test]
+    fn manual_discriminator_is_authenticated_and_mismatch_fails_closed() {
+        let (index_state, path) = state();
+        index_state
+            .initialize_clean_account("identity-test-1", "discord", "account-test-1")
+            .unwrap();
+        index_state
+            .with_registered_write(manual_registration(), || Ok(()))
+            .unwrap();
+        let manifest = index_state
+            .freeze_complete_manifest("identity-test-1", "discord", "account-test-1")
+            .unwrap();
+        assert_eq!(
+            manifest.scopes[0].manual_peer_person_id.as_deref(),
+            Some("hub-person-peer-1")
+        );
+
+        let mut removed_discriminator = manifest.clone();
+        removed_discriminator.scopes[0].manual_peer_person_id = None;
+        assert!(verify_manifest(&removed_discriminator).is_err());
+
+        let mut mismatched_person = manifest.clone();
+        mismatched_person.scopes[0].manual_peer_person_id = Some("hub-person-other".to_owned());
+        assert!(verify_manifest(&mismatched_person).is_err());
+
+        let generic = registration();
+        assert!(validate_registration(&generic).is_ok());
+        assert!(indexed_scope(&generic)
+            .unwrap()
+            .manual_peer_person_id
+            .is_none());
+
+        let mut missing_discriminator = manual_registration();
+        missing_discriminator.manual_peer_person_id = None;
+        assert!(validate_registration(&missing_discriminator).is_err());
+        let (rejected_state, rejected_path) = state();
+        rejected_state
+            .initialize_clean_account("identity-test-1", "discord", "account-test-1")
+            .unwrap();
+        assert!(rejected_state
+            .with_registered_write(missing_discriminator, || Ok(()))
+            .is_err());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("bak"));
+        let _ = std::fs::remove_file(&rejected_path);
+        let _ = std::fs::remove_file(rejected_path.with_extension("bak"));
     }
 
     #[test]

@@ -9,11 +9,14 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use ipc::scope::{ScopeInput, ScopeKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::core_bridge::HubCoreState;
+use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
 use crate::service_scope_index::ServiceScopeRegistration;
 use crate::services::{service_kind_from_id, ServiceRegistryState};
@@ -21,6 +24,7 @@ use crate::services::{service_kind_from_id, ServiceRegistryState};
 const MAX_CONTEXT_ID_BYTES: usize = 160;
 const MAX_PARTICIPANTS: usize = 512;
 const MAX_TEXT_BYTES: usize = 1_000;
+const MAX_PROSE_COVER_BYTES: usize = 16 * 1024;
 const MAX_ATTACHMENT_B64_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_ENTRIES: usize = 4_096;
@@ -65,11 +69,22 @@ struct ActiveContext {
     lease: ContextLease,
     context: HubConversationContext,
     authority: ContextAuthority,
+    manual_peer: Option<ManualPeerContext>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ManualPeerContext {
+    service_id: String,
+    account_id: String,
+    person_id: String,
+    peer_osl_user_id: String,
+    scope: ScopeInput,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ContextAuthority {
     PeerMessaging,
+    ManualPeer,
     LocalLoopback,
 }
 
@@ -91,7 +106,12 @@ impl HubBrokerState {
         context: HubConversationContext,
         host_generation: u64,
     ) -> Result<ContextLease, String> {
-        self.activate_with_authority(context, host_generation, ContextAuthority::PeerMessaging)
+        self.activate_with_authority(
+            context,
+            host_generation,
+            ContextAuthority::PeerMessaging,
+            None,
+        )
     }
 
     fn activate_with_authority(
@@ -99,6 +119,7 @@ impl HubBrokerState {
         context: HubConversationContext,
         host_generation: u64,
         authority: ContextAuthority,
+        manual_peer: Option<ManualPeerContext>,
     ) -> Result<ContextLease, String> {
         validate_context(&context)?;
         if host_generation == 0 {
@@ -123,6 +144,7 @@ impl HubBrokerState {
             lease: lease.clone(),
             context,
             authority,
+            manual_peer,
         });
         Ok(lease)
     }
@@ -143,7 +165,59 @@ impl HubBrokerState {
             participant_osl_ids: vec![owner_osl_user_id.to_owned()],
             self_osl_id: owner_osl_user_id.to_owned(),
         };
-        self.activate_with_authority(context, active.generation, ContextAuthority::LocalLoopback)
+        self.activate_with_authority(
+            context,
+            active.generation,
+            ContextAuthority::LocalLoopback,
+            None,
+        )
+    }
+
+    fn activate_manual_peer(
+        &self,
+        owner_osl_user_id: &str,
+        active: &ActiveServiceHost,
+        binding: ManualPeerBinding,
+    ) -> Result<ContextLease, String> {
+        let channel_binding = manual_dm_channel_binding(
+            &active.service_id,
+            owner_osl_user_id,
+            &binding.peer_osl_user_id,
+        )?;
+        let scope = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: security::manual_peer_scope_id(
+                &active.service_id,
+                &active.account_id,
+                &binding.person_id,
+            )?,
+            server_id: None,
+            channel_id: Some(channel_binding.clone()),
+        };
+        let manual_peer = ManualPeerContext {
+            service_id: active.service_id.clone(),
+            account_id: active.account_id.clone(),
+            person_id: binding.person_id.clone(),
+            peer_osl_user_id: binding.peer_osl_user_id,
+            scope,
+        };
+        let context = HubConversationContext {
+            service_id: active.service_id.clone(),
+            account_id: active.account_id.clone(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: channel_binding,
+            space_id: None,
+            // The original core indexes peers by the local person id. Never
+            // accept this recipient set from the renderer.
+            participant_osl_ids: vec![binding.person_id],
+            self_osl_id: owner_osl_user_id.to_owned(),
+        };
+        self.activate_with_authority(
+            context,
+            active.generation,
+            ContextAuthority::ManualPeer,
+            Some(manual_peer),
+        )
     }
 
     pub fn validate_active_host(
@@ -228,7 +302,83 @@ impl HubBrokerState {
     }
 
     pub fn scope_for_context(&self, context_token: &str) -> Result<ScopeInput, String> {
-        scope_input(&self.context_for(context_token)?)
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .ok_or_else(|| "OSL broker has no active trusted context".to_owned())?;
+        if active.lease.context_token != context_token {
+            return Err("OSL broker context is stale or belongs to another account".to_owned());
+        }
+        active
+            .manual_peer
+            .as_ref()
+            .map(|manual| manual.scope.clone())
+            .map(Ok)
+            .unwrap_or_else(|| scope_input(&active.context))
+    }
+
+    fn manual_peer_for(&self, context_token: &str) -> Result<ManualPeerContext, String> {
+        self.require_authority(context_token, ContextAuthority::ManualPeer)?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .filter(|active| active.lease.context_token == context_token)
+            .ok_or_else(|| {
+                "OSL broker context is stale or belongs to another account".to_owned()
+            })?;
+        active
+            .manual_peer
+            .clone()
+            .ok_or_else(|| "OSL broker context is not a manual peer conversation".to_owned())
+    }
+
+    pub fn manual_permission_target(
+        &self,
+        context_token: &str,
+        requested_person_id: &str,
+        requested_broadened: bool,
+    ) -> Result<String, String> {
+        let manual = self.manual_peer_for(context_token)?;
+        if manual.person_id != requested_person_id || requested_broadened {
+            return Err(
+                "OSL manual peer permission target does not match the active friend".to_owned(),
+            );
+        }
+        Ok(manual.person_id)
+    }
+
+    pub fn manual_burn_target(
+        &self,
+        context_token: &str,
+    ) -> Result<Option<ManualPeerBurnTarget>, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .filter(|active| active.lease.context_token == context_token)
+            .ok_or_else(|| {
+                "OSL broker context is stale or belongs to another account".to_owned()
+            })?;
+        Ok(active
+            .manual_peer
+            .as_ref()
+            .map(|manual| ManualPeerBurnTarget {
+                service_id: manual.service_id.clone(),
+                account_id: manual.account_id.clone(),
+                person_id: manual.person_id.clone(),
+                scope: manual.scope.clone(),
+            }))
     }
 
     pub fn service_scope_registration(
@@ -236,7 +386,10 @@ impl HubBrokerState {
         context_token: &str,
     ) -> Result<ServiceScopeRegistration, String> {
         let context = self.context_for(context_token)?;
-        let scope = scope_input(&context)?;
+        let scope = self.scope_for_context(context_token)?;
+        let manual_peer_person_id = self
+            .manual_burn_target(context_token)?
+            .map(|manual| manual.person_id);
         let canonical_channel_ids = scope.channel_id.clone().into_iter().collect::<Vec<_>>();
         if canonical_channel_ids.is_empty() {
             return Err(
@@ -250,6 +403,7 @@ impl HubBrokerState {
             scope,
             canonical_channel_ids,
             local_context_binding_sha256: local_context_binding(&context),
+            manual_peer_person_id,
         })
     }
 }
@@ -275,12 +429,74 @@ pub fn activate_owned_local_loopback_context(
     broker.activate_local_loopback(owner_osl_user_id, &active, conversation_id)
 }
 
+#[derive(Debug, Clone)]
+pub struct ActivatedManualPeerContext {
+    pub lease: ContextLease,
+    pub person_id: String,
+    pub peer_osl_user_id: String,
+    pub scope: ScopeInput,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualPeerBurnTarget {
+    pub service_id: String,
+    pub account_id: String,
+    pub person_id: String,
+    pub scope: ScopeInput,
+}
+
+/// Activate one renderer-selected existing friend without accepting any
+/// participant, recipient, or conversation identifier from the renderer.
+pub fn activate_owned_manual_peer_context(
+    broker: &HubBrokerState,
+    registry: &ServiceRegistryState,
+    host: &crate::service_host::ServiceHostState,
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    binding: ManualPeerBinding,
+) -> Result<ActivatedManualPeerContext, String> {
+    let service_kind =
+        service_kind_from_id(service_id).ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(owner_osl_user_id, service_kind, account_id)?;
+    let active = host
+        .require_current_owned(owner_osl_user_id, service_id, account_id)
+        .map_err(|error| error.to_string())?;
+    let person_id = binding.person_id.clone();
+    let peer_osl_user_id = binding.peer_osl_user_id.clone();
+    let lease = broker.activate_manual_peer(owner_osl_user_id, &active, binding)?;
+    let scope = broker.scope_for_context(&lease.context_token)?;
+    Ok(ActivatedManualPeerContext {
+        lease,
+        person_id,
+        peer_osl_user_id,
+        scope,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedCoreMessage {
     pub messages: Vec<String>,
     pub control_messages: Vec<String>,
     pub session_id: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedPeerProseMessage {
+    pub cover_text: String,
+    pub expires_at: i64,
+    pub person_to_person_e2ee: bool,
+}
+
+/// Plaintext is intentionally not `Debug` so diagnostics cannot format it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedPeerProseMessage {
+    pub plaintext: String,
+    pub context_verified: bool,
+    pub person_to_person_e2ee: bool,
 }
 
 /// A single-device protected capsule. This is intentionally not described as
@@ -377,7 +593,7 @@ pub fn prepare_encrypted_text(
         ));
     }
     let context = broker.context_for(context_token)?;
-    let scope = scope_input(&context)?;
+    let scope = broker.scope_for_context(context_token)?;
     let encrypted = ipc::commands::cmd_osl_encrypt_message_v2(
         &core.osl,
         plaintext,
@@ -390,6 +606,273 @@ pub fn prepare_encrypted_text(
         control_messages: encrypted.control_messages,
         session_id: encrypted.session_id,
     })
+}
+
+pub fn prepare_peer_prose_text(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    context_token: &str,
+    plaintext: String,
+) -> Result<PreparedPeerProseMessage, String> {
+    let manual = broker.manual_peer_for(context_token)?;
+    let verified = security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    let encrypted = prepare_direct_manual_v3(core, &verified, plaintext)?;
+    if verify_manual_v3(core, &verified, &encrypted, ManualWireSender::SelfIdentity).is_err() {
+        return Err("OSL could not prepare a single manual peer message".to_owned());
+    }
+
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
+    let uploaded = ipc::prose_token::prose_token_send(&dir, &manual.scope, &encrypted, ttl_seconds)
+        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    if security::record_peer_prose_blob(
+        security_state,
+        manual.scope.clone(),
+        uploaded.blob_id.clone(),
+    )
+    .is_err()
+    {
+        if ipc::prose_token::prose_token_burn_id(&dir, &manual.scope, &uploaded.blob_id).is_err() {
+            // A transient primary-ledger failure must not become an
+            // untracked remote blob if the authenticated DELETE also fails.
+            // Retry the encrypted recoverable ledger before returning failure.
+            let _ = security::record_peer_prose_blob(
+                security_state,
+                manual.scope.clone(),
+                uploaded.blob_id.clone(),
+            );
+        }
+        return Err("OSL could not save the encrypted message safely".to_owned());
+    }
+    Ok(PreparedPeerProseMessage {
+        cover_text: uploaded.cover_text,
+        expires_at: uploaded.expires_at,
+        person_to_person_e2ee: true,
+    })
+}
+
+fn prepare_direct_manual_v3(
+    core: &HubCoreState,
+    peer: &ManualPeerBinding,
+    plaintext: String,
+) -> Result<String, String> {
+    if plaintext.is_empty() || plaintext.len() > MAX_TEXT_BYTES {
+        return Err("Message text must be between 1 and 1000 UTF-8 bytes".to_owned());
+    }
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    if constant_time_eq_32(identity.x25519_public.as_bytes(), &peer.peer_x25519_public) {
+        return Err("OSL manual peer key matches the active identity".to_owned());
+    }
+    let recipients = [
+        ipc::wire_v2::RecipientV3 {
+            x25519_pub: identity.x25519_public,
+            mlkem_pub: identity.mlkem_encapsulation_key(),
+        },
+        ipc::wire_v2::RecipientV3 {
+            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
+            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.peer_mlkem768_public),
+        },
+    ];
+    ipc::wire_v2::encrypt_v3(
+        &identity.x25519_secret,
+        &identity.x25519_public,
+        &recipients,
+        ipc::wire_v2::MSG_TYPE_CONTENT,
+        plaintext.as_bytes(),
+    )
+    .map_err(|_| "OSL could not prepare a single manual peer message".to_owned())
+}
+
+pub fn open_peer_prose_text(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context_token: &str,
+    sender_person_id: String,
+    cover_text: String,
+) -> Result<OpenedPeerProseMessage, String> {
+    if cover_text.is_empty() || cover_text.len() > MAX_PROSE_COVER_BYTES {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let manual = broker.manual_peer_for(context_token)?;
+    if sender_person_id != manual.person_id {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let verified = security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    if verified.peer_osl_user_id != manual.peer_osl_user_id {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let display = security::scope_security(manual.scope.clone())?;
+    if !display.decrypt_display_enabled {
+        return Err("Turn on decrypted text for this conversation before opening it".to_owned());
+    }
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let recovered = peer_prose_token_or_generic(ipc::prose_token::prose_token_recv(
+        &dir,
+        &manual.scope,
+        &cover_text,
+    ))?;
+    verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer)
+        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    let plaintext = decrypt_direct_manual_v3(core, &recovered.wire)
+        .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    Ok(OpenedPeerProseMessage {
+        plaintext,
+        context_verified: true,
+        person_to_person_e2ee: true,
+    })
+}
+
+fn decrypt_direct_manual_v3(core: &HubCoreState, wire: &str) -> Result<String, String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    let opened = ipc::wire_v2::decrypt_v3(
+        wire,
+        &identity.x25519_secret,
+        &identity.mlkem_decapsulation_key(),
+    )
+    .map_err(|_| "This encrypted message could not be opened".to_owned())?;
+    if opened.msg_type != ipc::wire_v2::MSG_TYPE_CONTENT {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    String::from_utf8(opened.plaintext)
+        .map_err(|_| "This encrypted message could not be opened".to_owned())
+}
+
+fn peer_prose_token_or_generic(
+    result: Result<
+        Option<ipc::prose_token::ProseTokenRecvOutput>,
+        ipc::prose_token::ProseTokenError,
+    >,
+) -> Result<ipc::prose_token::ProseTokenRecvOutput, String> {
+    result
+        .ok()
+        .flatten()
+        .ok_or_else(|| "This encrypted message could not be opened".to_owned())
+}
+
+struct InspectedV3Content {
+    sender_ik: [u8; 32],
+    recipient_hashes: Vec<[u8; 8]>,
+}
+
+fn inspect_v3_content_wire(wire: &str) -> Result<InspectedV3Content, ()> {
+    let body = wire.strip_prefix("DPC0::").ok_or(())?;
+    let raw = STANDARD.decode(body).map_err(|_| ())?;
+    if raw.len() < 35 || raw[0] != 3 || raw[1] != ipc::wire_v2::MSG_TYPE_CONTENT {
+        return Err(());
+    }
+    let recipient_count = raw[34] as usize;
+    if recipient_count == 0 {
+        return Err(());
+    }
+    let slots_bytes = recipient_count
+        .checked_mul(ipc::wire_v2::SLOT_V3_BYTES)
+        .ok_or(())?;
+    let slots_end = 35usize.checked_add(slots_bytes).ok_or(())?;
+    if raw.len() < slots_end + 12 + 16 {
+        return Err(());
+    }
+    let mut sender_ik = [0u8; 32];
+    sender_ik.copy_from_slice(&raw[2..34]);
+    let mut recipient_hashes = Vec::with_capacity(recipient_count);
+    for slot in 0..recipient_count {
+        let start = 35 + slot * ipc::wire_v2::SLOT_V3_BYTES;
+        let mut hash = [0u8; 8];
+        hash.copy_from_slice(&raw[start..start + 8]);
+        recipient_hashes.push(hash);
+    }
+    Ok(InspectedV3Content {
+        sender_ik,
+        recipient_hashes,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum ManualWireSender {
+    SelfIdentity,
+    Peer,
+}
+
+fn verify_manual_v3(
+    core: &HubCoreState,
+    peer: &ManualPeerBinding,
+    wire: &str,
+    sender: ManualWireSender,
+) -> Result<(), ()> {
+    let inspected = inspect_v3_content_wire(wire)?;
+    let self_public = {
+        let identity = core.osl.identity.lock().map_err(|_| ())?;
+        *identity.as_ref().ok_or(())?.x25519_public.as_bytes()
+    };
+    let expected_sender = match sender {
+        ManualWireSender::SelfIdentity => &self_public,
+        ManualWireSender::Peer => &peer.peer_x25519_public,
+    };
+    verify_inspected_manual_v3(
+        &inspected,
+        &self_public,
+        &peer.peer_x25519_public,
+        expected_sender,
+    )
+}
+
+fn verify_inspected_manual_v3(
+    inspected: &InspectedV3Content,
+    self_public: &[u8; 32],
+    peer_public: &[u8; 32],
+    expected_sender: &[u8; 32],
+) -> Result<(), ()> {
+    if inspected.recipient_hashes.len() != 2
+        || !constant_time_eq_32(&inspected.sender_ik, expected_sender)
+        || constant_time_eq_32(self_public, peer_public)
+    {
+        return Err(());
+    }
+    let self_hash =
+        ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*self_public));
+    let peer_hash =
+        ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*peer_public));
+    let first = inspected.recipient_hashes[0];
+    let second = inspected.recipient_hashes[1];
+    if !((first == self_hash && second == peer_hash) || (first == peer_hash && second == self_hash))
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn constant_time_eq_32(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut difference = 0u8;
+    for index in 0..32 {
+        difference |= left[index] ^ right[index];
+    }
+    difference == 0
 }
 
 /// Encrypt text to this identity's own key and persist a context-bound local
@@ -588,9 +1071,11 @@ pub fn decrypt_capsule(
     if capsule.len() > 256 * 1024 {
         return Err("The encrypted message is too large to open on this device".to_owned());
     }
-    let context = broker.context_for(context_token)?;
-    let scope = scope_input(&context)?;
-    let channel_id = canonical_component(&context, "conversation", &context.conversation_id);
+    let scope = broker.scope_for_context(context_token)?;
+    let channel_id = scope
+        .channel_id
+        .clone()
+        .ok_or_else(|| "OSL broker conversation binding is incomplete".to_owned())?;
     ipc::commands::cmd_osl_decrypt_message_v2(
         &core.osl,
         service_message_id,
@@ -1023,6 +1508,27 @@ fn canonical_component(context: &HubConversationContext, kind: &str, value: &str
     format!("hub-{}", short_hex(&hash.finalize()))
 }
 
+fn manual_dm_channel_binding(
+    service_id: &str,
+    self_osl_user_id: &str,
+    peer_osl_user_id: &str,
+) -> Result<String, String> {
+    service_manifest(service_id).map_err(|error| error.to_string())?;
+    validate_context_id(self_osl_user_id, "self OSL id")?;
+    validate_context_id(peer_osl_user_id, "peer OSL id")?;
+    if self_osl_user_id == peer_osl_user_id {
+        return Err("OSL manual peer cannot be the active identity".to_owned());
+    }
+    let mut identities = [self_osl_user_id, peer_osl_user_id];
+    identities.sort_unstable();
+    let mut hash = Sha256::new();
+    for part in ["OSL-MANUAL-DM-v1", service_id, identities[0], identities[1]] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    Ok(format!("manual-dm-{}", short_hex(&hash.finalize())))
+}
+
 fn context_token(
     generation: u64,
     host_generation: u64,
@@ -1199,6 +1705,299 @@ mod tests {
             scope_input(&second).unwrap().id
         );
         assert!(!scope_input(&first).unwrap().id.contains("dm-1"));
+    }
+
+    #[test]
+    fn manual_peer_scope_is_symmetric_across_different_local_account_ids() {
+        let first = HubBrokerState::default();
+        let second = HubBrokerState::default();
+        let first_lease = first
+            .activate_manual_peer(
+                "osl-alice",
+                &ActiveServiceHost {
+                    service_id: "discord".to_owned(),
+                    account_id: "client-one-profile".to_owned(),
+                    generation: 11,
+                    owner_namespace: "owner-one".to_owned(),
+                },
+                ManualPeerBinding {
+                    person_id: "hub-person-bob".to_owned(),
+                    peer_osl_user_id: "osl-bob".to_owned(),
+                    peer_x25519_public: [2; 32],
+                    peer_mlkem768_public: [2; 1184],
+                },
+            )
+            .unwrap();
+        let second_lease = second
+            .activate_manual_peer(
+                "osl-bob",
+                &ActiveServiceHost {
+                    service_id: "discord".to_owned(),
+                    account_id: "completely-different-profile".to_owned(),
+                    generation: 23,
+                    owner_namespace: "owner-two".to_owned(),
+                },
+                ManualPeerBinding {
+                    person_id: "hub-person-alice".to_owned(),
+                    peer_osl_user_id: "osl-alice".to_owned(),
+                    peer_x25519_public: [1; 32],
+                    peer_mlkem768_public: [1; 1184],
+                },
+            )
+            .unwrap();
+        let first_scope = first.scope_for_context(&first_lease.context_token).unwrap();
+        let second_scope = second
+            .scope_for_context(&second_lease.context_token)
+            .unwrap();
+        assert_eq!(first_scope.channel_id, second_scope.channel_id);
+        assert_ne!(first_scope.id, second_scope.id);
+        assert_eq!(
+            first_scope.id,
+            security::manual_peer_scope_id("discord", "client-one-profile", "hub-person-bob",)
+                .unwrap()
+        );
+        assert_eq!(
+            second_scope.id,
+            security::manual_peer_scope_id(
+                "discord",
+                "completely-different-profile",
+                "hub-person-alice",
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            first_scope.id,
+            security::manual_peer_scope_id("instagram", "client-one-profile", "hub-person-bob",)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn manual_peer_context_has_exactly_one_non_self_recipient_and_goes_stale() {
+        let broker = HubBrokerState::default();
+        let lease = broker
+            .activate_manual_peer(
+                "osl-alice",
+                &ActiveServiceHost {
+                    service_id: "discord".to_owned(),
+                    account_id: "profile-a".to_owned(),
+                    generation: 4,
+                    owner_namespace: "owner-a".to_owned(),
+                },
+                ManualPeerBinding {
+                    person_id: "hub-person-bob".to_owned(),
+                    peer_osl_user_id: "osl-bob".to_owned(),
+                    peer_x25519_public: [2; 32],
+                    peer_mlkem768_public: [2; 1184],
+                },
+            )
+            .unwrap();
+        let context = broker.context_for(&lease.context_token).unwrap();
+        assert_eq!(context.participant_osl_ids, ["hub-person-bob"]);
+        assert!(broker
+            .require_peer_messaging_context(&lease.context_token)
+            .is_err());
+        let core = HubCoreState::default();
+        assert!(prepare_encrypted_text(
+            &core,
+            &broker,
+            &lease.context_token,
+            "generic bypass".to_owned(),
+        )
+        .is_err());
+        assert!(decrypt_capsule(
+            &core,
+            &broker,
+            &lease.context_token,
+            "hub-person-bob".to_owned(),
+            None,
+            "DPC0::AAAA".to_owned(),
+        )
+        .is_err());
+        assert!(prepare_encrypted_attachment(
+            &core,
+            &broker,
+            &lease.context_token,
+            "AA==".to_owned(),
+            "file.png".to_owned(),
+        )
+        .is_err());
+        assert!(open_encrypted_attachment(
+            &core,
+            &broker,
+            &lease.context_token,
+            "hub-person-bob".to_owned(),
+            None,
+            "AA==".to_owned(),
+        )
+        .is_err());
+        assert_eq!(
+            broker
+                .manual_permission_target(&lease.context_token, "hub-person-bob", false)
+                .unwrap(),
+            "hub-person-bob"
+        );
+        assert!(broker
+            .manual_permission_target(&lease.context_token, "hub-person-charlie", false)
+            .is_err());
+        assert!(broker
+            .manual_permission_target(&lease.context_token, "hub-person-bob", true)
+            .is_err());
+        assert!(!context
+            .participant_osl_ids
+            .iter()
+            .any(|participant| participant == &context.self_osl_id));
+        broker
+            .activate_manual_peer(
+                "osl-alice",
+                &ActiveServiceHost {
+                    service_id: "discord".to_owned(),
+                    account_id: "profile-a".to_owned(),
+                    generation: 5,
+                    owner_namespace: "owner-a".to_owned(),
+                },
+                ManualPeerBinding {
+                    person_id: "hub-person-charlie".to_owned(),
+                    peer_osl_user_id: "osl-charlie".to_owned(),
+                    peer_x25519_public: [3; 32],
+                    peer_mlkem768_public: [3; 1184],
+                },
+            )
+            .unwrap();
+        assert!(broker.manual_peer_for(&lease.context_token).is_err());
+    }
+
+    #[test]
+    fn malformed_or_unknown_peer_prose_maps_to_one_generic_error() {
+        let absent = peer_prose_token_or_generic(Ok(None)).unwrap_err();
+        let malformed =
+            peer_prose_token_or_generic(Err(ipc::prose_token::ProseTokenError::NotDpc0Wire))
+                .unwrap_err();
+        assert_eq!(absent, "This encrypted message could not be opened");
+        assert_eq!(malformed, absent);
+    }
+
+    #[test]
+    fn v3_content_inspector_rejects_other_versions_controls_and_sender_mismatch() {
+        fn fake_wire(version: u8, message_type: u8, sender: [u8; 32]) -> String {
+            let mut raw = vec![0u8; 35 + 2 * ipc::wire_v2::SLOT_V3_BYTES + 12 + 16];
+            raw[0] = version;
+            raw[1] = message_type;
+            raw[2..34].copy_from_slice(&sender);
+            raw[34] = 2;
+            format!("DPC0::{}", STANDARD.encode(raw))
+        }
+
+        let selected_friend = [0x31; 32];
+        let third_party = [0x42; 32];
+        let inspected =
+            inspect_v3_content_wire(&fake_wire(3, ipc::wire_v2::MSG_TYPE_CONTENT, third_party))
+                .unwrap();
+        assert!(!constant_time_eq_32(&inspected.sender_ik, &selected_friend));
+        assert!(inspect_v3_content_wire(&fake_wire(
+            2,
+            ipc::wire_v2::MSG_TYPE_CONTENT,
+            selected_friend
+        ))
+        .is_err());
+        assert!(inspect_v3_content_wire(&fake_wire(3, 1, selected_friend)).is_err());
+        assert!(inspect_v3_content_wire("DPC0::not-base64").is_err());
+
+        let self_public = [0x21; 32];
+        let self_hash =
+            ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(self_public));
+        let friend_hash = ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(
+            selected_friend,
+        ));
+        let valid_receive = InspectedV3Content {
+            sender_ik: selected_friend,
+            recipient_hashes: vec![friend_hash, self_hash],
+        };
+        assert!(verify_inspected_manual_v3(
+            &valid_receive,
+            &self_public,
+            &selected_friend,
+            &selected_friend
+        )
+        .is_ok());
+        let wrong_recipient = InspectedV3Content {
+            sender_ik: selected_friend,
+            recipient_hashes: vec![self_hash, [0x99; 8]],
+        };
+        assert!(verify_inspected_manual_v3(
+            &wrong_recipient,
+            &self_public,
+            &selected_friend,
+            &selected_friend
+        )
+        .is_err());
+        assert!(verify_inspected_manual_v3(
+            &valid_receive,
+            &self_public,
+            &selected_friend,
+            &third_party
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn direct_manual_v3_has_exact_self_peer_recipients_and_peer_opens_it() {
+        let alice = keystore::generate_identity("osl-alice-direct".to_owned());
+        let bob = keystore::generate_identity("osl-bob-direct".to_owned());
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        let binding = ManualPeerBinding {
+            person_id: "hub-person-bob".to_owned(),
+            peer_osl_user_id: bob.user_id.clone(),
+            peer_x25519_public: *bob.x25519_public.as_bytes(),
+            peer_mlkem768_public: bob.mlkem_public_bytes,
+        };
+        let wire = prepare_direct_manual_v3(&core, &binding, "private hello".to_owned()).unwrap();
+        verify_manual_v3(&core, &binding, &wire, ManualWireSender::SelfIdentity).unwrap();
+        *core.osl.identity.lock().unwrap() = Some(bob.clone());
+        assert_eq!(
+            decrypt_direct_manual_v3(&core, &wire).unwrap(),
+            "private hello"
+        );
+
+        let alice_local_scope =
+            security::manual_peer_scope_id("discord", "alice-account", "hub-person-bob").unwrap();
+        let bob_local_scope =
+            security::manual_peer_scope_id("discord", "bob-account", "hub-person-alice").unwrap();
+        assert_ne!(alice_local_scope, bob_local_scope);
+        assert_eq!(
+            manual_dm_channel_binding("discord", &alice.user_id, &bob.user_id).unwrap(),
+            manual_dm_channel_binding("discord", &bob.user_id, &alice.user_id).unwrap()
+        );
+
+        let alice_binding = ManualPeerBinding {
+            person_id: "hub-person-alice".to_owned(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+        let reply =
+            prepare_direct_manual_v3(&core, &alice_binding, "private reply".to_owned()).unwrap();
+        verify_manual_v3(
+            &core,
+            &alice_binding,
+            &reply,
+            ManualWireSender::SelfIdentity,
+        )
+        .unwrap();
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        assert_eq!(
+            decrypt_direct_manual_v3(&core, &reply).unwrap(),
+            "private reply"
+        );
+        let inspected_reply = inspect_v3_content_wire(&reply).unwrap();
+        verify_inspected_manual_v3(
+            &inspected_reply,
+            alice.x25519_public.as_bytes(),
+            bob.x25519_public.as_bytes(),
+            bob.x25519_public.as_bytes(),
+        )
+        .unwrap();
     }
 
     #[test]

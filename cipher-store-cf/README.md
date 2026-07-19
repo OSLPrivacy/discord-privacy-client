@@ -11,14 +11,14 @@ keys remain part of the provider-side metadata exposure.
 | Method | Path                | Notes                                          |
 |--------|---------------------|------------------------------------------------|
 | GET    | `/v1/healthz`       | Liveness probe.                                |
-| POST   | `/v1/blob`          | Body: ciphertext bytes. Requires `X-OSL-TTL-Seconds` ∈ {86400, 259200, 604800} and a 32-hex-character `X-OSL-Fetch-Token`. Returns `{ id, expires_at }`. |
+| POST   | `/v1/blob`          | Body: ciphertext bytes. Requires `X-OSL-TTL-Seconds` ∈ {3600, 86400, 259200, 604800} and a 32-hex-character `X-OSL-Fetch-Token`. Returns `{ id, expires_at }`. |
 | GET    | `/v1/blob/:id_hex`  | Requires the upload's fetch token. Returns raw ciphertext bytes, or 404 if missing / expired. |
 | DELETE | `/v1/blob/:id_hex`  | Requires the upload's fetch token and burns the blob idempotently. |
 
 ## Limits
 
 - Max blob size: **64 KB**. Typical v=4 wire ciphertexts are ~1–2 KB.
-- TTL values: 24h, 72h, or 7d. No other values accepted.
+- TTL values: 1h, 24h, 72h, or 7d. No other values accepted.
 - Best-effort KV rate limits per IP per hour: 600 uploads / 3600 fetches / 600 deletes. Identifiers are HMAC-pseudonymized with a Worker secret. KV is eventually consistent; limiter failures deny anonymous writes while reads remain available.
 
 ## Data-minimisation posture

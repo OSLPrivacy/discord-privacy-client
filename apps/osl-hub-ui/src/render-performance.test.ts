@@ -39,6 +39,8 @@ describe("truthful bounded startup", () => {
     expect(recovery).toContain("Couldn’t open OSL");
     expect(recovery).toContain('id="boot-retry"');
     expect(recovery).toContain("void bootstrap()");
+    expect(recovery).not.toContain("qaDiagnostic");
+    expect(recovery).not.toContain("<small>");
     expect(bootstrap).toContain('withNativeDeadline(loadCoreIntegration(), "Start OSL", bootCoreDeadlineMs)');
     expect(bootstrap).toContain("if (!usableBootCore(coreIntegration))");
     expect(bootstrap).not.toContain("Opening local workspace");
@@ -46,14 +48,26 @@ describe("truthful bounded startup", () => {
 
   it("loads supporting app data behind bounded noncritical requests", () => {
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
+    const readinessGate = bootstrap.indexOf("if (!usableBootCore(coreIntegration))");
+    const preferencesStart = bootstrap.indexOf("loadOnboardingPreferences()");
+    const supportStart = bootstrap.indexOf("loadLinkedServices()");
+    expect(readinessGate).toBeGreaterThanOrEqual(0);
+    expect(preferencesStart).toBeGreaterThan(readinessGate);
+    expect(supportStart).toBeGreaterThan(readinessGate);
     expect(bootstrap).toContain('withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs)');
-    expect(bootstrap).toContain('withNativeDeadline(loadNativeApps(), "Load installed apps", bootSupportDeadlineMs)');
+    expect(bootstrap).toContain('savedAccountMode === "use"');
+    expect(bootstrap).toContain('withNativeDeadline(loadNativeApps(), "Load selected Windows apps", bootSupportDeadlineMs)');
+    expect(bootstrap).toContain('savedAccountsReady');
+    expect(bootstrap).toContain('withNativeDeadline(loadFirefoxStatus(), "Check selected Firefox profile", bootSupportDeadlineMs)');
+    expect(bootstrap).not.toContain("const mullvadRequest =");
+    expect(bootstrap).not.toContain("const browserImportsRequest =");
     expect(bootstrap).toContain('withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs)');
     expect(bootstrap).toContain("renderNow();");
-    expect(bootstrap).toContain('withNativeDeadline(loadBrowserImports(), "Load browsers", bootSupportDeadlineMs)');
-    expect(bootstrap).toContain('withNativeDeadline(loadMullvadStatus(), "Check Mullvad", bootSupportDeadlineMs)');
-    expect(bootstrap).toContain('withNativeDeadline(loadFirefoxStatus(), "Check Firefox", bootSupportDeadlineMs)');
-    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, mullvadRequest, browserImportsRequest, firefoxRequest, licenseRequest])");
-    expect(bootstrap).toContain("if (currentMullvadStatus) mullvadStatus = currentMullvadStatus");
+    expect(bootstrap).toContain('onboardingRoute === "browser") void refreshBrowserImportReadiness()');
+    expect(bootstrap).toContain('onboardingRoute === "mullvad") void refreshMullvadSetup()');
+    expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, firefoxRequest, licenseRequest])");
+    expect(bootstrap).toContain("if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog))");
+    expect(bootstrap).not.toContain("nativeAppsReady");
+    expect(bootstrap).not.toContain("currentMullvadStatus");
   });
 });

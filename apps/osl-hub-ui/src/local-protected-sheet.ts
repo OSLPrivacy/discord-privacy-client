@@ -19,8 +19,13 @@ export interface LocalProtectedSheetModel {
 }
 
 export const LOCAL_CHAT_LABEL_MAX_LENGTH = 48;
-export const LOCAL_TTL_OPTIONS = [0, 3_600, 86_400, 259_200, 604_800] as const;
+export const LOCAL_TTL_OPTIONS = [3_600, 86_400, 259_200, 604_800] as const;
+export type LocalTtlSeconds = (typeof LOCAL_TTL_OPTIONS)[number];
 const STORAGE_PREFIX = "osl-local-loopback-context-v1";
+
+export function isLocalTtlSeconds(value: number): value is LocalTtlSeconds {
+  return LOCAL_TTL_OPTIONS.includes(value as LocalTtlSeconds);
+}
 
 export function validLocalChatLabel(value: string): boolean {
   const trimmed = value.trim();
@@ -58,7 +63,7 @@ export function blankLocalProtectedModel(open = false): LocalProtectedSheetModel
     chatLabel: "",
     context: null,
     pane: "write",
-    ttlSeconds: 0,
+    ttlSeconds: LOCAL_TTL_OPTIONS[0],
     viewOnce: false,
     decryptDisplayEnabled: true,
     busy: false,
@@ -79,12 +84,11 @@ function escapeHtml(value: string): string {
   })[character] ?? character);
 }
 
-function ttlLabel(seconds: number): string {
+function ttlLabel(seconds: LocalTtlSeconds): string {
   if (seconds === 3_600) return "1 hour";
   if (seconds === 86_400) return "1 day";
   if (seconds === 259_200) return "3 days";
-  if (seconds === 604_800) return "7 days";
-  return "No timer";
+  return "7 days";
 }
 
 export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "clipboard"): string {

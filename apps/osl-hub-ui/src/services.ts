@@ -31,6 +31,7 @@ export interface NativeApp {
   id: NativeAppId;
   displayName: string;
   availability: "installed" | "installable" | "unavailable";
+  isolatedProfileAvailable: boolean;
   supportsOverlay: boolean;
 }
 
@@ -127,10 +128,10 @@ const firefoxServiceIds: readonly HomeAppId[] = [
   "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
 ];
 const nativePreviewApps: readonly NativeApp[] = [
-  { id: "discord", displayName: "Discord", availability: "installable", supportsOverlay: false },
-  { id: "telegram", displayName: "Telegram", availability: "installable", supportsOverlay: false },
-  { id: "signal", displayName: "Signal", availability: "installable", supportsOverlay: false },
-  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportsOverlay: false },
+  { id: "discord", displayName: "Discord", availability: "installable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "telegram", displayName: "Telegram", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "signal", displayName: "Signal", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -318,14 +319,15 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
   if (!Array.isArray(raw) || raw.length > nativeAppIds.length) throw new Error("invalid native app catalog");
   const seen = new Set<NativeAppId>();
   return raw.map((candidate) => {
-    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportsOverlay"])) throw new Error("invalid native app catalog");
+    if (!isExactRecord(candidate, ["id", "displayName", "availability", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
     const id = candidate.id as NativeAppId;
     if (!nativeAppIds.includes(id) || seen.has(id) || !isDisplayString(candidate.displayName, 80)
-      || !["installed", "installable", "unavailable"].includes(String(candidate.availability)) || typeof candidate.supportsOverlay !== "boolean") {
+      || !["installed", "installable", "unavailable"].includes(String(candidate.availability))
+      || typeof candidate.isolatedProfileAvailable !== "boolean" || typeof candidate.supportsOverlay !== "boolean") {
       throw new Error("invalid native app catalog");
     }
     seen.add(id);
-    return { id, displayName: candidate.displayName as string, availability: candidate.availability as NativeApp["availability"], supportsOverlay: candidate.supportsOverlay };
+    return { id, displayName: candidate.displayName as string, availability: candidate.availability as NativeApp["availability"], isolatedProfileAvailable: candidate.isolatedProfileAvailable, supportsOverlay: candidate.supportsOverlay };
   });
 }
 

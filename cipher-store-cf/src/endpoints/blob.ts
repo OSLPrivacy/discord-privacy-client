@@ -4,7 +4,7 @@
 ///   - Upload body: raw bytes (application/octet-stream).
 ///   - Upload size: 1..=65536 bytes (64 KB cap).
 ///   - TTL header `X-OSL-TTL-Seconds`: must be one of
-///       86400 (24h), 259200 (72h), 604800 (7d).
+///       3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d).
 ///   - Fetch-token header `X-OSL-Fetch-Token`: 32 hex chars (16 bytes).
 ///     Required on upload; required on fetch/delete when the stored
 ///     row has a non-NULL token (any new upload). Phase 6 capability
@@ -17,11 +17,15 @@ import { error, json, notFound } from "../lib/http.js";
 import { hexToId, idToHex, newBlobId } from "../lib/id.js";
 
 export const MAX_BLOB_BYTES = 64 * 1024;
-const ALLOWED_TTL_SECONDS = new Set<number>([
-  86400, // 24h
-  259200, // 72h
-  604800, // 7d
-]);
+function parseAllowedTtlSeconds(raw: string | null): number | null {
+  switch (raw) {
+    case "3600": return 3600; // 1h
+    case "86400": return 86400; // 24h
+    case "259200": return 259200; // 72h
+    case "604800": return 604800; // 7d
+    default: return null;
+  }
+}
 
 const FETCH_TOKEN_HEX_LEN = 32; // 16 bytes
 const FETCH_TOKEN_HEX_RE = /^[0-9a-f]{32}$/;
@@ -59,12 +63,12 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   }
 
   const ttlHeader = request.headers.get("x-osl-ttl-seconds");
-  const ttl = ttlHeader ? parseInt(ttlHeader, 10) : NaN;
-  if (!Number.isFinite(ttl) || !ALLOWED_TTL_SECONDS.has(ttl)) {
+  const ttl = parseAllowedTtlSeconds(ttlHeader);
+  if (ttl === null) {
     return error(
       400,
       "bad_ttl",
-      "X-OSL-TTL-Seconds must be 86400 (24h), 259200 (72h), or 604800 (7d)"
+      "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d)"
     );
   }
 

@@ -14,7 +14,7 @@
 ///     opaque token gates fetch/delete but does not authenticate a person.
 ///   * No variable app-level request logging. Fixed failure event names carry
 ///     no identifiers, URLs, sizes, row counts, or timing details.
-///   * Short blob TTLs (24h / 72h / 7d) enforced server-side.
+///   * Short blob TTLs (1h / 24h / 72h / 7d) enforced server-side.
 ///   * IP-based rate limit lives in KV with short TTL — never
 ///     persisted to D1.
 

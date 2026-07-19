@@ -15,9 +15,12 @@ import {
   detachNativeAppWindow,
   focusNativeAppWindow,
   hostNativeAppWindow,
+  installFirefox,
   installNativeApp,
   installMullvad,
+  launchFirefoxService,
   loadBrowserImports,
+  loadFirefoxStatus,
   loadMullvadStatus,
   openBrowserImport,
   openMullvad,
@@ -220,6 +223,34 @@ describe("browser-owned import IPC", () => {
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(beginBrowserAccountImport()).resolves.toEqual(response);
     expect(mocks.invoke).toHaveBeenCalledWith("begin_browser_account_import");
+  });
+
+  it("uses only the exact Firefox status, install, and allowlisted service commands", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({ availability: "installed" })
+      .mockResolvedValueOnce({ started: true, packageId: "Mozilla.Firefox" })
+      .mockResolvedValueOnce({ serviceId: "instagram", started: true });
+
+    await expect(loadFirefoxStatus()).resolves.toEqual({ availability: "installed" });
+    await expect(installFirefox()).resolves.toBeUndefined();
+    await expect(launchFirefoxService("instagram")).resolves.toBeUndefined();
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["get_firefox_status"],
+      ["install_firefox"],
+      ["launch_firefox_service", { serviceId: "instagram" }],
+    ]);
+  });
+
+  it("rejects widened Firefox receipts and unsupported service ids", async () => {
+    mocks.invoke.mockResolvedValueOnce({ availability: "installed", executable: "C:/Firefox/firefox.exe" });
+    await expect(loadFirefoxStatus()).rejects.toThrow("invalid Firefox status");
+    mocks.invoke.mockResolvedValueOnce({ started: true, packageId: "Other.Firefox" });
+    await expect(installFirefox()).rejects.toThrow("invalid Firefox install response");
+    mocks.invoke.mockResolvedValueOnce({ serviceId: "gmail", started: true, url: "https://example.invalid" });
+    await expect(launchFirefoxService("gmail")).rejects.toThrow("invalid Firefox launch response");
+    mocks.invoke.mockClear();
+    await expect(launchFirefoxService("discord")).rejects.toThrow("Firefox launch unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it("rejects a widened or malformed account-migration result", async () => {

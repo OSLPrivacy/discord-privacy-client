@@ -51,12 +51,15 @@ describe("linked-service contract", () => {
   });
 
   it("strictly validates native launcher state and action receipts", () => {
-    expect(parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportsOverlay: false }]))
-      .toEqual([{ id: "discord", displayName: "Discord", availability: "installed", supportsOverlay: false }]);
+    expect(parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", isolatedProfileAvailable: false, supportsOverlay: false }]))
+      .toEqual([{ id: "discord", displayName: "Discord", availability: "installed", isolatedProfileAvailable: false, supportsOverlay: false }]);
+    expect(parseNativeApps([{ id: "telegram", displayName: "Telegram", availability: "installed", isolatedProfileAvailable: true, supportsOverlay: false }]))
+      .toEqual([{ id: "telegram", displayName: "Telegram", availability: "installed", isolatedProfileAvailable: true, supportsOverlay: false }]);
     expect(parseNativeAppAction({ id: "discord", started: true }, false)).toEqual({ id: "discord", started: true });
     expect(parseNativeAppAction({ id: "signal", started: true, packageId: "OpenWhisperSystems.Signal" }, true).packageId)
       .toBe("OpenWhisperSystems.Signal");
-    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "web", supportsOverlay: true }])).toThrow();
+    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "web", isolatedProfileAvailable: false, supportsOverlay: true }])).toThrow();
+    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportsOverlay: false }])).toThrow();
     expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
   });
 

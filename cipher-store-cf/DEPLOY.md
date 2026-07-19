@@ -61,11 +61,10 @@ public subdomain you prefer — the client config will point here).
 ## §5 Smoke test
 
 ```sh
-# Upload (3 sec TTL would be ideal for a smoke test but the server
-# only accepts 24h/72h/7d -- so we upload then immediately delete).
+# Upload with the shortest accepted TTL, then immediately delete.
 TOKEN=$(openssl rand -hex 16)
 ID=$(curl -sX POST https://ciphers.oslprivacy.com/v1/blob \
-  -H "X-OSL-TTL-Seconds: 86400" \
+  -H "X-OSL-TTL-Seconds: 3600" \
   -H "X-OSL-Fetch-Token: $TOKEN" \
   -H "content-type: application/octet-stream" \
   --data-binary $'\x01\x02\x03\x04' \
