@@ -1340,6 +1340,30 @@ mod tests {
         assert!(!unit.contains("CRYPTO_WATCHER_SHARED_SECRET_FILE"));
     }
 
+    #[test]
+    fn packaged_wallet_ceremony_is_import_only_and_pinned() {
+        let importer = include_str!("../deploy/provision-watch-only-wallets.sh");
+        let retired = include_str!("../deploy/provision-new-merchant-wallets.sh");
+
+        assert!(importer.contains("BTC_DESCRIPTOR_IS_DEDICATED_UNUSED"));
+        assert!(importer.contains("GlobalKnownHostsFile=/dev/null"));
+        assert!(importer.contains("flock -n"));
+        assert!(importer.contains("--generate-from-view-key"));
+        assert!(importer
+            .contains("CRYPTO_WATCHER_REQUEST_SECRET_FILE=/etc/osl-crypto/watcher-request-secret"));
+        assert!(importer.contains(
+            "CRYPTO_WATCHER_SETTLEMENT_SIGNING_KEY_FILE=/etc/osl-crypto/watcher-settlement-key.pem"
+        ));
+        assert!(importer.contains("CRYPTO_WATCHER_DB_KEY_FILE=/etc/osl-crypto/watcher-db-key"));
+        assert!(!importer.contains("--generate-new-wallet"));
+        assert!(!importer.contains("createwallet"));
+        assert!(!importer.contains("query_key"));
+
+        assert!(retired.contains("exit 64"));
+        assert!(!retired.contains("--generate-new-wallet"));
+        assert!(!retired.contains("createwallet"));
+    }
+
     struct MockWallet {
         allocations: Mutex<Vec<(String, Option<u32>)>>,
         observation: Mutex<Observation>,

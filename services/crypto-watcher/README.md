@@ -30,21 +30,105 @@ send, transfer, transaction-signing, refund, or withdrawal code.
 - Keep the Bitcoin xprv/seed and Monero private spend key offline. They are not
   deployment secrets and must never be copied to this host.
 
-Example Bitcoin wallet initialization (replace the descriptor with an offline
-derived xpub descriptor and add the checksum returned by `getdescriptorinfo`):
+Generate and back up both spending wallets offline. The supported ceremony is
+`deploy/generate-offline-merchant-wallets.sh`. It refuses root, shell tracing,
+default IPv4/IPv6 routes, and every UP interface except loopback. It also
+refuses swap or a configured hibernation resume device, requires independently
+pinned hashes for the Bitcoin and Monero wallet binaries, and requires exact
+interactive confirmations for the recovery backups. Never run it on this
+workstation or on the VPS.
+
+On a dedicated, physically disconnected offline machine, first record the
+current Monero mainnet height and independently verify the binary hashes. Then
+run:
 
 ```sh
-bitcoin-cli createwallet "osl-watch" true true "" false true true
-bitcoin-cli -rpcwallet=osl-watch importdescriptors \
-  '[{"desc":"wpkh([fingerprint/path]xpub.../0/*)#checksum","timestamp":"now","active":true,"internal":false,"range":[0,99999],"next_index":0}]'
+BITCOIND_BIN=/offline/bin/bitcoind \
+BITCOIN_CLI_BIN=/offline/bin/bitcoin-cli \
+MONERO_WALLET_CLI_BIN=/offline/bin/monero-wallet-cli \
+BITCOIND_BIN_SHA256=... \
+BITCOIN_CLI_BIN_SHA256=... \
+MONERO_WALLET_CLI_BIN_SHA256=... \
+MONERO_RESTORE_HEIGHT=... \
+OFFLINE_BACKUP_DIR=/offline-backup/osl-merchant-wallets \
+WATCH_ONLY_TRANSFER_DIR=/removable-transfer/osl-watch-material \
+  ./deploy/generate-offline-merchant-wallets.sh
 ```
 
-Create the Monero wallet offline/from trusted software using the public address
-and private view key only, then run its RPC locally:
+The ceremony leaves encrypted Bitcoin and Monero wallets only in the offline
+backup directory. Passphrases and the temporary Monero recovery transcript are
+handled only in a verified `/dev/shm` tmpfs. It shows the seed only on the
+offline terminal, requires the operator to confirm the seed and passphrases
+were stored durably, and then removes the volatile transcript. The separate
+transfer directory contains only:
+
+- `btc-descriptor`: checksummed external ranged public descriptor;
+- `xmr-address`: public Monero primary address;
+- `xmr-view-key`: Monero private view key, which cannot spend funds;
+- `xmr-restore-height`; and
+- `SHA256SUMS` for transfer verification; and
+- `CEREMONY-COMPLETE`, an atomic receipt binding both backup and transfer
+  manifests.
+
+The Bitcoin wallet is encrypted at creation, not after keys have already been
+written. Before reporting success, the ceremony restores the encrypted Bitcoin
+backup under a temporary wallet name and reopens a temporary copy of the Monero
+backup, then proves that both reproduce the exact exported public/view
+material and mnemonic seed. The backup and transfer paths must be on distinct
+filesystems. No watch/view files are written until the operator confirms the
+second durable offline backup.
+
+Both output directories begin with `CEREMONY-INCOMPLETE`. Any interruption or
+failed check leaves that marker in place. Do not import, fund, merge, or reuse a
+partial ceremony. Quarantine it as sensitive material and rerun from the start
+with two new empty directories. Success atomically creates
+`CEREMONY-COMPLETE` beside the encrypted backups, containing hashes of both
+manifests, then removes the incomplete markers. Verify that receipt before
+moving the transfer media to an online administrative machine.
+
+Do not add a BTC xprv, Monero spend key, recovery seed, wallet file, password,
+or unrelated secret to the transfer media. Power down and securely store the
+offline machine after making and verifying a second physically separate backup.
+
+The watcher begins allocating the dedicated BTC descriptor at index zero and
+imports it with the current timestamp. Move only the ceremony's mode-0600
+watch/view files to the online administrative workstation, verify `SHA256SUMS`,
+and run:
 
 ```sh
-monero-wallet-rpc --wallet-file /var/lib/osl-crypto/osl-view-only \
-  --password-file /etc/osl-crypto/monero-password \
+BTC_PUBLIC_DESCRIPTOR_FILE=/secure-transfer/btc-descriptor \
+BTC_DESCRIPTOR_IS_DEDICATED_UNUSED=true \
+MONERO_PRIMARY_ADDRESS_FILE=/secure-transfer/xmr-address \
+MONERO_PRIVATE_VIEW_KEY_FILE=/secure-transfer/xmr-view-key \
+OFFLINE_CEREMONY_RECEIPT_FILE=/secure-transfer/CEREMONY-COMPLETE \
+OFFLINE_CEREMONY_SHA256SUMS_FILE=/secure-transfer/SHA256SUMS \
+MONERO_RESTORE_HEIGHT=... \
+OSL_PAYMENTS_VPS=osladmin@payments-host \
+OSL_PAYMENTS_HOST_KEY_SHA256=SHA256:... \
+  ./deploy/provision-watch-only-wallets.sh
+```
+
+The legacy `provision-new-merchant-wallets.sh` now refuses to run because
+creating spending keys on an internet-connected workstation violates this
+service's trust boundary. The import ceremony pins the exact SSH host key,
+holds a remote provisioning lock, validates both synchronized nodes before
+stopping services, and records hashes of the imported material. If BTC import
+succeeds but a later stage fails, a rerun may continue only when Bitcoin Core
+contains that exact descriptor. Newly created partial XMR files are removed and
+the prior service state is restored on failure.
+
+The online importer refuses a transfer directory that still contains
+`CEREMONY-INCOMPLETE`. Before reading any descriptor or view key, it requires
+mode-0600, non-symlink inputs with the exact ceremony filenames, validates the
+three-line completion-receipt schema, checks the manifest hash bound into that
+receipt, runs `sha256sum -c` over the exact four watch/view files, and confirms
+the bundled Monero restore height matches the requested value.
+
+After the import-only ceremony, the VPS runs its view-only RPC locally:
+
+```sh
+monero-wallet-rpc --wallet-file /var/lib/osl-crypto/wallets/osl-view-only \
+  --password-file /etc/osl-crypto/monero-wallet-password \
   --daemon-address 127.0.0.1:18081 --rpc-bind-ip 127.0.0.1 \
   --rpc-bind-port 18088 --disable-rpc-login
 ```
@@ -81,19 +165,19 @@ The systemd process reads these environment variables from a root-owned file:
 | `CRYPTO_WATCHER_DB` | `/var/lib/osl-crypto/invoices.sqlite3` |
 | `CRYPTO_BTC_CONFIRMATIONS` | `2` |
 | `CRYPTO_XMR_CONFIRMATIONS` | `10` |
+| `INVOICE_RETENTION_SECONDS` | `604800` |
+| `LISTEN_ADDR` | `127.0.0.1:8789` |
 
 The legacy `BTC_CONFIRMATIONS` and `XMR_CONFIRMATIONS` names remain accepted
 only during migration. Configure the `CRYPTO_*` names on both the Worker and
 watcher so settlement policy cannot silently drift.
-| `INVOICE_RETENTION_SECONDS` | `604800` |
-| `LISTEN_ADDR` | `127.0.0.1:8789` |
 
 The exact request-secret text must also be installed in the Worker as
 `CRYPTO_WATCHER_REQUEST_SECRET`. Only the Ed25519 **public** SPKI value belongs
 in the Worker as `CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY`. Never copy the private
 settlement key to Cloudflare and never reuse the encrypted-database key.
 
-Create the two local files as the service user and keep secret values out of
+Create the three local files as the service user and keep secret values out of
 the environment file:
 
 ```sh
@@ -113,6 +197,14 @@ openssl pkey -in /etc/osl-crypto/watcher-settlement-key.pem \
 Write each generated value directly into its corresponding file without
 printing it in logs or shell history. The watcher rejects symlinks, files over
 16 KiB, empty files, and any group/other permission bits.
+
+The provisioning script writes only the credential **paths** to `watcher.env`;
+it never copies their contents into that environment file. A successful message
+means Bitcoin Core accepted the public ranged descriptor and Monero Wallet RPC
+returned the pinned primary address. Retain and independently inspect
+`/etc/osl-crypto/monero-view-only-creation.receipt` before enabling public XMR
+checkout; address matching alone is not proof against a replaced wallet binary
+or a previously compromised host.
 
 Expose only `127.0.0.1:8789` through a dedicated Cloudflare Tunnel hostname.
 The public invoice endpoint still requires a timestamped, method-and-path-bound
