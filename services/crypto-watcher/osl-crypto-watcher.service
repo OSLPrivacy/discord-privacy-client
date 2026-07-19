@@ -32,7 +32,8 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-ReadWritePaths=/var/lib/osl-crypto
+ReadWritePaths=/var/lib/osl-crypto/watcher
+InaccessiblePaths=/var/lib/osl-crypto/wallets /var/lib/osl-crypto/watch-wallet-backups
 ReadOnlyPaths=/run/bitcoind/.cookie
 UMask=0077
 

@@ -97,8 +97,7 @@ export async function getCommerceSummary(db: D1Database): Promise<CommerceSummar
     ).first<{ count: number; cents: number }>(),
     db.prepare(
       `SELECT COUNT(*) AS count, COALESCE(SUM(amount_usd_cents), 0) AS cents
-         FROM crypto_invoices_v2
-        WHERE status = 'delivery_ready'`,
+         FROM crypto_commerce_events`,
     ).first<{ count: number; cents: number }>(),
     db.prepare(
       `SELECT COALESCE(SUM(amount_cents), 0) AS cents

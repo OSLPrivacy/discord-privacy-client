@@ -1,7 +1,10 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { handleCryptoQuote } from "../../src/endpoints/crypto-checkout.js";
-import { handleCryptoSettlement } from "../../src/endpoints/crypto-settlement.js";
+import {
+  handleCryptoSettlement,
+  sweepAnonymousCryptoInvoices,
+} from "../../src/endpoints/crypto-settlement.js";
 import {
   settlementCanonical,
   sha256Hex,
@@ -294,11 +297,16 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const counts = await env.DB.prepare(
       `SELECT
          (SELECT COUNT(*) FROM licenses WHERE subscription_id = ?) AS licenses,
-         (SELECT COUNT(*) FROM crypto_settlement_events_v2 WHERE invoice_id = ?) AS events`,
-    ).bind(`crypto_${invoice.invoice_id}`, invoice.invoice_id).first<{
-      licenses: number; events: number;
+         (SELECT COUNT(*) FROM crypto_settlement_events_v2 WHERE invoice_id = ?) AS events,
+         (SELECT COUNT(*) FROM crypto_commerce_events WHERE subscription_id = ?) AS metrics`,
+    ).bind(
+      `crypto_${invoice.invoice_id}`,
+      invoice.invoice_id,
+      `crypto_${invoice.invoice_id}`,
+    ).first<{
+      licenses: number; events: number; metrics: number;
     }>();
-    expect(counts).toEqual({ licenses: 1, events: 1 });
+    expect(counts).toEqual({ licenses: 1, events: 1, metrics: 1 });
   });
 
   it("delivers the encrypted activation once and destroys it after acknowledgement", async () => {
@@ -363,6 +371,57 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     ).bind(invoice.invoice_id).first<{ encrypted_license: string | null; acknowledged_at: number | null }>();
     expect(stored?.encrypted_license).toBeNull();
     expect(stored?.acknowledged_at).not.toBeNull();
+  });
+
+  it("keeps lifetime commerce totals after transient invoice tombstones are deleted", async () => {
+    const commerceBefore = await getCommerceSummary(env.DB);
+    const keys = await deliveryKeys();
+    const invoice = await quote("xmr", keys.publicKey);
+    const evidence = await settlementEvidence(invoice, "xmr", 10);
+    const settled = await SELF.fetch("http://test/v1/internal/crypto/settle", {
+      method: "POST",
+      headers: await settlementHeaders(evidence),
+      body: JSON.stringify(evidence),
+    });
+    expect(settled.status, await settled.clone().text()).toBe(200);
+
+    const commerceAfterSettlement = await getCommerceSummary(env.DB);
+    expect(commerceAfterSettlement.successful_payments).toBe(
+      commerceBefore.successful_payments + 1,
+    );
+    expect(commerceAfterSettlement.gross_cents).toBe(commerceBefore.gross_cents + 500);
+
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE crypto_invoices_v2 SET cleanup_at = 1 WHERE invoice_id = ?",
+      ).bind(invoice.invoice_id),
+      env.DB.prepare(
+        "UPDATE crypto_settlement_events_v2 SET processed_at = 1 WHERE invoice_id = ?",
+      ).bind(invoice.invoice_id),
+    ]);
+    await sweepAnonymousCryptoInvoices(env.DB);
+
+    const transientRows = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM crypto_invoices_v2 WHERE invoice_id = ?) AS invoices,
+         (SELECT COUNT(*) FROM crypto_settlement_events_v2 WHERE invoice_id = ?) AS settlements`,
+    ).bind(invoice.invoice_id, invoice.invoice_id).first<{
+      invoices: number;
+      settlements: number;
+    }>();
+    expect(transientRows).toEqual({ invoices: 0, settlements: 0 });
+
+    const durableMetric = await env.DB.prepare(
+      `SELECT payment_method, amount_usd_cents
+         FROM crypto_commerce_events WHERE subscription_id = ?`,
+    ).bind(`crypto_${invoice.invoice_id}`).first<{
+      payment_method: string;
+      amount_usd_cents: number;
+    }>();
+    expect(durableMetric).toEqual({ payment_method: "xmr", amount_usd_cents: 500 });
+
+    const commerceAfterTombstone = await getCommerceSummary(env.DB);
+    expect(commerceAfterTombstone).toEqual(commerceAfterSettlement);
   });
 
   it("freezes confirmations at quote time and rejects impossible observation times", async () => {

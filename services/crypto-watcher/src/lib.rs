@@ -1337,6 +1337,11 @@ mod tests {
             "CRYPTO_WATCHER_SETTLEMENT_SIGNING_KEY_FILE=/etc/osl-crypto/watcher-settlement-key.pem"
         ));
         assert!(unit.contains("CRYPTO_WATCHER_DB_KEY_FILE=/etc/osl-crypto/watcher-db-key"));
+        assert!(unit.contains("ReadWritePaths=/var/lib/osl-crypto/watcher"));
+        assert!(unit.contains(
+            "InaccessiblePaths=/var/lib/osl-crypto/wallets /var/lib/osl-crypto/watch-wallet-backups"
+        ));
+        assert!(!unit.contains("ReadWritePaths=/var/lib/osl-crypto\n"));
         assert!(!unit.contains("CRYPTO_WATCHER_SHARED_SECRET_FILE"));
     }
 

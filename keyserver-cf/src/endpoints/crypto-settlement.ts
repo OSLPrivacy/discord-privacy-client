@@ -182,6 +182,11 @@ export async function handleCryptoSettlement(
           (license_hash, subscription_id, issued_at) VALUES (?, ?, ?)`,
       ).bind(license.hash, subscriptionId, now),
       env.DB.prepare(
+        `INSERT OR IGNORE INTO crypto_commerce_events
+          (subscription_id, payment_method, amount_usd_cents, settled_at)
+         VALUES (?, ?, ?, ?)`,
+      ).bind(subscriptionId, invoice.payment_method, invoice.amount_usd_cents, now),
+      env.DB.prepare(
         `UPDATE crypto_invoices_v2 SET
           status = 'delivery_ready',
           encrypted_license = ?, resolved_at = ?, cleanup_at = ?

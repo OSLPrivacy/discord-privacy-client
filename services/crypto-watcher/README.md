@@ -168,7 +168,7 @@ The systemd process reads these environment variables from a root-owned file:
 | `CRYPTO_WATCHER_DB_KEY_FILE` | Preferred: path to a separate mode-0600 file containing `openssl rand -base64 32` |
 | `CRYPTO_WATCHER_REQUEST_SECRET` | Compatibility fallback only; do not put it in `watcher.env` |
 | `CRYPTO_WATCHER_DB_KEY_B64` | Compatibility fallback only; do not put it in `watcher.env` |
-| `CRYPTO_WATCHER_DB` | `/var/lib/osl-crypto/invoices.sqlite3` |
+| `CRYPTO_WATCHER_DB` | `/var/lib/osl-crypto/watcher/invoices.sqlite3` |
 | `CRYPTO_BTC_CONFIRMATIONS` | `2` |
 | `CRYPTO_XMR_CONFIRMATIONS` | `10` |
 | `INVOICE_RETENTION_SECONDS` | `604800` |

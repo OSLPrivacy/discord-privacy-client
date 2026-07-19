@@ -281,7 +281,8 @@ XMR_WALLET=/var/lib/osl-crypto/wallets/osl-view-only
 XMR_KEYS=/var/lib/osl-crypto/wallets/osl-view-only.keys
 XMR_RECEIPT=/etc/osl-crypto/monero-view-only-creation.receipt
 WATCHER_ENV=/etc/osl-crypto/watcher.env
-INVOICE_DB=/var/lib/osl-crypto/invoices.sqlite3
+INVOICE_DIR=/var/lib/osl-crypto/watcher
+INVOICE_DB=$INVOICE_DIR/invoices.sqlite3
 MUTATION_STARTED=false
 XMR_CREATED=false
 RECEIPT_CREATED=false
@@ -438,7 +439,7 @@ expected_env() {
     'CRYPTO_WATCHER_REQUEST_SECRET_FILE=/etc/osl-crypto/watcher-request-secret' \
     'CRYPTO_WATCHER_SETTLEMENT_SIGNING_KEY_FILE=/etc/osl-crypto/watcher-settlement-key.pem' \
     'CRYPTO_WATCHER_DB_KEY_FILE=/etc/osl-crypto/watcher-db-key' \
-    'CRYPTO_WATCHER_DB=/var/lib/osl-crypto/invoices.sqlite3' \
+    'CRYPTO_WATCHER_DB=/var/lib/osl-crypto/watcher/invoices.sqlite3' \
     'CRYPTO_BTC_CONFIRMATIONS=2' \
     'CRYPTO_XMR_CONFIRMATIONS=10' \
     'INVOICE_RETENTION_SECONDS=604800' \
@@ -460,6 +461,10 @@ MONERO_ENABLED_BEFORE=$(unit_enabled_state "$MONERO_UNIT")
 MUTATION_STARTED=true
 systemctl stop "$WATCHER_UNIT" "$MONERO_UNIT"
 systemctl mask --runtime "$WATCHER_UNIT" "$MONERO_UNIT" >/dev/null
+
+# Keep the public watcher database in its own writable directory. The watcher
+# has no filesystem access to Monero wallet material or its backups.
+install -d -o osl-crypto -g osl-crypto -m 0700 "$INVOICE_DIR"
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)-$$
 if [[ "$BTC_IMPORT_NEEDED" == true ]]; then
