@@ -1339,7 +1339,7 @@ mod tests {
         assert!(unit.contains("CRYPTO_WATCHER_DB_KEY_FILE=/etc/osl-crypto/watcher-db-key"));
         assert!(unit.contains("ReadWritePaths=/var/lib/osl-crypto/watcher"));
         assert!(unit.contains(
-            "InaccessiblePaths=/var/lib/osl-crypto/wallets /var/lib/osl-crypto/watch-wallet-backups"
+            "InaccessiblePaths=/var/lib/osl-crypto/wallets /var/lib/osl-crypto/watch-wallet-backups /etc/osl-crypto/monero-wallet-password /etc/osl-crypto/monero-view-only-creation.receipt"
         ));
         assert!(!unit.contains("ReadWritePaths=/var/lib/osl-crypto\n"));
         assert!(!unit.contains("CRYPTO_WATCHER_SHARED_SECRET_FILE"));
