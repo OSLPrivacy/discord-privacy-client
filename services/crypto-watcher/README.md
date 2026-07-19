@@ -38,6 +38,12 @@ pinned hashes for the Bitcoin and Monero wallet binaries, and requires exact
 interactive confirmations for the recovery backups. Never run it on this
 workstation or on the VPS.
 
+For a guided, offline-only launcher that verifies exact Bitcoin Core 31.1 and
+Monero 0.18.5.1 release archives, extracts only the required wallet binaries to
+`/dev/shm`, and prompts for separate backup media, see
+`deploy/offline-kit/README.md`. The kit is only a wrapper around this same
+ceremony and contains no download or deployment behavior.
+
 On a dedicated, physically disconnected offline machine, first record the
 current Monero mainnet height and independently verify the binary hashes. Then
 run:
