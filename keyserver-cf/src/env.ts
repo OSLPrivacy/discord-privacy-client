@@ -97,6 +97,10 @@ export interface Env {
   CRYPTO_XMR_CONFIRMATIONS?: string;
   /** Exact "true" enables new Monero invoices; absent/other values fail closed. */
   CRYPTO_XMR_ENABLED?: string;
+  /** Exact "true" separately enables Bitcoin donation invoices. */
+  CRYPTO_DONATION_BTC_ENABLED?: string;
+  /** Exact "true" separately enables Monero donation invoices. */
+  CRYPTO_DONATION_XMR_ENABLED?: string;
   /** Exact one-time lifetime Pro price. Production must be the literal "500". */
   CRYPTO_PRO_USD_CENTS?: string;
 }

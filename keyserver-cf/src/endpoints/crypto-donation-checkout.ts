@@ -55,7 +55,10 @@ export async function handleCryptoDonationQuote(
       `amount_usd_cents must be an integer from ${DONATION_MIN_USD_CENTS} through ${DONATION_MAX_USD_CENTS}`,
     );
   }
-  if (!cryptoAssetEnabled(env, body.payment_method)) {
+  const donationEnabled = body.payment_method === "btc"
+    ? env.CRYPTO_DONATION_BTC_ENABLED === "true"
+    : env.CRYPTO_DONATION_XMR_ENABLED === "true";
+  if (!cryptoAssetEnabled(env, body.payment_method) || !donationEnabled) {
     return serviceUnavailable(`${body.payment_method} payments are not enabled`);
   }
 

@@ -33,6 +33,8 @@ function checkoutEnv(overrides: Partial<Env> = {}): Env {
   for (const [key, value] of Object.entries({
     CRYPTO_BTC_ENABLED: "true",
     CRYPTO_XMR_ENABLED: "true",
+    CRYPTO_DONATION_BTC_ENABLED: "true",
+    CRYPTO_DONATION_XMR_ENABLED: "true",
     ...overrides,
   })) {
     Object.defineProperty(result, key, {
@@ -212,17 +214,22 @@ describe("anonymous node-verified crypto donations", () => {
   });
 
   it("fails closed for disabled assets, stale prices, and bad watcher responses", async () => {
-    const disabled = await handleCryptoDonationQuote(new Request(
-      "https://keyserver.test/v1/donations/crypto/quote",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.142" },
-        body: JSON.stringify({ payment_method: "btc", amount_usd_cents: 500 }),
-      },
-    ), checkoutEnv({ CRYPTO_BTC_ENABLED: "false" }), async () => {
-      throw new Error("disabled asset reached watcher");
-    });
-    expect(disabled.status).toBe(503);
+    for (const override of [
+      { CRYPTO_BTC_ENABLED: "false" },
+      { CRYPTO_DONATION_BTC_ENABLED: "false" },
+    ]) {
+      const disabled = await handleCryptoDonationQuote(new Request(
+        "https://keyserver.test/v1/donations/crypto/quote",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.142" },
+          body: JSON.stringify({ payment_method: "btc", amount_usd_cents: 500 }),
+        },
+      ), checkoutEnv(override), async () => {
+        throw new Error("disabled asset reached watcher");
+      });
+      expect(disabled.status).toBe(503);
+    }
 
     await seedPrice("btc", "60000", Math.floor(Date.now() / 1000) - 901);
     const stale = await handleCryptoDonationQuote(new Request(

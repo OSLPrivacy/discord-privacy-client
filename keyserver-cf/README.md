@@ -27,6 +27,8 @@ F1.4 cutover from
 | GET    | `/v1/selector-manifest`           | public                        |
 | POST   | `/v1/crypto/quote`                | public, rate-limited          |
 | POST   | `/v1/crypto/status`               | anonymous claim token         |
+| POST   | `/v1/donations/crypto/quote`      | public, separately gated      |
+| POST   | `/v1/donations/crypto/status`     | anonymous donation claim token |
 | POST   | `/v1/internal/crypto/settle`      | timestamped watcher Ed25519 signature |
 | POST   | `/v1/checkout-session`            | public, live Stripe only      |
 | POST   | `/v1/checkout/claim`              | browser claim capability      |
@@ -101,6 +103,11 @@ Stripe and crypto delivery are two-phase. The browser-bound claim may fetch
 the same ciphertext again after network loss, but no retry mints a new code.
 After successful local decryption and local persistence, the browser sends
 `acknowledge_delivery: true`; the Worker then tombstones its ciphertext.
+
+Crypto donations have independent fail-closed launch flags:
+`CRYPTO_DONATION_BTC_ENABLED` and `CRYPTO_DONATION_XMR_ENABLED`. Both the
+matching Pro asset flag and donation flag must be the exact string `true`, so
+paid Pro canaries never open the donation surface implicitly.
 
 Owner-approved comp batches require both operator secrets, contain 1 to 25
 expiring codes, and return plaintext only inside one hybrid-encrypted response
