@@ -85,7 +85,7 @@ export interface CommerceSummary {
 
 export async function getCommerceSummary(db: D1Database): Promise<CommerceSummary> {
   const now = Math.floor(Date.now() / 1000);
-  const [payments, losses, donations, subscriptions, downloads] = await Promise.all([
+  const [payments, cryptoPayments, losses, donations, subscriptions, downloads] = await Promise.all([
     db.prepare(
       `SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents), 0) AS cents
          FROM commerce_events
@@ -94,6 +94,11 @@ export async function getCommerceSummary(db: D1Database): Promise<CommerceSummar
           'checkout.session.completed',
           'checkout.session.async_payment_succeeded'
         )`,
+    ).first<{ count: number; cents: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(amount_usd_cents), 0) AS cents
+         FROM crypto_invoices_v2
+        WHERE status = 'delivery_ready'`,
     ).first<{ count: number; cents: number }>(),
     db.prepare(
       `SELECT COALESCE(SUM(amount_cents), 0) AS cents
@@ -114,8 +119,8 @@ export async function getCommerceSummary(db: D1Database): Promise<CommerceSummar
     ).bind(now - 24 * 60 * 60).first<{ count: number; recent: number }>(),
   ]);
   return {
-    successful_payments: payments?.count ?? 0,
-    gross_cents: payments?.cents ?? 0,
+    successful_payments: (payments?.count ?? 0) + (cryptoPayments?.count ?? 0),
+    gross_cents: (payments?.cents ?? 0) + (cryptoPayments?.cents ?? 0),
     refunds_and_disputes_cents: losses?.cents ?? 0,
     verified_donations: donations?.count ?? 0,
     donation_gross_cents: donations?.cents ?? 0,

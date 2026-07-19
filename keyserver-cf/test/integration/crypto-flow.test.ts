@@ -1,11 +1,13 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { handleCryptoQuote } from "../../src/endpoints/crypto-checkout.js";
+import { handleCryptoSettlement } from "../../src/endpoints/crypto-settlement.js";
 import {
   settlementCanonical,
   sha256Hex,
   type WatcherSettlementEvidence,
 } from "../../src/lib/crypto-watcher-auth.js";
+import { getCommerceSummary } from "../../src/lib/commerce-metrics.js";
 import type { Env } from "../../src/env.js";
 
 const TEST_ED25519_SEED = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
@@ -70,7 +72,7 @@ async function settlementEvidence(
     payment_method: paymentMethod,
     amount_atomic: invoice.amount_atomic,
     confirmations,
-    observed_at: invoice.expires_at - 1,
+    observed_at: Math.min(invoice.expires_at - 1, Math.floor(Date.now() / 1000)),
     payment_reference_commitment: referenceCommitment,
   };
 }
@@ -100,10 +102,21 @@ async function deliveryKeys(): Promise<{ publicKey: string; privateKey: CryptoKe
 }
 
 function checkoutEnv(overrides: Partial<Env> = {}): Env {
-  return Object.assign(Object.create(env), {
+  const result = Object.create(env) as Env;
+  const values: Partial<Env> = {
     CRYPTO_BTC_ENABLED: "true",
     CRYPTO_XMR_ENABLED: "true",
-  }, overrides) as Env;
+    ...overrides,
+  };
+  for (const [key, value] of Object.entries(values)) {
+    Object.defineProperty(result, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value,
+    });
+  }
+  return result;
 }
 
 async function quote(
@@ -288,6 +301,117 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     expect(counts).toEqual({ licenses: 1, events: 1 });
   });
 
+  it("delivers the encrypted activation once and destroys it after acknowledgement", async () => {
+    const commerceBefore = await getCommerceSummary(env.DB);
+    const keys = await deliveryKeys();
+    const invoice = await quote("btc", keys.publicKey);
+    const evidence = await settlementEvidence(invoice, "btc", 2);
+    const settled = await SELF.fetch("http://test/v1/internal/crypto/settle", {
+      method: "POST",
+      headers: await settlementHeaders(evidence),
+      body: JSON.stringify(evidence),
+    });
+    expect(settled.status).toBe(200);
+    const commerceAfter = await getCommerceSummary(env.DB);
+    expect(commerceAfter.successful_payments).toBe(commerceBefore.successful_payments + 1);
+    expect(commerceAfter.gross_cents).toBe(commerceBefore.gross_cents + 500);
+
+    const wrongClaim = await SELF.fetch("http://test/v1/crypto/status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.121" },
+      body: JSON.stringify({ invoice_id: invoice.invoice_id, claim_token: "x".repeat(43) }),
+    });
+    expect(wrongClaim.status).toBe(403);
+
+    const ready = await SELF.fetch("http://test/v1/crypto/status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.122" },
+      body: JSON.stringify({ invoice_id: invoice.invoice_id, claim_token: invoice.claim_token }),
+    });
+    expect(ready.status).toBe(200);
+    const delivery = await ready.json() as { status: string; encrypted_license: string };
+    expect(delivery.status).toBe("delivery_ready");
+    const encrypted = Uint8Array.from(atob(delivery.encrypted_license), (character) =>
+      character.charCodeAt(0));
+    const plaintext = new TextDecoder().decode(await crypto.subtle.decrypt(
+      { name: "RSA-OAEP" },
+      keys.privateKey,
+      encrypted,
+    ));
+    expect(plaintext).toMatch(/^OSL-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/);
+
+    const acknowledged = await SELF.fetch("http://test/v1/crypto/status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.123" },
+      body: JSON.stringify({
+        invoice_id: invoice.invoice_id,
+        claim_token: invoice.claim_token,
+        acknowledge_delivery: true,
+      }),
+    });
+    expect(acknowledged.status).toBe(200);
+    await expect(acknowledged.json()).resolves.toMatchObject({ status: "acknowledged" });
+
+    const gone = await SELF.fetch("http://test/v1/crypto/status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.124" },
+      body: JSON.stringify({ invoice_id: invoice.invoice_id, claim_token: invoice.claim_token }),
+    });
+    expect(gone.status).toBe(410);
+    const stored = await env.DB.prepare(
+      "SELECT encrypted_license, acknowledged_at FROM crypto_invoices_v2 WHERE invoice_id = ?",
+    ).bind(invoice.invoice_id).first<{ encrypted_license: string | null; acknowledged_at: number | null }>();
+    expect(stored?.encrypted_license).toBeNull();
+    expect(stored?.acknowledged_at).not.toBeNull();
+  });
+
+  it("freezes confirmations at quote time and rejects impossible observation times", async () => {
+    const keys = await deliveryKeys();
+    const invoice = await quote("btc", keys.publicKey);
+    const stored = await env.DB.prepare(
+      "SELECT created_at, confirmations_required, price_locked_at FROM crypto_invoices_v2 WHERE invoice_id = ?",
+    ).bind(invoice.invoice_id).first<{
+      created_at: number; confirmations_required: number; price_locked_at: number;
+    }>();
+    expect(stored?.confirmations_required).toBe(2);
+    expect(stored?.price_locked_at).toBeGreaterThan(0);
+
+    const beforeCreation = await settlementEvidence(invoice, "btc", 2);
+    beforeCreation.observed_at = (stored?.created_at ?? 1) - 1;
+    const early = await handleCryptoSettlement(new Request(
+      "http://test/v1/internal/crypto/settle",
+      {
+        method: "POST",
+        headers: await settlementHeaders(beforeCreation),
+        body: JSON.stringify(beforeCreation),
+      },
+    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }));
+    expect(early.status).toBe(409);
+
+    const future = await settlementEvidence(invoice, "btc", 2);
+    future.observed_at = Math.floor(Date.now() / 1000) + 301;
+    const futureResponse = await handleCryptoSettlement(new Request(
+      "http://test/v1/internal/crypto/settle",
+      {
+        method: "POST",
+        headers: await settlementHeaders(future),
+        body: JSON.stringify(future),
+      },
+    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }));
+    expect(futureResponse.status).toBe(409);
+
+    const valid = await settlementEvidence(invoice, "btc", 2);
+    const accepted = await handleCryptoSettlement(new Request(
+      "http://test/v1/internal/crypto/settle",
+      {
+        method: "POST",
+        headers: await settlementHeaders(valid),
+        body: JSON.stringify(valid),
+      },
+    ), checkoutEnv({ CRYPTO_BTC_CONFIRMATIONS: "999" }));
+    expect(accepted.status).toBe(200);
+  });
+
   it("rejects assigning one on-chain payment reference to a second invoice", async () => {
     const keys = await deliveryKeys();
     const firstInvoice = await quote("btc", keys.publicKey);
@@ -299,7 +423,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       headers: await settlementHeaders(firstEvidence),
       body: JSON.stringify(firstEvidence),
     });
-    expect(first.status).toBe(200);
+    expect(first.status, await first.clone().text()).toBe(200);
 
     const secondEvidence = await settlementEvidence(secondInvoice, "btc", 2, sharedReference);
     const second = await SELF.fetch("http://test/v1/internal/crypto/settle", {
@@ -331,7 +455,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
         headers: await settlementHeaders(evidence),
         body: JSON.stringify(evidence),
       });
-      expect(response.status).toBe(200);
+      expect(response.status, await response.clone().text()).toBe(200);
       const entitlement = await env.DB.prepare(
         `SELECT status, current_period_end, cancel_at_period_end
            FROM subscriptions WHERE subscription_id = ?`,

@@ -2,7 +2,10 @@ import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../../src/env.js";
 import { handleTelegramWebhook } from "../../src/endpoints/telegram.js";
-import { notifyTelegramForStripeEvent } from "../../src/lib/telegram.js";
+import {
+  notifyTelegramForCryptoSettlement,
+  notifyTelegramForStripeEvent,
+} from "../../src/lib/telegram.js";
 
 const WEBHOOK_SECRET = "telegram-webhook-secret";
 const BOT_TOKEN = "1234567890:abcdefghijklmnopqrstuvwxyzABCDE";
@@ -172,6 +175,24 @@ describe("Telegram operator webhook route", () => {
     expect(telegramBody.chat_id).toBe(viewerChatId);
   });
 
+  it("lets viewers read aggregate stats without exposing the live Stripe balance", async () => {
+    const viewerChatId = "8876204092";
+    const fetcher = outboundFetcher();
+    const response = await handleTelegramWebhook(
+      commandRequest("/stats", viewerChatId),
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: viewerChatId }),
+      fetcher,
+    );
+    expect(response.status).toBe(200);
+    const calls = vi.mocked(fetcher).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.[0])).toContain("api.telegram.org");
+    const body = JSON.parse(String(calls[0]?.[1]?.body)) as { text: string };
+    expect(body.text).toContain("OSL live commerce");
+    expect(body.text).not.toContain("Stripe available");
+    expect(body.text).not.toContain("Stripe pending");
+  });
+
   it("fails closed when the additive viewer allowlist is malformed", async () => {
     for (const malformed of ["", "8876204092,", "@coworker", "-1001234567890"]) {
       const fetcher = outboundFetcher();
@@ -239,6 +260,23 @@ describe("Telegram operator webhook route", () => {
       return body.chat_id;
     });
     expect(destinations).toEqual([PRIVATE_CHAT_ONE, PRIVATE_CHAT_TWO, ADMIN_CHAT_ID]);
+  });
+
+  it("sends crypto settlement alerts only to operators, never additive viewers", async () => {
+    const fetcher = outboundFetcher();
+    await notifyTelegramForCryptoSettlement(
+      configuredEnv({ TELEGRAM_VIEWER_CHAT_IDS: "8876204092" }),
+      "xmr",
+      500,
+      fetcher,
+    );
+    const destinations = vi.mocked(fetcher).mock.calls.map((call) => {
+      const body = JSON.parse(String(call[1]?.body)) as { chat_id: string; text: string };
+      expect(body.text).toContain("$5.00 via Monero");
+      return body.chat_id;
+    });
+    expect(destinations).toEqual([PRIVATE_CHAT_ONE, PRIVATE_CHAT_TWO, ADMIN_CHAT_ID]);
+    expect(destinations).not.toContain("8876204092");
   });
 
   it("keeps the legacy single-chat setting as a migration fallback", async () => {

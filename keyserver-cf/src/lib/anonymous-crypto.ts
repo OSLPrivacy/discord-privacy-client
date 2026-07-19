@@ -17,6 +17,8 @@ export interface AnonymousInvoiceRow {
   plan: CryptoPlan;
   amount_usd_cents: number;
   amount_atomic: string;
+  confirmations_required: number;
+  price_locked_at: number;
   delivery_public_key_spki: string;
   status: "pending" | "paid" | "expired" | "delivery_ready";
   settlement_event_id: string | null;
@@ -169,9 +171,10 @@ export async function insertAnonymousInvoice(
   await db.prepare(
     `INSERT INTO crypto_invoices_v2
       (invoice_id, claim_hash, payment_method, plan, amount_usd_cents,
-       amount_atomic, delivery_public_key_spki, status, settlement_event_id,
+       amount_atomic, confirmations_required, price_locked_at,
+       delivery_public_key_spki, status, settlement_event_id,
        encrypted_license, created_at, expires_at, resolved_at, cleanup_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL, ?)`,
   ).bind(
     row.invoice_id,
     await sha256Hex(row.claim_token),
@@ -179,6 +182,8 @@ export async function insertAnonymousInvoice(
     row.plan,
     row.amount_usd_cents,
     row.amount_atomic,
+    row.confirmations_required,
+    row.price_locked_at,
     row.delivery_public_key_spki,
     now,
     row.expires_at,

@@ -19,8 +19,8 @@ interface StripeBalance {
 }
 
 type TelegramChatConfiguration =
-  | { status: "configured"; chatIds: string[] }
-  | { status: "invalid" | "unconfigured"; chatIds: [] };
+  | { status: "configured"; operatorChatIds: string[]; viewerChatIds: string[]; chatIds: string[] }
+  | { status: "invalid" | "unconfigured"; operatorChatIds: []; viewerChatIds: []; chatIds: [] };
 
 const MAX_TELEGRAM_CHAT_ID = 9_007_199_254_740_991n;
 const MAX_OPERATOR_CHAT_IDS = 32;
@@ -46,22 +46,22 @@ function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
   if (env.TELEGRAM_OPERATOR_CHAT_IDS !== undefined) {
     const rawIds = env.TELEGRAM_OPERATOR_CHAT_IDS.split(",");
     if (rawIds.length === 0 || rawIds.length > MAX_OPERATOR_CHAT_IDS) {
-      return { status: "invalid", chatIds: [] };
+      return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
     }
     const uniqueIds = new Set<string>();
     for (const rawId of rawIds) {
       const normalized = normalizeTelegramChatId(rawId);
-      if (normalized === null) return { status: "invalid", chatIds: [] };
+      if (normalized === null) return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
       uniqueIds.add(normalized);
     }
     const chatIds = [...uniqueIds];
     if (chatIds.length === 0 || chatIds.filter((chatId) => chatId.startsWith("-")).length > 1) {
-      return { status: "invalid", chatIds: [] };
+      return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
     }
     operatorChatIds = chatIds;
   } else if (env.TELEGRAM_ADMIN_CHAT_ID !== undefined) {
     const legacyChatId = normalizeTelegramChatId(env.TELEGRAM_ADMIN_CHAT_ID);
-    if (legacyChatId === null) return { status: "invalid", chatIds: [] };
+    if (legacyChatId === null) return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
     operatorChatIds = [legacyChatId];
   } else {
     operatorChatIds = [];
@@ -71,21 +71,25 @@ function telegramChatConfiguration(env: Env): TelegramChatConfiguration {
   if (env.TELEGRAM_VIEWER_CHAT_IDS !== undefined) {
     const rawIds = env.TELEGRAM_VIEWER_CHAT_IDS.split(",");
     if (rawIds.length === 0 || rawIds.length > MAX_OPERATOR_CHAT_IDS) {
-      return { status: "invalid", chatIds: [] };
+      return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
     }
     for (const rawId of rawIds) {
       const normalized = normalizeTelegramChatId(rawId);
       if (normalized === null || normalized.startsWith("-")) {
-        return { status: "invalid", chatIds: [] };
+        return { status: "invalid", operatorChatIds: [], viewerChatIds: [], chatIds: [] };
       }
       viewerChatIds.push(normalized);
     }
   }
 
-  const chatIds = [...new Set([...operatorChatIds, ...viewerChatIds])];
+  operatorChatIds = [...new Set(operatorChatIds)];
+  const uniqueViewerChatIds = [...new Set(viewerChatIds)].filter(
+    (chatId) => !operatorChatIds.includes(chatId),
+  );
+  const chatIds = [...operatorChatIds, ...uniqueViewerChatIds];
   return chatIds.length === 0
-    ? { status: "unconfigured", chatIds: [] }
-    : { status: "configured", chatIds };
+    ? { status: "unconfigured", operatorChatIds: [], viewerChatIds: [], chatIds: [] }
+    : { status: "configured", operatorChatIds, viewerChatIds: uniqueViewerChatIds, chatIds };
 }
 
 export function telegramReportingIsConfigured(env: Env): boolean {
@@ -166,7 +170,7 @@ export async function sendTelegramOperatorMessage(
   if (configuration.status === "invalid") {
     throw new Error("Telegram operator chat allowlist is malformed");
   }
-  const results = await Promise.allSettled(configuration.chatIds.map(
+  const results = await Promise.allSettled(configuration.operatorChatIds.map(
     (chatId) => sendTelegramMessage(botToken, chatId, text, fetcher),
   ));
   if (results.some((result) => result.status === "rejected")) {
@@ -284,6 +288,21 @@ export async function notifyTelegramForDonation(
   );
 }
 
+export async function notifyTelegramForCryptoSettlement(
+  env: Env,
+  paymentMethod: "btc" | "xmr",
+  amountUsdCents: number,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  const asset = paymentMethod === "btc" ? "Bitcoin" : "Monero";
+  await sendTelegramOperatorMessage(
+    env,
+    `OSL crypto payment verified\n${money(amountUsdCents)} via ${asset}\nMode: LIVE`,
+    fetcher,
+  );
+}
+
 export async function handleTelegramCommand(
   request: Request,
   env: Env,
@@ -304,10 +323,11 @@ export async function handleTelegramCommand(
   const chatId = update.message?.chat?.id;
   const authorizedChatId = await authorizedTelegramChatId(chatId, configuration.chatIds);
   if (authorizedChatId === null) return "ignored";
+  const isOperator = configuration.operatorChatIds.includes(authorizedChatId);
   const command = update.message?.text?.trim().split(/\s+/, 1)[0]?.split("@", 1)[0] ?? "";
   let message: string;
   if (command === "/stats" || command === "/payments") {
-    message = await telegramStatsMessage(env, true, fetcher);
+    message = await telegramStatsMessage(env, isOperator, fetcher);
   } else if (command === "/downloads") {
     const summary = await getCommerceSummary(env.DB);
     message = `OSL download requests\nAll time: ${summary.download_starts}\nLast 24h: ${summary.download_starts_24h}`;

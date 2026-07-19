@@ -14,12 +14,17 @@ import {
 } from "../lib/crypto-watcher-auth.js";
 import { badRequest, conflict, json, serviceUnavailable, unauthorized } from "../lib/http.js";
 import { generateInvoiceLicenseKey } from "../lib/license.js";
+import { notifyTelegramForCryptoSettlement } from "../lib/telegram.js";
 
 const DELIVERY_RETENTION = 7 * 24 * 60 * 60;
 const CONFIRMATION_GRACE = 24 * 60 * 60;
 const PRO_LIFETIME_USD_CENTS = 500;
 
-export async function handleCryptoSettlement(request: Request, env: Env): Promise<Response> {
+export async function handleCryptoSettlement(
+  request: Request,
+  env: Env,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<Response> {
   if (!env.CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY || !env.LICENSE_HMAC_SECRET) {
     return serviceUnavailable("crypto settlement is not configured");
   }
@@ -86,9 +91,7 @@ export async function handleCryptoSettlement(request: Request, env: Env): Promis
   if (invoice.plan !== "pro" || invoice.amount_usd_cents !== PRO_LIFETIME_USD_CENTS) {
     return conflict("invoice does not represent lifetime Pro");
   }
-  const requiredConfirmations = body.payment_method === "btc"
-    ? Number.parseInt(env.CRYPTO_BTC_CONFIRMATIONS ?? "2", 10)
-    : Number.parseInt(env.CRYPTO_XMR_CONFIRMATIONS ?? "10", 10);
+  const requiredConfirmations = invoice.confirmations_required;
   if (!Number.isSafeInteger(requiredConfirmations) || requiredConfirmations < 1 ||
       body.confirmations < requiredConfirmations) {
     return conflict("payment does not have enough confirmations");
@@ -97,7 +100,13 @@ export async function handleCryptoSettlement(request: Request, env: Env): Promis
       BigInt(body.amount_atomic) < BigInt(invoice.amount_atomic)) {
     return conflict("payment does not satisfy this invoice");
   }
-  if (body.observed_at > invoice.expires_at) return conflict("payment was observed after expiry");
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (body.observed_at < invoice.created_at || body.observed_at > invoice.expires_at) {
+    return conflict("payment was observed outside the invoice window");
+  }
+  if (body.observed_at > nowSeconds + 300) {
+    return conflict("payment observation time is in the future");
+  }
 
   // Claim the on-chain payment reference before issuing anything. The signer
   // binds invoice_id into the callback, while this D1 uniqueness boundary also
@@ -186,6 +195,15 @@ export async function handleCryptoSettlement(request: Request, env: Env): Promis
       ),
     ]);
     const finalized = (results.at(-1)?.meta?.changes ?? 0) > 0;
+    if (finalized) {
+      const notification = notifyTelegramForCryptoSettlement(
+        env,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+      ).catch(() => console.error("[crypto-settlement] Telegram alert failed"));
+      if (ctx) ctx.waitUntil(notification);
+      else await notification;
+    }
     return json({ ok: true, duplicate: !finalized, status: "delivery_ready" });
   } catch {
     console.error("[crypto-settlement] issuance transaction failed");

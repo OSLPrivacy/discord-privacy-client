@@ -107,6 +107,8 @@ export async function handleCryptoQuote(
       plan: body.plan,
       amount_usd_cents: usdCents,
       amount_atomic: amountAtomic,
+      confirmations_required: confirmationsRequired,
+      price_locked_at: snapshot.fetched_at,
       delivery_public_key_spki: body.delivery_public_key_spki,
       expires_at: expiresAt,
       cleanup_at: expiresAt + INVOICE_RETENTION_SECONDS,
@@ -127,7 +129,7 @@ export async function handleCryptoQuote(
     amount_native: amountNative,
     amount_atomic: amountAtomic,
     amount_usd_cents: usdCents,
-    price_locked_at: snapshot.snapshot_date,
+    price_locked_at: snapshot.fetched_at,
     expires_at: expiresAt,
     confirmations_required: confirmationsRequired,
   });

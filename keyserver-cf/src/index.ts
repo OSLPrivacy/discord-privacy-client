@@ -282,7 +282,7 @@ async function dispatch(
       return withCors(await handleCryptoStatus(request, env), request);
     }
     if (path === "/v1/internal/crypto/settle") {
-      return await handleCryptoSettlement(request, env);
+      return await handleCryptoSettlement(request, env, ctx);
     }
     if (path === "/v1/internal/comp/batches") {
       return await handleCompBatchIssue(request, env);
