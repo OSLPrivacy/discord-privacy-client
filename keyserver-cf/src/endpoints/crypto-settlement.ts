@@ -4,7 +4,7 @@
 
 import type { Env } from "../env.js";
 import {
-  encryptLicenseForDelivery,
+  encryptCryptoActivationForDelivery,
   getAnonymousInvoice,
 } from "../lib/anonymous-crypto.js";
 import { getCryptoDonationInvoice } from "../lib/crypto-donations.js";
@@ -132,9 +132,16 @@ export async function handleCryptoSettlement(
   }
 
   const license = await generateInvoiceLicenseKey(env.LICENSE_HMAC_SECRET, invoice.invoice_id);
-  const encryptedLicense = await encryptLicenseForDelivery(
+  const encryptedLicense = await encryptCryptoActivationForDelivery(
     invoice.delivery_public_key_spki,
-    license.plaintext,
+    {
+      version: 1,
+      invoice_id: invoice.invoice_id,
+      payment_method: invoice.payment_method,
+      amount_usd_cents: PRO_LIFETIME_USD_CENTS,
+      plan: "pro",
+      activation_code: license.plaintext,
+    },
   );
   const now = Math.floor(Date.now() / 1000);
   const subscriptionId = `crypto_${invoice.invoice_id}`;

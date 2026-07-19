@@ -377,6 +377,50 @@ generates the required browser-held RSA delivery key, and submit only
 `plan: "pro"`, `payment_method`, and `delivery_public_key_spki`. The Worker
 rejects email, recurring plan names, and browser-provided price or amount.
 
+Create the private state in an encrypted local directory. The client never
+prints its claim token, RSA private key, or activation code:
+
+```sh
+install -d -m 0700 "$HOME/.local/share/osl-crypto-canaries"
+umask 077
+node scripts/crypto-live-canary.mjs create \
+  --asset btc \
+  --state "$HOME/.local/share/osl-crypto-canaries/btc-state.json"
+```
+
+After sending the exact displayed amount from an independent wallet, resume
+until settlement completes. The activation is written durably before the
+single-use server delivery is acknowledged and deleted:
+
+```sh
+node scripts/crypto-live-canary.mjs watch \
+  --state "$HOME/.local/share/osl-crypto-canaries/btc-state.json" \
+  --activation-out "$HOME/.local/share/osl-crypto-canaries/btc-activation.txt"
+```
+
+Repeat with distinct `xmr-state.json` / `xmr-activation.txt` files. Never reuse
+an invoice, address, state file, activation output, or on-chain payment.
+
+Pro settlement and donations are separate commerce paths. After each Pro
+canary passes, run one small donation canary for the same asset while its
+public donation control remains disabled:
+
+```sh
+node scripts/crypto-donation-live-canary.mjs create \
+  --asset btc \
+  --amount-cents 100 \
+  --state "$HOME/.local/share/osl-crypto-canaries/btc-donation-state.json"
+
+node scripts/crypto-donation-live-canary.mjs watch \
+  --state "$HOME/.local/share/osl-crypto-canaries/btc-donation-state.json" \
+  --receipt-out "$HOME/.local/share/osl-crypto-canaries/btc-donation-receipt.json"
+```
+
+Repeat with distinct XMR paths. Verify that a donation creates exactly one
+donation event and no subscription, license, activation delivery, or Pro
+entitlement. The private state binds the receipt path before polling; do not
+change that path during recovery.
+
 If you see `503 no recent price snapshot`, the five-minute price cron has not
 completed successfully. Diagnose the scheduled handler; for a bounded canary
 only, seed today's

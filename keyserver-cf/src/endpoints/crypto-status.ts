@@ -11,15 +11,23 @@ import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 export async function handleCryptoStatus(request: Request, env: Env): Promise<Response> {
   const limit = await checkRateLimit(env, callerIp(request), 10, "crypto-status-v2");
   if (!limit.ok) return tooMany(limit.retryAfter);
-  let body: {
+  let parsedBody: unknown;
+  try {
+    parsedBody = await request.json();
+  } catch {
+    return badRequest("malformed JSON body");
+  }
+  if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+    return badRequest("JSON body must be an object");
+  }
+  const body = parsedBody as {
     invoice_id?: unknown;
     claim_token?: unknown;
     acknowledge_delivery?: unknown;
   };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return badRequest("malformed JSON body");
+  const allowedKeys = new Set(["invoice_id", "claim_token", "acknowledge_delivery"]);
+  if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+    return badRequest("unexpected status field");
   }
   if (typeof body.invoice_id !== "string" || !/^cpay_[0-9a-f]{32}$/.test(body.invoice_id)) {
     return badRequest("invoice_id malformed");

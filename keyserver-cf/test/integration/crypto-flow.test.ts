@@ -225,6 +225,27 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     }
   });
 
+  it("rejects non-object and unexpected crypto status fields before lookup", async () => {
+    for (const body of ["null", "[]", '"status"']) {
+      const response = await SELF.fetch("http://test/v1/crypto/status", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.95" },
+        body,
+      });
+      expect(response.status).toBe(400);
+    }
+    const response = await SELF.fetch("http://test/v1/crypto/status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.96" },
+      body: JSON.stringify({
+        invoice_id: `cpay_${"f".repeat(32)}`,
+        claim_token: "x".repeat(43),
+        amount_atomic: "1",
+      }),
+    });
+    expect(response.status).toBe(400);
+  });
+
   it("fails closed per asset before contacting the watcher", async () => {
     const keys = await deliveryKeys();
     for (const [asset, override] of [
@@ -346,7 +367,25 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       keys.privateKey,
       encrypted,
     ));
-    expect(plaintext).toMatch(/^OSL-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/);
+    const envelope = JSON.parse(plaintext) as Record<string, unknown>;
+    expect(Object.keys(envelope).sort()).toEqual([
+      "activation_code",
+      "amount_usd_cents",
+      "invoice_id",
+      "payment_method",
+      "plan",
+      "version",
+    ]);
+    expect(envelope).toMatchObject({
+      version: 1,
+      invoice_id: invoice.invoice_id,
+      payment_method: "btc",
+      amount_usd_cents: 500,
+      plan: "pro",
+    });
+    expect(envelope.activation_code).toMatch(
+      /^OSL-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/,
+    );
 
     const acknowledged = await SELF.fetch("http://test/v1/crypto/status", {
       method: "POST",
@@ -371,6 +410,47 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     ).bind(invoice.invoice_id).first<{ encrypted_license: string | null; acknowledged_at: number | null }>();
     expect(stored?.encrypted_license).toBeNull();
     expect(stored?.acknowledged_at).not.toBeNull();
+  });
+
+  it("binds a valid encrypted activation to one exact invoice", async () => {
+    const keys = await deliveryKeys();
+    const paidInvoice = await quote("btc", keys.publicKey);
+    const otherInvoice = await quote("btc", keys.publicKey);
+    const evidence = await settlementEvidence(paidInvoice, "btc", 2);
+    const settled = await SELF.fetch("http://test/v1/internal/crypto/settle", {
+      method: "POST",
+      headers: await settlementHeaders(evidence),
+      body: JSON.stringify(evidence),
+    });
+    expect(settled.status).toBe(200);
+
+    const ready = await SELF.fetch("http://test/v1/crypto/status", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.125" },
+      body: JSON.stringify({
+        invoice_id: paidInvoice.invoice_id,
+        claim_token: paidInvoice.claim_token,
+      }),
+    });
+    expect(ready.status).toBe(200);
+    const delivery = await ready.json() as { encrypted_license: string };
+    const encrypted = Uint8Array.from(atob(delivery.encrypted_license), (character) =>
+      character.charCodeAt(0));
+    const envelope = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt(
+      { name: "RSA-OAEP" },
+      keys.privateKey,
+      encrypted,
+    ))) as Record<string, unknown>;
+
+    const matchesQuote = (invoiceId: string): boolean => (
+      envelope.version === 1 &&
+      envelope.invoice_id === invoiceId &&
+      envelope.payment_method === "btc" &&
+      envelope.amount_usd_cents === 500 &&
+      envelope.plan === "pro"
+    );
+    expect(matchesQuote(paidInvoice.invoice_id)).toBe(true);
+    expect(matchesQuote(otherInvoice.invoice_id)).toBe(false);
   });
 
   it("keeps lifetime commerce totals after transient invoice tombstones are deleted", async () => {

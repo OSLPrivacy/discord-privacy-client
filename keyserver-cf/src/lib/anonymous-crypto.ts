@@ -105,6 +105,37 @@ export async function encryptLicenseForDelivery(
   return btoa(binary);
 }
 
+export interface CryptoActivationDeliveryEnvelope {
+  version: 1;
+  invoice_id: string;
+  payment_method: CryptoAsset;
+  amount_usd_cents: 500;
+  plan: "pro";
+  activation_code: string;
+}
+
+/** Bind a crypto activation to the exact paid invoice before encrypting it.
+ *
+ * Stripe intentionally continues to use encryptLicenseForDelivery's legacy
+ * raw-code plaintext. Crypto clients validate every field in this envelope
+ * against their locally retained quote before accepting or acknowledging it.
+ */
+export async function encryptCryptoActivationForDelivery(
+  publicKeySpki: string,
+  envelope: CryptoActivationDeliveryEnvelope,
+): Promise<string> {
+  const key = await validateDeliveryPublicKey(publicKeySpki);
+  const plaintext = JSON.stringify(envelope);
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    key,
+    new TextEncoder().encode(plaintext),
+  );
+  let binary = "";
+  for (const byte of new Uint8Array(encrypted)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 export async function createWatcherInvoice(
   env: Env,
   body: {
