@@ -165,12 +165,18 @@ export interface DonationSummary {
 }
 
 export async function getDonationSummary(db: D1Database): Promise<DonationSummary> {
-  const row = await db.prepare(
-    `SELECT COUNT(*) AS count, COALESCE(SUM(amount_usd_cents), 0) AS cents
-       FROM donation_events WHERE provider = 'stripe'`,
-  ).first<{ count: number; cents: number }>();
+  const [stripe, crypto] = await Promise.all([
+    db.prepare(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(amount_usd_cents), 0) AS cents
+         FROM donation_events WHERE provider = 'stripe'`,
+    ).first<{ count: number; cents: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(amount_usd_cents), 0) AS cents
+         FROM crypto_donation_events`,
+    ).first<{ count: number; cents: number }>(),
+  ]);
   return {
-    verified: row?.count ?? 0,
-    grossUsdCents: row?.cents ?? 0,
+    verified: (stripe?.count ?? 0) + (crypto?.count ?? 0),
+    grossUsdCents: (stripe?.cents ?? 0) + (crypto?.cents ?? 0),
   };
 }

@@ -1108,9 +1108,14 @@ impl AppState {
             serde_json::from_slice(&bytes).map_err(|_| {
                 WatcherError::CallbackRetryable("settlement acknowledgement is malformed".into())
             })?;
-        if !acknowledgement.ok || acknowledgement.status != "delivery_ready" {
+        let expected_status = if invoice.invoice_id.starts_with("cdon_") {
+            "recorded"
+        } else {
+            "delivery_ready"
+        };
+        if !acknowledgement.ok || acknowledgement.status != expected_status {
             return Err(WatcherError::CallbackRetryable(
-                "settlement acknowledgement did not confirm delivery".into(),
+                "settlement acknowledgement did not confirm finalization".into(),
             ));
         }
         Ok(())
@@ -1206,16 +1211,16 @@ fn sign_settlement(
 
 fn validate_invoice_request(request: &CreateInvoiceRequest) -> Result<(), WatcherError> {
     let now = unix_now();
-    if !request
+    let suffix = request
         .invoice_id
         .strip_prefix("cpay_")
-        .is_some_and(|rest| {
-            rest.len() == 32
-                && rest
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        })
-        || !request.amount_atomic.bytes().all(|b| b.is_ascii_digit())
+        .or_else(|| request.invoice_id.strip_prefix("cdon_"));
+    if !suffix.is_some_and(|rest| {
+        rest.len() == 32
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    }) || !request.amount_atomic.bytes().all(|b| b.is_ascii_digit())
         || request.amount_atomic.starts_with('0')
         || request.amount_atomic.len() > 31
         || request.expires_at <= now
@@ -1427,6 +1432,23 @@ mod tests {
         Url::parse(&format!("http://{address}/settle")).unwrap()
     }
 
+    async fn callback_url_recorded() -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/settle",
+                    post(|| async { Json(json!({"ok":true,"status":"recorded"})) }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        Url::parse(&format!("http://{address}/settle")).unwrap()
+    }
+
     async fn callback_url_reject_first() -> Url {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1527,6 +1549,31 @@ mod tests {
             expires_at: unix_now() + 60 * 60 + 1,
         };
         assert!(validate_invoice_request(&request).is_err());
+    }
+    #[test]
+    fn invoice_ids_accept_only_pro_or_donation_namespaces() {
+        for prefix in ["cpay_", "cdon_"] {
+            let request = CreateInvoiceRequest {
+                invoice_id: format!("{prefix}{}", "a".repeat(32)),
+                payment_method: Asset::Btc,
+                amount_atomic: "1".into(),
+                expires_at: unix_now() + 60,
+            };
+            assert!(validate_invoice_request(&request).is_ok());
+        }
+        for invoice_id in [
+            format!("free_{}", "a".repeat(32)),
+            format!("cdon_{}", "A".repeat(32)),
+            format!("cdon_{}", "a".repeat(31)),
+        ] {
+            let request = CreateInvoiceRequest {
+                invoice_id,
+                payment_method: Asset::Btc,
+                amount_atomic: "1".into(),
+                expires_at: unix_now() + 60,
+            };
+            assert!(validate_invoice_request(&request).is_err());
+        }
     }
     #[test]
     fn wallet_rpc_endpoints_must_be_loopback() {
@@ -1676,6 +1723,67 @@ mod tests {
         assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 0);
     }
 
+    #[tokio::test]
+    async fn donation_requires_and_accepts_exact_recorded_acknowledgement() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(InvoiceStore::open(&dir.path().join("db"), &[3; 32]).unwrap());
+        let wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![("bc1qdonation".into(), None)]),
+            observation: Mutex::new(Observation {
+                payments: vec![payment('d', 100, 2)],
+            }),
+        });
+        let mut test_config = (*config()).clone();
+        test_config.callback_url = callback_url_recorded().await;
+        let state = AppState {
+            config: Arc::new(test_config),
+            wallets: wallet,
+            store: store.clone(),
+            client: reqwest::Client::new(),
+        };
+        let expires_at = unix_now() + 60;
+        let invoice_id = format!("cdon_{}", "4".repeat(32));
+        state
+            .create_invoice(CreateInvoiceRequest {
+                invoice_id: invoice_id.clone(),
+                payment_method: Asset::Btc,
+                amount_atomic: "100".into(),
+                expires_at,
+            })
+            .await
+            .unwrap();
+        assert_eq!(state.poll_once(expires_at - 1).await.unwrap(), 1);
+        assert!(store.pending(expires_at - 1).unwrap().is_empty());
+
+        let wrong_dir = tempdir().unwrap();
+        let wrong_store =
+            Arc::new(InvoiceStore::open(&wrong_dir.path().join("db"), &[4; 32]).unwrap());
+        let wrong_wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![("bc1qwrongack".into(), None)]),
+            observation: Mutex::new(Observation {
+                payments: vec![payment('e', 100, 2)],
+            }),
+        });
+        let mut wrong_config = (*config()).clone();
+        wrong_config.callback_url = callback_url().await;
+        let wrong_state = AppState {
+            config: Arc::new(wrong_config),
+            wallets: wrong_wallet,
+            store: wrong_store,
+            client: reqwest::Client::new(),
+        };
+        wrong_state
+            .create_invoice(CreateInvoiceRequest {
+                invoice_id: format!("cdon_{}", "5".repeat(32)),
+                payment_method: Asset::Btc,
+                amount_atomic: "100".into(),
+                expires_at,
+            })
+            .await
+            .unwrap();
+        assert_eq!(wrong_state.poll_once(expires_at - 1).await.unwrap(), 0);
+    }
+
     #[test]
     fn exact_output_identity_prevents_same_tx_same_amount_collisions() {
         let first = Observation {
@@ -1792,6 +1900,39 @@ mod tests {
         let second = state.create_invoice(request).await.unwrap();
         assert_eq!(first.address, "bc1qunique");
         assert_eq!(first.address, second.address);
+    }
+
+    #[tokio::test]
+    async fn donation_invoice_replay_is_idempotent_and_term_bound() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(InvoiceStore::open(&dir.path().join("db"), &[5; 32]).unwrap());
+        let wallet = Arc::new(MockWallet {
+            allocations: Mutex::new(vec![("bc1qdonationunique".into(), None)]),
+            observation: Mutex::new(Observation { payments: vec![] }),
+        });
+        let state = AppState {
+            config: config(),
+            wallets: wallet,
+            store,
+            client: reqwest::Client::new(),
+        };
+        let request = CreateInvoiceRequest {
+            invoice_id: format!("cdon_{}", "6".repeat(32)),
+            payment_method: Asset::Btc,
+            amount_atomic: "3333".into(),
+            expires_at: unix_now() + 60,
+        };
+        let first = state.create_invoice(request.clone()).await.unwrap();
+        let second = state.create_invoice(request.clone()).await.unwrap();
+        assert_eq!(first.invoice_id, second.invoice_id);
+        assert_eq!(first.address, second.address);
+
+        let mut changed = request;
+        changed.amount_atomic = "3334".into();
+        assert!(matches!(
+            state.create_invoice(changed).await.unwrap_err(),
+            WatcherError::Request(_)
+        ));
     }
 
     #[tokio::test]

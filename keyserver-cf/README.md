@@ -82,6 +82,21 @@ npm run db:migrate:prod
 wrangler deploy
 ```
 
+When rotating the Telegram reporting bot, do not paste the bot token into a
+shell command or set it as an environment variable. From `keyserver-cf`, run:
+
+```sh
+./scripts/configure-telegram-reporting-bot.sh
+```
+
+The helper reads the replacement token from a hidden terminal prompt,
+generates a new webhook secret, streams both values to Wrangler over standard
+input, and registers the exact production webhook. Its temporary curl config
+is mode 0600 and securely removed on exit. It validates only the bot identity
+and webhook URL, never prints either credential, does not deploy the Worker,
+and does not read or change `TELEGRAM_OPERATOR_CHAT_IDS` or
+`TELEGRAM_VIEWER_CHAT_IDS`.
+
 Stripe and crypto delivery are two-phase. The browser-bound claim may fetch
 the same ciphertext again after network loss, but no retry mints a new code.
 After successful local decryption and local persistence, the browser sends

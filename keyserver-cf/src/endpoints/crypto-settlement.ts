@@ -7,6 +7,7 @@ import {
   encryptLicenseForDelivery,
   getAnonymousInvoice,
 } from "../lib/anonymous-crypto.js";
+import { getCryptoDonationInvoice } from "../lib/crypto-donations.js";
 import {
   sha256Hex,
   type WatcherSettlementEvidence,
@@ -14,7 +15,11 @@ import {
 } from "../lib/crypto-watcher-auth.js";
 import { badRequest, conflict, json, serviceUnavailable, unauthorized } from "../lib/http.js";
 import { generateInvoiceLicenseKey } from "../lib/license.js";
-import { notifyTelegramForCryptoSettlement } from "../lib/telegram.js";
+import { isDonationAmount } from "../lib/donations.js";
+import {
+  notifyTelegramForCryptoDonation,
+  notifyTelegramForCryptoSettlement,
+} from "../lib/telegram.js";
 
 const DELIVERY_RETENTION = 7 * 24 * 60 * 60;
 const CONFIRMATION_GRACE = 24 * 60 * 60;
@@ -25,7 +30,7 @@ export async function handleCryptoSettlement(
   env: Env,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Response> {
-  if (!env.CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY || !env.LICENSE_HMAC_SECRET) {
+  if (!env.CRYPTO_WATCHER_SETTLEMENT_PUBLIC_KEY) {
     return serviceUnavailable("crypto settlement is not configured");
   }
   const raw = await request.text();
@@ -46,7 +51,7 @@ export async function handleCryptoSettlement(
   if (typeof body.event_id !== "string" || !/^evt_[0-9a-f]{32,64}$/.test(body.event_id)) {
     return badRequest("event_id malformed");
   }
-  if (typeof body.invoice_id !== "string" || !/^cpay_[0-9a-f]{32}$/.test(body.invoice_id)) {
+  if (typeof body.invoice_id !== "string" || !/^(?:cpay|cdon)_[0-9a-f]{32}$/.test(body.invoice_id)) {
     return badRequest("invoice_id malformed");
   }
   if ((body.payment_method !== "btc" && body.payment_method !== "xmr") ||
@@ -74,6 +79,14 @@ export async function handleCryptoSettlement(
   )}`;
   if (evidence.event_id !== expectedEventId) {
     return badRequest("event_id does not match payment proof");
+  }
+
+  if (body.invoice_id.startsWith("cdon_")) {
+    return await settleCryptoDonation(body as WatcherSettlementEvidence, env, ctx);
+  }
+
+  if (!env.LICENSE_HMAC_SECRET) {
+    return serviceUnavailable("crypto entitlement settlement is not configured");
   }
 
   const invoice = await getAnonymousInvoice(env.DB, body.invoice_id);
@@ -112,29 +125,8 @@ export async function handleCryptoSettlement(
   // binds invoice_id into the callback, while this D1 uniqueness boundary also
   // prevents a watcher retry or attribution bug from applying one payment to a
   // second invoice. A retry for the same invoice/event remains idempotent.
-  const referenceClaim = await env.DB.prepare(
-    `INSERT OR IGNORE INTO crypto_payment_references_v2 (
-       payment_method, payment_reference_commitment, invoice_id, event_id, claimed_at
-     ) VALUES (?, ?, ?, ?, ?)`,
-  ).bind(
-    body.payment_method,
-    body.payment_reference_commitment,
-    invoice.invoice_id,
-    body.event_id,
-    Math.floor(Date.now() / 1000),
-  ).run();
-  if ((referenceClaim.meta?.changes ?? 0) === 0) {
-    const existing = await env.DB.prepare(
-      `SELECT invoice_id, event_id FROM crypto_payment_references_v2
-        WHERE payment_method = ? AND payment_reference_commitment = ?`,
-    ).bind(
-      body.payment_method,
-      body.payment_reference_commitment,
-    ).first<{ invoice_id: string; event_id: string }>();
-    if (existing?.invoice_id !== invoice.invoice_id || existing.event_id !== body.event_id) {
-      return conflict("payment reference is already assigned to another invoice");
-    }
-  }
+  const referenceConflict = await claimPaymentReference(env.DB, evidence);
+  if (referenceConflict) return referenceConflict;
   if (invoice.status === "delivery_ready") {
     return json({ ok: true, duplicate: true, status: "delivery_ready" });
   }
@@ -216,6 +208,152 @@ export async function handleCryptoSettlement(
   }
 }
 
+async function settleCryptoDonation(
+  evidence: WatcherSettlementEvidence,
+  env: Env,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<Response> {
+  const invoice = await getCryptoDonationInvoice(env.DB, evidence.invoice_id);
+  if (!invoice) return badRequest("unknown invoice");
+  if (invoice.status !== "pending" && invoice.status !== "paid" && invoice.status !== "recorded") {
+    return conflict(`invoice is ${invoice.status}`);
+  }
+  if (invoice.status === "paid" && invoice.settlement_event_id !== evidence.event_id) {
+    return conflict("invoice is already processing a different settlement");
+  }
+  if (!isDonationAmount(invoice.amount_usd_cents)) {
+    return conflict("invoice does not represent a bounded donation");
+  }
+  if (
+    !Number.isSafeInteger(invoice.confirmations_required) ||
+    invoice.confirmations_required < 1 ||
+    evidence.confirmations < invoice.confirmations_required
+  ) {
+    return conflict("payment does not have enough confirmations");
+  }
+  if (
+    invoice.payment_method !== evidence.payment_method ||
+    BigInt(evidence.amount_atomic) < BigInt(invoice.amount_atomic)
+  ) {
+    return conflict("payment does not satisfy this invoice");
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (evidence.observed_at < invoice.created_at || evidence.observed_at > invoice.expires_at) {
+    return conflict("payment was observed outside the invoice window");
+  }
+  if (evidence.observed_at > nowSeconds + 300) {
+    return conflict("payment observation time is in the future");
+  }
+
+  const referenceConflict = await claimPaymentReference(env.DB, evidence);
+  if (referenceConflict) return referenceConflict;
+  if (invoice.status === "recorded") {
+    return json({ ok: true, duplicate: true, status: "recorded" });
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const claimed = await env.DB.prepare(
+      `UPDATE crypto_donation_invoices
+          SET status = 'paid', settlement_event_id = ?
+        WHERE invoice_id = ? AND status = 'pending'`,
+    ).bind(evidence.event_id, invoice.invoice_id).run();
+    if ((claimed.meta?.changes ?? 0) === 0) {
+      const current = await getCryptoDonationInvoice(env.DB, invoice.invoice_id);
+      if (current?.status === "recorded") {
+        return json({ ok: true, duplicate: true, status: "recorded" });
+      }
+      if (current?.status !== "paid" || current.settlement_event_id !== evidence.event_id) {
+        return conflict(`invoice is ${current?.status ?? "missing"}`);
+      }
+    }
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO crypto_settlement_events_v2
+          (event_id, invoice_id, processed_at) VALUES (?, ?, ?)`,
+      ).bind(evidence.event_id, invoice.invoice_id, now),
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO crypto_donation_events
+          (donation_id, payment_method, amount_usd_cents, settled_at)
+         VALUES (?, ?, ?, ?)`,
+      ).bind(
+        `crypto_${invoice.invoice_id}`,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+        now,
+      ),
+      env.DB.prepare(
+        `UPDATE crypto_donation_invoices SET
+           status = 'recorded', resolved_at = ?, cleanup_at = ?
+         WHERE invoice_id = ? AND status = 'paid' AND settlement_event_id = ?
+           AND EXISTS (
+             SELECT 1 FROM crypto_donation_events
+              WHERE donation_id = ? AND payment_method = ? AND amount_usd_cents = ?
+           )`,
+      ).bind(
+        now,
+        now + DELIVERY_RETENTION,
+        invoice.invoice_id,
+        evidence.event_id,
+        `crypto_${invoice.invoice_id}`,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+      ),
+    ]);
+    const finalized = (results.at(-1)?.meta?.changes ?? 0) > 0;
+    if (finalized) {
+      const notification = notifyTelegramForCryptoDonation(
+        env,
+        invoice.payment_method,
+        invoice.amount_usd_cents,
+      ).catch(() => console.error("[crypto-donation] Telegram alert failed"));
+      if (ctx) ctx.waitUntil(notification);
+      else await notification;
+    } else {
+      const current = await getCryptoDonationInvoice(env.DB, invoice.invoice_id);
+      if (current?.status !== "recorded") {
+        console.error("[crypto-donation] durable donation event conflict");
+        return serviceUnavailable("donation recording failed");
+      }
+    }
+    return json({ ok: true, duplicate: !finalized, status: "recorded" });
+  } catch {
+    console.error("[crypto-donation] recording transaction failed");
+    return serviceUnavailable("donation recording failed");
+  }
+}
+
+async function claimPaymentReference(
+  db: D1Database,
+  evidence: WatcherSettlementEvidence,
+): Promise<Response | null> {
+  // This table deliberately has no invoice-table foreign key or prefix check:
+  // it is the global boundary shared by cpay_ entitlements and cdon_ donations.
+  const referenceClaim = await db.prepare(
+    `INSERT OR IGNORE INTO crypto_payment_references_v2 (
+       payment_method, payment_reference_commitment, invoice_id, event_id, claimed_at
+     ) VALUES (?, ?, ?, ?, ?)`,
+  ).bind(
+    evidence.payment_method,
+    evidence.payment_reference_commitment,
+    evidence.invoice_id,
+    evidence.event_id,
+    Math.floor(Date.now() / 1000),
+  ).run();
+  if ((referenceClaim.meta?.changes ?? 0) > 0) return null;
+  const existing = await db.prepare(
+    `SELECT invoice_id, event_id FROM crypto_payment_references_v2
+      WHERE payment_method = ? AND payment_reference_commitment = ?`,
+  ).bind(
+    evidence.payment_method,
+    evidence.payment_reference_commitment,
+  ).first<{ invoice_id: string; event_id: string }>();
+  if (existing?.invoice_id !== evidence.invoice_id || existing.event_id !== evidence.event_id) {
+    return conflict("payment reference is already assigned to another invoice");
+  }
+  return null;
+}
+
 export async function sweepAnonymousCryptoInvoices(db: D1Database): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   const expired = await db.prepare(
@@ -224,8 +362,18 @@ export async function sweepAnonymousCryptoInvoices(db: D1Database): Promise<numb
   const deleted = await db.prepare(
     "DELETE FROM crypto_invoices_v2 WHERE cleanup_at < ?",
   ).bind(now).run();
+  const expiredDonations = await db.prepare(
+    `UPDATE crypto_donation_invoices SET status = 'expired'
+      WHERE status = 'pending' AND expires_at < ?`,
+  ).bind(now - CONFIRMATION_GRACE).run();
+  const deletedDonations = await db.prepare(
+    "DELETE FROM crypto_donation_invoices WHERE cleanup_at < ?",
+  ).bind(now).run();
   await db.prepare(
     "DELETE FROM crypto_settlement_events_v2 WHERE processed_at < ?",
   ).bind(now - DELIVERY_RETENTION).run();
-  return (expired.meta?.changes ?? 0) + (deleted.meta?.changes ?? 0);
+  return (expired.meta?.changes ?? 0) +
+    (deleted.meta?.changes ?? 0) +
+    (expiredDonations.meta?.changes ?? 0) +
+    (deletedDonations.meta?.changes ?? 0);
 }

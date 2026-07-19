@@ -21,6 +21,8 @@
 /// Anonymous, node-verified crypto payments:
 ///   POST   /v1/crypto/quote
 ///   POST   /v1/crypto/status
+///   POST   /v1/donations/crypto/quote
+///   POST   /v1/donations/crypto/status
 ///   POST   /v1/internal/crypto/settle (watcher HMAC)
 ///
 /// scheduled() handler: five-minute crypto-price refresh, hourly expiry
@@ -32,6 +34,8 @@ import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
 import { handleCompBatchIssue, handleCompBatchRevoke } from "./endpoints/comp-batches.js";
 import { handleCryptoQuote } from "./endpoints/crypto-checkout.js";
+import { handleCryptoDonationQuote } from "./endpoints/crypto-donation-checkout.js";
+import { handleCryptoDonationStatus } from "./endpoints/crypto-donation-status.js";
 import { handleCryptoSettlement, sweepAnonymousCryptoInvoices } from "./endpoints/crypto-settlement.js";
 import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
@@ -208,7 +212,9 @@ async function dispatch(
       path === "/v1/checkout/claim" ||
       path === "/v1/billing-portal-session" ||
       path === "/v1/crypto/quote" ||
-      path === "/v1/crypto/status"
+      path === "/v1/crypto/status" ||
+      path === "/v1/donations/crypto/quote" ||
+      path === "/v1/donations/crypto/status"
     ) {
       return corsPreflight("POST, OPTIONS", request);
     }
@@ -280,6 +286,12 @@ async function dispatch(
     }
     if (path === "/v1/crypto/status") {
       return withCors(await handleCryptoStatus(request, env), request);
+    }
+    if (path === "/v1/donations/crypto/quote") {
+      return withCors(await handleCryptoDonationQuote(request, env), request);
+    }
+    if (path === "/v1/donations/crypto/status") {
+      return withCors(await handleCryptoDonationStatus(request, env), request);
     }
     if (path === "/v1/internal/crypto/settle") {
       return await handleCryptoSettlement(request, env, ctx);

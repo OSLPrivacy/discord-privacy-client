@@ -303,6 +303,27 @@ export async function notifyTelegramForCryptoSettlement(
   );
 }
 
+export async function notifyTelegramForCryptoDonation(
+  env: Env,
+  paymentMethod: "btc" | "xmr",
+  amountUsdCents: number,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  const asset = paymentMethod === "btc" ? "Bitcoin" : "Monero";
+  const summary = await getCommerceSummary(env.DB);
+  await sendTelegramOperatorMessage(
+    env,
+    [
+      "OSL crypto donation verified",
+      `${money(amountUsdCents)} via ${asset}`,
+      `Verified donations: ${summary.verified_donations} / ${money(summary.donation_gross_cents)}`,
+      "Mode: LIVE",
+    ].join("\n"),
+    fetcher,
+  );
+}
+
 export async function handleTelegramCommand(
   request: Request,
   env: Env,
