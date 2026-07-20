@@ -40,6 +40,15 @@ require_literal 'CEREMONY-INCOMPLETE'
 require_literal '.CEREMONY-COMPLETE.tmp'
 require_literal 'mktemp mv readlink'
 require_literal 'must be on distinct filesystems'
+require_literal 'OSL_SINGLE_USB_MODE'
+require_literal 'I ACCEPT THAT THIS USB WILL CONTAIN ENCRYPTED SPENDING BACKUPS AND WATCH-ONLY DATA'
+require_literal 'must be separate and non-nested'
+require_literal '/sys/fs/cgroup${cgroup_path}/memory.swap.max'
+require_literal 'the WSL cgroup MemorySwapMax is not zero'
+require_literal 'OSL_NONINTERACTIVE_MODE'
+require_literal 'OSL-RECOVERY-CREDENTIALS.txt'
+require_literal 'sync -f "$RECOVERY_CREDENTIALS_FILE"'
+require_literal 'manifest_files+=(OSL-RECOVERY-CREDENTIALS.txt)'
 
 for importer_literal in \
   'OFFLINE_CEREMONY_RECEIPT_FILE' \

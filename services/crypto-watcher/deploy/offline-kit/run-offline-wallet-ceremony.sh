@@ -24,9 +24,14 @@ usage() {
   local status=${1:-64}
   cat >&2 <<EOF
 Usage:
-  $0 --bitcoin-archive /media/path/$BITCOIN_ARCHIVE_NAME \\
+  $0 [--single-usb] [--noninteractive] \\
+     --bitcoin-archive /media/path/$BITCOIN_ARCHIVE_NAME \\
      --monero-archive /media/path/$MONERO_ARCHIVE_NAME \\
      --monero-restore-height BLOCK_HEIGHT
+
+Noninteractive mode additionally requires --backup-dir, --transfer-dir, both
+--*-passphrase-file paths under /dev/shm, and
+--i-accept-plaintext-recovery-credentials-on-backup-media.
 
 Run this only as an unprivileged user on a dedicated, physically disconnected
 Linux machine. The script prompts separately for new backup and transfer paths.
@@ -37,8 +42,47 @@ EOF
 BITCOIN_ARCHIVE=
 MONERO_ARCHIVE=
 MONERO_RESTORE_HEIGHT=
+SINGLE_USB_MODE=0
+NONINTERACTIVE_MODE=0
+OFFLINE_BACKUP_DIR=
+WATCH_ONLY_TRANSFER_DIR=
+BITCOIN_PASSPHRASE_FILE=
+MONERO_PASSPHRASE_FILE=
+ACCEPT_PLAINTEXT_RECOVERY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --single-usb)
+      SINGLE_USB_MODE=1
+      shift
+      ;;
+    --noninteractive)
+      NONINTERACTIVE_MODE=1
+      shift
+      ;;
+    --backup-dir)
+      [[ $# -ge 2 ]] || usage
+      OFFLINE_BACKUP_DIR=$2
+      shift 2
+      ;;
+    --transfer-dir)
+      [[ $# -ge 2 ]] || usage
+      WATCH_ONLY_TRANSFER_DIR=$2
+      shift 2
+      ;;
+    --bitcoin-passphrase-file)
+      [[ $# -ge 2 ]] || usage
+      BITCOIN_PASSPHRASE_FILE=$2
+      shift 2
+      ;;
+    --monero-passphrase-file)
+      [[ $# -ge 2 ]] || usage
+      MONERO_PASSPHRASE_FILE=$2
+      shift 2
+      ;;
+    --i-accept-plaintext-recovery-credentials-on-backup-media)
+      ACCEPT_PLAINTEXT_RECOVERY=1
+      shift
+      ;;
     --bitcoin-archive)
       [[ $# -ge 2 ]] || usage
       BITCOIN_ARCHIVE=$2
@@ -65,6 +109,15 @@ done
 
 [[ -n "$BITCOIN_ARCHIVE" && -n "$MONERO_ARCHIVE" && \
    "$MONERO_RESTORE_HEIGHT" =~ ^[0-9]+$ && "$MONERO_RESTORE_HEIGHT" -gt 2000 ]] || usage
+if [[ "$NONINTERACTIVE_MODE" -eq 1 ]]; then
+  [[ -n "$OFFLINE_BACKUP_DIR" && -n "$WATCH_ONLY_TRANSFER_DIR" && \
+     -n "$BITCOIN_PASSPHRASE_FILE" && -n "$MONERO_PASSPHRASE_FILE" && \
+     "$ACCEPT_PLAINTEXT_RECOVERY" -eq 1 ]] || usage
+else
+  [[ -z "$OFFLINE_BACKUP_DIR" && -z "$WATCH_ONLY_TRANSFER_DIR" && \
+     -z "$BITCOIN_PASSPHRASE_FILE" && -z "$MONERO_PASSPHRASE_FILE" && \
+     "$ACCEPT_PLAINTEXT_RECOVERY" -eq 0 ]] || usage
+fi
 [[ ${EUID:-$(id -u)} -ne 0 ]] || {
   printf 'Run this launcher as a dedicated, unprivileged offline user, not root.\n' >&2
   exit 1
@@ -221,12 +274,17 @@ require_new_canonical_directory() {
   printf -v "$destination" '%s' "$canonical_target"
 }
 
-read_tty 'New encrypted-backup directory on durable offline media: ' BACKUP_INPUT
-require_new_canonical_directory 'Backup directory' "$BACKUP_INPUT" OFFLINE_BACKUP_DIR
-unset BACKUP_INPUT
-read_tty 'New watch-only transfer directory on separate removable media: ' TRANSFER_INPUT
-require_new_canonical_directory 'Transfer directory' "$TRANSFER_INPUT" WATCH_ONLY_TRANSFER_DIR
-unset TRANSFER_INPUT
+if [[ "$NONINTERACTIVE_MODE" -eq 1 ]]; then
+  require_new_canonical_directory 'Backup directory' "$OFFLINE_BACKUP_DIR" OFFLINE_BACKUP_DIR
+  require_new_canonical_directory 'Transfer directory' "$WATCH_ONLY_TRANSFER_DIR" WATCH_ONLY_TRANSFER_DIR
+else
+  read_tty 'New encrypted-backup directory on durable offline media: ' BACKUP_INPUT
+  require_new_canonical_directory 'Backup directory' "$BACKUP_INPUT" OFFLINE_BACKUP_DIR
+  unset BACKUP_INPUT
+  read_tty 'New watch-only transfer directory on separate removable media: ' TRANSFER_INPUT
+  require_new_canonical_directory 'Transfer directory' "$TRANSFER_INPUT" WATCH_ONLY_TRANSFER_DIR
+  unset TRANSFER_INPUT
+fi
 
 [[ "$OFFLINE_BACKUP_DIR" != "$WATCH_ONLY_TRANSFER_DIR" && \
    "$OFFLINE_BACKUP_DIR" != "$WATCH_ONLY_TRANSFER_DIR"/* && \
@@ -234,11 +292,12 @@ unset TRANSFER_INPUT
   printf 'Backup and transfer directories must be separate and non-nested.\n' >&2
   exit 1
 }
-[[ $(stat -c '%d' "$(dirname -- "$OFFLINE_BACKUP_DIR")") != \
-   $(stat -c '%d' "$(dirname -- "$WATCH_ONLY_TRANSFER_DIR")") ]] || {
+if [[ $(stat -c '%d' "$(dirname -- "$OFFLINE_BACKUP_DIR")") == \
+      $(stat -c '%d' "$(dirname -- "$WATCH_ONLY_TRANSFER_DIR")") && \
+      "$SINGLE_USB_MODE" -ne 1 ]]; then
   printf 'Backup and transfer directories must be on distinct filesystems.\n' >&2
   exit 1
-}
+fi
 
 printf '\nArchives verified. Starting the audited offline wallet ceremony.\n'
 BITCOIND_BIN="$BITCOIND_BIN" \
@@ -250,4 +309,9 @@ MONERO_WALLET_CLI_BIN_SHA256="$MONERO_WALLET_CLI_BIN_SHA256" \
 MONERO_RESTORE_HEIGHT="$MONERO_RESTORE_HEIGHT" \
 OFFLINE_BACKUP_DIR="$OFFLINE_BACKUP_DIR" \
 WATCH_ONLY_TRANSFER_DIR="$WATCH_ONLY_TRANSFER_DIR" \
+OSL_SINGLE_USB_MODE="$SINGLE_USB_MODE" \
+OSL_NONINTERACTIVE_MODE="$NONINTERACTIVE_MODE" \
+OSL_BITCOIN_PASSPHRASE_FILE="$BITCOIN_PASSPHRASE_FILE" \
+OSL_MONERO_PASSPHRASE_FILE="$MONERO_PASSPHRASE_FILE" \
+OSL_ACCEPT_PLAINTEXT_RECOVERY="$ACCEPT_PLAINTEXT_RECOVERY" \
   "$CEREMONY_SCRIPT"

@@ -45,8 +45,27 @@ assert_offline() {
 }
 
 assert_volatile_memory() {
-  local resume_device
-  [[ -r /proc/swaps && $(awk 'END { print NR }' /proc/swaps) -eq 1 ]] || {
+  local resume_device cgroup_path cgroup_swap_max
+  if [[ ! -r /proc/swaps ]]; then
+    printf 'Refusing: /proc/swaps cannot be verified.\n' >&2
+    return 1
+  fi
+  if [[ $(awk 'END { print NR }' /proc/swaps) -ne 1 ]]; then
+    cgroup_path=$(awk -F: '$1 == "0" { print $3; exit }' /proc/self/cgroup)
+    [[ -r /proc/sys/kernel/osrelease && \
+       $(tr '[:upper:]' '[:lower:]' </proc/sys/kernel/osrelease) == *microsoft* && \
+       "$cgroup_path" == /* && "$cgroup_path" != *..* && \
+       -r "/sys/fs/cgroup${cgroup_path}/memory.swap.max" ]] || {
+      printf 'Refusing: swap is active and no WSL cgroup swap limit can be verified.\n' >&2
+      return 1
+    }
+    cgroup_swap_max=$(tr -d '[:space:]' <"/sys/fs/cgroup${cgroup_path}/memory.swap.max")
+    [[ "$cgroup_swap_max" == 0 ]] || {
+      printf 'Refusing: the WSL cgroup MemorySwapMax is not zero.\n' >&2
+      return 1
+    }
+  fi
+  [[ $(awk 'END { print NR }' /proc/swaps) -eq 1 || "$cgroup_swap_max" == 0 ]] || {
     printf 'Refusing: swap is active or /proc/swaps cannot be verified empty.\n' >&2
     return 1
   }
@@ -100,9 +119,16 @@ require_acknowledgement() {
   unset supplied
 }
 
-require_acknowledgement \
-  'I CONFIRM THIS MACHINE IS PHYSICALLY OFFLINE' \
-  'Disconnect Ethernet, Wi-Fi, cellular, Bluetooth networking, VPNs, and virtual adapters.'
+NONINTERACTIVE_MODE=${OSL_NONINTERACTIVE_MODE:-0}
+[[ "$NONINTERACTIVE_MODE" == 0 || "$NONINTERACTIVE_MODE" == 1 ]] || {
+  printf 'OSL_NONINTERACTIVE_MODE must be 0 or 1.\n' >&2
+  exit 1
+}
+if [[ "$NONINTERACTIVE_MODE" -eq 0 ]]; then
+  require_acknowledgement \
+    'I CONFIRM THIS MACHINE IS PHYSICALLY OFFLINE' \
+    'Disconnect Ethernet, Wi-Fi, cellular, Bluetooth networking, VPNs, and virtual adapters.'
+fi
 assert_offline_state
 
 : "${BITCOIND_BIN:?Set BITCOIND_BIN to the pinned offline bitcoind binary}"
@@ -180,10 +206,18 @@ require_new_directory WATCH_ONLY_TRANSFER_DIR "$WATCH_ONLY_TRANSFER_DIR"
 }
 BACKUP_PARENT=$(dirname -- "$OFFLINE_BACKUP_DIR")
 TRANSFER_PARENT=$(dirname -- "$WATCH_ONLY_TRANSFER_DIR")
-[[ $(stat -c '%d' "$BACKUP_PARENT") != $(stat -c '%d' "$TRANSFER_PARENT") ]] || {
-  printf 'Backup and watch-only transfer directories must be on distinct filesystems.\n' >&2
-  exit 1
-}
+if [[ $(stat -c '%d' "$BACKUP_PARENT") == $(stat -c '%d' "$TRANSFER_PARENT") ]]; then
+  [[ ${OSL_SINGLE_USB_MODE:-0} == 1 ]] || {
+    printf 'Backup and watch-only transfer directories must be on distinct filesystems.\n' >&2
+    exit 1
+  }
+  if [[ "$NONINTERACTIVE_MODE" -eq 0 ]]; then
+    require_acknowledgement \
+      'I ACCEPT THAT THIS USB WILL CONTAIN ENCRYPTED SPENDING BACKUPS AND WATCH-ONLY DATA' \
+      'Single-USB mode puts both directories on one failure domain and exposes the encrypted backups whenever that device is connected elsewhere.'
+  fi
+  assert_offline_state
+fi
 
 [[ -d /dev/shm && $(stat -f -c '%T' /dev/shm) == tmpfs ]] || {
   printf 'A tmpfs-backed /dev/shm is required for volatile seed and passphrase handling.\n' >&2
@@ -222,6 +256,8 @@ BTC_PASS=
 BTC_PASS_CONFIRM=
 XMR_PASS=
 XMR_PASS_CONFIRM=
+RECOVERY_CREDENTIALS_FILE="$OFFLINE_BACKUP_DIR/OSL-RECOVERY-CREDENTIALS.txt"
+RECOVERY_CREDENTIALS_TMP="$OFFLINE_BACKUP_DIR/.OSL-RECOVERY-CREDENTIALS.tmp"
 
 btc_cli() {
   "$BITCOIN_CLI_BIN" -datadir="$BTC_DATA_DIR" -rpcport="$BTC_RPC_PORT" "$@"
@@ -249,6 +285,7 @@ cleanup() {
   fi
   rm -f -- "$COMPLETE_RECEIPT_TMP"
   rm -f -- "$TRANSFER_COMPLETE_RECEIPT_TMP"
+  rm -f -- "$RECOVERY_CREDENTIALS_TMP"
   exit "$status"
 }
 trap cleanup EXIT
@@ -296,15 +333,51 @@ read_secret_twice() {
   unset first second
 }
 
-read_secret_twice Bitcoin BTC_PASS BTC_PASS_CONFIRM
-read_secret_twice Monero XMR_PASS XMR_PASS_CONFIRM
-unset BTC_PASS_CONFIRM XMR_PASS_CONFIRM
+read_secret_file() {
+  local label=$1 path=$2 destination=$3 canonical
+  local -a lines=()
+  [[ "$path" == /dev/shm/* && -f "$path" && ! -L "$path" ]] || {
+    printf '%s passphrase file must be a regular non-symlink file under /dev/shm.\n' "$label" >&2
+    exit 1
+  }
+  canonical=$(readlink -f -- "$path")
+  [[ "$canonical" == "$path" && $(stat -f -c '%T' "$path") == tmpfs && \
+     $(stat -c '%a' "$path") == 600 && $(stat -c '%u' "$path") == "$(id -u)" ]] || {
+    printf '%s passphrase file must be canonical, user-owned, mode 0600, and tmpfs-backed.\n' "$label" >&2
+    exit 1
+  }
+  [[ $(stat -c '%s' "$path") -le 4096 ]] || {
+    printf '%s passphrase file is unexpectedly large.\n' "$label" >&2
+    exit 1
+  }
+  mapfile -t lines <"$path"
+  [[ ${#lines[@]} -eq 1 && ${#lines[0]} -ge 16 && ${lines[0]} != *$'\r'* ]] || {
+    unset lines
+    printf '%s passphrase file must contain exactly one line of at least 16 characters.\n' "$label" >&2
+    exit 1
+  }
+  printf -v "$destination" '%s' "${lines[0]}"
+  unset lines
+}
+
+if [[ "$NONINTERACTIVE_MODE" -eq 1 ]]; then
+  [[ ${OSL_ACCEPT_PLAINTEXT_RECOVERY:-0} == 1 ]] || {
+    printf 'Noninteractive mode requires explicit acceptance of plaintext recovery credentials on backup media.\n' >&2
+    exit 1
+  }
+  read_secret_file Bitcoin "${OSL_BITCOIN_PASSPHRASE_FILE:-}" BTC_PASS
+  read_secret_file Monero "${OSL_MONERO_PASSPHRASE_FILE:-}" XMR_PASS
+else
+  read_secret_twice Bitcoin BTC_PASS BTC_PASS_CONFIRM
+  read_secret_twice Monero XMR_PASS XMR_PASS_CONFIRM
+  unset BTC_PASS_CONFIRM XMR_PASS_CONFIRM
+fi
 
 assert_offline_state
 mkdir -m 0700 -- "$BTC_DATA_DIR"
 "$BITCOIND_BIN" \
   -datadir="$BTC_DATA_DIR" -daemonwait -server=1 -listen=0 -dnsseed=0 \
-  -discover=0 -upnp=0 -natpmp=0 -connect=0 -networkactive=0 -onlynet=ipv4 \
+  -discover=0 -connect=0 -networkactive=0 -onlynet=ipv4 \
   -rpcbind=127.0.0.1 -rpcallowip=127.0.0.1 -rpcport="$BTC_RPC_PORT" \
   -fallbackfee=0.0002 -printtoconsole=0
 BTC_STARTED=true
@@ -371,7 +444,8 @@ BTC_RESTORED_PUBLIC_DESCRIPTOR=$(jq -er \
   exit 1
 }
 btc_cli unloadwallet osl-btc-restore-test >/dev/null
-unset BTC_PASS BTC_RESTORED_DESCRIPTOR_JSON BTC_RESTORED_PUBLIC_DESCRIPTOR
+[[ "$NONINTERACTIVE_MODE" -eq 1 ]] || unset BTC_PASS
+unset BTC_RESTORED_DESCRIPTOR_JSON BTC_RESTORED_PUBLIC_DESCRIPTOR
 
 assert_offline_state
 printf '%s\n' "$XMR_PASS" >"$XMR_PASS_FILE"
@@ -380,13 +454,13 @@ chmod 0600 "$XMR_PASS_FILE"
   --password-file "$XMR_PASS_FILE" --offline --mnemonic-language English \
   --restore-height "$MONERO_RESTORE_HEIGHT" --log-file /dev/null --command exit \
   >"$XMR_CREATE_OUT" 2>&1
-"$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_WALLET" \
+printf '%s\n' "$XMR_PASS" | "$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_WALLET" \
   --password-file "$XMR_PASS_FILE" --offline --log-file /dev/null --command seed \
   >"$XMR_SEED_OUT" 2>&1
 "$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_WALLET" \
   --password-file "$XMR_PASS_FILE" --offline --log-file /dev/null --command address \
   >"$XMR_ADDRESS_OUT" 2>&1
-"$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_WALLET" \
+printf '%s\n' "$XMR_PASS" | "$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_WALLET" \
   --password-file "$XMR_PASS_FILE" --offline --log-file /dev/null --command viewkey \
   >"$XMR_VIEW_OUT" 2>&1
 mapfile -t XMR_ADDRESS_MATCHES < <(
@@ -398,7 +472,23 @@ mapfile -t XMR_VIEW_KEY_MATCHES < <(
     "$XMR_VIEW_OUT" | sort -u
 )
 mapfile -t XMR_MNEMONIC_MATCHES < <(
-  awk 'NF == 25 { valid=1; for (i=1; i<=NF; i++) if ($i !~ /^[a-z]+$/) valid=0; if (valid) print }' \
+  awk '
+    function flush() {
+      if (word_count == 25) print phrase
+      word_count=0
+      phrase=""
+    }
+    {
+      valid=(NF > 0)
+      for (i=1; i<=NF; i++) if ($i !~ /^[a-z]+$/) valid=0
+      if (!valid) { flush(); next }
+      for (i=1; i<=NF; i++) {
+        phrase=(phrase == "" ? $i : phrase " " $i)
+        word_count++
+      }
+    }
+    END { flush() }
+  ' \
     "$XMR_SEED_OUT" | sort -u
 )
 [[ ${#XMR_ADDRESS_MATCHES[@]} -eq 1 && ${#XMR_VIEW_KEY_MATCHES[@]} -eq 1 && \
@@ -429,10 +519,10 @@ install -m 0600 "$XMR_WALLET.keys" "$XMR_RESTORE_WALLET.keys"
 "$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_RESTORE_WALLET" \
   --password-file "$XMR_PASS_FILE" --offline --log-file /dev/null --command address \
   >"$XMR_RESTORE_ADDRESS_OUT" 2>&1
-"$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_RESTORE_WALLET" \
+printf '%s\n' "$XMR_PASS" | "$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_RESTORE_WALLET" \
   --password-file "$XMR_PASS_FILE" --offline --log-file /dev/null --command viewkey \
   >"$XMR_RESTORE_VIEW_OUT" 2>&1
-"$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_RESTORE_WALLET" \
+printf '%s\n' "$XMR_PASS" | "$MONERO_WALLET_CLI_BIN" --wallet-file "$XMR_RESTORE_WALLET" \
   --password-file "$XMR_PASS_FILE" --offline --log-file /dev/null --command seed \
   >"$XMR_RESTORE_SEED_OUT" 2>&1
 mapfile -t XMR_RESTORE_ADDRESS_MATCHES < <(
@@ -444,7 +534,23 @@ mapfile -t XMR_RESTORE_VIEW_MATCHES < <(
     "$XMR_RESTORE_VIEW_OUT" | sort -u
 )
 mapfile -t XMR_RESTORE_MNEMONIC_MATCHES < <(
-  awk 'NF == 25 { valid=1; for (i=1; i<=NF; i++) if ($i !~ /^[a-z]+$/) valid=0; if (valid) print }' \
+  awk '
+    function flush() {
+      if (word_count == 25) print phrase
+      word_count=0
+      phrase=""
+    }
+    {
+      valid=(NF > 0)
+      for (i=1; i<=NF; i++) if ($i !~ /^[a-z]+$/) valid=0
+      if (!valid) { flush(); next }
+      for (i=1; i<=NF; i++) {
+        phrase=(phrase == "" ? $i : phrase " " $i)
+        word_count++
+      }
+    }
+    END { flush() }
+  ' \
     "$XMR_RESTORE_SEED_OUT" | sort -u
 )
 [[ ${#XMR_RESTORE_ADDRESS_MATCHES[@]} -eq 1 && \
@@ -476,28 +582,49 @@ mapfile -t XMR_VIEW_ONLY_ADDRESS_MATCHES < <(
   printf 'Monero view key did not reproduce the generated primary address.\n' >&2
   exit 1
 }
-unset XMR_VIEW_ONLY_ADDRESS_MATCHES XMR_PASS
+unset XMR_VIEW_ONLY_ADDRESS_MATCHES
 
 assert_offline_state
-printf '\nMonero recovery seed transcript follows. Keep cameras and networked devices away.\n' >/dev/tty
-printf '%s\n' '----- BEGIN OFFLINE MONERO RECOVERY TRANSCRIPT -----' >/dev/tty
-printf '%s\n' "$XMR_MNEMONIC" >/dev/tty
-printf '%s\n' '----- END OFFLINE MONERO RECOVERY TRANSCRIPT -----' >/dev/tty
-require_acknowledgement \
-  'I RECORDED THE MONERO SEED OFFLINE' \
-  'Write the seed onto durable offline media and verify every word twice.'
+if [[ "$NONINTERACTIVE_MODE" -eq 1 ]]; then
+  {
+    printf '%s\n' \
+      'OSL OFFLINE WALLET RECOVERY CREDENTIALS' \
+      'WARNING: PLAINTEXT SPENDING CREDENTIALS. KEEP THIS DEVICE PHYSICALLY OFFLINE.' \
+      "Bitcoin wallet passphrase: $BTC_PASS" \
+      "Monero wallet passphrase: $XMR_PASS" \
+      "Monero recovery seed: $XMR_MNEMONIC"
+  } >"$RECOVERY_CREDENTIALS_TMP"
+  chmod 0600 "$RECOVERY_CREDENTIALS_TMP"
+  sync -f "$RECOVERY_CREDENTIALS_TMP"
+  mv -- "$RECOVERY_CREDENTIALS_TMP" "$RECOVERY_CREDENTIALS_FILE"
+  sync -f "$RECOVERY_CREDENTIALS_FILE"
+  sync -f "$OFFLINE_BACKUP_DIR"
+else
+  printf '\nMonero recovery seed transcript follows. Keep cameras and networked devices away.\n' >/dev/tty
+  printf '%s\n' '----- BEGIN OFFLINE MONERO RECOVERY TRANSCRIPT -----' >/dev/tty
+  printf '%s\n' "$XMR_MNEMONIC" >/dev/tty
+  printf '%s\n' '----- END OFFLINE MONERO RECOVERY TRANSCRIPT -----' >/dev/tty
+  require_acknowledgement \
+    'I RECORDED THE MONERO SEED OFFLINE' \
+    'Write the seed onto durable offline media and verify every word twice.'
+fi
 unset XMR_MNEMONIC
 shred -u -- "$XMR_CREATE_OUT" "$XMR_SEED_OUT" "$XMR_RESTORE_SEED_OUT"
 
-require_acknowledgement \
-  'I STORED BOTH WALLET PASSPHRASES OFFLINE' \
-  'Store both passphrases separately from the encrypted wallet backup files.'
+if [[ "$NONINTERACTIVE_MODE" -eq 0 ]]; then
+  require_acknowledgement \
+    'I STORED BOTH WALLET PASSPHRASES OFFLINE' \
+    'Store both passphrases separately from the encrypted wallet backup files.'
+fi
+unset BTC_PASS XMR_PASS
 shred -u -- "$XMR_PASS_FILE"
 
 (
   cd "$OFFLINE_BACKUP_DIR"
-  sha256sum bitcoin/osl-btc-merchant.wallet monero/osl-xmr-merchant \
-    monero/osl-xmr-merchant.keys >BACKUP-SHA256SUMS
+  manifest_files=(bitcoin/osl-btc-merchant.wallet monero/osl-xmr-merchant \
+    monero/osl-xmr-merchant.keys)
+  [[ "$NONINTERACTIVE_MODE" -eq 0 ]] || manifest_files+=(OSL-RECOVERY-CREDENTIALS.txt)
+  sha256sum "${manifest_files[@]}" >BACKUP-SHA256SUMS
   chmod 0600 BACKUP-SHA256SUMS
 )
 
@@ -505,9 +632,11 @@ sync -f "$OFFLINE_BACKUP_DIR"
 sync -f "$WATCH_ONLY_TRANSFER_DIR"
 assert_offline_state
 
-require_acknowledgement \
-  'I COPIED BOTH ENCRYPTED WALLET BACKUPS TO DURABLE OFFLINE MEDIA' \
-  'Verify BACKUP-SHA256SUMS on at least one second, physically separate offline copy.'
+if [[ "$NONINTERACTIVE_MODE" -eq 0 ]]; then
+  require_acknowledgement \
+    'I COPIED BOTH ENCRYPTED WALLET BACKUPS TO DURABLE OFFLINE MEDIA' \
+    'Verify BACKUP-SHA256SUMS on at least one second, physically separate offline copy.'
+fi
 
 # BEGIN TRANSFER EXPORTS -- watch/view material only, after backup confirmation.
 printf '%s\n' "$BTC_PUBLIC_DESCRIPTOR" \
