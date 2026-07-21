@@ -316,7 +316,9 @@ export async function beginBrowserAccountImport(): Promise<BrowserAccountImportA
 export async function beginProtectedBrowserImport(browserIds: readonly BrowserImportId[]): Promise<ProtectedBrowserImportAction> {
   const selectedSources = [...browserIds];
   if (!isTauriRuntime()
-    || selectedSources.length !== 1
+    || selectedSources.length < 1
+    || selectedSources.length > browserImportIds.length
+    || new Set(selectedSources).size !== selectedSources.length
     || !selectedSources.every((id) => browserImportIds.includes(id))) {
     throw new Error("protected browser import unavailable");
   }

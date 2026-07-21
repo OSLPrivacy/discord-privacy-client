@@ -86,7 +86,7 @@ mod windows_impl {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
-        SetForegroundWindow, ShowWindow, SW_RESTORE, WM_CLOSE,
+        SetForegroundWindow, ShowWindow, SW_SHOWNOACTIVATE, WM_CLOSE,
     };
 
     const WINDOW_WAIT: Duration = Duration::from_secs(8);
@@ -445,16 +445,16 @@ mod windows_impl {
         window: SysHwnd,
         window_process_id: u32,
         source: BrowserImportId,
+        owner_window: isize,
     ) -> Result<(), String> {
         unsafe {
-            ShowWindow(window, SW_RESTORE);
-            SetForegroundWindow(window);
+            ShowWindow(window, SW_SHOWNOACTIVATE);
+            if owner_window != 0 {
+                SetForegroundWindow(owner_window as SysHwnd);
+            }
         }
-        std::thread::sleep(Duration::from_millis(100));
         let root = unsafe { automation.ElementFromHandle(HWND(window as isize)) }
             .map_err(|_| "Firefox migration window is unavailable".to_owned())?;
-        unsafe { root.SetFocus() }
-            .map_err(|_| "Firefox migration window could not receive focus".to_owned())?;
         let elements = descendants(automation, &root, window_process_id)?;
         require_exact_one(
             exact_elements(&elements, WIZARD_HEADINGS, &[UIA_TextControlTypeId]),
@@ -498,7 +498,11 @@ mod windows_impl {
         invoke_action(&action)
     }
 
-    pub(super) fn coordinate(process_id: u32, source: BrowserImportId) -> Result<(), String> {
+    pub(super) fn coordinate(
+        process_id: u32,
+        source: BrowserImportId,
+        owner_window: isize,
+    ) -> Result<(), String> {
         let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let _guard = ComGuard(initialized);
         let automation: IUIAutomation =
@@ -512,7 +516,13 @@ mod windows_impl {
                 return Err("Firefox exposed ambiguous migration windows".to_owned());
             }
             if let Some((window, window_process_id)) = windows.first() {
-                match coordinate_window(&automation, *window, *window_process_id, source) {
+                match coordinate_window(
+                    &automation,
+                    *window,
+                    *window_process_id,
+                    source,
+                    owner_window,
+                ) {
                     Ok(()) => return Ok(()),
                     Err(error) => last_error = error,
                 }
@@ -542,8 +552,12 @@ mod windows_impl {
 }
 
 #[cfg(target_os = "windows")]
-pub fn coordinate(process_id: u32, source: BrowserImportId) -> Result<(), String> {
-    windows_impl::coordinate(process_id, source)
+pub fn coordinate(
+    process_id: u32,
+    source: BrowserImportId,
+    owner_window: isize,
+) -> Result<(), String> {
+    windows_impl::coordinate(process_id, source, owner_window)
 }
 
 pub fn close(process_id: u32) -> Result<(), String> {
@@ -571,7 +585,11 @@ pub fn is_closed(process_id: u32) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn coordinate(_process_id: u32, _source: BrowserImportId) -> Result<(), String> {
+pub fn coordinate(
+    _process_id: u32,
+    _source: BrowserImportId,
+    _owner_window: isize,
+) -> Result<(), String> {
     Err("Firefox migration coordination is available only on Windows".to_owned())
 }
 

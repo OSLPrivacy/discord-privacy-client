@@ -86,6 +86,29 @@ pub struct ProtectedBrowserImportResult {
     pub manual_fallback: Option<String>,
 }
 
+const MAX_PROTECTED_BROWSER_IMPORT_SOURCES: usize = 6;
+
+fn validate_protected_browser_import_sources(
+    selected_sources: Vec<BrowserImportId>,
+    available_sources: &[BrowserImportId],
+) -> Result<Vec<BrowserImportId>, String> {
+    if selected_sources.is_empty() || selected_sources.len() > MAX_PROTECTED_BROWSER_IMPORT_SOURCES
+    {
+        return Err("Choose between one and six browsers to import".to_owned());
+    }
+    let mut unique = Vec::with_capacity(selected_sources.len());
+    for source in selected_sources {
+        if unique.contains(&source) {
+            return Err("A browser was selected more than once".to_owned());
+        }
+        if !available_sources.contains(&source) {
+            return Err("A selected browser is unavailable".to_owned());
+        }
+        unique.push(source);
+    }
+    Ok(unique)
+}
+
 #[cfg(target_os = "windows")]
 fn protected_browser_import_process() -> &'static Mutex<Option<Child>> {
     static PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
@@ -843,48 +866,48 @@ pub fn begin_protected_browser_import(
     app_local_data_dir: &std::path::Path,
     owner_osl_user_id: &str,
     selected_sources: Vec<BrowserImportId>,
+    owner_window: isize,
 ) -> Result<ProtectedBrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
         close_protected_browser_import_process()?;
-        if selected_sources.len() != 1 {
-            return Err("Open exactly one queued browser import at a time".to_owned());
-        }
-        let mut unique = Vec::with_capacity(selected_sources.len());
-        for id in selected_sources {
-            if unique.contains(&id)
-                || browser_import_executable(browser_import_manifest(id)).is_none()
-            {
-                return Err("A selected browser is unavailable".to_owned());
-            }
-            unique.push(id);
-        }
+        let available_sources = BROWSER_IMPORTS
+            .iter()
+            .filter(|browser| browser_import_executable(browser).is_some())
+            .map(|browser| browser.id)
+            .collect::<Vec<_>>();
+        let unique =
+            validate_protected_browser_import_sources(selected_sources, &available_sources)?;
         let firefox = firefox_executable().ok_or_else(|| {
             "Firefox is required for OSL's browser-owned account migration".to_owned()
         })?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
-        let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
-            .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
-        thread::sleep(Duration::from_millis(900));
-        if firefox_process
-            .try_wait()
-            .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
-            .is_some()
-        {
-            return Err("The OSL Firefox migration wizard closed before opening".to_owned());
-        }
-        let process_id = firefox_process.id();
-        let coordination = crate::firefox_migration_coordinator::coordinate(process_id, unique[0]);
-        *protected_browser_import_process()
-            .lock()
-            .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
-            Some(firefox_process);
-        if coordination.is_ok() {
-            // Firefox closes the migration wizard after its own Import action
-            // finishes. Wait for that exact OSL-owned window so the renderer
-            // can advance a multi-browser queue without asking for a second
-            // confirmation. The retained process is still the only process
-            // finish_protected_browser_import may close or terminate.
+        for (index, source) in unique.iter().copied().enumerate() {
+            let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
+                .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
+            thread::sleep(Duration::from_millis(900));
+            if firefox_process
+                .try_wait()
+                .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
+                .is_some()
+            {
+                return Err("The OSL Firefox migration wizard closed before opening".to_owned());
+            }
+            let process_id = firefox_process.id();
+            *protected_browser_import_process()
+                .lock()
+                .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
+                Some(firefox_process);
+            if let Err(error) =
+                crate::firefox_migration_coordinator::coordinate(process_id, source, owner_window)
+            {
+                close_protected_browser_import_process()?;
+                return Err(error);
+            }
+            // Firefox closes the exact OSL-owned migration window after its
+            // Import action. Keep the whole selected queue inside this one
+            // backend transaction so setup never exposes a per-source picker
+            // or asks the user for another OSL confirmation.
             let deadline = Instant::now() + Duration::from_secs(300);
             loop {
                 if crate::firefox_migration_coordinator::is_closed(process_id).is_ok() {
@@ -896,18 +919,26 @@ pub fn begin_protected_browser_import(
                 }
                 thread::sleep(Duration::from_millis(100));
             }
+            if index + 1 < unique.len() {
+                thread::sleep(Duration::from_millis(300));
+            }
         }
         Ok(ProtectedBrowserImportResult {
             selected_sources: unique,
             started: true,
             mode: "firefoxMigrationWizard",
-            source_selected: coordination.is_ok(),
-            manual_fallback: coordination.err(),
+            source_selected: true,
+            manual_fallback: None,
         })
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app_local_data_dir, owner_osl_user_id, selected_sources);
+        let _ = (
+            app_local_data_dir,
+            owner_osl_user_id,
+            selected_sources,
+            owner_window,
+        );
         Err("Browser account migration is available only on Windows".to_owned())
     }
 }
@@ -2699,6 +2730,44 @@ mod tests {
             ]),
             Some(BrowserImportId::DuckDuckGo)
         );
+    }
+
+    #[test]
+    fn protected_browser_import_validates_the_entire_bounded_queue() {
+        let available = [
+            BrowserImportId::Chrome,
+            BrowserImportId::Edge,
+            BrowserImportId::Firefox,
+            BrowserImportId::Brave,
+            BrowserImportId::Opera,
+            BrowserImportId::DuckDuckGo,
+        ];
+        assert_eq!(
+            validate_protected_browser_import_sources(
+                vec![
+                    BrowserImportId::Edge,
+                    BrowserImportId::Chrome,
+                    BrowserImportId::Firefox,
+                ],
+                &available,
+            ),
+            Ok(vec![
+                BrowserImportId::Edge,
+                BrowserImportId::Chrome,
+                BrowserImportId::Firefox,
+            ])
+        );
+        assert!(validate_protected_browser_import_sources(Vec::new(), &available).is_err());
+        assert!(validate_protected_browser_import_sources(
+            vec![BrowserImportId::Chrome, BrowserImportId::Chrome],
+            &available,
+        )
+        .is_err());
+        assert!(validate_protected_browser_import_sources(
+            vec![BrowserImportId::DuckDuckGo],
+            &available[..5],
+        )
+        .is_err());
     }
 
     #[test]

@@ -739,23 +739,25 @@ async fn begin_protected_browser_import(
 ) -> Result<ProtectedBrowserImportResult, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
+    let owner_window = main_window_hwnd(&app)?;
     let app_local_data_dir = app
         .path()
         .app_local_data_dir()
         .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
     tauri::async_runtime::spawn_blocking(move || {
-        native_apps::begin_protected_browser_import(&app_local_data_dir, &owner, browser_ids)
+        native_apps::begin_protected_browser_import(
+            &app_local_data_dir,
+            &owner,
+            browser_ids,
+            owner_window,
+        )
     })
     .await
     .map_err(|_| "The protected browser import worker stopped unexpectedly".to_owned())?
 }
 
 #[tauri::command]
-async fn finish_protected_browser_import(
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-) -> Result<(), String> {
-    let _session = session.transition.lock().await;
+async fn finish_protected_browser_import(core: State<'_, HubCoreState>) -> Result<(), String> {
     let _owner = active_unlocked_osl_user_id(&core)?;
     native_apps::finish_protected_browser_import()
 }
