@@ -20,7 +20,7 @@ describe("simplified truthful settings", () => {
 
   it("does not advertise automatic sending as functional", () => {
     expect(source).toContain("OSL encrypts and copies. You choose where and when to send.");
-    expect(source).toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
+    expect(source).not.toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
     expect(source).toContain("data-settings-send-mode");
     expect(source).not.toMatch(/Advanced sending preview|data-placement/);
     expect(source).not.toContain("Composer adapter required");

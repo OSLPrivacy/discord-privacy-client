@@ -41,10 +41,10 @@ describe("restrained motion system", () => {
     expect(styles).not.toMatch(/transition:\s*(?:all|width|height|inset|padding|margin)/);
   });
 
-  it("keeps loading and the explicit comparison as the only repeating motion", () => {
+  it("keeps repeating motion limited to loading, comparisons, and the explicit sending demo", () => {
     const infiniteAnimations = [...styles.matchAll(/animation:\s*([^;]*\binfinite\b[^;]*);/g)].map((match) => match[1]);
     expect(infiniteAnimations.length).toBeGreaterThan(0);
-    expect(infiniteAnimations.every((animation) => /loading-line|placement-|demo-pulse/.test(animation))).toBe(true);
+    expect(infiniteAnimations.every((animation) => /loading-line|placement-|demo-pulse|send-key-press/.test(animation))).toBe(true);
   });
 
   it("provides complete static states for reduced motion", () => {

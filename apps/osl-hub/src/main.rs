@@ -31,7 +31,8 @@ use osl_privacy_hub::password_lifecycle::{
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::scrub_index::{
-    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexState, ScrubIndexStatus,
+    selection_requires_registry_ownership, ScrubIndexChunkRequest, ScrubIndexInitializeRequest,
+    ScrubIndexState, ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
@@ -110,6 +111,9 @@ async fn initialize_scrub_index(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     for selection in &request.selections {
+        if !selection_requires_registry_ownership(request.source, selection)? {
+            continue;
+        }
         let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
             .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
         registry.require_owned(&owner, service, &selection.account_id)?;
@@ -118,6 +122,21 @@ async fn initialize_scrub_index(
     tokio::task::spawn_blocking(move || state.initialize(&owner, request))
         .await
         .map_err(|_| "Scrub initialization was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_index_scan(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    import_id: String,
+) -> Result<LocalPrivacyScanResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.read_scan(&owner, &import_id))
+        .await
+        .map_err(|_| "Scrub review loading was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -1780,6 +1799,7 @@ fn main() {
             initialize_scrub_index,
             append_scrub_index_chunk,
             get_scrub_index_status,
+            get_scrub_index_scan,
             pause_scrub_index,
             resume_scrub_index,
             cancel_scrub_index,

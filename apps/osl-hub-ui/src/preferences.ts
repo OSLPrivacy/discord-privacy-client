@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { hasTauriBridge, invoke } from "./dev-preview";
 import {
   defaultOnboardingPreferences,
   parseRustOnboardingPreferences,
@@ -11,7 +11,7 @@ const browserSetupKey = "osl-preview-setup";
 const browserCompleteKey = "osl-preview-onboarded";
 
 export function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return hasTauriBridge();
 }
 
 export async function loadOnboardingPreferences(): Promise<OnboardingPreferences> {

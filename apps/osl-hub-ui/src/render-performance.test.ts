@@ -63,7 +63,7 @@ describe("truthful bounded startup", () => {
     expect(bootstrap).not.toContain("const browserImportsRequest =");
     expect(bootstrap).toContain('withNativeDeadline(loadHubLicenseState(), "Load plan", bootSupportDeadlineMs)');
     expect(bootstrap).toContain("renderNow();");
-    expect(bootstrap).toContain('onboardingRoute === "browser") void refreshBrowserImportReadiness()');
+    expect(bootstrap).toContain('onboardingRoute === "import") void refreshBrowserImportReadiness()');
     expect(bootstrap).toContain('onboardingRoute === "mullvad") void refreshMullvadSetup()');
     expect(bootstrap).toContain("Promise.all([servicesRequest, nativeAppsRequest, firefoxRequest, licenseRequest])");
     expect(bootstrap).toContain("if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog))");

@@ -44,6 +44,11 @@ description = "Read bounded progress metadata for the active identity's encrypte
 commands.allow = ["get_scrub_index_status"]
 
 [[permission]]
+identifier = "allow-get-scrub-index-scan"
+description = "Decrypt the active identity's bounded authenticated Scrub chunks in memory and reproduce the local review findings without writing plaintext."
+commands.allow = ["get_scrub_index_scan"]
+
+[[permission]]
 identifier = "allow-pause-scrub-index"
 description = "Pause the exact active local Scrub import by its random identifier."
 commands.allow = ["pause_scrub_index"]

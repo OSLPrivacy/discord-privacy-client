@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./dev-preview";
 import { isTauriRuntime } from "./preferences";
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
@@ -119,6 +119,9 @@ export interface LocalPrivacyScanResult {
   truncated: boolean;
   analysisLocation: "this_device_only";
   persisted: false;
+}
+export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
+  persisted: true;
 }
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
@@ -529,11 +532,21 @@ export function parseFullCleanup(raw: unknown): HubFullCleanupResult | null {
 }
 
 export function parseLocalPrivacyScan(raw: unknown): LocalPrivacyScanResult | null {
+  return parsePrivacyScan(raw, false);
+}
+
+export function parsePersistedLocalPrivacyScan(raw: unknown): PersistedLocalPrivacyScanResult | null {
+  return parsePrivacyScan(raw, true);
+}
+
+function parsePrivacyScan(raw: unknown, persisted: false): LocalPrivacyScanResult | null;
+function parsePrivacyScan(raw: unknown, persisted: true): PersistedLocalPrivacyScanResult | null;
+function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null {
   if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"])) return null;
-  if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > 2_000 || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== false) return null;
+  if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > 2_000 || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== persisted) return null;
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
-  return { ...raw, findings } as LocalPrivacyScanResult;
+  return { ...raw, findings } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {

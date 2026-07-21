@@ -14,11 +14,10 @@ function functionSource(name: string, nextName: string): string {
 
 describe("zero-knowledge Scrub review", () => {
   it("keeps first-run Scrub local-only without scanning or deleting", () => {
-    const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
+    const onboarding = functionSource("scrubSetupContent", "scrubAccountSelections");
     const settings = functionSource("privacySettingsContent", "privacyScanResultsMarkup");
-    expect(onboarding).toContain("This stays on your device.");
-    expect(onboarding).toContain("Nothing is uploaded or deleted.");
-    expect(onboarding).toContain("Stores only exports you choose and messages OSL already shows.");
+    expect(onboarding).toContain("This device only.");
+    expect(onboarding).toContain("Nothing is deleted without explicit confirmation.");
     expect(onboarding).not.toContain("privacy-export-input");
     expect(settings).toMatch(/return `<h2>Scrub<\/h2><p class="scrub-local-promise"><strong>Your messages never leave this device\.<\/strong>[\s\S]*\$\{scanActions\}/);
   });
@@ -32,22 +31,24 @@ describe("zero-knowledge Scrub review", () => {
     expect(categories).toContain("scrubSignalDefinitions.map(({ id }) => id)");
   });
 
-  it("initializes only an encrypted local index without implying deletion", () => {
-    const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
-    expect(onboarding).toContain('id="initialize-scrub"');
-    expect(onboarding).toContain("Private index created");
-    expect(onboarding).toContain("waits for an explicit export or supported OSL-visible source");
-    expect(onboarding).toContain("Nothing is deleted now.");
-    expect(onboarding).not.toContain("Scanning…");
-    expect(onboarding).not.toContain("Not now");
+  it("records a setup plan without initializing or scanning", () => {
+    const onboarding = functionSource("scrubSetupContent", "scrubAccountSelections");
+    expect(onboarding).toContain('data-scrub-mode="${mode}"');
+    expect(onboarding).toContain('data-scrub-target="${escapeHtml(id)}"');
+    expect(onboarding).toContain('id="finish-scrub-setup"');
+    expect(onboarding).toContain('id="skip-scrub-setup"');
+    expect(source).not.toContain("function onboardingScrubContent");
+    expect(onboarding).not.toContain('id="initialize-scrub"');
   });
 
   it("states that later deletion retains explicit review and confirmation", () => {
-    const onboarding = functionSource("onboardingScrubContent", "bindOnboarding");
+    const onboarding = functionSource("scrubSetupContent", "scrubAccountSelections");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(onboarding).toContain("Nothing is deleted now.");
-    expect(onboarding).toContain("editable list and your confirmation");
+    expect(onboarding).toContain("Review before removing.");
+    expect(onboarding).toContain("explicit confirmation");
+    expect(binding).not.toContain("initializeOnboardingScrub");
     expect(binding).not.toContain("scanPrivacyExport");
+    expect(binding).not.toContain('id="initialize-scrub"');
     expect(binding).not.toContain("bindScrubControls");
   });
 

@@ -68,6 +68,7 @@ describe("bundled preview security boundary", () => {
       "allow-initialize-scrub-index",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
+      "allow-get-scrub-index-scan",
       "allow-pause-scrub-index",
       "allow-resume-scrub-index",
       "allow-cancel-scrub-index",

@@ -78,7 +78,7 @@ describe("local message export import", () => {
     expect(Object.keys(globalThis).includes("invoke")).toBe(false);
   });
 
-  it("keeps the UI import and native scan on a stateless local-only path", () => {
+  it("routes the UI import through the encrypted local Scrub index", () => {
     const ui = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const scanStart = ui.indexOf("async function scanPrivacyExport");
     const scanEnd = ui.indexOf("function sendingSettingsContent", scanStart);
@@ -86,20 +86,14 @@ describe("local message export import", () => {
     expect(scanStart).toBeGreaterThanOrEqual(0);
     expect(scanEnd).toBeGreaterThan(scanStart);
     expect(scanFlow).toContain("importLocalMessageExport(await file.text()");
-    expect(scanFlow).toContain("await scanLocalPrivacy(candidates)");
+    expect(scanFlow).toContain("await persistLocalScrubExport(candidates)");
+    expect(scanFlow).toContain("privacyScanResult = persisted.scan");
     expect(scanFlow).not.toMatch(/localStorage|saveOnboardingPreferences|createServiceAccount|\binvoke\s*\(/);
 
-    const nativeMain = readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
-    const commandStart = nativeMain.indexOf("async fn scan_local_privacy");
-    const commandEnd = nativeMain.indexOf("fn active_unlocked_osl_user_id", commandStart);
-    const command = nativeMain.slice(commandStart, commandEnd);
-    expect(command).toContain("spawn_blocking");
-    expect(command).toContain("privacy_scan::scan_local_messages(messages)");
-    expect(command).not.toMatch(/State<'_|AppHandle|write_|save\(|persist/);
-
-    const scanner = readFileSync(new URL("../../osl-hub/src/privacy_scan.rs", import.meta.url), "utf8");
-    expect(scanner).toContain('analysis_location: "this_device_only"');
-    expect(scanner).toContain("persisted: false");
-    expect(scanner).not.toMatch(/std::fs|OpenOptions|reqwest|ureq/);
+    const pipeline = readFileSync(new URL("./scrub-local.ts", import.meta.url), "utf8");
+    expect(pipeline).toContain("adapters.initialize");
+    expect(pipeline).toContain("adapters.append");
+    expect(pipeline).toContain("adapters.getStatus");
+    expect(pipeline).toContain("adapters.readScan");
   });
 });

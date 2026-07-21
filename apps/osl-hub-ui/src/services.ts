@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./dev-preview";
 import { isTauriRuntime } from "./preferences";
 
 export type ServiceId = "discord" | "telegram" | "instagram" | "snapchat" | "email" | "x" | "slack" | "linkedin" | "teams" | "messenger" | "signal" | "whatsapp";
@@ -205,6 +205,13 @@ export async function installNativeApp(appId: NativeAppId): Promise<NativeAppAct
 export async function loadMullvadStatus(): Promise<MullvadStatus> {
   if (!isTauriRuntime()) return { availability: "unavailable" };
   return parseMullvadStatus(await invoke<unknown>("get_mullvad_status"));
+}
+
+/** Optional preview/future native signal. Unknown runtimes fail closed to showing the choice. */
+export async function loadVpnConnectionDetected(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const raw = await invoke<unknown>("get_vpn_connection_status");
+  return typeof raw === "object" && raw !== null && (raw as { connected?: unknown }).connected === true;
 }
 
 export async function installMullvad(): Promise<MullvadAction> {
