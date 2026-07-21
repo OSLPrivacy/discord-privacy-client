@@ -33,6 +33,7 @@ export interface BrowserAccountImportAction {
 export interface ProtectedBrowserImportAction {
   selectedSources: BrowserImportId[];
   passwordFollowUpSources: BrowserImportId[];
+  sessionOnlySources: BrowserImportId[];
   started: true;
   mode: "firefoxMigrationWizard";
   sourceSelected: boolean;
@@ -324,13 +325,21 @@ export async function beginProtectedBrowserImport(browserIds: readonly BrowserIm
     throw new Error("protected browser import unavailable");
   }
   const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources });
-  if (!isExactRecord(raw, ["selectedSources", "passwordFollowUpSources", "started", "mode", "sourceSelected", "manualFallback"])
-    || !Array.isArray(raw.selectedSources)
+  if (!isExactRecord(raw, ["selectedSources", "passwordFollowUpSources", "sessionOnlySources", "started", "mode", "sourceSelected", "manualFallback"])) {
+    throw new Error("invalid protected browser import response");
+  }
+  const passwordFollowUpSources = raw.passwordFollowUpSources;
+  const sessionOnlySources = raw.sessionOnlySources;
+  if (!Array.isArray(raw.selectedSources)
     || raw.selectedSources.length !== selectedSources.length
     || raw.selectedSources.some((id, index) => id !== selectedSources[index])
-    || !Array.isArray(raw.passwordFollowUpSources)
-    || raw.passwordFollowUpSources.some((id) => !selectedSources.includes(id as BrowserImportId))
-    || new Set(raw.passwordFollowUpSources).size !== raw.passwordFollowUpSources.length
+    || !Array.isArray(passwordFollowUpSources)
+    || passwordFollowUpSources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || new Set(passwordFollowUpSources).size !== passwordFollowUpSources.length
+    || !Array.isArray(sessionOnlySources)
+    || sessionOnlySources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || new Set(sessionOnlySources).size !== sessionOnlySources.length
+    || sessionOnlySources.some((id) => passwordFollowUpSources.includes(id))
     || raw.started !== true
     || raw.mode !== "firefoxMigrationWizard"
     || typeof raw.sourceSelected !== "boolean"

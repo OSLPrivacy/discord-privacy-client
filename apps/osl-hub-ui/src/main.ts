@@ -1265,7 +1265,7 @@ function bindBrowserImportControls(): void {
       // Firefox cannot directly import passwords from every Chromium build.
       // Reuse the selected browser's real session by default so setup never
       // implies that the isolated Firefox profile received credentials it did not.
-      if (result.passwordFollowUpSources.length > 0) {
+      if (result.passwordFollowUpSources.length > 0 || result.sessionOnlySources.length > 0) {
         useDefaultBrowserCompanion = true;
         localStorage.setItem("osl-default-browser-companion-v1", "true");
       }
@@ -1276,8 +1276,8 @@ function bindBrowserImportControls(): void {
       persistBrowserImportQueue();
       resetOnboardingBranch();
       resetOnboardingConnections();
-      showToast(result.passwordFollowUpSources.length > 0
-        ? "Browser data imported; existing browser sessions stay available in OSL"
+      showToast(result.passwordFollowUpSources.length > 0 || result.sessionOnlySources.length > 0
+        ? "Browser data imported where supported; existing sessions stay available in OSL"
         : "Browser import finished");
       await enterCombinedAppChoice();
     } catch (failure) {

@@ -99,6 +99,7 @@ pub struct BrowserAccountImportResult {
 pub struct ProtectedBrowserImportResult {
     pub selected_sources: Vec<BrowserImportId>,
     pub password_follow_up_sources: Vec<BrowserImportId>,
+    pub session_only_sources: Vec<BrowserImportId>,
     pub started: bool,
     pub mode: &'static str,
     pub source_selected: bool,
@@ -944,7 +945,16 @@ pub fn begin_protected_browser_import(
         })?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
         let mut password_follow_up_sources = Vec::new();
+        let mut session_only_sources = Vec::new();
         for (index, source) in unique.iter().copied().enumerate() {
+            // Current Firefox does not expose another Firefox profile through
+            // this migration surface. Preserve the user's real Firefox
+            // session through OSL's existing-browser companion instead of
+            // opening a source picker that cannot complete.
+            if source == BrowserImportId::Firefox {
+                session_only_sources.push(source);
+                continue;
+            }
             let firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
                 .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
             if !firefox_process
@@ -983,6 +993,7 @@ pub fn begin_protected_browser_import(
         Ok(ProtectedBrowserImportResult {
             selected_sources: unique,
             password_follow_up_sources,
+            session_only_sources,
             started: true,
             mode: "firefoxMigrationWizard",
             source_selected: true,
