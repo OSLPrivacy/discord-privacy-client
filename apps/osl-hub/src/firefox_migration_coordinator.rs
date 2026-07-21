@@ -84,14 +84,55 @@ mod windows_impl {
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
-        SetForegroundWindow, ShowWindow, SW_SHOWNOACTIVATE, WM_CLOSE,
+        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
+        IsWindowVisible, PostMessageW, SetForegroundWindow, ShowWindow, SW_SHOWNOACTIVATE,
+        WM_CLOSE,
     };
 
     const WINDOW_WAIT: Duration = Duration::from_secs(8);
     const PROFILE_ITEM_WAIT: Duration = Duration::from_secs(2);
     const TREE_LIMIT: usize = 512;
+
+    pub(super) fn foreground_window() -> isize {
+        unsafe { GetForegroundWindow() as isize }
+    }
+
+    fn restore_foreground(window: isize) {
+        if window == 0 || unsafe { IsWindow(window as SysHwnd) } == 0 {
+            return;
+        }
+        let target = window as SysHwnd;
+        let current_foreground = unsafe { GetForegroundWindow() };
+        if current_foreground == target {
+            return;
+        }
+        let current_thread = unsafe { GetCurrentThreadId() };
+        let foreground_thread = if !current_foreground.is_null() {
+            unsafe { GetWindowThreadProcessId(current_foreground, std::ptr::null_mut()) }
+        } else {
+            0
+        };
+        let target_thread = unsafe { GetWindowThreadProcessId(target, std::ptr::null_mut()) };
+        let attached_foreground = foreground_thread != 0
+            && foreground_thread != current_thread
+            && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
+        let attached_target = target_thread != 0
+            && target_thread != current_thread
+            && target_thread != foreground_thread
+            && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
+        unsafe {
+            ShowWindow(target, SW_SHOWNOACTIVATE);
+            SetForegroundWindow(target);
+            if attached_target {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+            if attached_foreground {
+                AttachThreadInput(current_thread, foreground_thread, 0);
+            }
+        }
+    }
 
     struct ComGuard(bool);
 
@@ -449,10 +490,8 @@ mod windows_impl {
     ) -> Result<(), String> {
         unsafe {
             ShowWindow(window, SW_SHOWNOACTIVATE);
-            if owner_window != 0 {
-                SetForegroundWindow(owner_window as SysHwnd);
-            }
         }
+        restore_foreground(owner_window);
         let root = unsafe { automation.ElementFromHandle(HWND(window as isize)) }
             .map_err(|_| "Firefox migration window is unavailable".to_owned())?;
         let elements = descendants(automation, &root, window_process_id)?;
@@ -491,11 +530,14 @@ mod windows_impl {
                 select_source(&profile)?;
             }
         }
+        restore_foreground(owner_window);
         std::thread::sleep(Duration::from_millis(150));
         let refreshed = descendants(automation, &root, window_process_id)?;
         let action =
             exact_automation_id(&refreshed, IMPORT_AUTOMATION_ID, UIA_ButtonControlTypeId)?;
-        invoke_action(&action)
+        invoke_action(&action)?;
+        restore_foreground(owner_window);
+        Ok(())
     }
 
     pub(super) fn coordinate(
@@ -511,6 +553,7 @@ mod windows_impl {
         let deadline = Instant::now() + WINDOW_WAIT;
         let mut last_error = "Firefox migration window did not appear".to_owned();
         while Instant::now() < deadline {
+            restore_foreground(owner_window);
             let windows = firefox_windows(process_id);
             if windows.len() > 1 {
                 return Err("Firefox exposed ambiguous migration windows".to_owned());
@@ -523,7 +566,10 @@ mod windows_impl {
                     source,
                     owner_window,
                 ) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => {
+                        restore_foreground(owner_window);
+                        return Ok(());
+                    }
                     Err(error) => last_error = error,
                 }
             }
@@ -549,6 +595,16 @@ mod windows_impl {
             .then_some(())
             .ok_or_else(|| "The OSL Firefox import window did not close".to_owned())
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn foreground_window() -> isize {
+    windows_impl::foreground_window()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn foreground_window() -> isize {
+    0
 }
 
 #[cfg(target_os = "windows")]

@@ -883,9 +883,17 @@ pub fn begin_protected_browser_import(
         })?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
         for (index, source) in unique.iter().copied().enumerate() {
+            // Preserve whichever window the user is actually working in. In
+            // normal setup this is OSL; background QA and accessibility use
+            // must not let Firefox steal focus from another desktop app.
+            let foreground_window = crate::firefox_migration_coordinator::foreground_window();
+            let restore_window = if foreground_window != 0 {
+                foreground_window
+            } else {
+                owner_window
+            };
             let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
                 .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
-            thread::sleep(Duration::from_millis(900));
             if firefox_process
                 .try_wait()
                 .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
@@ -899,7 +907,7 @@ pub fn begin_protected_browser_import(
                 .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
                 Some(firefox_process);
             if let Err(error) =
-                crate::firefox_migration_coordinator::coordinate(process_id, source, owner_window)
+                crate::firefox_migration_coordinator::coordinate(process_id, source, restore_window)
             {
                 close_protected_browser_import_process()?;
                 return Err(error);
