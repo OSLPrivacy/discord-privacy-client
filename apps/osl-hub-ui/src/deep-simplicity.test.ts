@@ -26,11 +26,11 @@ describe("radical simplicity on deep screens", () => {
     expect(styles).toContain(".settings-disclosure");
   });
 
-  it("keeps unavailable Scrub automation behind the manual scan", () => {
+  it("keeps transport-gated Scrub automation behind the manual scan", () => {
     const scrub = functionSource("privacySettingsContent", "clearPrivacyScanState");
     expect(scrub.indexOf('for="privacy-export-input"')).toBeLessThan(scrub.indexOf("autoscrub-disclosure"));
     expect(scrub).toContain("Before deleting anything");
-    expect(scrub).toContain("does not delete app messages");
+    expect(scrub).toContain("Only a provider readback can verify removal");
   });
 
   it("keeps Burn limits visible and secondary options collapsed", () => {

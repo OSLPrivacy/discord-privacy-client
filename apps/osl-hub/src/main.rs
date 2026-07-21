@@ -23,6 +23,7 @@ use osl_privacy_hub::native_apps::{
     self, BrowserAccountImportResult, BrowserImportId, BrowserImportResult, BrowserImportStatus,
     FirefoxInstallResult, FirefoxLaunchResult, FirefoxServiceId, FirefoxStatus,
     MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
+    ProtectedBrowserImportResult,
 };
 use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
 use osl_privacy_hub::osl_chat;
@@ -32,8 +33,13 @@ use osl_privacy_hub::password_lifecycle::{
 };
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
+use osl_privacy_hub::scrub_imap::{
+    self, ConfigureImapRequest, ImapAccountRequest, ImapCapability, ImapDeleteResult,
+    ImapEnumeration, ImapInspection, ImapItemRequest, ImapVerification, ScrubImapState,
+};
 use osl_privacy_hub::scrub_index::{
-    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexState, ScrubIndexStatus,
+    selection_requires_registry_ownership, ScrubIndexChunkRequest, ScrubIndexInitializeRequest,
+    ScrubIndexState, ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
@@ -76,6 +82,86 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
     };
     screenshot::apply_to_window(&window, protection)
         .map_err(|_| "Windows capture resistance could not be changed".to_owned())
+}
+
+#[tauri::command]
+async fn configure_scrub_imap_account(
+    app: tauri::AppHandle,
+    request: ConfigureImapRequest,
+) -> Result<ImapCapability, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::configure(&app.state::<ScrubImapState>(), request)
+    })
+    .await
+    .map_err(|_| "IMAP configuration worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+fn get_scrub_imap_capability(
+    state: State<'_, ScrubImapState>,
+    request: ImapAccountRequest,
+) -> ImapCapability {
+    scrub_imap::capability(&state, &request.account_id)
+}
+
+#[tauri::command]
+async fn reauth_scrub_imap_account(
+    app: tauri::AppHandle,
+    request: ImapAccountRequest,
+) -> Result<ImapCapability, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::reauthenticate(&app.state::<ScrubImapState>(), &request.account_id)
+    })
+    .await
+    .map_err(|_| "IMAP re-authentication worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_enumerate(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapEnumeration, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::enumerate(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP enumeration worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_inspect(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapInspection, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::inspect(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP inspection worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_delete(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapDeleteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::delete(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP deletion worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_verify(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapVerification, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::verify(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP verification worker was unavailable".to_owned())
 }
 
 #[tauri::command]
@@ -139,6 +225,9 @@ async fn initialize_scrub_index(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     for selection in &request.selections {
+        if !selection_requires_registry_ownership(request.source, selection)? {
+            continue;
+        }
         let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
             .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
         registry.require_owned(&owner, service, &selection.account_id)?;
@@ -147,6 +236,21 @@ async fn initialize_scrub_index(
     tokio::task::spawn_blocking(move || state.initialize(&owner, request))
         .await
         .map_err(|_| "Scrub initialization was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_index_scan(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    import_id: String,
+) -> Result<LocalPrivacyScanResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.read_scan(&owner, &import_id))
+        .await
+        .map_err(|_| "Scrub review loading was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -660,6 +764,38 @@ async fn begin_browser_account_import(
         .app_local_data_dir()
         .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
     native_apps::begin_browser_account_import(&app_local_data_dir, &owner)
+}
+
+#[tauri::command]
+async fn begin_protected_browser_import(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    browser_ids: Vec<BrowserImportId>,
+) -> Result<ProtectedBrowserImportResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let owner_window = main_window_hwnd(&app)?;
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        native_apps::begin_protected_browser_import(
+            &app_local_data_dir,
+            &owner,
+            browser_ids,
+            owner_window,
+        )
+    })
+    .await
+    .map_err(|_| "The protected browser import worker stopped unexpectedly".to_owned())?
+}
+
+#[tauri::command]
+async fn finish_protected_browser_import(core: State<'_, HubCoreState>) -> Result<(), String> {
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    native_apps::finish_protected_browser_import()
 }
 
 #[tauri::command]
@@ -1969,6 +2105,7 @@ fn main() {
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
             app.manage(ScrubIndexState::default());
+            app.manage(ScrubImapState::default());
             let registration_app = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 registration_app
@@ -1988,6 +2125,13 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_onboarding_preferences,
+            configure_scrub_imap_account,
+            get_scrub_imap_capability,
+            reauth_scrub_imap_account,
+            scrub_imap_enumerate,
+            scrub_imap_inspect,
+            scrub_imap_delete,
+            scrub_imap_verify,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
@@ -1998,6 +2142,7 @@ fn main() {
             initialize_scrub_index,
             append_scrub_index_chunk,
             get_scrub_index_status,
+            get_scrub_index_scan,
             pause_scrub_index,
             resume_scrub_index,
             cancel_scrub_index,
@@ -2032,6 +2177,8 @@ fn main() {
             get_firefox_status,
             install_firefox,
             begin_browser_account_import,
+            begin_protected_browser_import,
+            finish_protected_browser_import,
             launch_firefox_service,
             host_native_app_window,
             resize_native_app_window,

@@ -210,6 +210,7 @@ fn profile_component(id: NativeAppId) -> &'static str {
         NativeAppId::Telegram => "telegram",
         NativeAppId::Signal => "signal",
         NativeAppId::Whatsapp => "whatsapp",
+        NativeAppId::Outlook => "outlook",
     }
 }
 
@@ -243,6 +244,7 @@ fn fixed_secondary_launch(id: NativeAppId) -> FixedSecondaryLaunch {
         NativeAppId::Telegram => FixedSecondaryLaunch::TelegramManyWorkdir,
         NativeAppId::Signal => FixedSecondaryLaunch::SignalUserDataDir,
         NativeAppId::Whatsapp => FixedSecondaryLaunch::Unsupported,
+        NativeAppId::Outlook => FixedSecondaryLaunch::Unsupported,
     }
 }
 

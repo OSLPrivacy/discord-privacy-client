@@ -12,7 +12,7 @@ import {
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import {
-  beginBrowserAccountImport,
+  beginProtectedBrowserImport,
   escapeHtml,
   closeEmbeddedServiceHost,
   configuredTopStripApps,
@@ -22,7 +22,6 @@ import {
   loadBrowserImports,
   homeAppsFromServices,
   hostNativeAppWindow,
-  installFirefox,
   installNativeApp,
   installMullvad,
   loadFirefoxStatus,
@@ -31,7 +30,7 @@ import {
   loadMullvadStatus,
   loadNativeApps,
   openMullvad,
-  openBrowserImport,
+  finishProtectedBrowserImport,
   openEmbeddedHomeApp,
   resizeNativeAppWindow,
   setupEmbeddedHomeApp,
@@ -45,7 +44,7 @@ import {
   type NativeApp,
   type NativeAppId,
   type BrowserImportStatus,
-  type BrowserAccountImportAction,
+  type BrowserImportId,
   type ServiceId,
 } from "./services";
 import {
@@ -73,8 +72,8 @@ import {
   type HubPasswordRoleStatus,
 } from "./core";
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
-import { serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, claimOslUsername, closeOslChatContext, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadOslProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, saveOslProfile, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type OslChatOpenedBatch, type OslProfile, type OslProfileEffect, type OslProfileFrame } from "./adapters";
+import { browserLogo, serviceLogo, providerLogo } from "./logos";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, claimOslUsername, closeOslChatContext, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadOslProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, saveOslProfile, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type OslChatOpenedBatch, type OslProfile, type OslProfileEffect, type OslProfileFrame, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -85,6 +84,11 @@ import { withNativeDeadline } from "./native-deadline";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { getScrubIndexStatus, initializeScrubIndex, type ScrubAccountSelection, type ScrubIndexStatus } from "./scrub-index";
+import { persistLocalScrubExport } from "./scrub-local";
+import { runAutoScrubBatch, summarizeAutoScrubReceipt, unavailableAutoScrubCapabilities, type AutoScrubCapability } from "./autoscrub-flow";
+import { configureScrubImapAccount, createDesktopAutoScrubBridge, prepareScrubImapFindings, type ScrubImapLocator } from "./scrub-imap-ipc";
+import type { ProviderDeletionReceipt, ScopePolicy } from "./scrub-delete-engine";
+import type { ScrubCoverageReceipt } from "./scrub-plan";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { applyAccessibilityPreferences, loadAccessibilityPreferences, saveAccessibilityPreferences, type AccessibilityPreferences, type TextScale } from "./accessibility-preference";
@@ -140,11 +144,13 @@ let mullvadStatus: MullvadStatus = { availability: "unavailable" };
 let mullvadBusy = false;
 let mullvadConnectedConfirmed = false;
 let browserImports: BrowserImportStatus[] = [];
-let browserAccountImport: BrowserAccountImportAction | null = null;
 let browserImportBusy = false;
 let browserReadinessBusy = false;
+let browserImportCancelling = false;
+let browserImportOperation: ReturnType<typeof beginProtectedBrowserImport> | null = null;
+let selectedBrowserImportIds = new Set<BrowserImportId>();
+let browserImportFailureNotice = "";
 let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
-let browserMigrationAwaitingConfirmation = false;
 let savedAccountsReady = false;
 let savedAccountMode: SavedAccountMode = "ask";
 let savedNativeApps = new Set<NativeAppId>();
@@ -195,7 +201,9 @@ let screenshotProtectionEnabled = false;
 let hubIdentities: HubIdentitySlot[] = [];
 let newIdentityRecoveryPhrase: string | null = null;
 let hubPeople: HubPerson[] = [];
-let privacyScanResult: LocalPrivacyScanResult | null = null;
+let privacyScanResult: PersistedLocalPrivacyScanResult | null = null;
+let privacyScanStatus: ScrubIndexStatus | null = null;
+let privacyCoverageReceipt: ScrubCoverageReceipt | null = null;
 let privacyScanFileName: string | null = null;
 let privacyScanBusy = false;
 let enabledScrubSignals = new Set<ScrubSignalGroup>(defaultScrubSignalGroups);
@@ -203,6 +211,12 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
+let autoScrubCapabilities: readonly AutoScrubCapability[] = unavailableAutoScrubCapabilities;
+let autoScrubAccountId = "";
+let autoScrubBusy = false;
+let autoScrubDryRunReceipt: ProviderDeletionReceipt | null = null;
+let autoScrubExecutionReceipt: ProviderDeletionReceipt | null = null;
+let autoScrubError = "";
 let scrubIndexStatus: ScrubIndexStatus | null = null;
 let scrubIndexBusy = false;
 let lastFocusKey = "";
@@ -439,7 +453,7 @@ function refreshActiveBrowserAccountsReady(): void {
   const key = activeBrowserAccountsReadyStorageKey();
   savedAccountsReady = key !== null && localStorage.getItem(key) === "true";
   const pendingKey = activeBrowserImportPendingStorageKey();
-  browserMigrationAwaitingConfirmation = !savedAccountsReady && pendingKey !== null && localStorage.getItem(pendingKey) === "true";
+  if (!savedAccountsReady && pendingKey !== null) localStorage.removeItem(pendingKey);
 }
 
 function saveHomeTilePreferences(): void {
@@ -753,31 +767,16 @@ function onboardingAppsContent(): string {
 
 function browserImportContent(): string {
   const installed = browserImports.filter((browser) => browser.installed);
-  const names = installed.map((browser) => escapeHtml(browser.displayName)).join(", ");
-  const advancedButtons = installed.map((browser) => `<button class="button compact" type="button" data-browser-import="${browser.id}">Prepare export in ${escapeHtml(browser.displayName)}</button>`).join("");
-  const chromeNote = installed.some((browser) => browser.id === "chrome")
-    ? `<p class="saved-account-truth"><strong>Chrome on Windows:</strong> app-bound encryption prevents a silent copy. Firefox will guide a browser-owned CSV export, Windows confirmation, and explicit file selection. Delete that plaintext CSV when Firefox finishes.</p>`
-    : "";
+  const sources = installed.length
+    ? `<fieldset class="browser-detected-sources" ${browserImportBusy ? "disabled" : ""}><legend class="sr-only">Browsers</legend><label class="browser-detected-item browser-import-all"><strong>All detected browsers</strong><input type="checkbox" data-browser-select-all aria-label="Select all detected browsers" ${selectedBrowserImportIds.size === installed.length ? "checked" : ""}/></label><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<strong>${escapeHtml(browser.displayName)}</strong><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImportIds.has(browser.id) ? "checked" : ""}/></label>`).join("")}</div></fieldset>`
+    : `<p class="saved-account-truth">No supported browser detected.</p>`;
   const ready = savedAccountsReady
-    ? `<div class="saved-account-browser-note"><strong>Firefox import marked complete</strong><small>You confirmed the browser-owned import finished. Firefox may offer imported saved logins on supported sites. MFA and CAPTCHA still apply; OSL never receives your passwords.</small></div>`
+    ? `<div class="saved-account-browser-note"><strong>Browser import completed</strong><small>Account contents remain browser-owned.</small></div>`
     : "";
-  const selectedRoute = browserAccountImport
-    ? `<p class="saved-account-truth">Recommended source: ${escapeHtml(browserAccountImport.preferredSource)}. Firefox keeps the final source and confirmation visible among ${browserAccountImport.detectedSources.length} detected browser${browserAccountImport.detectedSources.length === 1 ? "" : "s"}.</p>`
-    : "";
-  const buttonLabel = browserReadinessBusy
-    ? "Checking browsers…"
-    : browserImportBusy
-    ? firefoxStatus.availability === "installed" ? "Opening Firefox…" : "Preparing Firefox…"
-    : browserMigrationAwaitingConfirmation
-      ? "I finished the Firefox import"
-      : savedAccountsReady
-        ? "Import marked complete"
-        : "Import saved accounts";
-  const firefoxNote = !browserReadinessBusy && firefoxStatus.availability === "unavailable"
-    ? `<p class="saved-account-truth">Firefox is required for this visible import and could not be installed automatically on this PC.</p>`
-    : "";
-  const disabled = browserReadinessBusy || browserImportBusy || savedAccountsReady || installed.length === 0 || firefoxStatus.availability === "unavailable";
-  return `<h1 id="route-heading" tabindex="-1">Import browser accounts</h1><p class="compact-lead onboarding-centered-copy">${installed.length ? `Found ${names}.` : "No supported browser was found."} Import stays in Firefox's visible, browser-owned flow.</p><section class="saved-account-browser-note"><strong>Local-only consent</strong><small>Firefox performs the migration into this OSL identity's isolated Firefox profile. Supported web apps then open there in a separate Firefox window. Firefox windows are outside OSL capture resistance. OSL does not scrape or decrypt browser databases, discover accounts, receive passwords, or upload account data.</small></section>${ready}${selectedRoute}${firefoxNote}<button class="button" id="import-saved-accounts" type="button" ${disabled ? "disabled" : ""}>${buttonLabel}</button>${browserMigrationAwaitingConfirmation && !savedAccountsReady ? `<p class="saved-account-truth">Finish the temporary Firefox wizard, return to OSL, then confirm with the same button.</p>` : ""}${chromeNote}<details class="saved-account-advanced"><summary>Advanced browser export</summary><p>Use these only if Firefox asks for a manual export.</p><div class="browser-import-actions">${advancedButtons || "No browser export shortcut is available."}</div></details><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-browser-import" type="button" ${browserImportBusy ? "disabled" : ""}>Continue</button></div>`;
+  const failure = browserImportFailureNotice ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>` : "";
+  const importEnabled = selectedBrowserImportIds.size > 0 && firefoxStatus.availability === "installed" && !browserReadinessBusy && !browserImportBusy;
+  const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : browserImportBusy ? "Cancel import" : "Not now";
+  return `<h1 id="route-heading" tabindex="-1">Import browser data</h1><p class="compact-lead onboarding-centered-copy">Choose browsers, then import once.</p>${sources}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${browserImportBusy ? "Importing…" : selectedBrowserImportIds.size ? "Import selected" : "Choose browsers"}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Stays inside OSL. Windows may ask before protected passwords are used.</p>`;
 }
 
 function persistSavedAccountPreferences(): void {
@@ -814,72 +813,53 @@ function bindSavedAccountControls(): void {
 
 function bindBrowserImportControls(): void {
   document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", async () => {
-    if (browserImportBusy || savedAccountsReady) return;
-    if (browserMigrationAwaitingConfirmation) {
-      savedAccountsReady = true;
-      browserMigrationAwaitingConfirmation = false;
-      const readyKey = activeBrowserAccountsReadyStorageKey();
-      const pendingKey = activeBrowserImportPendingStorageKey();
-      if (!readyKey) throw new Error("Unlock an OSL identity before finishing browser import");
-      localStorage.setItem(readyKey, "true");
-      if (pendingKey) localStorage.removeItem(pendingKey);
-      showToast("Saved accounts ready in OSL Firefox");
-      onboardingRoute = "mullvad";
-      render();
-      void refreshMullvadSetup();
-      return;
-    }
+    if (browserImportBusy || savedAccountsReady || selectedBrowserImportIds.size === 0) return;
     browserImportBusy = true;
+    browserImportFailureNotice = "";
     render();
     try {
-      if (firefoxStatus.availability === "installable") {
-        await withNativeDeadline(installFirefox(), "Start Firefox install");
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 3_000));
-          if (route !== "onboarding" || onboardingRoute !== "browser") return;
-          firefoxStatus = await loadFirefoxStatus().catch(() => firefoxStatus);
-          if (firefoxStatus.availability === "installed") break;
-        }
-        if (firefoxStatus.availability !== "installed") {
-          throw new Error("Firefox is still installing in Windows");
-        }
-      }
-      if (firefoxStatus.availability !== "installed") {
-        throw new Error("Firefox is unavailable on this PC");
-      }
-      if (route !== "onboarding" || onboardingRoute !== "browser") return;
-      browserAccountImport = await withNativeDeadline(beginBrowserAccountImport(), "Open Firefox account migration", 5_000);
-      const pendingKey = activeBrowserImportPendingStorageKey();
-      if (!pendingKey) throw new Error("Unlock an OSL identity before starting browser import");
-      localStorage.setItem(pendingKey, "true");
-      browserMigrationAwaitingConfirmation = true;
-      showToast(browserAccountImport.manualExportRequired
-        ? "Firefox opened — follow its browser-owned export and import steps"
-        : "Temporary Firefox migration window opened");
+      const selected = browserImports.filter((browser) => browser.installed && selectedBrowserImportIds.has(browser.id)).map((browser) => browser.id);
+      const operation = beginProtectedBrowserImport(selected);
+      browserImportOperation = operation;
+      const result = await operation.finally(() => { if (browserImportOperation === operation) browserImportOperation = null; });
+      await finishProtectedBrowserImport();
+      if (!result.sourceSelected || result.selectedSources.some((source, index) => source !== selected[index])) throw new Error("The selected browser queue could not be completed safely.");
+      const readyKey = activeBrowserAccountsReadyStorageKey();
+      if (readyKey) localStorage.setItem(readyKey, "true");
+      savedAccountsReady = true;
+      showToast(result.sessionOnlySources.length || result.passwordFollowUpSources.length ? "Imported supported data; existing sessions stay available" : "Browser import finished");
+      onboardingRoute = "mullvad";
+      void refreshMullvadSetup();
     } catch (failure) {
-      showToast(localActionError(failure, "Saved-account migration could not open"));
+      browserImportFailureNotice = localActionError(failure, "Browser import did not finish");
+      showToast(browserImportFailureNotice);
     } finally {
       browserImportBusy = false;
       render();
     }
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-browser-import]").forEach((button) => button.addEventListener("click", async () => {
-    const browserId = button.dataset.browserImport as BrowserImportStatus["id"];
-    button.disabled = true;
-    try {
-      await openBrowserImport(browserId);
-      showToast("Browser password manager opened — approve export there");
-    } catch (failure) {
-      showToast(localActionError(failure, "Browser password manager could not open"));
-    } finally {
-      button.disabled = false;
-    }
+  document.querySelectorAll<HTMLInputElement>("[data-browser-source]").forEach((input) => input.addEventListener("change", () => {
+    const id = input.dataset.browserSource as BrowserImportId;
+    if (input.checked) selectedBrowserImportIds.add(id); else selectedBrowserImportIds.delete(id);
+    browserImportFailureNotice = "";
+    render();
   }));
-  document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", () => {
+  document.querySelector<HTMLInputElement>("[data-browser-select-all]")?.addEventListener("change", (event) => {
+    selectedBrowserImportIds = (event.currentTarget as HTMLInputElement).checked ? new Set(browserImports.filter((browser) => browser.installed).map((browser) => browser.id)) : new Set();
+    browserImportFailureNotice = "";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", async () => {
+    if (browserImportCancelling) return;
+    browserImportCancelling = true;
+    render();
+    await finishProtectedBrowserImport().catch(() => undefined);
+    await browserImportOperation?.catch(() => undefined);
+    browserImportOperation = null;
     const pendingKey = activeBrowserImportPendingStorageKey();
     if (pendingKey) localStorage.removeItem(pendingKey);
-    browserMigrationAwaitingConfirmation = false;
-    browserAccountImport = null;
+    browserImportBusy = false;
+    browserImportCancelling = false;
     onboardingRoute = "mullvad";
     render();
     void refreshMullvadSetup();
@@ -1701,7 +1681,7 @@ function friendsDialogMarkup(): string {
   const inviteCard = friendCode && friendDisplayId
     ? `<section class="friend-invite" aria-labelledby="friend-id-label"><div><span id="friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
-  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-username-form" class="friend-add-form"><label for="friend-username-input"><span>OSL username</span><input id="friend-username-input" minlength="3" maxlength="30" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required/></label><label for="friend-username-nickname-input"><span>Name them on this device</span><input id="friend-username-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Adding a username never skips verification. Compare the safety number another way before encrypted chat access turns on.</p><details class="settings-disclosure friend-invite-fallback"><summary>Use a long invite instead</summary><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button">Add from invite</button></form></details><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
+  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-username-form" class="friend-add-form"><label for="friend-username-input"><span>OSL username</span><input id="friend-username-input" minlength="3" maxlength="30" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required/></label><label for="friend-username-nickname-input"><span>Name them on this device</span><input id="friend-username-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off until you compare the safety number another way and approve each chat separately.</p><details class="settings-disclosure friend-invite-fallback"><summary>Use a long invite instead</summary><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button">Add from invite</button></form></details><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
 }
 
 function activeServiceBurnTarget(): { serviceId: string; accountId: string } | null {
@@ -1947,9 +1927,10 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
       conversationId: "privacy-scan",
     });
     if (!candidates?.length) throw new Error("No supported messages were found");
-    const result = await scanLocalPrivacy(candidates);
-    if (!result) throw new Error("The trusted local scanner was unavailable");
-    privacyScanResult = result;
+    const persisted = await persistLocalScrubExport(candidates);
+    privacyScanResult = persisted.scan;
+    privacyScanStatus = persisted.status;
+    privacyCoverageReceipt = persisted.receipt;
     selectedScrubFindings.clear();
     scrubResultsPage = 0;
     scrubReviewOpen = false;
@@ -1957,6 +1938,8 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
     privacyScanFileName = file.name.slice(0, 96);
   } catch (failure) {
     privacyScanResult = null;
+    privacyScanStatus = null;
+    privacyCoverageReceipt = null;
     privacyScanFileName = null;
     showToast(localActionError(failure, "The export could not be scanned locally"));
   } finally {
@@ -2012,17 +1995,90 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
-  const autoScrubPlan = proActive ? "PRO ACTIVE · COMING SOON" : "PRO · COMING SOON";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card" aria-disabled="true"><p>Coming soon. It schedules local scans and prepares an editable list. Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details><button class="button compact" type="button" disabled>Unavailable in this build</button></section></details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
+  const autoScrubPlan = proActive ? "PRO · TRANSPORT-GATED" : "PRO REQUIRED";
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked except an explicitly connected IMAP account</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
 }
+
+function autoScrubAccountIds(): string[] {
+  const linked = services.find((service) => service.id === "email")?.accounts.map((account) => account.id) ?? [];
+  const imported = privacyScanResult?.findings.filter((finding) => finding.serviceId === "email").map((finding) => finding.accountId) ?? [];
+  return [...new Set([...linked, ...imported])];
+}
+
+function selectedImapLocators(): ScrubImapLocator[] {
+  if (!autoScrubAccountId) return [];
+  return selectedScrubItems().flatMap(({ finding }) => finding.serviceId === "email" && finding.accountId === autoScrubAccountId && finding.authoredBySelf && finding.canRequestDelete && finding.createdAtUnixMs !== null && !finding.messageLocator.startsWith("local-import-")
+    ? [{ accountId: finding.accountId, mailbox: finding.conversationId, messageId: finding.messageLocator, sinceDate: finding.createdAtUnixMs }]
+    : []);
+}
+
+function autoScrubReceiptMarkup(receipt: ProviderDeletionReceipt | null): string {
+  if (!receipt) return "";
+  const summary = summarizeAutoScrubReceipt(receipt);
+  const items = receipt.items.map((item) => `<li><strong>${escapeHtml(item.outcome)}</strong><span>${escapeHtml(item.itemId)} · ${escapeHtml(item.detail)}</span></li>`).join("");
+  return `<section class="autoscrub-receipt" aria-live="polite"><strong>${escapeHtml(summary.heading)}</strong><p>${escapeHtml(summary.detail)}</p><ul>${items}</ul></section>`;
+}
+
+function autoScrubMarkup(proActive: boolean): string {
+  const accounts = autoScrubAccountIds();
+  if (!autoScrubAccountId || !accounts.includes(autoScrubAccountId)) autoScrubAccountId = accounts[0] ?? "";
+  const capability = autoScrubCapabilities.find((item) => item.providerId === "imap") ?? unavailableAutoScrubCapabilities[0];
+  const eligible = selectedImapLocators().length;
+  const active = proActive && capability.liveConfirmed && Boolean(autoScrubAccountId);
+  const providers = autoScrubCapabilities.map((item) => `<li><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.coverage)}</small></span><b class="status-tag ${item.liveConfirmed ? "active" : ""}">${item.liveConfirmed ? "ACTIVE" : "MANUAL"}</b>${item.unavailableReason ? `<p>${escapeHtml(item.unavailableReason)}</p>` : ""}</li>`).join("");
+  const accountOptions = accounts.map((id) => `<option value="${escapeHtml(id)}" ${id === autoScrubAccountId ? "selected" : ""}>${escapeHtml(id)}</option>`).join("");
+  const unavailableReason = !proActive ? "AutoScrub requires Pro." : !capability.liveConfirmed ? "IMAP is inactive until TLS authentication and mailbox access are live-confirmed." : eligible === 0 ? "Select sent email findings with real Message-ID and date locators. Plain-text lines and ambiguous exports stay manual." : "";
+  return `<section class="autoscrub-card" aria-disabled="${!active}"><header><div><span class="privacy-local-mark">DELETE ENGINE · REVIEW REQUIRED</span><h3>One reviewed batch</h3></div><button class="button compact" id="refresh-autoscrub" type="button" ${autoScrubBusy ? "disabled" : ""}>Check transport</button></header><p>Edit the checked findings above. OSL then re-authenticates, shows a no-delete dry-run receipt, and executes only that reduced scope.</p><ul class="autoscrub-providers">${providers}</ul>${accounts.length ? `<label class="autoscrub-account"><span>Email account</span><select id="autoscrub-account">${accountOptions}</select></label>` : `<p>No email account is available.</p>`}${unavailableReason ? `<p class="autoscrub-unavailable"><strong>Unavailable:</strong> ${escapeHtml(unavailableReason)}</p>` : ""}<label class="autoscrub-confirm"><input id="autoscrub-final-confirmation" type="checkbox" ${active && eligible ? "" : "disabled"}/><span><strong>Final confirmation</strong><small>Delete only the ${eligible} currently selected, eligible ${eligible === 1 ? "message" : "messages"}. This can be irreversible.</small></span></label><button class="button primary" id="run-autoscrub" type="button" ${active && eligible && !autoScrubBusy ? "" : "disabled"}>${autoScrubBusy ? "Working…" : "Dry-run, then delete"}</button>${autoScrubError ? `<p class="autoscrub-error" role="alert">${escapeHtml(autoScrubError)}</p>` : ""}${autoScrubReceiptMarkup(autoScrubDryRunReceipt)}${autoScrubReceiptMarkup(autoScrubExecutionReceipt)}<details class="autoscrub-connect"><summary>Connect an IMAP account</summary><form id="autoscrub-imap-form"><label>Account<select id="autoscrub-imap-account" required>${accountOptions}</select></label><label>IMAP host<input id="autoscrub-imap-host" autocomplete="off" required/></label><label>Username<input id="autoscrub-imap-username" autocomplete="username" required/></label><label>Credential type<select id="autoscrub-imap-auth-kind"><option value="appPassword">App password</option><option value="oauthBearer">OAuth bearer token</option></select></label><label>Credential<input id="autoscrub-imap-secret" type="password" autocomplete="current-password" required/></label><label>Mailbox<input id="autoscrub-imap-mailbox" value="Sent" required/></label><button class="button" type="submit" ${accounts.length ? "" : "disabled"}>Connect and verify</button><p>The credential is handed directly to OS-backed secure storage and is never retained in UI state.</p></form></details><details><summary>Discord and Telegram</summary><p><strong>Manual only.</strong> Discord assistance can restrict or ban an account and remains disabled. Telegram remains unavailable until a real TDLib session is packaged and live-confirmed.</p><p><a href="https://support.discord.com/hc/articles/212500837-How-do-I-permanently-delete-my-account" target="_blank" rel="noreferrer">Discord account deletion</a> · <a href="https://my.telegram.org/auth?to=delete" target="_blank" rel="noreferrer">Telegram account deletion</a></p></details></section>`;
+}
+
+async function refreshAutoScrubCapability(): Promise<void> {
+  if (!autoScrubAccountId) {
+    autoScrubCapabilities = unavailableAutoScrubCapabilities;
+    return;
+  }
+  autoScrubCapabilities = await createDesktopAutoScrubBridge([autoScrubAccountId]).capabilities().catch(() => unavailableAutoScrubCapabilities);
+}
+
+async function executeSelectedAutoScrubBatch(finalConfirmation: boolean): Promise<void> {
+  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const capability = autoScrubCapabilities.find((item) => item.providerId === "imap");
+  const locators = selectedImapLocators();
+  if (!proActive || !capability?.liveConfirmed || !finalConfirmation || !autoScrubAccountId || locators.length === 0) throw new Error("AutoScrub confirmation or live transport is missing");
+  const bridge = createDesktopAutoScrubBridge([autoScrubAccountId]);
+  const result = await runAutoScrubBatch({
+    target: { providerId: "imap", accountId: autoScrubAccountId },
+    prepare: async (stepUp) => {
+      const findings = await prepareScrubImapFindings(locators, stepUp);
+      const itemIds = findings.map((finding) => finding.itemId);
+      const channelIds = [...new Set(findings.map((finding) => finding.channelId))];
+      const policy: ScopePolicy = { providerId: "imap", accountId: autoScrubAccountId, itemIds, channelIds, protectedChannelIds: [], protectedCorrespondentIds: [], maxCount: findings.length, minAgeMs: 0 };
+      return { providerId: "imap", accountId: autoScrubAccountId, findings, approved: policy, requested: policy };
+    },
+    capability,
+    bridge,
+    finalConfirmation,
+    onDryRun: (receipt) => {
+      autoScrubDryRunReceipt = receipt;
+      autoScrubExecutionReceipt = null;
+      render();
+    },
+  });
+  autoScrubExecutionReceipt = result.execution;
+}
+
 
 function clearPrivacyScanState(): void {
   privacyScanResult = null;
+  privacyScanStatus = null;
+  privacyCoverageReceipt = null;
   privacyScanFileName = null;
   selectedScrubFindings.clear();
   scrubResultsPage = 0;
   scrubReviewOpen = false;
   scrubReviewPage = 0;
+  autoScrubDryRunReceipt = null;
+  autoScrubExecutionReceipt = null;
+  autoScrubError = "";
 }
 
 function privacyScanResultsMarkup(): string {
@@ -2037,7 +2093,8 @@ function privacyScanResultsMarkup(): string {
   const selected = [...selectedScrubFindings].filter((index) => matching.some((item) => item.index === index)).length;
   const selectionControls = matching.length ? `<div class="scrub-selection-controls"><button class="text-button" id="select-all-scrub" type="button">Select all ${matching.length}</button><button class="text-button" id="clear-scrub-selection" type="button" ${selected ? "" : "disabled"}>Clear selection</button></div>` : "";
   const pagination = pageCount > 1 ? `<nav class="scrub-pagination" aria-label="Scrub result pages"><button class="button compact" data-scrub-page="${scrubResultsPage - 1}" ${scrubResultsPage === 0 ? "disabled" : ""}>Previous</button><span>${scrubResultsPage + 1} / ${pageCount}</span><button class="button compact" data-scrub-page="${scrubResultsPage + 1}" ${scrubResultsPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>` : "";
-  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">LOCAL · NOT SAVED</span></header>${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
+  const coverage = privacyCoverageReceipt ? `<small>${privacyCoverageReceipt.providerReportedComplete ? "Provider reports complete coverage" : "Export completeness not provider-attested"}${privacyCoverageReceipt.gaps.length ? ` · ${privacyCoverageReceipt.gaps.length} known gap${privacyCoverageReceipt.gaps.length === 1 ? "" : "s"}` : ""}</small>` : "";
+  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small>${coverage}</div><span class="privacy-local-mark">${privacyScanStatus?.persistedEncrypted ? "ENCRYPTED · THIS DEVICE" : "LOCAL"}</span></header>${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
 }
 
 function scrubFindingLabel(category: LocalPrivacyScanResult["findings"][number]["category"]): string {
@@ -2069,7 +2126,7 @@ function scrubReviewDialogMarkup(): string {
   const pageStart = scrubReviewPage * scrubReviewPageSize;
   const items = selected.slice(pageStart, pageStart + scrubReviewPageSize).map(({ finding, index }) => scrubFindingMarkup(finding, index, "review")).join("");
   const pagination = pageCount > 1 ? `<nav class="scrub-pagination" aria-label="Review pages"><button class="button compact" data-scrub-review-page="${scrubReviewPage - 1}" ${scrubReviewPage === 0 ? "disabled" : ""}>Previous</button><span>${scrubReviewPage + 1} / ${pageCount}</span><button class="button compact" data-scrub-review-page="${scrubReviewPage + 1}" ${scrubReviewPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>` : "";
-  return `<dialog class="scrub-review-dialog" id="scrub-review-dialog" aria-labelledby="scrub-review-heading"><div class="scrub-review-card"><header><div><p class="eyebrow">Manual Scrub</p><h2 id="scrub-review-heading">Confirm your list</h2></div><button class="icon-button" id="close-scrub-review" type="button" aria-label="Close review">×</button></header><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Review every checked item before continuing.</p><div class="scrub-review-summary"><strong>${selected.length} selected</strong><span>Nothing is deleted by this build.</span></div><div class="scrub-review-items">${items || `<div class="empty-state"><strong>Nothing selected</strong><p>Close this window and choose the messages you want to review.</p></div>`}</div>${pagination}<footer><p>Confirming only prepares manual directions. It does not contact or change any app.</p><div><button class="button ghost" id="close-scrub-review-footer" type="button">Back</button><button class="button primary" id="confirm-scrub-list" type="button" ${selected.length ? "" : "disabled"}>Confirm this list</button></div></footer></div></dialog>`;
+  return `<dialog class="scrub-review-dialog" id="scrub-review-dialog" aria-labelledby="scrub-review-heading"><div class="scrub-review-card"><header><div><p class="eyebrow">Manual Scrub</p><h2 id="scrub-review-heading">Confirm your list</h2></div><button class="icon-button" id="close-scrub-review" type="button" aria-label="Close review">×</button></header><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Review every checked item before continuing.</p><div class="scrub-review-summary"><strong>${selected.length} selected</strong><span>This review step does not delete anything.</span></div><div class="scrub-review-items">${items || `<div class="empty-state"><strong>Nothing selected</strong><p>Close this window and choose the messages you want to review.</p></div>`}</div>${pagination}<footer><p>Confirming keeps the editable list. Any supported AutoScrub batch still requires fresh authentication, a dry-run, and final confirmation.</p><div><button class="button ghost" id="close-scrub-review-footer" type="button">Back</button><button class="button primary" id="confirm-scrub-list" type="button" ${selected.length ? "" : "disabled"}>Confirm this list</button></div></footer></div></dialog>`;
 }
 
 function openScrubReviewDialogAfterRender(): void {
@@ -2136,6 +2193,70 @@ function bindScrubControls(): void {
     if (!selectedScrubItems().length) return;
     scrubReviewOpen = false;
     render();
+  });
+  document.querySelector<HTMLSelectElement>("#autoscrub-account")?.addEventListener("change", async (event) => {
+    autoScrubAccountId = (event.currentTarget as HTMLSelectElement).value;
+    autoScrubCapabilities = unavailableAutoScrubCapabilities;
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    await refreshAutoScrubCapability();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#refresh-autoscrub")?.addEventListener("click", async () => {
+    if (autoScrubBusy) return;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    render();
+    await refreshAutoScrubCapability();
+    autoScrubBusy = false;
+    render();
+  });
+  document.querySelector<HTMLFormElement>("#autoscrub-imap-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (autoScrubBusy) return;
+    const form = event.currentTarget as HTMLFormElement;
+    const accountId = form.querySelector<HTMLSelectElement>("#autoscrub-imap-account")?.value ?? "";
+    const host = form.querySelector<HTMLInputElement>("#autoscrub-imap-host")?.value.trim() ?? "";
+    const username = form.querySelector<HTMLInputElement>("#autoscrub-imap-username")?.value.trim() ?? "";
+    const authKind = form.querySelector<HTMLSelectElement>("#autoscrub-imap-auth-kind")?.value === "oauthBearer" ? "oauthBearer" as const : "appPassword" as const;
+    const secretInput = form.querySelector<HTMLInputElement>("#autoscrub-imap-secret");
+    const mailbox = form.querySelector<HTMLInputElement>("#autoscrub-imap-mailbox")?.value.trim() ?? "Sent";
+    let secret = secretInput?.value ?? "";
+    if (secretInput) secretInput.value = "";
+    if (!accountId || !host || !username || !secret) return;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    render();
+    try {
+      const result = await configureScrubImapAccount({ accountId, host, username, auth: { kind: authKind, secret }, defaultMailbox: mailbox });
+      secret = "";
+      if (!result.configured || !result.liveConfirmed) throw new Error(result.detail || "IMAP connection was not live-confirmed");
+      autoScrubAccountId = accountId;
+      await refreshAutoScrubCapability();
+    } catch (error) {
+      secret = "";
+      autoScrubError = error instanceof Error ? error.message : "IMAP connection could not be verified";
+    } finally {
+      autoScrubBusy = false;
+      render();
+    }
+  });
+  document.querySelector<HTMLButtonElement>("#run-autoscrub")?.addEventListener("click", async () => {
+    if (autoScrubBusy) return;
+    const confirmed = document.querySelector<HTMLInputElement>("#autoscrub-final-confirmation")?.checked === true;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    render();
+    try {
+      await executeSelectedAutoScrubBatch(confirmed);
+    } catch (error) {
+      autoScrubError = error instanceof Error ? error.message : "AutoScrub stopped without a verified result";
+    } finally {
+      autoScrubBusy = false;
+      render();
+    }
   });
 }
 

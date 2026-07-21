@@ -992,6 +992,43 @@ code {
 .saved-account-browser-note small { display: block; }
 .saved-account-browser-note small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 .browser-import-actions { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
+.browser-detected-sources {
+  margin-top: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-right: 0;
+  border-left: 0;
+}
+.browser-detected-sources > legend { width: 100%; min-height: 38px; }
+.browser-detected-list { border-top: 1px solid var(--line-soft); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.browser-detected-item {
+  min-width: 0;
+  min-height: 62px;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.browser-import-all { border-right: 0; border-bottom: 0; background: var(--brand-wash); }
+.browser-detected-item input { width: 18px; min-height: 18px; margin-left: auto; flex: 0 0 18px; accent-color: var(--brand); }
+.browser-detected-item:nth-child(3n) { border-right: 0; }
+.browser-detected-item .company-logo { width: 27px; height: 27px; flex: 0 0 auto; }
+.browser-detected-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browser-import-actions-primary { flex-direction: column; align-items: center; }
+.browser-import-skip {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.browser-import-skip:hover { color: var(--text); }
 .saved-account-settings > p { color: var(--muted); font-size: 11px; }
 
 .cleanup-lock,
@@ -3348,12 +3385,41 @@ code {
   padding: 16px;
   border: 1px solid var(--line);
   background: var(--panel);
-  opacity: .78;
 }
 .autoscrub-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .autoscrub-card h3 { margin: 8px 0 0; }
 .autoscrub-card p { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .autoscrub-card .button { margin-top: 12px; }
+.autoscrub-providers { margin: 12px 0; padding: 0; list-style: none; border-top: 1px solid var(--line-soft); }
+.autoscrub-providers li { padding: 9px 0; border-bottom: 1px solid var(--line-soft); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; align-items: center; }
+.autoscrub-providers span strong,
+.autoscrub-providers span small { display: block; }
+.autoscrub-providers span small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.autoscrub-providers li > p { grid-column: 1 / -1; margin: 0; }
+.autoscrub-account,
+.autoscrub-confirm { margin: 10px 0 0; display: flex; align-items: center; gap: 10px; }
+.autoscrub-account { justify-content: space-between; }
+.autoscrub-account select { min-width: 220px; }
+.autoscrub-confirm { padding: 10px; border: 1px solid var(--line); background: var(--panel-2); align-items: flex-start; }
+.autoscrub-confirm input { margin-top: 2px; accent-color: var(--brand); }
+.autoscrub-confirm strong,
+.autoscrub-confirm small { display: block; }
+.autoscrub-confirm small { margin-top: 3px; color: var(--muted); }
+.autoscrub-unavailable,
+.autoscrub-error { padding: 8px 10px; border-left: 3px solid var(--warn); background: var(--panel-2); }
+.autoscrub-receipt { margin-top: 12px; padding: 10px; border: 1px solid var(--line); background: var(--panel-2); }
+.autoscrub-receipt > p { margin: 4px 0 8px; }
+.autoscrub-receipt ul { margin: 0; padding-left: 18px; }
+.autoscrub-receipt li { margin-top: 5px; }
+.autoscrub-receipt li strong,
+.autoscrub-receipt li span { display: block; }
+.autoscrub-receipt li span { color: var(--muted); font-size: 11px; }
+.autoscrub-connect { margin-top: 14px; }
+.autoscrub-connect form { padding-top: 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.autoscrub-connect form label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+.autoscrub-connect form button,
+.autoscrub-connect form p { grid-column: 1 / -1; }
+@media (max-width: 720px) { .autoscrub-connect form { grid-template-columns: 1fr; } }
 
 .safety-disclosure {
   margin: 0 0 10px;

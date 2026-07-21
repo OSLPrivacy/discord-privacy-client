@@ -13,7 +13,7 @@ describe("Scrub safety contract", () => {
     expect(source).toContain("select-all-scrub");
     expect(source).toContain("clear-scrub-selection");
     expect(source).toContain("Review selected");
-    expect(source).toContain("delete each message yourself");
+    expect(source).toContain("This review step does not delete anything.");
     const privacyStart = source.indexOf("function privacySettingsContent");
     const privacyEnd = source.indexOf("function privacyScanResultsMarkup", privacyStart);
     const privacyUi = source.slice(privacyStart, privacyEnd);
@@ -21,11 +21,11 @@ describe("Scrub safety contract", () => {
     expect(privacyUi).not.toContain("if (!proActive)");
   });
 
-  it("keeps AutoScrub Pro off and prevents unattended deletion claims", () => {
+  it("keeps AutoScrub Pro transport-gated and prevents unattended deletion claims", () => {
     expect(source).toContain("AutoScrub assistant");
-    expect(source).toContain("PRO · COMING SOON");
-    expect(source).toContain("Nothing happens until you review and confirm every batch.");
-    expect(source).toContain("Unavailable in this build");
+    expect(source).toContain("PRO · TRANSPORT-GATED");
+    expect(source).toContain("fresh authentication, a dry-run, and final confirmation");
+    expect(source).toContain("IMAP is inactive until TLS authentication and mailbox access are live-confirmed.");
     expect(categories).toContain("completeEditableReviewRequiredEveryBatch: true");
     expect(categories).toContain("finalConfirmationRequiredEveryBatch: true");
   });
@@ -33,8 +33,8 @@ describe("Scrub safety contract", () => {
   it("requires confirmation and never simulates platform deletion", () => {
     expect(source).toContain('id="confirm-scrub-list"');
     expect(source).not.toMatch(/function confirmScrubSelection[\s\S]*?window\.confirm/);
-    expect(source).toContain("Nothing is deleted by this build.");
-    expect(source).toContain("This build only gives manual directions. It does not delete app messages.");
+    expect(source).toContain("This review step does not delete anything.");
+    expect(source).toContain("Only a provider readback can verify removal");
     expect(source).not.toContain("Platform messages deleted");
   });
 

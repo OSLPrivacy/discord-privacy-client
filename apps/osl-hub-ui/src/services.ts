@@ -11,7 +11,7 @@ export type HomeAppId = Exclude<ServiceId, "email" | "slack" | "linkedin" | "tea
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
 export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp";
-export type BrowserImportId = "chrome" | "edge" | "firefox" | "brave" | "opera" | "vivaldi";
+export type BrowserImportId = "chrome" | "edge" | "firefox" | "brave" | "opera" | "duckduckgo";
 
 export interface BrowserImportStatus {
   id: BrowserImportId;
@@ -25,6 +25,16 @@ export interface BrowserAccountImportAction {
   opened: true;
   mode: "firefoxMigrationWizard";
   manualExportRequired: boolean;
+}
+
+export interface ProtectedBrowserImportAction {
+  selectedSources: BrowserImportId[];
+  passwordFollowUpSources: BrowserImportId[];
+  sessionOnlySources: BrowserImportId[];
+  started: true;
+  mode: "firefoxMigrationWizard";
+  sourceSelected: boolean;
+  manualFallback: string | null;
 }
 
 export interface NativeApp {
@@ -123,7 +133,7 @@ const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"]
 const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp"];
-const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"];
+const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
   "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ];
@@ -261,6 +271,50 @@ export async function beginBrowserAccountImport(): Promise<BrowserAccountImportA
     throw new Error("invalid browser account import response");
   }
   return raw as unknown as BrowserAccountImportAction;
+}
+
+export async function beginProtectedBrowserImport(browserIds: readonly BrowserImportId[]): Promise<ProtectedBrowserImportAction> {
+  const selectedSources = [...browserIds];
+  if (!isTauriRuntime()
+    || selectedSources.length < 1
+    || selectedSources.length > browserImportIds.length
+    || new Set(selectedSources).size !== selectedSources.length
+    || !selectedSources.every((id) => browserImportIds.includes(id))) {
+    throw new Error("protected browser import unavailable");
+  }
+  const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources });
+  if (!isExactRecord(raw, ["selectedSources", "passwordFollowUpSources", "sessionOnlySources", "started", "mode", "sourceSelected", "manualFallback"])) {
+    throw new Error("invalid protected browser import response");
+  }
+  const passwordFollowUpSources = raw.passwordFollowUpSources;
+  const sessionOnlySources = raw.sessionOnlySources;
+  if (!Array.isArray(raw.selectedSources)
+    || raw.selectedSources.length !== selectedSources.length
+    || raw.selectedSources.some((id, index) => id !== selectedSources[index])
+    || !Array.isArray(passwordFollowUpSources)
+    || passwordFollowUpSources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || new Set(passwordFollowUpSources).size !== passwordFollowUpSources.length
+    || !Array.isArray(sessionOnlySources)
+    || sessionOnlySources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || new Set(sessionOnlySources).size !== sessionOnlySources.length
+    || sessionOnlySources.some((id) => passwordFollowUpSources.includes(id))
+    || raw.started !== true
+    || raw.mode !== "firefoxMigrationWizard"
+    || typeof raw.sourceSelected !== "boolean"
+    || (raw.manualFallback !== null
+      && (typeof raw.manualFallback !== "string"
+        || raw.manualFallback.length < 1
+        || raw.manualFallback.length > 180
+        || /[\u0000-\u001f\u007f]/.test(raw.manualFallback)))
+    || (raw.sourceSelected ? raw.manualFallback !== null : raw.manualFallback === null)) {
+    throw new Error("invalid protected browser import response");
+  }
+  return raw as unknown as ProtectedBrowserImportAction;
+}
+
+export async function finishProtectedBrowserImport(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("finish_protected_browser_import");
 }
 
 export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {

@@ -1,10 +1,15 @@
 import {
+  siBrave,
   siDiscord,
+  siDuckduckgo,
+  siFirefoxbrowser,
   siGmail,
   siGmx,
+  siGooglechrome,
   siInstagram,
   siMaildotcom,
   siMessenger,
+  siOpera,
   siSignal,
   siSlack,
   siSnapchat,
@@ -15,7 +20,7 @@ import {
   siZoho,
 } from "simple-icons";
 import type { SimpleIcon } from "simple-icons";
-import type { ServiceId } from "./services";
+import type { BrowserImportId, ServiceId } from "./services";
 
 const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
   discord: siDiscord,
@@ -37,6 +42,14 @@ const providerIcons: Record<string, SimpleIcon> = {
   maildotcom: siMaildotcom,
 };
 
+const browserIcons: Partial<Record<BrowserImportId, SimpleIcon>> = {
+  chrome: siGooglechrome,
+  firefox: siFirefoxbrowser,
+  brave: siBrave,
+  opera: siOpera,
+  duckduckgo: siDuckduckgo,
+};
+
 export function serviceLogo(id: ServiceId | "signal"): string {
   if (id === "email") return envelopeSvg("Email");
   if (id === "teams") return teamsSvg();
@@ -54,6 +67,16 @@ export function providerLogo(id: string): string {
   const icon = providerIcons[id];
   const fallbackLabels: Record<string, string> = { fastmail: "Fastmail", yahoo: "Yahoo Mail" };
   return icon ? iconSvg(icon) : envelopeSvg(fallbackLabels[id] ?? "Mail");
+}
+
+export function browserLogo(id: BrowserImportId): string {
+  if (id === "edge") return edgeSvg();
+  const icon = browserIcons[id];
+  return icon ? iconSvg(icon) : envelopeSvg("Browser");
+}
+
+function edgeSvg(): string {
+  return `<svg class="company-logo" viewBox="0 0 24 24" role="img" aria-label="Microsoft Edge"><path fill="currentColor" d="M21.7 14.2H8.1c.3 2.8 2.4 4.4 5.4 4.4 2.1 0 3.8-.5 5.4-1.5v4.1A13 13 0 0 1 13 22C6.6 22 2 18 2 12.1 2 6.4 6.4 2 12.2 2 18 2 22 6.1 22 12c0 .8-.1 1.5-.3 2.2ZM8.2 10.7h8.3c-.2-2.7-1.8-4.4-4.1-4.4-2.2 0-3.8 1.7-4.2 4.4Z"/></svg>`;
 }
 
 function iCloudMailSvg(): string {

@@ -4,6 +4,41 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-configure-scrub-imap-account"
+description = "Verify one explicit TLS IMAP endpoint and store its authentication only in the operating-system credential store."
+commands.allow = ["configure_scrub_imap_account"]
+
+[[permission]]
+identifier = "allow-get-scrub-imap-capability"
+description = "Report whether one exact IMAP account is configured and live-confirmed in the current process without returning credentials."
+commands.allow = ["get_scrub_imap_capability"]
+
+[[permission]]
+identifier = "allow-reauth-scrub-imap-account"
+description = "Perform a fresh TLS authentication and mailbox selection for one configured IMAP account and rotate its short-lived authentication epoch."
+commands.allow = ["reauth_scrub_imap_account"]
+
+[[permission]]
+identifier = "allow-scrub-imap-enumerate"
+description = "Search one selected mailbox by exact Message-ID and optional date, returning server-derived deletion findings only."
+commands.allow = ["scrub_imap_enumerate"]
+
+[[permission]]
+identifier = "allow-scrub-imap-inspect"
+description = "Read identity headers for one exact IMAP deletion finding without reading or returning message content."
+commands.allow = ["scrub_imap_inspect"]
+
+[[permission]]
+identifier = "allow-scrub-imap-delete"
+description = "After fresh authentication and an exact own-message fingerprint match, mark one IMAP UID deleted and issue only scoped UID EXPUNGE."
+commands.allow = ["scrub_imap_delete"]
+
+[[permission]]
+identifier = "allow-scrub-imap-verify"
+description = "Verify one exact IMAP Message-ID by server readback and return confirmed-deleted, confirmed-not-deleted, or UNKNOWN."
+commands.allow = ["scrub_imap_verify"]
+
+[[permission]]
 identifier = "allow-claim-hub-username"
 description = "Claim one exact normalized username using the active identity's signed public friend invite; private keys never cross IPC."
 commands.allow = ["claim_hub_username"]
@@ -62,6 +97,11 @@ commands.allow = ["append_scrub_index_chunk"]
 identifier = "allow-get-scrub-index-status"
 description = "Read bounded progress metadata for the active identity's encrypted local Scrub index."
 commands.allow = ["get_scrub_index_status"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-scan"
+description = "Decrypt the active identity's bounded authenticated Scrub chunks in memory and reproduce local review findings without writing plaintext."
+commands.allow = ["get_scrub_index_scan"]
 
 [[permission]]
 identifier = "allow-pause-scrub-index"
@@ -242,6 +282,16 @@ commands.allow = ["install_firefox"]
 identifier = "allow-begin-browser-account-import"
 description = "After explicit local consent, open Firefox's fixed migration wizard in OSL's isolated Firefox profile; browser detection, profile path, executable, and arguments are native fixed values."
 commands.allow = ["begin_browser_account_import"]
+
+[[permission]]
+identifier = "allow-begin-protected-browser-import"
+description = "After explicit local consent, validate a bounded list of detected browser IDs and run the fixed importer queue in the active OSL identity's isolated profile."
+commands.allow = ["begin_protected_browser_import"]
+
+[[permission]]
+identifier = "allow-finish-protected-browser-import"
+description = "Close only the exact retained OSL-owned Firefox migration process after an import finishes, is cancelled, or is skipped."
+commands.allow = ["finish_protected_browser_import"]
 
 [[permission]]
 identifier = "allow-launch-firefox-service"

@@ -178,9 +178,7 @@ pub fn normalize_username_candidate(input: &str) -> Result<String, String> {
         ));
     }
     if !candidate.is_ascii() {
-        return Err(
-            "OSL usernames use only lowercase ASCII letters, numbers, and '_'".to_owned(),
-        );
+        return Err("OSL usernames use only lowercase ASCII letters, numbers, and '_'".to_owned());
     }
     let normalized = candidate.to_ascii_lowercase();
     let bytes = normalized.as_bytes();

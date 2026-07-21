@@ -1,6 +1,8 @@
+pub mod browser_companion;
 pub mod burn_contract;
 pub mod control_contract;
 pub mod external_overlay;
+pub(crate) mod firefox_migration_coordinator;
 pub mod models;
 pub mod native_apps;
 pub mod native_window_host;
@@ -12,6 +14,8 @@ pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
+
+pub(crate) mod windows_executable_trust;
 
 mod atomic_file;
 
@@ -32,6 +36,8 @@ pub mod mass_cleanup;
 pub mod osl_profile;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
+#[cfg(feature = "core")]
+pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 #[cfg(feature = "core")]

@@ -44,7 +44,7 @@ describe("restrained motion system", () => {
   it("keeps loading and the explicit comparison as the only repeating motion", () => {
     const infiniteAnimations = [...styles.matchAll(/animation:\s*([^;]*\binfinite\b[^;]*);/g)].map((match) => match[1]);
     expect(infiniteAnimations.length).toBeGreaterThan(0);
-    expect(infiniteAnimations.every((animation) => /loading-line|placement-|demo-pulse/.test(animation))).toBe(true);
+    expect(infiniteAnimations.every((animation) => /loading-line|placement-|demo-pulse|profile-(?:pulse|shimmer)/.test(animation))).toBe(true);
   });
 
   it("provides complete static states for reduced motion", () => {

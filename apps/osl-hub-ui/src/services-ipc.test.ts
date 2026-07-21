@@ -10,10 +10,12 @@ vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import {
   beginBrowserAccountImport,
+  beginProtectedBrowserImport,
   createEmbeddedServiceAccount,
   closeEmbeddedServiceHost,
   detachNativeAppWindow,
   focusNativeAppWindow,
+  finishProtectedBrowserImport,
   hostNativeAppWindow,
   installFirefox,
   installNativeApp,
@@ -223,6 +225,31 @@ describe("browser-owned import IPC", () => {
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(beginBrowserAccountImport()).resolves.toEqual(response);
     expect(mocks.invoke).toHaveBeenCalledWith("begin_browser_account_import");
+  });
+
+  it("passes the complete exact browser queue in one protected import command", async () => {
+    const response = { selectedSources: ["edge", "chrome", "firefox"], passwordFollowUpSources: ["edge", "chrome"], sessionOnlySources: ["firefox"], started: true, mode: "firefoxMigrationWizard", sourceSelected: true, manualFallback: null };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(beginProtectedBrowserImport(["edge", "chrome", "firefox"])).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("begin_protected_browser_import", { browserIds: ["edge", "chrome", "firefox"] });
+  });
+
+  it("closes only the retained protected import process when cancelling", async () => {
+    mocks.invoke.mockResolvedValueOnce(undefined);
+    await expect(finishProtectedBrowserImport()).resolves.toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledWith("finish_protected_browser_import");
+  });
+
+  it("rejects empty, duplicate, unknown, oversized, or mismatched protected imports", async () => {
+    await expect(beginProtectedBrowserImport([])).rejects.toThrow("protected browser import unavailable");
+    await expect(beginProtectedBrowserImport(["chrome", "chrome"])).rejects.toThrow("protected browser import unavailable");
+    await expect(beginProtectedBrowserImport(["chrome --evil" as "chrome"])).rejects.toThrow("protected browser import unavailable");
+    await expect(beginProtectedBrowserImport(["chrome", "edge", "firefox", "brave", "opera", "duckduckgo", "extra" as "chrome"])).rejects.toThrow("protected browser import unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    mocks.invoke.mockResolvedValueOnce({ selectedSources: ["edge"], passwordFollowUpSources: [], sessionOnlySources: [], started: true, mode: "protectedInApp", sourceSelected: true, manualFallback: null });
+    await expect(beginProtectedBrowserImport(["chrome"])).rejects.toThrow("invalid protected browser import response");
+    mocks.invoke.mockResolvedValueOnce({ selectedSources: ["chrome"], passwordFollowUpSources: [], sessionOnlySources: [], started: true, mode: "firefoxMigrationWizard", sourceSelected: false, manualFallback: null });
+    await expect(beginProtectedBrowserImport(["chrome"])).rejects.toThrow("invalid protected browser import response");
   });
 
   it("uses only the exact Firefox status, install, and allowlisted service commands", async () => {
