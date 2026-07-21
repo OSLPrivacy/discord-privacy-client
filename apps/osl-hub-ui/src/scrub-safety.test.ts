@@ -28,8 +28,13 @@ describe("Scrub safety contract", () => {
     expect(source).toContain("live-confirmed");
     expect(source).toContain("summarizeAutoScrubReceipt");
     expect(source).not.toContain("all removed");
+    expect(source).toContain('let autoScrubPathId: AutoScrubProviderId = "gmail-web"');
+    expect(source).toContain("Existing signed-in hosted session; no re-authentication");
+    expect(source).toContain("Optional: use IMAP instead");
+    expect(source).toContain('autoScrubPathId === "discord" ? "discord" : "telegram"');
     expect(categories).toContain("completeEditableReviewRequiredEveryBatch: true");
     expect(categories).toContain("finalConfirmationRequiredEveryBatch: true");
+    expect(categories).toContain("narrowSemanticHostedPortAllowed: true");
   });
 
   it("requires confirmation and never simulates platform deletion", () => {

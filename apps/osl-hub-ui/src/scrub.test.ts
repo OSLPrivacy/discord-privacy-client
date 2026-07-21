@@ -47,12 +47,13 @@ describe("local Scrub category preferences", () => {
     expect(scrubDeletionContract).toEqual({
       browserUiAutomationAllowed: false,
       privateApiAllowed: false,
-      documentedProviderDeleteApiRequired: true,
+      narrowSemanticHostedPortAllowed: true,
+      documentedProviderDeleteApiAllowed: true,
       unattendedDeletionAllowed: false,
       completeEditableReviewRequiredEveryBatch: true,
       finalConfirmationRequiredEveryBatch: true,
       requestedDeletionCountsAsVerified: false,
-      stopOn: ["rate_limit", "challenge", "content_mismatch", "verification_failure"],
+      stopOn: ["captcha", "rate_limit", "challenge", "account_change", "schema_drift", "unknown", "content_mismatch", "verification_failure"],
     });
     expect(Object.isFrozen(scrubDeletionContract)).toBe(true);
   });
@@ -65,6 +66,7 @@ describe("local Scrub category preferences", () => {
       requestedDeletionCountsAsVerified: false,
     };
     expect(scrubDeletionAllowed(safe)).toBe(true);
+    expect(scrubDeletionAllowed({ ...safe, mechanism: "hosted_semantic_delete_port" })).toBe(true);
     expect(scrubDeletionAllowed({ ...safe, deletionEnabled: false })).toBe(false);
     expect(scrubDeletionAllowed({ ...safe, mechanism: "browser_ui_automation" })).toBe(false);
     expect(scrubDeletionAllowed({ ...safe, mechanism: "private_api" })).toBe(false);

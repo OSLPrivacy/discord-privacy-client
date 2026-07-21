@@ -43,8 +43,9 @@ describe("IMAP AutoScrub IPC contract", () => {
     invoke.mockResolvedValue({ configured: true, liveConfirmed: true, authEpoch: null, detail: "ok" });
     const single = await createDesktopAutoScrubBridge(["mail-a"]).capabilities();
     const ambiguous = await createDesktopAutoScrubBridge(["mail-a", "mail-b"]).capabilities();
-    expect(single[0].liveConfirmed).toBe(true);
-    expect(ambiguous[0].liveConfirmed).toBe(false);
+    expect(single.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(true);
+    expect(ambiguous.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(false);
+    expect(single[0]).toMatchObject({ providerId: "gmail-web", primary: true, liveConfirmed: false });
     expect(invoke).toHaveBeenCalledWith("get_scrub_imap_capability", { request: { accountId: "mail-a" } });
   });
 });

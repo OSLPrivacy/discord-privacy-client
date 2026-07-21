@@ -31,7 +31,8 @@ describe("radical simplicity on deep screens", () => {
     expect(scrub.indexOf('for="privacy-export-input"')).toBeLessThan(scrub.indexOf("autoscrub-disclosure"));
     expect(scrub).toContain("Before deleting anything");
     expect(scrub).toContain("Only a provider readback can verify removal within its stated coverage");
-    expect(scrub).toContain("IMAP is inactive until TLS authentication and mailbox access are live-confirmed");
+    expect(scrub).toContain("The default path reuses the account already signed in inside OSL");
+    expect(scrub).toContain("Optional: use IMAP instead");
   });
 
   it("keeps Burn limits visible and secondary options collapsed", () => {

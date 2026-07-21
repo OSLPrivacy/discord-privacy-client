@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
-import type { AutoScrubCapability, AutoScrubProviderBridge, AutoScrubProviderId } from "./autoscrub-flow";
+import { unavailableAutoScrubCapabilities, type AutoScrubCapability, type AutoScrubProviderBridge, type AutoScrubProviderId } from "./autoscrub-flow";
 import type { DeleteFinding, DeleteInspection, DeleteRequestResult, DeleteVerification, ScrubDeleteAdapter, StepUpProof } from "./scrub-delete-engine";
 
 export interface ScrubImapConfiguration {
@@ -94,11 +94,15 @@ export function createDesktopAutoScrubBridge(accountIds: readonly string[]): Aut
       }));
       // Capability is intentionally account-specific: never let account A activate account B.
       const liveConfirmed = imapStates.length === 1 && imapStates[0].configured && imapStates[0].liveConfirmed;
-      return [
-        { providerId: "imap", label: "Email (IMAP)", liveConfirmed, coverage: liveConfirmed ? "Message-ID deletion with provider readback" : "No live transport confirmed", unavailableReason: liveConfirmed ? undefined : "Connect and verify an IMAP account." },
-        { providerId: "telegram", label: "Telegram", liveConfirmed: false, coverage: "Manual only", unavailableReason: "TDLib session and readback are not available in this build." },
-        { providerId: "discord", label: "Discord", liveConfirmed: false, coverage: "Manual only", unavailableReason: "Hosted deletion is disabled and not live-verified." },
-      ];
+      return unavailableAutoScrubCapabilities.map((capability) => capability.providerId === "imap" ? {
+        providerId: "imap" as const,
+        label: "Email (IMAP, optional)",
+        liveConfirmed,
+        coverage: liveConfirmed ? "Message-ID deletion with provider readback" : "No live transport confirmed",
+        unavailableReason: liveConfirmed ? undefined : "Optional secondary path: connect and verify an IMAP account.",
+        pathKind: "secondary-api" as const,
+        primary: false,
+      } : capability);
     },
     async adapter(providerId: AutoScrubProviderId, accountId: string, findings: readonly DeleteFinding[], stepUp: StepUpProof): Promise<ScrubDeleteAdapter> {
       if (providerId !== "imap") throw new Error("This provider has no live AutoScrub transport");
