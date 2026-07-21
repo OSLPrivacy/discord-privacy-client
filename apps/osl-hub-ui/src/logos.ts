@@ -5,7 +5,6 @@ import {
   siInstagram,
   siMaildotcom,
   siMessenger,
-  siProtonmail,
   siSignal,
   siSlack,
   siSnapchat,
@@ -32,7 +31,6 @@ const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
 
 const providerIcons: Record<string, SimpleIcon> = {
   gmail: siGmail,
-  proton: siProtonmail,
   tuta: siTuta,
   zoho: siZoho,
   gmx: siGmx,
@@ -48,7 +46,9 @@ export function serviceLogo(id: ServiceId | "signal"): string {
 }
 
 export function providerLogo(id: string): string {
+  if (id === "icloud") return iCloudMailSvg();
   if (id === "outlook") return outlookSvg();
+  if (id === "proton") return protonMailSvg();
   if (id === "yahoo") return yahooSvg();
   if (id === "aol") return aolSvg();
   const icon = providerIcons[id];
@@ -56,12 +56,20 @@ export function providerLogo(id: string): string {
   return icon ? iconSvg(icon) : envelopeSvg(fallbackLabels[id] ?? "Mail");
 }
 
+function iCloudMailSvg(): string {
+  return `<svg class="company-logo provider-logo provider-logo-icloud" viewBox="0 0 24 24" role="img" aria-label="iCloud Mail"><defs><linearGradient id="icloud-mail-gradient" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#62c8ff"/><stop offset="1" stop-color="#1688f8"/></linearGradient></defs><path fill="url(#icloud-mail-gradient)" d="M7.2 19.4h10.2a4.6 4.6 0 0 0 .8-9.1A6.5 6.5 0 0 0 5.9 8.7a5.4 5.4 0 0 0 1.3 10.7Z"/><path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.45" d="M8.1 12.2h7.8v4.6H8.1zM8.4 12.6l3.6 2.5 3.6-2.5"/></svg>`;
+}
+
 function aolSvg(): string {
   return `<svg class="company-logo" viewBox="0 0 24 24" role="img" aria-label="AOL Mail"><path fill="currentColor" d="M2 17.5 7.3 6h2.4L15 17.5h-2.8l-1.1-2.7H5.8l-1.1 2.7H2Zm4.7-5h3.5L8.45 8.2 6.7 12.5Zm9.1 5V6h2.6v9.2H22v2.3h-6.2Z"/><circle cx="14.5" cy="11.8" r="2.8" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="22" cy="16.2" r="1.3" fill="currentColor"/></svg>`;
 }
 
 function outlookSvg(): string {
-  return `<svg class="company-logo" viewBox="0 0 24 24" role="img" aria-label="Microsoft Outlook"><path fill="currentColor" opacity=".72" d="M8 4h14v16H8z"/><path fill="currentColor" d="M2 6h11v12H2z"/><path fill="none" stroke="var(--panel, #fff)" stroke-width="1.8" d="M9.6 12c0 2-1 3.3-2.6 3.3S4.4 14 4.4 12 5.4 8.7 7 8.7 9.6 10 9.6 12Z"/><path fill="none" stroke="var(--panel, #fff)" stroke-width="1.4" d="m13 8 4.4 3.4L22 8"/></svg>`;
+  return `<svg class="company-logo provider-logo provider-logo-outlook" viewBox="0 0 24 24" role="img" aria-label="Microsoft Outlook"><path fill="#1490df" d="M9 3h12v7H9z"/><path fill="#0f78d4" d="M9 10h12v11H9z"/><path fill="#35a7e8" d="m9 10 6 4 6-4v8.8c0 1.2-1 2.2-2.2 2.2H9z"/><path fill="#0a5ea8" d="M2 5.5h11v13H2z"/><path fill="#fff" d="M7.5 8.2c2 0 3.3 1.5 3.3 3.8s-1.3 3.8-3.3 3.8-3.3-1.5-3.3-3.8 1.3-3.8 3.3-3.8Zm0 1.9c-.8 0-1.3.7-1.3 1.9s.5 1.9 1.3 1.9 1.3-.7 1.3-1.9-.5-1.9-1.3-1.9Z"/></svg>`;
+}
+
+function protonMailSvg(): string {
+  return `<svg class="company-logo provider-logo provider-logo-proton" viewBox="0 0 24 24" role="img" aria-label="Proton Mail"><path fill="#6d4aff" d="M2 6.7 8.2 12a2.3 2.3 0 0 0 3-.1l5-4.5v13.1H4.5A2.5 2.5 0 0 1 2 18V6.7Z"/><path fill="#8b6cff" d="M2.7 3.2a.7.7 0 0 0-.7.7v1.3l6.9 5.9a1.2 1.2 0 0 0 1.6 0l1.8-1.6a2.7 2.7 0 0 1-1.2-.6L4.2 3.2H2.7Z"/><path fill="#b6a7ff" d="M21.3 3.2h-1.1l-3 2.6v14.7h2.3A2.5 2.5 0 0 0 22 18V3.9a.7.7 0 0 0-.7-.7Z"/></svg>`;
 }
 
 function yahooSvg(): string {

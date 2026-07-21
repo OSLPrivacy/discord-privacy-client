@@ -1499,8 +1499,16 @@ function trustedHeader(): string {
 }
 
 function homeHeader(): string {
-  const ready = isCoreProtectionReady(core.readiness);
-  return `<div class="trusted-stack home-trusted-stack"><header class="home-header"><button class="home-brand home-brand-home" data-route="home" aria-label="OSL Privacy home"><span class="home-brand-mark" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></span><span class="home-brand-copy"><strong>OSL Privacy</strong></span></button><div class="home-core-state ${ready ? "ready" : "pending"}" role="status"><span class="dot"></span>${ready ? "OSL unlocked" : "Unlock OSL"}</div>${settingsButtonMarkup()}</header>${updateBannerMarkup()}</div>`;
+  const friendRequests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
+  const notificationCount = notificationsEnabled ? appNotifications?.length ?? 0 : 0;
+  return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar"><button class="home-logo-button" data-route="home" aria-label="OSL Privacy home" title="OSL Privacy"><img src="${oslVectorLogoUrl}" alt=""/></button><nav class="home-command-actions" aria-label="Home controls"><button class="home-command-icon" data-open-friends type="button" aria-label="Friends${friendRequests ? `, ${friendRequests} pending` : ""}" title="Friends">${homeCommandIcon("friends")}${friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : ""}</button><button class="home-command-icon" data-notification-settings type="button" aria-label="Notifications${notificationCount ? `, ${notificationCount} new` : ""}" title="Notifications">${homeCommandIcon("notifications")}${notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : ""}</button><button class="home-command-icon" data-route="settings" type="button" aria-label="Settings" title="Settings">${homeCommandIcon("settings")}</button></nav></header>${updateBannerMarkup()}</div>`;
+}
+
+function homeCommandIcon(id: "friends" | "notifications" | "settings" | "organize"): string {
+  if (id === "friends") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.8c0-2-1.8-3.7-4-3.7H7c-2.2 0-4 1.7-4 3.7V20M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM16 11.2c1.7-.3 2.8-1.7 2.8-3.4 0-1.6-1.1-3-2.6-3.3M17.5 14.8c2 .5 3.5 1.9 3.5 3.7V20"/></svg>`;
+  if (id === "notifications") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7ZM10 20h4"/></svg>`;
+  if (id === "organize") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg>`;
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>`;
 }
 
 function settingsButtonMarkup(extraClass = ""): string {
@@ -1511,12 +1519,10 @@ function workspaceContent(): string {
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
   const homeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const configuredAppCount = homeApps.filter((app) => app.linked).length;
   const modules = [
-    { id: "osl-chats", name: "OSL Chats", state: "Coming later", available: false },
-    { id: "osl-groups", name: "OSL Groups", state: "Coming later", available: false },
-    { id: "notifications", name: "Notifications", state: configuredAppCount >= 2 ? "Local activity" : "Connect 2 apps", available: configuredAppCount >= 2 },
-    { id: "osl-notes", name: "OSL Notes", state: "Coming later", available: false },
+    { id: "osl-chats", name: "OSL Chat", available: true },
+    { id: "osl-notes", name: "OSL Notes", available: false },
+    { id: "scrub", name: "Scrub", available: true },
   ] as const;
   const byId = new Map(homeApps.map((app) => [app.id, app]));
   const moduleById = new Map(modules.map((module) => [module.id, module]));
@@ -1527,8 +1533,7 @@ function workspaceContent(): string {
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
-    if (module?.state === "Coming later" && !homeEditMode) return "";
-    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${module.state}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small>${module.state}</small></span></button>${controls}</article>`;
+    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(module.available ? module.name : `${module.name}, coming later`)}" title="${escapeHtml(module.available ? module.name : `${module.name} · Coming later`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong></span></button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
     const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
@@ -1540,24 +1545,14 @@ function workspaceContent(): string {
   const socialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
-  const oslSection = oslTiles ? `<section class="home-app-section"><h2>OSL</h2><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
-  const friendCount = hubPeople.length;
-  const friendId = friendDisplayId ? compactFriendId(friendDisplayId) : null;
-  const activity = notificationsEnabled
-    ? `<button class="friends-activity" data-notification-settings><span class="dot"></span><span><strong>Activity</strong><small>${appNotifications?.length ? `${appNotifications.length} local OSL ${appNotifications.length === 1 ? "event" : "events"}` : "Nothing new"}</small></span></button>`
-    : "";
-  return `<main class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}">
-    <section class="home-primary">
-      <section class="home-apps" aria-labelledby="route-heading"><header><h1 id="route-heading" class="sr-only" tabindex="-1">Apps</h1><button class="button compact" id="edit-home">${homeEditMode ? "Done" : "Edit"}</button></header><div class="home-app-groups"><section class="home-app-section"><h2>Social</h2><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section><section class="home-app-section"><h2>Email</h2><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>${oslSection}</div></section>
-    </section>
-    <aside class="friends-rail" aria-labelledby="friends-heading"><header><h2 id="friends-heading">Friends <span>${friendCount}</span></h2><button class="friends-add" data-open-friends aria-label="Add an OSL friend">+</button></header><div class="friends-rail-list">${peopleListMarkup("home", 8)}</div>${activity}<footer>${friendId ? `<span>Your friend ID</span><code>${escapeHtml(friendId)}</code><button class="text-button" data-open-friends>Share invite</button>` : `<p>Unlock OSL to create your invite.</p>`}</footer></aside>
-  </main>`;
+  const organizeButton = (label: string) => `<button class="home-section-action" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}" title="${homeEditMode ? "Done" : `Customize ${label}`}">${homeCommandIcon("organize")}</button>`;
+  const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><h1 id="route-heading" class="sr-only" tabindex="-1">Home</h1><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
+  return `<main class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section><section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section></div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="OSL Profile"><span aria-hidden="true">O</span><strong>OSL Profile</strong></button></main>`;
 }
 
-function homeModuleIcon(id: "osl-chats" | "osl-groups" | "notifications" | "osl-notes"): string {
+function homeModuleIcon(id: "osl-chats" | "osl-notes" | "scrub"): string {
   if (id === "osl-chats") return `<svg viewBox="0 0 24 24"><path d="M4 5.5h16v10H9l-5 4v-14Z"/><path d="M8 9h8M8 12h5"/></svg>`;
-  if (id === "osl-groups") return `<svg viewBox="0 0 24 24"><circle cx="9" cy="9" r="3"/><circle cx="17" cy="10" r="2.3"/><path d="M3.5 19c.5-3 2.3-4.5 5.5-4.5s5 1.5 5.5 4.5M14.5 15c2.9-.4 4.9.8 6 3.5"/></svg>`;
-  if (id === "notifications") return `<svg viewBox="0 0 24 24"><path d="M6 16.5h12l-1.5-2V10a4.5 4.5 0 0 0-9 0v4.5l-1.5 2Z"/><path d="M10 19h4"/></svg>`;
+  if (id === "scrub") return `<svg viewBox="0 0 24 24"><path d="m5 18 9-9 5 5-6 6H7l-2-2Z"/><path d="m12 11 3-3 5 5-3 3M4 20h16"/></svg>`;
   return `<svg viewBox="0 0 24 24"><path d="M6 3.5h9l3 3V20H6V3.5Z"/><path d="M14.5 3.5V7H18M9 11h6M9 14h6M9 17h4"/></svg>`;
 }
 
@@ -2600,6 +2595,7 @@ function bindWorkspace(): void {
       onboardingRoute = "browser";
     } else {
       route = requestedRoute;
+      if (button.hasAttribute("data-profile-settings")) settingsSection = "account";
     }
     activeService = null;
     activeHomeAppId = null;
@@ -2719,7 +2715,7 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector("#native-app-back")?.addEventListener("click", async () => { await closeActiveServiceSurface(); serviceAccountPickerOpen = false; route = "home"; activeService = null; activeHomeAppId = null; render(); });
-  document.querySelector("#edit-home")?.addEventListener("click", () => { homeEditMode = !homeEditMode; render(); });
+  document.querySelectorAll("[data-edit-home]").forEach((button) => button.addEventListener("click", () => { homeEditMode = !homeEditMode; render(); }));
   document.querySelectorAll<HTMLButtonElement>("[data-tile-move]").forEach((button) => button.addEventListener("click", () => moveHomeTile(button.dataset.tileMove ?? "")));
   document.querySelectorAll<HTMLButtonElement>("[data-tile-toggle]").forEach((button) => button.addEventListener("click", () => toggleHomeTile(button.dataset.tileToggle ?? "")));
   document.querySelectorAll<HTMLElement>("[data-tile-id][draggable=true]").forEach((tile) => {
@@ -3011,7 +3007,7 @@ async function continueOnboardingFromService(): Promise<void> {
 function currentHomeTileIds(): string[] {
   return [
     ...homeAppsFromServices(services).filter((app) => app.visibility === "launch").map((app) => app.id),
-    "osl-chats", "osl-groups", "notifications", "osl-notes",
+    "osl-chats", "osl-notes", "scrub",
   ];
 }
 
@@ -3052,13 +3048,13 @@ function toggleHomeTile(id: string): void {
 }
 
 function openHomeModule(id: string): void {
-  if (id === "osl-chats" || id === "osl-groups") {
+  if (id === "osl-chats") {
     friendsDialogOpen = true;
     friendsDialogPage = 0;
     render();
-  } else if (id === "notifications") {
+  } else if (id === "scrub") {
     route = "settings";
-    settingsSection = "notifications";
+    settingsSection = "scrub";
     render();
   } else {
     showToast("OSL Notes is planned for a later release");

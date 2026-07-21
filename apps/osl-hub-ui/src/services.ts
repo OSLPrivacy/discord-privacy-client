@@ -3,10 +3,10 @@ import { isTauriRuntime } from "./preferences";
 
 export type ServiceId = "discord" | "telegram" | "instagram" | "snapchat" | "email" | "x" | "slack" | "linkedin" | "teams" | "messenger" | "signal" | "whatsapp";
 export type ConnectionState = "demoLinked" | "notLinked";
-export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "fastmail" | "yahoo" | "zoho" | "aol" | "gmx" | "maildotcom";
+export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "fastmail" | "yahoo" | "zoho" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
 export type LaunchState = "available" | "comingSoon";
-export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom";
+export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type HomeAppId = Exclude<ServiceId, "email" | "slack" | "linkedin" | "teams"> | OfferedEmailProvider | "slack" | "linkedin";
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
@@ -120,12 +120,12 @@ export interface NotificationIntegrationEligibility {
 
 const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
-const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom"];
+const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
+  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ];
 const nativePreviewApps: readonly NativeApp[] = [
   { id: "discord", displayName: "Discord", availability: "installable", isolatedProfileAvailable: false, supportsOverlay: false },
@@ -160,6 +160,7 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("aol", "AOL Mail", "email", "aol"),
   homeApp("gmx", "GMX", "email", "gmx"),
   homeApp("maildotcom", "Mail.com", "email", "maildotcom"),
+  homeApp("icloud", "iCloud Mail", "email", "icloud"),
   homeApp("slack", "Slack", "slack", null, "later", "comingSoon"),
   homeApp("linkedin", "LinkedIn messaging", "linkedin", null, "later", "comingSoon"),
 ];

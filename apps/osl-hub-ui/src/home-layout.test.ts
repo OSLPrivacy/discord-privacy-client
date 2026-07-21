@@ -19,19 +19,19 @@ describe("home workspace hierarchy", () => {
   const styles = readRelative("./styles.css");
   const home = functionSource(source, "workspaceContent", "peopleListMarkup");
 
-  it("keeps a radically simple tile grid and friends in their intended regions", () => {
+  it("keeps a radically simple tile grid without a persistent friends rail", () => {
     const apps = home.indexOf('class="app-grid');
-    const friends = home.indexOf('class="friends-rail');
 
     expect(apps).toBeGreaterThanOrEqual(0);
-    expect(friends).toBeGreaterThan(apps);
+    expect(home).not.toContain('class="friends-rail');
     expect(home).not.toContain("home-walkthrough");
     expect(home).not.toContain("osl-chat-tutorial");
     expect(home).toContain("osl-chats");
     expect(home).toContain("osl-notes");
+    expect(home).toContain('name: "Scrub"');
     expect(home).toMatch(/class="[^"]*\bhome-dashboard\b/);
     expect(home).toMatch(/class="[^"]*\bhome-primary\b/);
-    expect(home).toMatch(/<aside class="friends-rail"[^>]*aria-label(?:ledby)?=/);
+    expect(home).toContain('class="home-profile-dock"');
   });
 
   it("uses compact square app launchers instead of a service dropdown", () => {
@@ -44,11 +44,12 @@ describe("home workspace hierarchy", () => {
   });
 
   it("keeps default Home focused on usable modules without removing edit controls", () => {
-    expect(home).toContain('if (module?.state === "Coming later" && !homeEditMode) return "";');
+    expect(home).toContain('module.available ? "" : "disabled"');
     expect(home).toContain("const oslSection = oslTiles ?");
     expect(home).toContain("${oslSection}");
     expect(home).toContain("data-tile-move");
     expect(home).toContain("data-tile-toggle");
+    expect(home).toContain("data-edit-home");
   });
 
   it("removes tile and logo-plate chrome while retaining visible keyboard focus", () => {
@@ -79,16 +80,13 @@ describe("home workspace hierarchy", () => {
     expect(source).not.toContain("<small>Privacy OSL Privacy</small>");
   });
 
-  it("gives only the Home brand a refined large square mark with compact balance", () => {
+  it("uses the official OSL mark alone in the Home corner", () => {
     const homeHeader = functionSource(source, "homeHeader", "settingsButtonMarkup");
-    expect(homeHeader).toContain('class="home-brand home-brand-home"');
-    expect(homeHeader).toContain('class="home-brand-mark"');
+    expect(homeHeader).toContain('class="home-logo-button"');
     expect(homeHeader).toContain('src="${oslVectorLogoUrl}"');
-    expect(styles).toMatch(/\.home-brand-mark\s*\{[^}]*width:\s*56px[^}]*height:\s*56px[^}]*border:[^}]*background:[^}]*box-shadow:/s);
-    expect(styles).toMatch(/\.home-brand-mark\s*\{[^}]*width:\s*68px[^}]*height:\s*68px[^}]*flex-basis:\s*68px/s);
-    expect(styles).toMatch(/\.home-brand-mark \.osl-logo\s*\{[^}]*width:\s*64px[^}]*height:\s*64px/s);
+    expect(homeHeader).not.toContain("OSL Privacy</strong>");
+    expect(styles).toMatch(/\.home-logo-button\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
     expect(styles).toMatch(/\.logo-treatment\s*\{[^}]*filter:[^}]*drop-shadow[^}]*drop-shadow/s);
-    expect(styles).toMatch(/@media \(max-width: 620px\)[\s\S]*?\.home-brand-home \.osl-logo\s*\{[^}]*width:\s*52px[^}]*height:\s*52px/s);
     expect(functionSource(source, "trustedHeader", "homeHeader")).not.toContain("home-brand-mark");
   });
 
@@ -99,10 +97,13 @@ describe("home workspace hierarchy", () => {
     expect(styles).toMatch(/\.command-brand \.osl-logo\s*\{[^}]*width:\s*34px[^}]*height:\s*34px/s);
   });
 
-  it("keeps friends persistently visible on wide screens and responsive on compact screens", () => {
-    expect(styles).toMatch(/\.home-dashboard[^}]*grid-template-columns\s*:[^;]*(?:minmax|fr)[^;]*(?:px|rem|clamp|minmax)/s);
-    expect(styles).toMatch(/\.friends-rail\s*\{/);
-    expect(styles).toMatch(/@media[^{}]*\(max-width:[^)]+\)[\s\S]*?\.home-dashboard[^}]*grid-template-columns\s*:\s*1fr/s);
+  it("keeps friends, notifications, settings, and profile at the screen edges", () => {
+    const homeHeader = functionSource(source, "homeHeader", "settingsButtonMarkup");
+    expect(homeHeader).toContain("data-open-friends");
+    expect(homeHeader).toContain("data-notification-settings");
+    expect(homeHeader).toContain('data-route="settings"');
+    expect(styles).toMatch(/\.home-command-bar\s*\{[^}]*padding:\s*0 24px[^}]*justify-content:\s*space-between/s);
+    expect(styles).toMatch(/\.home-profile-dock\s*\{[^}]*position:\s*fixed[^}]*right:\s*26px[^}]*bottom:\s*24px/s);
   });
 });
 
@@ -147,8 +148,8 @@ describe("home interaction regressions", () => {
     expect(source).not.toContain('window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); showRenderRecovery(); });');
   });
 
-  it("does not eagerly duplicate the entire friends list", () => {
-    expect(source).toContain('peopleListMarkup("home", 8)');
+  it("does not eagerly duplicate the friends list on Home", () => {
+    expect(home).not.toContain('peopleListMarkup("home"');
     expect(source).toMatch(/function friendsDialogMarkup[\s\S]*?route !== "home" \|\| !friendsDialogOpen/);
   });
 
@@ -192,11 +193,11 @@ describe("home interaction regressions", () => {
     expect(opening.indexOf("if (native)")).toBeLessThan(opening.indexOf("launchFirefoxService(app.id)"));
     expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
-    expect(home).toContain("<small>${module.state}</small>");
+    expect(home).not.toContain("<small>${module.state}</small>");
     expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span>');
     expect(home).toContain("Social</h2>");
     expect(home).toContain("Email</h2>");
-    expect(home).toContain("OSL</h2>");
+    expect(home).toContain('aria-label="OSL tools"');
   });
 
   it("acknowledges app clicks immediately and bounds the profile refresh", () => {

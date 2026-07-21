@@ -11,7 +11,7 @@ describe("bundled service marks", () => {
   });
 
   it("renders all fixed email providers locally", () => {
-    for (const id of ["gmail", "outlook", "proton", "fastmail", "yahoo", "aol", "gmx", "maildotcom"]) {
+    for (const id of ["gmail", "outlook", "proton", "fastmail", "yahoo", "aol", "gmx", "maildotcom", "icloud"]) {
       expect(providerLogo(id)).toContain("<svg");
     }
   });
