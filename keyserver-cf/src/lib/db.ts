@@ -135,6 +135,14 @@ export async function rotateUserKeys(
   const now = new Date().toISOString();
   const results = await db.batch([
     db.prepare(
+      `DELETE FROM username_directory
+        WHERE user_id = ?1
+          AND EXISTS (
+            SELECT 1 FROM users
+             WHERE user_id = ?1 AND ik_ed25519_pub = ?2
+          )`,
+    ).bind(input.user_id, expectedCurrentEd25519Pub),
+    db.prepare(
       `UPDATE users
           SET ik_x25519_pub = ?2,
               ik_ed25519_pub = ?3,
@@ -155,7 +163,7 @@ export async function rotateUserKeys(
       expectedCurrentEd25519Pub,
     ),
   ]);
-  if ((results[0]?.meta?.changes ?? 0) !== 1) return null;
+  if ((results[1]?.meta?.changes ?? 0) !== 1) return null;
   return { last_rotated_at: now };
 }
 
@@ -213,6 +221,13 @@ export async function unregisterUserIfCurrent(
             AND ${ownsCurrentKey}`,
         )
         .bind(userId, userId, userId, expectedCurrentEd25519Pub),
+      db
+        .prepare(
+          `DELETE FROM username_directory
+          WHERE user_id = ?
+            AND ${ownsCurrentKey}`,
+        )
+        .bind(userId, userId, expectedCurrentEd25519Pub),
       db
         .prepare(
           `DELETE FROM opk_pool

@@ -51,7 +51,8 @@ pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_
 pub use client::{
     BurnResponse, ControlInboxItem, ControlInboxPostResponse, KeyServerClient,
     LicenseValidateResponse, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
-    RegisterResponse, ReplenishResponse, WrappedKeyPostResponse, WrappedKeyResponse,
+    RegisterResponse, ReplenishResponse, UsernameClaimResponse, UsernameLookupResponse,
+    WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
     DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths, DuressReport,

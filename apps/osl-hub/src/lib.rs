@@ -4,6 +4,8 @@ pub mod external_overlay;
 pub mod models;
 pub mod native_apps;
 pub mod native_window_host;
+#[cfg(feature = "core")]
+pub mod osl_chat;
 pub mod preferences;
 pub mod privacy_scan;
 pub mod service_host;
@@ -26,6 +28,8 @@ pub mod core_bridge;
 pub mod identity_registry;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+#[cfg(feature = "core")]
+pub mod osl_profile;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 #[cfg(feature = "core")]

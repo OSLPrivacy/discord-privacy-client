@@ -39,6 +39,7 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "pending_invitations.json",
     "hub_local_protected.json",
     "hub_people.json",
+    "hub_profile.json",
     "hub_security_preferences.json",
     "store",
 ];

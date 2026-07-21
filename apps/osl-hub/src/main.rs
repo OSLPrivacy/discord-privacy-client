@@ -25,6 +25,8 @@ use osl_privacy_hub::native_apps::{
     MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
 };
 use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
+use osl_privacy_hub::osl_chat;
+use osl_privacy_hub::osl_profile::{HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
@@ -91,6 +93,33 @@ async fn scan_local_privacy(
     tokio::task::spawn_blocking(move || privacy_scan::scan_local_messages(messages))
         .await
         .map_err(|_| "The local privacy scan was interrupted".to_owned())
+}
+
+#[tauri::command]
+async fn get_osl_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Option<HubProfileDto>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    tokio::task::spawn_blocking(move || osl_privacy_hub::osl_profile::get_active_profile(&owner))
+        .await
+        .map_err(|_| "OSL profile read was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn save_osl_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    profile: HubProfileInput,
+) -> Result<HubProfileDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    tokio::task::spawn_blocking(move || {
+        osl_privacy_hub::osl_profile::save_active_profile(&owner, profile)
+    })
+    .await
+    .map_err(|_| "OSL profile save was interrupted".to_owned())?
 }
 
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
@@ -942,6 +971,119 @@ async fn activate_manual_peer_context(
     })
 }
 
+#[tauri::command]
+async fn activate_osl_chat_context(
+    caller: tauri::WebviewWindow,
+    broker: State<'_, HubBrokerState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<ManualPeerContextLease, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may open OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let binding = security::manual_peer_binding(&core, person_id)?;
+    let activated = broker::activate_owned_osl_chat_context(&broker, &owner, binding)?;
+    let scope_approved = security::manual_peer_scope_approved(
+        &core,
+        &activated.lease.service_id,
+        &activated.lease.account_id,
+        activated.person_id.clone(),
+        activated.scope,
+    )?;
+    Ok(ManualPeerContextLease {
+        context_token: activated.lease.context_token,
+        service_id: activated.lease.service_id,
+        account_id: activated.lease.account_id,
+        person_id: activated.person_id,
+        peer_osl_user_id: activated.peer_osl_user_id,
+        scope_approved,
+    })
+}
+
+#[tauri::command]
+async fn close_osl_chat_context(
+    caller: tauri::WebviewWindow,
+    broker: State<'_, HubBrokerState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<(), String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may close OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    broker.clear_osl_chat_context()
+}
+
+#[tauri::command]
+async fn prepare_osl_chat_text(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    plaintext: String,
+    view_once: bool,
+) -> Result<osl_chat::PreparedText, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may send OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_chat::prepare_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            plaintext,
+            view_once,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_osl_chat_text(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<osl_chat::OpenedBatch, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may receive OSL Chats".to_owned());
+    }
+    screenshot::apply_to_window(&caller, runtime::ScreenshotProtection::On)
+        .map_err(|_| "Windows capture resistance is required to receive OSL Chats".to_owned())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_chat::open_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_osl_chat_history(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<osl_chat::HistoryRow>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
+    }
+    screenshot::apply_to_window(&caller, runtime::ScreenshotProtection::On).map_err(|_| {
+        "Windows capture resistance is required to read OSL Chat history".to_owned()
+    })?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_chat::history(&app.state::<HubCoreState>(), &app.state::<HubBrokerState>())
+    })
+    .await
+    .map_err(|error| format!("OSL Chat history worker failed: {error}"))?
+}
+
 /// Produce marker-free encrypted copy text for manual user placement. Nothing
 /// is placed into or sent through the hosted service by this command.
 #[tauri::command]
@@ -1111,6 +1253,80 @@ async fn add_hub_friend(
 ) -> Result<AddFriendResult, String> {
     let _session = session.transition.lock().await;
     security::add_friend_code(&core, &security_state, friend_code, alias)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubUsernameClaim {
+    username: String,
+    osl_user_id: String,
+}
+
+#[tauri::command]
+async fn claim_hub_username(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubUsernameClaim, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let exported = security::export_friend_code(&core)?;
+        let identity = core
+            .osl
+            .identity
+            .lock()
+            .map_err(|_| "OSL identity state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+        let keyserver = core
+            .osl
+            .keyserver
+            .lock()
+            .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL keyserver is not initialized".to_owned())?;
+        let claimed = keyserver
+            .claim_username(&identity, &username, &exported.friend_code)
+            .map_err(|error| format!("OSL username could not be claimed: {error}"))?;
+        Ok(HubUsernameClaim {
+            username: claimed.username,
+            osl_user_id: claimed.user_id,
+        })
+    })
+    .await
+    .map_err(|error| format!("OSL username worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn add_hub_friend_by_username(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let security_state = app.state::<HubSecurityState>();
+        let _owner = active_unlocked_osl_user_id(&core)?;
+        let keyserver = core
+            .osl
+            .keyserver
+            .lock()
+            .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL keyserver is not initialized".to_owned())?;
+        let resolved = keyserver
+            .lookup_username(&username)
+            .map_err(|error| format!("OSL username could not be resolved: {error}"))?;
+        if resolved.username != username {
+            return Err("OSL username lookup did not match the requested username".to_owned());
+        }
+        security::add_friend_code(&core, &security_state, resolved.friend_code, alias)
+    })
+    .await
+    .map_err(|error| format!("OSL username worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1777,6 +1993,8 @@ fn main() {
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             scan_local_privacy,
+            get_osl_profile,
+            save_osl_profile,
             initialize_scrub_index,
             append_scrub_index_chunk,
             get_scrub_index_status,
@@ -1826,6 +2044,11 @@ fn main() {
             remove_service_account,
             activate_local_loopback_context,
             activate_manual_peer_context,
+            activate_osl_chat_context,
+            close_osl_chat_context,
+            prepare_osl_chat_text,
+            open_osl_chat_text,
+            list_osl_chat_history,
             prepare_encrypted_text,
             decrypt_hub_capsule,
             prepare_peer_prose_text,
@@ -1836,6 +2059,8 @@ fn main() {
             open_hub_attachment,
             export_hub_friend_code,
             add_hub_friend,
+            claim_hub_username,
+            add_hub_friend_by_username,
             verify_hub_friend_safety_number,
             list_hub_people,
             set_hub_friend_nickname,

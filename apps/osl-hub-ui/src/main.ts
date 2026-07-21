@@ -74,7 +74,7 @@ import {
 } from "./core";
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
 import { serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, listHubIdentities, listHubPeople, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openPeerProseText, prepareLocalProtectedText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, claimOslUsername, closeOslChatContext, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadOslProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, saveOslProfile, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type OslChatOpenedBatch, type OslProfile, type OslProfileEffect, type OslProfileFrame } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -87,10 +87,13 @@ import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups,
 import { getScrubIndexStatus, initializeScrubIndex, type ScrubAccountSelection, type ScrubIndexStatus } from "./scrub-index";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
+import { applyAccessibilityPreferences, loadAccessibilityPreferences, saveAccessibilityPreferences, type AccessibilityPreferences, type TextScale } from "./accessibility-preference";
+import { applyThemeMod, parseThemeMod, themeModStorageKey, type ThemeMod } from "./theme-mod";
+import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 
-type Route = "onboarding" | "home" | "service" | "settings";
+type Route = "onboarding" | "home" | "service" | "settings" | "osl-chat";
 type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "tutorial" | "detected" | "install" | "apps" | "browser" | "mullvad" | "sending" | "passwords" | "burnpass" | "privacy" | "scrub" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "accessibility" | "developer" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -161,6 +164,12 @@ let updateStatus: UpdateStatus = { state: "unavailable" };
 let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null = null;
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
+let accessibilityPreferences = loadAccessibilityPreferences(localStorage);
+let activeThemeMod: ThemeMod | null = parseThemeMod(localStorage.getItem(themeModStorageKey));
+let oslProfile: OslProfile | null = null;
+let claimedOslUsername: string | null = null;
+let profileDraftAvatar: string | null | undefined;
+let profileSaving = false;
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -174,6 +183,8 @@ let notificationsEnabled = false;
 let notificationAppPreferences: Partial<Record<ServiceId, boolean>> = {};
 let notificationPreviewContent = false;
 let notificationScopeSuggestions = true;
+let notificationChatActivity = true;
+let notificationSecurityActivity = true;
 let activeContextToken: string | null = null;
 let localProtectedSheet: LocalProtectedSheetModel = blankLocalProtectedModel();
 let peerProtectedSheet: PeerProtectedSheetModel = blankPeerProtectedModel();
@@ -212,6 +223,19 @@ let ownedConfirmationBusy = false;
 let ownedConfirmationError = "";
 let navigationIntentEpoch = 0;
 let bootstrapEpoch = 0;
+let activeOslChatPersonId: string | null = null;
+let activeOslChatContext: ManualPeerContext | null = null;
+let oslChatDraft = "";
+let oslChatViewOnce = false;
+let oslChatBusy = false;
+let oslChatBackgroundBusy = false;
+let oslChatOperationEpoch = 0;
+const oslChatMessages = new Map<string, OslChatMessage[]>();
+const oslChatUnread = new Map<string, number>();
+let oslChatMutedPeople = new Set<string>();
+let oslChatRemoteAccessConfirmed = new Set<string>();
+let friendDefaultOslChatEnabled = false;
+let oslChatSettingsPersonId: string | null = null;
 
 const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
@@ -219,6 +243,8 @@ const notificationsStorageKey = "osl-hub-notifications";
 const notificationAppsStorageKey = "osl-hub-notification-apps";
 const notificationPreviewStorageKey = "osl-hub-notification-previews";
 const notificationScopeStorageKey = "osl-hub-notification-scope-suggestions";
+const notificationChatStorageKey = "osl-hub-notification-chats-v1";
+const notificationSecurityStorageKey = "osl-hub-notification-security-v1";
 const screenshotProtectionStorageKey = "osl-hub-screenshot-protection";
 const scrubSignalsStorageKey = "osl-hub-scrub-signals-v1";
 const serviceGuideStorageKey = "osl-hub-service-guide-v1";
@@ -231,6 +257,10 @@ const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
 const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
 const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
+const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
+const oslChatUnreadStorageKey = "osl-chat-unread-v1";
+const oslChatRemoteAccessStorageKey = "osl-chat-remote-access-v1";
+const friendDefaultOslChatStorageKey = "osl-friend-default-chat-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
@@ -362,6 +392,16 @@ function loadUiPreferences(): void {
     }
     const savedApps = JSON.parse(localStorage.getItem(savedNativeAppsStorageKey) ?? "[]") as unknown;
     if (Array.isArray(savedApps)) savedNativeApps = new Set(savedApps.filter((id): id is NativeAppId => typeof id === "string" && supportedNativeAppIds.has(id as NativeAppId)));
+    const mutedPeople = JSON.parse(localStorage.getItem(oslChatMutedStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(mutedPeople)) oslChatMutedPeople = new Set(mutedPeople.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
+    const remoteAccess = JSON.parse(localStorage.getItem(oslChatRemoteAccessStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(remoteAccess)) oslChatRemoteAccessConfirmed = new Set(remoteAccess.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
+    const unread = JSON.parse(localStorage.getItem(oslChatUnreadStorageKey) ?? "{}") as unknown;
+    if (typeof unread === "object" && unread !== null && !Array.isArray(unread)) {
+      for (const [personId, count] of Object.entries(unread).slice(0, 512)) {
+        if (personId.length <= 180 && Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 10_000) oslChatUnread.set(personId, Number(count));
+      }
+    }
   } catch {
     sidebarOrder = [];
     hiddenServices.clear();
@@ -369,12 +409,18 @@ function loadUiPreferences(): void {
     hiddenHomeTiles.clear();
     notificationAppPreferences = {};
     savedNativeApps.clear();
+    oslChatMutedPeople.clear();
+    oslChatRemoteAccessConfirmed.clear();
+    oslChatUnread.clear();
   }
   savedAccountMode = parseSavedAccountMode(localStorage.getItem(savedAccountModeStorageKey));
   savedAccountsReady = false;
   notificationsEnabled = localStorage.getItem(notificationsStorageKey) === "true";
   notificationPreviewContent = localStorage.getItem(notificationPreviewStorageKey) === "true";
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
+  notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
+  notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
+  friendDefaultOslChatEnabled = localStorage.getItem(friendDefaultOslChatStorageKey) === "true";
   screenshotProtectionEnabled = localStorage.getItem(screenshotProtectionStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
 }
@@ -1484,7 +1530,7 @@ function simpleDeviceStatusMarkup(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home") return homeHeader();
+  if (route === "home" || route === "osl-chat") return homeHeader();
   if (route === "service" && activeService && serviceGuideStep !== null) {
     return `<div class="trusted-stack home-trusted-stack"><header class="home-header guide-header"><button class="home-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span class="home-brand-copy"><strong>OSL Privacy</strong></span></button><div class="guide-header-service">${serviceLogo(activeService.id)}<span><strong>${escapeHtml(activeService.displayName)}</strong><small>${isCoreProtectionReady(core.readiness) ? "Ready" : "Needs attention"}</small></span></div>${settingsButtonMarkup()}</header></div>`;
   }
@@ -1500,7 +1546,7 @@ function trustedHeader(): string {
 
 function homeHeader(): string {
   const friendRequests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
-  const notificationCount = notificationsEnabled ? appNotifications?.length ?? 0 : 0;
+  const notificationCount = notificationsEnabled ? visibleAppNotifications().length : 0;
   return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar"><button class="home-logo-button" data-route="home" aria-label="OSL Privacy home" title="OSL Privacy"><img src="${oslVectorLogoUrl}" alt=""/></button><nav class="home-command-actions" aria-label="Home controls"><button class="home-command-icon" data-open-friends type="button" aria-label="Friends${friendRequests ? `, ${friendRequests} pending` : ""}" title="Friends">${homeCommandIcon("friends")}${friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : ""}</button><button class="home-command-icon" data-notification-settings type="button" aria-label="Notifications${notificationCount ? `, ${notificationCount} new` : ""}" title="Notifications">${homeCommandIcon("notifications")}${notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : ""}</button><button class="home-command-icon" data-route="settings" type="button" aria-label="Settings" title="Settings">${homeCommandIcon("settings")}</button></nav></header>${updateBannerMarkup()}</div>`;
 }
 
@@ -1516,6 +1562,7 @@ function settingsButtonMarkup(extraClass = ""): string {
 }
 
 function workspaceContent(): string {
+  if (route === "osl-chat") return oslChatContent();
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
   const homeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
@@ -1547,7 +1594,41 @@ function workspaceContent(): string {
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
   const organizeButton = (label: string) => `<button class="home-section-action" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}" title="${homeEditMode ? "Done" : `Customize ${label}`}">${homeCommandIcon("organize")}</button>`;
   const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><h1 id="route-heading" class="sr-only" tabindex="-1">Home</h1><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
-  return `<main class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section><section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section></div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="OSL Profile"><span aria-hidden="true">O</span><strong>OSL Profile</strong></button></main>`;
+  const profileVisual = oslProfile?.avatar
+    ? `<img src="${escapeHtml(oslProfile.avatar)}" alt=""/>`
+    : `<span aria-hidden="true">${escapeHtml((oslProfile?.displayName || "OSL").slice(0, 1).toUpperCase())}</span>`;
+  const profileStyle = oslProfile ? ` style="--profile-accent:${oslProfile.accentColor};--profile-banner:${oslProfile.bannerColor}" data-profile-frame="${oslProfile.frame}" data-profile-effect="${oslProfile.effect}"` : "";
+  return `<main class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section><section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section></div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="OSL Profile"${profileStyle}>${profileVisual}<strong>${escapeHtml(oslProfile?.displayName ?? "OSL Profile")}</strong></button></main>`;
+}
+
+function oslChatContent(): string {
+  const friends = hubPeople.map((person) => {
+    const last = oslChatMessages.get(person.personId)?.at(-1);
+    return {
+      personId: person.personId,
+      nickname: person.alias ?? "Unnamed friend",
+      verified: person.safetyNumberVerified && !person.pendingKeyChange,
+      ready: person.personId === activeOslChatPersonId && activeOslChatContext?.scopeApproved === true,
+      preview: last?.body ?? null,
+      previewVisible: true,
+      unreadCount: oslChatUnread.get(person.personId) ?? 0,
+      muted: oslChatMutedPeople.has(person.personId),
+    };
+  });
+  const approval = activeOslChatPersonId && activeOslChatContext && !activeOslChatContext.scopeApproved
+    ? `<div class="osl-chat-approval"><span><strong>Turn on this encrypted chat</strong><small>Approves only this OSL friend.</small></span><button class="button primary compact" id="osl-chat-approve" type="button" ${oslChatBusy ? "disabled" : ""}>Enable</button></div>`
+    : "";
+  const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
+  const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
+  return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({ friends, activePersonId: activeOslChatPersonId, messages: activeOslChatPersonId ? oslChatMessages.get(activeOslChatPersonId) ?? [] : [], draft: oslChatDraft, busy: oslChatBusy, viewOnce: oslChatViewOnce, homeLogoUrl: oslVectorLogoUrl })}${settings}</main>`;
+}
+
+function oslChatFriendSettingsMarkup(person: HubPerson): string {
+  const isActive = activeOslChatPersonId === person.personId;
+  const approved = isActive && activeOslChatContext?.scopeApproved === true;
+  const muted = oslChatMutedPeople.has(person.personId);
+  const remoteConfirmed = oslChatRemoteAccessConfirmed.has(person.personId);
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list"><label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><div class="setting-line"><span><strong>You allow</strong><small>${approved ? "Encrypted OSL Chat for this verified friend." : "No OSL Chat access."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div><div class="setting-line"><span><strong>They allow</strong><small>${remoteConfirmed ? "Encrypted OSL Chat confirmed by a signed receipt from their identity." : "Not confirmed yet. OSL updates this after their identity acknowledges a message."}</small></span><span class="status-tag ${remoteConfirmed ? "active" : ""}">${remoteConfirmed ? "Confirmed" : "Waiting"}</span></div><div class="setting-line"><span><strong>Connected services</strong><small>Provider access is approved separately inside each exact account and conversation.</small></span><span class="status-tag">${person.whitelistCount.toLocaleString("en-US")}</span></div></div></div></dialog>`;
 }
 
 function homeModuleIcon(id: "osl-chats" | "osl-notes" | "scrub"): string {
@@ -1620,7 +1701,7 @@ function friendsDialogMarkup(): string {
   const inviteCard = friendCode && friendDisplayId
     ? `<section class="friend-invite" aria-labelledby="friend-id-label"><div><span id="friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
-  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off after adding someone. Compare the verification code another way, then approve each chat separately.</p><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
+  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-username-form" class="friend-add-form"><label for="friend-username-input"><span>OSL username</span><input id="friend-username-input" minlength="3" maxlength="30" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required/></label><label for="friend-username-nickname-input"><span>Name them on this device</span><input id="friend-username-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Adding a username never skips verification. Compare the safety number another way before encrypted chat access turns on.</p><details class="settings-disclosure friend-invite-fallback"><summary>Use a long invite instead</summary><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button">Add from invite</button></form></details><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
 }
 
 function activeServiceBurnTarget(): { serviceId: string; accountId: string } | null {
@@ -1742,7 +1823,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["accessibility", "Accessibility"], ["developer", "Developer"], ["about", "About"]];
   return `<main class="content-viewport settings-page"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="page"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
 }
 
@@ -1753,6 +1834,8 @@ function settingsSectionContent(): string {
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
+  if (settingsSection === "accessibility") return accessibilitySettingsContent();
+  if (settingsSection === "developer") return developerSettingsContent();
   return updateSettingsContent();
 }
 
@@ -2058,7 +2141,19 @@ function bindScrubControls(): void {
 
 function notificationSettingsContent(): string {
   const apps = orderedServices().filter((service) => service.category === "consumer").map((service) => `<label class="notification-app-row">${serviceLogo(service.id)}<span><strong>${escapeHtml(service.displayName)}</strong><small>Unread access is not supported yet</small></span><input type="checkbox" data-notification-app="${service.id}" ${notificationAppPreferences[service.id] !== false ? "checked" : ""}/></label>`).join("");
-  return `<h2>Notifications</h2><p>Local OSL activity only. App unread counts are not supported yet.</p><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Security and app-connection events on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div><details class="settings-disclosure notification-apps"><summary><span><strong>Apps</strong><small>For future unread support</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
+  const visibleNotifications = visibleAppNotifications();
+  const activity = notificationsEnabled && visibleNotifications.length
+    ? visibleNotifications.map((item) => `<article class="notification-event"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><time>${escapeHtml(item.createdAt)}</time></article>`).join("")
+    : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Activity is off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
+  const muted = [...oslChatMutedPeople].flatMap((personId) => {
+    const person = hubPeople.find((candidate) => candidate.personId === personId);
+    return person ? [`<div class="setting-line"><span><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>Messages still arrive without a local alert.</small></span><button class="button compact" data-osl-chat-unmute="${escapeHtml(personId)}" type="button">Unmute</button></div>`] : [];
+  }).join("");
+  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div>${muted ? `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${muted}</div></details>` : ""}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>For future unread support</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
+}
+
+function visibleAppNotifications(): AppNotification[] {
+  return (appNotifications ?? []).filter((item) => item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity);
 }
 
 function identitySettingsContent(): string {
@@ -2066,7 +2161,21 @@ function identitySettingsContent(): string {
     ? hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)} · ${escapeHtml(identity.safetyNumber)}</small></div>${identity.active ? `<span class="status-tag">Active</span>` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("")
     : `<div class="empty-state"><strong>Identity list unavailable</strong><p>Unlock OSL to manage encrypted identity slots.</p></div>`;
   const recovery = newIdentityRecoveryPhrase ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>` : "";
-  return `<h2>Account</h2><p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+  return `<h2>Account</h2>${profileSettingsContent()}${settingsDivider()}${friendDefaultsSettingsContent()}${settingsDivider()}<p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+}
+
+function friendDefaultsSettingsContent(): string {
+  return `<section class="settings-section friend-defaults"><header><div><h3>Friend defaults</h3><p>Defaults apply only after you verify a friend’s safety number.</p></div></header><div class="settings-list"><label class="setting-line interactive"><span><strong>Enable OSL Chat when opened</strong><small>Automatically approve the exact first-party OSL Chat scope for verified friends you choose to open. Provider accounts remain separate.</small></span><input id="friend-default-osl-chat" type="checkbox" ${friendDefaultOslChatEnabled ? "checked" : ""}/></label></div></section>`;
+}
+
+function profileSettingsContent(): string {
+  const profile = oslProfile;
+  const avatar = profileDraftAvatar === undefined ? profile?.avatar ?? null : profileDraftAvatar;
+  const avatarMarkup = avatar ? `<img src="${escapeHtml(avatar)}" alt=""/>` : `<span aria-hidden="true">${escapeHtml((profile?.displayName || "OSL").slice(0, 1).toUpperCase())}</span>`;
+  const frames: OslProfileFrame[] = ["none", "thin", "double", "glow"];
+  const effects: OslProfileEffect[] = ["none", "gradient", "pulse", "shimmer"];
+  const usernameStatus = profile?.usernameCandidate && claimedOslUsername === profile.usernameCandidate ? `@${escapeHtml(profile.usernameCandidate)} is friendable` : "Saving reserves this username";
+  return `<section class="settings-section osl-profile-settings"><header><div><h3>OSL profile</h3><p>Your encrypted profile and public friend identity.</p></div></header><form id="osl-profile-form"><div class="profile-editor-preview" style="--profile-accent:${profile?.accentColor ?? "#06b6d4"};--profile-banner:${profile?.bannerColor ?? "#141414"}" data-profile-frame="${profile?.frame ?? "none"}" data-profile-effect="${profile?.effect ?? "none"}">${avatarMarkup}</div><div class="profile-editor-fields"><label>OSL name<input name="displayName" maxlength="64" value="${escapeHtml(profile?.displayName ?? "")}" autocomplete="nickname" required/></label><label>Username<input name="username" minlength="3" maxlength="30" pattern="[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?" value="${escapeHtml(profile?.usernameCandidate ?? "")}" placeholder="your_name" autocomplete="username" autocapitalize="none" spellcheck="false" required/><small>${usernameStatus}</small></label><label class="profile-status-field">Status<input name="status" maxlength="160" value="${escapeHtml(profile?.status ?? "")}" placeholder="Optional"/></label><label>Accent<input name="accentColor" type="color" value="${profile?.accentColor ?? "#06b6d4"}"/></label><label>Banner<input name="bannerColor" type="color" value="${profile?.bannerColor ?? "#141414"}"/></label><label>Frame<select name="frame">${frames.map((value) => `<option value="${value}" ${profile?.frame === value ? "selected" : ""}>${value}</option>`).join("")}</select></label><label>Effect<select name="effect">${effects.map((value) => `<option value="${value}" ${profile?.effect === value ? "selected" : ""}>${value}</option>`).join("")}</select></label></div><div class="profile-avatar-actions"><label class="button" for="osl-profile-avatar-file">Choose image or GIF</label><input class="sr-only" id="osl-profile-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif"/><label>or HTTPS image URL<input id="osl-profile-avatar-url" type="url" maxlength="2048" value="${avatar?.startsWith("https://") ? escapeHtml(avatar) : ""}" placeholder="https://…"/></label>${avatar ? `<button class="button ghost" id="osl-profile-avatar-remove" type="button">Remove image</button>` : ""}</div><footer><span id="osl-profile-status" role="status"></span><button class="button primary" type="submit" ${profileSaving ? "disabled" : ""}>${profileSaving ? "Saving…" : "Save profile"}</button></footer></form></section>`;
 }
 
 function activationSettingsContent(): string {
@@ -2082,7 +2191,106 @@ function formatUnixDate(seconds: number): string {
 }
 
 function appearanceSettingsContent(): string {
-  return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
+  const custom = activeThemeMod ? `<p class="setting-status"><span class="dot"></span>${escapeHtml(activeThemeMod.name)} theme mod active</p>` : "";
+  return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>${custom}`;
+}
+
+function accessibilitySettingsContent(): string {
+  const toggle = (id: keyof Pick<AccessibilityPreferences, "highContrast" | "reduceMotion" | "largeTargets">, title: string, detail: string): string => `<label class="setting-line interactive"><span><strong>${title}</strong><small>${detail}</small></span><input type="checkbox" data-accessibility-toggle="${id}" ${accessibilityPreferences[id] ? "checked" : ""}/></label>`;
+  return `<h2>Accessibility</h2><p>These choices apply immediately and stay on this device.</p><section class="settings-list accessibility-settings"><label class="setting-line interactive"><span><strong>Text size</strong><small>Increase text throughout OSL.</small></span><select id="accessibility-text-scale" aria-label="Text size"><option value="100" ${accessibilityPreferences.textScale === 100 ? "selected" : ""}>Default</option><option value="112" ${accessibilityPreferences.textScale === 112 ? "selected" : ""}>Large</option><option value="125" ${accessibilityPreferences.textScale === 125 ? "selected" : ""}>Larger</option><option value="150" ${accessibilityPreferences.textScale === 150 ? "selected" : ""}>Largest</option></select></label>${toggle("highContrast", "High contrast", "Strengthen borders, text, and focus indicators.")}${toggle("reduceMotion", "Reduce motion", "Remove nonessential transitions and animations.")}${toggle("largeTargets", "Larger controls", "Keep buttons and interactive rows at least 44 pixels tall.")}</section>`;
+}
+
+function developerSettingsContent(): string {
+  const modState = activeThemeMod ? `<span class="status-tag active">${escapeHtml(activeThemeMod.name)}</span>` : `<span class="status-tag">None installed</span>`;
+  return `<h2>Developer</h2><p>Build OSL from source or install a data-only theme mod.</p><section class="settings-section developer-settings"><header><div><h3>Source</h3><p>Clone the repository, install the UI dependencies, then run the local Vite preview.</p></div><a class="button compact" href="https://github.com/OSLPrivacy/discord-privacy-client" target="_blank" rel="noreferrer">GitHub</a></header><pre><code>git clone https://github.com/OSLPrivacy/discord-privacy-client.git
+cd discord-privacy-client/apps/osl-hub-ui
+npm ci
+npm run dev</code></pre></section><section class="settings-section developer-settings"><header><div><h3>Theme mods</h3><p>Theme mods are JSON data only. Scripts, remote CSS, and unknown fields are rejected.</p></div>${modState}</header><div class="settings-actions"><label class="button" for="theme-mod-input">Install theme mod</label><input class="sr-only" id="theme-mod-input" type="file" accept="application/json,.json"/>${activeThemeMod ? `<button class="button ghost" id="remove-theme-mod" type="button">Remove</button>` : ""}</div><details class="settings-disclosure"><summary>Theme mod format</summary><pre><code>{
+  &quot;version&quot;: 1,
+  &quot;name&quot;: &quot;My theme&quot;,
+  &quot;colors&quot;: {
+    &quot;brand&quot;: &quot;#06b6d4&quot;,
+    &quot;background&quot;: &quot;#0a0a0a&quot;,
+    &quot;panel&quot;: &quot;#141414&quot;,
+    &quot;text&quot;: &quot;#e8e8e8&quot;,
+    &quot;muted&quot;: &quot;#9aa0a6&quot;
+  },
+  &quot;radius&quot;: 6
+}</code></pre></details></section>`;
+}
+
+async function submitOslProfile(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  if (profileSaving) return;
+  const form = event.currentTarget as HTMLFormElement;
+  const field = (name: string): string => (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value.trim() ?? "";
+  const displayName = field("displayName");
+  const usernameCandidate = field("username").replace(/^@/u, "").toLowerCase();
+  if (!isNormalizedOslUsername(usernameCandidate)) {
+    showToast("Use 3–30 lowercase letters, numbers, or interior underscores");
+    return;
+  }
+  const frame = field("frame") as OslProfileFrame;
+  const effect = field("effect") as OslProfileEffect;
+  const avatarUrl = document.querySelector<HTMLInputElement>("#osl-profile-avatar-url")?.value.trim() ?? "";
+  const avatar = profileDraftAvatar !== undefined
+    ? profileDraftAvatar
+    : avatarUrl || (oslProfile?.avatar?.startsWith("data:image/") ? oslProfile.avatar : null);
+  const next: OslProfile = {
+    displayName,
+    usernameCandidate,
+    avatar,
+    accentColor: field("accentColor").toLowerCase(),
+    bannerColor: field("bannerColor").toLowerCase(),
+    frame,
+    effect,
+    status: field("status"),
+  };
+  profileSaving = true;
+  render();
+  const claim = await claimOslUsername(usernameCandidate);
+  if (!claim) {
+    profileSaving = false;
+    showToast("That username could not be reserved");
+    render();
+    return;
+  }
+  const saved = await saveOslProfile(next);
+  profileSaving = false;
+  if (!saved) { showToast("OSL profile could not be saved"); render(); return; }
+  oslProfile = saved;
+  claimedOslUsername = claim.username;
+  profileDraftAvatar = undefined;
+  showToast("OSL profile saved");
+  render();
+}
+
+function bindOslProfileControls(): void {
+  document.querySelector<HTMLFormElement>("#osl-profile-form")?.addEventListener("submit", (event) => void submitOslProfile(event));
+  document.querySelector<HTMLInputElement>("#osl-profile-avatar-file")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) || file.size > 2 * 1024 * 1024) {
+      showToast("Choose a PNG, JPEG, WebP, or GIF up to 2 MiB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result !== "string" || !reader.result.startsWith(`data:${file.type};base64,`)) {
+        showToast("Profile image could not be read");
+        return;
+      }
+      profileDraftAvatar = reader.result;
+      render();
+    });
+    reader.addEventListener("error", () => showToast("Profile image could not be read"));
+    reader.readAsDataURL(file);
+  });
+  document.querySelector<HTMLButtonElement>("#osl-profile-avatar-remove")?.addEventListener("click", () => {
+    profileDraftAvatar = null;
+    render();
+  });
 }
 
 async function prepareServiceBurn(): Promise<void> {
@@ -2570,6 +2778,31 @@ function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
+  document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => void openOslChat(button.dataset.oslChatOpen ?? "")));
+  document.querySelectorAll<HTMLElement>("[data-osl-chat-context]").forEach((row) => row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    oslChatSettingsPersonId = row.dataset.oslChatContext ?? null;
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-settings]").forEach((button) => button.addEventListener("click", () => { oslChatSettingsPersonId = button.dataset.oslChatSettings ?? null; render(); }));
+  const oslChatSettingsDialog = document.querySelector<HTMLDialogElement>("#osl-chat-settings-dialog");
+  if (oslChatSettingsDialog && !oslChatSettingsDialog.open) oslChatSettingsDialog.showModal();
+  document.querySelector<HTMLButtonElement>("#osl-chat-settings-close")?.addEventListener("click", () => { oslChatSettingsPersonId = null; render(); });
+  document.querySelector<HTMLInputElement>("#osl-chat-mute-toggle")?.addEventListener("change", (event) => {
+    const personId = oslChatSettingsPersonId;
+    if (!personId) return;
+    if ((event.currentTarget as HTMLInputElement).checked) oslChatMutedPeople.add(personId); else oslChatMutedPeople.delete(personId);
+    localStorage.setItem(oslChatMutedStorageKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512)));
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#osl-chat-permission-toggle")?.addEventListener("click", () => void toggleOslChatPermission());
+  document.querySelector<HTMLButtonElement>("#osl-chat-back")?.addEventListener("click", () => void closeOslChat());
+  document.querySelector<HTMLButtonElement>("#osl-chat-refresh")?.addEventListener("click", () => void refreshOslChat());
+  document.querySelector<HTMLButtonElement>("#osl-chat-approve")?.addEventListener("click", () => void approveOslChat());
+  const oslChatDraftInput = document.querySelector<HTMLTextAreaElement>("#osl-chat-draft");
+  oslChatDraftInput?.addEventListener("input", () => { oslChatDraft = oslChatDraftInput.value; });
+  document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
+  document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   if (!activeContextToken) {
     const encryptedMode = document.querySelector<HTMLButtonElement>('[data-mode="protected"]');
     if (encryptedMode) {
@@ -2586,6 +2819,11 @@ function bindWorkspace(): void {
     const requestedRoute = button.dataset.route as Route;
     await Promise.resolve();
     if (intent !== navigationIntentEpoch) return;
+    if (route === "osl-chat") {
+      if (oslChatBusy || !(await closeOslChatContext())) { showToast("OSL Chat could not close safely"); return; }
+      discardOpenedOslChatMessages();
+      resetOslChatUiState(false);
+    }
     if (activeEmbeddedHost || activeNativeHostId) await closeActiveServiceSurface();
     if (route === "settings" && settingsSection === "scrub") clearPrivacyScanState();
     if (route === "settings" && settingsSection === "account") newIdentityRecoveryPhrase = null;
@@ -2621,6 +2859,12 @@ function bindWorkspace(): void {
     render();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
+  bindOslProfileControls();
+  document.querySelector<HTMLInputElement>("#friend-default-osl-chat")?.addEventListener("change", (event) => {
+    friendDefaultOslChatEnabled = (event.currentTarget as HTMLInputElement).checked;
+    localStorage.setItem(friendDefaultOslChatStorageKey, String(friendDefaultOslChatEnabled));
+    showToast("Friend defaults updated");
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
@@ -2655,6 +2899,44 @@ function bindWorkspace(): void {
     applyTheme(next);
     render();
   }));
+  document.querySelector<HTMLSelectElement>("#accessibility-text-scale")?.addEventListener("change", (event) => {
+    const next = Number((event.currentTarget as HTMLSelectElement).value);
+    if (![100, 112, 125, 150].includes(next)) return;
+    accessibilityPreferences = { ...accessibilityPreferences, textScale: next as TextScale };
+    saveAccessibilityPreferences(localStorage, accessibilityPreferences);
+    applyAccessibilityPreferences(document.documentElement, accessibilityPreferences);
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>("[data-accessibility-toggle]").forEach((input) => input.addEventListener("change", () => {
+    const key = input.dataset.accessibilityToggle;
+    if (key !== "highContrast" && key !== "reduceMotion" && key !== "largeTargets") return;
+    accessibilityPreferences = { ...accessibilityPreferences, [key]: input.checked };
+    saveAccessibilityPreferences(localStorage, accessibilityPreferences);
+    applyAccessibilityPreferences(document.documentElement, accessibilityPreferences);
+    render();
+  }));
+  document.querySelector<HTMLInputElement>("#theme-mod-input")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || file.size > 8 * 1024) { showToast("Theme mod must be a small JSON file"); return; }
+    void file.text().then((raw) => {
+      const parsed = parseThemeMod(raw);
+      if (!parsed) { showToast("Theme mod is invalid or contains unsupported fields"); return; }
+      activeThemeMod = parsed;
+      localStorage.setItem(themeModStorageKey, JSON.stringify(parsed));
+      applyThemeMod(document.documentElement, parsed);
+      showToast(`${parsed.name} installed`);
+      render();
+    }).catch(() => showToast("Theme mod could not be read"));
+  });
+  document.querySelector<HTMLButtonElement>("#remove-theme-mod")?.addEventListener("click", () => {
+    activeThemeMod = null;
+    localStorage.removeItem(themeModStorageKey);
+    applyThemeMod(document.documentElement, null);
+    showToast("Theme mod removed");
+    render();
+  });
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
@@ -2760,13 +3042,17 @@ function bindWorkspace(): void {
     friendsDialogPage = next;
     render();
   }));
+  document.querySelector<HTMLFormElement>("#add-friend-username-form")?.addEventListener("submit", (event) => void submitFriendUsername(event));
   document.querySelector<HTMLFormElement>("#add-friend-form")?.addEventListener("submit", (event) => void submitFriendCode(event));
   document.querySelectorAll<HTMLFormElement>("[data-nickname-person]").forEach((form) => form.addEventListener("submit", (event) => void saveFriendNickname(event)));
   document.querySelector<HTMLButtonElement>("#copy-friend-code")?.addEventListener("click", () => void copyFriendInvite());
   document.querySelector<HTMLInputElement>("#notifications-opt-in")?.addEventListener("change", (event) => void changeNotifications(event.currentTarget as HTMLInputElement));
+  document.querySelector<HTMLInputElement>("#notification-chat-activity")?.addEventListener("change", (event) => { notificationChatActivity = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationChatStorageKey, String(notificationChatActivity)); render(); });
+  document.querySelector<HTMLInputElement>("#notification-security-activity")?.addEventListener("change", (event) => { notificationSecurityActivity = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationSecurityStorageKey, String(notificationSecurityActivity)); render(); });
   document.querySelector<HTMLInputElement>("#notification-previews")?.addEventListener("change", (event) => { notificationPreviewContent = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationPreviewStorageKey, String(notificationPreviewContent)); });
   document.querySelector<HTMLInputElement>("#notification-scope-suggestions")?.addEventListener("change", (event) => { notificationScopeSuggestions = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationScopeStorageKey, String(notificationScopeSuggestions)); });
   document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.notificationApp as ServiceId; notificationAppPreferences[id] = input.checked; localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences)); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-unmute]").forEach((button) => button.addEventListener("click", () => { oslChatMutedPeople.delete(button.dataset.oslChatUnmute ?? ""); localStorage.setItem(oslChatMutedStorageKey, JSON.stringify([...oslChatMutedPeople].slice(0, 512))); render(); }));
   bindBurnDialog();
   bindOwnedConfirmation();
   bindUpdateControls();
@@ -3049,9 +3335,9 @@ function toggleHomeTile(id: string): void {
 
 function openHomeModule(id: string): void {
   if (id === "osl-chats") {
-    friendsDialogOpen = true;
-    friendsDialogPage = 0;
-    render();
+    const first = hubPeople.find((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+    if (first) void openOslChat(first.personId);
+    else { friendsDialogOpen = true; friendsDialogPage = 0; render(); }
   } else if (id === "scrub") {
     route = "settings";
     settingsSection = "scrub";
@@ -3059,6 +3345,196 @@ function openHomeModule(id: string): void {
   } else {
     showToast("OSL Notes is planned for a later release");
   }
+}
+
+function oslChatTimestamp(seconds?: number): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(seconds === undefined ? new Date() : new Date(seconds * 1_000));
+}
+
+function persistOslChatUnread(): void {
+  localStorage.setItem(oslChatUnreadStorageKey, JSON.stringify(Object.fromEntries([...oslChatUnread.entries()].slice(0, 512))));
+}
+
+function historyMessages(context: ManualPeerContext, rows: NonNullable<Awaited<ReturnType<typeof listOslChatHistory>>>): OslChatMessage[] {
+  return rows.slice().reverse().map((row) => {
+    const incoming = row.senderOslUserId === context.peerOslUserId;
+    return { messageId: row.messageId, direction: incoming ? "incoming" : "outgoing", body: row.plaintext, state: incoming ? "received" : "sent", timestampLabel: oslChatTimestamp(row.decryptedAt) } as OslChatMessage;
+  });
+}
+
+async function openOslChat(personId: string): Promise<void> {
+  const person = hubPeople.find((candidate) => candidate.personId === personId);
+  if (!person?.safetyNumberVerified || person.pendingKeyChange || oslChatBusy) return;
+  const queuedViewOnce = (oslChatUnread.get(personId) ?? 0) > 0 ? (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened") : [];
+  const epoch = ++oslChatOperationEpoch;
+  oslChatBusy = true;
+  activeOslChatPersonId = personId;
+  activeOslChatContext = null;
+  oslChatSettingsPersonId = null;
+  oslChatUnread.delete(personId);
+  persistOslChatUnread();
+  route = "osl-chat";
+  render();
+  let shouldRefresh = false;
+  try {
+    if (!await setScreenshotProtection(true) || epoch !== oslChatOperationEpoch) { showToast("Capture resistance could not be enabled"); return; }
+    screenshotProtectionEnabled = true;
+    const context = await activateOslChatContext(personId);
+    if (!context || epoch !== oslChatOperationEpoch || activeOslChatPersonId !== personId) { showToast("OSL Chat could not open"); return; }
+    let resolvedContext = context;
+    if (!resolvedContext.scopeApproved && friendDefaultOslChatEnabled) {
+      const enabled = await setActiveHubFriendPermission(resolvedContext.contextToken, personId, true, false);
+      if (enabled) {
+        resolvedContext = { ...resolvedContext, scopeApproved: true };
+        hubPeople = await listHubPeople() ?? hubPeople;
+      }
+    }
+    activeOslChatContext = resolvedContext;
+    if (resolvedContext.scopeApproved) {
+      const history = await listOslChatHistory();
+      if (epoch !== oslChatOperationEpoch) return;
+      if (history) oslChatMessages.set(personId, [...historyMessages(resolvedContext, history), ...queuedViewOnce].slice(-200));
+      shouldRefresh = true;
+    }
+  } finally {
+    if (epoch === oslChatOperationEpoch) { oslChatBusy = false; render(); }
+  }
+  if (shouldRefresh && epoch === oslChatOperationEpoch) await refreshOslChat();
+}
+
+function commitOslChatBatch(personId: string, batch: OslChatOpenedBatch, background: boolean): void {
+  const messages = [...(oslChatMessages.get(personId) ?? [])];
+  for (const acknowledgment of batch.acknowledgments) {
+    const message = messages.find((candidate) => candidate.messageId === acknowledgment.messageId);
+    if (message) message.state = acknowledgment.status;
+  }
+  if (batch.acknowledgments.length) {
+    oslChatRemoteAccessConfirmed.add(personId);
+    localStorage.setItem(oslChatRemoteAccessStorageKey, JSON.stringify([...oslChatRemoteAccessConfirmed].slice(0, 512)));
+  }
+  for (const incoming of batch.messages) {
+    const localMessageId = `received-${crypto.randomUUID()}`;
+    messages.push({ messageId: localMessageId, direction: "incoming", body: incoming.plaintext, state: incoming.viewOnceConsumed ? "opened" : "received", timestampLabel: oslChatTimestamp() });
+    if (background) {
+      oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
+      if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
+        appNotifications = [{ id: localMessageId, title: "OSL Chat", detail: "New encrypted message", createdAt: "Now" }, ...(appNotifications ?? [])].slice(0, 20);
+      }
+    }
+  }
+  oslChatMessages.set(personId, messages.slice(-200));
+  if (background && batch.messages.length) { persistOslChatUnread(); renderWhenIdle(); }
+}
+
+async function syncOslChatsInBackground(): Promise<void> {
+  if (oslChatBackgroundBusy || route !== "home" || activeContextToken || activeOslChatPersonId || activeNativeHostId || activeEmbeddedHost || !core.readiness.identityLoaded) return;
+  const people = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).slice(0, 32);
+  if (!people.length) return;
+  oslChatBackgroundBusy = true;
+  try {
+    if (!await setScreenshotProtection(true)) return;
+    screenshotProtectionEnabled = true;
+    for (const person of people) {
+      if (route !== "home" || activeOslChatPersonId || activeContextToken || activeNativeHostId || activeEmbeddedHost) break;
+      const context = await activateOslChatContext(person.personId);
+      if (!context) continue;
+      try {
+        if (!context.scopeApproved) continue;
+        const batch = await openOslChatText();
+        if (batch) commitOslChatBatch(person.personId, batch, true);
+        const history = await listOslChatHistory();
+        if (history) {
+          const viewOnce = (oslChatMessages.get(person.personId) ?? []).filter((message) => message.state === "opened");
+          oslChatMessages.set(person.personId, [...historyMessages(context, history), ...viewOnce].slice(-200));
+        }
+      } finally { await closeOslChatContext(); }
+    }
+  } finally { oslChatBackgroundBusy = false; }
+}
+
+async function toggleOslChatPermission(): Promise<void> {
+  const context = activeOslChatContext;
+  if (!context || oslChatBusy || oslChatSettingsPersonId !== context.personId) return;
+  const next = !context.scopeApproved;
+  oslChatBusy = true;
+  render();
+  const saved = await setActiveHubFriendPermission(context.contextToken, context.personId, next, false);
+  if (saved) {
+    activeOslChatContext = { ...context, scopeApproved: next };
+    hubPeople = await listHubPeople() ?? hubPeople;
+    showToast(next ? "Encrypted chat enabled" : "Encrypted chat revoked");
+  } else showToast("Encrypted chat permission could not be changed");
+  oslChatBusy = false;
+  render();
+}
+
+async function approveOslChat(): Promise<void> {
+  const context = activeOslChatContext;
+  if (!context || context.scopeApproved || oslChatBusy) return;
+  oslChatSettingsPersonId = context.personId;
+  await toggleOslChatPermission();
+  oslChatSettingsPersonId = null;
+  if (activeOslChatContext?.scopeApproved) await refreshOslChat();
+}
+
+async function refreshOslChat(): Promise<void> {
+  const context = activeOslChatContext;
+  const personId = activeOslChatPersonId;
+  if (!context?.scopeApproved || !personId || oslChatBusy) return;
+  const epoch = oslChatOperationEpoch;
+  oslChatBusy = true;
+  render();
+  if (!await setScreenshotProtection(true) || epoch !== oslChatOperationEpoch || activeOslChatContext?.contextToken !== context.contextToken) {
+    showToast("Capture resistance could not be enabled");
+    if (epoch === oslChatOperationEpoch) { oslChatBusy = false; render(); }
+    return;
+  }
+  screenshotProtectionEnabled = true;
+  const batch = await openOslChatText();
+  if (batch) commitOslChatBatch(personId, batch, false);
+  if (epoch === oslChatOperationEpoch) { oslChatBusy = false; render(); }
+}
+
+async function sendOslChat(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const context = activeOslChatContext;
+  const personId = activeOslChatPersonId;
+  const draft = oslChatDraft;
+  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft)) return;
+  const epoch = oslChatOperationEpoch;
+  oslChatBusy = true;
+  render();
+  const sent = await prepareOslChatText(draft, oslChatViewOnce);
+  if (epoch !== oslChatOperationEpoch || activeOslChatContext?.contextToken !== context.contextToken) return;
+  if (!sent) { oslChatBusy = false; showToast("Encrypted message was not sent"); render(); return; }
+  const outgoing: OslChatMessage = { messageId: sent.messageId, direction: "outgoing", body: draft, state: "sent", timestampLabel: oslChatTimestamp() };
+  oslChatMessages.set(personId, [...(oslChatMessages.get(personId) ?? []), outgoing].slice(-200));
+  oslChatDraft = "";
+  oslChatViewOnce = false;
+  oslChatBusy = false;
+  render();
+}
+
+function resetOslChatUiState(clearMessages: boolean): void {
+  oslChatOperationEpoch += 1;
+  activeOslChatPersonId = null;
+  activeOslChatContext = null;
+  oslChatDraft = "";
+  oslChatBusy = false;
+  if (clearMessages) oslChatMessages.clear();
+}
+
+function discardOpenedOslChatMessages(): void {
+  if (!activeOslChatPersonId) return;
+  oslChatMessages.set(activeOslChatPersonId, (oslChatMessages.get(activeOslChatPersonId) ?? []).filter((message) => message.state !== "opened"));
+}
+
+async function closeOslChat(): Promise<void> {
+  if (oslChatBusy || !(await closeOslChatContext())) { showToast("OSL Chat could not close safely"); return; }
+  discardOpenedOslChatMessages();
+  resetOslChatUiState(false);
+  route = "home";
+  render();
 }
 
 async function submitFriendCode(event: SubmitEvent): Promise<void> {
@@ -3086,6 +3562,39 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   hubPeople = await listHubPeople() ?? hubPeople;
   render();
   showToast("Friend added. Encrypted chats are still off.");
+}
+
+async function submitFriendUsername(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const form = event.currentTarget as HTMLFormElement;
+  const input = form.querySelector<HTMLInputElement>("#friend-username-input");
+  const nicknameInput = form.querySelector<HTMLInputElement>("#friend-username-nickname-input");
+  const button = form.querySelector<HTMLButtonElement>('button[type="submit"], button:not([type])');
+  const status = document.querySelector<HTMLElement>("#friend-form-status");
+  const username = (input?.value ?? "").trim().replace(/^@/u, "").toLowerCase();
+  if (!isNormalizedOslUsername(username)) {
+    if (status) status.textContent = "Use 3–30 lowercase letters, numbers, or interior underscores.";
+    input?.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = "Finding exact username…";
+  const result = await addOslFriendByUsername(username, nicknameInput?.value ?? "");
+  if (button) button.disabled = false;
+  if (!result) {
+    if (status) status.textContent = "That exact username could not be added. Nothing changed.";
+    return;
+  }
+  hubPeople = await listHubPeople() ?? hubPeople;
+  if (result.disposition === "key_change_requires_verification") {
+    if (status) status.textContent = "Their encryption identity changed. Review the new safety number.";
+  }
+  if (!result.safetyNumberVerified) {
+    requestFriendVerification(result.personId, result.safetyNumber);
+    return;
+  }
+  render();
+  showToast(result.disposition === "already_present" ? "Friend already added" : "Friend added");
 }
 
 async function saveFriendNickname(event: SubmitEvent): Promise<void> {
@@ -3172,18 +3681,22 @@ async function refreshIdentitySlots(): Promise<void> {
 }
 
 async function refreshIdentityScopedState(): Promise<void> {
-  const [nextCore, nextIdentities, profile, people, linkedServices, notifications] = await Promise.all([
+  const [nextCore, nextIdentities, friendProfile, profile, people, linkedServices, notifications] = await Promise.all([
     loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
     listHubIdentities().then((value) => value ?? []),
     loadFriendProfile(),
+    loadOslProfile(),
     listHubPeople().then((value) => value ?? []),
     loadLinkedServices().catch(() => []),
     notificationsEnabled ? loadAppNotifications() : Promise.resolve([]),
   ]);
   core = nextCore;
   hubIdentities = nextIdentities;
-  friendCode = profile?.friendCode ?? null;
-  friendDisplayId = profile?.oslUserId ?? null;
+  friendCode = friendProfile?.friendCode ?? null;
+  friendDisplayId = friendProfile?.oslUserId ?? null;
+  oslProfile = profile;
+  claimedOslUsername = profile ? (await claimOslUsername(profile.usernameCandidate))?.username ?? null : null;
+  profileDraftAvatar = undefined;
   hubPeople = people;
   services = linkedServices;
   appNotifications = notifications;
@@ -3563,6 +4076,12 @@ function startReadyWorkspaceLoads(): void {
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
+  void loadOslProfile().then(async (profile) => {
+    oslProfile = profile;
+    profileDraftAvatar = undefined;
+    claimedOslUsername = profile ? (await claimOslUsername(profile.usernameCandidate))?.username ?? null : null;
+    if (route === "home" || (route === "settings" && settingsSection === "account")) renderWhenIdle();
+  });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
     appNotifications = enabled ? await loadAppNotifications() : null;
@@ -3574,6 +4093,8 @@ function startReadyWorkspaceLoads(): void {
 async function bootstrap(): Promise<void> {
   const attempt = ++bootstrapEpoch;
   applyTheme(themeChoice);
+  applyAccessibilityPreferences(document.documentElement, accessibilityPreferences);
+  applyThemeMod(document.documentElement, activeThemeMod);
   loadUiPreferences();
   root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><span class="sr-only">Opening OSL</span></main></div>`;
   bindDesktopTitlebar();
@@ -3643,10 +4164,15 @@ window.addEventListener("resize", () => {
   });
 });
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void syncOslChatsInBackground();
   if (document.visibilityState !== "hidden" || !newIdentityRecoveryPhrase) return;
   newIdentityRecoveryPhrase = null;
   if (route === "settings" && settingsSection === "account") render();
 });
 window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
 window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
+function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
+  window.setTimeout(() => void syncOslChatsInBackground().finally(() => scheduleOslChatBackgroundSync()), delayMs);
+}
+scheduleOslChatBackgroundSync(1_000);
 void bootstrap();

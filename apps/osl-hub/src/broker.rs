@@ -81,6 +81,16 @@ struct ManualPeerContext {
     scope: ScopeInput,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct OslChatContextSnapshot {
+    pub context_token: String,
+    pub person_id: String,
+    pub peer_osl_user_id: String,
+    pub conversation_binding: String,
+    pub self_osl_user_id: String,
+    pub scope: ScopeInput,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ContextAuthority {
     PeerMessaging,
@@ -340,6 +350,60 @@ impl HubBrokerState {
             .ok_or_else(|| "OSL broker context is not a manual peer conversation".to_owned())
     }
 
+    /// Return only the fixed first-party OSL direct-chat lease. The renderer
+    /// never supplies the service or account identifiers for this authority.
+    pub fn active_osl_chat_context_token(&self) -> Result<String, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .filter(|active| {
+                active.authority == ContextAuthority::ManualPeer
+                    && active.context.service_id == "osl-chat"
+                    && active.context.account_id == "osl-main"
+                    && active.manual_peer.is_some()
+            })
+            .ok_or_else(|| "OSL Chat is not active".to_owned())?;
+        Ok(active.lease.context_token.clone())
+    }
+
+    pub fn clear_osl_chat_context(&self) -> Result<(), String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let is_osl_chat = inner.active.as_ref().is_some_and(|active| {
+            active.authority == ContextAuthority::ManualPeer
+                && active.context.service_id == "osl-chat"
+                && active.context.account_id == "osl-main"
+        });
+        if is_osl_chat {
+            inner.generation = inner
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| "OSL broker generation exhausted".to_owned())?;
+            inner.active = None;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn osl_chat_snapshot(&self) -> Result<OslChatContextSnapshot, String> {
+        let context_token = self.active_osl_chat_context_token()?;
+        let manual = self.manual_peer_for(&context_token)?;
+        let context = self.context_for(&context_token)?;
+        Ok(OslChatContextSnapshot {
+            context_token,
+            person_id: manual.person_id,
+            peer_osl_user_id: manual.peer_osl_user_id,
+            conversation_binding: context.conversation_id,
+            self_osl_user_id: context.self_osl_id,
+            scope: manual.scope,
+        })
+    }
+
     pub fn manual_permission_target(
         &self,
         context_token: &str,
@@ -462,6 +526,31 @@ pub fn activate_owned_manual_peer_context(
     let active = host
         .require_current_owned(owner_osl_user_id, service_id, account_id)
         .map_err(|error| error.to_string())?;
+    let person_id = binding.person_id.clone();
+    let peer_osl_user_id = binding.peer_osl_user_id.clone();
+    let lease = broker.activate_manual_peer(owner_osl_user_id, &active, binding)?;
+    let scope = broker.scope_for_context(&lease.context_token)?;
+    Ok(ActivatedManualPeerContext {
+        lease,
+        person_id,
+        peer_osl_user_id,
+        scope,
+    })
+}
+
+/// Activate a first-party OSL direct chat. All authority-bearing service,
+/// account, and conversation values are fixed or derived in Rust.
+pub fn activate_owned_osl_chat_context(
+    broker: &HubBrokerState,
+    owner_osl_user_id: &str,
+    binding: ManualPeerBinding,
+) -> Result<ActivatedManualPeerContext, String> {
+    let active = ActiveServiceHost {
+        service_id: "osl-chat".to_owned(),
+        account_id: "osl-main".to_owned(),
+        generation: 1,
+        owner_namespace: owner_osl_user_id.to_owned(),
+    };
     let person_id = binding.person_id.clone();
     let peer_osl_user_id = binding.peer_osl_user_id.clone();
     let lease = broker.activate_manual_peer(owner_osl_user_id, &active, binding)?;
@@ -1395,7 +1484,9 @@ fn prune_local_ledger_context(
 }
 
 fn validate_context(context: &HubConversationContext) -> Result<(), String> {
-    service_manifest(&context.service_id).map_err(|error| error.to_string())?;
+    if context.service_id != "osl-chat" || context.account_id != "osl-main" {
+        service_manifest(&context.service_id).map_err(|error| error.to_string())?;
+    }
     validate_opaque_id(&context.account_id).map_err(|error| error.to_string())?;
     validate_context_id(&context.conversation_id, "conversation id")?;
     validate_context_id(&context.self_osl_id, "self OSL id")?;
@@ -1513,7 +1604,9 @@ fn manual_dm_channel_binding(
     self_osl_user_id: &str,
     peer_osl_user_id: &str,
 ) -> Result<String, String> {
-    service_manifest(service_id).map_err(|error| error.to_string())?;
+    if service_id != "osl-chat" {
+        service_manifest(service_id).map_err(|error| error.to_string())?;
+    }
     validate_context_id(self_osl_user_id, "self OSL id")?;
     validate_context_id(peer_osl_user_id, "peer OSL id")?;
     if self_osl_user_id == peer_osl_user_id {
@@ -1770,6 +1863,30 @@ mod tests {
             security::manual_peer_scope_id("instagram", "client-one-profile", "hub-person-bob",)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn first_party_osl_chat_uses_only_fixed_service_and_account() {
+        let broker = HubBrokerState::default();
+        let activated = activate_owned_osl_chat_context(
+            &broker,
+            "osl-alice",
+            ManualPeerBinding {
+                person_id: "hub-person-bob".to_owned(),
+                peer_osl_user_id: "osl-bob".to_owned(),
+                peer_x25519_public: [2; 32],
+                peer_mlkem768_public: [2; 1184],
+            },
+        )
+        .unwrap();
+        assert_eq!(activated.lease.service_id, "osl-chat");
+        assert_eq!(activated.lease.account_id, "osl-main");
+        assert_eq!(
+            broker.active_osl_chat_context_token().unwrap(),
+            activated.lease.context_token
+        );
+        broker.clear_osl_chat_context().unwrap();
+        assert!(broker.active_osl_chat_context_token().is_err());
     }
 
     #[test]

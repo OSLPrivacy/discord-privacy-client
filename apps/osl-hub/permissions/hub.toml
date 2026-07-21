@@ -4,6 +4,16 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-claim-hub-username"
+description = "Claim one exact normalized username using the active identity's signed public friend invite; private keys never cross IPC."
+commands.allow = ["claim_hub_username"]
+
+[[permission]]
+identifier = "allow-add-hub-friend-by-username"
+description = "Resolve one exact username to a signed friend invite and pass it through the existing trusted friend-code validation path."
+commands.allow = ["add_hub_friend_by_username"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
@@ -27,6 +37,16 @@ commands.allow = ["save_onboarding_preferences"]
 identifier = "allow-scan-local-privacy"
 description = "Scan bounded caller-provided visible message text in local process memory without persistence or network access."
 commands.allow = ["scan_local_privacy"]
+
+[[permission]]
+identifier = "allow-get-osl-profile"
+description = "Read the active identity's bounded authenticated encrypted local OSL profile; the username is only a local candidate."
+commands.allow = ["get_osl_profile"]
+
+[[permission]]
+identifier = "allow-save-osl-profile"
+description = "Validate and save the active identity's bounded authenticated encrypted local OSL profile without claiming username reservation or remote lookup."
+commands.allow = ["save_osl_profile"]
 
 [[permission]]
 identifier = "allow-initialize-scrub-index"
@@ -272,6 +292,31 @@ commands.allow = ["activate_local_loopback_context"]
 identifier = "allow-activate-manual-peer-context"
 description = "Activate one renderer-selected existing friend for the exact active owned service account; recipient keys and the symmetric manual-DM binding are derived locally without inspecting the remote service page."
 commands.allow = ["activate_manual_peer_context"]
+
+[[permission]]
+identifier = "allow-activate-osl-chat-context"
+description = "Bind one verified friend to the fixed first-party OSL Chat scope from the trusted main window."
+commands.allow = ["activate_osl_chat_context"]
+
+[[permission]]
+identifier = "allow-close-osl-chat-context"
+description = "Revoke the active first-party OSL Chat lease from the trusted main window."
+commands.allow = ["close_osl_chat_context"]
+
+[[permission]]
+identifier = "allow-prepare-osl-chat-text"
+description = "Encrypt and deliver bounded text for the active approved first-party OSL Chat."
+commands.allow = ["prepare_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-text"
+description = "Receive first-party OSL Chat text only after capture resistance is active."
+commands.allow = ["open_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-history"
+description = "Read bounded encrypted-at-rest history for the active first-party OSL Chat after capture resistance is active."
+commands.allow = ["list_osl_chat_history"]
 
 [[permission]]
 identifier = "allow-prepare-peer-prose-text"
