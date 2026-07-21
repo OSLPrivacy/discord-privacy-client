@@ -30,7 +30,13 @@ use std::thread;
 #[cfg(any(target_os = "windows", test))]
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE, WAIT_OBJECT_0,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -43,8 +49,9 @@ use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, CreateDeskto
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, INFINITE, PROCESS_INFORMATION,
+    CreateProcessW, GetExitCodeProcess, OpenProcess, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, INFINITE,
+    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     STARTUPINFOW,
 };
 
@@ -129,6 +136,31 @@ fn validate_protected_browser_import_sources(
     Ok(unique)
 }
 
+fn browser_import_uses_existing_session(source: BrowserImportId) -> bool {
+    matches!(source, BrowserImportId::Firefox | BrowserImportId::Opera)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn process_lineage(root_process_id: u32, processes: &[(u32, u32)]) -> Vec<u32> {
+    let mut lineage = vec![root_process_id];
+    for _ in 0..processes.len() {
+        let mut changed = false;
+        for &(process_id, parent_process_id) in processes {
+            if process_id != 0
+                && !lineage.contains(&process_id)
+                && lineage.contains(&parent_process_id)
+            {
+                lineage.push(process_id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    lineage
+}
+
 #[cfg(target_os = "windows")]
 struct HiddenFirefoxProcess {
     process_handle: isize,
@@ -152,11 +184,86 @@ impl HiddenFirefoxProcess {
         Ok(exit_code == STILL_ACTIVE as u32)
     }
 
-    fn terminate(&self) -> std::io::Result<()> {
-        if unsafe { TerminateJobObject(self.job_handle as _, 1) } == 0 {
-            return Err(std::io::Error::last_os_error());
+    fn terminate_tree(&self) -> std::io::Result<()> {
+        let process_ids = firefox_process_lineage(self.process_id)?;
+        let mut handles = Vec::with_capacity(process_ids.len());
+        handles.push((self.process_handle as _, false));
+        for process_id in process_ids {
+            if process_id == self.process_id {
+                continue;
+            }
+            let handle = unsafe {
+                OpenProcess(
+                    PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                    0,
+                    process_id,
+                )
+            };
+            if handle.is_null() {
+                let error = std::io::Error::last_os_error();
+                // A captured descendant can exit between the snapshot and
+                // OpenProcess. Access-denied and every other failure remain a
+                // hard cleanup error; only a no-longer-valid PID is skipped.
+                if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                    continue;
+                }
+                for (handle, close_after) in handles {
+                    if close_after {
+                        unsafe { CloseHandle(handle) };
+                    }
+                }
+                return Err(error);
+            }
+            handles.push((handle, true));
         }
-        Ok(())
+
+        // The job is the primary containment boundary. The exact captured PID
+        // lineage below is a bounded fallback for Firefox children that did
+        // not exit with the job on a real Windows host.
+        let _ = unsafe { TerminateJobObject(self.job_handle as _, 1) };
+        let mut result = Ok(());
+        for (handle, close_after) in handles {
+            let mut exit_code = 0u32;
+            let mut handle_error = None;
+            if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0 {
+                handle_error = Some(std::io::Error::last_os_error());
+            } else if exit_code == STILL_ACTIVE as u32
+                && unsafe { TerminateProcess(handle, 1) } == 0
+            {
+                let terminate_error = std::io::Error::last_os_error();
+                if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0
+                    || exit_code == STILL_ACTIVE as u32
+                {
+                    handle_error = Some(terminate_error);
+                }
+            }
+            if handle_error.is_none()
+                && unsafe { WaitForSingleObject(handle, 5_000) } != WAIT_OBJECT_0
+            {
+                handle_error = Some(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "OSL Firefox process did not exit before the cleanup deadline",
+                ));
+            }
+            if handle_error.is_none()
+                && (unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0
+                    || exit_code == STILL_ACTIVE as u32)
+            {
+                handle_error = Some(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "OSL Firefox process remained active after termination",
+                ));
+            }
+            if result.is_ok() {
+                if let Some(error) = handle_error {
+                    result = Err(error);
+                }
+            }
+            if close_after {
+                unsafe { CloseHandle(handle) };
+            }
+        }
+        result
     }
 
     fn wait(&self) -> std::io::Result<()> {
@@ -164,6 +271,31 @@ impl HiddenFirefoxProcess {
             .then_some(())
             .ok_or_else(std::io::Error::last_os_error)
     }
+}
+
+#[cfg(target_os = "windows")]
+fn firefox_process_lineage(root_process_id: u32) -> std::io::Result<Vec<u32>> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() || snapshot == -1isize as _ {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut processes = Vec::new();
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while found {
+        if processes.len() >= 16_384 {
+            unsafe { CloseHandle(snapshot) };
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Windows process snapshot exceeded its safety bound",
+            ));
+        }
+        processes.push((entry.th32ProcessID, entry.th32ParentProcessID));
+        found = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    Ok(process_lineage(root_process_id, &processes))
 }
 
 #[cfg(target_os = "windows")]
@@ -191,41 +323,41 @@ fn close_protected_browser_import_process() -> Result<(), String> {
     let Some(child) = process.take() else {
         return Ok(());
     };
+    let root_process_id = child.id();
     match child.is_running() {
-        Ok(false) => Ok(()),
+        Ok(false) => {}
         Ok(true) => {
-            crate::firefox_migration_coordinator::close(child.id(), &child.desktop_name)?;
-            let root_process_id = child.id();
-            let deadline = Instant::now() + Duration::from_secs(1);
-            loop {
-                match child.is_running() {
-                    Ok(false) => return Ok(()),
-                    Ok(true) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(50));
-                    }
-                    Ok(true) => {
-                        child.terminate().map_err(|_| {
-                            "The OSL Firefox import window could not be closed".to_owned()
-                        })?;
-                        child.wait().map_err(|_| {
-                            "The OSL Firefox import process could not be reaped".to_owned()
-                        })?;
-                        thread::sleep(Duration::from_millis(200));
-                        return crate::firefox_migration_coordinator::is_closed(
-                            root_process_id,
-                            &child.desktop_name,
-                        );
-                    }
-                    Err(_) => {
-                        return Err(
-                            "The OSL Firefox import process could not be verified".to_owned()
-                        )
+            if crate::firefox_migration_coordinator::close(child.id(), &child.desktop_name).is_ok()
+            {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                loop {
+                    match child.is_running() {
+                        Ok(false) => break,
+                        Ok(true) if Instant::now() < deadline => {
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                        Ok(true) | Err(_) => break,
                     }
                 }
             }
         }
-        Err(_) => Err("The OSL Firefox import process could not be verified".to_owned()),
+        // Cleanup below uses the retained exact process handle and a fresh
+        // rooted lineage snapshot, so it remains safe even when this status
+        // query itself fails.
+        Err(_) => {}
     }
+
+    // Enforce cleanup even when Firefox's root has already exited: retained
+    // descendants can outlive it, and are still discoverable through the
+    // exact root PID lineage in the Toolhelp snapshot.
+    child
+        .terminate_tree()
+        .map_err(|_| "The OSL Firefox import window could not be closed".to_owned())?;
+    child
+        .wait()
+        .map_err(|_| "The OSL Firefox import process could not be reaped".to_owned())?;
+    thread::sleep(Duration::from_millis(200));
+    crate::firefox_migration_coordinator::is_closed(root_process_id, &child.desktop_name)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -947,11 +1079,11 @@ pub fn begin_protected_browser_import(
         let mut password_follow_up_sources = Vec::new();
         let mut session_only_sources = Vec::new();
         for (index, source) in unique.iter().copied().enumerate() {
-            // Current Firefox does not expose another Firefox profile through
-            // this migration surface. Preserve the user's real Firefox
-            // session through OSL's existing-browser companion instead of
-            // opening a source picker that cannot complete.
-            if source == BrowserImportId::Firefox {
+            // Current Firefox cannot complete Firefox-profile migration here,
+            // and Opera's migration never completed in a bounded hidden live
+            // run. Preserve those real sessions through OSL's existing-browser
+            // companion instead of opening a flow that cannot finish.
+            if browser_import_uses_existing_session(source) {
                 session_only_sources.push(source);
                 continue;
             }
@@ -2959,6 +3091,40 @@ mod tests {
             &available[..5],
         )
         .is_err());
+    }
+
+    #[test]
+    fn unsupported_migration_sources_reuse_existing_sessions() {
+        assert!(browser_import_uses_existing_session(
+            BrowserImportId::Firefox
+        ));
+        assert!(browser_import_uses_existing_session(BrowserImportId::Opera));
+        assert!(!browser_import_uses_existing_session(
+            BrowserImportId::Chrome
+        ));
+        assert!(!browser_import_uses_existing_session(BrowserImportId::Edge));
+        assert!(!browser_import_uses_existing_session(
+            BrowserImportId::Brave
+        ));
+        assert!(!browser_import_uses_existing_session(
+            BrowserImportId::DuckDuckGo
+        ));
+    }
+
+    #[test]
+    fn process_lineage_is_rooted_and_excludes_unrelated_processes() {
+        let processes = [
+            (10, 1),
+            (11, 10),
+            (12, 11),
+            (13, 10),
+            (20, 1),
+            (21, 20),
+            (30, 999),
+        ];
+        let mut lineage = process_lineage(10, &processes);
+        lineage.sort_unstable();
+        assert_eq!(lineage, vec![10, 11, 12, 13]);
     }
 
     #[test]
