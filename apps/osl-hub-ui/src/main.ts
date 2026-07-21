@@ -1112,7 +1112,7 @@ function browserImportContent(): string {
   const installed = browserImports.filter((browser) => browser.installed);
   const queueActive = browserImportQueue.length > 0;
   const detectedBrowsers = installed.length
-    ? `<fieldset class="browser-detected-sources" ${queueActive ? "disabled" : ""}><legend>Choose browsers</legend><label class="browser-detected-item browser-import-all"><span><strong>Import all detected browsers</strong><small>Select everything, then press Import once</small></span><input type="checkbox" data-browser-select-all aria-label="Import all detected browsers"/></label><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<span><strong>${escapeHtml(browser.displayName)}</strong><small>Import from this browser</small></span><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImportIds.has(browser.id) ? "checked" : ""}/></label>`).join("")}</div></fieldset>`
+    ? `<fieldset class="browser-detected-sources" ${queueActive ? "disabled" : ""}><legend class="sr-only">Browsers</legend><label class="browser-detected-item browser-import-all"><strong>All detected browsers</strong><input type="checkbox" data-browser-select-all aria-label="Select all detected browsers"/></label><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<strong>${escapeHtml(browser.displayName)}</strong><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImportIds.has(browser.id) ? "checked" : ""}/></label>`).join("")}</div></fieldset>`
     : `<p class="saved-account-truth">No supported browser detected.</p>`;
   const ready = savedAccountsReady
     ? `<div class="saved-account-browser-note"><strong>Browser import completed</strong><small>Account contents remain browser-owned.</small></div>`
@@ -1121,7 +1121,7 @@ function browserImportContent(): string {
     ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>`
     : "";
   const progress = queueActive
-    ? `<div class="saved-account-browser-note" aria-live="polite"><strong>Importing ${browserImportQueue.length} ${browserImportQueue.length === 1 ? "browser" : "browsers"}</strong><small>Stay in OSL. Each selected source is handled automatically.</small></div>`
+    ? `<div class="saved-account-browser-note" aria-live="polite"><strong>Importing ${browserImportQueue.length} ${browserImportQueue.length === 1 ? "browser" : "browsers"}…</strong></div>`
     : "";
   const selectionReady = selectedBrowserImportIds.size > 0;
   const importEnabled = selectionReady && protectedBrowserImportReady && !browserReadinessBusy && !browserImportBusy;
@@ -1129,7 +1129,7 @@ function browserImportContent(): string {
     ? (firefoxStatus.availability === "installed" ? "Opening import…" : "Preparing protected import…")
     : selectionReady ? "Import selected" : "Choose browsers";
   const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : queueActive ? "Cancel import" : "Not now";
-  return `<h1 id="route-heading" tabindex="-1">Bring your logins</h1><p class="compact-lead onboarding-centered-copy">Optional. Choose every browser you want to import from.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Choose sources, press Import once, and stay in OSL. Only an unavoidable Windows or browser credential check may need your approval.</p>`;
+  return `<h1 id="route-heading" tabindex="-1">Import browser data</h1><p class="compact-lead onboarding-centered-copy">Choose browsers, then import once.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Stays inside OSL. Windows may ask before protected passwords are used.</p>`;
 }
 
 function persistSavedAccountPreferences(): void {
