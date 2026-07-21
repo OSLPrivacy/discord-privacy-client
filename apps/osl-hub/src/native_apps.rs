@@ -12,13 +12,15 @@ use crate::windows_executable_trust::ExecutablePublisher;
 use crate::windows_executable_trust::{verify_executable, TrustedExecutable};
 
 #[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(target_os = "windows", test))]
 use std::sync::Mutex;
 #[cfg(target_os = "windows")]
@@ -28,7 +30,23 @@ use std::thread;
 #[cfg(any(target_os = "windows", test))]
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE, WAIT_OBJECT_0};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, CreateDesktopW};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::{
+    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, INFINITE, PROCESS_INFORMATION,
+    STARTUPINFOW,
+};
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -80,6 +98,7 @@ pub struct BrowserAccountImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct ProtectedBrowserImportResult {
     pub selected_sources: Vec<BrowserImportId>,
+    pub password_follow_up_sources: Vec<BrowserImportId>,
     pub started: bool,
     pub mode: &'static str,
     pub source_selected: bool,
@@ -110,8 +129,56 @@ fn validate_protected_browser_import_sources(
 }
 
 #[cfg(target_os = "windows")]
-fn protected_browser_import_process() -> &'static Mutex<Option<Child>> {
-    static PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+struct HiddenFirefoxProcess {
+    process_handle: isize,
+    job_handle: isize,
+    process_id: u32,
+    desktop_handle: isize,
+    desktop_name: String,
+}
+
+#[cfg(target_os = "windows")]
+impl HiddenFirefoxProcess {
+    fn id(&self) -> u32 {
+        self.process_id
+    }
+
+    fn is_running(&self) -> std::io::Result<bool> {
+        let mut exit_code = 0u32;
+        if unsafe { GetExitCodeProcess(self.process_handle as _, &mut exit_code) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(exit_code == STILL_ACTIVE as u32)
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        if unsafe { TerminateJobObject(self.job_handle as _, 1) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn wait(&self) -> std::io::Result<()> {
+        (unsafe { WaitForSingleObject(self.process_handle as _, INFINITE) } == WAIT_OBJECT_0)
+            .then_some(())
+            .ok_or_else(std::io::Error::last_os_error)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for HiddenFirefoxProcess {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.job_handle as _);
+            CloseHandle(self.process_handle as _);
+            CloseDesktop(self.desktop_handle as _);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn protected_browser_import_process() -> &'static Mutex<Option<HiddenFirefoxProcess>> {
+    static PROCESS: OnceLock<Mutex<Option<HiddenFirefoxProcess>>> = OnceLock::new();
     PROCESS.get_or_init(|| Mutex::new(None))
 }
 
@@ -120,30 +187,33 @@ fn close_protected_browser_import_process() -> Result<(), String> {
     let mut process = protected_browser_import_process()
         .lock()
         .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())?;
-    let Some(mut child) = process.take() else {
+    let Some(child) = process.take() else {
         return Ok(());
     };
-    match child.try_wait() {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => {
-            crate::firefox_migration_coordinator::close(child.id())?;
+    match child.is_running() {
+        Ok(false) => Ok(()),
+        Ok(true) => {
+            crate::firefox_migration_coordinator::close(child.id(), &child.desktop_name)?;
             let root_process_id = child.id();
             let deadline = Instant::now() + Duration::from_secs(1);
             loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => return Ok(()),
-                    Ok(None) if Instant::now() < deadline => {
+                match child.is_running() {
+                    Ok(false) => return Ok(()),
+                    Ok(true) if Instant::now() < deadline => {
                         thread::sleep(Duration::from_millis(50));
                     }
-                    Ok(None) => {
-                        child.kill().map_err(|_| {
+                    Ok(true) => {
+                        child.terminate().map_err(|_| {
                             "The OSL Firefox import window could not be closed".to_owned()
                         })?;
                         child.wait().map_err(|_| {
                             "The OSL Firefox import process could not be reaped".to_owned()
                         })?;
                         thread::sleep(Duration::from_millis(200));
-                        return crate::firefox_migration_coordinator::is_closed(root_process_id);
+                        return crate::firefox_migration_coordinator::is_closed(
+                            root_process_id,
+                            &child.desktop_name,
+                        );
                     }
                     Err(_) => {
                         return Err(
@@ -828,29 +898,20 @@ pub fn begin_browser_account_import(
             .collect::<Vec<_>>();
         let preferred_source = preferred_browser_import_source(&detected_sources)
             .ok_or_else(|| "No supported browser account source was found".to_owned())?;
-        let firefox = firefox_executable().ok_or_else(|| {
-            "Firefox is required for OSL's browser-owned account migration".to_owned()
-        })?;
-        let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
-        let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
-            .map_err(|_| "The OSL Firefox import settings could not be opened".to_owned())?;
-        thread::sleep(Duration::from_millis(900));
-        if firefox_process
-            .try_wait()
-            .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
-            .is_some()
-        {
-            return Err("The OSL Firefox import settings closed before opening".to_owned());
-        }
+        let result = begin_protected_browser_import(
+            app_local_data_dir,
+            owner_osl_user_id,
+            vec![preferred_source],
+            0,
+        )?;
         Ok(BrowserAccountImportResult {
             preferred_source,
             detected_sources,
             opened: true,
             mode: "firefoxMigrationWizard",
-            manual_export_required: matches!(
-                preferred_source,
-                BrowserImportId::Chrome | BrowserImportId::Firefox
-            ),
+            manual_export_required: result
+                .password_follow_up_sources
+                .contains(&preferred_source),
         })
     }
     #[cfg(not(target_os = "windows"))]
@@ -866,7 +927,7 @@ pub fn begin_protected_browser_import(
     app_local_data_dir: &std::path::Path,
     owner_osl_user_id: &str,
     selected_sources: Vec<BrowserImportId>,
-    owner_window: isize,
+    _owner_window: isize,
 ) -> Result<ProtectedBrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
@@ -882,57 +943,46 @@ pub fn begin_protected_browser_import(
             "Firefox is required for OSL's browser-owned account migration".to_owned()
         })?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
+        let mut password_follow_up_sources = Vec::new();
         for (index, source) in unique.iter().copied().enumerate() {
-            // Preserve whichever window the user is actually working in. In
-            // normal setup this is OSL; background QA and accessibility use
-            // must not let Firefox steal focus from another desktop app.
-            let foreground_window = crate::firefox_migration_coordinator::foreground_window();
-            let restore_window = if foreground_window != 0 {
-                foreground_window
-            } else {
-                owner_window
-            };
-            let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
+            let firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
                 .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
-            if firefox_process
-                .try_wait()
+            if !firefox_process
+                .is_running()
                 .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
-                .is_some()
             {
                 return Err("The OSL Firefox migration wizard closed before opening".to_owned());
             }
             let process_id = firefox_process.id();
+            let desktop_name = firefox_process.desktop_name.clone();
             *protected_browser_import_process()
                 .lock()
                 .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
                 Some(firefox_process);
-            if let Err(error) =
-                crate::firefox_migration_coordinator::coordinate(process_id, source, restore_window)
-            {
-                close_protected_browser_import_process()?;
-                return Err(error);
-            }
-            // Firefox closes the exact OSL-owned migration window after its
-            // Import action. Keep the whole selected queue inside this one
-            // backend transaction so setup never exposes a per-source picker
-            // or asks the user for another OSL confirmation.
-            let deadline = Instant::now() + Duration::from_secs(300);
-            loop {
-                if crate::firefox_migration_coordinator::is_closed(process_id).is_ok() {
+            match crate::firefox_migration_coordinator::coordinate(
+                process_id,
+                source,
+                0,
+                &desktop_name,
+            ) {
+                Ok(true) => password_follow_up_sources.push(source),
+                Ok(false) => {}
+                Err(error) => {
                     close_protected_browser_import_process()?;
-                    break;
+                    return Err(error);
                 }
-                if Instant::now() >= deadline {
-                    return Err("Firefox import did not finish within five minutes".to_owned());
-                }
-                thread::sleep(Duration::from_millis(100));
             }
+            // Firefox can leave a normal new-tab window behind after Done.
+            // Close the exact retained OSL-owned process before the next
+            // source; ordinary Firefox processes and profiles are untouched.
+            close_protected_browser_import_process()?;
             if index + 1 < unique.len() {
                 thread::sleep(Duration::from_millis(300));
             }
         }
         Ok(ProtectedBrowserImportResult {
             selected_sources: unique,
+            password_follow_up_sources,
             started: true,
             mode: "firefoxMigrationWizard",
             source_selected: true,
@@ -945,7 +995,7 @@ pub fn begin_protected_browser_import(
             app_local_data_dir,
             owner_osl_user_id,
             selected_sources,
-            owner_window,
+            _owner_window,
         );
         Err("Browser account migration is available only on Windows".to_owned())
     }
@@ -2351,18 +2401,140 @@ fn spawn_firefox_tab(
 fn spawn_firefox_migration_wizard(
     executable: &TrustedExecutable,
     profile: &Path,
-) -> std::io::Result<Child> {
-    Command::new(executable.path())
-        .arg("--no-remote")
-        .arg("--profile")
-        .arg(profile)
-        .arg(FIREFOX_WAIT_FOR_BROWSER_SWITCH)
-        .arg(FIREFOX_MIGRATION_SWITCH)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x0800_0000)
-        .spawn()
+) -> std::io::Result<HiddenFirefoxProcess> {
+    static NEXT_DESKTOP: AtomicU64 = AtomicU64::new(1);
+    let desktop_name = format!(
+        "OSLBrowserImport-{}-{}",
+        std::process::id(),
+        NEXT_DESKTOP.fetch_add(1, Ordering::Relaxed)
+    );
+    let desktop_name_wide = desktop_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let desktop = unsafe {
+        CreateDesktopW(
+            desktop_name_wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            0x1000_0000,
+            std::ptr::null(),
+        )
+    };
+    if desktop.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() {
+        unsafe { CloseDesktop(desktop) };
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    } == 0
+    {
+        unsafe {
+            CloseHandle(job);
+            CloseDesktop(desktop);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut command_line = Vec::<u16>::new();
+    for argument in [
+        executable.path().as_os_str(),
+        std::ffi::OsStr::new("--no-remote"),
+        std::ffi::OsStr::new("--profile"),
+        profile.as_os_str(),
+        std::ffi::OsStr::new(FIREFOX_WAIT_FOR_BROWSER_SWITCH),
+        std::ffi::OsStr::new(FIREFOX_MIGRATION_SWITCH),
+    ] {
+        if !command_line.is_empty() {
+            command_line.push(b' ' as u16);
+        }
+        append_windows_quoted_argument(&mut command_line, argument);
+    }
+    command_line.push(0);
+    let executable_wide = executable
+        .path()
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    startup.lpDesktop = desktop_name_wide.as_ptr() as *mut _;
+    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let created = unsafe {
+        CreateProcessW(
+            executable_wide.as_ptr(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup,
+            &mut process,
+        )
+    };
+    if created == 0 {
+        unsafe {
+            CloseHandle(job);
+            CloseDesktop(desktop);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { AssignProcessToJobObject(job, process.hProcess) } == 0
+        || unsafe { ResumeThread(process.hThread) } == u32::MAX
+    {
+        unsafe {
+            TerminateProcess(process.hProcess, 1);
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            CloseHandle(job);
+            CloseDesktop(desktop);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe { CloseHandle(process.hThread) };
+    Ok(HiddenFirefoxProcess {
+        process_handle: process.hProcess as isize,
+        job_handle: job as isize,
+        process_id: process.dwProcessId,
+        desktop_handle: desktop as isize,
+        desktop_name,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn append_windows_quoted_argument(command_line: &mut Vec<u16>, argument: &std::ffi::OsStr) {
+    command_line.push(b'"' as u16);
+    let mut backslashes = 0usize;
+    for unit in argument.encode_wide() {
+        if unit == b'\\' as u16 {
+            backslashes += 1;
+            continue;
+        }
+        if unit == b'"' as u16 {
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+        } else {
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+        }
+        backslashes = 0;
+        command_line.push(unit);
+    }
+    command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    command_line.push(b'"' as u16);
 }
 
 #[cfg(test)]
