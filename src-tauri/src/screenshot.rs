@@ -8,17 +8,14 @@
 //! inside the `runtime` crate, which builds on Linux dev environments
 //! without GTK system libs.
 //!
-//! Since Layer 9 the main window loads `https://discord.com/app`
-//! directly, so the HWND tree includes WebView2's child host windows
-//! and render surface. Setting affinity only on the parent has been
-//! reported to leak to capture on some Windows builds; the propagated
-//! variant in `runtime` walks every descendant via `EnumChildWindows`
-//! to close that gap.
+//! Windows display affinity is supported only for a current-process
+//! top-level HWND. Protecting the OSL-owned top-level window covers its
+//! composed client area; foreign windows receive no direct affinity call.
 
 use ipc::{IpcError, IpcResult};
 use runtime::ScreenshotProtection;
 
-/// Apply `protection` to `window` and every WebView2 descendant HWND.
+/// Apply `protection` to OSL's top-level window.
 /// Maps Tauri / Win32 errors to [`ipc::IpcError`] for consistent
 /// return shape across the bridge.
 #[cfg(windows)]
@@ -44,17 +41,15 @@ pub fn apply_to_window(
     runtime::apply_to_hwnd_and_children(0, _protection).map_err(|e| IpcError::Crypto(e.to_string()))
 }
 
-/// Apply `protection` to the window containing `webview` and every
-/// descendant HWND. This is the variant used from the app-level
+/// Apply `protection` to the top-level window containing `webview`.
+/// This is the variant used from the app-level
 /// `Builder::on_page_load` callback, which delivers `&tauri::Webview`
 /// (the page-load event is webview-scoped because Tauri 2 supports
 /// multiple webviews per window).
 ///
 /// `tauri::Webview` doesn't expose `hwnd()` directly — Tauri 2's
-/// HWND lives on the parent `Window`, reachable via
-/// `Webview::window()`. The `EnumChildWindows` walk inside
-/// `runtime::apply_to_hwnd_and_children` then descends into the
-/// WebView2 host + render surface beneath that parent.
+/// top-level HWND lives on the parent `Window`, reachable via
+/// `Webview::window()`.
 #[cfg(windows)]
 pub fn apply_to_webview(
     webview: &tauri::Webview,

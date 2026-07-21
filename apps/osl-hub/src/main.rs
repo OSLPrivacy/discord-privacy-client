@@ -2,8 +2,12 @@
 
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
-    OpenedPeerProseMessage, PreparedCoreMessage, PreparedHubAttachment,
-    PreparedLocalProtectedMessage, PreparedPeerProseMessage,
+    OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
+    PreparedHubAttachment, PreparedLocalProtectedMessage, PreparedNativeOverlayText,
+    PreparedPeerProseMessage,
+};
+use osl_privacy_hub::browser_companion::{
+    BrowserAccountMode, BrowserCompanionAction, BrowserCompanionState, BrowserCompanionStatus,
 };
 use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
 use osl_privacy_hub::core_bridge::{
@@ -19,17 +23,26 @@ use osl_privacy_hub::mass_cleanup::{
 use osl_privacy_hub::models::{
     EmailProvider, LinkedAccountDemo, LinkedServiceDemo, OnboardingPreferences, ServiceKind,
 };
+use osl_privacy_hub::mullvad_window_host::{MullvadWindowHostResult, MullvadWindowHostState};
 use osl_privacy_hub::native_apps::{
     self, BrowserAccountImportResult, BrowserImportId, BrowserImportResult, BrowserImportStatus,
     FirefoxInstallResult, FirefoxLaunchResult, FirefoxServiceId, FirefoxStatus,
     MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
+    ProtectedBrowserImportResult,
 };
-use osl_privacy_hub::native_window_host::{NativeWindowHostResult, NativeWindowHostState};
+use osl_privacy_hub::native_discord_adapter::{
+    DiscordCarrierMode, DiscordCarrierReceipt, NativeDiscordComposerState,
+};
+use osl_privacy_hub::native_window_host::{
+    DiscordSessionMode, NativeWindowHostReason, NativeWindowHostResult, NativeWindowHostState,
+};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
+use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
+use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexState, ScrubIndexStatus,
 };
@@ -38,18 +51,27 @@ use osl_privacy_hub::security::{
     ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
-use osl_privacy_hub::service_host::{self, ServiceHostState};
+use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::{Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
 #[cfg(windows)]
 mod window_border;
+
+mod native_attachment_transport;
+mod native_discord_overlay;
+mod native_image_viewer;
+
+use native_discord_overlay::OverlaySessionState;
 
 #[allow(dead_code)]
 #[path = "../../../src-tauri/src/screenshot.rs"]
@@ -64,6 +86,9 @@ fn get_onboarding_preferences(
 
 #[tauri::command]
 fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if !enabled {
+        native_discord_overlay::clear_and_hide(&app);
+    }
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "OSL Privacy is unavailable".to_owned())?;
@@ -99,6 +124,30 @@ fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
         .ok_or_else(|| "Unlock an OSL identity before accessing service profiles".to_owned())
 }
 
+fn require_current_context_host(
+    app: &tauri::AppHandle,
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context_token: &str,
+) -> Result<ActiveServiceHost, String> {
+    let owner = active_unlocked_osl_user_id(core)?;
+    if let Ok(native) = app
+        .state::<NativeWindowHostState>()
+        .current_discord_service_host(&owner)
+    {
+        if broker.validate_active_host(context_token, &native).is_ok() {
+            return Ok(native);
+        }
+    }
+    let active = app
+        .state::<ServiceHostState>()
+        .current()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "OSL broker requires an active trusted host".to_owned())?;
+    broker.validate_active_host(context_token, &active)?;
+    Ok(active)
+}
+
 #[tauri::command]
 async fn initialize_scrub_index(
     state: State<'_, ScrubIndexState>,
@@ -109,10 +158,12 @@ async fn initialize_scrub_index(
 ) -> Result<ScrubIndexStatus, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
-    for selection in &request.selections {
-        let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
-            .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
-        registry.require_owned(&owner, service, &selection.account_id)?;
+    if request.source == osl_privacy_hub::scrub_index::ScrubIndexSource::OslVisibleData {
+        for selection in &request.selections {
+            let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
+                .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
+            registry.require_owned(&owner, service, &selection.account_id)?;
+        }
     }
     let state = state.inner().clone();
     tokio::task::spawn_blocking(move || state.initialize(&owner, request))
@@ -199,6 +250,38 @@ struct HubAccountSessionState {
     transition: tokio::sync::Mutex<()>,
 }
 
+#[derive(Default)]
+struct MainWindowLifecycleState {
+    close_started: AtomicBool,
+}
+
+impl MainWindowLifecycleState {
+    fn begin_close(&self) -> bool {
+        !self.close_started.swap(true, Ordering::AcqRel)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn main_window_is_live(window: &tauri::WebviewWindow) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
+
+    let Ok(handle) = window.hwnd() else {
+        return false;
+    };
+    let hwnd = handle.0 as windows_sys::Win32::Foundation::HWND;
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    let mut process_id = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+    process_id == std::process::id()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn main_window_is_live(_window: &tauri::WebviewWindow) -> bool {
+    true
+}
+
 #[tauri::command]
 async fn list_linked_services(
     state: State<'_, ServiceRegistryState>,
@@ -223,6 +306,14 @@ fn list_core_features() -> Vec<CoreFeature> {
 #[tauri::command]
 fn get_hub_license_state(state: State<'_, HubCoreState>) -> Result<HubLicenseState, String> {
     core_bridge::license_state(&state)
+}
+
+fn require_active_pro_entitlement(core: &HubCoreState) -> Result<(), String> {
+    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
+        Ok(())
+    } else {
+        Err("Encrypted attachments require OSL Pro".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -291,14 +382,20 @@ async fn unlock_hub_password_gate(
         }
         VerifiedGateRole::Stealth => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
-            let _ = app.state::<NativeWindowHostState>().detach();
+            native_discord_overlay::clear_and_hide(&app);
+            let _ = app.state::<NativeWindowHostState>().terminate();
+            let _ = app.state::<MullvadWindowHostState>().restore();
+            let _ = app.state::<BrowserCompanionState>().terminate();
             app.state::<HubBrokerState>().clear()?;
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }
         VerifiedGateRole::Burn => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
-            let _ = app.state::<NativeWindowHostState>().detach();
+            native_discord_overlay::clear_and_hide(&app);
+            let _ = app.state::<NativeWindowHostState>().terminate();
+            let _ = app.state::<MullvadWindowHostState>().restore();
+            let _ = app.state::<BrowserCompanionState>().terminate();
             app.state::<HubBrokerState>().clear()?;
             let config_dir = app
                 .path()
@@ -634,6 +731,36 @@ async fn begin_browser_account_import(
 }
 
 #[tauri::command]
+async fn begin_protected_browser_import(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    browser_ids: Vec<BrowserImportId>,
+) -> Result<ProtectedBrowserImportResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        native_apps::begin_protected_browser_import(&app_local_data_dir, &owner, browser_ids)
+    })
+    .await
+    .map_err(|_| "The protected browser import worker stopped unexpectedly".to_owned())?
+}
+
+#[tauri::command]
+async fn finish_protected_browser_import(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    native_apps::finish_protected_browser_import()
+}
+
+#[tauri::command]
 async fn launch_firefox_service(
     app: tauri::AppHandle,
     core: State<'_, HubCoreState>,
@@ -647,6 +774,68 @@ async fn launch_firefox_service(
         .app_local_data_dir()
         .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
     native_apps::launch_firefox_service(&app_local_data_dir, &owner, service_id)
+}
+
+#[tauri::command]
+async fn get_default_browser_companion_status(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    companion: State<'_, BrowserCompanionState>,
+) -> Result<BrowserCompanionStatus, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    Ok(companion.status())
+}
+
+#[tauri::command]
+async fn host_default_browser_companion(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: FirefoxServiceId,
+    browser_id: Option<BrowserImportId>,
+    account_mode: BrowserAccountMode,
+) -> Result<BrowserCompanionAction, String> {
+    let owner = {
+        let _session = session.transition.lock().await;
+        active_unlocked_osl_user_id(&core)?
+    };
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "The OSL browser profile directory is unavailable".to_owned())?;
+    let parent = main_window_hwnd(&app)?;
+    let operation_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation_app.state::<BrowserCompanionState>().host(
+            service_id,
+            browser_id,
+            account_mode,
+            &app_local_data_dir,
+            &owner,
+            parent,
+        )
+    })
+    .await
+    .map_err(|_| "The default-browser companion operation was interrupted".to_owned())
+}
+
+#[tauri::command]
+fn resize_default_browser_companion(
+    app: tauri::AppHandle,
+) -> Result<BrowserCompanionAction, String> {
+    let parent = main_window_hwnd(&app)?;
+    Ok(app.state::<BrowserCompanionState>().resize(parent))
+}
+
+#[tauri::command]
+fn focus_default_browser_companion(app: tauri::AppHandle) -> BrowserCompanionAction {
+    app.state::<BrowserCompanionState>().focus()
+}
+
+#[tauri::command]
+fn detach_default_browser_companion(app: tauri::AppHandle) -> BrowserCompanionAction {
+    app.state::<BrowserCompanionState>().detach()
 }
 
 #[cfg(target_os = "windows")]
@@ -669,9 +858,25 @@ async fn host_native_app_window(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
     app_id: NativeAppId,
+    discord_session_mode: DiscordSessionMode,
 ) -> Result<NativeWindowHostResult, String> {
-    let _session = session.transition.lock().await;
-    let owner = active_unlocked_osl_user_id(&core)?;
+    native_discord_overlay::clear_and_hide(&app);
+    if discord_session_mode == DiscordSessionMode::ExistingSession
+        && !matches!(
+            app_id,
+            NativeAppId::Discord
+                | NativeAppId::Telegram
+                | NativeAppId::Signal
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook
+        )
+    {
+        return Err("An existing native session is not supported for this app".to_owned());
+    }
+    let owner = {
+        let _session = session.transition.lock().await;
+        active_unlocked_osl_user_id(&core)?
+    };
     let parent = main_window_hwnd(&app)?;
     let profile_root = app
         .path()
@@ -679,9 +884,37 @@ async fn host_native_app_window(
         .map_err(|_| "The OSL-owned native profile directory is unavailable".to_owned())?;
     let operation_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        operation_app
-            .state::<NativeWindowHostState>()
-            .host(app_id, &profile_root, &owner, parent)
+        let state = operation_app.state::<NativeWindowHostState>();
+        let mut result =
+            state.host_mode(app_id, &profile_root, &owner, parent, discord_session_mode);
+        if app_id == NativeAppId::Discord
+            && discord_session_mode == DiscordSessionMode::Dedicated
+            && matches!(
+                result.reason,
+                NativeWindowHostReason::ChannelNotOwned
+                    | NativeWindowHostReason::NoChannelAvailable
+                    | NativeWindowHostReason::AppNotInstalled
+            )
+            && native_apps::install_discord_dedicated_channel().is_ok()
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                result =
+                    state.host_mode(app_id, &profile_root, &owner, parent, discord_session_mode);
+                if !matches!(
+                    result.reason,
+                    NativeWindowHostReason::ChannelNotOwned
+                        | NativeWindowHostReason::NoChannelAvailable
+                        | NativeWindowHostReason::AppNotInstalled
+                        | NativeWindowHostReason::WindowNotFound
+                        | NativeWindowHostReason::ProfileInitializationFailed
+                ) {
+                    break;
+                }
+            }
+        }
+        result
     })
     .await
     .map_err(|_| "The experimental native host operation was interrupted".to_owned())
@@ -700,7 +933,720 @@ fn focus_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
 
 #[tauri::command]
 fn detach_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
+    native_discord_overlay::clear_and_hide(&app);
+    app.state::<NativeDiscordComposerState>().clear();
     app.state::<NativeWindowHostState>().detach()
+}
+
+fn native_discord_scope_binding(app: &tauri::AppHandle) -> Result<String, String> {
+    let broker = app.state::<HubBrokerState>();
+    app.state::<OverlaySessionState>()
+        .with_bootstrap_context(|context_token, host| {
+            broker.validate_active_host(context_token, host)?;
+            let target = broker
+                .manual_burn_target(context_token)?
+                .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            serde_json::to_string(&(
+                target.service_id,
+                target.account_id,
+                target.person_id,
+                target.scope,
+            ))
+            .map_err(|_| "The native Discord friend context is unavailable".to_owned())
+        })
+}
+
+#[tauri::command]
+async fn set_native_discord_protected_overlay_open(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    context_token: String,
+    open: bool,
+) -> Result<bool, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL Privacy window may control the overlay".to_owned());
+    }
+    if !open {
+        native_discord_overlay::clear_and_hide(&app);
+        app.state::<NativeDiscordComposerState>().clear();
+        return Ok(true);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let broker_state = app.state::<HubBrokerState>();
+        let owner = active_unlocked_osl_user_id(&core)?;
+        let current = require_current_context_host(&app, &core, &broker_state, &context_token)?;
+        let native = app
+            .state::<NativeWindowHostState>()
+            .current_discord_service_host(&owner)?;
+        if current != native || current.service_id != "discord" {
+            return Err("The protected context is not the current native Discord host".to_owned());
+        }
+        let target = app
+            .state::<NativeWindowHostState>()
+            .discord_overlay_target(&owner)?;
+        if target.generation != current.generation {
+            return Err("The native Discord window changed before protection opened".to_owned());
+        }
+        let overlay_state = app.state::<OverlaySessionState>();
+        let epoch = overlay_state.activate(context_token, current)?;
+        let scope_binding = native_discord_scope_binding(&app)?;
+        if app
+            .state::<NativeDiscordComposerState>()
+            .calibrate(
+                &app.state::<NativeWindowHostState>(),
+                &owner,
+                &scope_binding,
+            )
+            .is_err()
+        {
+            // Discord may expose no bounded, trustworthy accessibility composer.
+            // Keep the verified OSL friend relay usable, but make marker placement
+            // unavailable. The carrier command remains independently fail-closed.
+            app.state::<NativeDiscordComposerState>().clear();
+        }
+        native_discord_overlay::show(&app, target.rect, epoch)
+            .map(|()| true)
+            .map_err(|error| {
+                native_discord_overlay::clear_and_hide(&app);
+                error
+            })
+    })
+    .await
+    .map_err(|_| "The native Discord overlay operation was interrupted".to_owned())?
+}
+
+#[tauri::command]
+fn send_native_discord_overlay_carrier(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    mode: DiscordCarrierMode,
+    chars_per_second: u16,
+) -> Result<DiscordCarrierReceipt, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may send its carrier".to_owned());
+    }
+    let paid = ipc::tier_gate::is_paid_equivalent(&app.state::<HubCoreState>().osl);
+    if mode == DiscordCarrierMode::Compatibility && !paid {
+        return Err("Compatibility typing requires OSL Pro".to_owned());
+    }
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    let (epoch, host) = require_overlay_context_snapshot(&app)?;
+    let scope_binding = native_discord_scope_binding(&app)?;
+    require_same_overlay_context(&app, epoch, &host)?;
+    let carrier = if paid {
+        let ttl_seconds = native_discord_overlay_state(&app)?.ttl_seconds;
+        app.state::<LocalCoverState>()
+            .next_pro_cover(&scope_binding, ttl_seconds)?
+    } else {
+        LocalCoverState::free_cover().to_owned()
+    };
+    let receipt = app.state::<NativeDiscordComposerState>().place_carrier(
+        &app.state::<NativeWindowHostState>(),
+        &owner,
+        &scope_binding,
+        mode,
+        chars_per_second,
+        &carrier,
+    );
+    require_same_overlay_context(&app, epoch, &host)?;
+    if let Some(window) = app.get_webview_window(native_discord_overlay::OVERLAY_LABEL) {
+        let _ = window.set_focus();
+    }
+    Ok(receipt)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeDiscordOverlayStateDto {
+    active: bool,
+    friend_label: String,
+    scope_approved: bool,
+    ttl_seconds: u32,
+    decrypt_display_enabled: bool,
+    view_once_enabled: bool,
+    attachments_enabled: bool,
+    discord_marker_available: bool,
+}
+
+#[tauri::command]
+fn get_native_discord_overlay_state(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<NativeDiscordOverlayStateDto, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may read this state".to_owned());
+    }
+    native_discord_overlay_state(&app)
+}
+
+fn native_discord_overlay_state(
+    app: &tauri::AppHandle,
+) -> Result<NativeDiscordOverlayStateDto, String> {
+    let core = app.state::<HubCoreState>();
+    let broker = app.state::<HubBrokerState>();
+    let state = app.state::<OverlaySessionState>();
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let (context_epoch, stored_host) = state
+        .validated_marker(|context_token, host| broker.validate_active_host(context_token, host))?;
+    let current_host = app
+        .state::<NativeWindowHostState>()
+        .current_discord_service_host(&owner)?;
+    if current_host != stored_host {
+        return Err("The native Discord overlay context changed".to_owned());
+    }
+    let target = state.with_context(|context_token, host| {
+        broker.validate_active_host(context_token, host)?;
+        broker
+            .manual_burn_target(context_token)?
+            .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())
+    })?;
+    state.validate_marker(context_epoch, &stored_host, |context_token, host| {
+        broker.validate_active_host(context_token, host)
+    })?;
+    let scope = security::scope_security(target.scope.clone())?;
+    let scope_approved = security::manual_peer_scope_approved(
+        &core,
+        &target.service_id,
+        &target.account_id,
+        target.person_id.clone(),
+        target.scope,
+    )?;
+    let friend_label = security::list_people(&core)?
+        .into_iter()
+        .find(|person| person.person_id == target.person_id)
+        .and_then(|person| person.alias)
+        .unwrap_or_else(|| "Friend".to_owned());
+    require_same_overlay_context(app, context_epoch, &stored_host)?;
+    Ok(NativeDiscordOverlayStateDto {
+        active: true,
+        friend_label,
+        scope_approved,
+        ttl_seconds: scope.ttl_seconds,
+        decrypt_display_enabled: scope.decrypt_display_enabled,
+        view_once_enabled: true,
+        attachments_enabled: ipc::tier_gate::is_paid_equivalent(&core.osl),
+        discord_marker_available: app.state::<NativeDiscordComposerState>().marker_available(),
+    })
+}
+
+fn require_overlay_context_snapshot(
+    app: &tauri::AppHandle,
+) -> Result<(u64, ActiveServiceHost), String> {
+    let broker = app.state::<HubBrokerState>();
+    let marker = app
+        .state::<OverlaySessionState>()
+        .validated_marker(|context_token, host| broker.validate_active_host(context_token, host))?;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    let current = app
+        .state::<NativeWindowHostState>()
+        .current_discord_service_host(&owner)?;
+    if current != marker.1 {
+        return Err("The native Discord overlay context changed".to_owned());
+    }
+    Ok(marker)
+}
+
+fn require_same_overlay_context(
+    app: &tauri::AppHandle,
+    expected_epoch: u64,
+    expected_host: &ActiveServiceHost,
+) -> Result<(), String> {
+    app.state::<OverlaySessionState>().validate_marker(
+        expected_epoch,
+        expected_host,
+        |context_token, host| {
+            app.state::<HubBrokerState>()
+                .validate_active_host(context_token, host)
+        },
+    )?;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    let current = app
+        .state::<NativeWindowHostState>()
+        .current_discord_service_host(&owner)?;
+    if &current != expected_host {
+        return Err("The native Discord overlay context changed".to_owned());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_native_discord_overlay_security(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    ttl_seconds: u32,
+    decrypt_display_enabled: bool,
+) -> Result<NativeDiscordOverlayStateDto, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may change protection".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let broker = app.state::<HubBrokerState>();
+        app.state::<OverlaySessionState>()
+            .with_context(|context_token, stored_host| {
+                if stored_host != &host {
+                    return Err("The native Discord overlay context changed".to_owned());
+                }
+                broker.validate_active_host(context_token, stored_host)?;
+                let scope = broker.scope_for_context(context_token)?;
+                with_indexed_context_write(&app, &broker, context_token, || {
+                    security::set_scope_security(
+                        &app.state::<HubSecurityState>(),
+                        scope,
+                        ttl_seconds,
+                        decrypt_display_enabled,
+                    )
+                })?;
+                Ok(())
+            })?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        native_discord_overlay_state(&app)
+    })
+    .await
+    .map_err(|error| format!("OSL native overlay worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_native_discord_overlay_text(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    plaintext: String,
+    view_once: bool,
+) -> Result<PreparedNativeOverlayText, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may protect text".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let prepared = broker::prepare_native_discord_overlay_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            plaintext,
+            view_once,
+        )?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        Ok(prepared)
+    })
+    .await
+    .map_err(|error| format!("OSL native overlay worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_native_discord_overlay_text(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OpenedNativeOverlayTextBatch, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may receive text".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let opened = broker::drain_native_discord_overlay_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+        )?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        Ok(opened)
+    })
+    .await
+    .map_err(|error| format!("OSL native overlay worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn reveal_native_discord_overlay_view_once(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    message_id: String,
+) -> Result<broker::OpenedNativeOverlayText, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may reveal view-once text".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let opened = broker::reveal_native_discord_overlay_view_once(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            &message_id,
+        )?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        Ok(opened)
+    })
+    .await
+    .map_err(|error| format!("OSL native overlay worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn prepare_osl_chat_text(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    plaintext: String,
+    view_once: bool,
+) -> Result<PreparedNativeOverlayText, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may send OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::prepare_osl_chat_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            plaintext,
+            view_once,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_osl_chat_text(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OpenedNativeOverlayTextBatch, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may receive OSL Chats".to_owned());
+    }
+    screenshot::apply_to_window(&caller, runtime::ScreenshotProtection::On)
+        .map_err(|_| "Windows capture resistance is required to receive OSL Chats".to_owned())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::drain_osl_chat_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            true,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_osl_chat_history(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
+    }
+    screenshot::apply_to_window(&caller, runtime::ScreenshotProtection::On).map_err(|_| {
+        "Windows capture resistance is required to read OSL Chat history".to_owned()
+    })?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::load_osl_chat_history(&app.state::<HubCoreState>(), &app.state::<HubBrokerState>())
+    })
+    .await
+    .map_err(|error| format!("OSL Chat history worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn select_osl_chat_attachment(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    view_once: bool,
+) -> Result<Option<broker::PreparedNativeOverlayAttachment>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may choose OSL Chat attachments".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        native_attachment_transport::select_osl_chat_attachment(
+            &app,
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            view_once,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_osl_chat_attachments(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<broker::PendingNativeOverlayAttachment>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may list OSL Chat attachments".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        native_attachment_transport::list_osl_chat_pending(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_osl_chat_attachment(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    attachment_id: String,
+) -> Result<native_attachment_transport::OpenedNativeOverlayAttachment, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may open OSL Chat attachments".to_owned());
+    }
+    screenshot::apply_to_window(&caller, runtime::ScreenshotProtection::On).map_err(|_| {
+        "Windows capture resistance is required to open OSL Chat attachments".to_owned()
+    })?;
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        native_attachment_transport::open_osl_chat_pending(
+            &app,
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            &attachment_id,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn select_native_discord_overlay_attachment(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    view_once: bool,
+) -> Result<Option<broker::PreparedNativeOverlayAttachment>, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may choose attachments".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let prepared = native_attachment_transport::select_encrypt_upload_deliver(
+            &app,
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            context_epoch,
+            &host,
+            view_once,
+        )?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        Ok(prepared)
+    })
+    .await
+    .map_err(|error| format!("OSL native attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_native_discord_overlay_attachments(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<broker::PendingNativeOverlayAttachment>, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may list attachments".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let pending = native_attachment_transport::list_pending(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+        )?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        Ok(pending)
+    })
+    .await
+    .map_err(|error| format!("OSL native attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_native_discord_overlay_attachment(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    attachment_id: String,
+) -> Result<native_attachment_transport::OpenedNativeOverlayAttachment, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may open attachments".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
+        let opened = native_attachment_transport::open_pending(
+            &app,
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            context_epoch,
+            &host,
+            &attachment_id,
+        )?;
+        require_same_overlay_context(&app, context_epoch, &host)?;
+        Ok(opened)
+    })
+    .await
+    .map_err(|error| format!("OSL native attachment worker failed: {error}"))?
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeDiscordOverlayBurnResult {
+    rows_destroyed: usize,
+    channels_destroyed: usize,
+    whitelist_entries_removed: usize,
+    local_protected_rows_destroyed: usize,
+    remote_blobs_deleted: usize,
+    remote_blob_deletions_failed: usize,
+    local_cleanup_complete: bool,
+    remote_cleanup_complete: bool,
+    discord_history_deleted: bool,
+    recipient_copies_deleted: bool,
+}
+
+#[tauri::command]
+async fn burn_native_discord_overlay_chat(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<NativeDiscordOverlayBurnResult, String> {
+    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+        return Err("Only the trusted native Discord overlay may burn this OSL chat".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let cover_scope = native_discord_scope_binding(&app)?;
+    let burn_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let (context_epoch, host) = require_overlay_context_snapshot(&burn_app)?;
+        let broker_state = burn_app.state::<HubBrokerState>();
+        let core = burn_app.state::<HubCoreState>();
+        let result = burn_app.state::<OverlaySessionState>().with_context(
+            |context_token, stored_host| {
+                if stored_host != &host {
+                    return Err("The native Discord overlay context changed".to_owned());
+                }
+                broker_state.validate_active_host(context_token, stored_host)?;
+                let manual = broker_state
+                    .manual_burn_target(context_token)?
+                    .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+                let scope_result = security::burn_manual_peer_scope(
+                    &core,
+                    &burn_app.state::<HubSecurityState>(),
+                    &manual.service_id,
+                    &manual.account_id,
+                    &manual.person_id,
+                    manual.scope,
+                )?;
+                let (local_protected_rows_destroyed, local_ledger_complete) =
+                    match broker::burn_local_protected_context(&core, &broker_state, context_token)
+                    {
+                        Ok(rows) => (rows, true),
+                        Err(_) => (0, false),
+                    };
+                Ok(NativeDiscordOverlayBurnResult {
+                    rows_destroyed: scope_result.rows_destroyed,
+                    channels_destroyed: scope_result.channels_destroyed,
+                    whitelist_entries_removed: scope_result.whitelist_entries_removed,
+                    local_protected_rows_destroyed,
+                    remote_blobs_deleted: scope_result.remote_blobs_deleted,
+                    remote_blob_deletions_failed: scope_result.remote_blob_deletions_failed,
+                    local_cleanup_complete: scope_result.local_cleanup_complete
+                        && local_ledger_complete,
+                    remote_cleanup_complete: scope_result.remote_cleanup_complete,
+                    // OSL burn never touches the native Discord profile/history
+                    // and cannot revoke copies already received by another user.
+                    discord_history_deleted: false,
+                    recipient_copies_deleted: false,
+                })
+            },
+        )?;
+        // Recheck the Rust-held epoch/host after every destructive operation,
+        // then revoke the broker lease regardless. The exact old scope has
+        // already been burned, so a concurrent host change must not suppress
+        // its truthful counts or leave the overlay capable of retrying it.
+        let _ = require_same_overlay_context(&burn_app, context_epoch, &host);
+        let _ = broker_state.clear();
+        Ok::<NativeDiscordOverlayBurnResult, String>(result)
+    })
+    .await
+    .map_err(|error| format!("OSL native overlay burn worker failed: {error}"))??;
+
+    app.state::<LocalCoverState>().burn_scope(&cover_scope);
+    app.state::<NativeDiscordComposerState>().clear();
+    let close_app = app.clone();
+    std::thread::spawn(move || {
+        // Leave enough time for Tauri to deliver the truthful result DTO to
+        // the invoking overlay before that webview is closed. Its broker and
+        // composer authority were already revoked synchronously above.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        native_discord_overlay::clear_and_hide(&close_app);
+    });
+    Ok(result)
+}
+
+/// With the user's explicit consent, visually borrow the one existing Mullvad
+/// window from this Windows logon session. The native boundary accepts no PID,
+/// HWND, executable path, account value, or launch argument from the renderer.
+#[tauri::command]
+async fn host_mullvad_window(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<MullvadWindowHostResult, String> {
+    {
+        let _session = session.transition.lock().await;
+        let _ = active_unlocked_osl_user_id(&core)?;
+    }
+    let parent = main_window_hwnd(&app)?;
+    let operation_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation_app.state::<MullvadWindowHostState>().host(parent)
+    })
+    .await
+    .map_err(|_| "The Mullvad window operation was interrupted".to_owned())
+}
+
+#[tauri::command]
+fn resize_mullvad_window(app: tauri::AppHandle) -> Result<MullvadWindowHostResult, String> {
+    let parent = main_window_hwnd(&app)?;
+    Ok(app.state::<MullvadWindowHostState>().resize(parent))
+}
+
+#[tauri::command]
+fn focus_mullvad_window(app: tauri::AppHandle) -> MullvadWindowHostResult {
+    app.state::<MullvadWindowHostState>().focus()
+}
+
+#[tauri::command]
+fn restore_mullvad_window(app: tauri::AppHandle) -> MullvadWindowHostResult {
+    app.state::<MullvadWindowHostState>().restore()
 }
 
 fn with_indexed_context_write<T>(
@@ -725,6 +1671,12 @@ async fn create_service_account(
     provider: Option<EmailProvider>,
 ) -> Result<LinkedAccountDemo, String> {
     let _session = session.transition.lock().await;
+    if matches!(
+        service_id,
+        ServiceKind::Discord | ServiceKind::Telegram | ServiceKind::Signal | ServiceKind::WhatsApp
+    ) {
+        return Err("This service requires its dedicated native app".to_owned());
+    }
     let owner = active_unlocked_osl_user_id(&core)?;
     let account = registry.create_with_provider_for_owner(&owner, service_id, label, provider)?;
     let service = service_kind_id(service_id);
@@ -746,6 +1698,12 @@ async fn open_service_host(
     account_id: String,
 ) -> Result<service_host::ActiveServiceHost, String> {
     let _session = session.transition.lock().await;
+    if matches!(
+        service_id.as_str(),
+        "discord" | "telegram" | "signal" | "whatsapp"
+    ) {
+        return Err("This service requires its dedicated native app".to_owned());
+    }
     let owner = active_unlocked_osl_user_id(&core)?;
     service_host::desktop::open(app, host, registry, owner, service_id, account_id).await
 }
@@ -758,6 +1716,7 @@ async fn close_service_host(
     session: State<'_, HubAccountSessionState>,
 ) -> Result<(), String> {
     let _session = session.transition.lock().await;
+    native_discord_overlay::clear_and_hide(&app);
     broker.clear()?;
     service_host::desktop::close(app, host).await
 }
@@ -799,6 +1758,7 @@ async fn mutate_service_account(
     // Any active context may be bound to the profile being removed. Clearing
     // every lease is cheap and prevents stale composer authority surviving a
     // profile reset or removal.
+    native_discord_overlay::clear_and_hide(&app);
     broker.clear()?;
     service_host::desktop::mutate_account_profile(
         app,
@@ -870,6 +1830,7 @@ struct ManualPeerContextLease {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn activate_local_loopback_context(
+    app: tauri::AppHandle,
     broker: State<'_, HubBrokerState>,
     host: State<'_, ServiceHostState>,
     registry: State<'_, ServiceRegistryState>,
@@ -880,6 +1841,7 @@ async fn activate_local_loopback_context(
     conversation_id: String,
 ) -> Result<LocalLoopbackContextLease, String> {
     let _session = session.transition.lock().await;
+    native_discord_overlay::clear_and_hide(&app);
     let owner = active_unlocked_osl_user_id(&core)?;
     let lease = broker::activate_owned_local_loopback_context(
         &broker,
@@ -904,6 +1866,7 @@ async fn activate_local_loopback_context(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn activate_manual_peer_context(
+    app: tauri::AppHandle,
     broker: State<'_, HubBrokerState>,
     host: State<'_, ServiceHostState>,
     registry: State<'_, ServiceRegistryState>,
@@ -914,6 +1877,7 @@ async fn activate_manual_peer_context(
     person_id: String,
 ) -> Result<ManualPeerContextLease, String> {
     let _session = session.transition.lock().await;
+    native_discord_overlay::clear_and_hide(&app);
     let owner = active_unlocked_osl_user_id(&core)?;
     let binding = security::manual_peer_binding(&core, person_id)?;
     let activated = broker::activate_owned_manual_peer_context(
@@ -942,6 +1906,91 @@ async fn activate_manual_peer_context(
     })
 }
 
+/// Activate a synthetic OSL protection scope over the currently attached,
+/// signed native Discord lifecycle. The renderer selects only an already-known
+/// friend; service id, account id, owner, and generation are derived locally.
+#[tauri::command]
+async fn activate_native_manual_peer_context(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<ManualPeerContextLease, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    native_discord_overlay::clear_and_hide(&app);
+    let active = app
+        .state::<NativeWindowHostState>()
+        .current_discord_service_host(&owner)?;
+    let binding = security::manual_peer_binding(&core, person_id)?;
+    let activated = broker::activate_owned_native_manual_peer_context(
+        &app.state::<HubBrokerState>(),
+        &owner,
+        &active,
+        binding,
+    )?;
+    let scope_approved = security::manual_peer_scope_approved(
+        &core,
+        &activated.lease.service_id,
+        &activated.lease.account_id,
+        activated.person_id.clone(),
+        activated.scope,
+    )?;
+    Ok(ManualPeerContextLease {
+        context_token: activated.lease.context_token,
+        service_id: activated.lease.service_id,
+        account_id: activated.lease.account_id,
+        person_id: activated.person_id,
+        peer_osl_user_id: activated.peer_osl_user_id,
+        scope_approved,
+    })
+}
+
+#[tauri::command]
+async fn activate_osl_chat_context(
+    caller: tauri::WebviewWindow,
+    broker: State<'_, HubBrokerState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<ManualPeerContextLease, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may open OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let binding = security::manual_peer_binding(&core, person_id)?;
+    let activated = broker::activate_owned_osl_chat_context(&broker, &owner, binding)?;
+    let scope_approved = security::manual_peer_scope_approved(
+        &core,
+        &activated.lease.service_id,
+        &activated.lease.account_id,
+        activated.person_id.clone(),
+        activated.scope,
+    )?;
+    Ok(ManualPeerContextLease {
+        context_token: activated.lease.context_token,
+        service_id: activated.lease.service_id,
+        account_id: activated.lease.account_id,
+        person_id: activated.person_id,
+        peer_osl_user_id: activated.peer_osl_user_id,
+        scope_approved,
+    })
+}
+
+#[tauri::command]
+async fn close_osl_chat_context(
+    caller: tauri::WebviewWindow,
+    broker: State<'_, HubBrokerState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<(), String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may close OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    broker.clear_osl_chat_context()
+}
+
 /// Produce marker-free encrypted copy text for manual user placement. Nothing
 /// is placed into or sent through the hosted service by this command.
 #[tauri::command]
@@ -950,32 +1999,32 @@ async fn prepare_peer_prose_text(
     session: State<'_, HubAccountSessionState>,
     context_token: String,
     plaintext: String,
+    view_once: bool,
 ) -> Result<PreparedPeerProseMessage, String> {
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let security_state = app.state::<HubSecurityState>();
         let broker_state = app.state::<HubBrokerState>();
-        let host_state = app.state::<ServiceHostState>();
-        let active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
-        broker_state.validate_active_host(&context_token, &active)?;
+        let require_capture_protection = app
+            .state::<PreviewState>()
+            .get()
+            .map(|preferences| preferences.window_capture_enabled)
+            .unwrap_or(true);
+        let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
         let prepared = with_indexed_context_write(&app, &broker_state, &context_token, || {
-            broker::prepare_peer_prose_text(
+            broker::prepare_peer_prose_text_with_capture(
                 &core,
                 &security_state,
                 &broker_state,
                 &context_token,
                 plaintext,
+                view_once,
+                require_capture_protection,
             )
         })?;
-        let still_active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker service host closed during preparation".to_owned())?;
-        broker_state.validate_active_host(&context_token, &still_active)?;
+        let _still_active =
+            require_current_context_host(&app, &core, &broker_state, &context_token)?;
         Ok(prepared)
     })
     .await
@@ -994,27 +2043,21 @@ async fn open_peer_prose_text(
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
+        let security_state = app.state::<HubSecurityState>();
         let broker_state = app.state::<HubBrokerState>();
-        let host_state = app.state::<ServiceHostState>();
-        let active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
-        broker_state.validate_active_host(&context_token, &active)?;
+        let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
         let opened = with_indexed_context_write(&app, &broker_state, &context_token, || {
             broker::open_peer_prose_text(
                 &core,
+                &security_state,
                 &broker_state,
                 &context_token,
                 sender_person_id,
                 cover_text,
             )
         })?;
-        let still_active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker service host closed during decryption".to_owned())?;
-        broker_state.validate_active_host(&context_token, &still_active)?;
+        let _still_active =
+            require_current_context_host(&app, &core, &broker_state, &context_token)?;
         Ok(opened)
     })
     .await
@@ -1101,6 +2144,108 @@ async fn export_hub_friend_code(
     security::export_friend_code(&core)
 }
 
+/// Copy only the current identity's freshly signed friend invite. This command
+/// accepts no text and exposes no clipboard-read or generic write surface.
+#[tauri::command]
+async fn copy_hub_friend_invite(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<(), String> {
+    let friend_code = {
+        let _session = session.transition.lock().await;
+        security::export_friend_code(&core)?.friend_code
+    };
+
+    #[cfg(windows)]
+    {
+        tokio::task::spawn_blocking(move || write_windows_clipboard_text(&friend_code))
+            .await
+            .map_err(|_| "The Windows clipboard operation was interrupted".to_owned())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = friend_code;
+        Err("Copy invite is available in the Windows app".to_owned())
+    }
+}
+
+#[cfg(windows)]
+fn write_windows_clipboard_text(value: &str) -> Result<(), String> {
+    use std::{ptr, thread, time::Duration};
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            Ole::CF_UNICODETEXT,
+        },
+    };
+
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard exists only after this thread successfully
+            // opened the clipboard and closes that exact open operation.
+            unsafe { CloseClipboard() };
+        }
+    }
+
+    let mut opened = false;
+    for _ in 0..8 {
+        // SAFETY: a null owner is explicitly supported by OpenClipboard. The
+        // command never reads the clipboard and immediately closes it below.
+        if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
+            opened = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(8));
+    }
+    if !opened {
+        return Err("The Windows clipboard is busy".to_owned());
+    }
+    let _clipboard = ClipboardGuard;
+
+    let utf16 = value
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let byte_len = utf16
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or_else(|| "The friend invite is too large for the clipboard".to_owned())?;
+    // SAFETY: byte_len is checked above and the returned movable allocation is
+    // kept owned by this function until SetClipboardData accepts ownership.
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, byte_len) };
+    if memory.is_null() {
+        return Err("The Windows clipboard could not allocate memory".to_owned());
+    }
+    // SAFETY: memory is a valid allocation from GlobalAlloc.
+    let destination = unsafe { GlobalLock(memory) }.cast::<u16>();
+    if destination.is_null() {
+        // SAFETY: ownership has not been transferred to the clipboard.
+        unsafe { GlobalFree(memory) };
+        return Err("The Windows clipboard memory could not be locked".to_owned());
+    }
+    // SAFETY: destination is byte_len bytes and utf16 contains exactly the
+    // same number of u16 values, including one trailing NUL.
+    unsafe {
+        ptr::copy_nonoverlapping(utf16.as_ptr(), destination, utf16.len());
+        GlobalUnlock(memory);
+    }
+    // SAFETY: this thread owns the open clipboard and writes only Unicode text.
+    if unsafe { EmptyClipboard() } == 0 {
+        // SAFETY: ownership has not been transferred to the clipboard.
+        unsafe { GlobalFree(memory) };
+        return Err("The Windows clipboard could not be cleared".to_owned());
+    }
+    // SAFETY: after success Windows owns memory; after failure we free it.
+    if unsafe { SetClipboardData(CF_UNICODETEXT as u32, memory) }.is_null() {
+        unsafe { GlobalFree(memory) };
+        return Err("The friend invite could not be copied".to_owned());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn add_hub_friend(
     core: State<'_, HubCoreState>,
@@ -1150,7 +2295,6 @@ async fn set_hub_friend_nickname(
 #[allow(clippy::too_many_arguments)]
 async fn set_active_hub_friend_permission(
     app: tauri::AppHandle,
-    host_state: State<'_, ServiceHostState>,
     broker_state: State<'_, HubBrokerState>,
     core: State<'_, HubCoreState>,
     security_state: State<'_, HubSecurityState>,
@@ -1161,11 +2305,7 @@ async fn set_active_hub_friend_permission(
     broadened: bool,
 ) -> Result<(), String> {
     let _session = session.transition.lock().await;
-    let active = host_state
-        .current()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "OSL People requires an active service host".to_owned())?;
-    broker_state.validate_active_host(&context_token, &active)?;
+    let active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
     let person_id = broker_state.manual_permission_target(&context_token, &person_id, broadened)?;
     let scope = broker_state.scope_for_context(&context_token)?;
     with_indexed_context_write(&app, &broker_state, &context_token, || {
@@ -1178,22 +2318,21 @@ async fn set_active_hub_friend_permission(
             scope,
             enabled,
         )
-    })
+    })?;
+    let _still_active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
+    Ok(())
 }
 
 #[tauri::command]
 async fn get_active_hub_context_security(
-    host_state: State<'_, ServiceHostState>,
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
     broker_state: State<'_, HubBrokerState>,
     session: State<'_, HubAccountSessionState>,
     context_token: String,
 ) -> Result<ScopeSecurityDto, String> {
     let _session = session.transition.lock().await;
-    let active = host_state
-        .current()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "OSL security settings require an active service host".to_owned())?;
-    broker_state.validate_active_host(&context_token, &active)?;
+    let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
     security::scope_security(broker_state.scope_for_context(&context_token)?)
 }
 
@@ -1201,7 +2340,7 @@ async fn get_active_hub_context_security(
 #[allow(clippy::too_many_arguments)]
 async fn set_active_hub_context_security(
     app: tauri::AppHandle,
-    host_state: State<'_, ServiceHostState>,
+    core: State<'_, HubCoreState>,
     broker_state: State<'_, HubBrokerState>,
     security_state: State<'_, HubSecurityState>,
     session: State<'_, HubAccountSessionState>,
@@ -1210,15 +2349,13 @@ async fn set_active_hub_context_security(
     decrypt_display_enabled: bool,
 ) -> Result<ScopeSecurityDto, String> {
     let _session = session.transition.lock().await;
-    let active = host_state
-        .current()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "OSL security settings require an active service host".to_owned())?;
-    broker_state.validate_active_host(&context_token, &active)?;
+    let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
     let scope = broker_state.scope_for_context(&context_token)?;
-    with_indexed_context_write(&app, &broker_state, &context_token, || {
+    let saved = with_indexed_context_write(&app, &broker_state, &context_token, || {
         security::set_scope_security(&security_state, scope, ttl_seconds, decrypt_display_enabled)
-    })
+    })?;
+    let _still_active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -1270,6 +2407,7 @@ async fn prepare_hub_attachment(
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
+        require_active_pro_entitlement(&core)?;
         let broker_state = app.state::<HubBrokerState>();
         let host_state = app.state::<ServiceHostState>();
         let active = host_state
@@ -1291,6 +2429,7 @@ async fn prepare_hub_attachment(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "OSL service closed during attachment preparation".to_owned())?;
         broker_state.validate_active_host(&context_token, &still_active)?;
+        require_active_pro_entitlement(&core)?;
         Ok(prepared)
     })
     .await
@@ -1309,6 +2448,7 @@ async fn open_hub_attachment(
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
+        require_active_pro_entitlement(&core)?;
         let broker_state = app.state::<HubBrokerState>();
         let host_state = app.state::<ServiceHostState>();
         let active = host_state
@@ -1331,6 +2471,7 @@ async fn open_hub_attachment(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "OSL service closed during attachment opening".to_owned())?;
         broker_state.validate_active_host(&context_token, &still_active)?;
+        require_active_pro_entitlement(&core)?;
         Ok(opened)
     })
     .await
@@ -1387,6 +2528,10 @@ async fn create_hub_identity_slot(
     let _session = session.transition.lock().await;
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
+    native_discord_overlay::clear_and_hide(&app);
+    let _ = app.state::<NativeWindowHostState>().terminate();
+    let _ = app.state::<MullvadWindowHostState>().restore();
+    let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
     tauri::async_runtime::spawn_blocking(move || {
         identity_registry::create_identity_slot(
@@ -1409,6 +2554,10 @@ async fn recover_hub_identity_slot(
     let _session = session.transition.lock().await;
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
+    native_discord_overlay::clear_and_hide(&app);
+    let _ = app.state::<NativeWindowHostState>().terminate();
+    let _ = app.state::<MullvadWindowHostState>().restore();
+    let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
     tauri::async_runtime::spawn_blocking(move || {
         identity_registry::recover_identity_slot(
@@ -1431,6 +2580,10 @@ async fn switch_hub_identity(
     let _session = session.transition.lock().await;
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
+    native_discord_overlay::clear_and_hide(&app);
+    let _ = app.state::<NativeWindowHostState>().terminate();
+    let _ = app.state::<MullvadWindowHostState>().restore();
+    let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
     tauri::async_runtime::spawn_blocking(move || {
         identity_registry::switch_identity_slot(
@@ -1451,6 +2604,10 @@ async fn burn_active_hub_identity(
     let _session = session.transition.lock().await;
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
+    native_discord_overlay::clear_and_hide(&app);
+    let _ = app.state::<NativeWindowHostState>().terminate();
+    let _ = app.state::<MullvadWindowHostState>().restore();
+    let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
     tauri::async_runtime::spawn_blocking(move || {
         let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
@@ -1473,6 +2630,10 @@ async fn execute_hub_full_cleanup(
     let _session = session.transition.lock().await;
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
+    native_discord_overlay::clear_and_hide(&app);
+    let _ = app.state::<NativeWindowHostState>().terminate();
+    let _ = app.state::<MullvadWindowHostState>().restore();
+    let _ = app.state::<BrowserCompanionState>().terminate();
     app.state::<HubBrokerState>().clear()?;
     let config_dir = app
         .path()
@@ -1629,6 +2790,7 @@ fn burn_indexed_service_manifest(
             remote_blob_deletions_failed.saturating_add(result.remote_blob_deletions_failed);
     }
     index.finish_burn(manifest)?;
+    native_discord_overlay::clear_and_hide(&app);
     app.state::<HubBrokerState>().clear()?;
     Ok(HubServiceBurnResult {
         burn_id: bytes_hex(&manifest.burn_id),
@@ -1663,15 +2825,11 @@ async fn burn_active_hub_context(
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let broker_state = app.state::<HubBrokerState>();
-        let host = app.state::<ServiceHostState>();
-        let active = host
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL burn requires an active service host".to_owned())?;
-        broker_state.validate_active_host(&context_token, &active)?;
+        let core = app.state::<HubCoreState>();
+        let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
         let result = if let Some(manual) = broker_state.manual_burn_target(&context_token)? {
             security::burn_manual_peer_scope(
-                &app.state::<HubCoreState>(),
+                &core,
                 &app.state::<HubSecurityState>(),
                 &manual.service_id,
                 &manual.account_id,
@@ -1682,7 +2840,7 @@ async fn burn_active_hub_context(
             let scope_input = broker_state.scope_for_context(&context_token)?;
             let known_channel_ids = scope_input.channel_id.clone().into_iter().collect();
             security::burn_scope(
-                &app.state::<HubCoreState>(),
+                &core,
                 &app.state::<HubSecurityState>(),
                 scope_input,
                 known_channel_ids,
@@ -1690,11 +2848,9 @@ async fn burn_active_hub_context(
                 Vec::new(),
             )?
         };
-        broker::burn_local_protected_context(
-            &app.state::<HubCoreState>(),
-            &broker_state,
-            &context_token,
-        )?;
+        let _still_active =
+            require_current_context_host(&app, &core, &broker_state, &context_token)?;
+        broker::burn_local_protected_context(&core, &broker_state, &context_token)?;
         Ok(result)
     })
     .await
@@ -1703,17 +2859,84 @@ async fn burn_active_hub_context(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+            let restored = app.get_webview_window("main").is_some_and(|window| {
+                main_window_is_live(&window) && window.unminimize().is_ok() && window.show().is_ok()
+            });
+            if restored {
+                if let Some(window) = app.get_webview_window("main") {
+                    // Focus can legitimately fail in a disconnected or
+                    // minimized RDP session. A visible window is still healthy.
+                    let _ = window.set_focus();
+                }
+            } else {
+                // A retained service webview can otherwise leave the
+                // single-instance process alive without a recoverable main UI.
+                app.request_restart();
             }
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|webview, _| {
             #[cfg(windows)]
-            let _ = window_border::suppress_accent_border(webview);
+            {
+                let _ = window_border::suppress_accent_border(webview);
+                // Protect OSL-owned pixels before the renderer can paint any
+                // account or recovery UI. Foreign native app windows remain
+                // outside this boundary and are never claimed as protected.
+                let _ = screenshot::apply_to_webview(webview, runtime::ScreenshotProtection::On);
+            }
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            #[cfg(windows)]
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                if let Some(webview) = window.app_handle().get_webview_window("main") {
+                    let _ =
+                        screenshot::apply_to_window(&webview, runtime::ScreenshotProtection::On);
+                }
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let app = window.app_handle().clone();
+                if !app.state::<MainWindowLifecycleState>().begin_close() {
+                    return;
+                }
+                let _ = window.hide();
+                // Arm the bounded exit before waiting on any native-host lock.
+                // A concurrent launch may legitimately hold that lock while it
+                // discovers and adopts its exact window. Close must never block
+                // Tauri's window-event thread behind that operation.
+                let watchdog_app = app.clone();
+                std::thread::spawn(move || {
+                    // Native discovery/adoption is bounded to eleven seconds.
+                    // Leave enough time for its exact window restoration while
+                    // retaining an unconditional upper bound on shutdown.
+                    std::thread::sleep(std::time::Duration::from_secs(15));
+                    watchdog_app.exit(0);
+                });
+                native_discord_overlay::clear_and_hide(&app);
+                tauri::async_runtime::spawn(async move {
+                    let native_cleanup_app = app.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        let _ = native_cleanup_app
+                            .state::<NativeWindowHostState>()
+                            .terminate();
+                        let _ = native_cleanup_app
+                            .state::<MullvadWindowHostState>()
+                            .restore();
+                        let _ = native_cleanup_app
+                            .state::<BrowserCompanionState>()
+                            .terminate();
+                    })
+                    .await;
+                    let host = app.state::<ServiceHostState>();
+                    let _ = service_host::desktop::shutdown(&app, &host).await;
+                    app.exit(0);
+                });
+            }
         })
         .setup(|app| {
             let config_dir = app
@@ -1729,6 +2952,7 @@ fn main() {
                 .path()
                 .app_local_data_dir()
                 .map_err(|error| format!("could not resolve app local-data directory: {error}"))?;
+            peer_attachment_io::scavenge_staging_on_startup(&local_data_dir)?;
             // Resume an already-committed gate burn before any identity can be
             // selected or decrypted. The recovery record contains no paths or
             // secrets; it only authorizes the same fixed-root idempotent purge.
@@ -1749,7 +2973,13 @@ fn main() {
             app.manage(HubIdentityRegistryState::default());
             app.manage(ServiceHostState::default());
             app.manage(NativeWindowHostState::default());
+            app.manage(NativeDiscordComposerState::default());
+            app.manage(LocalCoverState::default());
+            app.manage(OverlaySessionState::default());
+            app.manage(MullvadWindowHostState::default());
+            app.manage(BrowserCompanionState::default());
             app.manage(HubAccountSessionState::default());
+            app.manage(MainWindowLifecycleState::default());
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
             app.manage(ScrubIndexState::default());
@@ -1814,11 +3044,39 @@ fn main() {
             get_firefox_status,
             install_firefox,
             begin_browser_account_import,
+            begin_protected_browser_import,
+            finish_protected_browser_import,
             launch_firefox_service,
+            get_default_browser_companion_status,
+            host_default_browser_companion,
+            resize_default_browser_companion,
+            focus_default_browser_companion,
+            detach_default_browser_companion,
             host_native_app_window,
             resize_native_app_window,
             focus_native_app_window,
             detach_native_app_window,
+            set_native_discord_protected_overlay_open,
+            get_native_discord_overlay_state,
+            prepare_native_discord_overlay_text,
+            prepare_osl_chat_text,
+            send_native_discord_overlay_carrier,
+            open_native_discord_overlay_text,
+            reveal_native_discord_overlay_view_once,
+            open_osl_chat_text,
+            list_osl_chat_history,
+            select_osl_chat_attachment,
+            list_osl_chat_attachments,
+            open_osl_chat_attachment,
+            select_native_discord_overlay_attachment,
+            list_native_discord_overlay_attachments,
+            open_native_discord_overlay_attachment,
+            burn_native_discord_overlay_chat,
+            set_native_discord_overlay_security,
+            host_mullvad_window,
+            resize_mullvad_window,
+            focus_mullvad_window,
+            restore_mullvad_window,
             create_service_account,
             open_service_host,
             close_service_host,
@@ -1826,6 +3084,9 @@ fn main() {
             remove_service_account,
             activate_local_loopback_context,
             activate_manual_peer_context,
+            activate_native_manual_peer_context,
+            activate_osl_chat_context,
+            close_osl_chat_context,
             prepare_encrypted_text,
             decrypt_hub_capsule,
             prepare_peer_prose_text,
@@ -1835,6 +3096,7 @@ fn main() {
             prepare_hub_attachment,
             open_hub_attachment,
             export_hub_friend_code,
+            copy_hub_friend_invite,
             add_hub_friend,
             verify_hub_friend_safety_number,
             list_hub_people,

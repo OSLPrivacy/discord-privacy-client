@@ -25,15 +25,54 @@ body { padding: 0; }
   position: relative;
   width: 100%;
   height: 100%;
-  padding: 6px 10px;
+  padding: 14px;
   border: 1px solid rgba(255, 255, 255, .12);
   border-radius: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   background: rgba(24, 24, 26, .985);
   box-shadow: none;
+}
+
+.overlay-shell > header { width: 100%; display: flex; align-items: center; gap: 9px; }
+.overlay-shell > header div { min-width: 0; }
+.overlay-shell > header strong,
+.overlay-shell > header small { display: block; }
+.overlay-shell > header small,
+.overlay-shell > footer { color: #9aa0a6; font-size: 11px; }
+.overlay-shell > section { width: 100%; min-height: 0; max-height: 52%; overflow: auto; }
+#osl-message-list { width: 100%; min-height: 72px; flex: 1 1 auto; margin: 0; padding: 4px 0; display: flex; flex-direction: column; gap: 8px; overflow: auto; list-style: none; }
+#osl-message-list li { width: min(78%, 560px); padding: 8px 10px; border: 1px solid rgba(255,255,255,.12); border-radius: 0; background: #202024; }
+#osl-message-list li.outgoing { align-self: end; border-color: rgba(6,182,212,.5); background: #10272b; }
+#osl-message-list li.incoming { align-self: start; }
+#osl-message-list p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#osl-message-list span { display: block; margin-top: 5px; color: #9aa0a6; font-size: 11px; }
+.overlay-shell label > span,
+.overlay-shell section > label { display: block; margin-bottom: 5px; color: #9aa0a6; font-size: 11px; }
+.overlay-shell textarea { width: 100%; padding: 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 0; resize: vertical; color: #e8e8e8; background: rgba(0,0,0,.2); font: inherit; }
+.overlay-shell button,
+.overlay-shell select { min-height: 34px; border: 1px solid rgba(255,255,255,.16); border-radius: 0; color: #e8e8e8; background: #242428; font: inherit; }
+.overlay-shell button { padding: 0 12px; cursor: pointer; }
+.overlay-shell button:disabled { cursor: not-allowed; opacity: .5; }
+.overlay-actions { display: flex; gap: 8px; }
+#burn-protected-chat { color: #fca5a5; }
+.overlay-options { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.overlay-options label { display: grid; gap: 4px; color: #9aa0a6; font-size: 11px; }
+.overlay-options label:nth-last-child(-n+2) { grid-template-columns: auto auto; align-items: center; }
+#overlay-status { width: 100%; min-height: 18px; color: #9aa0a6; font-size: 11px; }
+
+@media (max-width: 620px) {
+  .overlay-shell { padding: 10px; }
+  #osl-message-list li { width: 88%; }
+  .overlay-options { flex-wrap: wrap; }
+}
+
+@media (max-height: 620px) {
+  .overlay-shell { gap: 7px; }
+  #osl-message-list { min-height: 48px; }
+  .overlay-shell > section { max-height: 56%; }
+  .draft-field textarea { min-height: 64px; max-height: 110px; }
 }
 
 .trust-mark {
@@ -54,12 +93,8 @@ body { padding: 0; }
 .draft-field { min-width: 0; display: grid; align-content: center; }
 .draft-field textarea {
   width: 100%;
-  min-height: 25px;
-  max-height: 25px;
-  padding: 2px 0;
-  border: 0;
-  resize: none;
-  overflow: hidden;
+  min-height: 92px;
+  max-height: 180px;
   color: #e8e8e8;
   background: transparent;
   font: inherit;
@@ -75,7 +110,6 @@ body { padding: 0; }
 }
 
 .draft-status {
-  grid-column: 3;
   display: block;
   color: #9aa0a6;
   font-size: 11px;

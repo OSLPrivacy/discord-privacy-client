@@ -7,6 +7,8 @@ const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 describe("restrained motion system", () => {
   it("enters only when the navigation key changes", () => {
     expect(source).toContain('if (focusKey !== lastFocusKey)');
+    expect(source).toContain("const userHasFocusedControl = active instanceof HTMLElement");
+    expect(source).toContain("if (!userHasFocusedControl)");
     expect(source).toContain('classList.add("view-enter")');
     expect(source).toContain('`${route}:${activeService?.id ?? "none"}:${serviceGuideStep ?? "app"}`');
     expect(styles).toMatch(/\.view-enter\s*\{[\s\S]*?animation:\s*view-enter var\(--motion-slow\)/);
@@ -44,7 +46,7 @@ describe("restrained motion system", () => {
   it("keeps loading and the explicit comparison as the only repeating motion", () => {
     const infiniteAnimations = [...styles.matchAll(/animation:\s*([^;]*\binfinite\b[^;]*);/g)].map((match) => match[1]);
     expect(infiniteAnimations.length).toBeGreaterThan(0);
-    expect(infiniteAnimations.every((animation) => /loading-line|placement-|demo-pulse/.test(animation))).toBe(true);
+    expect(infiniteAnimations.every((animation) => /loading-line|placement-|demo-pulse|cover-(?:atomic|character|caret)-cycle/.test(animation))).toBe(true);
   });
 
   it("provides complete static states for reduced motion", () => {
@@ -57,6 +59,28 @@ describe("restrained motion system", () => {
     expect(reduced).toContain(".signin-logo");
     expect(reduced).toContain(".unlock-logo-stage .osl-logo");
     expect(reduced).toContain('.toast { transform: translateX(-50%) !important; }');
+  });
+
+  it("reveals the four sending steps once, slowly, from left to right", () => {
+    expect(source).toContain('step(1, "Write")');
+    expect(source).toContain('step(4, finalStep)');
+    expect(styles).toContain("animation: manual-send-step .48s var(--ease-out) 1 both");
+    expect(styles).toContain(".manual-send-demo span:nth-of-type(2) { animation-delay: .78s; }");
+    expect(styles).toContain(".manual-send-demo span:nth-of-type(4) { animation-delay: 2.34s; }");
+    expect(styles).not.toMatch(/manual-send-(?:step|flow)[^;]*infinite/);
+    const reduced = styles.slice(styles.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toMatch(/\.manual-send-demo span,[\s\S]*?animation:\s*none !important/);
+  });
+
+  it("loops the explicit atomic and character comparison with a static reduced-motion state", () => {
+    expect(source).toContain('class="cover-atomic-preview"');
+    expect(source).toContain('class="cover-composer cover-typing-preview"');
+    expect(styles).toContain("animation: cover-character-cycle 7.2s linear var(--cover-delay) infinite both");
+    expect(styles).toContain("animation: cover-atomic-cycle 7.2s var(--ease-out) infinite both");
+    expect(styles).toContain("animation: cover-caret-cycle 7.2s steps(1, end) infinite");
+    const reduced = styles.slice(styles.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain(".cover-atomic-preview");
+    expect(reduced).toContain(".cover-typing-preview i");
   });
 
   it("gives transient feedback an exit instead of abruptly removing it", () => {

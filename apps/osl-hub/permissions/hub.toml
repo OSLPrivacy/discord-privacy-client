@@ -4,9 +4,99 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-activate-native-manual-peer-context"
+description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
+commands.allow = ["activate_native_manual_peer_context"]
+
+[[permission]]
+identifier = "allow-activate-osl-chat-context"
+description = "Allow only the trusted main OSL window to bind one verified friend to the fixed first-party OSL Chat service and account scope."
+commands.allow = ["activate_osl_chat_context"]
+
+[[permission]]
+identifier = "allow-close-osl-chat-context"
+description = "Allow only the trusted main OSL window to revoke the active fixed first-party OSL Chat lease."
+commands.allow = ["close_osl_chat_context"]
+
+[[permission]]
+identifier = "allow-prepare-osl-chat-text"
+description = "Allow only the trusted main OSL window to encrypt bounded first-party chat text for the active verified friend and deliver it through the authenticated OSL inbox."
+commands.allow = ["prepare_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-text"
+description = "Allow only the trusted main OSL window to drain and open authenticated first-party chat messages for the active verified friend."
+commands.allow = ["open_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-history"
+description = "Allow only the trusted main OSL window to read bounded encrypted-at-rest history for the currently active first-party OSL Chat."
+commands.allow = ["list_osl_chat_history"]
+
+[[permission]]
+identifier = "allow-select-osl-chat-attachment"
+description = "Allow only the trusted main OSL window to choose, encrypt, upload, and deliver one Pro attachment for the exact active verified OSL friend scope."
+commands.allow = ["select_osl_chat_attachment"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-attachments"
+description = "Allow only the trusted main OSL window to list authenticated pending Pro attachments for the exact active verified OSL friend scope."
+commands.allow = ["list_osl_chat_attachments"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-attachment"
+description = "Allow only the trusted main OSL window to authenticate and open one pending Pro attachment for the exact active verified OSL friend scope."
+commands.allow = ["open_osl_chat_attachment"]
+
+[[permission]]
+identifier = "allow-set-native-discord-protected-overlay-open"
+description = "From the trusted main OSL UI only, show or close the capture-resistant bundled OSL private layer over the exact current signed native Discord window."
+commands.allow = ["set_native_discord_protected_overlay_open"]
+
+[[permission]]
+identifier = "allow-get-native-discord-overlay-state"
+description = "Allow only the bundled native Discord overlay to read bounded non-secret protection state; the context token is never returned."
+commands.allow = ["get_native_discord_overlay_state"]
+
+[[permission]]
+identifier = "allow-prepare-native-discord-overlay-text"
+description = "Allow only the bundled native Discord overlay to encrypt bounded text for the active verified friend and deliver it through the authenticated OSL inbox; no context capability is accepted."
+commands.allow = ["prepare_native_discord_overlay_text"]
+
+[[permission]]
+identifier = "allow-send-native-discord-overlay-carrier"
+description = "Allow only the bundled native Discord overlay to place one fixed non-secret OSL carrier into the exact calibrated signed Discord composer after an explicit gesture; no text, HWND, PID, path, or timing trace is accepted."
+commands.allow = ["send_native_discord_overlay_carrier"]
+
+[[permission]]
+identifier = "allow-open-native-discord-overlay-text"
+description = "Allow only the bundled native Discord overlay to drain ordinary authenticated OSL relay notices and list view-once notices without revealing them for the exact active friend and native Discord lifecycle; no context capability is accepted."
+commands.allow = ["open_native_discord_overlay_text"]
+
+[[permission]]
+identifier = "allow-reveal-native-discord-overlay-view-once"
+description = "Allow only the bundled native Discord overlay to reveal one explicitly selected authenticated view-once message for the exact active friend and native Discord lifecycle; only its opaque message id is accepted."
+commands.allow = ["reveal_native_discord_overlay_view_once"]
+
+[[permission]]
+identifier = "allow-burn-native-discord-overlay-chat"
+description = "Allow only the bundled native Discord overlay, after its own explicit two-step confirmation, to burn the exact Rust-held OSL friend scope and local protected ledger. It cannot touch Discord history, profiles, logins, or recipient copies."
+commands.allow = ["burn_native_discord_overlay_chat"]
+
+[[permission]]
+identifier = "allow-set-native-discord-overlay-security"
+description = "Allow only the bundled native Discord overlay to change the existing bounded TTL and decrypted-display preference for its exact Rust-held friend context; no context capability is accepted."
+commands.allow = ["set_native_discord_overlay_security"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
+
+[[permission]]
+identifier = "allow-copy-hub-friend-invite"
+description = "Copy only the freshly signed friend invite obtained from the active unlocked Rust identity to the Windows clipboard; accepts no content and cannot read the clipboard."
+commands.allow = ["copy_hub_friend_invite"]
 
 [[permission]]
 identifier = "allow-list-hub-app-notifications"
@@ -199,6 +289,26 @@ description = "Open only a fixed detected Mullvad desktop executable with no arg
 commands.allow = ["open_mullvad"]
 
 [[permission]]
+identifier = "allow-host-mullvad-window"
+description = "After explicit consent, borrow only the one eligible existing Mullvad window from the current Windows session; no path, process, window, account, or VPN state is accepted or returned."
+commands.allow = ["host_mullvad_window"]
+
+[[permission]]
+identifier = "allow-resize-mullvad-window"
+description = "Realign only the already verified borrowed Mullvad window to OSL's content bounds."
+commands.allow = ["resize_mullvad_window"]
+
+[[permission]]
+identifier = "allow-focus-mullvad-window"
+description = "Focus only the already verified borrowed Mullvad window."
+commands.allow = ["focus_mullvad_window"]
+
+[[permission]]
+identifier = "allow-restore-mullvad-window"
+description = "Restore the borrowed Mullvad window's original owner, styles, and bounds without closing Mullvad."
+commands.allow = ["restore_mullvad_window"]
+
+[[permission]]
 identifier = "allow-list-browser-imports"
 description = "Report only whether six fixed supported browsers exist in standard Windows install locations; never reads browser profiles, cookies, or credentials."
 commands.allow = ["list_browser_imports"]
@@ -224,9 +334,44 @@ description = "After explicit local consent, open Firefox's fixed migration wiza
 commands.allow = ["begin_browser_account_import"]
 
 [[permission]]
+identifier = "allow-begin-protected-browser-import"
+description = "After explicit local consent, validate a bounded list of detected browser IDs and open Firefox's fixed migration wizard in the active OSL identity's isolated profile; no credential, path, URL, or arbitrary argument crosses IPC."
+commands.allow = ["begin_protected_browser_import"]
+
+[[permission]]
+identifier = "allow-finish-protected-browser-import"
+description = "Close only the exact retained OSL-owned Firefox migration process after a queued import finishes or is skipped."
+commands.allow = ["finish_protected_browser_import"]
+
+[[permission]]
 identifier = "allow-launch-firefox-service"
 description = "Open one reviewed service origin in the active identity's OSL-owned Firefox profile; callers cannot provide a URL, path, or browser argument."
 commands.allow = ["launch_firefox_service"]
+
+[[permission]]
+identifier = "allow-get-default-browser-companion-status"
+description = "Report only whether Windows' current HTTPS default resolves to one fixed Authenticode-verified supported browser."
+commands.allow = ["get_default_browser_companion_status"]
+
+[[permission]]
+identifier = "allow-host-default-browser-companion"
+description = "After explicit consent, open one fixed service origin in a new app-style window of the verified Windows default browser using its normal profile; no URL, path, profile, policy, or hook is accepted."
+commands.allow = ["host_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-resize-default-browser-companion"
+description = "Realign only the exact default-browser app window created and retained by OSL."
+commands.allow = ["resize_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-focus-default-browser-companion"
+description = "Focus only the exact default-browser app window created and retained by OSL."
+commands.allow = ["focus_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-detach-default-browser-companion"
+description = "Restore and hide only the exact default-browser app window created and retained by OSL."
+commands.allow = ["detach_default_browser_companion"]
 
 [[permission]]
 identifier = "allow-host-native-app-window"
@@ -317,6 +462,21 @@ commands.allow = ["prepare_hub_attachment"]
 identifier = "allow-open-hub-attachment"
 description = "Open one bounded OSL attachment only in the exact active trusted context and return plaintext solely to the bundled local UI."
 commands.allow = ["open_hub_attachment"]
+
+[[permission]]
+identifier = "allow-select-native-discord-overlay-attachment"
+description = "Allow only the bundled native Discord overlay to open a system picker and stream one supported selected file without exposing its path or bytes."
+commands.allow = ["select_native_discord_overlay_attachment"]
+
+[[permission]]
+identifier = "allow-list-native-discord-overlay-attachments"
+description = "List authenticated pending attachment display metadata for only the active native Discord friend scope; never return capabilities, keys, paths, or bytes."
+commands.allow = ["list_native_discord_overlay_attachments"]
+
+[[permission]]
+identifier = "allow-open-native-discord-overlay-attachment"
+description = "Stream, authenticate, decrypt, and open one opaque attachment ID in a native viewer for only the active native Discord friend scope."
+commands.allow = ["open_native_discord_overlay_attachment"]
 
 [[permission]]
 identifier = "allow-export-hub-friend-code"

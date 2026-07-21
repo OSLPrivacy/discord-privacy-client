@@ -163,6 +163,34 @@ pub const MSG_TYPE_SKDM_REQUEST: u8 = 0x06;
 /// in the recv handler (see `decrypt_v2_recv` SESSION_RESET arm).
 pub const MSG_TYPE_SESSION_RESET: u8 = 0x07;
 
+/// OSL Privacy native-overlay relay notice. This type is never dispatched by
+/// the ordinary control-message drain: the trusted overlay drain alone may
+/// authenticate and open it. Discord is not part of this transport.
+pub const MSG_TYPE_NATIVE_OVERLAY_RELAY: u8 = 0x08;
+
+/// Domain-separated native-overlay receipt. The encrypted body contains only
+/// an opaque original message id plus exact peer/scope/timing facts; it never
+/// carries message content or claims provider delivery/read state.
+pub const MSG_TYPE_NATIVE_OVERLAY_ACK: u8 = 0x09;
+
+/// Cheap framing-only classification for an opaque control-inbox bundle.
+/// Authentication and decryption remain the overlay drain's responsibility.
+pub fn is_native_overlay_relay_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_NATIVE_OVERLAY_RELAY
+}
+
+/// Framing-only classification for an encrypted native-overlay receipt.
+pub fn is_native_overlay_ack_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_NATIVE_OVERLAY_ACK
+}
+
+/// Framing-only classification for the native overlay's encrypted attachment
+/// notice. Payload authentication remains mandatory before any metadata or R2
+/// capability is used.
+pub fn is_attachment_bundle(bundle: &[u8]) -> bool {
+    bundle.len() >= 2 && bundle[0] == WIRE_VERSION_V3 && bundle[1] == MSG_TYPE_ATTACHMENT
+}
+
 /// Length of the per-recipient pubkey-hash prefix on the wire
 /// (8 bytes = leading bytes of SHA-256(recipient_pubkey)). 8 bytes
 /// = 1/2^64 ≈ 5.4e-20 collision probability for the small N this

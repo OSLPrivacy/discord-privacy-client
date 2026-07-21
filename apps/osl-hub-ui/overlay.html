@@ -7,15 +7,17 @@
     <title>OSL private composer</title>
   </head>
   <body>
-    <main class="overlay-shell" aria-label="OSL private composer">
-      <span class="trust-mark" title="This field belongs to OSL, not the app underneath" aria-label="OSL-owned field">OSL</span>
-      <label class="draft-field" for="protected-draft">
-        <span class="sr-only">Private message</span>
-        <textarea id="protected-draft" rows="1" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes" placeholder="Private message"></textarea>
-      </label>
-      <div class="draft-status">
-        <span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true">0 / 1000 bytes</span>
-      </div>
+    <main class="overlay-shell" aria-label="OSL private Discord protection">
+      <header><span class="trust-mark" title="This panel belongs to OSL, not Discord" aria-label="OSL-owned panel">OSL</span><div><strong id="friend-label">Private message</strong><small>Private through OSL · Discord stays separate</small></div></header>
+      <ol id="osl-message-list" aria-label="Messages prepared or opened in this OSL panel"></ol>
+      <section id="write-pane">
+        <label class="draft-field" for="protected-draft"><span>Message</span><textarea id="protected-draft" rows="5" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes" placeholder="Write privately"></textarea></label>
+        <div class="draft-status"><span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true"></span></div>
+        <div class="overlay-options"><label><span>Send</span><select id="protected-send-mode" disabled><option value="button">Button</option><option value="double">Double Enter</option><option value="single">Single Enter · Experimental</option></select></label><label><span>Placement</span><select id="protected-placement-mode" disabled><option value="atomic">Instant</option><option value="compatibility">Match typing · Pro</option></select></label><label><span>Expires</span><select id="protected-ttl" disabled><option value="3600">1 hour</option><option value="86400">1 day</option><option value="259200">3 days</option><option value="604800">7 days</option></select><small id="current-expiry">Current: checking…</small></label><label><span>View once</span><input id="protected-view-once" type="checkbox" disabled/></label><label><span>Show received text</span><input id="protected-decrypt-display" type="checkbox" disabled/></label></div>
+        <div class="overlay-actions"><button id="choose-attachment" type="button" disabled>Attach privately</button><button id="prepare-protected" type="button" disabled>Send privately</button><button id="burn-protected-chat" type="button" disabled>Burn OSL chat</button></div>
+      </section>
+      <output id="overlay-status" role="status" aria-live="polite">Checking protection…</output>
+      <footer>Discord stays separate. When OSL can verify its composer, an optional marker can be placed there; otherwise the message travels only through OSL. Pro cover text uses only local OSL decoy lines, never private content or cloud AI. Ordinary Windows capture sees a black chat area instead of this private panel.</footer>
     </main>
     <script type="module" src="/src/overlay.ts"></script>
   </body>

@@ -2,12 +2,14 @@
 resolver = "2"
 members = [
     "src-tauri",
+    "crates/cover-draft",
     "crates/crypto",
     "crates/stego",
     "crates/transport",
     "crates/keystore",
     "crates/selectors",
     "crates/ipc",
+    "crates/message-lifecycle",
     "crates/runtime",
     "crates/store",
 ]

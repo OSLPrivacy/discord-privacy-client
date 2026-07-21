@@ -15,6 +15,7 @@ serde_json = "=1.0.149"
 tauri = { version = "=2.11.1", features = ["unstable"], optional = true }
 tauri-plugin-updater = { version = "=2.9.0", optional = true }
 tauri-plugin-single-instance = { version = "=2.4.2", optional = true }
+tauri-plugin-dialog = { version = "=2.7.2", default-features = false, optional = true }
 tokio = { version = "=1.49.0", features = ["sync"], optional = true }
 ipc = { path = "../../crates/ipc", optional = true }
 keystore = { path = "../../crates/keystore", optional = true }
@@ -29,12 +30,13 @@ url = "=2.5.8"
 zeroize = "=1.9.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics_Imaging", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility"] }
 
 [features]
 default = []
 core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:store", "dep:tracing"]
-desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
+desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]

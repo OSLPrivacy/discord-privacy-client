@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
+import {
+  parseNativeDiscordOverlayOpenedBatch,
+  parseNativeDiscordOverlayPrepared,
+  type NativeDiscordOverlayOpenedBatch,
+  type NativeDiscordOverlayPrepared,
+} from "./overlay-state";
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
 export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
@@ -37,11 +43,20 @@ export interface PreparedPeerProseText {
   coverText: string;
   expiresAt: number;
   personToPersonE2ee: true;
+  viewOnce: boolean;
 }
 export interface OpenedPeerProseText {
   plaintext: string;
   contextVerified: true;
   personToPersonE2ee: true;
+  viewOnceConsumed: boolean;
+  requireCaptureProtection: boolean;
+}
+export interface OslChatHistoryRow {
+  messageId: string;
+  senderOslUserId: string;
+  plaintext: string;
+  decryptedAt: number;
 }
 export interface PreparedHubAttachment {
   sealedB64: string;
@@ -189,15 +204,81 @@ export async function activateManualPeerContext(
   } catch { return null; }
 }
 
+/** Bind one verified friend to the currently claimed native Discord host. */
+export async function activateNativeManualPeerContext(personId: string): Promise<ManualPeerContext | null> {
+  if (!isTauriRuntime() || !safe(personId, 180)) return null;
+  try {
+    const parsed = parseManualPeerContext(await invoke<unknown>("activate_native_manual_peer_context", { personId }));
+    return parsed?.serviceId === "discord" && parsed.personId === personId ? parsed : null;
+  } catch { return null; }
+}
+
+/** Bind one verified friend to the fixed first-party OSL Chat context. */
+export async function activateOslChatContext(personId: string): Promise<ManualPeerContext | null> {
+  if (!isTauriRuntime() || !safe(personId, 180)) return null;
+  try {
+    const parsed = parseManualPeerContext(await invoke<unknown>("activate_osl_chat_context", { personId }));
+    return parsed?.serviceId === "osl-chat" && parsed.accountId === "osl-main"
+      && parsed.personId === personId ? parsed : null;
+  } catch { return null; }
+}
+
+export async function closeOslChatContext(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try { await invoke("close_osl_chat_context"); return true; }
+  catch { return false; }
+}
+
+export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<NativeDiscordOverlayPrepared | null> {
+  if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean") return null;
+  try {
+    return parseNativeDiscordOverlayPrepared(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce }));
+  } catch { return null; }
+}
+
+export async function openOslChatText(): Promise<NativeDiscordOverlayOpenedBatch | null> {
+  if (!isTauriRuntime()) return null;
+  try { return parseNativeDiscordOverlayOpenedBatch(await invoke<unknown>("open_osl_chat_text")); }
+  catch { return null; }
+}
+
+export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const value = await invoke<unknown>("list_osl_chat_history");
+    if (!Array.isArray(value) || value.length > 200) return null;
+    const rows = value.map((entry) => {
+      if (!isRecord(entry)
+        || !exact(entry, ["discord_message_id", "channel_id", "sender_discord_id", "sender_osl_user_id", "plaintext", "decrypted_at", "burned"])
+        || !safe(entry.discord_message_id, 96)
+        || !isContextId(entry.channel_id)
+        || !isContextId(entry.sender_osl_user_id)
+        || !isHubPlaintext(entry.plaintext)
+        || !Number.isSafeInteger(entry.decrypted_at)
+        || Number(entry.decrypted_at) <= 0
+        || typeof entry.burned !== "boolean") return null;
+      return {
+        messageId: entry.discord_message_id as string,
+        senderOslUserId: entry.sender_osl_user_id as string,
+        plaintext: entry.plaintext as string,
+        decryptedAt: entry.decrypted_at as number,
+      };
+    });
+    return rows.some((row) => row === null) ? null : rows as OslChatHistoryRow[];
+  } catch { return null; }
+}
+
 export async function preparePeerProseText(
   contextToken: string,
   plaintext: string,
+  viewOnce: boolean,
 ): Promise<PreparedPeerProseText | null> {
-  if (!isTauriRuntime() || !safeContextToken(contextToken) || !isHubPlaintext(plaintext)) return null;
+  if (!isTauriRuntime() || !safeContextToken(contextToken) || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean") return null;
   try {
     return parsePreparedPeerProseText(await invoke<unknown>("prepare_peer_prose_text", {
       contextToken,
       plaintext,
+      viewOnce,
     }));
   } catch { return null; }
 }
@@ -225,6 +306,14 @@ export async function setLocalProtectedSheetOpen(open: boolean): Promise<boolean
   if (!isTauriRuntime() || typeof open !== "boolean") return false;
   try { return await invoke<boolean>("set_local_protected_sheet_open", { open }) === true; }
   catch { return false; }
+}
+
+/** Show or hide only the OSL-owned native Discord protection overlay. */
+export async function setNativeDiscordProtectedOverlayOpen(contextToken: string, open: boolean): Promise<boolean> {
+  if (!isTauriRuntime() || !safeContextToken(contextToken) || typeof open !== "boolean") return false;
+  try {
+    return await invoke<boolean>("set_native_discord_protected_overlay_open", { contextToken, open }) === true;
+  } catch { return false; }
 }
 
 export async function prepareEncryptedText(contextToken: string, plaintext: string): Promise<PreparedEncryptedText | null> {
@@ -338,6 +427,26 @@ export async function loadFriendProfile(): Promise<FriendProfile | null> {
     const raw = await invoke<unknown>("export_hub_friend_code");
     return parseFriendProfile(raw);
   } catch { return null; }
+}
+
+/**
+ * In the native app Rust creates and copies the signed invite without
+ * accepting renderer-controlled clipboard content. Browser development uses
+ * the already-validated profile string as its narrow fallback.
+ */
+export async function copyHubFriendInvite(friendCode: string): Promise<boolean> {
+  if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(friendCode)) return false;
+  if (isTauriRuntime()) {
+    try {
+      await invoke("copy_hub_friend_invite");
+      return true;
+    } catch { return false; }
+  }
+  try {
+    if (!navigator.clipboard?.writeText) return false;
+    await navigator.clipboard.writeText(friendCode);
+    return true;
+  } catch { return false; }
 }
 
 export async function addOslFriend(code: string, nickname = ""): Promise<boolean> {
@@ -615,19 +724,22 @@ export function parseManualPeerContext(raw: unknown): ManualPeerContext | null {
 }
 
 export function parsePreparedPeerProseText(raw: unknown): PreparedPeerProseText | null {
-  if (!isRecord(raw) || !exact(raw, ["coverText", "expiresAt", "personToPersonE2ee"])) return null;
+  if (!isRecord(raw) || !exact(raw, ["coverText", "expiresAt", "personToPersonE2ee", "viewOnce"])) return null;
   if (!boundedUtf8Text(raw.coverText, HUB_CAPSULE_MAX_BYTES)
     || !Number.isSafeInteger(raw.expiresAt)
     || Number(raw.expiresAt) <= 0
-    || raw.personToPersonE2ee !== true) return null;
+    || raw.personToPersonE2ee !== true
+    || typeof raw.viewOnce !== "boolean") return null;
   return raw as unknown as PreparedPeerProseText;
 }
 
 export function parseOpenedPeerProseText(raw: unknown): OpenedPeerProseText | null {
-  if (!isRecord(raw) || !exact(raw, ["plaintext", "contextVerified", "personToPersonE2ee"])) return null;
+  if (!isRecord(raw) || !exact(raw, ["plaintext", "contextVerified", "personToPersonE2ee", "viewOnceConsumed", "requireCaptureProtection"])) return null;
   if (!isHubPlaintext(raw.plaintext)
     || raw.contextVerified !== true
-    || raw.personToPersonE2ee !== true) return null;
+    || raw.personToPersonE2ee !== true
+    || typeof raw.viewOnceConsumed !== "boolean"
+    || typeof raw.requireCaptureProtection !== "boolean") return null;
   return raw as unknown as OpenedPeerProseText;
 }
 

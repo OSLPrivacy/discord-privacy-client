@@ -9,6 +9,7 @@
 ///   uploads:  600 / hour
 ///   fetches:  3600 / hour
 ///   deletes:  600 / hour
+///   attachment upload requests/fetches/deletes: 140 / 120 / 60 per hour
 ///
 /// Returns true when the action is allowed and the counter has
 /// been incremented; false when the cap has been hit (caller
@@ -33,12 +34,23 @@ const HOUR_SECONDS = 60 * 60;
 // forever.
 const WINDOW_SECONDS = HOUR_SECONDS;
 
-export type Bucket = "upload" | "fetch" | "delete";
+export type Bucket =
+  | "upload"
+  | "fetch"
+  | "delete"
+  | "attachment-upload"
+  | "attachment-fetch"
+  | "attachment-delete";
 
 const BUDGETS: Record<Bucket, number> = {
   upload: 600,
   fetch: 3600,
   delete: 600,
+  // A 512 MiB upload uses up to 65 bounded multipart requests plus session
+  // creation/completion. This still permits only two full-size attempts/hour.
+  "attachment-upload": 140,
+  "attachment-fetch": 120,
+  "attachment-delete": 60,
 };
 
 async function bucketKey(
@@ -105,7 +117,7 @@ export async function rateLimit(
     // Reads may remain available during a limiter outage. Anonymous writes
     // fail closed so a KV outage cannot become an unbounded D1 storage or
     // deletion-abuse window.
-    const allowed = bucket === "fetch";
+    const allowed = bucket === "fetch" || bucket === "attachment-fetch";
     console.error("[rate-limit] limiter unavailable");
     return { allowed, remaining: 0 };
   }

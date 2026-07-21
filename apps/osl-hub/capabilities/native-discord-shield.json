@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "native-discord-capture-shield",
+  "description": "Opaque local capture shield behind the capture-excluded OSL overlay. It has no IPC, input, filesystem, shell, navigation, event, or credential authority.",
+  "webviews": ["native-discord-shield"],
+  "local": true,
+  "permissions": []
+}

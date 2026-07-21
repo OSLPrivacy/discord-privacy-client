@@ -28,7 +28,9 @@ describe("home workspace hierarchy", () => {
     expect(home).not.toContain("home-walkthrough");
     expect(home).not.toContain("osl-chat-tutorial");
     expect(home).toContain("osl-chats");
-    expect(home).toContain("osl-notes");
+    expect(home).toContain("osl-servers");
+    expect(home).toContain('name: "Scrub"');
+    expect(home).toContain('name: "Activity"');
     expect(home).toMatch(/class="[^"]*\bhome-dashboard\b/);
     expect(home).toMatch(/class="[^"]*\bhome-primary\b/);
     expect(home).toMatch(/<aside class="friends-rail"[^>]*aria-label(?:ledby)?=/);
@@ -44,7 +46,7 @@ describe("home workspace hierarchy", () => {
   });
 
   it("keeps default Home focused on usable modules without removing edit controls", () => {
-    expect(home).toContain('if (module?.state === "Coming later" && !homeEditMode) return "";');
+    expect(home).toContain('if (module && !module.available && !homeEditMode) return "";');
     expect(home).toContain("const oslSection = oslTiles ?");
     expect(home).toContain("${oslSection}");
     expect(home).toContain("data-tile-move");
@@ -73,22 +75,24 @@ describe("home workspace hierarchy", () => {
     expect(home).toContain("homeAppsFromServices(services)");
     expect(home).toMatch(/homeApps\.map\(\(app\)[\s\S]*?data-home-app="\$\{app\.id\}"/);
     expect(source).toMatch(/function homeAppLogo[\s\S]*?app\.provider \? providerLogo\(app\.provider\)/);
+    for (const provider of ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"]) {
+      expect(styles).toContain(`.app-tile > button[data-home-app="${provider}"], .app-launcher[data-home-app="${provider}"]`);
+    }
+    expect(styles).toMatch(/\.app-launcher\s*\{[^}]*color:\s*var\(--service, var\(--muted\)\)/s);
+    expect(styles).toMatch(/\.app-launcher\.active\s*\{[^}]*color:\s*var\(--service, var\(--text\)\)/s);
   });
 
   it("does not repeat the old Privacy OSL Privacy subtitle beneath the OSL mark", () => {
     expect(source).not.toContain("<small>Privacy OSL Privacy</small>");
   });
 
-  it("gives only the Home brand a refined large square mark with compact balance", () => {
+  it("keeps the Home wordmark quiet while preserving full marks elsewhere", () => {
     const homeHeader = functionSource(source, "homeHeader", "settingsButtonMarkup");
     expect(homeHeader).toContain('class="home-brand home-brand-home"');
-    expect(homeHeader).toContain('class="home-brand-mark"');
-    expect(homeHeader).toContain('src="${oslVectorLogoUrl}"');
-    expect(styles).toMatch(/\.home-brand-mark\s*\{[^}]*width:\s*56px[^}]*height:\s*56px[^}]*border:[^}]*background:[^}]*box-shadow:/s);
-    expect(styles).toMatch(/\.home-brand-mark\s*\{[^}]*width:\s*68px[^}]*height:\s*68px[^}]*flex-basis:\s*68px/s);
-    expect(styles).toMatch(/\.home-brand-mark \.osl-logo\s*\{[^}]*width:\s*64px[^}]*height:\s*64px/s);
+    expect(homeHeader).toContain('class="home-brand-pip"');
+    expect(homeHeader).not.toContain('src="${oslLogoUrl}"');
+    expect(styles).toMatch(/\.home-brand-pip\s*\{[^}]*width:\s*8px[^}]*height:\s*8px[^}]*background:\s*var\(--brand\)/s);
     expect(styles).toMatch(/\.logo-treatment\s*\{[^}]*filter:[^}]*drop-shadow[^}]*drop-shadow/s);
-    expect(styles).toMatch(/@media \(max-width: 620px\)[\s\S]*?\.home-brand-home \.osl-logo\s*\{[^}]*width:\s*52px[^}]*height:\s*52px/s);
     expect(functionSource(source, "trustedHeader", "homeHeader")).not.toContain("home-brand-mark");
   });
 
@@ -127,7 +131,11 @@ describe("home interaction regressions", () => {
     const binding = functionSource(source, "bindWorkspace", "ttlSeconds");
     expect(binding).not.toContain('window.addEventListener("resize"');
     expect(binding).not.toContain('document.addEventListener("keydown"');
-    expect(source).toMatch(/window\.addEventListener\("resize"[\s\S]*?if \(!activeNativeHostId \|\| nativeHostResizeFrame\) return;[\s\S]*?requestAnimationFrame[\s\S]*?resizeNativeAppWindow\(\)/);
+    expect(source).toMatch(/function scheduleNativeHostRealignment[\s\S]*?if \(\(!activeNativeHostId && !activeDefaultBrowserCompanion && !mullvadWindowHosted\) \|\| nativeHostResizeFrame\) return;[\s\S]*?requestAnimationFrame[\s\S]*?validateNativeSurfaces\(\)/);
+    expect(source).toContain('window.addEventListener("resize", scheduleNativeHostRealignment)');
+    expect(source).toContain("desktopWindow.onMoved(scheduleNativeHostRealignment)");
+    expect(source).toContain("desktopWindow.onResized(scheduleNativeHostRealignment)");
+    expect(source).toContain("desktopWindow.onFocusChanged");
   });
 
   it("coalesces background state updates into one paint", () => {
@@ -175,7 +183,7 @@ describe("home interaction regressions", () => {
     expect(source).not.toContain("linkedInstagram");
   });
 
-  it("uses imported Firefox only for supported web apps while Discord stays native or embedded", () => {
+  it("uses one trusted browser companion only for web apps while Discord stays native", () => {
     const importedAppsStart = source.indexOf("const importedFirefoxHomeAppIds");
     const importedAppsEnd = source.indexOf("]);", importedAppsStart);
     const importedApps = source.slice(importedAppsStart, importedAppsEnd);
@@ -186,10 +194,10 @@ describe("home interaction regressions", () => {
     expect(importedApps).toContain('"instagram"');
     expect(importedApps).toContain('"gmail"');
     expect(importedApps).not.toContain('"discord"');
-    expect(opening).toMatch(/selectedInstalledNativeApp\(app\.id\)[\s\S]*?if \(native\)[\s\S]*?openNativeHostedApp/);
-    expect(opening).toContain("importedFirefoxHomeAppIds.has(app.id)");
-    expect(opening).toContain("await launchFirefoxService(app.id)");
-    expect(opening.indexOf("if (native)")).toBeLessThan(opening.indexOf("launchFirefoxService(app.id)"));
+    expect(opening).toMatch(/selectedNativeAppIntent\(app\.id\)[\s\S]*?if \(nativeIntent\)[\s\S]*?openNativeHostedApp/);
+    expect(opening).toContain("defaultBrowserCompanionEligible(app.id)");
+    expect(opening).toContain("openBrowserCompanionApp(app, service)");
+    expect(opening.indexOf("if (nativeIntent)")).toBeLessThan(opening.indexOf("openBrowserCompanionApp(app, service)"));
     expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
     expect(home).toContain("<small>${module.state}</small>");
@@ -209,14 +217,11 @@ describe("home interaction regressions", () => {
 
   it("reopens the linked isolated profile instead of creating one per click", () => {
     const opening = functionSource(source, "openHomeAppFromLauncher", "startBackgroundInstall");
-    const fallback = functionSource(source, "openSafeEmbeddedFallback", "openNativeHostedApp");
     expect(opening).toContain("else if (app.linked)");
     expect(opening).toContain("void openEmbeddedApp(app, service)");
     expect(opening).toContain("void setupEmbeddedApp()");
     expect(opening).not.toContain('app.linked && savedAccountMode !== "clean"');
     expect(opening).not.toContain("setupEmbeddedApp(true)");
-    expect(fallback).toContain("existingProfiles.length > 0");
-    expect(fallback).not.toContain('savedAccountMode !== "clean"');
   });
 
   it("loads the new identity's friend profile before first Home render", () => {
@@ -249,30 +254,84 @@ describe("home interaction regressions", () => {
     expect(source).toContain("saveHomeTilePreferences");
   });
 
-  it("hosts installed native apps while preserving isolated embedded fallbacks", () => {
-    expect(source).toContain("hostNativeAppWindow(appId)");
+  it("preserves explicit native intent and never silently falls back to the web", () => {
+    const nativeOpening = functionSource(source, "openNativeHostedApp", "setupEmbeddedApp");
+    const nativePresentation = functionSource(source, "focusActiveNativeCompanion", "renderOnboarding");
+    expect(source).toContain("const requestedMode = nativeSessionModeForApp(appId)");
+    expect(source).toContain("hostNativeAppWindow(appId, requestedMode)");
+    expect(source).toContain("selectedNativeAppIntent(app.id)");
+    expect(source).toContain("openNativeHostedApp(app, service, nativeIntent)");
     expect(source).toContain("installNativeApp(appId)");
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).toContain('candidate.availability === "installed"');
-    expect(source).toContain("void openNativeHostedApp(app, service, native.id)");
+    expect(source).not.toContain("openSafeEmbeddedFallback");
+    expect(source).not.toContain("opened in a separate OSL web profile; the normal app stayed open");
     expect(source).toContain("await detachNativeAppWindow().catch(() => undefined)");
-    expect(source).toContain('withNativeDeadline(hostNativeAppWindow(appId), `Open ${app.displayName} inside OSL`, 12_000)');
-    expect(source).toContain(">Use selected apps</strong>");
-    expect(source).toContain(">Use web profiles</strong>");
-    expect(source).toContain("selectedInstalledNativeApp(app.id)");
+    expect(source).toContain('const hostDeadlineMs = appId === "discord" && requestedMode === "dedicated" ? 190_000 : 30_000');
+    expect(source).toContain("hostNativeAppWindow(appId, requestedMode)");
+    expect(source).toContain("hostDeadlineMs");
+    expect(source).toContain("activeNativeHostMode === requestedMode");
+    expect(source).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
+    expect(source).toContain("outlookSessionModeChoices()");
     expect(source).toContain("savedNativeApps.has(nativeId)");
+    expect(source).toContain('catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable');
+    expect(source).toContain('finishNativeAccountChoice("telegram")');
+    expect(source).toContain(">Current account</strong>");
+    expect(source).toContain(">Separate account</strong>");
+    expect(source).toContain('aria-label="Telegram account"');
+    expect(source).toContain('let telegramSessionMode: NativeSessionMode = "existingSession"');
+    expect(source).toContain('let signalSessionMode: NativeSessionMode = "existingSession"');
+    expect(source).toContain('let whatsappSessionMode: NativeSessionMode = "existingSession"');
+    expect(source).toContain('storedTelegramMode === null ? "existingSession"');
+    expect(source).toContain('storedSignalMode === null ? "existingSession"');
+    expect(source).toContain('storedWhatsappMode === null ? "existingSession"');
+    expect(source).toContain('data-signal-session-mode="dedicated"');
+    expect(source).toContain('data-whatsapp-session-mode="dedicated"');
+    expect(source).toContain('function separateNativeAccountAvailable');
+    expect(source).toContain('supportedNativeAppIds.has(app.id as NativeAppId)');
+    expect(source).toContain('A separate ${app.displayName} app account is unavailable');
+    expect(source).toContain('["telegram", "signal", "whatsapp"].includes(activeHomeAppId)');
+    expect(source).toContain('reason === "profileInitializationFailed"');
+    expect(source).toContain("your normal ${name} is untouched");
+    expect(nativeOpening).toMatch(/result\.status !== "hosted"[\s\S]*?activeNativeHostId = appId[\s\S]*?savedAccountMode = "use"[\s\S]*?savedNativeApps\.add\(appId\)[\s\S]*?persistSavedAccountPreferences\(\)/);
+    expect(nativeOpening).toMatch(/focusActiveNativeCompanion\(\)[\s\S]*?detachNativeAppWindow\(\)/);
+    expect(nativePresentation).toMatch(/focusNativeAppWindow\(\)[\s\S]*?status !== "focused"[\s\S]*?resizeNativeAppWindow\(\)[\s\S]*?status === "resized"/);
+    expect(nativeOpening).not.toContain("openEmbeddedHomeApp");
+    expect(nativeOpening).not.toContain("setupEmbeddedHomeApp");
   });
 
-  it("falls back to an isolated OSL web profile when a native client has no safe secondary instance", () => {
-    const fallback = functionSource(source, "openSafeEmbeddedFallback", "openNativeHostedApp");
+  it("realigns the native app in true fullscreen and windowed modes", () => {
+    expect(source).toContain('event.key !== "F11"');
+    expect(source).toContain("await appWindow.isFullscreen()");
+    expect(source).toContain("await appWindow.setFullscreen(!fullscreen)");
+    expect(source).toContain("if (activeNativeHostId) await resizeNativeAppWindow()");
+    expect(source).toContain("await focusActiveNativeCompanion()");
+    expect(source).toContain('id="native-companion-focus"');
+    expect(source).toContain("async function reopenActiveNativeCompanion");
+    expect(source).toMatch(/reopenActiveNativeCompanion[\s\S]*?focusActiveNativeCompanion\(\)[\s\S]*?detachNativeAppWindow\(\)[\s\S]*?openNativeHostedApp/);
+    expect(source).toContain("Bring forward or reopen");
+    expect(source).toContain("activeNativeHostMode === \"existingSession\"");
+    expect(source).toContain("Native companion");
+    expect(source).toContain("async function validateNativeSurfaces");
+    expect(source).toContain('showToast(`${name} closed. Use Bring forward or reopen.`)');
+    expect(source).toContain("await reopenActiveNativeCompanion()");
+    expect(source).toContain('showToast(`${name} closed and could not be reopened safely.`)');
+    expect(source).toContain('const reopened = await hostMullvadWithDeadline("Reopen Mullvad")');
+    expect(source).toContain('showToast("Mullvad could not be reopened")');
+  });
+
+  it("never falls an explicit native choice back to WebView", () => {
     const nativeOpen = functionSource(source, "openNativeHostedApp", "setupEmbeddedApp");
-    expect(nativeOpen).toContain('result.reason === "secondaryInstanceUnverified"');
-    expect(nativeOpen).toContain("await openSafeEmbeddedFallback(app)");
-    expect(fallback).toContain("openEmbeddedHomeApp(app, services)");
-    expect(fallback).toContain("setupEmbeddedHomeApp(app,");
-    expect(fallback).toContain("activeNativeHostId = null");
-    expect(nativeOpen).toContain("the normal app stayed open");
+    expect(nativeOpen).toContain("nativeHostFailureNotice = nativeHostFailureMessage(result.reason, app.displayName)");
+    expect(nativeOpen).toContain("showToast(nativeHostFailureNotice)");
+    expect(nativeOpen).toContain("serviceGuideStep = 0");
+    expect(source).toContain('role="status">${escapeHtml(nativeHostFailureNotice)}');
+    expect(nativeOpen).not.toContain("openEmbeddedHomeApp");
+    expect(nativeOpen).not.toContain("setupEmbeddedHomeApp");
+    expect(source).toContain("supportedNativeAppIds.has(app.id as NativeAppId)");
+    expect(source).toContain("A separate ${app.displayName} app account is unavailable");
+    expect(source).toContain('if (nativeId === "discord" || existingNativeSessionRequested(appId)) return nativeId;');
   });
 
   it("refreshes profiles before routing and asks which local profile to open", () => {

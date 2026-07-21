@@ -24,10 +24,18 @@ import {
   handleFetch,
   handleUpload,
 } from "./endpoints/blob.js";
+import {
+  handleAttachmentComplete,
+  handleAttachmentDelete,
+  handleAttachmentFetch,
+  handleAttachmentPartUpload,
+  handleAttachmentSessionCreate,
+  handleAttachmentUpload,
+} from "./endpoints/attachment.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { clientIp, error, notFound, serverError } from "./lib/http.js";
 import { rateLimit } from "./lib/rate-limit.js";
-import { sweepExpired } from "./lib/sweep.js";
+import { sweepExpired, sweepExpiredAttachments } from "./lib/sweep.js";
 
 export default {
   async fetch(
@@ -52,7 +60,12 @@ export default {
     try {
       await sweepExpired(env);
     } catch {
-      console.error("[sweep] failed");
+      console.error("[blob-sweep] failed");
+    }
+    try {
+      await sweepExpiredAttachments(env);
+    } catch {
+      console.error("[attachment-sweep] failed");
     }
   },
 };
@@ -71,6 +84,52 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
       return error(429, "rate_limited", "upload rate limit hit");
     }
     return handleUpload(request, env);
+  }
+
+  if (path === "/v1/attachment" && request.method === "POST") {
+    const rl = await rateLimit(env, clientIp(request), "attachment-upload");
+    if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
+    return handleAttachmentUpload(request, env);
+  }
+
+  if (path === "/v1/attachment/session" && request.method === "POST") {
+    const rl = await rateLimit(env, clientIp(request), "attachment-upload");
+    if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
+    return handleAttachmentSessionCreate(request, env);
+  }
+
+  const attachmentPartMatch = /^\/v1\/attachment\/([0-9a-f]{32})\/part\/(\d+)$/.exec(path);
+  if (attachmentPartMatch && request.method === "PUT") {
+    const rl = await rateLimit(env, clientIp(request), "attachment-upload");
+    if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
+    return handleAttachmentPartUpload(
+      request,
+      env,
+      attachmentPartMatch[1]!,
+      Number(attachmentPartMatch[2]),
+    );
+  }
+
+  const attachmentCompleteMatch = /^\/v1\/attachment\/([0-9a-f]{32})\/complete$/.exec(path);
+  if (attachmentCompleteMatch && request.method === "POST") {
+    const rl = await rateLimit(env, clientIp(request), "attachment-upload");
+    if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
+    return handleAttachmentComplete(request, env, attachmentCompleteMatch[1]!);
+  }
+
+  const attachmentMatch = /^\/v1\/attachment\/([0-9a-f]+)$/.exec(path);
+  if (attachmentMatch) {
+    const id = attachmentMatch[1]!;
+    if (request.method === "GET") {
+      const rl = await rateLimit(env, clientIp(request), "attachment-fetch");
+      if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
+      return handleAttachmentFetch(request, env, id);
+    }
+    if (request.method === "DELETE") {
+      const rl = await rateLimit(env, clientIp(request), "attachment-delete");
+      if (!rl.allowed) return error(429, "rate_limited", "delete rate limit hit");
+      return handleAttachmentDelete(request, env, id);
+    }
   }
 
   const blobMatch = /^\/v1\/blob\/([0-9a-fA-F]+)$/.exec(path);

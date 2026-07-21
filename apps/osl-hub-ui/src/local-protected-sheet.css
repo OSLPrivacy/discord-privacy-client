@@ -158,3 +158,14 @@
 @media (prefers-reduced-motion: reduce) {
   .local-protected-sheet { animation: none; }
 }
+.peer-message-receipt {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+  padding-top: 10px;
+}
+
+.peer-message-receipt span { color: var(--muted); }
+.peer-message-receipt strong { color: var(--text); font-weight: 600; }

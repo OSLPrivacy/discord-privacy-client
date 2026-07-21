@@ -25,6 +25,7 @@ export async function loadOnboardingPreferences(): Promise<OnboardingPreferences
     onboardingComplete: localStorage.getItem(browserCompleteKey) === "true",
     setup: parseSetupState(localStorage.getItem(browserSetupKey)),
     showPlaintextPreview: true,
+    windowCaptureEnabled: true,
   };
 }
 

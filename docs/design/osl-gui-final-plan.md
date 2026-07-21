@@ -162,6 +162,12 @@ The user can enter `Edit Home` to reorder, pin or hide tiles. This is an explici
 
 Optional OSL modules include Chats, Circles/groups, Notifications, Notes, Files, Network privacy and, later, Protected Passwords and Android Workspace. Notifications are off the Home screen by default and may be enabled per connected app. No third-party message content is copied into the notification hub unless the user explicitly enables a locally stored preview.
 
+The Friends rail is also the direct-message launcher. Each approved friend occupies one compact row. Selecting the row opens that person's first-party OSL Chat; a separate settings control opens nickname, safety-number verification, per-service/per-chat whitelist, expiry and preview policy without navigating away. The row may show the most recent locally authorized OSL message preview. It must never scrape or infer a preview from an ordinary platform history. If no authorized preview exists, the row shows a neutral delivery or verification state.
+
+Message previews are on by default. **Hide friend message previews** is a Pro appearance/privacy preference that replaces preview text with a neutral state on Home, notifications and task switching while leaving the encrypted local history unchanged. Lock-screen and OS notification previews remain independently controlled and default off.
+
+Servers are never nested under an individual friend. **Servers** is a separate Home icon and destination for Discord servers/channels and supported Telegram, Signal or Snapchat groups. It owns membership proof, group-key state, channel whitelist, expiry and burn controls independently from one-to-one OSL Chats.
+
 Connection state still uses four honest labels when details are opened: **Protected**, **Needs attention**, **Degraded** and **Offline**. Home itself communicates these states with a small icon-plus-text badge on the affected tile, never a giant banner or vague score.
 
 ## Onboarding
@@ -235,6 +241,17 @@ OSL Chat is a first-party service, not an overlay. Its first release includes:
 - Delivery states that do not leak more presence information than necessary.
 
 Calls, large public communities, bots and third-party mini-apps come later. They expand the attack surface and are not required to prove the product.
+
+The first friend-centric desktop surface includes:
+
+- a compact conversation list with local previews and honest sent, delivered, received, opened, expired and failed states;
+- one-to-one text and multiline formatting with exact UTF-8 and line-break preservation;
+- files, images, voice notes, replies and reactions only after their authenticated envelopes and local rendering pass the same fail-closed checks as text;
+- per-friend settings for verification, nickname, expiry, view once, burn and connector whitelists;
+- offline receive after reconnect, replay rejection and malformed-message failure that never substitutes guessed plaintext;
+- a separate Servers destination for group and channel conversations.
+
+Connected-platform capability is proved per surface, not inherited from the OSL Chat feature name. Discord DMs, group DMs, channels and servers; Telegram DMs, groups and channels; Signal DMs and groups; and Snapchat DMs and groups each remain unavailable until OSL can revalidate the exact signed client, OSL-owned profile, account, conversation, participants, author and composer. A connector that can only prove a subset exposes only that subset. No connector reads credentials, cookies, hidden history or private APIs, injects code, bypasses challenges or claims that its foreign window inherits OSL capture resistance.
 
 ### OSL Circles
 
@@ -564,12 +581,12 @@ The initial native-client companion matrix is:
 | Telegram | Installed Telegram Desktop | Local protection and user-assisted handoff |
 | Signal | Installed Signal Desktop | Local protection and user-assisted handoff |
 | WhatsApp | Installed WhatsApp for Windows | Local protection and user-assisted handoff |
-| Outlook | Fixed official Outlook web origin in a dedicated local Firefox profile; reviewed desktop connector later | Native use now; protected overlay later |
+| Outlook | Installed signed Outlook for Windows | Current native account; separate native profile only when independently verified |
 | Slack / Teams | Installed desktop clients, later launch | Coming soon; no hidden browser fallback |
-| Instagram / Snapchat / X / Messenger | Fixed official origin in a dedicated local Firefox profile | Native site use now; protected overlay later |
-| Gmail / Yahoo / AOL / GMX / Mail.com / Proton | Fixed official webmail origin in a dedicated local Firefox profile | Native webmail use now; protected overlay later |
+| Instagram / Snapchat / X / Messenger | Fixed official origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
+| Gmail / Yahoo / AOL / GMX / Mail.com / Proton | Fixed official webmail origin in the user's selected trusted browser | Browser account or new OSL-owned browser profile |
 
-The launch does not depend on official APIs. OSL companion capabilities are not promised to match every native feature. Full platform functionality remains in the official Windows client or the service's real site in Firefox while each OSL tile exposes only capabilities OSL can actually enforce. Browser-backed services are explicit Firefox routes, never a silent WebView fallback. OSL uses only fixed reviewed HTTPS origins, keeps the Firefox profile local, and does not embed, inject into, inspect, or intercept the remote page. A permitted official integration can be added later without changing the user's privacy policy or interface.
+The launch does not depend on official APIs. OSL companion capabilities are not promised to match every native feature. Native Discord, Telegram, Signal, WhatsApp and installed Outlook remain native-only and never fall back to a browser. Settings selects one installed, signed, allowlisted major browser for all genuinely web-backed apps. If that browser has a completed import-source receipt, a web app shows only `Browser account` and `New account`; without one, the tile opens the fixed official sign-in origin directly. `New account` uses a fixed owner-scoped OSL browser profile. OSL never accepts a renderer-provided executable, URL, profile path or browser argument, and does not inject into, inspect or intercept the remote page.
 
 ### Self-healing companion system
 
@@ -599,6 +616,8 @@ States are Protected, Connecting, Not protected and Unavailable. Depending on us
 
 OSL never stores Mullvad account credentials or claims that VPN use makes message content private from the recipient or platform.
 
+On Windows, explicit consent may let OSL visually borrow the user's existing Mullvad app window. This reuses Mullvad's existing device-wide sign-in without importing it: OSL does not read or copy the account number, settings, tunnel state, traffic, credentials or configuration. The borrowed foreign window is restored rather than closed, and OSL does not claim its screenshot resistance covers Mullvad pixels.
+
 ## Privacy.com integration (optional Pro)
 
 Privacy.com is an off-by-default Pro connector. Enabling it opens Privacy.com in a dedicated local service profile and can surface quick access from payment warnings; disabling it removes the OSL shortcut without touching the user's Privacy.com account.
@@ -624,6 +643,8 @@ The paid desktop feature runs selected Android-only apps inside a clearly isolat
 It is marketed as a privacy workspace, not a cloud phone and not a stealth automation environment. The default is local execution. A future hosted workspace would require a separate threat model and explicit customer consent.
 
 This is a future Pro feature, not a dependency of the Windows launch. The virtual device gets its own encrypted disk, Android identity, app permissions, clipboard boundary, network policy and wipe key per OSL identity. Snapshots are encrypted locally before any optional backup; OSL infrastructure cannot mount the workspace. Host-to-Android clipboard, files, notifications, camera, microphone and location are denied until individually enabled. A hosted version is a different product boundary and cannot inherit the local product's privacy claims without a new audit.
+
+The planned local workspace may run official Android apps that have no equivalent supported Windows surface, including Snapchat and Telegram secret chats, while OSL presents consistent Windows-style chrome around the dedicated Android runtime. The user signs in normally inside each official app. Windows-style presentation does not change the app's Android identity, platform rules or security boundary. Until the runtime, isolation, input, rendering and recovery paths are implemented and independently verified, the feature remains visibly `Coming later` and OSL makes no compatibility or protection claim. It never bypasses CAPTCHA or approval prompts, spoofs device fingerprints, copies sessions, cookies or tokens, or extracts credentials.
 
 ## Windows installation and updates
 

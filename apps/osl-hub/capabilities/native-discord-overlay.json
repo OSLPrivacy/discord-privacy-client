@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "native-discord-overlay-local",
+  "description": "Narrow permissions for the bundled capture-resistant OSL private layer. It has no service-host, window-management, navigation, filesystem, shell, or credential authority.",
+  "webviews": ["native-discord-overlay"],
+  "local": true,
+  "permissions": [
+    "allow-get-native-discord-overlay-state",
+    "allow-prepare-native-discord-overlay-text",
+    "allow-send-native-discord-overlay-carrier",
+    "allow-open-native-discord-overlay-text",
+    "allow-reveal-native-discord-overlay-view-once",
+    "allow-select-native-discord-overlay-attachment",
+    "allow-list-native-discord-overlay-attachments",
+    "allow-open-native-discord-overlay-attachment",
+    "allow-burn-native-discord-overlay-chat",
+    "allow-set-native-discord-overlay-security"
+  ]
+}

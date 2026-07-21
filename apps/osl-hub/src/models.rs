@@ -35,7 +35,13 @@ pub struct OnboardingPreferences {
     pub send_mode: SendMode,
     pub placement_mode: PlacementMode,
     pub show_plaintext_preview: bool,
+    #[serde(default = "default_true")]
+    pub window_capture_enabled: bool,
     pub acknowledge_experimental_send_risk: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for OnboardingPreferences {
@@ -45,6 +51,7 @@ impl Default for OnboardingPreferences {
             send_mode: SendMode::Manual,
             placement_mode: PlacementMode::Atomic,
             show_plaintext_preview: true,
+            window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
         }
     }
@@ -97,6 +104,7 @@ mod tests {
             send_mode: SendMode::SingleEnter,
             placement_mode: PlacementMode::Atomic,
             show_plaintext_preview: true,
+            window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
         }
         .fail_closed();
@@ -148,6 +156,7 @@ pub enum EmailProvider {
     Aol,
     Gmx,
     Maildotcom,
+    Icloud,
 }
 
 impl Default for EmailProvider {
