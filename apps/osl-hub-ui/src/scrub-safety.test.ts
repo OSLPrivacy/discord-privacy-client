@@ -6,26 +6,28 @@ const scanner = readFileSync(new URL("../../osl-hub/src/privacy_scan.rs", import
 const categories = readFileSync(new URL("./scrub.ts", import.meta.url), "utf8");
 
 describe("Scrub safety contract", () => {
-  it("keeps Manual Scrub free, local, review-first, and user deleted", () => {
+  it("keeps Manual Scrub free, local, and review-first", () => {
     expect(source).toContain("FREE · THIS DEVICE ONLY");
     expect(source).toContain("Your messages never leave this device.");
     expect(source).toContain("data-scrub-finding");
     expect(source).toContain("select-all-scrub");
     expect(source).toContain("clear-scrub-selection");
     expect(source).toContain("Review selected");
-    expect(source).toContain("delete each message yourself");
+    expect(source).toContain("Nothing is deleted by this build.");
     const privacyStart = source.indexOf("function privacySettingsContent");
-    const privacyEnd = source.indexOf("function privacyScanResultsMarkup", privacyStart);
+    const privacyEnd = source.indexOf("function autoScrubAccountIds", privacyStart);
     const privacyUi = source.slice(privacyStart, privacyEnd);
     expect(privacyUi).toContain('id="privacy-export-input"');
     expect(privacyUi).not.toContain("if (!proActive)");
   });
 
-  it("keeps AutoScrub Pro off and prevents unattended deletion claims", () => {
+  it("keeps AutoScrub Pro, reviewed, transport-gated, and readback-qualified", () => {
     expect(source).toContain("AutoScrub assistant");
-    expect(source).toContain("PRO · COMING SOON");
-    expect(source).toContain("Nothing happens until you review and confirm every batch.");
-    expect(source).toContain("Unavailable in this build");
+    expect(source).toContain("PRO · TRANSPORT-GATED");
+    expect(source).toContain("Final confirmation");
+    expect(source).toContain("live-confirmed");
+    expect(source).toContain("summarizeAutoScrubReceipt");
+    expect(source).not.toContain("all removed");
     expect(categories).toContain("completeEditableReviewRequiredEveryBatch: true");
     expect(categories).toContain("finalConfirmationRequiredEveryBatch: true");
   });
@@ -34,7 +36,8 @@ describe("Scrub safety contract", () => {
     expect(source).toContain('id="confirm-scrub-list"');
     expect(source).not.toMatch(/function confirmScrubSelection[\s\S]*?window\.confirm/);
     expect(source).toContain("Nothing is deleted by this build.");
-    expect(source).toContain("This build only gives manual directions. It does not delete app messages.");
+    expect(source).toContain('id="autoscrub-final-confirmation"');
+    expect(source).toContain("Only a provider readback can verify removal within its stated coverage.");
     expect(source).not.toContain("Platform messages deleted");
   });
 

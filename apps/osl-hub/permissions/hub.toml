@@ -4,6 +4,41 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-configure-scrub-imap-account"
+description = "Verify one explicit TLS IMAP endpoint and store its authentication only in the operating-system credential store."
+commands.allow = ["configure_scrub_imap_account"]
+
+[[permission]]
+identifier = "allow-get-scrub-imap-capability"
+description = "Report whether one exact IMAP account is configured and live-confirmed in the current process without returning credentials."
+commands.allow = ["get_scrub_imap_capability"]
+
+[[permission]]
+identifier = "allow-reauth-scrub-imap-account"
+description = "Perform a fresh TLS authentication and mailbox selection for one configured IMAP account and rotate its short-lived authentication epoch."
+commands.allow = ["reauth_scrub_imap_account"]
+
+[[permission]]
+identifier = "allow-scrub-imap-enumerate"
+description = "Search one selected mailbox by exact Message-ID and optional date, returning server-derived deletion findings only."
+commands.allow = ["scrub_imap_enumerate"]
+
+[[permission]]
+identifier = "allow-scrub-imap-inspect"
+description = "Read identity headers for one exact IMAP deletion finding without reading or returning message content."
+commands.allow = ["scrub_imap_inspect"]
+
+[[permission]]
+identifier = "allow-scrub-imap-delete"
+description = "After fresh authentication and an exact own-message fingerprint match, mark one IMAP UID deleted and issue only scoped UID EXPUNGE."
+commands.allow = ["scrub_imap_delete"]
+
+[[permission]]
+identifier = "allow-scrub-imap-verify"
+description = "Verify one exact IMAP Message-ID by server readback and return confirmed-deleted, confirmed-not-deleted, or UNKNOWN."
+commands.allow = ["scrub_imap_verify"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]

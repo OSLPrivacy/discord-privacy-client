@@ -94,6 +94,9 @@ import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups,
 import { defaultScrubSetupPlan, parseScrubSetupPlan, SCRUB_TARGET_LIMIT, targetId, validateCoverageReceipt, type ScrubCoverageReceipt, type ScrubMode, type ScrubSetupPlan } from "./scrub-plan";
 import { persistLocalScrubExport } from "./scrub-local";
 import type { ScrubIndexStatus } from "./scrub-index";
+import { runAutoScrubBatch, summarizeAutoScrubReceipt, unavailableAutoScrubCapabilities, type AutoScrubCapability } from "./autoscrub-flow";
+import { configureScrubImapAccount, createDesktopAutoScrubBridge, prepareScrubImapFindings, type ScrubImapLocator } from "./scrub-imap-ipc";
+import type { ProviderDeletionReceipt, ScopePolicy } from "./scrub-delete-engine";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 
@@ -208,6 +211,12 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
+let autoScrubCapabilities: readonly AutoScrubCapability[] = unavailableAutoScrubCapabilities;
+let autoScrubAccountId = "";
+let autoScrubBusy = false;
+let autoScrubDryRunReceipt: ProviderDeletionReceipt | null = null;
+let autoScrubExecutionReceipt: ProviderDeletionReceipt | null = null;
+let autoScrubError = "";
 let lastFocusKey = "";
 let lastWorkspaceMarkup: string | null = null;
 let lastWorkspaceViewKey = "";
@@ -1979,8 +1988,75 @@ function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const assistedDeleteWarning = `<details class="safety-disclosure"><summary>Assisted deletion and account-deletion options</summary><div><p><strong>Brutally honest warning:</strong> Discord may restrict or ban an account for assisted deletion. OSL must stop on every challenge, rate signal, unknown error, or changed interface. Use only while present, in small human-speed batches.</p><p>Sanctioned scorched-earth options: <a href="https://support.discord.com/hc/articles/212500837-How-do-I-permanently-delete-my-account" target="_blank" rel="noreferrer">delete the Discord account</a> or <a href="https://support.discord.com/hc/articles/360004027692-Requesting-a-Copy-of-your-Data" target="_blank" rel="noreferrer">request its data first</a>.</p></div></details>`;
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>${assistedDeleteWarning}`;
-  const autoScrubPlan = proActive ? "PRO ACTIVE · COMING SOON" : "PRO · COMING SOON";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card" aria-disabled="true"><p>Coming soon. It schedules local scans and prepares an editable list. Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details><button class="button compact" type="button" disabled>Unavailable in this build</button></section></details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
+  const autoScrubPlan = proActive ? "PRO · TRANSPORT-GATED" : "PRO REQUIRED";
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked except an explicitly connected IMAP account</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
+}
+
+function autoScrubAccountIds(): string[] {
+  const linked = services.find((service) => service.id === "email")?.accounts.map((account) => account.id) ?? [];
+  const imported = privacyScanResult?.findings.filter((finding) => finding.serviceId === "email").map((finding) => finding.accountId) ?? [];
+  return [...new Set([...linked, ...imported])];
+}
+
+function selectedImapLocators(): ScrubImapLocator[] {
+  if (!autoScrubAccountId) return [];
+  return selectedScrubItems().flatMap(({ finding }) => finding.serviceId === "email" && finding.accountId === autoScrubAccountId && finding.authoredBySelf && finding.canRequestDelete && finding.createdAtUnixMs !== null && !finding.messageLocator.startsWith("local-import-")
+    ? [{ accountId: finding.accountId, mailbox: finding.conversationId, messageId: finding.messageLocator, sinceDate: finding.createdAtUnixMs }]
+    : []);
+}
+
+function autoScrubReceiptMarkup(receipt: ProviderDeletionReceipt | null): string {
+  if (!receipt) return "";
+  const summary = summarizeAutoScrubReceipt(receipt);
+  const items = receipt.items.map((item) => `<li><strong>${escapeHtml(item.outcome)}</strong><span>${escapeHtml(item.itemId)} · ${escapeHtml(item.detail)}</span></li>`).join("");
+  return `<section class="autoscrub-receipt" aria-live="polite"><strong>${escapeHtml(summary.heading)}</strong><p>${escapeHtml(summary.detail)}</p><ul>${items}</ul></section>`;
+}
+
+function autoScrubMarkup(proActive: boolean): string {
+  const accounts = autoScrubAccountIds();
+  if (!autoScrubAccountId || !accounts.includes(autoScrubAccountId)) autoScrubAccountId = accounts[0] ?? "";
+  const capability = autoScrubCapabilities.find((item) => item.providerId === "imap") ?? unavailableAutoScrubCapabilities[0];
+  const eligible = selectedImapLocators().length;
+  const active = proActive && capability.liveConfirmed && Boolean(autoScrubAccountId);
+  const providers = autoScrubCapabilities.map((item) => `<li><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.coverage)}</small></span><b class="status-tag ${item.liveConfirmed ? "active" : ""}">${item.liveConfirmed ? "ACTIVE" : "MANUAL"}</b>${item.unavailableReason ? `<p>${escapeHtml(item.unavailableReason)}</p>` : ""}</li>`).join("");
+  const accountOptions = accounts.map((id) => `<option value="${escapeHtml(id)}" ${id === autoScrubAccountId ? "selected" : ""}>${escapeHtml(id)}</option>`).join("");
+  const unavailableReason = !proActive ? "AutoScrub requires Pro." : !capability.liveConfirmed ? "IMAP is inactive until TLS authentication and mailbox access are live-confirmed." : eligible === 0 ? "Select sent email findings with real Message-ID and date locators. Plain-text lines and ambiguous exports stay manual." : "";
+  return `<section class="autoscrub-card" aria-disabled="${!active}"><header><div><span class="privacy-local-mark">DELETE ENGINE · REVIEW REQUIRED</span><h3>One reviewed batch</h3></div><button class="button compact" id="refresh-autoscrub" type="button" ${autoScrubBusy ? "disabled" : ""}>Check transport</button></header><p>Edit the checked findings above. OSL then re-authenticates, shows a no-delete dry-run receipt, and executes only that reduced scope.</p><ul class="autoscrub-providers">${providers}</ul>${accounts.length ? `<label class="autoscrub-account"><span>Email account</span><select id="autoscrub-account">${accountOptions}</select></label>` : `<p>No email account is available.</p>`}${unavailableReason ? `<p class="autoscrub-unavailable"><strong>Unavailable:</strong> ${escapeHtml(unavailableReason)}</p>` : ""}<label class="autoscrub-confirm"><input id="autoscrub-final-confirmation" type="checkbox" ${active && eligible ? "" : "disabled"}/><span><strong>Final confirmation</strong><small>Delete only the ${eligible} currently selected, eligible ${eligible === 1 ? "message" : "messages"}. This can be irreversible.</small></span></label><button class="button primary" id="run-autoscrub" type="button" ${active && eligible && !autoScrubBusy ? "" : "disabled"}>${autoScrubBusy ? "Working…" : "Dry-run, then delete"}</button>${autoScrubError ? `<p class="autoscrub-error" role="alert">${escapeHtml(autoScrubError)}</p>` : ""}${autoScrubReceiptMarkup(autoScrubDryRunReceipt)}${autoScrubReceiptMarkup(autoScrubExecutionReceipt)}<details class="autoscrub-connect"><summary>Connect an IMAP account</summary><form id="autoscrub-imap-form"><label>Account<select id="autoscrub-imap-account" required>${accountOptions}</select></label><label>IMAP host<input id="autoscrub-imap-host" autocomplete="off" required/></label><label>Username<input id="autoscrub-imap-username" autocomplete="username" required/></label><label>Credential type<select id="autoscrub-imap-auth-kind"><option value="appPassword">App password</option><option value="oauthBearer">OAuth bearer token</option></select></label><label>Credential<input id="autoscrub-imap-secret" type="password" autocomplete="current-password" required/></label><label>Mailbox<input id="autoscrub-imap-mailbox" value="Sent" required/></label><button class="button" type="submit" ${accounts.length ? "" : "disabled"}>Connect and verify</button><p>The credential is handed directly to OS-backed secure storage and is never retained in UI state.</p></form></details><details><summary>Discord and Telegram</summary><p><strong>Manual only.</strong> Discord assistance can restrict or ban an account and remains disabled. Telegram remains unavailable until a real TDLib session is packaged and live-confirmed.</p><p><a href="https://support.discord.com/hc/articles/212500837-How-do-I-permanently-delete-my-account" target="_blank" rel="noreferrer">Discord account deletion</a> · <a href="https://my.telegram.org/auth?to=delete" target="_blank" rel="noreferrer">Telegram account deletion</a></p></details></section>`;
+}
+
+async function refreshAutoScrubCapability(): Promise<void> {
+  if (!autoScrubAccountId) {
+    autoScrubCapabilities = unavailableAutoScrubCapabilities;
+    return;
+  }
+  autoScrubCapabilities = await createDesktopAutoScrubBridge([autoScrubAccountId]).capabilities().catch(() => unavailableAutoScrubCapabilities);
+}
+
+async function executeSelectedAutoScrubBatch(finalConfirmation: boolean): Promise<void> {
+  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const capability = autoScrubCapabilities.find((item) => item.providerId === "imap");
+  const locators = selectedImapLocators();
+  if (!proActive || !capability?.liveConfirmed || !finalConfirmation || !autoScrubAccountId || locators.length === 0) throw new Error("AutoScrub confirmation or live transport is missing");
+  const bridge = createDesktopAutoScrubBridge([autoScrubAccountId]);
+  const result = await runAutoScrubBatch({
+    target: { providerId: "imap", accountId: autoScrubAccountId },
+    prepare: async (stepUp) => {
+      const findings = await prepareScrubImapFindings(locators, stepUp);
+      const itemIds = findings.map((finding) => finding.itemId);
+      const channelIds = [...new Set(findings.map((finding) => finding.channelId))];
+      const policy: ScopePolicy = { providerId: "imap", accountId: autoScrubAccountId, itemIds, channelIds, protectedChannelIds: [], protectedCorrespondentIds: [], maxCount: findings.length, minAgeMs: 0 };
+      return { providerId: "imap", accountId: autoScrubAccountId, findings, approved: policy, requested: policy };
+    },
+    capability,
+    bridge,
+    finalConfirmation,
+    onDryRun: (receipt) => {
+      autoScrubDryRunReceipt = receipt;
+      autoScrubExecutionReceipt = null;
+      render();
+    },
+  });
+  autoScrubExecutionReceipt = result.execution;
 }
 
 function clearPrivacyScanState(): void {
@@ -1992,6 +2068,9 @@ function clearPrivacyScanState(): void {
   scrubResultsPage = 0;
   scrubReviewOpen = false;
   scrubReviewPage = 0;
+  autoScrubDryRunReceipt = null;
+  autoScrubExecutionReceipt = null;
+  autoScrubError = "";
 }
 
 function privacyScanResultsMarkup(): string {
@@ -2128,6 +2207,70 @@ function bindScrubControls(): void {
     }
     scrubReviewOpen = false;
     render();
+  });
+  document.querySelector<HTMLSelectElement>("#autoscrub-account")?.addEventListener("change", async (event) => {
+    autoScrubAccountId = (event.currentTarget as HTMLSelectElement).value;
+    autoScrubCapabilities = unavailableAutoScrubCapabilities;
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    await refreshAutoScrubCapability();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#refresh-autoscrub")?.addEventListener("click", async () => {
+    if (autoScrubBusy) return;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    render();
+    await refreshAutoScrubCapability();
+    autoScrubBusy = false;
+    render();
+  });
+  document.querySelector<HTMLFormElement>("#autoscrub-imap-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (autoScrubBusy) return;
+    const form = event.currentTarget as HTMLFormElement;
+    const accountId = form.querySelector<HTMLSelectElement>("#autoscrub-imap-account")?.value ?? "";
+    const host = form.querySelector<HTMLInputElement>("#autoscrub-imap-host")?.value.trim() ?? "";
+    const username = form.querySelector<HTMLInputElement>("#autoscrub-imap-username")?.value.trim() ?? "";
+    const authKind = form.querySelector<HTMLSelectElement>("#autoscrub-imap-auth-kind")?.value === "oauthBearer" ? "oauthBearer" as const : "appPassword" as const;
+    const secretInput = form.querySelector<HTMLInputElement>("#autoscrub-imap-secret");
+    const mailbox = form.querySelector<HTMLInputElement>("#autoscrub-imap-mailbox")?.value.trim() ?? "Sent";
+    let secret = secretInput?.value ?? "";
+    if (secretInput) secretInput.value = "";
+    if (!accountId || !host || !username || !secret) return;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    render();
+    try {
+      const result = await configureScrubImapAccount({ accountId, host, username, auth: { kind: authKind, secret }, defaultMailbox: mailbox });
+      secret = "";
+      if (!result.configured || !result.liveConfirmed) throw new Error(result.detail || "IMAP connection was not live-confirmed");
+      autoScrubAccountId = accountId;
+      await refreshAutoScrubCapability();
+    } catch (error) {
+      secret = "";
+      autoScrubError = error instanceof Error ? error.message : "IMAP connection could not be verified";
+    } finally {
+      autoScrubBusy = false;
+      render();
+    }
+  });
+  document.querySelector<HTMLButtonElement>("#run-autoscrub")?.addEventListener("click", async () => {
+    if (autoScrubBusy) return;
+    const confirmed = document.querySelector<HTMLInputElement>("#autoscrub-final-confirmation")?.checked === true;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    render();
+    try {
+      await executeSelectedAutoScrubBatch(confirmed);
+    } catch (error) {
+      autoScrubError = error instanceof Error ? error.message : "AutoScrub stopped without a verified result";
+    } finally {
+      autoScrubBusy = false;
+      render();
+    }
   });
 }
 

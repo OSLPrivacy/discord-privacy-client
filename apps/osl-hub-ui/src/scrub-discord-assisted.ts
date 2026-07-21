@@ -15,13 +15,30 @@ export interface HostedDiscordDeleteOnlySession {
 export interface DiscordPacingOptions { fixedRestMs: number; maxBatch: number; presenceTtlMs: number; boundedAwayMs: number; wait: (ms: number) => Promise<void>; clock: () => number }
 
 export class PresenceGatedPacer {
-  readonly #options: DiscordPacingOptions; #lastPresence = -1; #batchStart = -1; #count = 0;
+  readonly #options: DiscordPacingOptions; #lastPresence = -1; #batchStart = -1; #count = 0; #tail: Promise<void> = Promise.resolve();
   constructor(options: DiscordPacingOptions) { this.#options = options; }
-  signalHumanPresence(): void { this.#lastPresence = this.#options.clock(); this.#batchStart = this.#lastPresence; this.#count = 0; }
-  async beforeAction(): Promise<"ready" | "parked"> {
+  signalHumanPresence(): void {
     const now = this.#options.clock();
-    if (this.#lastPresence < 0 || now - this.#lastPresence > this.#options.presenceTtlMs || this.#batchStart < 0 || now - this.#batchStart > this.#options.boundedAwayMs || this.#count >= this.#options.maxBatch) return "parked";
-    await this.#options.wait(this.#options.fixedRestMs); this.#count += 1; return "ready";
+    this.#lastPresence = now;
+    if (this.#batchStart < 0 || now - this.#batchStart > this.#options.boundedAwayMs || this.#count >= this.#options.maxBatch) {
+      this.#batchStart = now;
+      this.#count = 0;
+    }
+  }
+  async beforeAction(): Promise<"ready" | "parked"> {
+    let release!: () => void;
+    const prior = this.#tail;
+    this.#tail = new Promise<void>((resolve) => { release = resolve; });
+    await prior;
+    try {
+      const now = this.#options.clock();
+      if (this.#lastPresence < 0 || now - this.#lastPresence > this.#options.presenceTtlMs || this.#batchStart < 0 || now - this.#batchStart > this.#options.boundedAwayMs || this.#count >= this.#options.maxBatch) return "parked";
+      await this.#options.wait(this.#options.fixedRestMs);
+      this.#count += 1;
+      return "ready";
+    } finally {
+      release();
+    }
   }
 }
 
@@ -39,13 +56,14 @@ export class DiscordAssistedDeleteAdapter implements ScrubDeleteAdapter {
         let page;
         try { page = await this.#session.loadNextOwnMessageHistory(channelId); } catch { this.#stop("unknown"); return findings; }
         if (this.#stop(page.friction)) return findings;
-        for (const m of page.messages) if (m.authoredBySelf && m.createdAtUnixMs < scope.beforeUnixMs) findings.push({ providerId: "discord", accountId: this.#accountId, channelId: m.channelId, correspondentId: m.correspondentId, itemId: m.id, authoredBySelf: true, createdAtUnixMs: m.createdAtUnixMs, contentFingerprint: m.contentFingerprint });
+        for (const m of page.messages) if (m.authoredBySelf && m.channelId === channelId && m.createdAtUnixMs < scope.beforeUnixMs) findings.push({ providerId: "discord", accountId: this.#accountId, channelId: m.channelId, correspondentId: m.correspondentId, itemId: m.id, authoredBySelf: true, createdAtUnixMs: m.createdAtUnixMs, contentFingerprint: m.contentFingerprint });
         complete = page.complete;
       }
     }
     return findings;
   }
   async inspect(f: DeleteFinding): Promise<DeleteInspection> {
+    if (f.providerId !== "discord" || f.accountId !== this.#accountId) return { state: "unknown", authoredBySelf: false, contentFingerprint: null, authEpoch: this.#authEpoch, schemaVersion: "discord-hosted-v1", retractable: false, detail: "finding is outside the fixed Discord account" };
     if (this.#friction !== null || await this.#pacer.beforeAction() === "parked") return { state: "unknown", authoredBySelf: false, contentFingerprint: null, authEpoch: this.#authEpoch, schemaVersion: "discord-hosted-v1", retractable: false, detail: "parked pending genuine human presence or friction review" };
     try {
       const result = await this.#session.inspectOwnMessage(f.channelId, f.itemId);
@@ -55,11 +73,12 @@ export class DiscordAssistedDeleteAdapter implements ScrubDeleteAdapter {
     } catch { this.#stop("unknown"); return { state: "unknown", authoredBySelf: false, contentFingerprint: null, authEpoch: this.#authEpoch, schemaVersion: "discord-hosted-v1", retractable: false, detail: "stopped on unknown hosted-session error" }; }
   }
   async delete(f: DeleteFinding): Promise<DeleteRequestResult> {
-    if (!f.authoredBySelf || this.#friction !== null || await this.#pacer.beforeAction() === "parked") return { accepted: false, authEpoch: this.#authEpoch, detail: "parked or item is not owned by this account" };
+    if (f.providerId !== "discord" || f.accountId !== this.#accountId || !f.authoredBySelf || this.#friction !== null || await this.#pacer.beforeAction() === "parked") return { accepted: false, authEpoch: this.#authEpoch, detail: "parked or item is not owned by this account" };
     try { const result = await this.#session.deleteOwnMessage(f.channelId, f.itemId); if (this.#stop(result.friction)) return { accepted: false, authEpoch: this.#authEpoch, detail: `stopped on ${this.#friction}` }; return { accepted: result.accepted, authEpoch: this.#authEpoch }; }
     catch { this.#stop("unknown"); return { accepted: false, authEpoch: this.#authEpoch, detail: "stopped on unknown hosted-session error" }; }
   }
   async verify(f: DeleteFinding): Promise<DeleteVerification> {
+    if (f.providerId !== "discord" || f.accountId !== this.#accountId) return { outcome: "UNKNOWN", authEpoch: this.#authEpoch, detail: "finding is outside the fixed Discord account" };
     if (this.#friction !== null || await this.#pacer.beforeAction() === "parked") return { outcome: "UNKNOWN", authEpoch: this.#authEpoch, detail: "parked pending genuine human presence or friction review" };
     try { const result = await this.#session.verifyOwnMessageAbsent(f.channelId, f.itemId); if (this.#stop(result.friction)) return { outcome: "UNKNOWN", authEpoch: this.#authEpoch, detail: `stopped on ${this.#friction}` }; return { outcome: result.absent ? "confirmed-deleted" : "confirmed-not-deleted", authEpoch: this.#authEpoch, detail: "hosted Discord readback" }; }
     catch { this.#stop("unknown"); return { outcome: "UNKNOWN", authEpoch: this.#authEpoch, detail: "stopped on unknown hosted-session error" }; }

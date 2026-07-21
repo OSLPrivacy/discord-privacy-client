@@ -21,6 +21,7 @@ export interface ProviderDeletionReceipt { providerId: string; accountId: string
 export interface ExecutionRequest { adapter: ScrubDeleteAdapter; findings: readonly DeleteFinding[]; approved: ScopePolicy; requested: ScopePolicy; consent: ExecutionConsent; stepUp: StepUpProof; finalConfirmation: boolean; dryRun: boolean; now: number; previousReceipts?: readonly ProviderDeletionReceipt[] }
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
+const safeLocator = (value: string): boolean => value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value);
 const canonical = (values: readonly string[]) => [...new Set(values)].sort().join("\n");
 function token(parts: readonly string[]): string {
   let hash = 0x811c9dc5;
@@ -38,7 +39,7 @@ export function scopeOnlyAllows(a: ScopePolicy, r: ScopePolicy): boolean {
 function validPolicy(p: ScopePolicy): boolean {
   return idPattern.test(p.providerId) && idPattern.test(p.accountId) && Number.isSafeInteger(p.maxCount) && p.maxCount >= 0 && p.maxCount <= 10_000
     && Number.isSafeInteger(p.minAgeMs) && p.minAgeMs >= 0
-    && [p.itemIds, p.channelIds, p.protectedChannelIds, p.protectedCorrespondentIds].every((xs) => xs.length <= 10_000 && xs.every((x) => idPattern.test(x)));
+    && [p.itemIds, p.channelIds, p.protectedChannelIds, p.protectedCorrespondentIds].every((xs) => xs.length <= 10_000 && xs.every(safeLocator));
 }
 function preflight(r: ExecutionRequest): boolean {
   return r.finalConfirmation && validPolicy(r.approved) && validPolicy(r.requested) && scopeOnlyAllows(r.approved, r.requested)

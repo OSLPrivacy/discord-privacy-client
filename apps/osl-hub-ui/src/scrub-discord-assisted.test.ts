@@ -32,10 +32,31 @@ describe("Discord hosted assisted deletion", () => {
     expect((await adapter.inspect(item)).state).toBe("unknown");
     expect(session.inspectOwnMessage).toHaveBeenCalledTimes(10);
   });
+  it("serializes concurrent pacing and does not let repeated presence reset an active batch", async () => {
+    let releaseWait!: () => void;
+    const pendingWait = new Promise<void>((resolve) => { releaseWait = resolve; });
+    let clock = 100;
+    const wait = vi.fn(async () => pendingWait);
+    const pacer = new PresenceGatedPacer({ fixedRestMs: 2_000, maxBatch: 1, presenceTtlMs: 60_000, boundedAwayMs: 120_000, wait, clock: () => clock });
+    pacer.signalHumanPresence();
+    pacer.signalHumanPresence();
+    const first = pacer.beforeAction();
+    const second = pacer.beforeAction();
+    await Promise.resolve();
+    expect(wait).toHaveBeenCalledTimes(1);
+    releaseWait();
+    await expect(first).resolves.toBe("ready");
+    await expect(second).resolves.toBe("parked");
+    pacer.signalHumanPresence();
+    clock += 1;
+    const next = pacer.beforeAction();
+    await expect(next).resolves.toBe("ready");
+  });
   it("has no send or generic automation capability and rejects other people's items", async () => {
     const { adapter, pacer, session } = setup(); pacer.signalHumanPresence();
     expect(Object.getOwnPropertyNames(DiscordAssistedDeleteAdapter.prototype).sort()).toEqual(["constructor", "delete", "enumerate", "inspect", "verify"]);
     expect(await adapter.delete({ ...item, authoredBySelf: false })).toMatchObject({ accepted: false });
+    expect(await adapter.delete({ ...item, accountId: "other" })).toMatchObject({ accepted: false });
     expect(session.deleteOwnMessage).not.toHaveBeenCalled();
     // @ts-expect-error no generic scripting capability is allowed
     expect(adapter.executeScript).toBeUndefined();

@@ -53,6 +53,14 @@ describe("delete engine", () => {
       expect(vi.mocked(r.adapter.inspect).mock.calls).toHaveLength(0);
     }
   });
+  it("accepts bounded IMAP Message-ID/mailbox locators but rejects control characters", async () => {
+    const imapFinding = { ...finding("<message@example.test>"), channelId: "[Gmail]/Sent Mail" };
+    const imapPolicy = policy({ itemIds: [imapFinding.itemId], channelIds: [imapFinding.channelId], maxCount: 1, minAgeMs: 0 });
+    const consent = { id: "imap", planFingerprint: planFingerprint(imapPolicy), findingsFingerprint: findingsFingerprint([imapFinding]), issuedAt: now - 1, expiresAt: now + 1 };
+    expect(await executeDeletion(request({ findings: [imapFinding], approved: imapPolicy, requested: imapPolicy, consent, dryRun: true }))).toMatchObject({ stoppedFailClosed: false, items: [{ itemId: "<message@example.test>" }] });
+    const invalid = { ...imapPolicy, itemIds: ["<message@example.test>\nUID STORE 1"] };
+    expect(await executeDeletion(request({ findings: [imapFinding], approved: invalid, requested: invalid, consent: { ...consent, planFingerprint: planFingerprint(invalid) }, dryRun: true }))).toMatchObject({ stoppedFailClosed: true, items: [] });
+  });
   it("honors protected people, age, ownership, and max-count", async () => {
     const findings = [finding(), { ...finding("item-2"), correspondentId: "safe" }, { ...finding("item-3"), createdAtUnixMs: now - 1 }, { ...finding("item-4"), authoredBySelf: false }];
     const approved = policy({ itemIds: findings.map((f) => f.itemId), protectedCorrespondentIds: ["safe"], maxCount: 1 });

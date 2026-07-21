@@ -29,6 +29,8 @@ pub mod mass_cleanup;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 #[cfg(feature = "core")]
+pub mod scrub_imap;
+#[cfg(feature = "core")]
 pub mod scrub_index;
 #[cfg(feature = "core")]
 pub mod security;

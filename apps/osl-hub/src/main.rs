@@ -30,6 +30,10 @@ use osl_privacy_hub::password_lifecycle::{
 };
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
+use osl_privacy_hub::scrub_imap::{
+    self, ConfigureImapRequest, ImapAccountRequest, ImapCapability, ImapDeleteResult,
+    ImapEnumeration, ImapInspection, ImapItemRequest, ImapVerification, ScrubImapState,
+};
 use osl_privacy_hub::scrub_index::{
     selection_requires_registry_ownership, ScrubIndexChunkRequest, ScrubIndexInitializeRequest,
     ScrubIndexState, ScrubIndexStatus,
@@ -75,6 +79,86 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
     };
     screenshot::apply_to_window(&window, protection)
         .map_err(|_| "Windows capture resistance could not be changed".to_owned())
+}
+
+#[tauri::command]
+async fn configure_scrub_imap_account(
+    app: tauri::AppHandle,
+    request: ConfigureImapRequest,
+) -> Result<ImapCapability, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::configure(&app.state::<ScrubImapState>(), request)
+    })
+    .await
+    .map_err(|_| "IMAP configuration worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+fn get_scrub_imap_capability(
+    state: State<'_, ScrubImapState>,
+    request: ImapAccountRequest,
+) -> ImapCapability {
+    scrub_imap::capability(&state, &request.account_id)
+}
+
+#[tauri::command]
+async fn reauth_scrub_imap_account(
+    app: tauri::AppHandle,
+    request: ImapAccountRequest,
+) -> Result<ImapCapability, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::reauthenticate(&app.state::<ScrubImapState>(), &request.account_id)
+    })
+    .await
+    .map_err(|_| "IMAP re-authentication worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_enumerate(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapEnumeration, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::enumerate(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP enumeration worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_inspect(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapInspection, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::inspect(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP inspection worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_delete(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapDeleteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::delete(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP deletion worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_verify(
+    app: tauri::AppHandle,
+    request: ImapItemRequest,
+) -> Result<ImapVerification, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::verify(&app.state::<ScrubImapState>(), &request)
+    })
+    .await
+    .map_err(|_| "IMAP verification worker was unavailable".to_owned())
 }
 
 #[tauri::command]
@@ -1730,9 +1814,9 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .on_page_load(|webview, _| {
+        .on_page_load(|_webview, _| {
             #[cfg(windows)]
-            let _ = window_border::suppress_accent_border(webview);
+            let _ = window_border::suppress_accent_border(_webview);
         })
         .setup(|app| {
             let config_dir = app
@@ -1772,6 +1856,7 @@ fn main() {
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
             app.manage(ScrubIndexState::default());
+            app.manage(ScrubImapState::default());
             let registration_app = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 registration_app
@@ -1791,6 +1876,13 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_onboarding_preferences,
+            configure_scrub_imap_account,
+            get_scrub_imap_capability,
+            reauth_scrub_imap_account,
+            scrub_imap_enumerate,
+            scrub_imap_inspect,
+            scrub_imap_delete,
+            scrub_imap_verify,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
