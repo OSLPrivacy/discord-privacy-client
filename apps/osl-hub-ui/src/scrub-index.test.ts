@@ -92,6 +92,8 @@ describe("Scrub index IPC", () => {
     const scan = {
       findings: [], messagesScanned: 1, messagesRejected: 0, truncated: false,
       analysisLocation: "this_device_only", persisted: true,
+      attachmentsScanned: 0, imagesChecked: false, videosChecked: false,
+      attachmentTypesScanned: [], uninspectedAttachments: [],
     } as const;
     mocks.invoke.mockResolvedValue(scan);
     await expect(getScrubIndexScan(importId)).resolves.toEqual(scan);

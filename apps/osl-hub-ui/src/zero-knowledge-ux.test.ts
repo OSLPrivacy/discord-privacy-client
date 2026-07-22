@@ -19,7 +19,7 @@ describe("zero-knowledge Scrub review", () => {
     expect(onboarding).toContain("This device only.");
     expect(onboarding).toContain("Nothing is deleted without explicit confirmation.");
     expect(onboarding).not.toContain("privacy-export-input");
-    expect(settings).toMatch(/return `<h2>Scrub<\/h2><p class="scrub-local-promise"><strong>Your messages never leave this device\.<\/strong>[\s\S]*\$\{scanActions\}/);
+    expect(settings).toMatch(/return `<h2>Scrub<\/h2><p class="scrub-local-promise"><strong>Your messages and attachments never leave this device\.<\/strong>[\s\S]*\$\{scanActions\}/);
   });
 
   it("keeps categories collapsed in onboarding and all six default on", () => {

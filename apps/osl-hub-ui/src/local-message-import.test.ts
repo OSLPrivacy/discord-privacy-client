@@ -85,7 +85,10 @@ describe("local message export import", () => {
     const scanFlow = ui.slice(scanStart, scanEnd);
     expect(scanStart).toBeGreaterThanOrEqual(0);
     expect(scanEnd).toBeGreaterThan(scanStart);
-    expect(scanFlow).toContain("importLocalMessageExport(await file.text()");
+    expect(scanFlow).toContain("await file.arrayBuffer()");
+    expect(scanFlow).toContain('new TextDecoder("utf-8", { fatal: true }).decode(bytes)');
+    expect(scanFlow).toContain("attachments: [{");
+    expect(scanFlow).toContain("contentBase64: bytesToBase64(bytes)");
     expect(scanFlow).toContain("await persistLocalScrubExport(candidates)");
     expect(scanFlow).toContain("privacyScanResult = persisted.scan");
     expect(scanFlow).not.toMatch(/localStorage|saveOnboardingPreferences|createServiceAccount|\binvoke\s*\(/);

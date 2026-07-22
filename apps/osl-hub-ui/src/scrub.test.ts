@@ -15,6 +15,7 @@ function finding(category: PrivacyRiskCategory): LocalPrivacyFinding {
     reason: "Review in context.",
     localPreview: "Local preview",
     canRequestDelete: true,
+    attachmentPath: null,
   };
 }
 

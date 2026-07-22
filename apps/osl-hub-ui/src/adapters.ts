@@ -104,6 +104,12 @@ export interface LocalMessageCandidate {
   authoredBySelf: boolean;
   createdAtUnixMs: number | null;
   text: string;
+  attachments?: LocalAttachmentCandidate[];
+}
+export interface LocalAttachmentCandidate {
+  attachmentId: string;
+  displayName: string;
+  contentBase64: string;
 }
 export interface LocalPrivacyFinding extends Omit<LocalMessageCandidate, "text"> {
   category: PrivacyRiskCategory;
@@ -111,6 +117,15 @@ export interface LocalPrivacyFinding extends Omit<LocalMessageCandidate, "text">
   reason: string;
   localPreview: string;
   canRequestDelete: boolean;
+  attachmentPath: string | null;
+}
+export type UninspectedAttachmentReason = "unsupported" | "encrypted" | "malformed" | "limit_exceeded" | "unsafe_archive_entry" | "model_not_installed" | "dependency_not_installed" | "image_only_pdf_needs_ocr";
+export interface UninspectedAttachment {
+  attachmentId: string;
+  path: string;
+  detectedType: string;
+  reason: UninspectedAttachmentReason;
+  detail: string;
 }
 export interface LocalPrivacyScanResult {
   findings: LocalPrivacyFinding[];
@@ -119,6 +134,11 @@ export interface LocalPrivacyScanResult {
   truncated: boolean;
   analysisLocation: "this_device_only";
   persisted: false;
+  attachmentsScanned: number;
+  imagesChecked: boolean;
+  videosChecked: boolean;
+  attachmentTypesScanned: string[];
+  uninspectedAttachments: UninspectedAttachment[];
 }
 export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
   persisted: true;
@@ -542,16 +562,26 @@ export function parsePersistedLocalPrivacyScan(raw: unknown): PersistedLocalPriv
 function parsePrivacyScan(raw: unknown, persisted: false): LocalPrivacyScanResult | null;
 function parsePrivacyScan(raw: unknown, persisted: true): PersistedLocalPrivacyScanResult | null;
 function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null {
-  if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"])) return null;
+  if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted", "attachmentsScanned", "imagesChecked", "videosChecked", "attachmentTypesScanned", "uninspectedAttachments"])) return null;
   if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > 2_000 || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== persisted) return null;
+  if (!boundedCount(raw.attachmentsScanned)
+    || typeof raw.imagesChecked !== "boolean"
+    || typeof raw.videosChecked !== "boolean"
+    || !Array.isArray(raw.attachmentTypesScanned)
+    || raw.attachmentTypesScanned.length > 64
+    || !raw.attachmentTypesScanned.every((value) => safePlaintext(value, 80))
+    || new Set(raw.attachmentTypesScanned).size !== raw.attachmentTypesScanned.length
+    || !Array.isArray(raw.uninspectedAttachments)
+    || raw.uninspectedAttachments.length > 1_000
+    || !raw.uninspectedAttachments.every(validUninspectedAttachment)) return null;
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
   return { ...raw, findings } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {
-  if (!isRecord(raw) || !exact(raw, ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete"])) return null;
-  if (!safeId(raw.serviceId, 32) || !safePlaintext(raw.accountId, 128) || !safePlaintext(raw.conversationId, 256) || !safePlaintext(raw.messageLocator, 256) || typeof raw.authoredBySelf !== "boolean" || !(raw.createdAtUnixMs === null || Number.isSafeInteger(raw.createdAtUnixMs)) || !["credential", "recovery_material", "payment_card", "government_identity", "precise_location", "profanity", "sexual_content", "sensitive_health", "controlled_substances", "potentially_unlawful_conduct", "work_sensitive_information"].includes(String(raw.category)) || !Number.isSafeInteger(raw.confidence) || Number(raw.confidence) < 0 || Number(raw.confidence) > 100 || !safePlaintext(raw.reason, 240) || !safePlaintext(raw.localPreview, 256) || typeof raw.canRequestDelete !== "boolean") return null;
+  if (!isRecord(raw) || !exact(raw, ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete", "attachmentPath"])) return null;
+  if (!safeId(raw.serviceId, 32) || !safePlaintext(raw.accountId, 128) || !safePlaintext(raw.conversationId, 256) || !safePlaintext(raw.messageLocator, 256) || typeof raw.authoredBySelf !== "boolean" || !(raw.createdAtUnixMs === null || Number.isSafeInteger(raw.createdAtUnixMs)) || !["credential", "recovery_material", "payment_card", "government_identity", "precise_location", "profanity", "sexual_content", "sensitive_health", "controlled_substances", "potentially_unlawful_conduct", "work_sensitive_information"].includes(String(raw.category)) || !Number.isSafeInteger(raw.confidence) || Number(raw.confidence) < 0 || Number(raw.confidence) > 100 || !safePlaintext(raw.reason, 240) || !safePlaintext(raw.localPreview, 256) || typeof raw.canRequestDelete !== "boolean" || !(raw.attachmentPath === null || safePlaintext(raw.attachmentPath, 1_024))) return null;
   if (raw.canRequestDelete && !raw.authoredBySelf) return null;
   return raw as unknown as LocalPrivacyFinding;
 }
@@ -563,7 +593,31 @@ function validLocalCandidate(candidate: LocalMessageCandidate): boolean {
     && safePlaintext(candidate.messageLocator, 256)
     && typeof candidate.authoredBySelf === "boolean"
     && (candidate.createdAtUnixMs === null || Number.isSafeInteger(candidate.createdAtUnixMs))
-    && safePlaintext(candidate.text, 8 * 1024);
+    && ((safePlaintext(candidate.text, 8 * 1024)) || (candidate.text === "" && Boolean(candidate.attachments?.length)))
+    && (candidate.attachments === undefined || (Array.isArray(candidate.attachments)
+      && candidate.attachments.length > 0
+      && candidate.attachments.length <= 64
+      && candidate.attachments.every(validLocalAttachment)));
+}
+
+function validLocalAttachment(attachment: LocalAttachmentCandidate): boolean {
+  return isRecord(attachment)
+    && exact(attachment, ["attachmentId", "displayName", "contentBase64"])
+    && safePlaintext(attachment.attachmentId, 256)
+    && safePlaintext(attachment.displayName, 1_024)
+    && typeof attachment.contentBase64 === "string"
+    && attachment.contentBase64.length <= 12 * 1024 * 1024
+    && attachment.contentBase64.length % 4 === 0
+    && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(attachment.contentBase64);
+}
+
+function validUninspectedAttachment(value: unknown): boolean {
+  if (!isRecord(value) || !exact(value, ["attachmentId", "path", "detectedType", "reason", "detail"])) return false;
+  return safePlaintext(value.attachmentId, 256)
+    && safePlaintext(value.path, 1_024)
+    && safePlaintext(value.detectedType, 80)
+    && ["unsupported", "encrypted", "malformed", "limit_exceeded", "unsafe_archive_entry", "model_not_installed", "dependency_not_installed", "image_only_pdf_needs_ocr"].includes(String(value.reason))
+    && safePlaintext(value.detail, 240);
 }
 
 function parseIdentityCreation(raw: unknown): HubIdentityCreation | null {

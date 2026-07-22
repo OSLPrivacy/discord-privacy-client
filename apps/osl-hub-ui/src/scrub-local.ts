@@ -38,19 +38,23 @@ const defaultAdapters: LocalScrubIndexAdapters = {
 
 export function localImportCoverageReceipt(
   messages: readonly LocalMessageCandidate[],
-  messagesScanned: number,
+  scan: PersistedLocalPrivacyScanResult,
 ): ScrubCoverageReceipt {
   const timestamps = messages.flatMap(({ createdAtUnixMs }) => createdAtUnixMs === null ? [] : [createdAtUnixMs]);
   const gaps = ["The provider did not attest that this manual export is complete."];
   if (timestamps.length !== messages.length) gaps.push("Some exported messages did not include a reachable timestamp.");
   const receipt: ScrubCoverageReceipt = {
-    messagesScanned,
+    messagesScanned: scan.messagesScanned,
     oldestReachableAtUnixMs: timestamps.length ? Math.min(...timestamps) : null,
     newestReachableAtUnixMs: timestamps.length ? Math.max(...timestamps) : null,
     providerReportedComplete: false,
     gaps,
     textChecked: true,
-    imagesChecked: false,
+    imagesChecked: scan.imagesChecked,
+    videosChecked: scan.videosChecked,
+    attachmentsScanned: scan.attachmentsScanned,
+    attachmentTypesScanned: [...scan.attachmentTypesScanned],
+    uninspectedAttachments: [...scan.uninspectedAttachments],
   };
   if (!validateCoverageReceipt(receipt)) throw new Error("invalid Scrub coverage receipt");
   return receipt;
@@ -111,6 +115,6 @@ export async function persistLocalScrubExport(
   return {
     scan,
     status: persistedStatus,
-    receipt: localImportCoverageReceipt(messages, scan.messagesScanned),
+    receipt: localImportCoverageReceipt(messages, scan),
   };
 }

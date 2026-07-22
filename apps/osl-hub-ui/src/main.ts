@@ -80,7 +80,7 @@ import {
 } from "./core";
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
 import { serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, listHubIdentities, listHubPeople, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openPeerProseText, prepareLocalProtectedText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, listHubIdentities, listHubPeople, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openPeerProseText, prepareLocalProtectedText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalMessageCandidate, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -1913,12 +1913,36 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   privacyScanBusy = true;
   render();
   try {
-    const candidates = importLocalMessageExport(await file.text(), {
-      serviceId: "local_import",
-      accountId: "manual-export",
-      conversationId: "privacy-scan",
-    });
-    if (!candidates?.length) throw new Error("No supported messages were found");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let candidates: LocalMessageCandidate[] | null = null;
+    try {
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (decoded.trimStart().startsWith("[")) {
+        candidates = importLocalMessageExport(decoded, {
+          serviceId: "local_import",
+          accountId: "manual-export",
+          conversationId: "privacy-scan",
+        });
+      }
+    } catch {
+      candidates = null;
+    }
+    if (!candidates?.length) {
+      candidates = [{
+        serviceId: "local_import",
+        accountId: "manual-export",
+        conversationId: "privacy-scan",
+        messageLocator: "local-attachment-1",
+        authoredBySelf: false,
+        createdAtUnixMs: null,
+        text: "",
+        attachments: [{
+          attachmentId: "local-attachment-1",
+          displayName: file.name.slice(0, 64) || "unnamed attachment",
+          contentBase64: bytesToBase64(bytes),
+        }],
+      }];
+    }
     const persisted = await persistLocalScrubExport(candidates);
     if (!validateCoverageReceipt(persisted.receipt)) throw new Error("The coverage receipt was invalid");
     privacyScanResult = persisted.scan;
@@ -1939,6 +1963,15 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
     privacyScanBusy = false;
     render();
   }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function sendingSettingsContent(): string {
@@ -1988,9 +2021,9 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const assistedDeleteWarning = `<details class="safety-disclosure"><summary>Assisted deletion and account-deletion options</summary><div><p><strong>Brutally honest warning:</strong> Gmail web, Discord, and Telegram web may restrict or ban an account for assisted UI deletion. OSL permanently stops on every captcha, challenge, rate signal, unknown result, account change, or changed interface. Use only while present, in small fixed human-speed batches.</p><p>IMAP is the lower-ban-risk optional email path. Sanctioned scorched-earth options: <a href="https://support.discord.com/hc/articles/212500837-How-do-I-permanently-delete-my-account" target="_blank" rel="noreferrer">delete the Discord account</a> or <a href="https://support.discord.com/hc/articles/360004027692-Requesting-a-Copy-of-your-Data" target="_blank" rel="noreferrer">request its data first</a>.</p></div></details>`;
-  const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>${assistedDeleteWarning}`;
+  const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose file"}</label><input id="privacy-export-input" class="sr-only" type="file" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>${assistedDeleteWarning}`;
   const autoScrubPlan = proActive ? "PRO · TRANSPORT-GATED" : "PRO REQUIRED";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Primary delete path</span><strong>Existing signed-in hosted session; no re-authentication</strong></div><div class="setting-line"><span>Optional paths</span><strong>IMAP and Telegram TDLib</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages and attachments never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review a file</h3><p>Choose a message export or attachment of any type. OSL reports exactly what it could and could not inspect.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Primary delete path</span><strong>Existing signed-in hosted session; no re-authentication</strong></div><div class="setting-line"><span>Optional paths</span><strong>IMAP and Telegram TDLib</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
 }
 
 function autoScrubAccountIds(): string[] {
@@ -2089,7 +2122,7 @@ function privacyScanResultsMarkup(): string {
   const selected = [...selectedScrubFindings].filter((index) => matching.some((item) => item.index === index)).length;
   const selectionControls = matching.length ? `<div class="scrub-selection-controls"><button class="text-button" id="select-all-scrub" type="button">Select all ${matching.length}</button><button class="text-button" id="clear-scrub-selection" type="button" ${selected ? "" : "disabled"}>Clear selection</button></div>` : "";
   const pagination = pageCount > 1 ? `<nav class="scrub-pagination" aria-label="Scrub result pages"><button class="button compact" data-scrub-page="${scrubResultsPage - 1}" ${scrubResultsPage === 0 ? "disabled" : ""}>Previous</button><span>${scrubResultsPage + 1} / ${pageCount}</span><button class="button compact" data-scrub-page="${scrubResultsPage + 1}" ${scrubResultsPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>` : "";
-  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">LOCAL · ENCRYPTED</span></header>${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
+  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages · ${privacyScanResult.attachmentsScanned} attachments scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">LOCAL · ENCRYPTED</span></header>${scrubCoverageReceiptMarkup()}${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
 }
 
 function scrubFindingLabel(category: PersistedLocalPrivacyScanResult["findings"][number]["category"]): string {
@@ -2103,7 +2136,8 @@ function scrubFindingMarkup(finding: PersistedLocalPrivacyScanResult["findings"]
   const sentCopy = finding.canRequestDelete
     ? "The file says you sent this. Check the exact message in the app."
     : "OSL cannot tell who sent this from the file. Check the exact message in the app.";
-  return `<article class="privacy-finding ${selected ? "selected" : ""}"><label class="scrub-finding-select"><input type="checkbox" ${inputAttribute}="${index}" ${selected ? "checked" : ""}/><strong>${escapeHtml(scrubFindingLabel(finding.category))}</strong></label><div class="scrub-finding-field"><span>Why OSL showed this</span><p>${escapeHtml(finding.reason)}</p></div><blockquote>${escapeHtml(finding.localPreview)}</blockquote><div class="scrub-finding-field"><span>Where to find it</span><p>${escapeHtml(finding.serviceId)} · ${escapeHtml(finding.conversationId)} · ${escapeHtml(finding.messageLocator)}</p></div><div class="scrub-finding-field"><span>Check that you sent this</span><p>${sentCopy}</p></div></article>`;
+  const attachmentLocation = finding.attachmentPath ? ` · ${escapeHtml(finding.attachmentPath)}` : "";
+  return `<article class="privacy-finding ${selected ? "selected" : ""}"><label class="scrub-finding-select"><input type="checkbox" ${inputAttribute}="${index}" ${selected ? "checked" : ""}/><strong>${escapeHtml(scrubFindingLabel(finding.category))}</strong></label><div class="scrub-finding-field"><span>Why OSL showed this</span><p>${escapeHtml(finding.reason)}</p></div><blockquote>${escapeHtml(finding.localPreview)}</blockquote><div class="scrub-finding-field"><span>Where to find it</span><p>${escapeHtml(finding.serviceId)} · ${escapeHtml(finding.conversationId)} · ${escapeHtml(finding.messageLocator)}${attachmentLocation}</p></div><div class="scrub-finding-field"><span>Check that you sent this</span><p>${sentCopy}</p></div></article>`;
 }
 
 function selectedScrubItems(): Array<{ finding: PersistedLocalPrivacyScanResult["findings"][number]; index: number }> {
@@ -2128,7 +2162,12 @@ function scrubCoverageReceiptMarkup(): string {
   if (!privacyCoverageReceipt || !validateCoverageReceipt(privacyCoverageReceipt)) return "";
   const receipt = privacyCoverageReceipt;
   const date = (value: number | null): string => value === null ? "Unknown" : new Date(value).toLocaleString();
-  return `<section class="scrub-review-summary" aria-label="Scan coverage receipt"><strong>Coverage: incomplete</strong><span>${receipt.messagesScanned} text messages checked · images not checked</span><span>Oldest reachable: ${escapeHtml(date(receipt.oldestReachableAtUnixMs))}</span><span>Newest reachable: ${escapeHtml(date(receipt.newestReachableAtUnixMs))}</span>${receipt.gaps.map((gap) => `<span>Gap: ${escapeHtml(gap)}</span>`).join("")}</section>`;
+  const complete = receipt.providerReportedComplete && receipt.gaps.length === 0 && receipt.uninspectedAttachments.length === 0;
+  const types = receipt.attachmentTypesScanned.length ? receipt.attachmentTypesScanned.map(escapeHtml).join(", ") : "none";
+  const uninspected = receipt.uninspectedAttachments.length
+    ? `<div class="scrub-uninspected"><strong>Could not inspect</strong><ul>${receipt.uninspectedAttachments.map((attachment) => `<li><span>${escapeHtml(attachment.path)} · ${escapeHtml(attachment.detectedType)}</span><small>${escapeHtml(attachment.reason.replaceAll("_", " "))}: ${escapeHtml(attachment.detail)}</small></li>`).join("")}</ul></div>`
+    : "";
+  return `<section class="scrub-review-summary coverage-receipt" aria-label="Scan coverage receipt"><strong>Coverage: ${complete ? "complete" : "incomplete"}</strong><span>${receipt.messagesScanned} text messages · ${receipt.attachmentsScanned} attachments checked</span><span>Images: ${receipt.imagesChecked ? "deep-inspected" : "not deep-inspected"} · Videos: ${receipt.videosChecked ? "deep-inspected" : "not deep-inspected"}</span><span>Attachment types scanned: ${types}</span><span>Oldest reachable: ${escapeHtml(date(receipt.oldestReachableAtUnixMs))}</span><span>Newest reachable: ${escapeHtml(date(receipt.newestReachableAtUnixMs))}</span>${receipt.gaps.map((gap) => `<span>Gap: ${escapeHtml(gap)}</span>`).join("")}${uninspected}</section>`;
 }
 
 function scrubDeletionPathEnabled(): boolean {

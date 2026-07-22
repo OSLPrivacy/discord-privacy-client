@@ -1,3 +1,4 @@
+pub mod attachment_scan;
 pub mod burn_contract;
 pub mod control_contract;
 pub mod external_overlay;
