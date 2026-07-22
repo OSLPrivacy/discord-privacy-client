@@ -138,6 +138,42 @@ pub enum ImapVerificationOutcome {
     Unknown,
 }
 
+/// Read-only metadata surfaced by the local IMAP live-test harness.
+pub struct ImapLiveMessage {
+    pub uid: u32,
+    pub internal_date: String,
+    pub from: String,
+    pub subject: String,
+    pub message_id: Option<String>,
+    pub authored_by_self: bool,
+    pub content_fingerprint: Option<String>,
+    identity_headers: Vec<u8>,
+}
+
+/// A single inspected item that is ready for the harness to preview.
+pub struct ImapLivePreparedDelete {
+    pub uid: u32,
+    pub message_id: String,
+    request: ImapItemRequest,
+}
+
+pub struct ImapLiveDeleteExecution {
+    pub delete_result: Result<ImapDeleteResult, String>,
+    pub verification: ImapVerification,
+}
+
+/// Credential-in-memory facade used only by the local live-test binary.
+///
+/// It delegates connection, authentication, inspection, deletion, scoped
+/// expunge, and readback to the production transport implementation. It never
+/// persists the supplied app password.
+pub struct ImapLiveTestTransport {
+    state: ScrubImapState,
+    account_id: String,
+    auth_epoch: String,
+    secret: Zeroizing<String>,
+}
+
 #[derive(Clone)]
 struct AccountConfig {
     host: String,
@@ -183,6 +219,9 @@ trait MailboxSession {
     fn supports_uid_expunge(&mut self) -> Result<bool, TransportFailure>;
     fn mark_deleted(&mut self, uid: u32) -> Result<(), TransportFailure>;
     fn expunge_uid(&mut self, uid: u32) -> Result<(), TransportFailure>;
+    fn recent_messages(&mut self, _limit: usize) -> Result<Vec<ImapLiveMessage>, TransportFailure> {
+        Err(TransportFailure::Ambiguous)
+    }
 }
 
 trait SessionConnector {
@@ -354,6 +393,68 @@ impl MailboxSession for RealMailbox {
             .uid_expunge(uid.to_string())
             .map(|_| ())
             .map_err(classify_imap_error)
+    }
+
+    fn recent_messages(&mut self, limit: usize) -> Result<Vec<ImapLiveMessage>, TransportFailure> {
+        self.pace();
+        let mut uids: Vec<u32> = self
+            .session
+            .uid_search("ALL")
+            .map_err(classify_imap_error)?
+            .into_iter()
+            .collect();
+        uids.sort_unstable_by(|left, right| right.cmp(left));
+        uids.truncate(limit);
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sequence = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        self.pace();
+        let fetches = self
+            .session
+            .uid_fetch(
+                sequence,
+                "(UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM SUBJECT)])",
+            )
+            .map_err(classify_imap_error)?;
+        let mut messages = Vec::with_capacity(fetches.len());
+        for fetch in fetches.iter() {
+            let uid = fetch.uid.ok_or(TransportFailure::Ambiguous)?;
+            let headers = fetch
+                .body()
+                .map(ToOwned::to_owned)
+                .ok_or(TransportFailure::Ambiguous)?;
+            use mailparse::MailHeaderMap;
+            let (parsed, _) =
+                mailparse::parse_headers(&headers).map_err(|_| TransportFailure::Ambiguous)?;
+            messages.push(ImapLiveMessage {
+                uid,
+                internal_date: fetch
+                    .internal_date()
+                    .map(|date| date.to_rfc3339())
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                from: parsed
+                    .get_first_value("From")
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                subject: parsed
+                    .get_first_value("Subject")
+                    .unwrap_or_else(|| "(no subject)".to_owned()),
+                message_id: parsed
+                    .get_first_value("Message-ID")
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty()),
+                authored_by_self: false,
+                content_fingerprint: None,
+                identity_headers: headers,
+            });
+        }
+        messages.sort_unstable_by(|left, right| right.uid.cmp(&left.uid));
+        Ok(messages)
     }
 }
 
@@ -894,6 +995,143 @@ fn verify_with(
 
 pub fn verify(state: &ScrubImapState, request: &ImapItemRequest) -> ImapVerification {
     verify_with(state, request, &RealConnector, None)
+}
+
+impl ImapLiveTestTransport {
+    pub fn connect(
+        host: String,
+        port: u16,
+        username: String,
+        app_password: String,
+    ) -> Result<Self, String> {
+        let state = ScrubImapState::default();
+        let account_id = "imap-livetest".to_owned();
+        let secret = Zeroizing::new(app_password);
+        let capability = state.configure_with(
+            ConfigureImapRequest {
+                account_id: account_id.clone(),
+                host,
+                port: Some(port),
+                username,
+                auth: ImapAuthInput {
+                    kind: ImapAuthKind::AppPassword,
+                    secret: secret.to_string(),
+                },
+                default_mailbox: Some("INBOX".to_owned()),
+            },
+            &RealConnector,
+            false,
+        )?;
+        let auth_epoch = capability
+            .auth_epoch
+            .ok_or_else(|| "IMAP authentication did not produce a live epoch".to_owned())?;
+        Ok(Self {
+            state,
+            account_id,
+            auth_epoch,
+            secret,
+        })
+    }
+
+    pub fn recent_messages(&self, limit: usize) -> Result<Vec<ImapLiveMessage>, String> {
+        let config = self
+            .state
+            .config_for_epoch(&self.account_id, &self.auth_epoch)?;
+        let mut session = RealConnector
+            .connect(&config, self.secret.as_str())
+            .map_err(|error| error.public_detail().to_owned())?;
+        session
+            .select("INBOX")
+            .map_err(|error| error.public_detail().to_owned())?;
+        let mut messages = session
+            .recent_messages(limit)
+            .map_err(|error| error.public_detail().to_owned())?;
+        for message in &mut messages {
+            let Some(message_id) = message.message_id.as_deref() else {
+                continue;
+            };
+            let finding = finding_from_headers(
+                &config,
+                "INBOX",
+                message.uid,
+                message_id,
+                &message.identity_headers,
+            )
+            .map_err(|error| error.public_detail().to_owned())?;
+            message.authored_by_self = finding.authored_by_self;
+            message.content_fingerprint = Some(finding.content_fingerprint);
+        }
+        Ok(messages)
+    }
+
+    pub fn prepare_delete(
+        &self,
+        message: &ImapLiveMessage,
+    ) -> Result<ImapLivePreparedDelete, String> {
+        let message_id = message.message_id.as_deref().ok_or_else(|| {
+            "Delete refused because the searched message has no Message-ID".to_owned()
+        })?;
+        let searched_fingerprint = message.content_fingerprint.as_deref().ok_or_else(|| {
+            "Delete refused because the searched message has no identity fingerprint".to_owned()
+        })?;
+        let mut request = ImapItemRequest {
+            account_id: self.account_id.clone(),
+            expected_auth_epoch: self.auth_epoch.clone(),
+            mailbox: "INBOX".to_owned(),
+            message_id: message_id.to_owned(),
+            since_date_unix_ms: None,
+            expected_content_fingerprint: None,
+        };
+        let inspection = inspect_with(
+            &self.state,
+            &request,
+            &RealConnector,
+            Some(self.secret.as_str()),
+        )?;
+        if inspection.state != ImapPresence::Present {
+            return Err(
+                "Delete refused because the searched message is no longer present".to_owned(),
+            );
+        }
+        if !inspection.authored_by_self {
+            return Err(
+                "Delete refused because From did not match the configured account".to_owned(),
+            );
+        }
+        let inspected_fingerprint = inspection.content_fingerprint.ok_or_else(|| {
+            "Delete refused because inspection produced no content fingerprint".to_owned()
+        })?;
+        if inspected_fingerprint != searched_fingerprint {
+            return Err(
+                "Delete refused because the message changed after the prior search".to_owned(),
+            );
+        }
+        request.expected_content_fingerprint = Some(inspected_fingerprint);
+        Ok(ImapLivePreparedDelete {
+            uid: message.uid,
+            message_id: message_id.to_owned(),
+            request,
+        })
+    }
+
+    pub fn delete_prepared(&self, prepared: &ImapLivePreparedDelete) -> ImapLiveDeleteExecution {
+        let delete_result = delete_with(
+            &self.state,
+            &prepared.request,
+            &RealConnector,
+            Some(self.secret.as_str()),
+        );
+        let verification = verify_with(
+            &self.state,
+            &prepared.request,
+            &RealConnector,
+            Some(self.secret.as_str()),
+        );
+        ImapLiveDeleteExecution {
+            delete_result,
+            verification,
+        }
+    }
 }
 
 #[cfg(test)]

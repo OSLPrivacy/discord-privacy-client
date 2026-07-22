@@ -176,6 +176,7 @@ fn save_onboarding_preferences(
 async fn scan_local_privacy(
     messages: Vec<LocalMessageCandidate>,
 ) -> Result<LocalPrivacyScanResult, String> {
+    privacy_scan::validate_attachment_input_batch(&messages)?;
     tokio::task::spawn_blocking(move || privacy_scan::scan_local_messages(messages))
         .await
         .map_err(|_| "The local privacy scan was interrupted".to_owned())

@@ -3481,6 +3481,12 @@ code {
 .scrub-review-card .scrub-local-promise { margin: 0; }
 .scrub-review-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
 .scrub-review-summary strong { color: var(--text); }
+.coverage-receipt { margin-bottom: 12px; align-items: flex-start; flex-direction: column; }
+.scrub-uninspected { width: 100%; }
+.scrub-uninspected ul { margin: 6px 0 0; padding-left: 18px; }
+.scrub-uninspected li + li { margin-top: 5px; }
+.scrub-uninspected span,
+.scrub-uninspected small { display: block; }
 .scrub-review-items { min-height: 0; overflow-y: auto; border: 1px solid var(--line-soft); }
 .scrub-review-items .privacy-finding { padding: 12px; }
 .scrub-review-card > footer { padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 16px; }

@@ -43,10 +43,17 @@ describe("Scrub setup plan", () => {
       gaps: ["The provider did not attest that this export is complete."],
       textChecked: true,
       imagesChecked: false,
+      videosChecked: false,
+      attachmentsScanned: 1,
+      attachmentTypesScanned: ["plain_text"],
+      uninspectedAttachments: [],
     };
     expect(validateCoverageReceipt(receipt)).toBe(true);
     expect(validateCoverageReceipt({ ...receipt, providerReportedComplete: true })).toBe(false);
-    expect(validateCoverageReceipt({ ...receipt, imagesChecked: true })).toBe(false);
+    expect(validateCoverageReceipt({ ...receipt, imagesChecked: true })).toBe(true);
+    expect(validateCoverageReceipt({ ...receipt, gaps: [], providerReportedComplete: true, uninspectedAttachments: [{
+      attachmentId: "photo", path: "photo.png", detectedType: "png", reason: "model_not_installed", detail: "Install the verified local image model pack.",
+    }] })).toBe(false);
     expect(validateCoverageReceipt({ ...receipt, oldestReachableAtUnixMs: receipt.newestReachableAtUnixMs + 1 })).toBe(false);
   });
 });

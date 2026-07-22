@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::privacy_scan::{
-    scan_local_messages, LocalMessageCandidate, LocalPrivacyScanResult, MAX_FINDINGS,
+    scan_local_messages, validate_attachment_input_batch, LocalMessageCandidate,
+    LocalPrivacyScanResult, MAX_FINDINGS,
 };
 
 const VERSION: u8 = 1;
@@ -26,7 +27,10 @@ const MAX_INDEX_BYTES: u64 = 50 * 1024 * 1024;
 const JOURNAL_RESERVE_BYTES: u64 = 512 * 1024;
 const MAX_SELECTIONS: usize = 32;
 const MAX_MESSAGES_PER_CHUNK: usize = 256;
-const MAX_PLAINTEXT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
+// One UI-selected attachment may be up to 8 MiB. Base64 plus the bounded JSON
+// envelope fits within 12 MiB while the encrypted index remains globally
+// capped at 50 MiB.
+const MAX_PLAINTEXT_CHUNK_BYTES: usize = 12 * 1024 * 1024;
 const MAX_ENCRYPTED_CHUNK_BYTES: u64 = MAX_PLAINTEXT_CHUNK_BYTES as u64 + 64;
 const MAX_CHUNKS: usize = 4_096;
 pub const MANUAL_EXPORT_SERVICE_ID: &str = "local_import";
@@ -210,6 +214,9 @@ impl ScrubIndexState {
         let mut findings = Vec::new();
         let mut messages_scanned = 0usize;
         let mut truncated = false;
+        let mut attachments_scanned = 0usize;
+        let mut attachment_types_scanned = Vec::new();
+        let mut uninspected_attachments = Vec::new();
         for sequence in 0..document.next_sequence {
             let sealed = crate::atomic_file::read_recoverable_bounded(
                 &chunk_path(&root, sequence),
@@ -262,6 +269,10 @@ impl ScrubIndexState {
                 return Err("Scrub chunk contains an invalid message".into());
             }
             messages_scanned = messages_scanned.saturating_add(chunk_scan.messages_scanned);
+            attachments_scanned =
+                attachments_scanned.saturating_add(chunk_scan.attachments_scanned);
+            attachment_types_scanned.extend(chunk_scan.attachment_types_scanned);
+            uninspected_attachments.extend(chunk_scan.uninspected_attachments);
             let remaining = MAX_FINDINGS.saturating_sub(findings.len());
             truncated |= chunk_scan.truncated || chunk_scan.findings.len() > remaining;
             findings.extend(chunk_scan.findings.into_iter().take(remaining));
@@ -271,6 +282,16 @@ impl ScrubIndexState {
         {
             return Err("Scrub index counters do not match committed chunks".into());
         }
+        attachment_types_scanned.sort();
+        attachment_types_scanned.dedup();
+        let images_checked = attachment_types_scanned.iter().any(|kind| kind == "image")
+            && !uninspected_attachments
+                .iter()
+                .any(|item| item.detected_type == "image");
+        let videos_checked = attachment_types_scanned.iter().any(|kind| kind == "video")
+            && !uninspected_attachments
+                .iter()
+                .any(|item| item.detected_type == "video");
         Ok(LocalPrivacyScanResult {
             findings,
             messages_scanned,
@@ -278,6 +299,11 @@ impl ScrubIndexState {
             truncated,
             analysis_location: "this_device_only",
             persisted: true,
+            attachments_scanned,
+            images_checked,
+            videos_checked,
+            attachment_types_scanned,
+            uninspected_attachments,
         })
     }
 
@@ -292,6 +318,7 @@ impl ScrubIndexState {
         if request.messages.is_empty() || request.messages.len() > MAX_MESSAGES_PER_CHUNK {
             return Err("Scrub chunks must contain 1-256 messages".into());
         }
+        validate_attachment_input_batch(&request.messages)?;
         let root = self.root()?;
         ensure_safe_root(&root, false)?;
         let key = self.key()?;
@@ -831,6 +858,7 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.into(),
+            attachments: Vec::new(),
         }
     }
 

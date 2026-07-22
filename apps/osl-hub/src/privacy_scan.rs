@@ -8,10 +8,19 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use crate::attachment_scan::{
+    scan_attachments, AttachmentAnalyzers, LocalAttachmentCandidate, UninspectedAttachment,
+    MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_BYTES,
+};
+
 const MAX_MESSAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
+const MAX_ATTACHMENT_ID_BYTES: usize = 128;
+const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
+const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
+pub(crate) const MAX_ATTACHMENT_BATCH_ENCODED_BYTES: usize = 12 * 1024 * 1024;
 pub(crate) const MAX_FINDINGS: usize = 1_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -24,6 +33,8 @@ pub struct LocalMessageCandidate {
     pub authored_by_self: bool,
     pub created_at_unix_ms: Option<i64>,
     pub text: String,
+    #[serde(default)]
+    pub attachments: Vec<LocalAttachmentCandidate>,
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize)]
@@ -56,6 +67,7 @@ pub struct LocalPrivacyFinding {
     pub reason: &'static str,
     pub local_preview: String,
     pub can_request_delete: bool,
+    pub attachment_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -67,6 +79,11 @@ pub struct LocalPrivacyScanResult {
     pub truncated: bool,
     pub analysis_location: &'static str,
     pub persisted: bool,
+    pub attachments_scanned: usize,
+    pub images_checked: bool,
+    pub videos_checked: bool,
+    pub attachment_types_scanned: Vec<String>,
+    pub uninspected_attachments: Vec<UninspectedAttachment>,
 }
 
 /// Scan bounded caller-provided text entirely in process memory.
@@ -76,10 +93,49 @@ pub struct LocalPrivacyScanResult {
 /// still confirm that a locator belongs to the active trusted service context
 /// before offering jump/delete actions.
 pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacyScanResult {
+    scan_local_messages_with_analyzers(messages, AttachmentAnalyzers::default())
+}
+
+/// Reject oversized attachment IPC inputs before they are cloned, decoded, or
+/// passed to the parser boundary. This validates only the transport envelope;
+/// byte-derived type detection and extraction remain in `attachment_scan`.
+pub fn validate_attachment_input_batch(messages: &[LocalMessageCandidate]) -> Result<(), String> {
+    let mut aggregate_encoded_bytes = 0usize;
+    for message in messages {
+        if message.attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+            return Err(format!(
+                "A message exceeds the {MAX_ATTACHMENTS_PER_MESSAGE}-attachment input limit"
+            ));
+        }
+        for attachment in &message.attachments {
+            if !valid_attachment_input(attachment) {
+                return Err("Attachment metadata or base64 input is invalid".into());
+            }
+            aggregate_encoded_bytes = aggregate_encoded_bytes
+                .checked_add(attachment.content_base64.len())
+                .ok_or_else(|| "Attachment input exceeds the aggregate limit".to_owned())?;
+            if aggregate_encoded_bytes > MAX_ATTACHMENT_BATCH_ENCODED_BYTES {
+                return Err("Attachment input exceeds the aggregate encoded-byte limit".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Scan with explicitly supplied local media capabilities. The desktop build
+/// supplies none until separately installed adapters and model packs have been
+/// verified, so unavailable media is recorded rather than treated as clean.
+pub fn scan_local_messages_with_analyzers(
+    messages: Vec<LocalMessageCandidate>,
+    analyzers: AttachmentAnalyzers<'_>,
+) -> LocalPrivacyScanResult {
     let mut findings = Vec::new();
     let mut messages_scanned = 0usize;
     let mut messages_rejected = messages.len().saturating_sub(MAX_MESSAGES);
     let mut truncated = messages.len() > MAX_MESSAGES;
+    let mut attachments_scanned = 0usize;
+    let mut attachment_types_scanned = Vec::new();
+    let mut uninspected_attachments = Vec::new();
 
     for message in messages.into_iter().take(MAX_MESSAGES) {
         if !valid_candidate(&message) {
@@ -89,7 +145,7 @@ pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacy
         messages_scanned += 1;
         let mut categories = HashSet::new();
         for (category, confidence, reason) in classify(&message.text) {
-            if !categories.insert(category) {
+            if !categories.insert((category, None::<String>)) {
                 continue;
             }
             if findings.len() >= MAX_FINDINGS {
@@ -108,9 +164,77 @@ pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacy
                 reason,
                 local_preview: preview(&message.text),
                 can_request_delete: message.authored_by_self,
+                attachment_path: None,
+            });
+        }
+
+        let attachment_scan = scan_attachments(&message.attachments, analyzers);
+        attachments_scanned =
+            attachments_scanned.saturating_add(attachment_scan.attachments_scanned);
+        attachment_types_scanned.extend(attachment_scan.attachment_types_scanned);
+        uninspected_attachments.extend(attachment_scan.uninspected_attachments);
+
+        for fragment in attachment_scan.extracted_text {
+            for (category, confidence, reason) in classify(&fragment.text) {
+                if !categories.insert((category, Some(fragment.path.clone()))) {
+                    continue;
+                }
+                if findings.len() >= MAX_FINDINGS {
+                    truncated = true;
+                    break;
+                }
+                findings.push(LocalPrivacyFinding {
+                    service_id: message.service_id.clone(),
+                    account_id: message.account_id.clone(),
+                    conversation_id: message.conversation_id.clone(),
+                    message_locator: message.message_locator.clone(),
+                    authored_by_self: message.authored_by_self,
+                    created_at_unix_ms: message.created_at_unix_ms,
+                    category,
+                    confidence,
+                    reason,
+                    local_preview: preview(&fragment.text),
+                    can_request_delete: message.authored_by_self,
+                    attachment_path: Some(fragment.path.clone()),
+                });
+            }
+        }
+        for signal in attachment_scan.explicit_media_signals {
+            let category = PrivacyRiskCategory::SexualContent;
+            if !categories.insert((category, Some(signal.path.clone()))) {
+                continue;
+            }
+            if findings.len() >= MAX_FINDINGS {
+                truncated = true;
+                break;
+            }
+            findings.push(LocalPrivacyFinding {
+                service_id: message.service_id.clone(),
+                account_id: message.account_id.clone(),
+                conversation_id: message.conversation_id.clone(),
+                message_locator: message.message_locator.clone(),
+                authored_by_self: message.authored_by_self,
+                created_at_unix_ms: message.created_at_unix_ms,
+                category,
+                confidence: signal.confidence,
+                reason: signal.reason,
+                local_preview: "Local media classification signal".into(),
+                can_request_delete: message.authored_by_self,
+                attachment_path: Some(signal.path),
             });
         }
     }
+
+    attachment_types_scanned.sort();
+    attachment_types_scanned.dedup();
+    let images_checked = attachment_types_scanned.iter().any(|kind| kind == "image")
+        && !uninspected_attachments
+            .iter()
+            .any(|item| item.detected_type == "image");
+    let videos_checked = attachment_types_scanned.iter().any(|kind| kind == "video")
+        && !uninspected_attachments
+            .iter()
+            .any(|item| item.detected_type == "video");
 
     LocalPrivacyScanResult {
         findings,
@@ -119,6 +243,11 @@ pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacy
         truncated,
         analysis_location: "this_device_only",
         persisted: false,
+        attachments_scanned,
+        images_checked,
+        videos_checked,
+        attachment_types_scanned,
+        uninspected_attachments,
     }
 }
 
@@ -132,9 +261,51 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
         && message.conversation_id.len() <= 256
         && !message.message_locator.is_empty()
         && message.message_locator.len() <= MAX_LOCATOR_BYTES
-        && !message.text.is_empty()
+        && (!message.text.is_empty() || !message.attachments.is_empty())
         && message.text.len() <= MAX_TEXT_BYTES
         && !message.text.contains('\0')
+        && message.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
+        && message.attachments.iter().all(valid_attachment_input)
+}
+
+fn valid_attachment_input(value: &LocalAttachmentCandidate) -> bool {
+    !value.attachment_id.is_empty()
+        && value.attachment_id.len() <= MAX_ATTACHMENT_ID_BYTES
+        && !value
+            .attachment_id
+            .chars()
+            .any(unsafe_attachment_metadata_char)
+        && !value.display_name.is_empty()
+        && value.display_name.len() <= MAX_ATTACHMENT_DISPLAY_NAME_BYTES
+        && !value
+            .display_name
+            .chars()
+            .any(unsafe_attachment_metadata_char)
+        && !value.content_base64.is_empty()
+        && value.content_base64.len() <= MAX_ATTACHMENT_ENCODED_BYTES
+        && valid_base64_envelope(&value.content_base64)
+}
+
+fn valid_base64_envelope(value: &str) -> bool {
+    if value.len() % 4 != 0 {
+        return false;
+    }
+    let padding = value.bytes().rev().take_while(|byte| *byte == b'=').count();
+    padding <= 2
+        && value[..value.len() - padding]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+        && value[value.len() - padding..]
+            .bytes()
+            .all(|byte| byte == b'=')
+}
+
+fn unsafe_attachment_metadata_char(value: char) -> bool {
+    value.is_control()
+        || matches!(
+            value,
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 fn valid_id_byte(byte: u8) -> bool {
@@ -408,6 +579,7 @@ fn preview(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     fn message(text: &str) -> LocalMessageCandidate {
         LocalMessageCandidate {
@@ -418,6 +590,7 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.to_owned(),
+            attachments: Vec::new(),
         }
     }
 
@@ -492,5 +665,96 @@ mod tests {
     fn profanity_matching_uses_word_boundaries() {
         let result = scan_local_messages(vec![message("Scunthorpe and shitake mushrooms")]);
         assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn attachment_text_runs_through_existing_detectors_with_provenance() {
+        let mut candidate = message("");
+        candidate.attachments.push(LocalAttachmentCandidate {
+            attachment_id: "invoice-1".into(),
+            display_name: "photo.jpg".into(),
+            content_base64: base64::engine::general_purpose::STANDARD
+                .encode(b"password: attachment-secret"),
+        });
+        let result = scan_local_messages(vec![candidate]);
+        assert_eq!(result.messages_scanned, 1);
+        assert_eq!(result.attachments_scanned, 1);
+        assert_eq!(result.attachment_types_scanned, ["plain_text"]);
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(
+            result.findings[0].attachment_path.as_deref(),
+            Some("photo.jpg")
+        );
+    }
+
+    #[test]
+    fn attachment_input_rejects_more_than_sixteen_items_before_scanning() {
+        let mut candidate = message("");
+        candidate.attachments = (0..=MAX_ATTACHMENTS_PER_MESSAGE)
+            .map(|index| LocalAttachmentCandidate {
+                attachment_id: format!("attachment-{index}"),
+                display_name: format!("attachment-{index}.txt"),
+                content_base64: "YQ==".into(),
+            })
+            .collect();
+
+        assert!(validate_attachment_input_batch(std::slice::from_ref(&candidate)).is_err());
+        let result = scan_local_messages(vec![candidate]);
+        assert_eq!(result.messages_scanned, 0);
+        assert_eq!(result.messages_rejected, 1);
+        assert_eq!(result.attachments_scanned, 0);
+    }
+
+    #[test]
+    fn attachment_input_bounds_metadata_and_base64_envelopes() {
+        let mut candidate = message("");
+        candidate.attachments.push(LocalAttachmentCandidate {
+            attachment_id: "attachment\nspoof".into(),
+            display_name: "document.txt".into(),
+            content_base64: "not base64!".into(),
+        });
+        assert!(validate_attachment_input_batch(&[candidate]).is_err());
+
+        let mut oversized = message("");
+        oversized.attachments.push(LocalAttachmentCandidate {
+            attachment_id: "a".repeat(MAX_ATTACHMENT_ID_BYTES + 1),
+            display_name: "document.txt".into(),
+            content_base64: "YQ==".into(),
+        });
+        assert!(validate_attachment_input_batch(&[oversized]).is_err());
+    }
+
+    #[test]
+    fn attachment_input_rejects_aggregate_encoded_bytes_before_scan_or_clone() {
+        let encoded = "A".repeat(MAX_ATTACHMENT_BATCH_ENCODED_BYTES / 2 + 4);
+        let mut first = message("");
+        first.attachments.push(LocalAttachmentCandidate {
+            attachment_id: "first".into(),
+            display_name: "first.bin".into(),
+            content_base64: encoded.clone(),
+        });
+        let mut second = message("");
+        second.attachments.push(LocalAttachmentCandidate {
+            attachment_id: "second".into(),
+            display_name: "second.bin".into(),
+            content_base64: encoded,
+        });
+
+        assert!(validate_attachment_input_batch(&[first, second]).is_err());
+    }
+
+    #[test]
+    fn unavailable_image_model_is_explicitly_uninspected() {
+        let mut candidate = message("");
+        candidate.attachments.push(LocalAttachmentCandidate {
+            attachment_id: "image-1".into(),
+            display_name: "actually-an-image.bin".into(),
+            content_base64: base64::engine::general_purpose::STANDARD
+                .encode(b"\x89PNG\r\n\x1a\nminimal"),
+        });
+        let result = scan_local_messages(vec![candidate]);
+        assert!(!result.images_checked);
+        assert_eq!(result.attachments_scanned, 0);
+        assert_eq!(result.uninspected_attachments.len(), 1);
     }
 }

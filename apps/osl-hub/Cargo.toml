@@ -25,13 +25,22 @@ runtime = { path = "../../crates/runtime", optional = true }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
 bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
-base64 = { version = "=0.22.1", optional = true }
+base64 = "=0.22.1"
 url = "=2.5.8"
 zeroize = "=1.9.0"
 imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["native-tls"] }
 keyring = { version = "=3.6.3" }
 mailparse = "=0.16.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
+calamine = { version = "=0.36.0", default-features = false }
+flate2 = "=1.1.9"
+pdf-extract = "=0.12.0"
+quick-xml = "=0.41.0"
+tar = "=0.4.46"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+lopdf = { version = "=0.42.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
@@ -46,7 +55,7 @@ keyring = { version = "=3.6.3", features = ["apple-native"] }
 
 [features]
 default = []
-core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:store", "dep:tracing"]
+core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:store", "dep:tracing"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 custom-protocol = ["tauri/custom-protocol"]
 

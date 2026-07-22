@@ -1,4 +1,5 @@
 import { defaultScrubSignalGroups, type ScrubSignalGroup } from "./scrub";
+import type { UninspectedAttachment } from "./adapters";
 
 export type ScrubMode = "skip" | "scrub" | "autoscrub";
 
@@ -18,6 +19,10 @@ export interface ScrubCoverageReceipt {
   gaps: string[];
   textChecked: boolean;
   imagesChecked: boolean;
+  videosChecked: boolean;
+  attachmentsScanned: number;
+  attachmentTypesScanned: string[];
+  uninspectedAttachments: UninspectedAttachment[];
 }
 
 export function validateCoverageReceipt(receipt: ScrubCoverageReceipt): boolean {
@@ -33,9 +38,24 @@ export function validateCoverageReceipt(receipt: ScrubCoverageReceipt): boolean 
     && Array.isArray(receipt.gaps)
     && receipt.gaps.length <= 32
     && receipt.gaps.every((gap) => typeof gap === "string" && gap.length > 0 && gap.length <= 240)
-    && !(receipt.providerReportedComplete && receipt.gaps.length > 0)
+    && !(receipt.providerReportedComplete && (receipt.gaps.length > 0 || receipt.uninspectedAttachments.length > 0))
     && receipt.textChecked === true
-    && receipt.imagesChecked === false;
+    && typeof receipt.imagesChecked === "boolean"
+    && typeof receipt.videosChecked === "boolean"
+    && Number.isSafeInteger(receipt.attachmentsScanned)
+    && receipt.attachmentsScanned >= 0
+    && Array.isArray(receipt.attachmentTypesScanned)
+    && receipt.attachmentTypesScanned.length <= 64
+    && receipt.attachmentTypesScanned.every((type) => typeof type === "string" && type.length > 0 && type.length <= 80)
+    && new Set(receipt.attachmentTypesScanned).size === receipt.attachmentTypesScanned.length
+    && Array.isArray(receipt.uninspectedAttachments)
+    && receipt.uninspectedAttachments.length <= 1_000
+    && receipt.uninspectedAttachments.every((attachment) => typeof attachment.attachmentId === "string"
+      && attachment.attachmentId.length > 0 && attachment.attachmentId.length <= 256
+      && typeof attachment.path === "string" && attachment.path.length > 0 && attachment.path.length <= 1_024
+      && typeof attachment.detectedType === "string" && attachment.detectedType.length > 0 && attachment.detectedType.length <= 80
+      && ["unsupported", "encrypted", "malformed", "limit_exceeded", "unsafe_archive_entry", "model_not_installed", "dependency_not_installed", "image_only_pdf_needs_ocr"].includes(attachment.reason)
+      && typeof attachment.detail === "string" && attachment.detail.length > 0 && attachment.detail.length <= 240);
 }
 
 export const defaultScrubSetupPlan: ScrubSetupPlan = {

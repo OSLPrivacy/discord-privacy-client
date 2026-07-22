@@ -10,7 +10,7 @@ import {
   type StepUpProof,
 } from "./scrub-delete-engine";
 
-export type AutoScrubProviderId = "imap" | "telegram" | "discord";
+export type AutoScrubProviderId = "gmail-web" | "discord" | "telegram-web" | "imap" | "telegram";
 
 export interface AutoScrubCapability {
   providerId: AutoScrubProviderId;
@@ -18,6 +18,8 @@ export interface AutoScrubCapability {
   liveConfirmed: boolean;
   coverage: string;
   unavailableReason?: string;
+  pathKind?: "hosted-session" | "secondary-api";
+  primary?: boolean;
 }
 
 export interface AutoScrubBatch {
@@ -67,7 +69,7 @@ export async function runAutoScrubBatch(options: AutoScrubRunOptions): Promise<A
   const stepUp = await bridge.stepUp(target.providerId, target.accountId);
   const now = options.now?.() ?? Date.now();
   if (stepUp.providerId !== target.providerId || stepUp.accountId !== target.accountId || stepUp.authenticatedAt > now || stepUp.expiresAt < now || now - stepUp.authenticatedAt > 300_000) {
-    throw new Error("AutoScrub re-authentication is not fresh");
+    throw new Error("AutoScrub live-session proof is not fresh");
   }
   const batch = await options.prepare(stepUp);
   if (batch.providerId !== target.providerId || batch.accountId !== target.accountId || batch.approved.providerId !== target.providerId || batch.approved.accountId !== target.accountId || !scopeOnlyAllows(batch.approved, batch.requested)) throw new Error("AutoScrub scope may only shrink after review");
@@ -116,7 +118,9 @@ export function summarizeAutoScrubReceipt(receipt: ProviderDeletionReceipt): Aut
 }
 
 export const unavailableAutoScrubCapabilities: readonly AutoScrubCapability[] = [
-  { providerId: "imap", label: "Email (IMAP)", liveConfirmed: false, coverage: "No live transport confirmed", unavailableReason: "Connect and verify an IMAP account in the desktop app." },
-  { providerId: "telegram", label: "Telegram", liveConfirmed: false, coverage: "Manual only", unavailableReason: "TDLib session and readback are not available in this build." },
-  { providerId: "discord", label: "Discord", liveConfirmed: false, coverage: "Manual only", unavailableReason: "Hosted deletion is not enabled or live-verified." },
+  { providerId: "gmail-web", label: "Gmail (signed-in session)", liveConfirmed: false, coverage: "Hosted own-item UI readback", unavailableReason: "Open the signed-in Gmail service window. The host command port must then live-confirm this account.", pathKind: "hosted-session", primary: true },
+  { providerId: "discord", label: "Discord (signed-in session)", liveConfirmed: false, coverage: "Hosted own-message UI readback", unavailableReason: "Open the signed-in Discord service window. Live verification is still required.", pathKind: "hosted-session", primary: true },
+  { providerId: "telegram-web", label: "Telegram Web (signed-in session)", liveConfirmed: false, coverage: "Hosted own-message UI readback", unavailableReason: "Open the signed-in Telegram service window. Live verification is still required.", pathKind: "hosted-session", primary: true },
+  { providerId: "imap", label: "Email (IMAP, optional)", liveConfirmed: false, coverage: "No live transport confirmed", unavailableReason: "Optional secondary path: connect and verify IMAP only if you choose it.", pathKind: "secondary-api", primary: false },
+  { providerId: "telegram", label: "Telegram (TDLib, optional)", liveConfirmed: false, coverage: "No packaged live session", unavailableReason: "Optional secondary path; TDLib is not packaged or live-confirmed in this build.", pathKind: "secondary-api", primary: false },
 ] as const;

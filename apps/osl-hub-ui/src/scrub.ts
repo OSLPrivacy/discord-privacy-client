@@ -23,27 +23,29 @@ export const defaultScrubSignalGroups: readonly ScrubSignalGroup[] = scrubSignal
 export const scrubDeletionContract = Object.freeze({
   browserUiAutomationAllowed: false,
   privateApiAllowed: false,
-  documentedProviderDeleteApiRequired: true,
+  narrowSemanticHostedPortAllowed: true,
+  documentedProviderDeleteApiAllowed: true,
   unattendedDeletionAllowed: false,
   completeEditableReviewRequiredEveryBatch: true,
   finalConfirmationRequiredEveryBatch: true,
   requestedDeletionCountsAsVerified: false,
-  stopOn: ["rate_limit", "challenge", "content_mismatch", "verification_failure"] as const,
+  stopOn: ["captcha", "rate_limit", "challenge", "account_change", "schema_drift", "unknown", "content_mismatch", "verification_failure"] as const,
 });
 
 export interface ScrubDeletionCapability {
   deletionEnabled: boolean;
-  mechanism: "none" | "documented_provider_delete_api" | "browser_ui_automation" | "private_api";
+  mechanism: "none" | "hosted_semantic_delete_port" | "documented_provider_delete_api" | "browser_ui_automation" | "private_api";
   stopOn: readonly string[];
   requestedDeletionCountsAsVerified: boolean;
 }
 
 export function scrubDeletionAllowed(capability: ScrubDeletionCapability): boolean {
   return capability.deletionEnabled
-    && capability.mechanism === "documented_provider_delete_api"
+    && (capability.mechanism === "hosted_semantic_delete_port" || capability.mechanism === "documented_provider_delete_api")
     && scrubDeletionContract.browserUiAutomationAllowed === false
     && scrubDeletionContract.privateApiAllowed === false
-    && scrubDeletionContract.documentedProviderDeleteApiRequired
+    && scrubDeletionContract.narrowSemanticHostedPortAllowed
+    && scrubDeletionContract.documentedProviderDeleteApiAllowed
     && scrubDeletionContract.unattendedDeletionAllowed === false
     && scrubDeletionContract.completeEditableReviewRequiredEveryBatch
     && scrubDeletionContract.finalConfirmationRequiredEveryBatch

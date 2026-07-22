@@ -30,9 +30,12 @@ const status = (overrides: Partial<ScrubIndexStatus> = {}): ScrubIndexStatus => 
   deletionEnabled: false,
   ...overrides,
 });
-const scan = (messagesScanned: number): PersistedLocalPrivacyScanResult => ({
+const scan = (messagesScanned: number, overrides: Partial<PersistedLocalPrivacyScanResult> = {}): PersistedLocalPrivacyScanResult => ({
   findings: [], messagesScanned, messagesRejected: 0, truncated: false,
   analysisLocation: "this_device_only", persisted: true,
+  attachmentsScanned: 0, imagesChecked: false, videosChecked: false,
+  attachmentTypesScanned: [], uninspectedAttachments: [],
+  ...overrides,
 });
 
 describe("local Scrub persisted pipeline", () => {
@@ -57,7 +60,7 @@ describe("local Scrub persisted pipeline", () => {
     expect(adapters.readScan).toHaveBeenCalledWith(importId);
     expect(result.scan.persisted).toBe(true);
     expect(result.status.deletionEnabled).toBe(false);
-    expect(result.receipt).toMatchObject({ providerReportedComplete: false, textChecked: true, imagesChecked: false });
+    expect(result.receipt).toMatchObject({ providerReportedComplete: false, textChecked: true, imagesChecked: false, videosChecked: false, attachmentsScanned: 0 });
   });
 
   it("restarts an interrupted import under a fresh authenticated import id", async () => {
@@ -79,11 +82,26 @@ describe("local Scrub persisted pipeline", () => {
   });
 
   it("emits a validated incomplete receipt for manual exports and records timestamp gaps", () => {
-    const receipt = localImportCoverageReceipt([message(0), message(2)], 2);
+    const receipt = localImportCoverageReceipt([message(0), message(2)], scan(2));
     expect(receipt.oldestReachableAtUnixMs).toBe(1_700_000_000_002);
     expect(receipt.newestReachableAtUnixMs).toBe(1_700_000_000_002);
     expect(receipt.providerReportedComplete).toBe(false);
     expect(receipt.gaps).toHaveLength(2);
+  });
+
+  it("propagates attachment coverage and unavailable local capabilities honestly", () => {
+    const uninspectedAttachments = [{
+      attachmentId: "photo", path: "photo.png", detectedType: "png", reason: "model_not_installed" as const,
+      detail: "Install the verified local image model pack.",
+    }];
+    const receipt = localImportCoverageReceipt([message(2)], scan(1, {
+      attachmentsScanned: 1,
+      attachmentTypesScanned: ["png"],
+      uninspectedAttachments,
+    }));
+    expect(receipt).toMatchObject({ attachmentsScanned: 1, imagesChecked: false, videosChecked: false });
+    expect(receipt.uninspectedAttachments).toEqual(uninspectedAttachments);
+    expect(receipt.providerReportedComplete).toBe(false);
   });
 
   it("restarts a paused import instead of assuming it belongs to the selected file", async () => {
