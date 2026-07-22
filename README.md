@@ -108,7 +108,10 @@ suspended. You take that risk on yourself.
 ## Repository layout
 
 ```
-src-tauri/            Tauri app shell (Rust) and the injected boot.js
+src-tauri/            Original Discord-specific Tauri app shell (Rust)
+apps/
+  osl-hub/            Multi-service standalone shell (Rust/Tauri, isolated crate)
+  osl-hub-ui/         Bundled frontend for the standalone shell (TypeScript/Vite)
 crates/
   crypto/             PQXDH hybrid handshake, Double Ratchet, sender keys, AEAD
   stego/              Cover text generation (bigram language model + templates)
@@ -125,10 +128,28 @@ docs/
 
 ## Building
 
-The app is a Tauri 2 project. From `src-tauri/` run `cargo tauri dev` for a
-development build. The two Cloudflare Workers in `keyserver-cf/` and
-`cipher-store-cf/` deploy with `npm run deploy` and apply their database
-migrations with `wrangler d1 migrations apply`.
+The original Discord client is a Tauri 2 project. From `src-tauri/` run
+`cargo tauri dev` for a development build.
+
+The newer standalone multi-service shell lives under `apps/`. Build its frontend
+from `apps/osl-hub-ui/`:
+
+```sh
+npm ci
+npm run typecheck
+npm test
+npm run build          # emits the relative-path bundle in dist/
+```
+
+Then build the native Windows preview with the desktop feature enabled:
+
+```sh
+cargo build --release --features desktop --manifest-path apps/osl-hub/Cargo.toml
+```
+
+The two Cloudflare Workers in `keyserver-cf/` and `cipher-store-cf/` deploy with
+`npm run deploy` and apply their database migrations with
+`wrangler d1 migrations apply`.
 
 ## License
 
