@@ -97,6 +97,13 @@ export function telegramReportingIsConfigured(env: Env): boolean {
     telegramChatConfiguration(env).status === "configured";
 }
 
+/** Payment alerts are outbound-only and must not depend on the separate
+ * inbound webhook secret. Invalid or missing destinations fail closed. */
+export function telegramOperatorAlertsAreConfigured(env: Env): boolean {
+  return Boolean(env.TELEGRAM_BOT_TOKEN) &&
+    telegramChatConfiguration(env).status === "configured";
+}
+
 async function constantTimeEqual(left: string, right: string): Promise<boolean> {
   const encoder = new TextEncoder();
   const [leftDigest, rightDigest] = await Promise.all([
