@@ -421,6 +421,31 @@ donation event and no subscription, license, activation delivery, or Pro
 entitlement. The private state binds the receipt path before polling; do not
 change that path during recovery.
 
+Every finalized BTC/XMR Pro purchase or donation atomically inserts one
+privacy-minimal row in `payment_alert_outbox`. The row contains only a one-way
+alert digest, asset, integer USD amount, and delivery timing state. It never
+contains an invoice capability, address, transaction reference, customer, or
+activation code. Telegram delivery is at-least-once: missing configuration or
+a transient API failure leaves the row pending, and every scheduled invocation
+retries it with bounded backoff. Delivered rows are retained for seven days for
+operational proof and then removed by the hourly sweep.
+
+Before enabling public crypto controls, confirm the outbound-only alert
+configuration is present. `TELEGRAM_WEBHOOK_SECRET` is required only for
+inbound bot commands; settlement alerts require the bot token and an operator
+destination:
+
+```sh
+npx wrangler secret list | jq -r '.[].name' \
+  | grep -E '^TELEGRAM_(BOT_TOKEN|OPERATOR_CHAT_IDS)$'
+
+npx wrangler d1 execute osl-keyserver-prod --remote \
+  --command "SELECT status, COUNT(*) AS count FROM payment_alert_outbox GROUP BY status"
+```
+
+Any `pending` row must remain durable until Telegram accepts it. Never delete
+pending rows to make an alert check appear green.
+
 If you see `503 no recent price snapshot`, the five-minute price cron has not
 completed successfully. Diagnose the scheduled handler; for a bounded canary
 only, seed today's

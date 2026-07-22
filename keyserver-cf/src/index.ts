@@ -70,6 +70,10 @@ import { refreshPriceSnapshots } from "./lib/crypto-prices.js";
 import { sweepStripeCheckoutClaims } from "./lib/stripe-checkout-claims.js";
 import { sendTelegramOperatorMessage, telegramStatsMessage } from "./lib/telegram.js";
 import { sweepExpiredPrivacyRows } from "./lib/db.js";
+import {
+  drainPaymentAlertOutbox,
+  sweepDeliveredPaymentAlerts,
+} from "./lib/payment-alert-outbox.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 
@@ -91,6 +95,21 @@ export default {
   ): Promise<void> {
     void ctx;
     const cron = controller.cron;
+    // Payment alerts use an at-least-once D1 outbox. Missing/malformed
+    // Telegram configuration or a transient network failure leaves every row
+    // pending for the next scheduled attempt rather than losing the alert.
+    try {
+      const alerts = await drainPaymentAlertOutbox(env);
+      if (!alerts.configured) {
+        console.error("[cron] Telegram payment alerts are not configured; outbox retained");
+      } else if (alerts.attempted > 0) {
+        console.log(
+          `[cron] payment alert outbox delivered ${alerts.delivered}/${alerts.attempted}`,
+        );
+      }
+    } catch {
+      console.error("[cron] payment alert outbox retry failed");
+    }
     // Keep price refresh isolated from the slower housekeeping/report jobs.
     if (cron === "*/5 * * * *") {
       try {
@@ -138,6 +157,14 @@ export default {
       }
     } catch {
       console.error("[cron] Stripe checkout claim sweep failed");
+    }
+    try {
+      const deleted = await sweepDeliveredPaymentAlerts(env.DB);
+      if (deleted > 0) {
+        console.log(`[cron] payment alert outbox deleted ${deleted} delivered row(s)`);
+      }
+    } catch {
+      console.error("[cron] payment alert outbox retention sweep failed");
     }
     try {
       const deleted = await sweepExpiredPrivacyRows(env.DB);

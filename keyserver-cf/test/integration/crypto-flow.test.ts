@@ -11,6 +11,7 @@ import {
   type WatcherSettlementEvidence,
 } from "../../src/lib/crypto-watcher-auth.js";
 import { getCommerceSummary } from "../../src/lib/commerce-metrics.js";
+import { paymentAlertId } from "../../src/lib/payment-alert-outbox.js";
 import type { Env } from "../../src/env.js";
 
 const TEST_ED25519_SEED = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
@@ -315,19 +316,33 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     const retry = await send();
     expect(retry.status).toBe(200);
     await expect(retry.json()).resolves.toMatchObject({ duplicate: true });
+    const alertId = await paymentAlertId("crypto_pro", invoice.invoice_id);
     const counts = await env.DB.prepare(
       `SELECT
          (SELECT COUNT(*) FROM licenses WHERE subscription_id = ?) AS licenses,
          (SELECT COUNT(*) FROM crypto_settlement_events_v2 WHERE invoice_id = ?) AS events,
-         (SELECT COUNT(*) FROM crypto_commerce_events WHERE subscription_id = ?) AS metrics`,
+         (SELECT COUNT(*) FROM crypto_commerce_events WHERE subscription_id = ?) AS metrics,
+         (SELECT COUNT(*) FROM payment_alert_outbox WHERE alert_id = ?) AS alerts`,
     ).bind(
       `crypto_${invoice.invoice_id}`,
       invoice.invoice_id,
       `crypto_${invoice.invoice_id}`,
+      alertId,
     ).first<{
-      licenses: number; events: number; metrics: number;
+      licenses: number; events: number; metrics: number; alerts: number;
     }>();
-    expect(counts).toEqual({ licenses: 1, events: 1, metrics: 1 });
+    expect(counts).toEqual({ licenses: 1, events: 1, metrics: 1, alerts: 1 });
+    const alert = await env.DB.prepare(
+      `SELECT alert_kind, payment_method, amount_usd_cents, status, attempts
+         FROM payment_alert_outbox WHERE alert_id = ?`,
+    ).bind(alertId).first();
+    expect(alert).toEqual({
+      alert_kind: "crypto_pro",
+      payment_method: "btc",
+      amount_usd_cents: 500,
+      status: "pending",
+      attempts: 0,
+    });
   });
 
   it("delivers the encrypted activation once and destroys it after acknowledgement", async () => {
