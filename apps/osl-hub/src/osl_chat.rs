@@ -227,6 +227,7 @@ pub fn open_text(
     core: &HubCoreState,
     _security_state: &HubSecurityState,
     broker_state: &HubBrokerState,
+    reveal_view_once: bool,
 ) -> Result<OpenedBatch, String> {
     let snapshot = broker_state.osl_chat_snapshot()?;
     let peer = security::require_manual_peer_scope_approved(
@@ -248,6 +249,7 @@ pub fn open_text(
         .map_err(|_| "OSL Chat could not receive messages".to_owned())?;
     let fetched = items.len().min(MAX_BATCH);
     let mut messages = Vec::new();
+    let mut pending_view_once = Vec::new();
     for item in items.into_iter().take(MAX_BATCH) {
         if item.sender_id != snapshot.peer_osl_user_id || item.scope_id != scope_id {
             continue;
@@ -280,6 +282,14 @@ pub fn open_text(
             || envelope.expires_at <= now()
             || !envelope.message_id.starts_with("peer-")
         {
+            continue;
+        }
+        if envelope.view_once && !reveal_view_once {
+            pending_view_once.push(serde_json::json!({
+                "messageId": envelope.message_id,
+                "expiresAt": envelope.expires_at,
+                "personToPersonE2ee": true,
+            }));
             continue;
         }
         let opened = match broker::open_peer_prose_text(
@@ -319,7 +329,7 @@ pub fn open_text(
     }
     Ok(OpenedBatch {
         messages,
-        pending_view_once: Vec::new(),
+        pending_view_once,
         acknowledgments: Vec::new(),
         fetched,
     })
@@ -379,5 +389,17 @@ mod tests {
             "unexpected": true
         });
         assert!(serde_json::from_value::<InboxEnvelope>(value).is_err());
+    }
+
+    #[test]
+    fn pending_view_once_metadata_contains_no_plaintext() {
+        let pending = serde_json::json!({
+            "messageId": "peer-00000000000000000000000000000000",
+            "expiresAt": 100,
+            "personToPersonE2ee": true,
+        });
+        assert!(pending.get("messageId").is_some());
+        assert!(pending.get("plaintext").is_none());
+        assert!(pending.get("coverText").is_none());
     }
 }

@@ -1,6 +1,7 @@
 //! Pure validation helpers for the trusted OSL Privacy updater boundary.
 
 pub const RELEASES_URL: &str = "https://github.com/OSLPrivacy/discord-privacy-client/releases";
+pub const SOURCE_REPOSITORY_URL: &str = "https://github.com/OSLPrivacy/discord-privacy-client";
 pub const MAX_RELEASE_NOTES_CHARS: usize = 2_000;
 
 pub fn bounded_plain_notes(input: Option<&str>) -> String {
@@ -45,5 +46,17 @@ mod tests {
         );
         assert!(bounded_version("<script>").is_none());
         assert!(bounded_version(&"1".repeat(65)).is_none());
+    }
+
+    #[test]
+    fn external_pages_are_exact_compiled_in_github_destinations() {
+        assert_eq!(
+            SOURCE_REPOSITORY_URL,
+            "https://github.com/OSLPrivacy/discord-privacy-client"
+        );
+        assert_eq!(
+            RELEASES_URL,
+            "https://github.com/OSLPrivacy/discord-privacy-client/releases"
+        );
     }
 }

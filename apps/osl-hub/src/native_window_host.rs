@@ -63,6 +63,45 @@ pub struct NativeWindowHostResult {
     pub mode: &'static str,
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RestorationDisposition {
+    ReportDetached,
+    PreserveBorrowedSession,
+    ContainExactIsolatedChild,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn restoration_disposition(
+    verified: bool,
+    borrowed_session: bool,
+    exact_isolated_child_containment: bool,
+) -> RestorationDisposition {
+    if verified {
+        RestorationDisposition::ReportDetached
+    } else if borrowed_session || !exact_isolated_child_containment {
+        RestorationDisposition::PreserveBorrowedSession
+    } else {
+        RestorationDisposition::ContainExactIsolatedChild
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn restoration_result(
+    id: NativeAppId,
+    disposition: RestorationDisposition,
+) -> NativeWindowHostResult {
+    match disposition {
+        RestorationDisposition::ReportDetached => {
+            NativeWindowHostResult::success(id, NativeWindowHostStatus::Detached)
+        }
+        RestorationDisposition::PreserveBorrowedSession
+        | RestorationDisposition::ContainExactIsolatedChild => {
+            NativeWindowHostResult::failed(id, NativeWindowHostReason::WindowOperationRejected)
+        }
+    }
+}
+
 impl NativeWindowHostResult {
     fn unsupported(id: NativeAppId, reason: NativeWindowHostReason) -> Self {
         Self {
@@ -73,7 +112,7 @@ impl NativeWindowHostResult {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     fn failed(id: NativeAppId, reason: NativeWindowHostReason) -> Self {
         Self {
             id,
@@ -83,7 +122,7 @@ impl NativeWindowHostResult {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     fn success(id: NativeAppId, status: NativeWindowHostStatus) -> Self {
         Self {
             id,
@@ -105,9 +144,24 @@ impl Drop for NativeWindowHostState {
     fn drop(&mut self) {
         if let Ok(slot) = self.inner.get_mut() {
             if let Some(mut hosted) = slot.take() {
-                unsafe { windows::restore_owned_window(&hosted) };
-                let _ = hosted.child.kill();
-                let _ = hosted.child.wait();
+                let restored = unsafe { windows::restore_owned_window(&hosted) };
+                match restoration_disposition(restored, false, true) {
+                    RestorationDisposition::ReportDetached => {
+                        let _ = hosted.child.kill();
+                        let _ = hosted.child.wait();
+                        unsafe { windows::destroy_owned_owner(&hosted) };
+                    }
+                    RestorationDisposition::ContainExactIsolatedChild => {
+                        tracing::error!(
+                            app = ?hosted.id,
+                            "OSL native window restoration was unverified; containing exact isolated child"
+                        );
+                        let _ = hosted.child.kill();
+                        let _ = hosted.child.wait();
+                        unsafe { windows::destroy_owned_owner(&hosted) };
+                    }
+                    RestorationDisposition::PreserveBorrowedSession => {}
+                }
             }
         }
     }
@@ -486,10 +540,26 @@ mod windows {
                 NativeWindowHostReason::WindowIdentityChanged,
             );
         }
-        unsafe { restore_window(&hosted) };
-        let _ = hosted.child.kill();
-        let _ = hosted.child.wait();
-        NativeWindowHostResult::success(hosted.id, NativeWindowHostStatus::Detached)
+        let restored = unsafe { restore_window(&hosted) };
+        let disposition = restoration_disposition(restored, false, true);
+        match disposition {
+            RestorationDisposition::ReportDetached => {
+                let _ = hosted.child.kill();
+                let _ = hosted.child.wait();
+                unsafe { destroy_owner(hosted.owner_window as HWND) };
+            }
+            RestorationDisposition::ContainExactIsolatedChild => {
+                // This process was launched by OSL with an isolated profile and
+                // is still held by its original Child handle. Terminating that
+                // exact child is the only safe containment after a partial
+                // Win32 restore; never call this a successful detach.
+                let _ = hosted.child.kill();
+                let _ = hosted.child.wait();
+                unsafe { destroy_owner(hosted.owner_window as HWND) };
+            }
+            RestorationDisposition::PreserveBorrowedSession => {}
+        }
+        restoration_result(hosted.id, disposition)
     }
 
     fn build_launch_spec(
@@ -833,28 +903,56 @@ mod windows {
         ) != 0
     }
 
-    pub(super) unsafe fn restore_owned_window(hosted: &HostedWindow) {
-        restore_window(hosted);
+    pub(super) unsafe fn restore_owned_window(hosted: &HostedWindow) -> bool {
+        restore_window(hosted)
     }
 
-    unsafe fn restore_window(hosted: &HostedWindow) {
-        let window = hosted.window as HWND;
-        if window_process_id(window) == Some(hosted.process_id) {
-            SetWindowLongPtrW(window, GWLP_HWNDPARENT, hosted.previous_owner);
-            SetWindowLongPtrW(window, GWL_STYLE, hosted.previous_style);
-            SetWindowLongPtrW(window, GWL_EXSTYLE, hosted.previous_ex_style);
-            let [left, top, right, bottom] = hosted.previous_rect;
-            let _ = SetWindowPos(
-                window,
-                HWND_TOP,
-                left,
-                top,
-                (right - left).max(1),
-                (bottom - top).max(1),
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-            );
-        }
+    pub(super) unsafe fn destroy_owned_owner(hosted: &HostedWindow) {
         destroy_owner(hosted.owner_window as HWND);
+    }
+
+    unsafe fn restore_window(hosted: &HostedWindow) -> bool {
+        let window = hosted.window as HWND;
+        if window_process_id(window) != Some(hosted.process_id) {
+            return false;
+        }
+        if !set_window_long_verified(window, GWLP_HWNDPARENT, hosted.previous_owner)
+            || !set_window_long_verified(window, GWL_STYLE, hosted.previous_style)
+            || !set_window_long_verified(window, GWL_EXSTYLE, hosted.previous_ex_style)
+        {
+            return false;
+        }
+        let [left, top, right, bottom] = hosted.previous_rect;
+        if SetWindowPos(
+            window,
+            HWND_TOP,
+            left,
+            top,
+            (right - left).max(1),
+            (bottom - top).max(1),
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+        ) == 0
+        {
+            return false;
+        }
+        let mut restored_rect: RECT = std::mem::zeroed();
+        window_process_id(window) == Some(hosted.process_id)
+            && GetWindowLongPtrW(window, GWLP_HWNDPARENT) == hosted.previous_owner
+            && GetWindowLongPtrW(window, GWL_STYLE) == hosted.previous_style
+            && GetWindowLongPtrW(window, GWL_EXSTYLE) == hosted.previous_ex_style
+            && GetWindowRect(window, &mut restored_rect) != 0
+            && [
+                restored_rect.left,
+                restored_rect.top,
+                restored_rect.right,
+                restored_rect.bottom,
+            ] == hosted.previous_rect
+    }
+
+    unsafe fn set_window_long_verified(window: HWND, index: i32, value: isize) -> bool {
+        SetLastError(ERROR_SUCCESS);
+        SetWindowLongPtrW(window, index, value);
+        GetLastError() == ERROR_SUCCESS && GetWindowLongPtrW(window, index) == value
     }
 
     unsafe fn destroy_owner(owner: HWND) {
@@ -867,6 +965,45 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restoration_policy_never_reports_unverified_detach() {
+        assert_eq!(
+            restoration_disposition(true, true, false),
+            RestorationDisposition::ReportDetached
+        );
+        assert_eq!(
+            restoration_disposition(false, true, false),
+            RestorationDisposition::PreserveBorrowedSession
+        );
+        assert_eq!(
+            restoration_disposition(false, false, true),
+            RestorationDisposition::ContainExactIsolatedChild
+        );
+        assert_eq!(
+            restoration_disposition(false, false, false),
+            RestorationDisposition::PreserveBorrowedSession
+        );
+        for disposition in [
+            RestorationDisposition::PreserveBorrowedSession,
+            RestorationDisposition::ContainExactIsolatedChild,
+        ] {
+            let result = restoration_result(NativeAppId::Telegram, disposition);
+            assert_eq!(result.status, NativeWindowHostStatus::Failed);
+            assert_eq!(
+                result.reason,
+                NativeWindowHostReason::WindowOperationRejected
+            );
+        }
+        assert_eq!(
+            restoration_result(
+                NativeAppId::Telegram,
+                RestorationDisposition::ReportDetached
+            )
+            .status,
+            NativeWindowHostStatus::Detached
+        );
+    }
 
     #[test]
     fn allowlist_and_profile_names_are_fixed_and_path_free() {

@@ -35,4 +35,26 @@ describe("real text-only OSL Chats integration", () => {
     expect(source).toContain('addEventListener("contextmenu"');
     expect(source).toContain("notificationChatActivity && !oslChatMutedPeople.has(personId)");
   });
+
+  it("uses one fail-closed navigation path for Home controls while a chat is active", () => {
+    const navigation = source.slice(source.indexOf("async function navigateWorkspace"), source.indexOf("function bindWorkspace"));
+    expect(navigation).toContain('if (route === "osl-chat")');
+    expect(navigation.indexOf("closeOslChatContext()")).toBeLessThan(navigation.indexOf("route = requestedRoute"));
+    expect(navigation).toContain('friendsDialogOpen = options.openFriends === true && route === "home"');
+    expect(source).toContain('navigateWorkspace("home", { openFriends: true })');
+    expect(source).toContain('navigateWorkspace("settings", { settingsTarget: "notifications" })');
+    expect(source).not.toContain('data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"');
+  });
+
+  it("polls view-once as metadata and never exposes background view-once plaintext", () => {
+    const commit = source.slice(source.indexOf("function commitOslChatBatch"), source.indexOf("async function syncOslChatsInBackground"));
+    const background = source.slice(source.indexOf("async function syncOslChatsInBackground"), source.indexOf("async function toggleOslChatPermission"));
+    expect(background).toContain("openOslChatText(false)");
+    expect(commit).toContain("background && incoming.viewOnceConsumed");
+    expect(commit).toContain("batch.pendingViewOnce");
+    expect(commit.indexOf("background && incoming.viewOnceConsumed")).toBeLessThan(commit.indexOf("body: incoming.plaintext"));
+    expect(source).toContain('preview: hasPendingViewOnce ? "View-once message"');
+    expect(source).toContain("previewVisible: notificationPreviewContent");
+    expect(background).not.toContain("filter((message) => message.state === \"opened\")");
+  });
 });

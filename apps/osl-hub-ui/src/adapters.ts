@@ -3,6 +3,7 @@ import { isTauriRuntime } from "./preferences";
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
 export interface HubUsernameClaim { username: string; oslUserId: string; }
+export interface HubUsernameStatus { username: string; ownedByActiveIdentity: boolean; }
 export interface HubAddFriendResult {
   disposition: "added" | "already_present" | "key_change_requires_verification";
   personId: string;
@@ -287,9 +288,9 @@ export async function prepareOslChatText(plaintext: string, viewOnce = false): P
   catch { return null; }
 }
 
-export async function openOslChatText(): Promise<OslChatOpenedBatch | null> {
+export async function openOslChatText(revealViewOnce = true): Promise<OslChatOpenedBatch | null> {
   if (!isTauriRuntime()) return null;
-  try { return parseOslChatOpenedBatch(await invoke<unknown>("open_osl_chat_text")); }
+  try { return parseOslChatOpenedBatch(await invoke<unknown>("open_osl_chat_text", { revealViewOnce })); }
   catch { return null; }
 }
 
@@ -500,6 +501,16 @@ export async function claimOslUsername(username: string): Promise<HubUsernameCla
   if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
   try { return parseHubUsernameClaim(await invoke<unknown>("claim_hub_username", { username })); }
   catch { return null; }
+}
+
+export async function getOslUsernameStatus(username: string): Promise<HubUsernameStatus | null> {
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
+  try {
+    const raw = await invoke<unknown>("get_hub_username_status", { username });
+    if (!isRecord(raw) || !exact(raw, ["username", "ownedByActiveIdentity"])) return null;
+    if (raw.username !== username || typeof raw.ownedByActiveIdentity !== "boolean") return null;
+    return raw as unknown as HubUsernameStatus;
+  } catch { return null; }
 }
 
 export async function addOslFriendByUsername(username: string, nickname = ""): Promise<HubAddFriendResult | null> {

@@ -8,7 +8,8 @@
 //! `AppState` still holds those defaults; without an explicit
 //! reload, the user's whitelist, burns, tour state, sender chains,
 //! etc. stay blank for the entire session and the next launch
-//! repeats the cycle.
+//! repeats the cycle. The password gate treats any reported error as
+//! fatal and removes the storage key again.
 //!
 //! [`reload_encrypted_state_after_unlock`] re-runs the same loaders
 //! bootstrap used (so file-format / migration semantics stay
@@ -20,6 +21,7 @@ use std::path::Path;
 
 use crate::peer_map::{load_peer_map_from_path, PeerMapError};
 use crate::AppState;
+use serde::de::DeserializeOwned;
 
 /// Per-file outcome of a post-gate state reload. Bool flags
 /// indicate "load was attempted and succeeded for a file that
@@ -38,6 +40,7 @@ pub struct ReloadReport {
     pub burned_scopes_count: usize,
     pub sender_keys_loaded: bool,
     pub sender_keys_count: usize,
+    pub membership_loaded: bool,
     pub app_prefs_loaded: bool,
     pub errors: Vec<String>,
     /// 9-PEER-MAP-ENC: tracks the retroactive re-encryption sweep.
@@ -76,10 +79,10 @@ pub fn reload_encrypted_state_after_unlock(
     // that orphaned it) and would otherwise make the loader below
     // silently fall back to Default forever. Quarantine it aside
     // (rename, never delete — same non-destructive contract as
-    // bootstrap's store self-heal) so the loader recreates a fresh
-    // one under the current key. The pre-key path (no key in slot)
-    // is left UNTOUCHED — that is bootstrap's expected pre-gate
-    // state, not a wrong-key failure.
+    // bootstrap's store self-heal) and report the failure so the gate
+    // remains locked. The pre-key path (no key in slot) is left
+    // UNTOUCHED — that is bootstrap's expected pre-gate state, not a
+    // wrong-key failure.
     for name in [
         "peer_map.json",
         "whitelist_state.json",
@@ -102,8 +105,12 @@ pub fn reload_encrypted_state_after_unlock(
                     quarantined_to = %q.display(),
                     "OSL: state_reload — {name} sealed by a different key; \
                      quarantined (rename, not delete), recreating under \
-                     current key"
+                    current key"
                 );
+                report.errors.push(format!(
+                    "{name}: encrypted state could not be opened with the active key; preserved at {}",
+                    q.display()
+                ));
             }
             Ok(None) => {}
             Err(e) => report.errors.push(format!("{name} quarantine: {e}")),
@@ -183,19 +190,22 @@ pub fn reload_encrypted_state_after_unlock(
         Err(e) => report.errors.push(format!("whitelist_state: {e}")),
     }
 
-    // burned_scopes.json — the loader is infallible by signature
-    // (returns default on any failure), but missing files are the
-    // fresh-install case, not an error. Use file existence as a
-    // proxy for "should have data."
+    // These security files historically used default-on-error loaders. That is
+    // acceptable during pre-gate bootstrap, but post-gate it would silently
+    // turn corrupt or undecryptable state into an empty policy. Use strict
+    // typed reads here so the password gate can fail closed.
     let bs_path = config_dir.join("burned_scopes.json");
-    if bs_path.exists() {
-        let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
-        report.burned_scopes_count = bs.scopes.len();
-        report.burned_scopes_loaded = true;
-        *state
-            .burned_scopes
-            .lock()
-            .expect("burned_scopes mutex poisoned") = bs;
+    match read_required_json::<crate::burned_scopes_file::BurnedScopesFile>(&bs_path) {
+        Ok(Some(bs)) => {
+            report.burned_scopes_count = bs.scopes.len();
+            report.burned_scopes_loaded = true;
+            *state
+                .burned_scopes
+                .lock()
+                .expect("burned_scopes mutex poisoned") = bs;
+        }
+        Ok(None) => {}
+        Err(error) => report.errors.push(format!("burned_scopes: {error}")),
     }
 
     // sender_key_state.json — same shape as burned_scopes (loader
@@ -203,14 +213,30 @@ pub fn reload_encrypted_state_after_unlock(
     // this file at all; the reload path is the first time the
     // on-disk sender chains actually populate AppState.
     let sk_path = config_dir.join("sender_key_state.json");
-    if sk_path.exists() {
-        let sk = crate::sender_key_state::load_sender_key_state(&sk_path);
-        report.sender_keys_count = sk.states.len();
-        report.sender_keys_loaded = true;
-        *state
-            .sender_key_state
-            .lock()
-            .expect("sender_key_state mutex poisoned") = sk;
+    match read_required_json::<crate::sender_key_state::SenderKeyStateFile>(&sk_path) {
+        Ok(Some(sk)) => {
+            report.sender_keys_count = sk.states.len();
+            report.sender_keys_loaded = true;
+            *state
+                .sender_key_state
+                .lock()
+                .expect("sender_key_state mutex poisoned") = sk;
+        }
+        Ok(None) => {}
+        Err(error) => report.errors.push(format!("sender_key_state: {error}")),
+    }
+
+    let membership_path = config_dir.join("membership.json");
+    match crate::membership::load_scope_membership_from_path(&membership_path) {
+        Ok(membership) => {
+            report.membership_loaded = true;
+            *state
+                .scope_membership
+                .lock()
+                .expect("scope_membership mutex poisoned") = membership;
+        }
+        Err(crate::membership::ScopeMembershipError::NotFound(_)) => {}
+        Err(error) => report.errors.push(format!("membership: {error}")),
     }
 
     // app_preferences.json — holds tour resume state, stego mode,
@@ -225,13 +251,16 @@ pub fn reload_encrypted_state_after_unlock(
     } else {
         legacy_prefs_path
     };
-    if prefs_path.exists() {
-        let prefs = crate::app_preferences::load_app_preferences(&prefs_path);
-        report.app_prefs_loaded = true;
-        *state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned") = prefs;
+    match read_required_json::<crate::app_preferences::AppPreferences>(&prefs_path) {
+        Ok(Some(prefs)) => {
+            report.app_prefs_loaded = true;
+            *state
+                .app_preferences
+                .lock()
+                .expect("app_preferences mutex poisoned") = prefs;
+        }
+        Ok(None) => {}
+        Err(error) => report.errors.push(format!("app_preferences: {error}")),
     }
 
     // 9-PEER-MAP-ENC: retroactive re-encryption of plaintext peer_map.
@@ -241,7 +270,7 @@ pub fn reload_encrypted_state_after_unlock(
     // sniff the on-disk file: if no OSL-ENC1 magic, rewrite via
     // write_peer_map which will encrypt-on-write. One-shot; subsequent
     // reloads see the magic and skip.
-    if pm_path.exists() {
+    if report.peer_map_loaded && pm_path.exists() {
         if let Ok(blob) = std::fs::read(&pm_path) {
             if !crate::main_password::has_enc_magic(&blob) {
                 let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
@@ -263,25 +292,40 @@ pub fn reload_encrypted_state_after_unlock(
     // OR it ran against a stale state. Either way, with the real map
     // now loaded, a fresh verify is the correct repair point. Persist
     // succeeds here because the key is installed.
-    match crate::commands::verify_and_persist_peer_map_self_entry(state) {
-        Ok((_, repaired)) => {
-            if repaired {
-                report.self_entry_repaired_post_gate = true;
-                tracing::info!(
-                    "OSL: peer_map self-entry repaired post-gate \
-                     (would have been refused pre-gate)"
-                );
+    if report.errors.is_empty() {
+        match crate::commands::verify_and_persist_peer_map_self_entry(state) {
+            Ok((_, repaired)) => {
+                if repaired {
+                    report.self_entry_repaired_post_gate = true;
+                    tracing::info!(
+                        "OSL: peer_map self-entry repaired post-gate \
+                         (would have been refused pre-gate)"
+                    );
+                }
             }
+            Err(reason) if reason == "no_discord_snowflake" || reason == "identity_not_loaded" => {
+                // Both are expected during early bootstrap; boot.js will
+                // retry via cmd_osl_register_self_snowflake once the
+                // Discord runtime exposes the snowflake.
+            }
+            Err(other) => report.errors.push(format!("self_entry_repair: {other}")),
         }
-        Err(reason) if reason == "no_discord_snowflake" || reason == "identity_not_loaded" => {
-            // Both are expected during early bootstrap; boot.js will
-            // retry via cmd_osl_register_self_snowflake once the
-            // Discord runtime exposes the snowflake.
-        }
-        Err(other) => report.errors.push(format!("self_entry_repair: {other}")),
     }
 
     Ok(report)
+}
+
+fn read_required_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    let blob = match std::fs::read(path) {
+        Ok(blob) => blob,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let plaintext = crate::main_password::maybe_decrypt(&blob)
+        .map_err(|error| format!("decrypt {}: {error}", path.display()))?;
+    serde_json::from_slice(&plaintext)
+        .map(Some)
+        .map_err(|error| format!("parse {}: {error}", path.display()))
 }
 
 /// Wrong-key discrimination for one file_storage_key-sealed JSON

@@ -104,6 +104,7 @@ pub struct BrowserAccountImportResult {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtectedBrowserImportResult {
+    pub operation_id: String,
     pub selected_sources: Vec<BrowserImportId>,
     pub password_follow_up_sources: Vec<BrowserImportId>,
     pub session_only_sources: Vec<BrowserImportId>,
@@ -111,6 +112,154 @@ pub struct ProtectedBrowserImportResult {
     pub mode: &'static str,
     pub source_selected: bool,
     pub manual_fallback: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ProtectedBrowserImportPhase {
+    Running,
+    AwaitingFinish,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ProtectedBrowserImportBinding {
+    owner_osl_user_id: String,
+    operation_id: String,
+    phase: ProtectedBrowserImportPhase,
+}
+
+#[derive(Default)]
+struct ProtectedBrowserImportAuthority {
+    active: Option<ProtectedBrowserImportBinding>,
+    terminal: Vec<(String, String)>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn protected_browser_import_authority() -> &'static Mutex<ProtectedBrowserImportAuthority> {
+    static AUTHORITY: std::sync::OnceLock<Mutex<ProtectedBrowserImportAuthority>> =
+        std::sync::OnceLock::new();
+    AUTHORITY.get_or_init(|| Mutex::new(ProtectedBrowserImportAuthority::default()))
+}
+
+fn validate_protected_browser_import_operation_id(operation_id: &str) -> Result<(), String> {
+    if operation_id.len() != 32
+        || !operation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("The protected browser import operation is invalid".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn claim_protected_browser_import(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
+    validate_protected_browser_import_operation_id(operation_id)?;
+    let mut authority = protected_browser_import_authority()
+        .lock()
+        .map_err(|_| "The protected browser import authority is unavailable".to_owned())?;
+    if authority.active.is_some() {
+        return Err("Another protected browser import is already active".to_owned());
+    }
+    if authority
+        .terminal
+        .iter()
+        .any(|(_, terminal_id)| terminal_id == operation_id)
+    {
+        return Err("The protected browser import operation was already used".to_owned());
+    }
+    authority.active = Some(ProtectedBrowserImportBinding {
+        owner_osl_user_id: owner_osl_user_id.to_owned(),
+        operation_id: operation_id.to_owned(),
+        phase: ProtectedBrowserImportPhase::Running,
+    });
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn require_protected_browser_import(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+) -> Result<Option<ProtectedBrowserImportPhase>, String> {
+    validate_protected_browser_import_operation_id(operation_id)?;
+    let authority = protected_browser_import_authority()
+        .lock()
+        .map_err(|_| "The protected browser import authority is unavailable".to_owned())?;
+    if authority
+        .terminal
+        .iter()
+        .any(|(owner, id)| owner == owner_osl_user_id && id == operation_id)
+    {
+        return Ok(None);
+    }
+    let active = authority
+        .active
+        .as_ref()
+        .ok_or_else(|| "No matching protected browser import is active".to_owned())?;
+    if active.owner_osl_user_id != owner_osl_user_id || active.operation_id != operation_id {
+        return Err(
+            "The protected browser import belongs to another identity or operation".to_owned(),
+        );
+    }
+    Ok(Some(active.phase))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn mark_protected_browser_import_ready(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
+    let mut authority = protected_browser_import_authority()
+        .lock()
+        .map_err(|_| "The protected browser import authority is unavailable".to_owned())?;
+    let active = authority
+        .active
+        .as_mut()
+        .ok_or_else(|| "The protected browser import was cancelled".to_owned())?;
+    if active.owner_osl_user_id != owner_osl_user_id || active.operation_id != operation_id {
+        return Err(
+            "The protected browser import belongs to another identity or operation".to_owned(),
+        );
+    }
+    active.phase = ProtectedBrowserImportPhase::AwaitingFinish;
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn retire_protected_browser_import(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+) -> Result<bool, String> {
+    validate_protected_browser_import_operation_id(operation_id)?;
+    let mut authority = protected_browser_import_authority()
+        .lock()
+        .map_err(|_| "The protected browser import authority is unavailable".to_owned())?;
+    if authority
+        .terminal
+        .iter()
+        .any(|(owner, id)| owner == owner_osl_user_id && id == operation_id)
+    {
+        return Ok(false);
+    }
+    let active = authority
+        .active
+        .as_ref()
+        .ok_or_else(|| "No matching protected browser import is active".to_owned())?;
+    if active.owner_osl_user_id != owner_osl_user_id || active.operation_id != operation_id {
+        return Err(
+            "The protected browser import belongs to another identity or operation".to_owned(),
+        );
+    }
+    authority.active = None;
+    authority
+        .terminal
+        .push((owner_osl_user_id.to_owned(), operation_id.to_owned()));
+    if authority.terminal.len() > 16 {
+        authority.terminal.remove(0);
+    }
+    Ok(true)
 }
 
 const MAX_PROTECTED_BROWSER_IMPORT_SOURCES: usize = 6;
@@ -313,6 +462,40 @@ impl Drop for HiddenFirefoxProcess {
 fn protected_browser_import_process() -> &'static Mutex<Option<HiddenFirefoxProcess>> {
     static PROCESS: OnceLock<Mutex<Option<HiddenFirefoxProcess>>> = OnceLock::new();
     PROCESS.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn retain_protected_browser_import_process(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+    process: HiddenFirefoxProcess,
+) -> Result<(), String> {
+    // Lock authority before process state. Cancellation closes the retained
+    // child before retiring authority, so it either waits for and closes this
+    // attachment or retires before a later attachment can be authorized.
+    let authority = protected_browser_import_authority()
+        .lock()
+        .map_err(|_| "The protected browser import authority is unavailable".to_owned())?;
+    let active = authority
+        .active
+        .as_ref()
+        .ok_or_else(|| "The protected browser import was cancelled".to_owned())?;
+    if active.owner_osl_user_id != owner_osl_user_id
+        || active.operation_id != operation_id
+        || active.phase != ProtectedBrowserImportPhase::Running
+    {
+        return Err(
+            "The protected browser import belongs to another identity or operation".to_owned(),
+        );
+    }
+    let mut retained = protected_browser_import_process()
+        .lock()
+        .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())?;
+    if retained.is_some() {
+        return Err("A protected Firefox import process is already retained".to_owned());
+    }
+    *retained = Some(process);
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -1021,6 +1204,7 @@ pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, S
 pub fn begin_browser_account_import(
     app_local_data_dir: &std::path::Path,
     owner_osl_user_id: &str,
+    operation_id: &str,
 ) -> Result<BrowserAccountImportResult, String> {
     #[cfg(target_os = "windows")]
     {
@@ -1034,9 +1218,11 @@ pub fn begin_browser_account_import(
         let result = begin_protected_browser_import(
             app_local_data_dir,
             owner_osl_user_id,
+            operation_id,
             vec![preferred_source],
             0,
         )?;
+        finish_protected_browser_import(owner_osl_user_id, operation_id)?;
         Ok(BrowserAccountImportResult {
             preferred_source,
             detected_sources,
@@ -1049,7 +1235,7 @@ pub fn begin_browser_account_import(
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app_local_data_dir, owner_osl_user_id);
+        let _ = (app_local_data_dir, owner_osl_user_id, operation_id);
         Err("Browser account migration is available only on Windows".to_owned())
     }
 }
@@ -1059,12 +1245,12 @@ pub fn begin_browser_account_import(
 pub fn begin_protected_browser_import(
     app_local_data_dir: &std::path::Path,
     owner_osl_user_id: &str,
+    operation_id: &str,
     selected_sources: Vec<BrowserImportId>,
     _owner_window: isize,
 ) -> Result<ProtectedBrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
-        close_protected_browser_import_process()?;
         let available_sources = BROWSER_IMPORTS
             .iter()
             .filter(|browser| browser_import_executable(browser).is_some())
@@ -1072,71 +1258,85 @@ pub fn begin_protected_browser_import(
             .collect::<Vec<_>>();
         let unique =
             validate_protected_browser_import_sources(selected_sources, &available_sources)?;
-        let firefox = firefox_executable().ok_or_else(|| {
-            "Firefox is required for OSL's browser-owned account migration".to_owned()
-        })?;
-        let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
-        let mut password_follow_up_sources = Vec::new();
-        let mut session_only_sources = Vec::new();
-        for (index, source) in unique.iter().copied().enumerate() {
-            // Current Firefox cannot complete Firefox-profile migration here,
-            // and Opera's migration never completed in a bounded hidden live
-            // run. Preserve those real sessions through OSL's existing-browser
-            // companion instead of opening a flow that cannot finish.
-            if browser_import_uses_existing_session(source) {
-                session_only_sources.push(source);
-                continue;
-            }
-            let firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
-                .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
-            if !firefox_process
-                .is_running()
-                .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
-            {
-                return Err("The OSL Firefox migration wizard closed before opening".to_owned());
-            }
-            let process_id = firefox_process.id();
-            let desktop_name = firefox_process.desktop_name.clone();
-            *protected_browser_import_process()
-                .lock()
-                .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
-                Some(firefox_process);
-            match crate::firefox_migration_coordinator::coordinate(
-                process_id,
-                source,
-                0,
-                &desktop_name,
-            ) {
-                Ok(true) => password_follow_up_sources.push(source),
-                Ok(false) => {}
-                Err(error) => {
-                    close_protected_browser_import_process()?;
-                    return Err(error);
+        claim_protected_browser_import(owner_osl_user_id, operation_id)?;
+        let run = || -> Result<ProtectedBrowserImportResult, String> {
+            let firefox = firefox_executable().ok_or_else(|| {
+                "Firefox is required for OSL's browser-owned account migration".to_owned()
+            })?;
+            let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
+            let mut password_follow_up_sources = Vec::new();
+            let mut session_only_sources = Vec::new();
+            for (index, source) in unique.iter().copied().enumerate() {
+                // Current Firefox cannot complete Firefox-profile migration here,
+                // and Opera's migration never completed in a bounded hidden live
+                // run. Preserve those real sessions through OSL's existing-browser
+                // companion instead of opening a flow that cannot finish.
+                if browser_import_uses_existing_session(source) {
+                    session_only_sources.push(source);
+                    continue;
+                }
+                let firefox_process =
+                    spawn_firefox_migration_wizard(&firefox, &profile).map_err(|_| {
+                        "The OSL Firefox migration wizard could not be opened".to_owned()
+                    })?;
+                if !firefox_process.is_running().map_err(|_| {
+                    "The OSL Firefox import process could not be verified".to_owned()
+                })? {
+                    return Err("The OSL Firefox migration wizard closed before opening".to_owned());
+                }
+                let process_id = firefox_process.id();
+                let desktop_name = firefox_process.desktop_name.clone();
+                retain_protected_browser_import_process(
+                    owner_osl_user_id,
+                    operation_id,
+                    firefox_process,
+                )?;
+                match crate::firefox_migration_coordinator::coordinate(
+                    process_id,
+                    source,
+                    0,
+                    &desktop_name,
+                ) {
+                    Ok(true) => password_follow_up_sources.push(source),
+                    Ok(false) => {}
+                    Err(error) => {
+                        close_protected_browser_import_process()?;
+                        return Err(error);
+                    }
+                }
+                // Firefox can leave a normal new-tab window behind after Done.
+                // Close the exact retained OSL-owned process before the next
+                // source; ordinary Firefox processes and profiles are untouched.
+                close_protected_browser_import_process()?;
+                if index + 1 < unique.len() {
+                    thread::sleep(Duration::from_millis(300));
                 }
             }
-            // Firefox can leave a normal new-tab window behind after Done.
-            // Close the exact retained OSL-owned process before the next
-            // source; ordinary Firefox processes and profiles are untouched.
-            close_protected_browser_import_process()?;
-            if index + 1 < unique.len() {
-                thread::sleep(Duration::from_millis(300));
-            }
+            mark_protected_browser_import_ready(owner_osl_user_id, operation_id)?;
+            Ok(ProtectedBrowserImportResult {
+                operation_id: operation_id.to_owned(),
+                selected_sources: unique,
+                password_follow_up_sources,
+                session_only_sources,
+                started: true,
+                mode: "firefoxMigrationWizard",
+                source_selected: true,
+                manual_fallback: None,
+            })
+        };
+        let result = run();
+        if result.is_err() {
+            let _ = close_protected_browser_import_process();
+            let _ = retire_protected_browser_import(owner_osl_user_id, operation_id);
         }
-        Ok(ProtectedBrowserImportResult {
-            selected_sources: unique,
-            password_follow_up_sources,
-            session_only_sources,
-            started: true,
-            mode: "firefoxMigrationWizard",
-            source_selected: true,
-            manual_fallback: None,
-        })
+        result
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (
             app_local_data_dir,
             owner_osl_user_id,
+            operation_id,
             selected_sources,
             _owner_window,
         );
@@ -1146,15 +1346,30 @@ pub fn begin_protected_browser_import(
 
 /// Closes only the exact isolated Firefox migration process retained above.
 /// The user's normal Firefox process and profiles are never enumerated or touched.
-pub fn finish_protected_browser_import() -> Result<(), String> {
+pub fn finish_protected_browser_import(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        close_protected_browser_import_process()
+        if require_protected_browser_import(owner_osl_user_id, operation_id)?.is_some() {
+            close_protected_browser_import_process()?;
+            retire_protected_browser_import(owner_osl_user_id, operation_id)?;
+        }
+        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = (owner_osl_user_id, operation_id);
         Err("Browser account migration is available only on Windows".to_owned())
     }
+}
+
+pub fn cancel_protected_browser_import(
+    owner_osl_user_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
+    finish_protected_browser_import(owner_osl_user_id, operation_id)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -3094,6 +3309,47 @@ mod tests {
     }
 
     #[test]
+    fn protected_browser_import_authority_binds_owner_and_operation() {
+        let owner_a = "owner-a";
+        let owner_b = "owner-b";
+        let operation_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let operation_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        {
+            let mut authority = protected_browser_import_authority()
+                .lock()
+                .expect("authority lock");
+            authority.active = None;
+            authority.terminal.clear();
+        }
+
+        assert!(claim_protected_browser_import(owner_a, operation_a).is_ok());
+        assert!(claim_protected_browser_import(owner_b, operation_b).is_err());
+        assert!(require_protected_browser_import(owner_b, operation_a).is_err());
+        assert!(require_protected_browser_import(owner_a, operation_b).is_err());
+        assert_eq!(
+            require_protected_browser_import(owner_a, operation_a),
+            Ok(Some(ProtectedBrowserImportPhase::Running))
+        );
+        assert!(mark_protected_browser_import_ready(owner_a, operation_a).is_ok());
+        assert_eq!(
+            require_protected_browser_import(owner_a, operation_a),
+            Ok(Some(ProtectedBrowserImportPhase::AwaitingFinish))
+        );
+        assert_eq!(
+            retire_protected_browser_import(owner_a, operation_a),
+            Ok(true)
+        );
+        assert_eq!(
+            retire_protected_browser_import(owner_a, operation_a),
+            Ok(false)
+        );
+        assert!(claim_protected_browser_import(owner_b, operation_b).is_ok());
+        assert!(retire_protected_browser_import(owner_b, operation_b).is_ok());
+        assert!(claim_protected_browser_import(owner_a, "invalid").is_err());
+        assert!(claim_protected_browser_import(owner_a, operation_a).is_err());
+    }
+
+    #[test]
     fn unsupported_migration_sources_reuse_existing_sessions() {
         assert!(browser_import_uses_existing_session(
             BrowserImportId::Firefox
@@ -3482,7 +3738,8 @@ mod tests {
         assert!(open_browser_import(BrowserImportId::Chrome).is_err());
         assert!(begin_browser_account_import(
             std::path::Path::new("/trusted/osl-data"),
-            "owner-test"
+            "owner-test",
+            "0123456789abcdef0123456789abcdef"
         )
         .is_err());
     }

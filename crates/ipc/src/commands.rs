@@ -9202,41 +9202,43 @@ pub fn cmd_osl_verify_gate_password(
             // every unlock. (app_preferences is device-level and the
             // reload reads it from the base internally.)
             let account_dir = keystore::osl_config_dir().unwrap_or_else(|_| dir.clone());
-            match crate::state_reload::reload_encrypted_state_after_unlock(state, &account_dir) {
-                Ok(r) => tracing::info!(
+            let reload =
+                crate::state_reload::reload_encrypted_state_after_unlock(state, &account_dir);
+            match reload {
+                Ok(ref r) if r.errors.is_empty() => tracing::info!(
                     peer_map_entries = r.peer_map_entries,
                     whitelist_scopes = r.whitelist_scopes,
                     server_defaults_entries = r.server_defaults_entries,
                     burned_scopes_count = r.burned_scopes_count,
                     sender_keys_count = r.sender_keys_count,
+                    membership_loaded = r.membership_loaded,
                     app_prefs_loaded = r.app_prefs_loaded,
-                    errors = ?r.errors,
                     "OSL: state reloaded post-gate"
                 ),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "OSL: post-gate state reload failed"
-                ),
+                Ok(ref r) => {
+                    tracing::error!(
+                        errors = ?r.errors,
+                        "OSL: required post-gate state reload failed; keeping session locked"
+                    );
+                    crate::main_password::set_file_storage_key(None);
+                    return Err(
+                        "OSL encrypted security state could not be reloaded safely".to_owned()
+                    );
+                }
+                Err(ref error) => {
+                    tracing::error!(
+                        error = %error,
+                        "OSL: required post-gate state reload failed; keeping session locked"
+                    );
+                    crate::main_password::set_file_storage_key(None);
+                    return Err(
+                        "OSL encrypted security state could not be reloaded safely".to_owned()
+                    );
+                }
             }
-            // REGISTER-FIX: the boot-time keyserver register runs at
-            // cold boot and is skipped whenever no identity was
-            // loadable then (the V2 clean-install case, and any boot
-            // where the sealed identity could not be read). It is
-            // never retried — so a machine that booted without a
-            // loadable identity stays absent from /v1/pubkeys and no
-            // peer can encrypt to it. This is the post-unlock retry:
-            // by the time the main password verifies, bootstrap has
-            // already run and (on a relaunch) loaded identity.json,
-            // so state.identity is populated here. Idempotent — see
-            // `ensure_keyserver_registered`'s upsert contract; it is
-            // a no-op if no identity exists yet (first install, where
-            // the identity is born later in the Discord-snowflake
-            // path, which carries its own hook).
-            ensure_keyserver_registered(
-                state,
-                &resolve_keyserver_base_url(&dir),
-                read_keyserver_client_token(&dir),
-            );
+            // Network registration is deliberately not part of password
+            // verification. The trusted desktop shell claims its single
+            // deferred worker only after this local reload succeeds.
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);

@@ -17,6 +17,7 @@ const KEYRING_SERVICE: &str = "org.open-source-labs.hub.scrub-imap";
 const DEFAULT_IMAP_PORT: u16 = 993;
 const COMMAND_INTERVAL: Duration = Duration::from_secs(1);
 const AUTH_EPOCH_LIFETIME: Duration = Duration::from_secs(5 * 60);
+const LIVE_TEST_OWNER: &str = "osl-imap-live-test-owner";
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -176,6 +177,7 @@ pub struct ImapLiveTestTransport {
 
 #[derive(Clone)]
 struct AccountConfig {
+    owner_scope: String,
     host: String,
     port: u16,
     username: String,
@@ -534,14 +536,34 @@ fn request_since_date(request: &ImapItemRequest) -> Result<Option<String>, Trans
     Ok(Some(date))
 }
 
-fn keyring_entry(account_id: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, account_id)
+fn owner_account_key(owner: &str, account_id: &str) -> Result<String, String> {
+    validate_account_field(owner).map_err(|error| error.public_detail().to_owned())?;
+    validate_account_field(account_id).map_err(|error| error.public_detail().to_owned())?;
+    let mut digest = Sha256::new();
+    digest.update(b"osl-scrub-imap-owner-account-v1\0");
+    digest.update((owner.len() as u64).to_le_bytes());
+    digest.update(owner.as_bytes());
+    digest.update((account_id.len() as u64).to_le_bytes());
+    digest.update(account_id.as_bytes());
+    Ok(format!("owner-account-{:x}", digest.finalize()))
+}
+
+fn owner_scope(owner: &str) -> Result<String, String> {
+    validate_account_field(owner).map_err(|error| error.public_detail().to_owned())?;
+    let mut digest = Sha256::new();
+    digest.update(b"osl-scrub-imap-owner-v1\0");
+    digest.update(owner.as_bytes());
+    Ok(format!("owner-{:x}", digest.finalize()))
+}
+
+fn keyring_entry(owner: &str, account_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, &owner_account_key(owner, account_id)?)
         .map_err(|_| "OS credential storage is unavailable".to_owned())
 }
 
-fn load_stored_account(account_id: &str) -> Result<StoredAccount, String> {
+fn load_stored_account(owner: &str, account_id: &str) -> Result<StoredAccount, String> {
     let serialized = Zeroizing::new(
-        keyring_entry(account_id)?
+        keyring_entry(owner, account_id)?
             .get_password()
             .map_err(|_| "Stored IMAP authentication is unavailable".to_owned())?,
     );
@@ -549,7 +571,7 @@ fn load_stored_account(account_id: &str) -> Result<StoredAccount, String> {
         .map_err(|_| "Stored IMAP account configuration is invalid".to_owned())
 }
 
-fn next_auth_epoch(account_id: &str) -> String {
+fn next_auth_epoch(owner: &str, account_id: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -557,6 +579,8 @@ fn next_auth_epoch(account_id: &str) -> String {
         .as_nanos();
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut digest = Sha256::new();
+    digest.update(owner.as_bytes());
+    digest.update([0]);
     digest.update(account_id.as_bytes());
     digest.update(nanos.to_le_bytes());
     digest.update(count.to_le_bytes());
@@ -614,6 +638,7 @@ fn finding_from_headers(
 impl ScrubImapState {
     fn configure_with(
         &self,
+        owner: &str,
         mut request: ConfigureImapRequest,
         connector: &dyn SessionConnector,
         persist_secret: bool,
@@ -634,6 +659,7 @@ impl ScrubImapState {
 
         let secret = Zeroizing::new(std::mem::take(&mut request.auth.secret));
         let mut config = AccountConfig {
+            owner_scope: owner_scope(owner)?,
             host: request.host,
             port: request.port.unwrap_or(DEFAULT_IMAP_PORT),
             username: request.username,
@@ -650,7 +676,7 @@ impl ScrubImapState {
             .map_err(|e| e.public_detail().to_owned())?;
 
         if persist_secret {
-            let entry = keyring_entry(&request.account_id)?;
+            let entry = keyring_entry(owner, &request.account_id)?;
             let stored_account = StoredAccount {
                 host: config.host.clone(),
                 port: config.port,
@@ -677,7 +703,7 @@ impl ScrubImapState {
             }
         }
 
-        config.auth_epoch = next_auth_epoch(&request.account_id);
+        config.auth_epoch = next_auth_epoch(owner, &request.account_id);
         config.auth_issued_at = Instant::now();
         let response = ImapCapability {
             configured: true,
@@ -689,12 +715,13 @@ impl ScrubImapState {
         self.accounts
             .lock()
             .map_err(|_| "IMAP account state is unavailable".to_owned())?
-            .insert(request.account_id, config);
+            .insert(owner_account_key(owner, &request.account_id)?, config);
         Ok(response)
     }
 
     fn config_for_epoch(
         &self,
+        owner: &str,
         account_id: &str,
         expected_auth_epoch: &str,
     ) -> Result<AccountConfig, String> {
@@ -702,8 +729,9 @@ impl ScrubImapState {
             .accounts
             .lock()
             .map_err(|_| "IMAP account state is unavailable".to_owned())?;
+        let key = owner_account_key(owner, account_id)?;
         let config = accounts
-            .get(account_id)
+            .get(&key)
             .ok_or_else(|| "IMAP transport is not live-confirmed in this session".to_owned())?;
         if config.auth_epoch != expected_auth_epoch
             || config.auth_issued_at.elapsed() > AUTH_EPOCH_LIFETIME
@@ -715,6 +743,7 @@ impl ScrubImapState {
 
     fn connect_for_item(
         &self,
+        owner: &str,
         request: &ImapItemRequest,
         connector: &dyn SessionConnector,
         secret_override: Option<&str>,
@@ -722,12 +751,13 @@ impl ScrubImapState {
         validate_mailbox(&request.mailbox).map_err(|e| e.public_detail())?;
         validate_message_id(&request.message_id).map_err(|e| e.public_detail())?;
         request_since_date(request).map_err(|e| e.public_detail())?;
-        let config = self.config_for_epoch(&request.account_id, &request.expected_auth_epoch)?;
+        let config =
+            self.config_for_epoch(owner, &request.account_id, &request.expected_auth_epoch)?;
         let stored;
         let secret = match secret_override {
             Some(value) => value,
             None => {
-                let account = load_stored_account(&request.account_id)?;
+                let account = load_stored_account(owner, &request.account_id)?;
                 stored = Zeroizing::new(account.secret.clone());
                 stored.as_str()
             }
@@ -744,17 +774,19 @@ impl ScrubImapState {
 
 pub fn configure(
     state: &ScrubImapState,
+    owner: &str,
     request: ConfigureImapRequest,
 ) -> Result<ImapCapability, String> {
-    state.configure_with(request, &RealConnector, true)
+    state.configure_with(owner, request, &RealConnector, true)
 }
 
-pub fn capability(state: &ScrubImapState, account_id: &str) -> ImapCapability {
+pub fn capability(state: &ScrubImapState, owner: &str, account_id: &str) -> ImapCapability {
+    let key = owner_account_key(owner, account_id).ok();
     let config = state
         .accounts
         .lock()
         .ok()
-        .and_then(|accounts| accounts.get(account_id).cloned());
+        .and_then(|accounts| key.and_then(|key| accounts.get(&key).cloned()));
     match config {
         Some(config) => ImapCapability {
             configured: true,
@@ -763,7 +795,7 @@ pub fn capability(state: &ScrubImapState, account_id: &str) -> ImapCapability {
             detail: "IMAP was live-confirmed in this process session".to_owned(),
         },
         None => ImapCapability {
-            configured: load_stored_account(account_id).is_ok(),
+            configured: load_stored_account(owner, account_id).is_ok(),
             live_confirmed: false,
             auth_epoch: None,
             detail: "Fresh IMAP authentication is required in this session".to_owned(),
@@ -771,15 +803,21 @@ pub fn capability(state: &ScrubImapState, account_id: &str) -> ImapCapability {
     }
 }
 
-pub fn reauthenticate(state: &ScrubImapState, account_id: &str) -> Result<ImapCapability, String> {
+pub fn reauthenticate(
+    state: &ScrubImapState,
+    owner: &str,
+    account_id: &str,
+) -> Result<ImapCapability, String> {
+    let key = owner_account_key(owner, account_id)?;
     let in_memory = state
         .accounts
         .lock()
         .map_err(|_| "IMAP account state is unavailable".to_owned())?
-        .get(account_id)
+        .get(&key)
         .cloned();
-    let stored = load_stored_account(account_id)?;
+    let stored = load_stored_account(owner, account_id)?;
     let mut config = in_memory.unwrap_or(AccountConfig {
+        owner_scope: owner_scope(owner)?,
         host: stored.host.clone(),
         port: stored.port,
         username: stored.username.clone(),
@@ -795,13 +833,13 @@ pub fn reauthenticate(state: &ScrubImapState, account_id: &str) -> Result<ImapCa
     session
         .select(&config.default_mailbox)
         .map_err(|e| e.public_detail().to_owned())?;
-    config.auth_epoch = next_auth_epoch(account_id);
+    config.auth_epoch = next_auth_epoch(owner, account_id);
     config.auth_issued_at = Instant::now();
     state
         .accounts
         .lock()
         .map_err(|_| "IMAP account state is unavailable".to_owned())?
-        .insert(account_id.to_owned(), config.clone());
+        .insert(key, config.clone());
     Ok(ImapCapability {
         configured: true,
         live_confirmed: true,
@@ -810,13 +848,32 @@ pub fn reauthenticate(state: &ScrubImapState, account_id: &str) -> Result<ImapCa
     })
 }
 
+impl ScrubImapState {
+    pub fn revoke_owner(&self, owner: &str) {
+        let Ok(scope) = owner_scope(owner) else {
+            return;
+        };
+        if let Ok(mut accounts) = self.accounts.lock() {
+            accounts.retain(|_, config| config.owner_scope != scope);
+        }
+    }
+
+    pub fn revoke_all(&self) {
+        if let Ok(mut accounts) = self.accounts.lock() {
+            accounts.clear();
+        }
+    }
+}
+
 fn enumerate_with(
     state: &ScrubImapState,
+    owner: &str,
     request: &ImapItemRequest,
     connector: &dyn SessionConnector,
     secret_override: Option<&str>,
 ) -> Result<ImapEnumeration, String> {
-    let (config, mut session) = state.connect_for_item(request, connector, secret_override)?;
+    let (config, mut session) =
+        state.connect_for_item(owner, request, connector, secret_override)?;
     let since_date = request_since_date(request).map_err(|e| e.public_detail().to_owned())?;
     let uids = session
         .search(&request.message_id, since_date.as_deref())
@@ -845,18 +902,20 @@ fn enumerate_with(
 
 pub fn enumerate(
     state: &ScrubImapState,
+    owner: &str,
     request: &ImapItemRequest,
 ) -> Result<ImapEnumeration, String> {
-    enumerate_with(state, request, &RealConnector, None)
+    enumerate_with(state, owner, request, &RealConnector, None)
 }
 
 fn inspect_with(
     state: &ScrubImapState,
+    owner: &str,
     request: &ImapItemRequest,
     connector: &dyn SessionConnector,
     secret_override: Option<&str>,
 ) -> Result<ImapInspection, String> {
-    let result = enumerate_with(state, request, connector, secret_override)?;
+    let result = enumerate_with(state, owner, request, connector, secret_override)?;
     let (state_value, uid, authored_by_self, fingerprint) = match result.findings.as_slice() {
         [] => (ImapPresence::Absent, None, false, None),
         [finding] => (
@@ -883,18 +942,21 @@ fn inspect_with(
 
 pub fn inspect(
     state: &ScrubImapState,
+    owner: &str,
     request: &ImapItemRequest,
 ) -> Result<ImapInspection, String> {
-    inspect_with(state, request, &RealConnector, None)
+    inspect_with(state, owner, request, &RealConnector, None)
 }
 
 fn delete_with(
     state: &ScrubImapState,
+    owner: &str,
     request: &ImapItemRequest,
     connector: &dyn SessionConnector,
     secret_override: Option<&str>,
 ) -> Result<ImapDeleteResult, String> {
-    let (config, mut session) = state.connect_for_item(request, connector, secret_override)?;
+    let (config, mut session) =
+        state.connect_for_item(owner, request, connector, secret_override)?;
     let since_date = request_since_date(request).map_err(|e| e.public_detail().to_owned())?;
     let uids = session
         .search(&request.message_id, since_date.as_deref())
@@ -961,20 +1023,22 @@ fn delete_with(
 }
 
 pub fn delete(
-    state: &ScrubImapState,
-    request: &ImapItemRequest,
+    _state: &ScrubImapState,
+    _owner: &str,
+    _request: &ImapItemRequest,
 ) -> Result<ImapDeleteResult, String> {
-    delete_with(state, request, &RealConnector, None)
+    Err("Native IMAP deletion is disabled until one-shot reviewed consent is enforced".to_owned())
 }
 
 fn verify_with(
     state: &ScrubImapState,
+    owner: &str,
     request: &ImapItemRequest,
     connector: &dyn SessionConnector,
     secret_override: Option<&str>,
 ) -> ImapVerification {
     let epoch = request.expected_auth_epoch.clone();
-    match inspect_with(state, request, connector, secret_override) {
+    match inspect_with(state, owner, request, connector, secret_override) {
         Ok(inspection) if inspection.state == ImapPresence::Absent => ImapVerification {
             outcome: ImapVerificationOutcome::ConfirmedDeleted,
             auth_epoch: inspection.auth_epoch,
@@ -993,8 +1057,8 @@ fn verify_with(
     }
 }
 
-pub fn verify(state: &ScrubImapState, request: &ImapItemRequest) -> ImapVerification {
-    verify_with(state, request, &RealConnector, None)
+pub fn verify(state: &ScrubImapState, owner: &str, request: &ImapItemRequest) -> ImapVerification {
+    verify_with(state, owner, request, &RealConnector, None)
 }
 
 impl ImapLiveTestTransport {
@@ -1008,6 +1072,7 @@ impl ImapLiveTestTransport {
         let account_id = "imap-livetest".to_owned();
         let secret = Zeroizing::new(app_password);
         let capability = state.configure_with(
+            LIVE_TEST_OWNER,
             ConfigureImapRequest {
                 account_id: account_id.clone(),
                 host,
@@ -1034,9 +1099,9 @@ impl ImapLiveTestTransport {
     }
 
     pub fn recent_messages(&self, limit: usize) -> Result<Vec<ImapLiveMessage>, String> {
-        let config = self
-            .state
-            .config_for_epoch(&self.account_id, &self.auth_epoch)?;
+        let config =
+            self.state
+                .config_for_epoch(LIVE_TEST_OWNER, &self.account_id, &self.auth_epoch)?;
         let mut session = RealConnector
             .connect(&config, self.secret.as_str())
             .map_err(|error| error.public_detail().to_owned())?;
@@ -1084,6 +1149,7 @@ impl ImapLiveTestTransport {
         };
         let inspection = inspect_with(
             &self.state,
+            LIVE_TEST_OWNER,
             &request,
             &RealConnector,
             Some(self.secret.as_str()),
@@ -1117,12 +1183,14 @@ impl ImapLiveTestTransport {
     pub fn delete_prepared(&self, prepared: &ImapLivePreparedDelete) -> ImapLiveDeleteExecution {
         let delete_result = delete_with(
             &self.state,
+            LIVE_TEST_OWNER,
             &prepared.request,
             &RealConnector,
             Some(self.secret.as_str()),
         );
         let verification = verify_with(
             &self.state,
+            LIVE_TEST_OWNER,
             &prepared.request,
             &RealConnector,
             Some(self.secret.as_str()),
@@ -1139,6 +1207,8 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
+
+    const TEST_OWNER: &str = "osl-test-owner";
 
     #[derive(Default)]
     struct FakeMailboxState {
@@ -1212,6 +1282,7 @@ mod tests {
         let connector = FakeConnector(fake);
         let capability = state
             .configure_with(
+                TEST_OWNER,
                 ConfigureImapRequest {
                     account_id: "mail".to_owned(),
                     host: "imap.example.test".to_owned(),
@@ -1246,7 +1317,8 @@ mod tests {
         connector: &FakeConnector,
         request: &mut ImapItemRequest,
     ) {
-        let inspection = inspect_with(state, request, connector, Some("secret")).unwrap();
+        let inspection =
+            inspect_with(state, TEST_OWNER, request, connector, Some("secret")).unwrap();
         assert!(inspection.authored_by_self);
         request.expected_content_fingerprint = inspection.content_fingerprint;
     }
@@ -1262,10 +1334,11 @@ mod tests {
         let mut request = item(epoch);
         authorize_delete(&state, &connector, &mut request);
 
-        let deleted = delete_with(&state, &request, &connector, Some("secret")).unwrap();
+        let deleted =
+            delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
         assert!(deleted.accepted);
         assert_eq!(
-            verify_with(&state, &request, &connector, Some("secret")).outcome,
+            verify_with(&state, TEST_OWNER, &request, &connector, Some("secret")).outcome,
             ImapVerificationOutcome::ConfirmedDeleted
         );
         assert_eq!(fake.lock().unwrap().marked, vec![7]);
@@ -1284,12 +1357,12 @@ mod tests {
         authorize_delete(&state, &connector, &mut request);
 
         assert!(
-            delete_with(&state, &request, &connector, Some("secret"))
+            delete_with(&state, TEST_OWNER, &request, &connector, Some("secret"))
                 .unwrap()
                 .accepted
         );
         assert_eq!(
-            verify_with(&state, &request, &connector, Some("secret")).outcome,
+            verify_with(&state, TEST_OWNER, &request, &connector, Some("secret")).outcome,
             ImapVerificationOutcome::ConfirmedNotDeleted
         );
     }
@@ -1301,7 +1374,7 @@ mod tests {
             ..Default::default()
         }));
         let (state, connector, epoch) = configured(fake);
-        let result = verify_with(&state, &item(epoch), &connector, Some("secret"));
+        let result = verify_with(&state, TEST_OWNER, &item(epoch), &connector, Some("secret"));
         assert_eq!(result.outcome, ImapVerificationOutcome::Unknown);
         assert!(result.detail.contains("TLS"));
     }
@@ -1314,10 +1387,10 @@ mod tests {
         }));
         let (state, connector, epoch) = configured(fake.clone());
         let request = item(epoch);
-        assert!(delete_with(&state, &request, &connector, Some("secret")).is_err());
+        assert!(delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).is_err());
         assert!(fake.lock().unwrap().marked.is_empty());
         assert_eq!(
-            verify_with(&state, &request, &connector, Some("secret")).outcome,
+            verify_with(&state, TEST_OWNER, &request, &connector, Some("secret")).outcome,
             ImapVerificationOutcome::Unknown
         );
     }
@@ -1330,15 +1403,36 @@ mod tests {
         }));
         let (state, connector, _epoch) = configured(fake.clone());
         let request = item("stale".to_owned());
-        assert!(delete_with(&state, &request, &connector, Some("secret")).is_err());
+        assert!(delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).is_err());
         assert_eq!(fake.lock().unwrap().selected, vec!["Sent"]);
     }
 
     #[test]
     fn fresh_process_is_never_live_confirmed() {
-        let capability = capability(&ScrubImapState::default(), "mail");
+        let capability = capability(&ScrubImapState::default(), TEST_OWNER, "mail");
         assert!(!capability.live_confirmed);
         assert!(!capability.configured);
+    }
+
+    #[test]
+    fn same_account_is_owner_scoped_and_revocation_clears_live_epoch() {
+        assert_ne!(
+            owner_account_key("owner-a", "mail").unwrap(),
+            owner_account_key("owner-b", "mail").unwrap()
+        );
+        let fake = Arc::new(Mutex::new(FakeMailboxState::default()));
+        let (state, _connector, _epoch) = configured(fake);
+        assert!(capability(&state, TEST_OWNER, "mail").live_confirmed);
+        assert!(!capability(&state, "another-owner", "mail").live_confirmed);
+        state.revoke_owner(TEST_OWNER);
+        assert!(!capability(&state, TEST_OWNER, "mail").live_confirmed);
+    }
+
+    #[test]
+    fn production_delete_entrypoint_is_fail_closed() {
+        let request = item("epoch".to_owned());
+        let error = delete(&ScrubImapState::default(), TEST_OWNER, &request).unwrap_err();
+        assert!(error.contains("one-shot reviewed consent"));
     }
 
     #[test]
@@ -1374,10 +1468,11 @@ mod tests {
         }));
         let (state, connector, epoch) = configured(fake.clone());
         let mut request = item(epoch);
-        let inspection = inspect_with(&state, &request, &connector, Some("secret")).unwrap();
+        let inspection =
+            inspect_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
         assert!(!inspection.authored_by_self);
         request.expected_content_fingerprint = inspection.content_fingerprint;
-        let result = delete_with(&state, &request, &connector, Some("secret")).unwrap();
+        let result = delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
         assert!(!result.accepted);
         assert!(fake.lock().unwrap().marked.is_empty());
 
@@ -1389,7 +1484,7 @@ mod tests {
         let (state, connector, epoch) = configured(fake.clone());
         let mut request = item(epoch);
         authorize_delete(&state, &connector, &mut request);
-        let result = delete_with(&state, &request, &connector, Some("secret")).unwrap();
+        let result = delete_with(&state, TEST_OWNER, &request, &connector, Some("secret")).unwrap();
         assert!(!result.accepted);
         assert!(fake.lock().unwrap().marked.is_empty());
     }

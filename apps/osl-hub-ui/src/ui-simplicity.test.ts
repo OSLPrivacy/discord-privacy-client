@@ -12,13 +12,14 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("radically simple onboarding", () => {
-  it("keeps one recommended sending path and puts Single Enter under Advanced", () => {
+  it("shows all three sending choices with clear risk hierarchy", () => {
     const sending = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
     expect(sending).toContain("Choose how to send");
-    expect(sending).toContain("manualSendingAnimationMarkup(selectedMode)");
-    expect(sending).toContain('"Copy", "Encrypts and copies. Never presses Send.", "Recommended"');
-    expect(sending).toContain('<details class="send-mode-advanced"');
-    expect(sending).toContain('"Single Enter"');
+    expect(sending.match(/manualSendingAnimationMarkup\(mode\)/g)).toHaveLength(1);
+    expect(sending).toContain('option("clipboard", "Copy", "safe", "Safest")');
+    expect(sending).toContain('option("double", "Double Enter", "caution"');
+    expect(sending).toContain('option("single", "Single Enter", "danger"');
+    expect(sending).not.toContain("send-mode-advanced");
   });
 });
 

@@ -77,7 +77,8 @@ class IpcImapDeleteAdapter implements ScrubDeleteAdapter {
     return invoke<DeleteInspection>("scrub_imap_inspect", operationArgs(finding, this.#authEpoch));
   }
   async delete(finding: DeleteFinding): Promise<DeleteRequestResult> {
-    return invoke<DeleteRequestResult>("scrub_imap_delete", operationArgs(finding, this.#authEpoch));
+    void finding;
+    throw new Error("Native IMAP deletion is disabled until one-shot reviewed consent is enforced");
   }
   async verify(finding: DeleteFinding): Promise<DeleteVerification> {
     return invoke<DeleteVerification>("scrub_imap_verify", operationArgs(finding, this.#authEpoch));
@@ -93,13 +94,13 @@ export function createDesktopAutoScrubBridge(accountIds: readonly string[]): Aut
         return { accountId, ...state };
       }));
       // Capability is intentionally account-specific: never let account A activate account B.
-      const liveConfirmed = imapStates.length === 1 && imapStates[0].configured && imapStates[0].liveConfirmed;
+      const readOnlyConfirmed = imapStates.length === 1 && imapStates[0].configured && imapStates[0].liveConfirmed;
       return unavailableAutoScrubCapabilities.map((capability) => capability.providerId === "imap" ? {
         providerId: "imap" as const,
         label: "Email (IMAP, optional)",
-        liveConfirmed,
-        coverage: liveConfirmed ? "Message-ID deletion with provider readback" : "No live transport confirmed",
-        unavailableReason: liveConfirmed ? undefined : "Optional secondary path: connect and verify an IMAP account.",
+        liveConfirmed: false,
+        coverage: readOnlyConfirmed ? "Read-only Message-ID inspection and provider readback" : "No live transport confirmed",
+        unavailableReason: readOnlyConfirmed ? "IMAP deletion is disabled until native one-shot reviewed consent is available." : "Optional secondary path: connect and verify an IMAP account.",
         pathKind: "secondary-api" as const,
         primary: false,
       } : capability);

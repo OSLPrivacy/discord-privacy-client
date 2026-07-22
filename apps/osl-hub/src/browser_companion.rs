@@ -88,6 +88,22 @@ pub struct BrowserCompanionAction {
     pub containment: &'static str,
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum BrowserRestoreDisposition {
+    CompleteDetach,
+    PreserveForRetry,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn browser_restore_disposition(verified: bool) -> BrowserRestoreDisposition {
+    if verified {
+        BrowserRestoreDisposition::CompleteDetach
+    } else {
+        BrowserRestoreDisposition::PreserveForRetry
+    }
+}
+
 impl BrowserCompanionAction {
     fn failed(reason: BrowserCompanionReason) -> Self {
         Self {
@@ -245,8 +261,15 @@ impl BrowserCompanionState {
 impl Drop for BrowserCompanionState {
     fn drop(&mut self) {
         if let Ok(slot) = self.inner.get_mut() {
-            if let Some(hosted) = slot.take() {
-                unsafe { windows::restore_and_close(hosted) };
+            if let Some(mut hosted) = slot.take() {
+                // Drop cannot report an error. Never close a normal-profile
+                // window unless exact identity and restoration postconditions
+                // were both verified; an unverified window is preserved.
+                if !unsafe { windows::restore_and_close(&mut hosted) } {
+                    tracing::error!(
+                        "OSL browser restoration was unverified; preserving ordinary session window"
+                    );
+                }
             }
         }
     }
@@ -263,16 +286,18 @@ mod windows {
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::Foundation::{
+        GetLastError, SetLastError, BOOL, HWND, LPARAM, POINT, RECT,
+    };
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, EnumWindows, GetClientRect, GetParent, GetWindowLongPtrW,
         GetWindowPlacement, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
         IsWindowVisible, PostMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPlacement,
         SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, WINDOWPLACEMENT,
-        WM_CLOSE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-        WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+        SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE, WINDOWPLACEMENT, WM_CLOSE,
+        WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP,
+        WS_SYSMENU, WS_THICKFRAME,
     };
 
     const ASSOCSTR_EXECUTABLE: u32 = 2;
@@ -281,6 +306,7 @@ mod windows {
     const TRUSTED_VERTICAL_RESERVE: i32 = 48;
     const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
     const STABLE_SAMPLES: usize = 3;
+    const ERROR_SUCCESS: u32 = 0;
 
     #[link(name = "shlwapi")]
     unsafe extern "system" {
@@ -408,8 +434,13 @@ mod windows {
                     );
                 }
             }
-            if let Some(stale) = guard.take() {
-                unsafe { restore_and_close(stale) };
+            if let Some(stale) = guard.as_mut() {
+                if !unsafe { restore_and_close(stale) } {
+                    return BrowserCompanionAction::failed(
+                        BrowserCompanionReason::WindowOperationRejected,
+                    );
+                }
+                guard.take();
             }
         }
 
@@ -499,7 +530,12 @@ mod windows {
             attached: false,
         };
         if !unsafe { present(&mut hosted) } {
-            unsafe { restore_and_close(hosted) };
+            if !unsafe { restore_and_close(&mut hosted) } {
+                // Retain authority over the exact new window so a later
+                // detach can retry restoration. Never abandon it and then
+                // guess at a browser process/window during cleanup.
+                *guard = Some(hosted);
+            }
             return BrowserCompanionAction::failed(BrowserCompanionReason::WindowOperationRejected);
         }
         *guard = Some(hosted);
@@ -573,9 +609,9 @@ mod windows {
         if !hosted_window_is_valid(hosted) {
             return BrowserCompanionAction::failed(BrowserCompanionReason::WindowIdentityChanged);
         }
-        unsafe {
-            restore(hosted);
-            ShowWindow(hosted.window as HWND, SW_HIDE);
+        let restored = unsafe { restore(hosted) };
+        if browser_restore_disposition(restored) == BrowserRestoreDisposition::PreserveForRetry {
+            return BrowserCompanionAction::failed(BrowserCompanionReason::WindowOperationRejected);
         }
         hosted.attached = false;
         BrowserCompanionAction::success(
@@ -586,20 +622,23 @@ mod windows {
     }
 
     pub(super) fn terminate(state: &BrowserCompanionState) -> BrowserCompanionAction {
-        let hosted = match state.inner.lock() {
-            Ok(mut guard) => guard.take(),
+        let mut guard = match state.inner.lock() {
+            Ok(guard) => guard,
             Err(_) => {
                 return BrowserCompanionAction::failed(
                     BrowserCompanionReason::WindowOperationRejected,
                 )
             }
         };
-        let Some(hosted) = hosted else {
+        let Some(hosted) = guard.as_mut() else {
             return BrowserCompanionAction::failed(BrowserCompanionReason::NotHosted);
         };
         let browser_id = hosted.browser_id;
         let account_mode = hosted.account_mode;
-        unsafe { restore_and_close(hosted) };
+        if !unsafe { restore_and_close(hosted) } {
+            return BrowserCompanionAction::failed(BrowserCompanionReason::WindowOperationRejected);
+        }
+        guard.take();
         BrowserCompanionAction::success(
             BrowserCompanionActionKind::Detached,
             browser_id,
@@ -905,37 +944,80 @@ mod windows {
         true
     }
 
-    unsafe fn restore(hosted: &HostedBrowserWindow) {
+    unsafe fn restore(hosted: &HostedBrowserWindow) -> bool {
         if !hosted_window_is_valid(hosted) {
-            return;
+            return false;
         }
-        SetWindowLongPtrW(hosted.window as HWND, GWL_STYLE, hosted.previous_style);
-        SetWindowLongPtrW(hosted.window as HWND, GWL_EXSTYLE, hosted.previous_ex_style);
-        let _ = SetWindowPlacement(hosted.window as HWND, &hosted.previous_placement);
-        let _ = SetWindowPos(
-            hosted.window as HWND,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER,
-        );
+        let window = hosted.window as HWND;
+        if !set_window_long_verified(window, GWL_STYLE, hosted.previous_style)
+            || !set_window_long_verified(window, GWL_EXSTYLE, hosted.previous_ex_style)
+            || SetWindowPlacement(window, &hosted.previous_placement) == 0
+            || SetWindowPos(
+                window,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER,
+            ) == 0
+        {
+            return false;
+        }
+        let mut actual: WINDOWPLACEMENT = std::mem::zeroed();
+        actual.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        hosted_window_is_valid(hosted)
+            && GetWindowLongPtrW(window, GWL_STYLE) == hosted.previous_style
+            && GetWindowLongPtrW(window, GWL_EXSTYLE) == hosted.previous_ex_style
+            && GetWindowPlacement(window, &mut actual) != 0
+            && placements_match(&actual, &hosted.previous_placement)
     }
 
-    pub(super) unsafe fn restore_and_close(hosted: HostedBrowserWindow) {
-        if hosted_window_is_valid(&hosted) {
-            restore(&hosted);
-            // Close only the exact app-style window created by OSL. Browser
-            // processes and every pre-existing browser window remain intact.
-            let _ = PostMessageW(hosted.window as HWND, WM_CLOSE, 0, 0);
+    unsafe fn set_window_long_verified(window: HWND, index: i32, value: isize) -> bool {
+        SetLastError(ERROR_SUCCESS);
+        SetWindowLongPtrW(window, index, value);
+        GetLastError() == ERROR_SUCCESS && GetWindowLongPtrW(window, index) == value
+    }
+
+    fn placements_match(actual: &WINDOWPLACEMENT, expected: &WINDOWPLACEMENT) -> bool {
+        actual.flags == expected.flags
+            && actual.showCmd == expected.showCmd
+            && actual.ptMinPosition.x == expected.ptMinPosition.x
+            && actual.ptMinPosition.y == expected.ptMinPosition.y
+            && actual.ptMaxPosition.x == expected.ptMaxPosition.x
+            && actual.ptMaxPosition.y == expected.ptMaxPosition.y
+            && actual.rcNormalPosition.left == expected.rcNormalPosition.left
+            && actual.rcNormalPosition.top == expected.rcNormalPosition.top
+            && actual.rcNormalPosition.right == expected.rcNormalPosition.right
+            && actual.rcNormalPosition.bottom == expected.rcNormalPosition.bottom
+    }
+
+    pub(super) unsafe fn restore_and_close(hosted: &mut HostedBrowserWindow) -> bool {
+        if !restore(hosted) || !hosted_window_is_valid(hosted) {
+            return false;
         }
+        hosted.attached = false;
+        // Close only the exact app-style window created by OSL. Browser
+        // processes and every pre-existing browser window remain intact.
+        PostMessageW(hosted.window as HWND, WM_CLOSE, 0, 0) != 0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_restore_policy_preserves_unverified_sessions() {
+        assert_eq!(
+            browser_restore_disposition(true),
+            BrowserRestoreDisposition::CompleteDetach
+        );
+        assert_eq!(
+            browser_restore_disposition(false),
+            BrowserRestoreDisposition::PreserveForRetry
+        );
+    }
 
     #[test]
     fn every_result_is_truthful_about_capture_and_containment() {

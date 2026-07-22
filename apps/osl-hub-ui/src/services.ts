@@ -28,6 +28,7 @@ export interface BrowserAccountImportAction {
 }
 
 export interface ProtectedBrowserImportAction {
+  operationId: string;
   selectedSources: BrowserImportId[];
   passwordFollowUpSources: BrowserImportId[];
   sessionOnlySources: BrowserImportId[];
@@ -35,6 +36,14 @@ export interface ProtectedBrowserImportAction {
   mode: "firefoxMigrationWizard";
   sourceSelected: boolean;
   manualFallback: string | null;
+}
+
+const protectedBrowserImportOperationPattern = /^[0-9a-f]{32}$/;
+
+export function createProtectedBrowserImportOperationId(): string {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export interface NativeApp {
@@ -273,22 +282,27 @@ export async function beginBrowserAccountImport(): Promise<BrowserAccountImportA
   return raw as unknown as BrowserAccountImportAction;
 }
 
-export async function beginProtectedBrowserImport(browserIds: readonly BrowserImportId[]): Promise<ProtectedBrowserImportAction> {
+export async function beginProtectedBrowserImport(
+  browserIds: readonly BrowserImportId[],
+  operationId: string,
+): Promise<ProtectedBrowserImportAction> {
   const selectedSources = [...browserIds];
   if (!isTauriRuntime()
     || selectedSources.length < 1
     || selectedSources.length > browserImportIds.length
     || new Set(selectedSources).size !== selectedSources.length
-    || !selectedSources.every((id) => browserImportIds.includes(id))) {
+    || !selectedSources.every((id) => browserImportIds.includes(id))
+    || !protectedBrowserImportOperationPattern.test(operationId)) {
     throw new Error("protected browser import unavailable");
   }
-  const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources });
-  if (!isExactRecord(raw, ["selectedSources", "passwordFollowUpSources", "sessionOnlySources", "started", "mode", "sourceSelected", "manualFallback"])) {
+  const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources, operationId });
+  if (!isExactRecord(raw, ["operationId", "selectedSources", "passwordFollowUpSources", "sessionOnlySources", "started", "mode", "sourceSelected", "manualFallback"])) {
     throw new Error("invalid protected browser import response");
   }
   const passwordFollowUpSources = raw.passwordFollowUpSources;
   const sessionOnlySources = raw.sessionOnlySources;
-  if (!Array.isArray(raw.selectedSources)
+  if (raw.operationId !== operationId
+    || !Array.isArray(raw.selectedSources)
     || raw.selectedSources.length !== selectedSources.length
     || raw.selectedSources.some((id, index) => id !== selectedSources[index])
     || !Array.isArray(passwordFollowUpSources)
@@ -312,9 +326,16 @@ export async function beginProtectedBrowserImport(browserIds: readonly BrowserIm
   return raw as unknown as ProtectedBrowserImportAction;
 }
 
-export async function finishProtectedBrowserImport(): Promise<void> {
+export async function finishProtectedBrowserImport(operationId: string): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("finish_protected_browser_import");
+  if (!protectedBrowserImportOperationPattern.test(operationId)) throw new Error("protected browser import unavailable");
+  await invoke("finish_protected_browser_import", { operationId });
+}
+
+export async function cancelProtectedBrowserImport(operationId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  if (!protectedBrowserImportOperationPattern.test(operationId)) throw new Error("protected browser import unavailable");
+  await invoke("cancel_protected_browser_import", { operationId });
 }
 
 export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {

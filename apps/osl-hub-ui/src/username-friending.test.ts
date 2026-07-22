@@ -7,6 +7,7 @@ vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 import {
   addOslFriendByUsername,
   claimOslUsername,
+  getOslUsernameStatus,
   isNormalizedOslUsername,
   parseHubAddFriendResult,
   parseHubUsernameClaim,
@@ -41,5 +42,18 @@ describe("username friending adapter", () => {
     });
     expect(parseHubAddFriendResult({ ...added, safetyNumberVerified: true })).toBeNull();
     expect(parseHubAddFriendResult({ ...added, codeSignatureValid: false })).toBeNull();
+  });
+
+  it("checks ownership without claiming and fails closed while offline", async () => {
+    invoke.mockResolvedValueOnce({ username: "alice_01", ownedByActiveIdentity: true });
+    await expect(getOslUsernameStatus("alice_01")).resolves.toEqual({ username: "alice_01", ownedByActiveIdentity: true });
+    expect(invoke).toHaveBeenCalledWith("get_hub_username_status", { username: "alice_01" });
+    invoke.mockRejectedValueOnce(new Error("offline"));
+    await expect(getOslUsernameStatus("alice_01")).resolves.toBeNull();
+  });
+
+  it("fails closed when adding a username while offline", async () => {
+    invoke.mockRejectedValueOnce(new Error("offline"));
+    await expect(addOslFriendByUsername("bob_02", "Bob")).resolves.toBeNull();
   });
 });

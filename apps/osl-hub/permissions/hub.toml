@@ -234,6 +234,11 @@ description = "Open the single compiled-in OSL GitHub releases page in the syste
 commands.allow = ["open_hub_releases_page"]
 
 [[permission]]
+identifier = "allow-open-hub-source-repository"
+description = "Open only the compiled-in OSL GitHub source repository in the system browser; accepts no URL input."
+commands.allow = ["open_hub_source_repository"]
+
+[[permission]]
 identifier = "allow-list-native-apps"
 description = "Report installed status for the four fixed Windows-native messaging applications without exposing executable paths."
 commands.allow = ["list_native_apps"]
@@ -292,6 +297,11 @@ commands.allow = ["begin_protected_browser_import"]
 identifier = "allow-finish-protected-browser-import"
 description = "Close only the exact retained OSL-owned Firefox migration process after an import finishes, is cancelled, or is skipped."
 commands.allow = ["finish_protected_browser_import"]
+
+[[permission]]
+identifier = "allow-cancel-protected-browser-import"
+description = "Cancel only the exact active identity-bound protected browser import operation."
+commands.allow = ["cancel_protected_browser_import"]
 
 [[permission]]
 identifier = "allow-launch-firefox-service"

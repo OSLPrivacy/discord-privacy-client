@@ -46,6 +46,12 @@ export async function openHubReleasesPage(): Promise<boolean> {
   catch { return false; }
 }
 
+export async function openHubSourceRepository(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try { await invoke("open_hub_source_repository"); return true; }
+  catch { return false; }
+}
+
 function isVersion(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 64 && /^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(value);
 }

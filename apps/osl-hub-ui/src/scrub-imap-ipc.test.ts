@@ -23,19 +23,18 @@ describe("IMAP AutoScrub IPC contract", () => {
     invoke.mockImplementation(async (command: string) => {
       if (command === "scrub_imap_enumerate") return { findings: [{ uid: 7, mailbox: "Sent", messageId: "m@example.test", authoredBySelf: true, contentFingerprint: "sha256:abc" }], authEpoch: "epoch-2" };
       if (command === "scrub_imap_inspect") return { state: "present", authoredBySelf: true, contentFingerprint: "sha256:abc", authEpoch: "epoch-2", schemaVersion: "imap-v1", retractable: true, detail: "present" };
-      if (command === "scrub_imap_delete") return { accepted: true, authEpoch: "epoch-2", detail: "accepted" };
       return { outcome: "confirmed-deleted", authEpoch: "epoch-2", detail: "absent" };
     });
     const prepared = await prepareScrubImapFindings([{ accountId: "mail", mailbox: "Sent", messageId: "m@example.test", sinceDate: 12 }], proof);
     const adapter = await createDesktopAutoScrubBridge(["mail"]).adapter("imap", "mail", prepared, proof);
     await adapter.inspect(prepared[0]);
-    await adapter.delete(prepared[0]);
+    await expect(adapter.delete(prepared[0])).rejects.toThrow("one-shot reviewed consent");
     await adapter.verify(prepared[0]);
     expect(prepared).toEqual([finding]);
     for (const call of invoke.mock.calls) {
       expect(call[1].request.expectedAuthEpoch).toBe("epoch-2");
     }
-    expect(invoke.mock.calls.find(([command]) => command === "scrub_imap_delete")?.[1].request.expectedContentFingerprint).toBe("sha256:abc");
+    expect(invoke.mock.calls.some(([command]) => command === "scrub_imap_delete")).toBe(false);
     expect(invoke.mock.calls[0][1]).toEqual({ request: { accountId: "mail", expectedAuthEpoch: "epoch-2", mailbox: "Sent", messageId: "m@example.test", sinceDateUnixMs: 12, expectedContentFingerprint: null } });
   });
 
@@ -43,7 +42,8 @@ describe("IMAP AutoScrub IPC contract", () => {
     invoke.mockResolvedValue({ configured: true, liveConfirmed: true, authEpoch: null, detail: "ok" });
     const single = await createDesktopAutoScrubBridge(["mail-a"]).capabilities();
     const ambiguous = await createDesktopAutoScrubBridge(["mail-a", "mail-b"]).capabilities();
-    expect(single.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(true);
+    expect(single.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(false);
+    expect(single.find((capability) => capability.providerId === "imap")?.coverage).toContain("Read-only");
     expect(ambiguous.find((capability) => capability.providerId === "imap")?.liveConfirmed).toBe(false);
     expect(single[0]).toMatchObject({ providerId: "gmail-web", primary: true, liveConfirmed: false });
     expect(invoke).toHaveBeenCalledWith("get_scrub_imap_capability", { request: { accountId: "mail-a" } });

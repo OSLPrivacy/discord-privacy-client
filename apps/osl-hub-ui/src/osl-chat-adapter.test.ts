@@ -21,7 +21,8 @@ describe("first-party OSL Chat IPC", () => {
       .mockResolvedValueOnce({ messages: [{ plaintext: "hello", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: true, expiresAt: 2_000_000_000 }], pendingViewOnce: [], acknowledgments: [], fetched: 1 })
       .mockResolvedValueOnce(undefined);
     await expect(prepareOslChatText("hello", true)).resolves.toMatchObject({ viewOnce: true });
-    await expect(openOslChatText()).resolves.toMatchObject({ fetched: 1 });
+    await expect(openOslChatText(false)).resolves.toMatchObject({ fetched: 1 });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "open_osl_chat_text", { revealViewOnce: false });
     await expect(closeOslChatContext()).resolves.toBe(true);
   });
 
