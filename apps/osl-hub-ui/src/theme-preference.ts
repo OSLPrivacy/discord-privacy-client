@@ -19,6 +19,7 @@ const existingOslUiStorageKeys = [
   "osl-saved-account-mode-v1",
   "osl-saved-native-apps-v1",
   "osl-browser-accounts-ready-v1",
+  "osl-browser-detected-services-v1",
   "osl-onboarding-resume-v1",
   "osl-onboarding-branch-v1",
   "osl-experimental-send-consent-v1",

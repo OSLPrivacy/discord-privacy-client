@@ -32,6 +32,7 @@ export interface ProtectedBrowserImportAction {
   selectedSources: BrowserImportId[];
   passwordFollowUpSources: BrowserImportId[];
   sessionOnlySources: BrowserImportId[];
+  detectedServices: HomeAppId[];
   started: true;
   mode: "firefoxMigrationWizard";
   sourceSelected: boolean;
@@ -296,11 +297,12 @@ export async function beginProtectedBrowserImport(
     throw new Error("protected browser import unavailable");
   }
   const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources, operationId });
-  if (!isExactRecord(raw, ["operationId", "selectedSources", "passwordFollowUpSources", "sessionOnlySources", "started", "mode", "sourceSelected", "manualFallback"])) {
+  if (!isExactRecord(raw, ["operationId", "selectedSources", "passwordFollowUpSources", "sessionOnlySources", "detectedServices", "started", "mode", "sourceSelected", "manualFallback"])) {
     throw new Error("invalid protected browser import response");
   }
   const passwordFollowUpSources = raw.passwordFollowUpSources;
   const sessionOnlySources = raw.sessionOnlySources;
+  const detectedServices = raw.detectedServices;
   if (raw.operationId !== operationId
     || !Array.isArray(raw.selectedSources)
     || raw.selectedSources.length !== selectedSources.length
@@ -312,6 +314,9 @@ export async function beginProtectedBrowserImport(
     || sessionOnlySources.some((id) => !selectedSources.includes(id as BrowserImportId))
     || new Set(sessionOnlySources).size !== sessionOnlySources.length
     || sessionOnlySources.some((id) => passwordFollowUpSources.includes(id))
+    || !Array.isArray(detectedServices)
+    || detectedServices.some((id) => !firefoxServiceIds.includes(id as HomeAppId))
+    || new Set(detectedServices).size !== detectedServices.length
     || raw.started !== true
     || raw.mode !== "firefoxMigrationWizard"
     || typeof raw.sourceSelected !== "boolean"

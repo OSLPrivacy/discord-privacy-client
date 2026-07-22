@@ -149,12 +149,15 @@ let mullvadStatus: MullvadStatus = { availability: "unavailable" };
 let mullvadBusy = false;
 let mullvadPreference: "auto" | "off" | null = null;
 let browserImports: BrowserImportStatus[] = [];
+let selectedBrowserImports = new Set<BrowserImportId>();
+let browserImportSelectionInitialized = false;
 let browserImportBusy = false;
 let browserReadinessBusy = false;
 let browserImportCancelling = false;
 let browserImportOperation: { operationId: string; result: ReturnType<typeof beginProtectedBrowserImport> } | null = null;
 let browserImportProgress = "";
 let browserImportFailureNotice = "";
+let detectedBrowserServices = new Set<HomeAppId>();
 let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
 let savedAccountsReady = false;
 let savedAccountMode: SavedAccountMode = "ask";
@@ -273,6 +276,7 @@ const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
 const savedAccountsReadyStorageKey = "osl-browser-accounts-ready-v1";
+const detectedBrowserServicesStorageKey = "osl-browser-detected-services-v1";
 const mullvadStartupStorageKey = "osl-mullvad-open-on-start-v1";
 const setupPrivacyStorageKey = "osl-setup-privacy-v1";
 const detectedAccountChoicesStorageKey = "osl-detected-account-opening-v1";
@@ -286,7 +290,7 @@ const oslChatRemoteAccessStorageKey = "osl-chat-remote-access-v1";
 const friendDefaultOslChatStorageKey = "osl-friend-default-chat-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
-  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
+  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -449,9 +453,25 @@ function activeBrowserImportPendingStorageKey(): string | null {
   return identityScopedStorageKey(browserImportPendingStorageKey);
 }
 
+function activeDetectedBrowserServicesStorageKey(): string | null {
+  return identityScopedStorageKey(detectedBrowserServicesStorageKey);
+}
+
 function refreshActiveBrowserAccountsReady(): void {
   const key = activeBrowserAccountsReadyStorageKey();
   savedAccountsReady = key !== null && localStorage.getItem(key) === "true";
+  detectedBrowserServices.clear();
+  const detectedKey = activeDetectedBrowserServicesStorageKey();
+  if (detectedKey !== null) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(detectedKey) ?? "[]") as unknown;
+      if (Array.isArray(parsed)) for (const id of parsed) {
+        if (typeof id === "string" && importedFirefoxHomeAppIds.has(id as HomeAppId)) detectedBrowserServices.add(id as HomeAppId);
+      }
+    } catch {
+      localStorage.removeItem(detectedKey);
+    }
+  }
   const pendingKey = activeBrowserImportPendingStorageKey();
   if (!savedAccountsReady && pendingKey !== null) localStorage.removeItem(pendingKey);
 }
@@ -680,6 +700,7 @@ function detectedAccountChoiceKey(serviceId: string, accountId: string): string 
 
 function persistDetectedAccountChoices(): void {
   const valid = new Set(services.flatMap((service) => service.accounts.map((account) => detectedAccountChoiceKey(service.id, account.id))));
+  for (const appId of detectedBrowserServices) valid.add(detectedAccountChoiceKey("browser", appId));
   for (const key of detectedAccountChoices.keys()) if (!valid.has(key)) detectedAccountChoices.delete(key);
   localStorage.setItem(detectedAccountChoicesStorageKey, JSON.stringify([...detectedAccountChoices]));
 }
@@ -698,13 +719,21 @@ function selectedInstalledNativeApp(appId: HomeAppId): NativeApp | undefined {
 function detectedAppsContent(): string {
   const installedIds = new Set(nativeApps.filter((app) => app.availability === "installed").map((app) => app.id));
   const accounts = services.flatMap((service) => service.accounts.map((account) => ({ service, account })));
-  const rows = accounts.length
-    ? accounts.map(({ service, account }) => {
+  const configuredAppIds = new Set(accounts.map(({ service, account }) => service.id === "email" && account.provider ? account.provider : service.id));
+  const browserApps = homeAppsFromServices(services).filter((app) => detectedBrowserServices.has(app.id) && !configuredAppIds.has(app.id));
+  const accountRows = accounts.map(({ service, account }) => {
       const id = detectedAccountChoiceKey(service.id, account.id);
       const choice = detectedAccountChoices.get(id) ?? "existing";
       const source = installedIds.has(service.id as NativeAppId) ? "Installed app" : savedAccountsReady ? "Imported browser data" : "OSL profile";
       return `<article class="detected-account-row detected-account-${choice}" data-detected-account-row="${escapeHtml(id)}"><span class="detected-account-logo service-brand-badge" data-service-brand="${service.id}">${serviceLogo(service.id)}</span><span class="detected-account-name"><strong>${escapeHtml(service.displayName)}</strong><small>${escapeHtml(account.displayHandle || account.label)}</small><em>${source}</em></span><label><span class="sr-only">How to open ${escapeHtml(account.label)}</span><select data-detected-account="${escapeHtml(id)}" aria-label="How to open ${escapeHtml(account.label)}"><option value="existing" ${choice === "existing" ? "selected" : ""}>Use current desktop session · provider-wide</option><option value="osl" ${choice === "osl" ? "selected" : ""}>Use isolated OSL profile · this account</option></select></label></article>`;
-    }).join("")
+    }).join("");
+  const browserRows = browserApps.map((app) => {
+    const id = detectedAccountChoiceKey("browser", app.id);
+    const choice = detectedAccountChoices.get(id) ?? "existing";
+    return `<article class="detected-account-row detected-account-${choice}" data-detected-account-row="${escapeHtml(id)}"><span class="detected-account-logo">${homeAppLogo(app)}</span><span class="detected-account-name"><strong>${escapeHtml(app.displayName)}</strong><small>Current browser session</small><em>Found in selected browser history</em></span><label><span class="sr-only">How to open ${escapeHtml(app.displayName)}</span><select data-detected-account="${escapeHtml(id)}" aria-label="How to open ${escapeHtml(app.displayName)}"><option value="existing" ${choice === "existing" ? "selected" : ""}>Use current browser session</option><option value="osl" ${choice === "osl" ? "selected" : ""}>Create isolated OSL profile</option></select></label></article>`;
+  }).join("");
+  const rows = accountRows || browserRows
+    ? `${accountRows}${browserRows}`
     : savedAccountsReady
       ? `<div class="empty-state"><strong>Current browser sessions ready</strong><p>Exact account names stay in your browser. Open an app from Home to use its current signed-in session.</p></div>`
       : `<div class="empty-state"><strong>No accounts detected</strong><p>You can add services from Home later.</p></div>`;
@@ -713,17 +742,19 @@ function detectedAppsContent(): string {
 
 function browserImportContent(): string {
   const installed = browserImports.filter((browser) => browser.installed);
+  const selectedCount = installed.filter((browser) => selectedBrowserImports.has(browser.id)).length;
+  const allSelected = installed.length > 0 && selectedCount === installed.length;
   const sources = installed.length
-    ? `<section class="browser-detected-sources" aria-label="Detected browsers"><div class="browser-detected-list">${installed.map((browser) => `<div class="browser-detected-item">${browserLogo(browser.id)}<strong>${escapeHtml(browser.displayName)}</strong></div>`).join("")}</div></section>`
+    ? `<section class="browser-detected-sources" aria-label="Detected browsers"><div class="browser-detected-heading"><span>${selectedCount} selected</span><button type="button" id="toggle-all-browser-imports" ${browserImportBusy ? "disabled" : ""}>${allSelected ? "Clear all" : "Select all"}</button></div><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<strong>${escapeHtml(browser.displayName)}</strong><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImports.has(browser.id) ? "checked" : ""} ${browserImportBusy ? "disabled" : ""} aria-label="Import from ${escapeHtml(browser.displayName)}"></label>`).join("")}</div></section>`
     : `<p class="saved-account-truth">No supported browser detected.</p>`;
   const ready = savedAccountsReady
     ? `<div class="saved-account-browser-note"><strong>Browser import completed</strong><small>Account contents remain browser-owned.</small></div>`
     : "";
   const failure = browserImportFailureNotice ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>` : "";
-  const importEnabled = installed.length > 0 && firefoxStatus.availability === "installed" && !browserReadinessBusy && !browserImportBusy;
+  const importEnabled = selectedCount > 0 && firefoxStatus.availability === "installed" && !browserReadinessBusy && !browserImportBusy;
   const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : browserImportBusy ? "Cancel import" : "Not now";
-  const primaryLabel = browserImportBusy ? escapeHtml(browserImportProgress || "Working…") : "Import all";
-  return `<h1 id="route-heading" tabindex="-1">Import browser data</h1><p class="compact-lead onboarding-centered-copy">Move supported data from every detected browser.</p>${sources}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${primaryLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Stays inside OSL. Windows may ask before protected passwords are used.</p>`;
+  const primaryLabel = browserImportBusy ? escapeHtml(browserImportProgress || "Working…") : `Import selected${selectedCount ? ` (${selectedCount})` : ""}`;
+  return `<h1 id="route-heading" tabindex="-1">Import browser data</h1><p class="compact-lead onboarding-centered-copy">Choose only the browsers you want to import.</p>${sources}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${primaryLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Stays inside OSL. Windows may ask before protected passwords are used.</p>`;
 }
 
 async function importOneBrowser(source: BrowserImportId, position: number, total: number): Promise<Awaited<ReturnType<typeof beginProtectedBrowserImport>>> {
@@ -778,9 +809,24 @@ function bindSavedAccountControls(): void {
 }
 
 function bindBrowserImportControls(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-browser-source]").forEach((input) => input.addEventListener("change", () => {
+    if (browserImportBusy) return;
+    const source = input.dataset.browserSource as BrowserImportId;
+    if (!browserImports.some((browser) => browser.installed && browser.id === source)) return;
+    if (input.checked) selectedBrowserImports.add(source);
+    else selectedBrowserImports.delete(source);
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#toggle-all-browser-imports")?.addEventListener("click", () => {
+    if (browserImportBusy) return;
+    const installed = browserImports.filter((browser) => browser.installed).map((browser) => browser.id);
+    const allSelected = installed.length > 0 && installed.every((source) => selectedBrowserImports.has(source));
+    selectedBrowserImports = new Set(allSelected ? [] : installed);
+    render();
+  });
   document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", async () => {
     if (browserImportBusy || savedAccountsReady) return;
-    const selected = browserImports.filter((browser) => browser.installed).map((browser) => browser.id);
+    const selected = browserImports.filter((browser) => browser.installed && selectedBrowserImports.has(browser.id)).map((browser) => browser.id);
     if (selected.length === 0) return;
     browserImportBusy = true;
     browserImportFailureNotice = "";
@@ -792,6 +838,9 @@ function bindBrowserImportControls(): void {
       const readyKey = activeBrowserAccountsReadyStorageKey();
       if (readyKey) localStorage.setItem(readyKey, "true");
       savedAccountsReady = true;
+      detectedBrowserServices = new Set(results.flatMap((result) => result.detectedServices));
+      const detectedKey = activeDetectedBrowserServicesStorageKey();
+      if (detectedKey) localStorage.setItem(detectedKey, JSON.stringify([...detectedBrowserServices]));
       savedAccountMode = "use";
       persistSavedAccountPreferences();
       const needsFollowUp = results.some((result) => result.sessionOnlySources.length || result.passwordFollowUpSources.length);
@@ -842,7 +891,15 @@ async function refreshBrowserImportReadiness(): Promise<void> {
     withNativeDeadline(loadFirefoxStatus(), "Refresh Firefox", nativeCatalogDecisionDeadlineMs).catch(() => null),
   ]);
   try {
-    if (catalog) browserImports = catalog;
+    if (catalog) {
+      browserImports = catalog;
+      const installed = new Set(catalog.filter((browser) => browser.installed).map((browser) => browser.id));
+      selectedBrowserImports = new Set([...selectedBrowserImports].filter((source) => installed.has(source)));
+      if (!browserImportSelectionInitialized && installed.size > 0) {
+        selectedBrowserImports = installed;
+        browserImportSelectionInitialized = true;
+      }
+    }
     if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
     if (!catalog && !currentFirefoxStatus) throw new Error("browser readiness unavailable");
   } catch {
@@ -3194,7 +3251,8 @@ async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promis
       void openNativeHostedApp(app, service, native.id);
     } else if (savedAccountsReady && firefoxStatus.availability === "installed" && importedFirefoxHomeAppIds.has(app.id)) {
       try {
-        if (savedAccountMode === "use") {
+        const isolatedBrowserProfile = detectedAccountChoices.get(detectedAccountChoiceKey("browser", app.id)) === "osl";
+        if (savedAccountMode === "use" && !isolatedBrowserProfile) {
           await launchSystemBrowserService(app.id);
           showToast(`${app.displayName} opened in your current browser session`);
         } else {
