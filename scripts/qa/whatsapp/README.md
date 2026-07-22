@@ -20,3 +20,27 @@ python3 scripts/qa/whatsapp/whatsapp-bootstrap-orchestrator.py \
 Use a fresh invocation ID for an independent audit record. Reusing the same ID with the same VM session is idempotent and returns `alreadyArmed` or `alreadyCompleted`.
 
 This command was not run during implementation.
+
+## Metadata-only UIA structure probe
+
+`whatsapp-uia-probe-orchestrator.py` arms an independently hash-pinned,
+limited-user scheduled task in the exact `osltest` session. The task attaches
+only when one exact official Store package, process, and main window exist.
+
+It records only bounded structural metadata needed to review a future selector
+contract: control type, strictly screened automation/class/framework tokens,
+salted runtime hashes, quantized relative geometry, state flags, and structural
+parent hashes. It never reads UIA names, values, text/help properties, provider
+storage, private APIs, or content; and it never clicks, types, sends, launches,
+foregrounds, or terminates anything. Ambiguity and UI tree instability fail
+closed. The output is capped at 512 nodes, depth 12, 256 KiB, and 15 seconds.
+
+After WhatsApp is manually open in the dedicated VM's `osltest` session:
+
+```bash
+python3 scripts/qa/whatsapp/whatsapp-uia-probe-orchestrator.py \
+  --vm OSL-WhatsApp-Client-1 \
+  --invocation wa-uia-0001
+```
+
+This command was not run during implementation.

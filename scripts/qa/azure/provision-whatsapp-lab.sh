@@ -37,15 +37,17 @@ fi
 secret_dir="$(mktemp -d)"
 trap 'find "$secret_dir" -type f -exec shred -u -- {} + 2>/dev/null || true; rmdir "$secret_dir" 2>/dev/null || true' EXIT
 for client in 1 2; do
-  secret_name="whatsapp-client-${client}-admin-password"
-  if ! az keyvault secret show --vault-name "$vault_name" --name "$secret_name" --query id -o tsv >/dev/null 2>&1; then
-    secret_file="$secret_dir/client-${client}"
-    { printf 'Aa1!'; openssl rand -base64 30 | tr -d '\n'; } >"$secret_file"
-    chmod 600 "$secret_file"
-    az keyvault secret set --vault-name "$vault_name" --name "$secret_name" \
-      --file "$secret_file" --encoding utf-8 --output none
-    shred -u -- "$secret_file"
-  fi
+  for secret_role in admin primary; do
+    secret_name="whatsapp-client-${client}-${secret_role}-password"
+    if ! az keyvault secret show --vault-name "$vault_name" --name "$secret_name" --query id -o tsv >/dev/null 2>&1; then
+      secret_file="$secret_dir/client-${client}-${secret_role}"
+      { printf 'Aa1!'; openssl rand -base64 30 | tr -d '\n'; } >"$secret_file"
+      chmod 600 "$secret_file"
+      az keyvault secret set --vault-name "$vault_name" --name "$secret_name" \
+        --file "$secret_file" --encoding utf-8 --output none
+      shred -u -- "$secret_file"
+    fi
+  done
 done
 
 vault_id="$(az keyvault show --name "$vault_name" --query id -o tsv)"
@@ -72,6 +74,8 @@ for client in 1 2; do
     --role "Key Vault Secrets User" --scope "$existing_vault_id" --output none 2>/dev/null || true
   az role assignment create --assignee-object-id "$principal_id" --assignee-principal-type ServicePrincipal \
     --role "Storage Blob Data Reader" --scope "$artifact_scope" --output none 2>/dev/null || true
+  az keyvault set-policy --name "$vault_name" --object-id "$principal_id" \
+    --secret-permissions get set --output none
 done
 
 az vm list -d --resource-group "$resource_group" \

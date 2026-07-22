@@ -38,6 +38,8 @@ class WhatsAppLabTemplateTests(unittest.TestCase):
         self.assertEqual(parameters["client2AdminPassword"]["type"], "secureString")
         self.assertIn("reference: {keyVault:", self.script)
         self.assertNotIn("az keyvault secret show --vault-name \"$vault_name\" --name \"$secret_name\" --query value", self.script)
+        self.assertIn('for secret_role in admin primary', self.script)
+        self.assertIn('--secret-permissions get set', self.script)
 
     def test_rdp_is_single_owner_and_existing_vms_are_not_mutated(self) -> None:
         self.assertIn("A single-owner IPv4 /32 is required", self.script)

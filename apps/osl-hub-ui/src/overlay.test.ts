@@ -36,21 +36,25 @@ describe("trusted composer overlay", () => {
     expect(hub.local).toBe(true);
     expect(hub.webviews).toEqual(["main"]);
     expect(hub.permissions).toEqual(expect.arrayContaining([
-      "allow-prepare-encrypted-text",
-      "allow-decrypt-hub-capsule",
+      "allow-unlock-hub-password-gate",
+      "allow-claim-whatsapp-qa-window",
     ]));
     expect(hub).not.toHaveProperty("remote");
     expect(overlay.permissions).not.toEqual(expect.arrayContaining([
       "allow-prepare-encrypted-text",
       "allow-decrypt-hub-capsule",
     ]));
+    expect(hub.permissions).not.toEqual(expect.arrayContaining([
+      "allow-prepare-encrypted-text",
+      "allow-decrypt-hub-capsule",
+    ]));
   });
 
-  it("ships as a dedicated local entry with no networking, storage, or IPC", () => {
+  it("retains its zero-authority source but is not packaged by the WhatsApp-only QA build", () => {
     const vite = readRelative("../vite.config.ts");
     const source = readRelative("./overlay.ts");
     const native = readRelative("../../osl-hub/src/service_host.rs");
-    expect(vite).toContain('overlay: fileURLToPath(new URL("./overlay.html"');
+    expect(vite).not.toContain('overlay: fileURLToPath(new URL("./overlay.html"');
     expect(source).not.toMatch(/\binvoke\s*\(/);
     expect(source).not.toMatch(/\bfetch\s*\(/);
     expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB/);
