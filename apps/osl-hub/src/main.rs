@@ -43,6 +43,7 @@ use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, Service
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
+use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -292,6 +293,7 @@ async fn unlock_hub_password_gate(
         VerifiedGateRole::Stealth => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             let _ = app.state::<NativeWindowHostState>().detach();
+            let _ = app.state::<WhatsAppQaHostState>().detach();
             app.state::<HubBrokerState>().clear()?;
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
@@ -299,6 +301,7 @@ async fn unlock_hub_password_gate(
         VerifiedGateRole::Burn => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             let _ = app.state::<NativeWindowHostState>().detach();
+            let _ = app.state::<WhatsAppQaHostState>().detach();
             app.state::<HubBrokerState>().clear()?;
             let config_dir = app
                 .path()
@@ -701,6 +704,39 @@ fn focus_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
 #[tauri::command]
 fn detach_native_app_window(app: tauri::AppHandle) -> NativeWindowHostResult {
     app.state::<NativeWindowHostState>().detach()
+}
+
+#[tauri::command]
+async fn claim_whatsapp_qa_window(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<WhatsAppQaResult, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    let parent = main_window_hwnd(&app)?;
+    let operation_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        operation_app.state::<WhatsAppQaHostState>().claim(parent)
+    })
+    .await
+    .map_err(|_| "The WhatsApp QA claim was interrupted".to_owned())
+}
+
+#[tauri::command]
+fn resize_whatsapp_qa_window(app: tauri::AppHandle) -> Result<WhatsAppQaResult, String> {
+    let parent = main_window_hwnd(&app)?;
+    Ok(app.state::<WhatsAppQaHostState>().resize(parent))
+}
+
+#[tauri::command]
+fn focus_whatsapp_qa_window(app: tauri::AppHandle) -> WhatsAppQaResult {
+    app.state::<WhatsAppQaHostState>().focus()
+}
+
+#[tauri::command]
+fn detach_whatsapp_qa_window(app: tauri::AppHandle) -> WhatsAppQaResult {
+    app.state::<WhatsAppQaHostState>().detach()
 }
 
 fn with_indexed_context_write<T>(
@@ -1749,6 +1785,7 @@ fn main() {
             app.manage(HubIdentityRegistryState::default());
             app.manage(ServiceHostState::default());
             app.manage(NativeWindowHostState::default());
+            app.manage(WhatsAppQaHostState::default());
             app.manage(HubAccountSessionState::default());
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
@@ -1819,6 +1856,10 @@ fn main() {
             resize_native_app_window,
             focus_native_app_window,
             detach_native_app_window,
+            claim_whatsapp_qa_window,
+            resize_whatsapp_qa_window,
+            focus_whatsapp_qa_window,
+            detach_whatsapp_qa_window,
             create_service_account,
             open_service_host,
             close_service_host,

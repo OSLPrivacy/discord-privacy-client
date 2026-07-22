@@ -249,6 +249,26 @@ description = "Restore ownership, styles, and bounds only for the exact OSL-spaw
 commands.allow = ["detach_native_app_window"]
 
 [[permission]]
+identifier = "allow-claim-whatsapp-qa-window"
+description = "Claim exactly one already-running official Store WhatsApp main window after OSL unlock; never launches, installs, relinks, or accepts a path."
+commands.allow = ["claim_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-resize-whatsapp-qa-window"
+description = "Revalidate and align only the exact WhatsApp window already claimed by the QA host."
+commands.allow = ["resize_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-focus-whatsapp-qa-window"
+description = "Focus only the exact WhatsApp window already claimed by the QA host after identity revalidation."
+commands.allow = ["focus_whatsapp_qa_window"]
+
+[[permission]]
+identifier = "allow-detach-whatsapp-qa-window"
+description = "Stop QA tethering and restore the borrowed WhatsApp window without terminating or altering its session."
+commands.allow = ["detach_whatsapp_qa_window"]
+
+[[permission]]
 identifier = "allow-open-service-host"
 description = "Open one explicitly allowlisted service in an isolated per-account child webview."
 commands.allow = ["open_service_host"]

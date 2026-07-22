@@ -10,6 +10,8 @@ pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
+pub mod whatsapp_accessibility;
+pub mod whatsapp_qa_host;
 
 mod atomic_file;
 
