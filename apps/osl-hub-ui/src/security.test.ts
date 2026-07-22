@@ -29,7 +29,7 @@ describe("bundled preview security boundary", () => {
   it("packages local assets without a development server", () => {
     const config = JSON.parse(readRelative("../../osl-hub/tauri.conf.json")) as {
       build: Record<string, unknown>;
-      app: { security: { csp: string } };
+      app: { security: { csp: string }; windows: Array<{ decorations: boolean; resizable: boolean; shadow: boolean }> };
     };
 
     expect(config.build.frontendDist).toBe("../osl-hub-ui/dist");
@@ -37,6 +37,7 @@ describe("bundled preview security boundary", () => {
     expect(config.app.security.csp).toContain("connect-src ipc: http://ipc.localhost");
     expect(config.app.security.csp).not.toMatch(/connect-src[^;]*(?:https:|wss:|\*)/u);
     expect(config.app.security.csp).toContain("frame-src 'none'");
+    expect(config.app.windows[0]).toMatchObject({ decorations: false, resizable: true, shadow: false });
 
     const viteConfig = readRelative("../vite.config.ts");
     expect(viteConfig).toContain("modulePreload: false");
@@ -119,6 +120,7 @@ describe("bundled preview security boundary", () => {
       "allow-finish-protected-browser-import",
       "allow-cancel-protected-browser-import",
       "allow-launch-firefox-service",
+      "allow-launch-system-browser-service",
       "allow-host-native-app-window",
       "allow-resize-native-app-window",
       "allow-focus-native-app-window",
@@ -175,6 +177,7 @@ describe("bundled preview security boundary", () => {
       ["allow-get-firefox-status", "get_firefox_status"],
       ["allow-install-firefox", "install_firefox"],
       ["allow-launch-firefox-service", "launch_firefox_service"],
+      ["allow-launch-system-browser-service", "launch_system_browser_service"],
     ] as const) {
       expect(handler).toContain(`${command},`);
       expect(permissions).toContain(`identifier = "${permission}"`);

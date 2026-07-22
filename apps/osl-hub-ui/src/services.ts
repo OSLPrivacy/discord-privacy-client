@@ -427,6 +427,12 @@ export async function launchFirefoxService(serviceId: HomeAppId): Promise<void> 
   if (!isExactRecord(raw, ["serviceId", "started"]) || raw.serviceId !== serviceId || raw.started !== true) throw new Error("invalid Firefox launch response");
 }
 
+export async function launchSystemBrowserService(serviceId: HomeAppId): Promise<void> {
+  if (!isTauriRuntime() || !firefoxServiceIds.includes(serviceId)) throw new Error("Current browser launch unavailable");
+  const raw = await invoke<unknown>("launch_system_browser_service", { serviceId });
+  if (!isExactRecord(raw, ["serviceId", "started"]) || raw.serviceId !== serviceId || raw.started !== true) throw new Error("invalid current browser launch response");
+}
+
 export async function installFirefox(): Promise<void> {
   if (!isTauriRuntime()) throw new Error("Firefox installation unavailable");
   const raw = await invoke<unknown>("install_firefox");

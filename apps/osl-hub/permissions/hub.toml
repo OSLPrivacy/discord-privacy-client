@@ -309,6 +309,11 @@ description = "Open one reviewed service origin in the active identity's OSL-own
 commands.allow = ["launch_firefox_service"]
 
 [[permission]]
+identifier = "allow-launch-system-browser-service"
+description = "Open one reviewed service origin in the Windows-selected current browser session without reading cookies, tokens, passwords, or profile paths."
+commands.allow = ["launch_system_browser_service"]
+
+[[permission]]
 identifier = "allow-host-native-app-window"
 description = "Experimentally launch only a verified isolated secondary instance of one fixed messaging app and align its owned borderless window inside OSL; unsupported clients fail closed."
 commands.allow = ["host_native_app_window"]

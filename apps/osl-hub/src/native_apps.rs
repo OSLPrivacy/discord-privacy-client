@@ -54,6 +54,10 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     STARTUPINFOW,
 };
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -1247,7 +1251,7 @@ pub fn begin_protected_browser_import(
     owner_osl_user_id: &str,
     operation_id: &str,
     selected_sources: Vec<BrowserImportId>,
-    _owner_window: isize,
+    owner_window: isize,
 ) -> Result<ProtectedBrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
@@ -1294,7 +1298,7 @@ pub fn begin_protected_browser_import(
                 match crate::firefox_migration_coordinator::coordinate(
                     process_id,
                     source,
-                    0,
+                    owner_window,
                     &desktop_name,
                 ) {
                     Ok(true) => password_follow_up_sources.push(source),
@@ -1338,7 +1342,7 @@ pub fn begin_protected_browser_import(
             owner_osl_user_id,
             operation_id,
             selected_sources,
-            _owner_window,
+            owner_window,
         );
         Err("Browser account migration is available only on Windows".to_owned())
     }
@@ -1704,6 +1708,47 @@ pub fn launch_firefox_service(
         let _ = (app_local_data_dir, owner_osl_user_id);
         let _ = service_id;
         Err("Firefox service launching is available only on Windows".to_owned())
+    }
+}
+
+/// Opens one exact reviewed service origin in the user's current default
+/// browser session. Windows owns browser/profile selection; OSL neither reads
+/// nor copies cookies, tokens, passwords, or profile paths.
+pub fn launch_system_browser_service(
+    service_id: FirefoxServiceId,
+) -> Result<FirefoxLaunchResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let operation = std::ffi::OsStr::new("open")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let target = std::ffi::OsStr::new(firefox_service_url(service_id))
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        if result <= 32 {
+            return Err("Windows could not open the current browser session".to_owned());
+        }
+        Ok(FirefoxLaunchResult {
+            service_id,
+            started: true,
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = service_id;
+        Err("Current browser session launching is available only on Windows".to_owned())
     }
 }
 

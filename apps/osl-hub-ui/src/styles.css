@@ -618,7 +618,8 @@ code {
 .onboarding-shell {
   min-height: 0;
   display: grid;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .onboarding-panel {
@@ -998,13 +999,14 @@ code {
 .saved-account-browser-note small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 .browser-import-actions { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
 .browser-detected-sources {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 18px;
   padding: 0;
   border: 1px solid var(--line);
   border-right: 0;
   border-left: 0;
 }
-.browser-detected-sources > legend { width: 100%; min-height: 38px; }
 .browser-detected-list { border-top: 1px solid var(--line-soft); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .browser-detected-item {
   min-width: 0;
@@ -1015,10 +1017,8 @@ code {
   display: flex;
   align-items: center;
   gap: 10px;
-  cursor: pointer;
+  cursor: default;
 }
-.browser-import-all { border-right: 0; border-bottom: 0; background: var(--brand-wash); }
-.browser-detected-item input { width: 18px; min-height: 18px; margin-left: auto; flex: 0 0 18px; accent-color: var(--brand); }
 .browser-detected-item:nth-child(3n) { border-right: 0; }
 .browser-detected-item .company-logo { width: 27px; height: 27px; flex: 0 0 auto; }
 .browser-detected-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3952,6 +3952,8 @@ code {
 
 .onboarding-shell { position: relative; place-items: center; }
 .onboarding-panel {
+  min-width: 0;
+  max-width: 100%;
   width: min(680px, calc(100% - 48px));
   margin: auto;
   padding: 38px 0 74px;

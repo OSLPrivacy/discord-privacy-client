@@ -112,7 +112,7 @@ mod windows_impl {
 
     const WINDOW_WAIT: Duration = Duration::from_secs(8);
     const PROFILE_ITEM_WAIT: Duration = Duration::from_secs(2);
-    const IMPORT_WAIT: Duration = Duration::from_secs(300);
+    const IMPORT_WAIT: Duration = Duration::from_secs(90);
     const TREE_LIMIT: usize = 512;
 
     fn restore_foreground(window: isize) {
@@ -588,10 +588,7 @@ mod windows_impl {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        Err(
-            "Firefox import did not reach a verified completion screen within five minutes"
-                .to_owned(),
-        )
+        Err("Firefox import did not reach a verified completion screen within 90 seconds".to_owned())
     }
 
     fn coordinate_window(

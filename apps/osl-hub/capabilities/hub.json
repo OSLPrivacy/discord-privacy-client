@@ -69,6 +69,7 @@
     "allow-finish-protected-browser-import",
     "allow-cancel-protected-browser-import",
     "allow-launch-firefox-service",
+    "allow-launch-system-browser-service",
     "allow-host-native-app-window",
     "allow-resize-native-app-window",
     "allow-focus-native-app-window",

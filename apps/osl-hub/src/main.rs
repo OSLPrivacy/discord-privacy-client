@@ -946,6 +946,17 @@ async fn launch_firefox_service(
     native_apps::launch_firefox_service(&app_local_data_dir, &owner, service_id)
 }
 
+#[tauri::command]
+async fn launch_system_browser_service(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: FirefoxServiceId,
+) -> Result<FirefoxLaunchResult, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    native_apps::launch_system_browser_service(service_id)
+}
+
 #[cfg(target_os = "windows")]
 fn main_window_hwnd(app: &tauri::AppHandle) -> Result<isize, String> {
     app.get_webview_window("main")
@@ -2357,6 +2368,7 @@ fn main() {
             finish_protected_browser_import,
             cancel_protected_browser_import,
             launch_firefox_service,
+            launch_system_browser_service,
             host_native_app_window,
             resize_native_app_window,
             focus_native_app_window,
