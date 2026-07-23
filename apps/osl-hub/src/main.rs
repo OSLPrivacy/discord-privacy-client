@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(feature = "whatsapp-qa-shell")]
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedPeerProseMessage, PreparedCoreMessage, PreparedHubAttachment,
@@ -45,9 +47,13 @@ use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole}
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
 use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use serde::Serialize;
+#[cfg(feature = "whatsapp-qa-shell")]
+use std::io::Write;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tauri_plugin_updater::UpdaterExt;
+#[cfg(feature = "whatsapp-qa-shell")]
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(windows)]
 mod window_border;
@@ -361,6 +367,141 @@ async fn setup_hub_main_password(
     })
     .await
     .map_err(|_| "OSL password setup worker failed".to_string())?
+}
+
+#[cfg(feature = "whatsapp-qa-shell")]
+fn bootstrap_whatsapp_qa_device_identity(
+    state: &HubCoreState,
+    config_dir: &std::path::Path,
+) -> Result<(), String> {
+    const SECRET_FILE: &str = "whatsapp-qa-device-secret.v1";
+    let secret_path = config_dir.join(SECRET_FILE);
+    let sealer = keystore::select_best_sealer();
+    if !matches!(
+        sealer.method_label(),
+        keystore::METHOD_TPM | keystore::METHOD_KEYRING
+    ) {
+        return Err(
+            "WhatsApp QA requires persistent TPM or operating-system credential storage".to_owned(),
+        );
+    }
+    let password = if secret_path.is_file() {
+        let sealed = std::fs::read(&secret_path)
+            .map_err(|_| "WhatsApp QA device secret is unreadable".to_owned())?;
+        let plaintext = Zeroizing::new(
+            sealer
+                .unseal(&sealed)
+                .map_err(|_| "WhatsApp QA device secret authentication failed".to_owned())?,
+        );
+        let value = std::str::from_utf8(&plaintext)
+            .map_err(|_| "WhatsApp QA device secret is malformed".to_owned())?;
+        Zeroizing::new(value.to_owned())
+    } else {
+        std::fs::create_dir_all(config_dir)
+            .map_err(|_| "WhatsApp QA configuration storage is unavailable".to_owned())?;
+        let random = Zeroizing::new(crypto::random::random_bytes(32));
+        let value = Zeroizing::new(URL_SAFE_NO_PAD.encode(&*random));
+        let sealed = sealer
+            .seal(value.as_bytes())
+            .map_err(|_| "WhatsApp QA device secret could not be sealed".to_owned())?;
+        let temporary_tag = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(9));
+        let temporary =
+            config_dir.join(format!(".whatsapp-qa-device-secret.v1.{temporary_tag}.tmp"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|_| "WhatsApp QA device secret staging was rejected".to_owned())?;
+        if file
+            .write_all(&sealed)
+            .and_then(|_| file.sync_all())
+            .is_err()
+        {
+            drop(file);
+            let _ = std::fs::remove_file(&temporary);
+            return Err("WhatsApp QA device secret could not be persisted".to_owned());
+        }
+        drop(file);
+        if std::fs::rename(&temporary, &secret_path).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+            return Err("WhatsApp QA device secret could not be committed".to_owned());
+        }
+        value
+    };
+
+    let before = password_lifecycle::readiness(state);
+    if !before.identity_loaded && !before.main_password_set {
+        let mut identity = password_lifecycle::create_native_identity(state)?;
+        if let Some(phrase) = identity.identity_recovery_phrase.as_mut() {
+            phrase.zeroize();
+        }
+        identity.identity_recovery_phrase = None;
+    } else if !before.identity_loaded {
+        return Err(
+            "WhatsApp QA found an existing password without its disposable identity".to_owned(),
+        );
+    }
+    let current = password_lifecycle::readiness(state);
+    if !current.main_password_set {
+        let mut setup = password_lifecycle::setup_main_password(state, password.to_string())?;
+        setup.password_recovery_phrase.zeroize();
+    } else if !current.unlocked {
+        core_bridge::unlock_main_password(state, password.to_string())?;
+    }
+    let ready = core_bridge::readiness(state);
+    if !ready.identity_loaded || !ready.password_gate_required || !ready.unlocked {
+        return Err("WhatsApp QA device identity did not reach a verified ready state".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "whatsapp-qa-shell")]
+struct WhatsAppQaRuntimeReceiptState {
+    path: std::path::PathBuf,
+    write_lock: Mutex<()>,
+}
+
+#[cfg(feature = "whatsapp-qa-shell")]
+impl WhatsAppQaRuntimeReceiptState {
+    fn beside_current_executable() -> Result<Self, String> {
+        let executable = std::env::current_exe()
+            .map_err(|_| "WhatsApp QA executable identity is unavailable".to_owned())?;
+        let directory = executable
+            .parent()
+            .ok_or_else(|| "WhatsApp QA install directory is unavailable".to_owned())?;
+        Ok(Self {
+            path: directory.join("whatsapp-qa-runtime-status.v1.json"),
+            write_lock: Mutex::new(()),
+        })
+    }
+
+    fn write(&self, phase: &'static str, host: Option<&WhatsAppQaResult>) -> Result<(), String> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| "WhatsApp QA audit receipt is unavailable".to_owned())?;
+        let receipt = serde_json::json!({
+            "schema": "whatsapp-qa-runtime-status/v1",
+            "phase": phase,
+            "nativeWindowClaimed": host.is_some_and(|value| value.mode == "existingNativeCompanion"),
+            "protectedControlsEnabled": false,
+            "browserFallbackUsed": false,
+            "providerContentRead": false,
+            "providerPrivateStorageRead": false,
+            "hostReceipt": host,
+        });
+        let bytes = serde_json::to_vec(&receipt)
+            .map_err(|_| "WhatsApp QA audit receipt serialization failed".to_owned())?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|_| "WhatsApp QA audit receipt could not be opened".to_owned())?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "WhatsApp QA audit receipt could not be persisted".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -716,11 +857,30 @@ async fn claim_whatsapp_qa_window(
     let _owner = active_unlocked_osl_user_id(&core)?;
     let parent = main_window_hwnd(&app)?;
     let operation_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         operation_app.state::<WhatsAppQaHostState>().claim(parent)
     })
     .await
-    .map_err(|_| "The WhatsApp QA claim was interrupted".to_owned())
+    .map_err(|_| "The WhatsApp QA claim was interrupted".to_owned())?;
+    #[cfg(feature = "whatsapp-qa-shell")]
+    if app
+        .state::<WhatsAppQaRuntimeReceiptState>()
+        .write(
+            if result.mode == "existingNativeCompanion" {
+                "nativeWindowClaimed"
+            } else {
+                "failedClosed"
+            },
+            Some(&result),
+        )
+        .is_err()
+    {
+        let _ = app.state::<WhatsAppQaHostState>().detach();
+        return Err(
+            "The WhatsApp QA audit receipt failed; the native window was detached".to_owned(),
+        );
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1779,7 +1939,16 @@ fn main() {
             app.manage(ServiceScopeIndexState::load(
                 config_dir.join("service-scope-index.json"),
             ));
-            app.manage(HubCoreState::bootstrap_from_disk());
+            let core = HubCoreState::bootstrap_from_disk();
+            #[cfg(feature = "whatsapp-qa-shell")]
+            bootstrap_whatsapp_qa_device_identity(&core, &config_dir)?;
+            app.manage(core);
+            #[cfg(feature = "whatsapp-qa-shell")]
+            {
+                let runtime_receipt = WhatsAppQaRuntimeReceiptState::beside_current_executable()?;
+                runtime_receipt.write("coreReady", None)?;
+                app.manage(runtime_receipt);
+            }
             app.manage(HubBrokerState::default());
             app.manage(HubSecurityState::default());
             app.manage(HubIdentityRegistryState::default());

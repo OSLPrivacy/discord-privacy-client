@@ -12,13 +12,13 @@ describe("dedicated WhatsApp QA build surface", () => {
     expect(read("../whatsapp-qa.html")).toContain('src="/src/whatsapp-qa.ts"');
   });
 
-  it("preserves the secret-safe unlock AutomationIds and ready sentinel", () => {
+  it("has one automatic readiness sentinel and no password or setup surface", () => {
     const source = read("./whatsapp-qa.ts");
-    expect(source).toContain('id="identity-password"');
-    expect(source).toContain('id="identity-password-submit"');
     expect(source).toContain('id="whatsapp-qa-ready"');
-    expect(source).toContain("unlockHubPasswordGate(password.value)");
-    expect(source).toContain("await claim()");
+    expect(source).toContain("readiness.unlocked && readiness.identityLoaded");
+    expect(source).toContain("void claim()");
+    expect(source).not.toMatch(/type="password"|<form|unlockHubPasswordGate|createHubOslIdentity|importHubOslIdentity|setupHubMainPassword/iu);
+    expect(source).not.toMatch(/host-focus|host-resize|host-detach|Focus claimed window|Realign|Detach safely/iu);
   });
 
   it("has no browser, setup, install, provider, credential, or send authority", () => {

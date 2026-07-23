@@ -132,12 +132,12 @@ function Get-WhatsAppWindowSnapshot([object[]]$Processes) {
   $windows=[Collections.Generic.List[object]]::new()
   $callback=[OslWhatsAppDeployWindows+EnumWindowsProc]{
     param([IntPtr]$hwnd,[IntPtr]$unused)
-    [uint32]$pid=0
-    [void][OslWhatsAppDeployWindows]::GetWindowThreadProcessId($hwnd,[ref]$pid)
-    if($allowed.ContainsKey([int]$pid)) {
+    [uint32]$ownerPid=0
+    [void][OslWhatsAppDeployWindows]::GetWindowThreadProcessId($hwnd,[ref]$ownerPid)
+    if($allowed.ContainsKey([int]$ownerPid)) {
       $windows.Add([pscustomobject]@{
         Handle=$hwnd.ToInt64()
-        ProcessId=[int]$pid
+        ProcessId=[int]$ownerPid
         Visible=[OslWhatsAppDeployWindows]::IsWindowVisible($hwnd)
         Minimized=[OslWhatsAppDeployWindows]::IsIconic($hwnd)
       })
@@ -172,21 +172,40 @@ function Start-ExactOsl([string]$InteractiveUser) {
 }
 
 Assert-ArtifactLayout $ExeUri $WebView2LoaderUri
-if(-not (Test-Path -LiteralPath $oslPath -PathType Leaf) -or -not (Test-Path -LiteralPath $loaderPath -PathType Leaf)) {
-  throw 'exact OSL installation is absent or incomplete'
-}
+$installRootPresent=Test-Path -LiteralPath $installRoot -PathType Container
+$exePresent=Test-Path -LiteralPath $oslPath -PathType Leaf
+$loaderPresent=Test-Path -LiteralPath $loaderPath -PathType Leaf
+if($exePresent -xor $loaderPresent) { throw 'exact OSL installation is incomplete' }
+if(-not $installRootPresent -and ($exePresent -or $loaderPresent)) { throw 'exact OSL installation root is invalid' }
+$initialInstall=-not $exePresent
 $explorers=@(Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" | Where-Object { [int]$_.SessionId -eq $SessionId })
-if($explorers.Count -ne 1) { throw 'interactive Explorer session is unavailable or ambiguous' }
-$owner=Invoke-CimMethod -InputObject $explorers[0] -MethodName GetOwner
-if($owner.ReturnValue -ne 0 -or $owner.User -cne 'osltest' -or -not $owner.Domain) { throw 'interactive session owner is not exact osltest identity' }
-$interactiveUser="$($owner.Domain)\$($owner.User)"
+if($explorers.Count -gt 1) { throw 'interactive Explorer session is ambiguous' }
+$ownerCandidates=@()
+if($explorers.Count -eq 1) {
+  $ownerCandidates=@($explorers[0])
+} else {
+  $ownerCandidates=@(Get-CimInstance Win32_Process -Filter "Name = 'WhatsApp.Root.exe'" | Where-Object { [int]$_.SessionId -eq $SessionId })
+  if(-not $initialInstall) { $ownerCandidates+=@(Get-ExactOslPrimary | Where-Object { [int]$_.SessionId -eq $SessionId }) }
+  if($ownerCandidates.Count -eq 0) { throw 'interactive session owner evidence is unavailable' }
+}
+$ownerIdentities=@($ownerCandidates | ForEach-Object {
+  $candidateOwner=Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+  if($candidateOwner.ReturnValue -ne 0 -or $candidateOwner.User -cne 'osltest' -or -not $candidateOwner.Domain) {
+    throw 'interactive session owner is not exact osltest identity'
+  }
+  "$($candidateOwner.Domain)\$($candidateOwner.User)"
+} | Sort-Object -Unique)
+if($ownerIdentities.Count -ne 1) { throw 'interactive session owner identity is ambiguous' }
+$interactiveUser=$ownerIdentities[0]
 $package=Get-OfficialWhatsAppPackage $interactiveUser
 $whatsAppBefore=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
 $windowsBefore=@(Get-WhatsAppWindowSnapshot $whatsAppBefore)
 $primaryBefore=@(Get-ExactOslPrimary)
-if($primaryBefore.Count -ne 1) { throw 'exact OSL primary process is unavailable or ambiguous' }
+if(($initialInstall -and $primaryBefore.Count -ne 0) -or (-not $initialInstall -and $primaryBefore.Count -ne 1)) {
+  throw 'exact OSL primary process state is unavailable or ambiguous'
+}
 
-if((Get-Sha256 $oslPath) -ceq $exeExpected -and (Get-Sha256 $loaderPath) -ceq $loaderExpected) {
+if(-not $initialInstall -and (Get-Sha256 $oslPath) -ceq $exeExpected -and (Get-Sha256 $loaderPath) -ceq $loaderExpected) {
   $whatsAppAfter=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
   $windowsAfter=@(Get-WhatsAppWindowSnapshot $whatsAppAfter)
   if(-not (Test-ExactSnapshot $whatsAppBefore $whatsAppAfter) -or -not (Test-ExactSnapshot $windowsBefore $windowsAfter)) {
@@ -203,30 +222,46 @@ if((Get-Sha256 $oslPath) -ceq $exeExpected -and (Get-Sha256 $loaderPath) -ceq $l
   exit 0
 }
 
+$installRootCreated=$false
+if(-not $installRootPresent) {
+  [void](New-Item -ItemType Directory -Path $installRoot)
+  $installRootCreated=$true
+}
 foreach($reserved in @($exeStage,$loaderStage,$exeBackup,$loaderBackup,"$exeStage.download","$loaderStage.download")) {
   if(Test-Path -LiteralPath $reserved) { throw 'invocation staging or rollback path already exists' }
 }
-$replacedExe=$false;$replacedLoader=$false;$taskRegistered=$false;$oldExeHash=Get-Sha256 $oslPath;$oldLoaderHash=Get-Sha256 $loaderPath
+$replacedExe=$false;$replacedLoader=$false;$installedExe=$false;$installedLoader=$false;$taskRegistered=$false
+$oldExeHash=if($initialInstall){$null}else{Get-Sha256 $oslPath}
+$oldLoaderHash=if($initialInstall){$null}else{Get-Sha256 $loaderPath}
+$failureStage='artifactDownload'
 try {
   Save-ManagedIdentityArtifact $ExeUri $exeStage $exeExpected
   Save-ManagedIdentityArtifact $WebView2LoaderUri $loaderStage $loaderExpected
-  Stop-Process -Id ([int]$primaryBefore[0].ProcessId) -Force
-  $stopDeadline=[DateTime]::UtcNow.AddSeconds($StopTimeoutSeconds)
-  while(@(Get-ExactOslProcesses).Count -ne 0 -and [DateTime]::UtcNow -lt $stopDeadline) { Start-Sleep -Milliseconds 200 }
-  if(@(Get-ExactOslProcesses).Count -ne 0) { throw 'exact OSL process or guardian did not stop within the bounded deadline' }
-
-  [IO.File]::Replace($exeStage,$oslPath,$exeBackup,$true);$replacedExe=$true
-  [IO.File]::Replace($loaderStage,$loaderPath,$loaderBackup,$true);$replacedLoader=$true
+  $failureStage='install'
+  if($initialInstall) {
+    [IO.File]::Move($exeStage,$oslPath);$installedExe=$true
+    [IO.File]::Move($loaderStage,$loaderPath);$installedLoader=$true
+  } else {
+    Stop-Process -Id ([int]$primaryBefore[0].ProcessId) -Force
+    $stopDeadline=[DateTime]::UtcNow.AddSeconds($StopTimeoutSeconds)
+    while(@(Get-ExactOslProcesses).Count -ne 0 -and [DateTime]::UtcNow -lt $stopDeadline) { Start-Sleep -Milliseconds 200 }
+    if(@(Get-ExactOslProcesses).Count -ne 0) { throw 'exact OSL process or guardian did not stop within the bounded deadline' }
+    [IO.File]::Replace($exeStage,$oslPath,$exeBackup,$true);$replacedExe=$true
+    [IO.File]::Replace($loaderStage,$loaderPath,$loaderBackup,$true);$replacedLoader=$true
+  }
   if((Get-Sha256 $oslPath) -cne $exeExpected -or (Get-Sha256 $loaderPath) -cne $loaderExpected) { throw 'installed artifact hash mismatch' }
+  $failureStage='launch'
   $running=Start-ExactOsl $interactiveUser;$taskRegistered=$true
 
+  $failureStage='providerRevalidation'
   $whatsAppAfter=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
   $windowsAfter=@(Get-WhatsAppWindowSnapshot $whatsAppAfter)
   if(-not (Test-ExactSnapshot $whatsAppBefore $whatsAppAfter)) { throw 'WhatsApp process set changed during OSL-only deployment' }
   if(-not (Test-ExactSnapshot $windowsBefore $windowsAfter)) { throw 'WhatsApp top-level window state changed during OSL-only deployment' }
   if((Get-Sha256 $oslPath) -cne $exeExpected) { throw 'running OSL executable bytes changed after launch' }
 
-  Remove-Item -LiteralPath $exeBackup,$loaderBackup -Force
+  $failureStage='commit'
+  if(-not $initialInstall) { Remove-Item -LiteralPath $exeBackup,$loaderBackup -Force }
   $replacedExe=$false;$replacedLoader=$false
   [pscustomobject]@{
     Schema='whatsapp-deploy-preserve/v1';Status='installedPreservedAndLaunched';Terminal=$true
@@ -241,7 +276,7 @@ try {
   # A post-launch validation failure must not leave the rejected executable
   # mapped while its on-disk bytes are rolled back. Stop only the exact OSL
   # primary; never stop, close, or signal a WhatsApp process/window.
-  if($replacedExe) {
+  if($replacedExe -or $installedExe) {
     $rollbackPrimary=@(Get-ExactOslPrimary)
     if($rollbackPrimary.Count -gt 1) { throw 'deployment failed and rollback cannot identify one exact OSL primary' }
     if($rollbackPrimary.Count -eq 1) {
@@ -257,12 +292,39 @@ try {
   if($replacedExe -and (Test-Path -LiteralPath $exeBackup)) {
     if(Test-Path -LiteralPath $oslPath) {[IO.File]::Replace($exeBackup,$oslPath,$null,$true)} else {[IO.File]::Move($exeBackup,$oslPath)}
   }
-  if((Get-Sha256 $oslPath) -cne $oldExeHash -or (Get-Sha256 $loaderPath) -cne $oldLoaderHash) { throw 'deployment failed and exact rollback verification failed' }
-  if(@(Get-ExactOslPrimary).Count -eq 0) { [void](Start-ExactOsl $interactiveUser);$taskRegistered=$true }
-  throw "deployment failed; previous exact OSL build restored and relaunched: $failure"
+  if($installedLoader -and (Test-Path -LiteralPath $loaderPath)) { Remove-Item -LiteralPath $loaderPath -Force }
+  if($installedExe -and (Test-Path -LiteralPath $oslPath)) { Remove-Item -LiteralPath $oslPath -Force }
+  if($initialInstall) {
+    if((Test-Path -LiteralPath $oslPath) -or (Test-Path -LiteralPath $loaderPath)) {
+      throw 'deployment failed and fresh-install rollback verification failed'
+    }
+  } else {
+    if((Get-Sha256 $oslPath) -cne $oldExeHash -or (Get-Sha256 $loaderPath) -cne $oldLoaderHash) {
+      throw 'deployment failed and exact rollback verification failed'
+    }
+    if(@(Get-ExactOslPrimary).Count -eq 0) { [void](Start-ExactOsl $interactiveUser);$taskRegistered=$true }
+  }
+  $whatsAppRollback=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
+  $windowsRollback=@(Get-WhatsAppWindowSnapshot $whatsAppRollback)
+  if(-not (Test-ExactSnapshot $whatsAppBefore $whatsAppRollback) -or
+      -not (Test-ExactSnapshot $windowsBefore $windowsRollback)) {
+    throw 'deployment failed and WhatsApp preservation could not be revalidated after rollback'
+  }
+  [pscustomobject]@{
+    Schema='whatsapp-deploy-preserve/v1';Status='failedClosed';Terminal=$true
+    InvocationId=$InvocationId;FailureStage=$failureStage;RollbackVerified=$true
+    ExactOfficialWhatsAppPackageVerified=$true;WhatsAppProcessSetUnchanged=$true;WhatsAppWindowStateUnchanged=$true
+    OslProfileTouched=$false;WhatsAppPrivateStorageRead=$false;WhatsAppProfileTouched=$false
+    WhatsAppProcessTerminated=$false;WhatsAppWindowForegrounded=$false;BrowserFallbackUsed=$false
+  } | ConvertTo-Json -Compress
+  return
 } finally {
   if(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
   foreach($temporary in @($exeStage,$loaderStage,"$exeStage.download","$loaderStage.download")) {
     if(Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+  }
+  if($installRootCreated -and (Test-Path -LiteralPath $installRoot -PathType Container) -and
+      @(Get-ChildItem -LiteralPath $installRoot -Force).Count -eq 0) {
+    Remove-Item -LiteralPath $installRoot -Force
   }
 }

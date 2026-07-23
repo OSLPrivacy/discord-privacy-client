@@ -19,7 +19,17 @@ ARTIFACT_HOST = "osltestartifactsa7d5.blob.core.windows.net"
 ROOT = Path(__file__).resolve().parent
 DISCOVER = ROOT / "discover-whatsapp-session.ps1"
 DEPLOY = ROOT / "deploy-whatsapp-preserve.ps1"
+RUNTIME_AUDIT = ROOT / "audit-whatsapp-qa-runtime.ps1"
 SUCCESS = {"alreadyInstalledPreserved", "installedPreservedAndLaunched"}
+VM_LOCATIONS = {
+    "OSL-WhatsApp-Client-1": "centralus",
+    "OSL-WhatsApp-Client-2": "northcentralus",
+}
+COMMAND_NAMES = {
+    DISCOVER: "whatsapp-session-discovery",
+    DEPLOY: "whatsapp-build-deploy",
+    RUNTIME_AUDIT: "whatsapp-runtime-audit",
+}
 
 
 class DeploymentError(RuntimeError):
@@ -55,18 +65,46 @@ def _parse_receipt(stdout: str) -> dict[str, Any]:
 def _run_command(vm: str, script: Path, parameters: dict[str, str]) -> dict[str, Any]:
     if vm not in ALLOWED_VMS:
         raise ValueError("VM is outside the exact dedicated WhatsApp pair")
-    command = [
-        "az", "vm", "run-command", "invoke",
+    if script not in COMMAND_NAMES:
+        raise ValueError("script is outside the fixed WhatsApp QA command allowlist")
+    run_command_name = COMMAND_NAMES[script]
+    common = [
         "--resource-group", RESOURCE_GROUP,
-        "--name", vm,
-        "--command-id", "RunPowerShellScript",
-        "--scripts", f"@{script}",
+        "--vm-name", vm,
+        "--run-command-name", run_command_name,
+    ]
+    listed = subprocess.run([
+        "az", "vm", "run-command", "list",
+        "--resource-group", RESOURCE_GROUP,
+        "--vm-name", vm,
+        "--query", f"[?name=='{run_command_name}'].name | [0]",
+        "--output", "tsv", "--only-show-errors",
+    ], check=True, text=True, capture_output=True)
+    operation = "update" if listed.stdout.strip() == run_command_name else "create"
+    command = [
+        "az", "vm", "run-command", operation,
+        *common,
+        "--location", VM_LOCATIONS[vm],
+        "--script", f"@{script}",
+        "--async-execution", "false",
+        "--timeout-in-seconds", "240",
     ]
     if parameters:
         command.extend(["--parameters", *[f"{key}={value}" for key, value in parameters.items()]])
-    command.extend(["--query", "value[0].message", "--output", "tsv", "--only-show-errors"])
-    completed = subprocess.run(command, check=True, text=True, capture_output=True)
-    return _parse_receipt(completed.stdout)
+    command.extend(["--output", "none", "--only-show-errors"])
+    subprocess.run(command, check=True, text=True, capture_output=True)
+    shown = subprocess.run([
+        "az", "vm", "run-command", "show", *common,
+        "--expand", "instanceView",
+        "--query", "instanceView", "--output", "json", "--only-show-errors",
+    ], check=True, text=True, capture_output=True)
+    instance = json.loads(shown.stdout)
+    if not isinstance(instance, dict) or instance.get("executionState") != "Succeeded" or instance.get("exitCode") != 0:
+        raise DeploymentError(f"{vm}: persistent Azure RunCommand failed closed")
+    output = instance.get("output")
+    if not isinstance(output, str):
+        raise DeploymentError(f"{vm}: persistent Azure RunCommand returned no bounded output")
+    return _parse_receipt(output)
 
 
 def _discover(vm: str) -> int:
@@ -112,6 +150,24 @@ def _deploy_one(vm: str, invocation: str, artifacts: dict[str, str]) -> dict[str
         or any(result.get(key) is not False for key in required_false)
     ):
         raise DeploymentError(f"{vm}: deployment receipt failed semantic validation")
+    audit = _run_command(vm, RUNTIME_AUDIT, {
+        "ClientNumber": suffix,
+        "InvocationId": f"{invocation}-audit-c{suffix}",
+        "OslExeSha256": artifacts["exe_sha256"],
+    })
+    audit_required_false = (
+        "ProtectedControlsEnabled", "BrowserFallbackUsed", "ProviderContentRead",
+        "WhatsAppPrivateStorageRead", "ProfileRead", "InputSent", "WindowForegrounded",
+    )
+    if (
+        audit.get("Schema") != "whatsapp-qa-runtime-audit/v1"
+        or audit.get("Status") != "audited"
+        or audit.get("ExeSha256") != artifacts["exe_sha256"]
+        or audit.get("Phase") != "nativeWindowClaimed"
+        or audit.get("NativeWindowClaimed") is not True
+        or any(audit.get(key) is not False for key in audit_required_false)
+    ):
+        raise DeploymentError(f"{vm}: runtime audit receipt failed semantic validation")
     return {
         "vmName": vm,
         "status": result["Status"],
@@ -119,6 +175,11 @@ def _deploy_one(vm: str, invocation: str, artifacts: dict[str, str]) -> dict[str
         "oslProcessCount": result.get("OslProcessCount"),
         "whatsAppProcessCount": result.get("WhatsAppProcessCount"),
         "whatsAppWindowCount": result.get("WhatsAppWindowCount"),
+        "runtimeAudit": {
+            "phase": "nativeWindowClaimed",
+            "nativeWindowClaimed": True,
+            "protectedControlsEnabled": False,
+        },
         "preservation": {
             "officialPackageVerified": True,
             "processSetUnchanged": True,

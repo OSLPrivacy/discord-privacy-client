@@ -23,10 +23,10 @@ def run_command(vm: str, script: Path, parameters: list[str]) -> dict:
         "--name", vm,
         "--command-id", "RunPowerShellScript",
         "--scripts", f"@{script}",
-        "--parameters", *parameters,
-        "--query", "value[0].message",
-        "--output", "tsv",
     ]
+    if parameters:
+        command.extend(["--parameters", *parameters])
+    command.extend(["--query", "value[0].message", "--output", "tsv"])
     completed = subprocess.run(command, check=True, text=True, capture_output=True)
     for line in reversed([line.strip() for line in completed.stdout.splitlines() if line.strip()]):
         try:

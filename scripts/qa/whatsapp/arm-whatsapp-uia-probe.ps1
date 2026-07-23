@@ -97,6 +97,16 @@ public static class OslQaWindowInventory {
   [DllImport("user32.dll", SetLastError=true)] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder value, int capacity);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder value, int capacity);
+  [DllImport("oleacc.dll")]
+  private static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint objectId, ref Guid interfaceId,
+    [MarshalAs(UnmanagedType.Interface)] out object accessible);
+  public static object AccessibleClient(IntPtr hwnd) {
+    if (hwnd == IntPtr.Zero) return null;
+    var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");
+    object accessible;
+    var result = AccessibleObjectFromWindow(hwnd, unchecked((uint)-4), ref iid, out accessible);
+    return result == 0 ? accessible : null;
+  }
   public static IntPtr[] Exact(uint pid, string expectedClass, string expectedTitle) {
     var found = new List<IntPtr>();
     EnumWindows((hwnd, state) => {
@@ -231,6 +241,25 @@ try {
       if ($current.ProcessId -ne [int]$pidValue) { throw 'cross-process UIA node rejected' }
       $runtimeHash = Get-StructuralHash ([int[]]$element.GetRuntimeId())
       if (-not $runtimeHash) { throw 'UIA node runtime identity unavailable' }
+      $msaaChildCount = $null
+      $msaaRole = $null
+      $accessible = $null
+      try {
+        $accessible = [OslQaWindowInventory]::AccessibleClient([IntPtr]$current.NativeWindowHandle)
+        if ($null -ne $accessible) {
+          $candidateChildCount = [int]$accessible.accChildCount
+          $candidateRole = [int]$accessible.accRole(0)
+          if ($candidateChildCount -ge 0 -and $candidateChildCount -le $maximumNodes -and
+              $candidateRole -ge 0 -and $candidateRole -le 255) {
+            $msaaChildCount = $candidateChildCount
+            $msaaRole = $candidateRole
+          }
+        }
+      } finally {
+        if ($null -ne $accessible -and [Runtime.InteropServices.Marshal]::IsComObject($accessible)) {
+          [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($accessible)
+        }
+      }
       $nodes.Add([ordered]@{
         Depth = [int]$item.Depth
         RuntimeHash = $runtimeHash
@@ -242,6 +271,8 @@ try {
         GeometryQ16 = Get-QuantizedRect $current.BoundingRectangle $rootRect
         Enabled = [bool]$current.IsEnabled
         Offscreen = [bool]$current.IsOffscreen
+        MsaaChildCount = $msaaChildCount
+        MsaaRole = $msaaRole
       })
       if ([int]$item.Depth -lt $maximumDepth) {
         $child = $walker.GetFirstChild($element)

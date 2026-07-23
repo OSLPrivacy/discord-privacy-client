@@ -40,11 +40,13 @@ class WhatsAppUiaProbeStaticTests(unittest.TestCase):
         for allowed in (
             "ControlType.ProgrammaticName", "AutomationId", "ClassName", "FrameworkId",
             "BoundingRectangle", "IsEnabled", "IsOffscreen", "GetRuntimeId",
+            "AccessibleObjectFromWindow", "accChildCount", "accRole",
         ):
             self.assertIn(allowed, self.arm)
         forbidden = (
             r"[.]Current[.]Name\b", r"[.]NameProperty\b", r"[.]Value\b", r"ValueProperty",
             r"TextPattern", r"LegacyIAccessiblePattern", r"HelpText", r"SelectionItemPattern",
+            r"accName", r"accValue", r"accDescription", r"accHelp", r"accKeyboardShortcut",
             r"InvokePattern", r"RangeValuePattern", r"ScrollItemPattern", r"WindowPattern",
             r"GetClickablePoint", r"GetSupportedPatterns", r"GetSupportedProperties",
         )

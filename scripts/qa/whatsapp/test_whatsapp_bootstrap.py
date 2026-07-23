@@ -84,8 +84,10 @@ class WhatsAppBootstrapStaticTests(unittest.TestCase):
         self.assertIn("return 3", self.orchestrator)
 
     def test_session_discovery_is_exact_and_read_only(self) -> None:
-        self.assertIn("$matches.Count -ne 1", self.discover)
+        self.assertIn("$sessionIds.Count -ne 1", self.discover)
         self.assertIn("$owner.User -ceq 'osltest'", self.discover)
+        self.assertIn("WhatsApp.Root.exe", self.discover)
+        self.assertIn("OSL Privacy.exe", self.discover)
         self.assertIn("ProviderStorageRead = $false", self.discover)
         self.assertIn("DISCOVER", self.orchestrator)
         for mutation in ("Start-Process", "Stop-Process", "Register-ScheduledTask", "Set-Content", "Remove-Item"):
