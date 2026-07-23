@@ -17,7 +17,7 @@ describe("setup resume checkpoints", () => {
   });
 
   it("fails closed for obsolete, unknown, and malformed routes", () => {
-    for (const route of ["tutorial", "apps", "install", "unknown"]) {
+    for (const route of ["tutorial", "install", "unknown"]) {
       expect(parseSetupResumeCheckpoint(JSON.stringify({ route, scrubStep: "intro" }))).toBeNull();
     }
     expect(parseSetupResumeCheckpoint("not-json")).toBeNull();
@@ -31,7 +31,7 @@ describe("setup privacy persistence", () => {
   });
 
   it("uses secure defaults for malformed, unknown, or oversized data", () => {
-    const defaults = ["hide-notifications"];
+    const defaults = [...setupPrivacyChoiceIds];
     expect([...parseSetupPrivacyChoices("bad")]).toEqual(defaults);
     expect([...parseSetupPrivacyChoices(JSON.stringify(["unknown"]))]).toEqual(defaults);
     expect([...parseSetupPrivacyChoices(JSON.stringify([...setupPrivacyChoiceIds, "auto-lock"]))]).toEqual(defaults);

@@ -40,6 +40,9 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "hub_local_protected.json",
     "hub_people.json",
     "hub_profile.json",
+    "osl_notes.bin",
+    "osl_notes.bak",
+    "osl_notes.tmp",
     "hub_security_preferences.json",
     "store",
 ];

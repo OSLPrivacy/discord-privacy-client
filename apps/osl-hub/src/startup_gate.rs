@@ -109,6 +109,14 @@ pub fn enter_stealth_landing(state: &HubCoreState) {
     crate::identity_registry::reset_account_scoped_state(&state.osl);
 }
 
+/// Drop the process-local unlock key and every account-scoped in-memory
+/// object. The password files remain untouched so the ordinary gate can
+/// unlock the same identity again.
+pub fn lock_session(state: &HubCoreState) {
+    ipc::main_password::set_file_storage_key(None);
+    crate::identity_registry::reset_account_scoped_state(&state.osl);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

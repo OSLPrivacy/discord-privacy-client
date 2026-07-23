@@ -302,6 +302,44 @@ async fn save_osl_profile(
     .map_err(|_| "OSL profile save was interrupted".to_owned())?
 }
 
+#[tauri::command]
+async fn list_osl_notes(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<osl_privacy_hub::osl_notes::OslNote>, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tokio::task::spawn_blocking(osl_privacy_hub::osl_notes::list)
+        .await
+        .map_err(|_| "OSL Notes read was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn save_osl_note(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    input: osl_privacy_hub::osl_notes::OslNoteInput,
+) -> Result<osl_privacy_hub::osl_notes::OslNote, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tokio::task::spawn_blocking(move || osl_privacy_hub::osl_notes::upsert(input))
+        .await
+        .map_err(|_| "OSL Notes save was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn delete_osl_note(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    note_id: String,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tokio::task::spawn_blocking(move || osl_privacy_hub::osl_notes::delete(&note_id))
+        .await
+        .map_err(|_| "OSL Notes deletion was interrupted".to_owned())?
+}
+
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
     core_bridge::readiness(core)
         .active_osl_user_id
@@ -907,6 +945,97 @@ fn open_fixed_system_url(url: &'static str, failure: &'static str) -> Result<(),
         command
     };
     command.spawn().map(|_| ()).map_err(|_| failure.to_owned())
+}
+
+#[tauri::command]
+fn open_external_link_in_default_browser(url: String) -> Result<(), String> {
+    if url.len() > 2_048 {
+        return Err("The external link is too long".to_owned());
+    }
+    let parsed = url::Url::parse(&url).map_err(|_| "The external link is invalid".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("Only credential-free HTTP links can open outside OSL".to_owned());
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", parsed.as_str()]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(parsed.as_str());
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(parsed.as_str());
+        command
+    };
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "The operating-system browser could not open the link".to_owned())
+}
+
+#[tauri::command]
+async fn lock_hub_session(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    app.state::<ScrubImapState>().revoke_all();
+    service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
+    native_discord_overlay::clear_and_hide(&app);
+    let _ = app.state::<NativeWindowHostState>().terminate();
+    let _ = app.state::<MullvadWindowHostState>().restore();
+    let _ = app.state::<BrowserCompanionState>().terminate();
+    app.state::<HubBrokerState>().clear()?;
+    startup_gate::lock_session(&app.state::<HubCoreState>());
+    Ok(())
+}
+
+#[tauri::command]
+fn schedule_protected_clipboard_clear(timeout_seconds: u64) -> Result<(), String> {
+    if !(5..=300).contains(&timeout_seconds) {
+        return Err("The clipboard clear timeout is invalid".to_owned());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+        let expected_sequence = unsafe { GetClipboardSequenceNumber() };
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(timeout_seconds));
+            // Never erase content copied after OSL's protected message.
+            if unsafe { GetClipboardSequenceNumber() } != expected_sequence {
+                return;
+            }
+            use std::ptr;
+            use windows_sys::Win32::System::DataExchange::{
+                CloseClipboard, EmptyClipboard, OpenClipboard,
+            };
+            if unsafe { OpenClipboard(ptr::null_mut()) } == 0 {
+                return;
+            }
+            unsafe {
+                EmptyClipboard();
+                CloseClipboard();
+            }
+        });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = timeout_seconds;
+        Err("Timed clipboard clearing is available in the Windows app".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -3438,10 +3567,16 @@ fn main() {
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
+            open_external_link_in_default_browser,
+            lock_hub_session,
+            schedule_protected_clipboard_clear,
             save_onboarding_preferences,
             scan_local_privacy,
             get_osl_profile,
             save_osl_profile,
+            list_osl_notes,
+            save_osl_note,
+            delete_osl_note,
             initialize_scrub_index,
             append_scrub_index_chunk,
             get_scrub_index_status,

@@ -119,6 +119,24 @@ describe("OSL chats view", () => {
     expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group/iu);
   });
 
+  it("suppresses every inline message and compose link preview when disabled", () => {
+    const withLinks = model({
+      messages: [{ messageId: "m-link", direction: "incoming", body: "See https://example.org/a", state: "received", timestampLabel: "Now" }],
+      draft: "Draft https://example.net/b",
+      disableLinkPreviews: true,
+    });
+    const hidden = oslChatsViewMarkup(withLinks);
+    expect(hidden).not.toContain("osl-chat-link-preview");
+    expect(hidden).toContain("osl-chat-external-link");
+    expect(hidden).toContain('data-external-url="https://example.org/a"');
+    expect(hidden).not.toContain("<strong>example.org</strong>");
+
+    const shown = oslChatsViewMarkup({ ...withLinks, disableLinkPreviews: false });
+    expect(shown).toContain('data-external-url="https://example.org/a"');
+    expect(shown).toContain('data-external-url="https://example.net/b"');
+    expect(shown).toContain("Open in browser");
+  });
+
   it("renders unread count, muted state, and a right-click context target per friend row", () => {
     const markup = oslChatsViewMarkup(model({ friends: [friend({ unreadCount: 4, muted: true })] }));
     expect(markup).toContain('data-osl-chat-context="friend-1"');

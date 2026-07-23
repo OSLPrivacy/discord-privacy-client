@@ -49,6 +49,8 @@ pub mod mass_cleanup;
 #[cfg(feature = "core")]
 pub mod osl_profile;
 #[cfg(feature = "core")]
+pub mod osl_notes;
+#[cfg(feature = "core")]
 pub mod password_lifecycle;
 #[cfg(feature = "core")]
 pub mod scrub_imap;

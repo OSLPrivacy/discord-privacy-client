@@ -116,8 +116,10 @@ import { isActiveSetupRoute, parseSetupPrivacyChoices, parseSetupResumeCheckpoin
 import { applyAccessibilityPreferences, loadAccessibilityPreferences, saveAccessibilityPreferences, type AccessibilityPreferences, type TextScale } from "./accessibility-preference";
 import { applyThemeMod, parseThemeMod, themeModStorageKey, type ThemeMod } from "./theme-mod";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { checkExternalLink, lockHubSession, openExternalLinkInDefaultBrowser, scheduleProtectedClipboardClear } from "./privacy-features";
+import { deleteOslNote, listOslNotes, notesWorkspaceMarkup, saveOslNote, type OslNote } from "./osl-notes";
 
-type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
+type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers" | "notes";
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "recovery" | "mullvad" | "sending" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy" | "scrub";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "accessibility" | "developer" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
@@ -203,6 +205,7 @@ const backgroundInstallIds = new Set<NativeAppId>();
 const selectedFirstInstallApps = new Set<NativeAppId>();
 const selectedOnboardingApps = new Set<HomeAppId>();
 let hasExplicitOnboardingAppSelection = false;
+let onboardingAppChoicesConfirmed = false;
 let onboardingConnectAppId: HomeAppId | null = null;
 const handledOnboardingConnectApps = new Set<HomeAppId>();
 let backgroundInstallQueue: Promise<void> = Promise.resolve();
@@ -318,6 +321,11 @@ let oslChatRemoteAccessConfirmed = new Set<string>();
 let friendDefaultOslChatEnabled = false;
 let oslChatSettingsPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+let oslNotes: OslNote[] = [];
+let activeOslNoteId: string | null = null;
+let oslNotesLoading = false;
+let oslNotesError = "";
+let oslNotesSaveTimer: number | undefined;
 
 const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
@@ -349,6 +357,9 @@ const completedBrowserImportsStorageKey = "osl-browser-import-sources-v1";
 const detectedBrowserServicesStorageKey = "osl-browser-detected-services-v1";
 const mullvadStartupStorageKey = "osl-mullvad-open-on-start-v1";
 const setupPrivacyStorageKey = "osl-setup-privacy-v1";
+const privacyFeaturesStorageKey = "osl-privacy-features-v1";
+const autoLockIdleMilliseconds = 5 * 60 * 1_000;
+const protectedClipboardClearSeconds = 30;
 const detectedAccountChoicesStorageKey = "osl-detected-account-opening-v1";
 const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
 const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
@@ -375,25 +386,11 @@ const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
 const nativeCatalogDecisionDeadlineMs = 8_000;
 const protectedBrowserImportSourceDeadlineMs = 90_000;
-
-type OnboardingBranch = {
-  detected: boolean;
-  install: boolean;
-};
-
-function loadOnboardingBranch(): OnboardingBranch {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(onboardingBranchStorageKey) ?? "null") as Partial<OnboardingBranch> | null;
-    return { detected: parsed?.detected === true, install: parsed?.install === true };
-  } catch {
-    return { detected: false, install: false };
-  }
-}
-
-let onboardingBranch = loadOnboardingBranch();
+let lastTrustedActivityAt = Date.now();
+let autoLockCheckTimer: number | undefined;
+let autoLockInProgress = false;
 
 function resetOnboardingBranch(): void {
-  onboardingBranch = { detected: false, install: false };
   localStorage.removeItem(onboardingBranchStorageKey);
 }
 
@@ -458,7 +455,7 @@ function beginServiceOnboarding(): void {
 
 function markServiceOnboardingOpened(): void {
   if (!onboardingServiceSetup) return;
-  persistOnboardingResume("browser", "intro");
+  persistOnboardingResume("apps", "intro");
 }
 
 function clearServiceOnboardingResume(): void {
@@ -591,6 +588,20 @@ function activeBrowserAccountsReadyStorageKey(): string | null {
 function activeOwnerStorageKey(base: string): string | null {
   const owner = core.readiness.activeOslUserId;
   return owner ? `${base}:${encodeURIComponent(owner)}` : null;
+}
+
+function loadActivePrivacyFeatureChoices(): void {
+  const identityKey = activeOwnerStorageKey(privacyFeaturesStorageKey);
+  const stored = identityKey ? localStorage.getItem(identityKey) : null;
+  setupPrivacyChoices = parseSetupPrivacyChoices(stored ?? localStorage.getItem(setupPrivacyStorageKey));
+}
+
+function persistActivePrivacyFeatureChoices(): void {
+  const serialized = JSON.stringify([...setupPrivacyChoices]);
+  localStorage.setItem(setupPrivacyStorageKey, serialized);
+  const identityKey = activeOwnerStorageKey(privacyFeaturesStorageKey);
+  if (identityKey) localStorage.setItem(identityKey, serialized);
+  if (!setupPrivacyChoices.has("auto-lock")) lastTrustedActivityAt = Date.now();
 }
 
 function supportedBrowserId(raw: unknown): raw is BrowserImportId {
@@ -928,7 +939,7 @@ function onboardingContent(): string {
   if (onboardingRoute === "cover") return coverDraftSetupContent();
   if (onboardingRoute === "tutorial") return tutorialContent();
   if (onboardingRoute === "install") return installMissingAppsContent();
-  if (onboardingRoute === "apps") return onboardingAppsContent();
+  if (onboardingRoute === "apps") return onboardingAppChoicesConfirmed ? onboardingAppsContent() : tutorialContent();
   if (onboardingRoute === "sending") return sendingSetupContent();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
@@ -989,7 +1000,7 @@ function hasSelectedInstalledNativeApps(): boolean {
 function onboardingConnectionApps(): HomeAppCatalogEntry[] {
   return homeAppsFromServices(services)
     .filter((app) => app.visibility === "launch" && app.launchState === "available")
-    .filter((app) => selectedOnboardingApps.size === 0 || selectedOnboardingApps.has(app.id));
+    .filter((app) => !hasExplicitOnboardingAppSelection || selectedOnboardingApps.has(app.id));
 }
 
 function selectNextConnectApp(): boolean {
@@ -1009,11 +1020,12 @@ function advanceOnboardingConnection(appId: HomeAppId | null): void {
   const hasNext = selectNextConnectApp();
   activeService = null;
   activeHomeAppId = null;
+  route = "onboarding";
   if (!hasNext) {
-    void completeOnboarding();
+    onboardingRoute = "pro";
+    render();
     return;
   }
-  route = "onboarding";
   onboardingRoute = "apps";
   render();
 }
@@ -1480,12 +1492,7 @@ function sendingSetupContent(): string {
   const risk = needsRiskAcceptance(selectedMode)
     ? `<label class="send-risk"><input id="accept-send-risk" type="checkbox" ${setup.acceptedRisk && setup.acceptedRiskForMode === selectedMode ? "checked" : ""}/><span><strong>I understand</strong><small>Experimental sending can target the wrong chat if an app changes. OSL stops unless it can verify the exact app, account, chat, and composer. Each account asks again.</small></span></label>`
     : "";
-  return `<h1 id="route-heading" tabindex="-1">Privacy and sending</h1>${captureSetupMarkup()}<h2 class="setup-section-heading">Choose how to send</h2><div class="send-choice-grid">${option("clipboard", "Copy", "safe", "Safest")}${option("double", "Double Enter", "caution", "", "Can possibly break ToS")}${option("single", "Single Enter", "danger", "", "Breaks some ToS · risky")}</div>${risk}<div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
-}
-
-function captureSetupMarkup(): string {
-  const applied = windowCaptureEnabled && screenshotProtectionEnabled;
-  return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span><span class="status-tag ${applied ? "active" : ""}">${windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off"}</span></div></section>`;
+  return `<h1 id="route-heading" tabindex="-1">Privacy and sending</h1><h2 class="setup-section-heading">Choose how to send</h2><div class="send-choice-grid">${option("clipboard", "Copy", "safe", "Safest")}${option("double", "Double Enter", "caution", "", "Can possibly break ToS")}${option("single", "Single Enter", "danger", "", "Breaks some ToS · risky")}</div>${risk}<div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
 }
 
 function coverDraftSetupContent(): string {
@@ -1507,8 +1514,7 @@ function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
 
 function onboardingPrivacyContent(): string {
   const toggle = (id: SetupPrivacyChoiceId, title: string, detail: string) => `<label class="setup-status-row interactive"><span><strong>${title}</strong><small>${detail}</small></span><input type="checkbox" data-setup-privacy="${id}" ${setupPrivacyChoices.has(id) ? "checked" : ""}/></label>`;
-  const unavailable = (title: string, detail: string) => `<div class="setup-status-row" aria-disabled="true"><span><strong>${title}</strong><small>${detail}</small></span><em>Coming later</em></div>`;
-  return `<h1 id="route-heading" tabindex="-1">Privacy</h1><section class="privacy-toggle-group"><h2>On screen</h2><div class="setup-list"><label class="setup-status-row interactive"><span><strong>Windows capture resistance</strong><small>Exclude OSL from ordinary Windows capture.</small></span><input id="onboarding-screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label>${toggle("hide-notifications", "Hide notification content", "Show the app, not the message.")}${unavailable("Disable link previews", "Preview blocking is not available in this build.")}</div></section><section class="privacy-toggle-group"><h2>Links</h2><div class="setup-list">${unavailable("IP-grabber protection", "Link reputation checks are not available in this build.")}${unavailable("Open links in your default browser", "External-link routing is not available in this build.")}</div></section><section class="privacy-toggle-group"><h2>When away</h2><div class="setup-list">${unavailable("Auto-lock on idle", "Idle locking is not available in this build.")}${unavailable("Clear copied messages", "Timed clipboard clearing is not available in this build.")}</div></section><section class="decrypt-display-note"><strong>Decrypt display</strong><span>Set per protected chat.</span></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Privacy</h1><section class="privacy-toggle-group"><h2>On screen</h2><div class="setup-list"><label class="setup-status-row interactive"><span><strong>Windows capture resistance</strong><small>Exclude OSL from ordinary Windows capture.</small></span><input id="onboarding-screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label>${toggle("hide-notifications", "Hide notification content", "Show the app, not the message.")}${toggle("disable-previews", "Disable link previews", "Do not render inline URL cards in messages or drafts.")}</div></section><section class="privacy-toggle-group"><h2>Links</h2><div class="setup-list">${toggle("ip-grabber-protection", "IP-grabber protection", "Block known logger domains locally before a link opens.")}${toggle("external-default-browser", "Open links in your default browser", "Send checked HTTP links to Windows instead of opening them inside OSL.")}</div></section><section class="privacy-toggle-group"><h2>When away</h2><div class="setup-list">${toggle("auto-lock", "Auto-lock on idle", "Return to the password gate and clear the live key after 5 minutes.")}${toggle("clear-clipboard", "Clear copied messages", "Clear unchanged protected clipboard text after 30 seconds in the Windows app.")}</div></section><section class="decrypt-display-note"><strong>Decrypt display</strong><span>Set per protected chat.</span></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
 }
 
 function mullvadSetupContent(): string {
@@ -1531,22 +1537,16 @@ function scrubCategoryChooserMarkup(compact = false): string {
 
 function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   const routes: Partial<Record<OnboardingRoute, OnboardingRoute>> = {
-    pro: "recovery",
-    privacy: "pro",
+    browser: "recovery",
+    detected: "browser",
+    apps: "detected",
+    pro: "apps",
     sending: "pro",
     cover: "sending",
     passwords: "cover",
     burnpass: "passwords",
-    mullvad: "detected",
-    browser: "recovery",
-    tutorial: "browser",
-    detected: "browser",
-    install: onboardingBranch.detected ? "detected" : "tutorial",
-    apps: onboardingBranch.install
-      ? "install"
-      : onboardingBranch.detected
-        ? "detected"
-        : "tutorial",
+    mullvad: "burnpass",
+    privacy: "mullvad",
     scrub: "privacy",
   };
   return routes[current] ?? "welcome";
@@ -1639,8 +1639,10 @@ function bindOnboarding(): void {
     recoverySavedAcknowledged = false;
     resetOnboardingBranch();
     resetOnboardingConnections();
-          onboardingRoute = "pro";
+    onboardingAppChoicesConfirmed = false;
+    onboardingRoute = "browser";
     render();
+    void refreshBrowserImportReadiness();
   });
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
@@ -1651,19 +1653,33 @@ function bindOnboarding(): void {
     onboardingConnectAppId = null;
     render();
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-connect-app-choice]").forEach((button) => button.addEventListener("click", () => {
+    const appId = button.dataset.connectAppChoice as HomeAppId;
+    if (!onboardingConnectionApps().some((app) => app.id === appId) || handledOnboardingConnectApps.has(appId)) return;
+    onboardingConnectAppId = appId;
+    render();
+  }));
   document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", async () => {
     if (!await ensureNativeCatalogForAppChoice()) return;
     persistCombinedHomeChoices();
-    await completeOnboarding();
+    onboardingAppChoicesConfirmed = true;
+    resetOnboardingConnections();
+    if (selectNextConnectApp()) {
+      onboardingRoute = "apps";
+      render();
+      return;
+    }
+    onboardingRoute = "pro";
+    render();
   });
   document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
     if (savedAccountMode === "ask") savedAccountMode = nativeApps.some((app) => app.availability === "installed") ? "use" : "clean";
     if (savedAccountMode === "use") nativeApps.filter((app) => app.availability === "installed").forEach((app) => savedNativeApps.add(app.id));
     persistSavedAccountPreferences();
     persistDetectedAccountChoices();
-    onboardingRoute = "mullvad";
+    onboardingAppChoicesConfirmed = false;
+    onboardingRoute = "apps";
     render();
-    void refreshMullvadSetup();
   });
   document.querySelector<HTMLButtonElement>("#continue-install-apps")?.addEventListener("click", () => {
     const selectedInstalls = [...selectedFirstInstallApps];
@@ -1698,7 +1714,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("#skip-connect-app")?.addEventListener("click", () => {
     if (onboardingConnectAppId) handledOnboardingConnectApps.add(onboardingConnectAppId);
     if (selectNextConnectApp()) onboardingRoute = "apps";
-    else { void completeOnboarding(); return; }
+    else onboardingRoute = "pro";
     render();
   });
   document.querySelector<HTMLButtonElement>("#continue-connect-app")?.addEventListener("click", () => {
@@ -1768,14 +1784,9 @@ function bindOnboarding(): void {
   document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => {
     notificationPreviewContent = !setupPrivacyChoices.has("hide-notifications");
     localStorage.setItem(notificationPreviewStorageKey, String(notificationPreviewContent));
+    persistActivePrivacyFeatureChoices();
     onboardingRoute = "scrub";
     scrubSetupStep = "intro";
-    render();
-  });
-  document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
-    windowCaptureEnabled = (event.currentTarget as HTMLInputElement).checked;
-    screenshotProtectionEnabled = await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
-    if (windowCaptureEnabled && !screenshotProtectionEnabled) showToast("Windows capture resistance is unavailable on this device");
     render();
   });
   document.querySelector<HTMLInputElement>("#onboarding-screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
@@ -1798,7 +1809,7 @@ function bindOnboarding(): void {
     if (!id || !setupPrivacyChoiceIds.includes(id as SetupPrivacyChoiceId)) return;
     const choice = id as SetupPrivacyChoiceId;
     if (input.checked) setupPrivacyChoices.add(choice); else setupPrivacyChoices.delete(choice);
-    localStorage.setItem(setupPrivacyStorageKey, JSON.stringify([...setupPrivacyChoices]));
+    persistActivePrivacyFeatureChoices();
   }));
   document.querySelector("#skip-scrub-setup")?.addEventListener("click", () => { saveScrubSetupPlan("skip"); void completeOnboarding(); });
   document.querySelector("#start-scrub-setup")?.addEventListener("click", () => { scrubSetupStep = "accounts"; selectedOnboardingScrubAccounts = new Set(scrubAccountSelections().map(({ selection }) => `${selection.serviceId}:${selection.accountId}`)); render(); });
@@ -2015,6 +2026,7 @@ function bindPasswordForm(): void {
           loadHubPasswordRoleStatus().catch(() => null),
         ]);
         core = loadedCore;
+        loadActivePrivacyFeatureChoices();
         // The locked bootstrap intentionally cannot read the encrypted
         // service registry. Refresh it immediately after the first password
         // installs the storage key, before the setup app chooser is shown.
@@ -2065,6 +2077,7 @@ function bindPasswordForm(): void {
         }
         if (!gate.readiness?.unlocked) throw new Error("OSL did not unlock");
         core = await loadCoreIntegration();
+        loadActivePrivacyFeatureChoices();
         services = await loadLinkedServices().catch(() => services);
         passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
         if (onboardingComplete) {
@@ -2182,6 +2195,7 @@ function bindImportForm(): void {
       const passwordResult = await setupHubMainPassword(passwordSecret);
       passwordSecret = "";
       core = await loadCoreIntegration();
+      loadActivePrivacyFeatureChoices();
       services = await loadLinkedServices().catch(() => services);
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
@@ -2275,7 +2289,7 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "osl-chat") return homeHeader();
+  if (route === "home" || route === "osl-chat" || route === "notes") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -2313,6 +2327,7 @@ function workspaceContent(): string {
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
   if (route === "osl-chat") return oslChatContent();
   if (route === "osl-servers") return oslServersContent();
+  if (route === "notes") return notesWorkspaceMarkup(oslNotes, activeOslNoteId, oslNotesLoading, oslNotesError);
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
@@ -2327,7 +2342,7 @@ function workspaceContent(): string {
     : launchableHomeApps;
   const modules = [
     { id: "osl-chats", name: "OSL Chat", available: true },
-    { id: "osl-notes", name: "OSL Notes", available: false },
+    { id: "osl-notes", name: "OSL Notes", available: true },
     { id: "scrub", name: "Scrub", available: true },
   ] as const;
   const byId = new Map(homeApps.map((app) => [app.id, app]));
@@ -2393,6 +2408,7 @@ function oslChatContent(): string {
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
+    disableLinkPreviews: setupPrivacyChoices.has("disable-previews"),
   })}${attachments}${settings}</main>`;
 }
 
@@ -2881,10 +2897,12 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const privacyToggle = (id: SetupPrivacyChoiceId, title: string, detail: string) => `<label class="setting-line interactive"><span><strong>${title}</strong><small>${detail}</small></span><input type="checkbox" data-privacy-feature="${id}" ${setupPrivacyChoices.has(id) ? "checked" : ""}/></label>`;
+  const privacyControls = `<section class="settings-section privacy-feature-settings"><header><div><h3>Privacy controls</h3><p>Stored for this OSL identity and enforced locally.</p></div></header><div class="settings-list">${privacyToggle("disable-previews", "Disable link previews", "Suppress local inline URL cards in OSL Chats and the composer.")}${privacyToggle("ip-grabber-protection", "IP-grabber protection", "Deny known logger domains locally at the moment a link is opened.")}${privacyToggle("external-default-browser", "Open links in your default browser", "Checked HTTP links leave OSL only through the operating-system browser command.")}${privacyToggle("auto-lock", "Auto-lock on idle", "Lock and clear the live unlock key after 5 minutes without input.")}${privacyToggle("clear-clipboard", "Clear copied messages", "Clear unchanged protected clipboard text after 30 seconds. Windows app only.")}</div></section>`;
   const assistedDeleteWarning = `<details class="safety-disclosure"><summary>Deletion coverage</summary><div><p>Automatic removal is enabled only for a live-confirmed documented adapter with exact item readback. Hosted-session deletion for Gmail web, Discord, and Telegram web is unavailable in this build.</p><p>Exports can be scanned locally, but they cannot prove that a provider copy was removed.</p></div></details>`;
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose file"}</label><input id="privacy-export-input" class="sr-only" type="file" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>${assistedDeleteWarning}`;
   const autoScrubPlan = proActive ? "PRO · TRANSPORT-GATED" : "PRO REQUIRED";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages and attachments never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review a file</h3><p>Choose a message export or attachment of any type. OSL reports exactly what it could and could not inspect.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Automatic deletion</span><strong>Unavailable in this build</strong></div><div class="setting-line"><span>Read-only adapters</span><strong>Local exports and configured IMAP</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
+  return `<h2>Scrub</h2>${privacyControls}<p class="scrub-local-promise"><strong>Your messages and attachments never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review a file</h3><p>Choose a message export or attachment of any type. OSL reports exactly what it could and could not inspect.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Automatic deletion</span><strong>Unavailable in this build</strong></div><div class="setting-line"><span>Read-only adapters</span><strong>Local exports and configured IMAP</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
 }
 
 function autoScrubAccountIds(): string[] {
@@ -3673,6 +3691,7 @@ async function preparePeerProtectedDraft(event: SubmitEvent): Promise<void> {
   peerProtectedSheet.receipt = { direction: "sent", state: "prepared" };
   try {
     await navigator.clipboard.writeText(prepared.coverText);
+    scheduleCopiedMessageClear();
     peerProtectedSheet.status = "Encrypted and copied. OSL did not press Send.";
   } catch {
     peerProtectedSheet.status = "Encrypted. Select the protected text to copy it.";
@@ -3752,6 +3771,7 @@ async function copyPeerProtectedText(): Promise<void> {
   if (!peerProtectedSheet.coverText) return;
   try {
     await navigator.clipboard.writeText(peerProtectedSheet.coverText);
+    scheduleCopiedMessageClear();
     peerProtectedSheet.status = "Copied. Paste and send it yourself.";
   } catch {
     peerProtectedSheet.status = "Copy failed. Select the protected text manually.";
@@ -3851,6 +3871,7 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   localProtectedSheet.capsule = prepared.capsule;
   try {
     await navigator.clipboard.writeText(prepared.capsule);
+    scheduleCopiedMessageClear();
     localProtectedSheet.status = setup.sendMode === "double" || setup.sendMode === "single"
       ? "Exact composer verification is unavailable here. Copied safely; nothing was sent."
       : "Encrypted and copied. OSL did not press Send.";
@@ -3914,6 +3935,7 @@ async function copyLocalProtectedCapsule(): Promise<void> {
   if (!localProtectedSheet.capsule) return;
   try {
     await navigator.clipboard.writeText(localProtectedSheet.capsule);
+    scheduleCopiedMessageClear();
     localProtectedSheet.status = "Copied. Paste and send it yourself.";
   } catch {
     localProtectedSheet.status = "Copy failed. Select the encrypted text manually.";
@@ -3977,6 +3999,10 @@ interface WorkspaceNavigationOptions {
 async function navigateWorkspace(requestedRoute: Route, options: WorkspaceNavigationOptions = {}): Promise<void> {
   const intent = ++navigationIntentEpoch;
   if (options.openFriends) friendsDialogOpen = false;
+  if (route === "notes" && requestedRoute !== "notes") {
+    window.clearTimeout(oslNotesSaveTimer);
+    await persistActiveOslNote();
+  }
   await Promise.resolve();
   if (intent !== navigationIntentEpoch) return;
   if (route === "osl-chat") {
@@ -4010,6 +4036,16 @@ function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
+  document.querySelectorAll<HTMLButtonElement>("[data-notes-new]").forEach((button) => button.addEventListener("click", () => void createOslNote()));
+  document.querySelectorAll<HTMLButtonElement>("[data-note-id]").forEach((button) => button.addEventListener("click", async () => {
+    window.clearTimeout(oslNotesSaveTimer);
+    await persistActiveOslNote();
+    activeOslNoteId = button.dataset.noteId ?? null;
+    render();
+  }));
+  document.querySelector<HTMLInputElement>("#note-title")?.addEventListener("input", scheduleOslNoteSave);
+  document.querySelector<HTMLTextAreaElement>("#note-body")?.addEventListener("input", scheduleOslNoteSave);
+  document.querySelectorAll<HTMLButtonElement>("[data-note-delete]").forEach((button) => button.addEventListener("click", () => void removeOslNote(button.dataset.noteDelete ?? "")));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
   }));
@@ -4119,6 +4155,8 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
+  document.querySelectorAll<HTMLInputElement>("[data-privacy-feature]").forEach((input) => input.addEventListener("change", () => changePrivacyFeature(input)));
+  document.querySelectorAll<HTMLButtonElement>("[data-external-url]").forEach((button) => button.addEventListener("click", () => void openCheckedExternalLink(button.dataset.externalUrl ?? "")));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { privacyScanResult = null; privacyScanFileName = null; selectedScrubFindings.clear(); scrubReviewOpen = false; render(); });
   bindScrubControls();
@@ -4235,7 +4273,7 @@ function bindWorkspace(): void {
       clearServiceOnboardingResume();
       clearServiceGuide();
       route = "onboarding";
-      onboardingRoute = "browser";
+      onboardingRoute = "apps";
       activeService = null;
       activeHomeAppId = null;
       await closeActiveServiceSurface();
@@ -4718,9 +4756,78 @@ function openHomeModule(id: string): void {
     route = "settings";
     settingsSection = "notifications";
     render();
+  } else if (id === "osl-notes") {
+    route = "notes";
+    render();
+    void loadOslNotesWorkspace();
   } else {
-    showToast("OSL Notes is planned for a later release");
+    showToast("That OSL module is unavailable");
   }
+}
+
+async function loadOslNotesWorkspace(): Promise<void> {
+  if (oslNotesLoading) return;
+  oslNotesLoading = true;
+  oslNotesError = "";
+  render();
+  try {
+    const loaded = await listOslNotes();
+    if (!loaded) throw new Error("native Notes storage unavailable");
+    oslNotes = loaded;
+    if (!activeOslNoteId || !loaded.some((note) => note.id === activeOslNoteId)) {
+      activeOslNoteId = loaded[0]?.id ?? null;
+    }
+  } catch {
+    oslNotesError = "Encrypted Notes could not be opened. Unlock this identity and try again.";
+  } finally {
+    oslNotesLoading = false;
+    render();
+  }
+}
+
+async function createOslNote(): Promise<void> {
+  const saved = await saveOslNote({ id: null, title: "", body: "" }).catch(() => null);
+  if (!saved) {
+    showToast("The encrypted note could not be created");
+    return;
+  }
+  oslNotes = [saved, ...oslNotes];
+  activeOslNoteId = saved.id;
+  render();
+  requestAnimationFrame(() => document.querySelector<HTMLInputElement>("#note-title")?.focus());
+}
+
+async function persistActiveOslNote(): Promise<void> {
+  const active = oslNotes.find((note) => note.id === activeOslNoteId);
+  if (!active) return;
+  const title = document.querySelector<HTMLInputElement>("#note-title")?.value ?? active.title;
+  const body = document.querySelector<HTMLTextAreaElement>("#note-body")?.value ?? active.body;
+  const saved = await saveOslNote({ id: active.id, title, body }).catch(() => null);
+  const status = document.querySelector<HTMLElement>("#notes-save-state");
+  if (!saved) {
+    if (status) status.textContent = "Save failed";
+    return;
+  }
+  oslNotes = [saved, ...oslNotes.filter((note) => note.id !== saved.id)];
+  if (status) status.textContent = "Saved locally";
+}
+
+function scheduleOslNoteSave(): void {
+  const status = document.querySelector<HTMLElement>("#notes-save-state");
+  if (status) status.textContent = "Saving…";
+  window.clearTimeout(oslNotesSaveTimer);
+  oslNotesSaveTimer = window.setTimeout(() => void persistActiveOslNote(), 400);
+}
+
+async function removeOslNote(noteId: string): Promise<void> {
+  if (!confirm("Delete this encrypted note from this identity?")) return;
+  if (!await deleteOslNote(noteId).catch(() => false)) {
+    showToast("The note could not be deleted");
+    return;
+  }
+  oslNotes = oslNotes.filter((note) => note.id !== noteId);
+  activeOslNoteId = oslNotes[0]?.id ?? null;
+  render();
 }
 
 function oslChatTimestamp(seconds?: number): string {
@@ -5171,11 +5278,108 @@ async function changeScreenshotProtection(input: HTMLInputElement): Promise<void
   showToast(requested ? "Windows capture resistance enabled" : "Windows capture resistance disabled");
 }
 
+function changePrivacyFeature(input: HTMLInputElement): void {
+  const id = input.dataset.privacyFeature;
+  if (!id || !setupPrivacyChoiceIds.includes(id as SetupPrivacyChoiceId)) return;
+  const choice = id as SetupPrivacyChoiceId;
+  if (input.checked) setupPrivacyChoices.add(choice); else setupPrivacyChoices.delete(choice);
+  lastTrustedActivityAt = Date.now();
+  persistActivePrivacyFeatureChoices();
+  render();
+}
+
+async function openCheckedExternalLink(url: string): Promise<void> {
+  if (!setupPrivacyChoices.has("external-default-browser")) {
+    showToast("External links are blocked · enable default-browser links in Privacy");
+    return;
+  }
+  const decision = checkExternalLink(url, setupPrivacyChoices.has("ip-grabber-protection"));
+  if (!decision.allowed) {
+    showToast(decision.reason === "knownLinkGrabber" ? "Blocked a known IP-logger link" : "That link is not safe to open");
+    return;
+  }
+  showToast(await openExternalLinkInDefaultBrowser(decision.normalizedUrl) ? "Opened in your default browser" : "Windows could not open that link");
+}
+
+function scheduleCopiedMessageClear(): void {
+  if (!setupPrivacyChoices.has("clear-clipboard")) return;
+  void scheduleProtectedClipboardClear(protectedClipboardClearSeconds).then((scheduled) => {
+    if (!scheduled) showToast("Timed clipboard clearing is available in the Windows app");
+  });
+}
+
+function clearUnlockedRendererState(): void {
+  window.clearTimeout(oslNotesSaveTimer);
+  oslNotesSaveTimer = undefined;
+  oslNotes = [];
+  activeOslNoteId = null;
+  oslNotesError = "";
+  oslNotesLoading = false;
+  resetOslChatUiState(true);
+  oslChatDraft = "";
+  peerProtectedSheet = blankPeerProtectedModel();
+  localProtectedSheet = blankLocalProtectedModel();
+  activeContextToken = null;
+  activeProtectedContextKind = null;
+  activeEmbeddedHost = null;
+  activeNativeHostId = null;
+  activeNativeHostMode = null;
+  activeDefaultBrowserCompanion = false;
+  mullvadWindowHosted = false;
+  privacyScanResult = null;
+  privacyScanFileName = null;
+  selectedScrubFindings.clear();
+  recoveryBundle = null;
+}
+
+async function enforceIdleLock(): Promise<void> {
+  if (autoLockInProgress || !setupPrivacyChoices.has("auto-lock") || route === "onboarding" || !core.readiness.unlocked) return;
+  autoLockInProgress = true;
+  try {
+    if (!(await lockHubSession())) {
+      // If the native key-clear path is unavailable, terminating the process
+      // is the only honest fail-closed result.
+      await getCurrentWindow().close().catch(() => undefined);
+      return;
+    }
+    clearUnlockedRendererState();
+    core = await loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration));
+    route = "onboarding";
+    onboardingRoute = "unlock";
+    lastWorkspaceMarkup = null;
+    lastWorkspaceViewKey = "";
+    renderNow();
+    showToast("OSL locked after 5 minutes idle");
+  } finally {
+    autoLockInProgress = false;
+  }
+}
+
+function checkAutoLock(): void {
+  if (!setupPrivacyChoices.has("auto-lock") || route === "onboarding" || !core.readiness.unlocked) return;
+  if (Date.now() - lastTrustedActivityAt >= autoLockIdleMilliseconds) void enforceIdleLock();
+}
+
+function ensureAutoLockTimer(): void {
+  if (autoLockCheckTimer !== undefined) return;
+  autoLockCheckTimer = window.setTimeout(() => {
+    autoLockCheckTimer = undefined;
+    checkAutoLock();
+    ensureAutoLockTimer();
+  }, 1_000);
+}
+
 async function refreshIdentitySlots(): Promise<void> {
   hubIdentities = await listHubIdentities() ?? [];
 }
 
 async function refreshIdentityScopedState(): Promise<void> {
+  window.clearTimeout(oslNotesSaveTimer);
+  oslNotesSaveTimer = undefined;
+  oslNotes = [];
+  activeOslNoteId = null;
+  oslNotesError = "";
+  oslNotesLoading = false;
   if (activeOslChatContext && !(await closeOslChatContext())) {
     throw new Error("OSL Chat could not close before changing identity state");
   }
@@ -5190,6 +5394,7 @@ async function refreshIdentityScopedState(): Promise<void> {
     notificationsEnabled ? loadAppNotifications() : Promise.resolve([]),
   ]);
   core = nextCore;
+  loadActivePrivacyFeatureChoices();
   refreshActiveBrowserAccountsReady();
   hubIdentities = nextIdentities;
   friendCode = friendProfile?.friendCode ?? null;
@@ -5241,7 +5446,7 @@ async function activatePro(event: SubmitEvent): Promise<void> {
   if (submit) { submit.disabled = true; submit.textContent = "Activating…"; }
   try {
     licenseState = await validateHubActivationCode(activationCode);
-    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "privacy";
+    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "sending";
     render();
     showToast(licenseState.access === "free" ? "This code does not include active Pro access" : "Pro activated on this device");
   } catch (failure) {
@@ -5296,6 +5501,7 @@ async function createAdditionalIdentity(event: SubmitEvent): Promise<void> {
   if (!created) { showToast("Identity creation failed closed"); return; }
   newIdentityRecoveryPhrase = created.identityRecoveryPhrase;
   core = await loadCoreIntegration();
+  loadActivePrivacyFeatureChoices();
   await refreshIdentitySlots();
   render();
 }
@@ -5312,6 +5518,7 @@ async function recoverAdditionalIdentity(event: SubmitEvent): Promise<void> {
   if (!recovered) { showToast("Identity recovery failed closed"); return; }
   newIdentityRecoveryPhrase = null;
   core = await loadCoreIntegration();
+  loadActivePrivacyFeatureChoices();
   await refreshIdentitySlots();
   render();
 }
@@ -5569,6 +5776,7 @@ function usableBootCore(value: CoreIntegration): boolean {
 }
 
 function startReadyWorkspaceLoads(): void {
+  ensureAutoLockTimer();
   void setScreenshotProtection(windowCaptureEnabled).then((applied) => {
     screenshotProtectionEnabled = windowCaptureEnabled ? applied : false;
     if (applied) return;
@@ -5697,6 +5905,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
     core = coreIntegration;
+    loadActivePrivacyFeatureChoices();
     refreshActiveBrowserAccountsReady();
     const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
     const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
@@ -5757,10 +5966,16 @@ async function bootstrap(): Promise<void> {
 
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });
 window.addEventListener("keydown", (event) => {
+  lastTrustedActivityAt = Date.now();
   if (event.key !== "F11" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
   event.preventDefault();
   void toggleDesktopFullscreen().catch(() => undefined);
 });
+window.addEventListener("pointerdown", () => { lastTrustedActivityAt = Date.now(); }, { capture: true, passive: true });
+window.addEventListener("pointermove", () => { lastTrustedActivityAt = Date.now(); }, { capture: true, passive: true });
+window.addEventListener("wheel", () => { lastTrustedActivityAt = Date.now(); }, { capture: true, passive: true });
+window.addEventListener("touchstart", () => { lastTrustedActivityAt = Date.now(); }, { capture: true, passive: true });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkAutoLock(); });
 let nativeHostResizeFrame = 0;
 let nativeHostValidationBusy = false;
 let nativeHostValidationPending = false;

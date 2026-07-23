@@ -29,6 +29,15 @@ fn usable_rect(rect: [i32; 4]) -> Option<[i32; 4]> {
 }
 
 #[cfg(any(target_os = "windows", test))]
+fn rect_size(rect: [i32; 4]) -> Option<[i32; 2]> {
+    let [left, top, right, bottom] = usable_rect(rect)?;
+    Some([
+        i32::try_from(i64::from(right) - i64::from(left)).ok()?,
+        i32::try_from(i64::from(bottom) - i64::from(top)).ok()?,
+    ])
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn saved_rect_for_window(
     actual: Option<[i32; 4]>,
     iconic: bool,
@@ -44,6 +53,43 @@ fn saved_rect_for_window(
 #[cfg(any(target_os = "windows", test))]
 fn presentation_matches(visible: bool, iconic: bool, expected: [i32; 4], actual: [i32; 4]) -> bool {
     visible && !iconic && expected == actual
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn side_docked_rect(available: [i32; 4], natural_size: [i32; 2]) -> Option<[i32; 4]> {
+    let [left, top, right, bottom] = usable_rect(available)?;
+    let [natural_width, natural_height] = natural_size;
+    if natural_width <= 0 || natural_height <= 0 {
+        return None;
+    }
+
+    let available_width = i64::from(right) - i64::from(left);
+    let available_height = i64::from(bottom) - i64::from(top);
+    let natural_width = i64::from(natural_width);
+    let natural_height = i64::from(natural_height);
+
+    // Never enlarge Mullvad to fill OSL. Keep its existing window dimensions
+    // whenever they fit, and otherwise shrink proportionally along the
+    // constraining axis. The borrowed top-level window is docked against the
+    // right edge and starts below OSL's trusted header.
+    let (width, height) = if natural_width <= available_width && natural_height <= available_height
+    {
+        (natural_width, natural_height)
+    } else if available_width * natural_height <= available_height * natural_width {
+        (
+            available_width,
+            (natural_height * available_width / natural_width).max(1),
+        )
+    } else {
+        (
+            (natural_width * available_height / natural_height).max(1),
+            available_height,
+        )
+    };
+    let width = i32::try_from(width).ok()?;
+    let height = i32::try_from(height).ok()?;
+
+    Some([right - width, top, right, top + height])
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -431,6 +477,7 @@ mod windows {
         previous_style: isize,
         previous_ex_style: isize,
         previous_placement: SavedWindowPlacement,
+        natural_size: [i32; 2],
         hosted_style: isize,
         hosted_ex_style: isize,
     }
@@ -1018,9 +1065,16 @@ mod windows {
         let Some(previous_placement) = capture_window_placement(window) else {
             return Err(MullvadWindowHostReason::WindowOperationRejected);
         };
-        if saved_window_rect(window, previous_iconic).is_none() {
+        let Some(current_rect) = saved_window_rect(window, previous_iconic) else {
             return Err(MullvadWindowHostReason::WindowOperationRejected);
-        }
+        };
+        // WINDOWPLACEMENT keeps the last restored dimensions even if Mullvad
+        // was discovered minimized or maximized. Prefer that as its natural
+        // size, with the already-validated current/saved rectangle as a
+        // fail-closed fallback.
+        let natural_size = rect_size(previous_placement.normal_position)
+            .or_else(|| rect_size(rect_array(current_rect)))
+            .ok_or(MullvadWindowHostReason::WindowOperationRejected)?;
         SetLastError(ERROR_SUCCESS);
         SetWindowLongPtrW(window, GWLP_HWNDPARENT, owner as isize);
         if GetLastError() != ERROR_SUCCESS {
@@ -1044,6 +1098,7 @@ mod windows {
             previous_style,
             previous_ex_style,
             previous_placement,
+            natural_size,
             hosted_style,
             hosted_ex_style,
         };
@@ -1093,7 +1148,7 @@ mod windows {
             && GetAncestor(parent, GA_ROOT) == parent
     }
 
-    unsafe fn parent_target_rect(parent: HWND) -> Option<RECT> {
+    unsafe fn parent_target_rect(parent: HWND, natural_size: [i32; 2]) -> Option<RECT> {
         if !trusted_parent_window(parent) {
             return None;
         }
@@ -1113,11 +1168,17 @@ mod windows {
         if ClientToScreen(parent, &mut origin) == 0 {
             return None;
         }
-        Some(RECT {
-            left: origin.x,
-            top: origin.y,
-            right: origin.x + (client.right - client.left).max(1),
-            bottom: origin.y + (client.bottom - TRUSTED_VERTICAL_RESERVE).max(1),
+        let available = [
+            origin.x,
+            origin.y,
+            origin.x + (client.right - client.left).max(1),
+            origin.y + (client.bottom - TRUSTED_VERTICAL_RESERVE).max(1),
+        ];
+        side_docked_rect(available, natural_size).map(|[left, top, right, bottom]| RECT {
+            left,
+            top,
+            right,
+            bottom,
         })
     }
 
@@ -1125,7 +1186,7 @@ mod windows {
         hosted: &BorrowedMullvadWindow,
         parent: HWND,
     ) -> Option<MullvadWindowHostReason> {
-        let Some(expected) = parent_target_rect(parent) else {
+        let Some(expected) = parent_target_rect(parent, hosted.natural_size) else {
             return Some(MullvadWindowHostReason::WindowBoundsRejected);
         };
         let window = hosted.window as HWND;
@@ -1175,7 +1236,7 @@ mod windows {
         hosted: &BorrowedMullvadWindow,
         parent: HWND,
     ) -> Result<(), MullvadWindowHostReason> {
-        let Some(expected) = parent_target_rect(parent) else {
+        let Some(expected) = parent_target_rect(parent, hosted.natural_size) else {
             return Err(MullvadWindowHostReason::WindowBoundsRejected);
         };
         let window = hosted.window as HWND;
@@ -1408,6 +1469,33 @@ mod tests {
         assert!(focus_matches(true, false, false));
         assert!(!focus_matches(false, false, true));
         assert!(!focus_matches(true, true, true));
+    }
+
+    #[test]
+    fn mullvad_geometry_preserves_natural_size_and_docks_right() {
+        assert_eq!(rect_size([50, 75, 440, 723]), Some([390, 648]));
+        assert_eq!(
+            side_docked_rect([0, 98, 1280, 800], [390, 648]),
+            Some([890, 98, 1280, 746])
+        );
+        assert_eq!(
+            side_docked_rect([200, 150, 1800, 1150], [390, 648]),
+            Some([1410, 150, 1800, 798])
+        );
+    }
+
+    #[test]
+    fn mullvad_geometry_shrinks_to_fit_without_distortion() {
+        assert_eq!(
+            side_docked_rect([0, 98, 1280, 800], [390, 900]),
+            Some([976, 98, 1280, 800])
+        );
+        assert_eq!(
+            side_docked_rect([100, 200, 600, 1000], [1000, 400]),
+            Some([100, 200, 600, 400])
+        );
+        assert_eq!(side_docked_rect([0, 0, 0, 800], [390, 648]), None);
+        assert_eq!(side_docked_rect([0, 0, 1280, 800], [0, 648]), None);
     }
 
     #[test]

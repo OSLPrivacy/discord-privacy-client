@@ -4,6 +4,21 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-list-osl-notes"
+description = "Read authenticated encrypted notes for the active unlocked OSL identity."
+commands.allow = ["list_osl_notes"]
+
+[[permission]]
+identifier = "allow-save-osl-note"
+description = "Validate and atomically save one encrypted note for the active unlocked OSL identity."
+commands.allow = ["save_osl_note"]
+
+[[permission]]
+identifier = "allow-delete-osl-note"
+description = "Delete one exact encrypted note owned by the active unlocked OSL identity."
+commands.allow = ["delete_osl_note"]
+
+[[permission]]
 identifier = "allow-activate-native-manual-peer-context"
 description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
 commands.allow = ["activate_native_manual_peer_context"]
@@ -142,6 +157,21 @@ commands.allow = ["add_hub_friend_by_username"]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
+
+[[permission]]
+identifier = "allow-open-external-link-in-default-browser"
+description = "Open one bounded credential-free HTTP or HTTPS link from the trusted OSL UI through the operating-system default browser."
+commands.allow = ["open_external_link_in_default_browser"]
+
+[[permission]]
+identifier = "allow-lock-hub-session"
+description = "Close hosted surfaces, revoke transient account capabilities, and clear the process-local unlock key before returning to the password gate."
+commands.allow = ["lock_hub_session"]
+
+[[permission]]
+identifier = "allow-schedule-protected-clipboard-clear"
+description = "Schedule a bounded Windows clipboard clear only while the clipboard sequence still matches the protected message OSL just copied."
+commands.allow = ["schedule_protected_clipboard_clear"]
 
 [[permission]]
 identifier = "allow-copy-hub-friend-invite"

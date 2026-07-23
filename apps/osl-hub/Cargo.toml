@@ -28,6 +28,7 @@ bip39 = { version = "=2.2.2", default-features = false, features = ["std"], opti
 base64 = "=0.22.1"
 url = "=2.5.8"
 zeroize = "=1.9.0"
+getrandom = "=0.3.4"
 imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["native-tls"] }
 keyring = { version = "=3.6.3" }
 mailparse = "=0.16.1"

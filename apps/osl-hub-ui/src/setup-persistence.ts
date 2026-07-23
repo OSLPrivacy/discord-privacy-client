@@ -1,10 +1,13 @@
 export const activeSetupRoutes = [
   "browser",
   "detected",
-  "mullvad",
+  "apps",
+  "pro",
   "sending",
+  "cover",
   "passwords",
   "burnpass",
+  "mullvad",
   "privacy",
   "scrub",
 ] as const;
@@ -52,10 +55,9 @@ export const setupPrivacyChoiceIds = [
 export type SetupPrivacyChoiceId = typeof setupPrivacyChoiceIds[number];
 
 export function parseSetupPrivacyChoices(raw: string | null): Set<SetupPrivacyChoiceId> {
-  // Only notification redaction has a complete runtime implementation today.
-  // Unsupported future choices must never become active merely because setup
-  // storage is missing, malformed, or from a newer build.
-  const defaults = new Set<SetupPrivacyChoiceId>(["hide-notifications"]);
+  // Privacy controls fail closed when storage is absent or malformed. Every
+  // default below has a complete local enforcement path in the bundled app.
+  const defaults = new Set<SetupPrivacyChoiceId>(setupPrivacyChoiceIds);
   try {
     const value = JSON.parse(raw ?? "null") as unknown;
     if (!Array.isArray(value) || value.length > setupPrivacyChoiceIds.length) return defaults;

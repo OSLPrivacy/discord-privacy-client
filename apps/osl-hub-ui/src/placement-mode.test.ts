@@ -43,6 +43,8 @@ describe("guarded sending choices", () => {
     expect(styles).toMatch(/\.manual-send-demo span:nth-of-type\(2\)\s*\{\s*animation-delay:\s*\.78s/);
     expect(styles).toMatch(/\.manual-send-demo span:nth-of-type\(3\)\s*\{\s*animation-delay:\s*1\.56s/);
     expect(styles).toMatch(/\.manual-send-demo span:nth-of-type\(4\)\s*\{\s*animation-delay:\s*2\.34s/);
+    expect(styles).toMatch(/\.manual-send-demo\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+8px\s+minmax\(0,\s*1fr\)/);
+    expect(styles).toMatch(/\.manual-send-demo span\s*\{[^}]*min-width:\s*0;[^}]*flex-direction:\s*column/);
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.manual-send-demo span,[\s\S]*?animation: none !important/);
     expect(animationMarkup).not.toMatch(/setTimeout|setInterval|requestAnimationFrame/);
   });

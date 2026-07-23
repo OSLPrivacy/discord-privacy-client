@@ -112,11 +112,16 @@ describe("fresh-account continuation", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(previous).toContain('browser: "recovery"');
     expect(previous).toContain('detected: "browser"');
+    expect(previous).toContain('apps: "detected"');
+    expect(previous).toContain('pro: "apps"');
     expect(previous).toContain('sending: "pro"');
+    expect(previous).toContain('cover: "sending"');
     expect(previous).toContain('passwords: "cover"');
-    expect(previous).toContain('privacy: "pro"');
+    expect(previous).toContain('burnpass: "passwords"');
+    expect(previous).toContain('mullvad: "burnpass"');
+    expect(previous).toContain('privacy: "mullvad"');
     expect(previous).toContain('scrub: "privacy"');
-    expect(binding).toMatch(/#continue-detected-apps[\s\S]*?onboardingRoute = "mullvad"/);
+    expect(binding).toMatch(/#continue-detected-apps[\s\S]*?onboardingRoute = "apps"/);
     expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
     expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "scrub"/);
   });
@@ -210,7 +215,7 @@ describe("fresh-account continuation", () => {
     expect(refresh).toContain("browserImports = catalog");
     expect(refresh).toContain("firefoxStatus = currentFirefoxStatus");
     expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
-    expect(advance).toContain("void completeOnboarding()");
+    expect(advance).toContain('onboardingRoute = "pro"');
     expect(continuation).not.toContain("clearServiceOnboardingResume()");
     expect(bootstrap).toMatch(/onboardingRoute === "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
   });
@@ -245,6 +250,7 @@ describe("fresh-account continuation", () => {
 
   it("returns from each service to the remaining app queue before completion", () => {
     const continuation = functionSource("continueOnboardingFromService", "currentHomeTileIds");
+    const advance = functionSource("advanceOnboardingConnection", "ensureNativeCatalogForAppChoice");
     const workspace = functionSource("bindWorkspace", "ttlSeconds");
     const finishStart = workspace.indexOf('querySelector("#service-guide-finish")');
     const exitStart = workspace.indexOf('querySelector("#service-guide-exit")');
@@ -253,6 +259,8 @@ describe("fresh-account continuation", () => {
     expect(exitStart).toBeGreaterThan(finishStart);
     expect(nativeBackStart).toBeGreaterThan(exitStart);
     expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
+    expect(advance.indexOf('route = "onboarding"')).toBeLessThan(advance.indexOf('if (!hasNext)'));
+    expect(advance).toContain('onboardingRoute = "pro"');
     expect(workspace.slice(finishStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
     expect(workspace.slice(exitStart, nativeBackStart)).toContain("clearServiceOnboardingResume()");
     expect(functionSource("completeOnboarding", "bindPasswordForm")).toContain("clearServiceOnboardingResume()");
@@ -325,12 +333,15 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
   });
 
-  it("completes after persisting the single chooser without opening apps", () => {
+  it("persists the chooser, offers selected app connections, then advances to Pro", () => {
     const apps = functionSource("tutorialContent", "selectedNativeApps");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
+    const chooserHandler = binding.slice(binding.indexOf('querySelector<HTMLButtonElement>("#continue-app-choice")'), binding.indexOf('querySelector<HTMLButtonElement>("#continue-detected-apps")'));
     expect(apps).toContain('id="continue-app-choice"');
     expect(apps).not.toContain('id="continue-connect-app"');
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?await completeOnboarding\(\)/);
+    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?onboardingAppChoicesConfirmed = true[\s\S]*?selectNextConnectApp\(\)[\s\S]*?onboardingRoute = "pro"/);
+    expect(binding).toMatch(/#skip-connect-app[\s\S]*?selectNextConnectApp\(\)[\s\S]*?onboardingRoute = "pro"/);
+    expect(chooserHandler).not.toContain("completeOnboarding()");
   });
 
   it("persists only non-sensitive chooser state before Home", () => {
@@ -426,6 +437,8 @@ describe("fresh-account continuation", () => {
     expect(content).toContain('option("single", "Single Enter"');
     expect(content).toContain("Can possibly break ToS");
     expect(content).toContain("Breaks some ToS · risky");
+    expect(content).not.toContain("captureSetupMarkup()");
+    expect(content).not.toContain("Screen capture");
     const animation = functionSource("manualSendingAnimationMarkup", "passwordEyeIcon");
     expect(animation).toContain('step(1, "Write")');
     expect(animation).toContain('step(2, "Encrypt")');
@@ -450,20 +463,18 @@ describe("fresh-account continuation", () => {
 
   it("collects only wired password roles and exposes only real capture resistance", () => {
     const passwords = functionSource("onboardingPasswordRoleContent", "onboardingPrivacyContent");
-    const privacy = functionSource("captureSetupMarkup", "coverDraftSetupContent");
+    const privacy = functionSource("onboardingPrivacyContent", "mullvadSetupContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(passwords).toContain("Stealth password");
     expect(passwords).toContain("Burn password");
     expect(passwords).toContain('data-onboarding-password-role="${role}"');
     expect(passwords).toContain("Current password");
     expect(passwords).toContain("Set password");
-    expect(privacy).toContain("Protected messages appear only after OSL enables this protection");
-    expect(privacy).toContain('id="window-capture-enabled"');
+    expect(privacy).toContain("Windows capture resistance");
+    expect(privacy).toContain('id="onboarding-screenshot-protection"');
     expect(privacy).toContain('type="checkbox"');
-    expect(privacy).not.toContain("Decrypt display");
     expect(privacy).not.toContain("Unavailable during setup");
-    expect(privacy).not.toContain('id="decrypt-display"');
-    expect(binding).toContain("setScreenshotProtection(windowCaptureEnabled)");
+    expect(binding).toContain("changeScreenshotProtection(event.currentTarget as HTMLInputElement)");
   });
 
   it("advances password-role setup only after an explicit valid form submission", () => {

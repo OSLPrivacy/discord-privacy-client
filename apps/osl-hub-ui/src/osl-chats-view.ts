@@ -1,3 +1,5 @@
+import { externalHttpUrls } from "./privacy-features";
+
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1_000;
 
 export type OslChatDeliveryState =
@@ -37,6 +39,7 @@ export interface OslChatsViewModel {
   busy: boolean;
   viewOnce?: boolean;
   homeLogoUrl?: string;
+  disableLinkPreviews?: boolean;
 }
 
 const chatIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17.5 3.5 20v-5.2A8 8 0 0 1 3 12c0-4.4 4-8 9-8s9 3.6 9 8-4 8-9 8a10 10 0 0 1-5-1.5Z"/></svg>';
@@ -99,10 +102,22 @@ function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: b
   </div>`;
 }
 
-function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
+function linkSurface(body: string, disableLinkPreviews: boolean, composer = false): string {
+  const links = externalHttpUrls(body);
+  if (!links.length) return "";
+  if (disableLinkPreviews) {
+    return `<div class="osl-chat-external-links" aria-label="${composer ? "Draft links" : "Message links"}">${links.map((url, index) => `<button class="osl-chat-external-link" data-external-url="${escapeHtml(url)}" type="button">Open link${links.length > 1 ? ` ${index + 1}` : ""} in browser</button>`).join("")}</div>`;
+  }
+  return `<aside class="osl-chat-link-previews" aria-label="${composer ? "Draft link previews" : "Message link previews"}">${links.map((url) => {
+    const hostname = new URL(url).hostname;
+    return `<button class="osl-chat-link-preview" data-external-url="${escapeHtml(url)}" type="button"><strong>${escapeHtml(hostname)}</strong><small>${escapeHtml(url)}</small><span>Open in browser</span></button>`;
+  }).join("")}</aside>`;
+}
+
+function messageRow(message: OslChatMessage, friend: OslChatFriend, disableLinkPreviews: boolean): string {
   const label = deliveryLabel(message.state);
   return `<article class="osl-chat-message is-${message.direction}" data-message-id="${escapeHtml(message.messageId)}">
-    <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div><p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
+    <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div><p class="osl-chat-message-text">${escapeHtml(message.body)}</p>${linkSurface(message.body, disableLinkPreviews)}
     <footer><span class="osl-chat-message-state is-${message.state}">${label}</span></footer>
   </article>`;
 }
@@ -124,7 +139,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
       ? "Chat is not ready."
       : "";
   const messages = model.messages.length
-    ? model.messages.map((message) => messageRow(message, friend)).join("")
+    ? model.messages.map((message) => messageRow(message, friend, model.disableLinkPreviews === true)).join("")
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
@@ -132,7 +147,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
       <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Removed from the relay when opened and never added to OSL history.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
-      <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
+      ${linkSurface(model.draft, model.disableLinkPreviews === true, true)}<div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;
 }
