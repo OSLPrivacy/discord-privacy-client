@@ -112,17 +112,18 @@ describe("fresh-account continuation", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(previous).toContain('browser: "recovery"');
     expect(previous).toContain('detected: "browser"');
-    expect(previous).toContain('apps: "detected"');
-    expect(previous).toContain('pro: "apps"');
-    expect(previous).toContain('sending: "pro"');
-    expect(previous).toContain('cover: "sending"');
-    expect(previous).toContain('passwords: "cover"');
+    expect(previous).toContain('mullvad: "detected"');
+    expect(previous).toContain('sending: "mullvad"');
+    expect(previous).toContain('passwords: "sending"');
     expect(previous).toContain('burnpass: "passwords"');
-    expect(previous).toContain('mullvad: "burnpass"');
-    expect(previous).toContain('privacy: "mullvad"');
+    expect(previous).toContain('privacy: "burnpass"');
     expect(previous).toContain('scrub: "privacy"');
-    expect(binding).toMatch(/#continue-detected-apps[\s\S]*?onboardingRoute = "apps"/);
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
+    const routeMap = previous.slice(previous.indexOf("const routes"), previous.indexOf("return routes"));
+    expect(routeMap).not.toContain("apps:");
+    expect(routeMap).not.toContain("pro:");
+    expect(routeMap).not.toContain("cover:");
+    expect(binding).toMatch(/#continue-detected-apps[\s\S]*?onboardingRoute = "mullvad"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
     expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "scrub"/);
   });
 
@@ -158,7 +159,7 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain("selectedBrowserImports.delete(source)");
     expect(source).toContain("beginProtectedBrowserImport(selected, operationId)");
     expect(source).toContain("finishProtectedBrowserImport(operationId)");
-    expect(binding).toContain('onboardingRoute = "detected"');
+    expect(binding).toContain("onboardingRoute = routeAfterBrowserStep()");
     expect(binding).not.toContain("window.confirm");
     expect(source).not.toContain("browserPasswordImportOptIn");
     expect(source).not.toContain("data-browser-password-import");
@@ -192,7 +193,7 @@ describe("fresh-account continuation", () => {
   it("opens and completes only the selected browser imports with one explicit OSL action", () => {
     const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
     const worker = functionSource("importSelectedBrowsers", "persistSavedAccountPreferences");
-    expect(binding).toMatch(/#import-saved-accounts[\s\S]*?browserImports\.filter\(\(browser\) => browser\.installed && selectedBrowserImports\.has\(browser\.id\)\)[\s\S]*?importSelectedBrowsers\(selected\)[\s\S]*?savedAccountsReady = true[\s\S]*?onboardingRoute = "detected"/);
+    expect(binding).toMatch(/#import-saved-accounts[\s\S]*?browserImports\.filter\(\(browser\) => browser\.installed && selectedBrowserImports\.has\(browser\.id\)\)[\s\S]*?importSelectedBrowsers\(selected\)[\s\S]*?savedAccountsReady = true[\s\S]*?onboardingRoute = nextRoute/);
     expect(worker).toContain("beginProtectedBrowserImport(selected, operationId)");
     expect(worker).toContain("finishProtectedBrowserImport(operationId)");
     expect(worker).toContain("protectedBrowserImportDeadlineMs");
@@ -203,7 +204,8 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain("detectedBrowserServices = new Set(result.detectedServices)");
     expect(binding).toContain('savedAccountMode = "use"');
     expect(binding).toContain("persistSavedAccountPreferences()");
-    expect(binding).toContain("result.failedSources.length > 0");
+    expect(binding).toContain('showToast("Browser import finished")');
+    expect(binding).not.toContain("failed sources");
     expect(binding).toContain("cancelProtectedBrowserImport(operation.operationId)");
     expect(binding).toContain("selected.length === 0");
     expect(binding).not.toContain("#install-firefox");
@@ -214,16 +216,14 @@ describe("fresh-account continuation", () => {
     const browser = functionSource("browserImportContent", "persistSavedAccountPreferences");
     const refresh = functionSource("refreshBrowserImportReadiness", "importIdentityForm");
     const continuation = functionSource("continueOnboardingFromService", "currentHomeTileIds");
-    const advance = functionSource("advanceOnboardingConnection", "ensureNativeCatalogForAppChoice");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
     expect(browser).toContain("browserReadinessBusy");
     expect(refresh).toContain('loadBrowserImports(), "Refresh browsers"');
     expect(refresh).toContain('loadFirefoxStatus(), "Refresh Firefox"');
     expect(refresh).toContain("browserImports = catalog");
     expect(refresh).toContain("firefoxStatus = currentFirefoxStatus");
-    expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
-    expect(advance).toContain('onboardingRoute = "pro"');
-    expect(continuation).not.toContain("clearServiceOnboardingResume()");
+    expect(continuation).toContain('onboardingRoute = "browser"');
+    expect(continuation).toContain("refreshBrowserImportReadiness()");
     expect(bootstrap).toMatch(/onboardingRoute === "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
   });
 
@@ -255,9 +255,8 @@ describe("fresh-account continuation", () => {
     expect(source).not.toMatch(/localStorage\.setItem\(browserImportPendingStorageKey\s*,/);
   });
 
-  it("returns from each service to the remaining app queue before completion", () => {
+  it("returns from each opened service to the setup flow before completion", () => {
     const continuation = functionSource("continueOnboardingFromService", "currentHomeTileIds");
-    const advance = functionSource("advanceOnboardingConnection", "ensureNativeCatalogForAppChoice");
     const workspace = functionSource("bindWorkspace", "ttlSeconds");
     const finishStart = workspace.indexOf('querySelector("#service-guide-finish")');
     const exitStart = workspace.indexOf('querySelector("#service-guide-exit")');
@@ -265,10 +264,8 @@ describe("fresh-account continuation", () => {
     expect(finishStart).toBeGreaterThanOrEqual(0);
     expect(exitStart).toBeGreaterThan(finishStart);
     expect(nativeBackStart).toBeGreaterThan(exitStart);
-    expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
-    expect(advance.indexOf('route = "onboarding"')).toBeLessThan(advance.indexOf('if (!hasNext)'));
-    expect(advance).toContain('onboardingRoute = "pro"');
-    expect(workspace.slice(finishStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
+    expect(continuation).toContain('onboardingRoute = "browser"');
+    expect(workspace.slice(finishStart, exitStart)).toContain('onboardingRoute = "browser"');
     expect(workspace.slice(exitStart, nativeBackStart)).toContain("clearServiceOnboardingResume()");
     expect(functionSource("completeOnboarding", "bindPasswordForm")).toContain("clearServiceOnboardingResume()");
   });
@@ -309,7 +306,7 @@ describe("fresh-account continuation", () => {
     expect(recovery).not.toContain('class="compact-lead"');
   });
 
-  it("continues from saved recovery material into optional Pro setup", () => {
+  it("continues from saved recovery material into the browser import step", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(recovery).toContain('id="copy-recovery-kit"');
@@ -318,7 +315,7 @@ describe("fresh-account continuation", () => {
     expect(binding).toMatch(/#copy-recovery-kit[\s\S]*?navigator\.clipboard\.writeText\(kit\)[\s\S]*?Recovery kit copied — save it, then confirm below/);
     expect(binding).not.toMatch(/#copy-recovery-kit[\s\S]*?recoverySavedAcknowledged = true/);
     expect(binding).toMatch(/recoverySaved\?\.addEventListener\("change"[\s\S]*?recoverySavedAcknowledged = recoverySaved\.checked[\s\S]*?recoveryContinue\.disabled = !recoverySavedAcknowledged/);
-    expect(binding).toMatch(/#recovery-continue[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "pro"/);
+    expect(binding).toMatch(/#recovery-continue[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "browser"/);
   });
 
   it("starts every recovery screen unacknowledged and clears recovery state on full cleanup", () => {
@@ -336,35 +333,30 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad", "scrub"].includes(onboardingRoute)');
+    expect(onboardingRender).toContain('["browser", "detected", "mullvad", "sending", "passwords", "burnpass", "privacy", "scrub"].includes(onboardingRoute)');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
   });
 
-  it("persists the chooser, offers selected app connections, then advances to Pro", () => {
-    const apps = functionSource("tutorialContent", "selectedNativeApps");
+  it("no longer carries the removed app-choice, Pro, or cover onboarding steps", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const chooserHandler = binding.slice(binding.indexOf('querySelector<HTMLButtonElement>("#continue-app-choice")'), binding.indexOf('querySelector<HTMLButtonElement>("#continue-detected-apps")'));
-    expect(apps).toContain('id="continue-app-choice"');
-    expect(apps).not.toContain('id="continue-connect-app"');
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?onboardingAppChoicesConfirmed = true[\s\S]*?selectNextConnectApp\(\)[\s\S]*?onboardingRoute = "pro"/);
-    expect(binding).toMatch(/#skip-connect-app[\s\S]*?selectNextConnectApp\(\)[\s\S]*?onboardingRoute = "pro"/);
-    expect(chooserHandler).not.toContain("completeOnboarding()");
-  });
-
-  it("persists only non-sensitive chooser state before Home", () => {
-    const intent = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
-    expect(intent).toContain("selectedOnboardingAppsStorageKey");
-    expect(intent).not.toContain("savedNativeApps");
-    expect(intent).not.toContain("persistSavedAccountPreferences");
-    expect(intent).not.toContain("account");
-    expect(intent).not.toContain("password");
+    expect(source).not.toContain("function tutorialContent");
+    expect(source).not.toContain("function onboardingAppsContent");
+    expect(source).not.toContain("function proSetupContent");
+    expect(source).not.toContain("function coverDraftSetupContent");
+    expect(source).not.toContain("function installMissingAppsContent");
+    expect(source).not.toContain("function selectNextConnectApp");
+    expect(source).not.toContain("function advanceOnboardingConnection");
+    expect(binding).not.toContain("#continue-app-choice");
+    expect(binding).not.toContain("#continue-connect-app");
+    expect(binding).not.toContain("#skip-connect-app");
+    expect(binding).not.toContain("#continue-cover-draft");
   });
 
   it("uses the approved order and defers Scrub until after onboarding", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const completion = functionSource("completeOnboarding", "bindPasswordForm");
     const scrub = functionSource("scrubSetupContent", "scrubAccountSelections");
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
     expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "passwords"/);
     expect(source).toContain('data-password-role-next="${next}"');
     expect(binding).toContain('button.dataset.passwordRoleNext as OnboardingRoute');
@@ -382,18 +374,14 @@ describe("fresh-account continuation", () => {
     expect(completion).toContain('route = "home"');
   });
 
-  it("offers Pro activation after fresh account creation without storing the code in the renderer", () => {
-    const content = functionSource("proSetupContent", "tutorialContent");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
+  it("keeps Pro activation in Settings and out of onboarding", () => {
     const activation = functionSource("activatePro", "requestClearProActivation");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
-    expect(content).toContain("Enter Pro code");
-    expect(content).toContain('id="activation-form"');
-    expect(content).toContain('data-onboarding="sending"');
-    expect(binding).toContain('"#activation-form"');
     expect(activation).toContain("validateHubActivationCode(activationCode)");
-    expect(activation).toContain('onboardingRoute === "pro"');
-    expect(content).not.toMatch(/localStorage|sessionStorage/);
+    expect(activation).not.toContain('onboardingRoute === "pro"');
+    expect(binding).not.toContain('"#activation-form"');
+    expect(source).not.toContain("Enter Pro code");
     expect(bootstrap).toContain('onboardingRoute = "welcome"');
   });
 
@@ -411,7 +399,7 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain('runMullvadSetupAction("open")');
     expect(content).toContain('data-mullvad-choice="${value}"');
     expect(binding).toContain('localStorage.setItem(mullvadStartupStorageKey');
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
   });
 
   it("keeps Mullvad installation and hosting behind one setup action", () => {
@@ -436,7 +424,7 @@ describe("fresh-account continuation", () => {
   });
 
   it("offers guarded sending choices without overstating placement support", () => {
-    const content = functionSource("sendingSetupContent", "coverDraftSetupContent");
+    const content = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
     expect(content).toContain("Choose how to send");
     expect(content).toContain("manualSendingAnimationMarkup(mode)");
     expect(content).toContain('option("clipboard", "Copy", "safe", "Safest")');
@@ -452,20 +440,6 @@ describe("fresh-account continuation", () => {
     expect(animation).toContain('step(4, finalStep)');
     expect(animation).not.toContain("encrypt · copy");
     expect(animation).not.toContain("verify · send");
-  });
-
-  it("shows a restrained animated atomic-versus-typing comparison", () => {
-    const content = functionSource("coverDraftSetupContent", "onboardingPasswordRoleContent");
-    expect(content).toContain("Choose cover insertion");
-    expect(content).toContain("AI writes the cover one character at a time");
-    expect(content).toContain("Insert on send");
-    expect(content).toContain("LOOKS GOOD");
-    expect(content).toContain("Pro");
-    expect(content).toContain('class="cover-atomic-preview"');
-    expect(content).toContain('class="cover-composer cover-typing-preview"');
-    expect(content).not.toContain('style="--cover-delay:');
-    expect(styles).toContain(".cover-typing-preview i:nth-child(10) { --cover-delay: 2.98s; }");
-    expect(content).toContain("OSL stops if it cannot verify the exact destination");
   });
 
   it("collects only wired password roles and exposes only real capture resistance", () => {

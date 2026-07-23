@@ -73,8 +73,6 @@ describe("restrained motion system", () => {
   });
 
   it("loops the explicit atomic and character comparison with a static reduced-motion state", () => {
-    expect(source).toContain('class="cover-atomic-preview"');
-    expect(source).toContain('class="cover-composer cover-typing-preview"');
     expect(styles).toContain("animation: cover-character-cycle 7.2s linear var(--cover-delay) infinite both");
     expect(styles).toContain("animation: cover-atomic-cycle 7.2s var(--ease-out) infinite both");
     expect(styles).toContain("animation: cover-caret-cycle 7.2s steps(1, end) infinite");

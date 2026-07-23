@@ -1,13 +1,10 @@
 export const activeSetupRoutes = [
   "browser",
   "detected",
-  "apps",
-  "pro",
+  "mullvad",
   "sending",
-  "cover",
   "passwords",
   "burnpass",
-  "mullvad",
   "privacy",
   "scrub",
 ] as const;

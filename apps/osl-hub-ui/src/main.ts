@@ -120,7 +120,7 @@ import { checkExternalLink, lockHubSession, openExternalLinkInDefaultBrowser, sc
 import { deleteOslNote, listOslNotes, notesWorkspaceMarkup, saveOslNote, type OslNote } from "./osl-notes";
 
 type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers" | "notes";
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "recovery" | "mullvad" | "sending" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy" | "scrub";
+type OnboardingRoute = "welcome" | "create" | "import" | "unlock" | "recovery" | "detected" | "browser" | "mullvad" | "sending" | "passwords" | "burnpass" | "privacy" | "scrub" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "accessibility" | "developer" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
@@ -166,7 +166,6 @@ let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
 let nativeApps: NativeApp[] = [];
-let nativeCatalogBusy = false;
 let mullvadStatus: MullvadStatus = { availability: "unavailable" };
 let mullvadBusy = false;
 let mullvadSetupNotice = "";
@@ -201,13 +200,6 @@ let outlookSessionMode: NativeSessionMode = "existingSession";
 let confirmedNativeSessionModes = new Set<NativeAppId>();
 let browserSessionModeConfirmed = false;
 const backgroundInstallIds = new Set<NativeAppId>();
-const selectedFirstInstallApps = new Set<NativeAppId>();
-const selectedOnboardingApps = new Set<HomeAppId>();
-let hasExplicitOnboardingAppSelection = false;
-let onboardingAppChoicesConfirmed = false;
-let onboardingConnectAppId: HomeAppId | null = null;
-const handledOnboardingConnectApps = new Set<HomeAppId>();
-let backgroundInstallQueue: Promise<void> = Promise.resolve();
 const detectedAccountChoices = new Map<string, "existing" | "osl">();
 let scrubSetupStep: ScrubSetupStep = "intro";
 let selectedOnboardingScrubAccounts = new Set<string>();
@@ -349,7 +341,6 @@ const whatsappSessionModeStorageKey = "osl-whatsapp-session-mode-v1";
 const outlookSessionModeStorageKey = "osl-outlook-session-mode-v1";
 const confirmedNativeSessionModesStorageKey = "osl-native-session-choices-v2";
 const browserSessionModeConfirmedStorageKey = "osl-browser-session-choice-v2";
-const selectedOnboardingAppsStorageKey = "osl-selected-apps-v1";
 const savedAccountsReadyStorageKey = "osl-browser-accounts-ready-v1";
 const preferredBrowserStorageKey = "osl-preferred-browser-v1";
 const completedBrowserImportsStorageKey = "osl-browser-import-sources-v1";
@@ -445,16 +436,9 @@ function persistOnboardingResume(routeToPersist = onboardingRoute, step = scrubS
   localStorage.setItem(key, JSON.stringify({ route: routeToPersist, scrubStep: routeToPersist === "scrub" ? step : "intro" }));
 }
 
-function beginServiceOnboarding(): void {
-  onboardingServiceSetup = true;
-  const key = identityScopedStorageKey(onboardingResumeStorageKey);
-  if (key) localStorage.removeItem(key);
-  localStorage.removeItem(onboardingResumeStorageKey);
-}
-
 function markServiceOnboardingOpened(): void {
   if (!onboardingServiceSetup) return;
-  persistOnboardingResume("apps", "intro");
+  persistOnboardingResume("browser", "intro");
 }
 
 function clearServiceOnboardingResume(): void {
@@ -500,10 +484,6 @@ function loadUiPreferences(): void {
     }
     const savedApps = JSON.parse(localStorage.getItem(savedNativeAppsStorageKey) ?? "[]") as unknown;
     if (Array.isArray(savedApps)) savedNativeApps = new Set(savedApps.filter((id): id is NativeAppId => typeof id === "string" && supportedNativeAppIds.has(id as NativeAppId)));
-    const selectedAppsRaw = localStorage.getItem(selectedOnboardingAppsStorageKey);
-    hasExplicitOnboardingAppSelection = selectedAppsRaw !== null;
-    const selectedApps = JSON.parse(selectedAppsRaw ?? "[]") as unknown;
-    if (Array.isArray(selectedApps)) selectedApps.filter((id): id is HomeAppId => typeof id === "string").slice(0, 32).forEach((id) => selectedOnboardingApps.add(id));
     const mutedPeople = JSON.parse(localStorage.getItem(oslChatMutedStorageKey) ?? "[]") as unknown;
     if (Array.isArray(mutedPeople)) oslChatMutedPeople = new Set(mutedPeople.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
     const remoteAccess = JSON.parse(localStorage.getItem(oslChatRemoteAccessStorageKey) ?? "[]") as unknown;
@@ -521,8 +501,6 @@ function loadUiPreferences(): void {
     hiddenHomeTiles.clear();
     notificationAppPreferences = {};
     savedNativeApps.clear();
-    selectedOnboardingApps.clear();
-    hasExplicitOnboardingAppSelection = localStorage.getItem(selectedOnboardingAppsStorageKey) !== null;
     oslChatMutedPeople.clear();
     oslChatRemoteAccessConfirmed.clear();
     oslChatUnread.clear();
@@ -889,7 +867,7 @@ async function reopenActiveNativeCompanion(): Promise<void> {
 
 function renderOnboarding(): void {
   if (isActiveSetupRoute(onboardingRoute)) persistOnboardingResume();
-  const setupScreen = ["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad", "scrub"].includes(onboardingRoute);
+  const setupScreen = ["browser", "detected", "mullvad", "sending", "passwords", "burnpass", "privacy", "scrub"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
     : "";
@@ -913,7 +891,6 @@ function renderOnboarding(): void {
 }
 
 function onboardingContent(): string {
-  if (onboardingRoute === "pro") return proSetupContent();
   if (onboardingRoute === "welcome") {
     const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired";
     const returning = core.readiness.bootstrapStatus === "passwordRequired" || core.readiness.passwordGateRequired;
@@ -935,10 +912,6 @@ function onboardingContent(): string {
   if (onboardingRoute === "detected") return detectedAppsContent();
   if (onboardingRoute === "browser") return browserImportContent();
   if (onboardingRoute === "mullvad") return mullvadSetupContent();
-  if (onboardingRoute === "cover") return coverDraftSetupContent();
-  if (onboardingRoute === "tutorial") return tutorialContent();
-  if (onboardingRoute === "install") return installMissingAppsContent();
-  if (onboardingRoute === "apps") return onboardingAppChoicesConfirmed ? onboardingAppsContent() : tutorialContent();
   if (onboardingRoute === "sending") return sendingSetupContent();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
@@ -949,40 +922,11 @@ function onboardingContent(): string {
   return sendingSetupContent();
 }
 
-function proSetupContent(): string {
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup" aria-labelledby="route-heading"><span class="status-tag active">Pro active</span><h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
-  return `<section class="pro-setup" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" data-onboarding="sending" type="button">Skip</button></section>`;
-}
-
-function tutorialContent(): string {
-  const apps = homeAppsFromServices(services)
-    .filter((app) => app.visibility === "launch" && app.launchState === "available");
-  const detectedIds = new Set(apps.filter((app) => {
-    const native = nativeApps.find((candidate) => candidate.id === app.id);
-    return app.linked
-      || native?.availability === "installed"
-      || (savedAccountsReady && importedFirefoxHomeAppIds.has(app.id));
-  }).map((app) => app.id));
-  const detected = apps.filter((app) => detectedIds.has(app.id));
-  const other = apps.filter((app) => !detectedIds.has(app.id));
-  const choices = (items: HomeAppCatalogEntry[], label: string) => items.length
-    ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
-    : `<p class="saved-account-truth">None</p>`;
-  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Choose what appears on Home. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${nativeCatalogBusy ? "Checking Windows…" : "Continue"}</button></div>`;
-}
-
-function persistCombinedHomeChoices(): void {
-  hasExplicitOnboardingAppSelection = true;
-  localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
-}
-
-function selectedNativeApps(): NativeApp[] {
-  return nativeApps.filter((app) => selectedOnboardingApps.has(app.id));
-}
-
-function hasSelectedNativeAppChoice(): boolean {
-  return [...selectedOnboardingApps].some((appId) => supportedNativeAppIds.has(appId as NativeAppId));
+function routeAfterBrowserStep(): OnboardingRoute {
+  // Skip the "Detected services" page when nothing was detected — no linked
+  // accounts and no browser sessions found — and go straight to Mullvad.
+  const hasDetectedAccounts = services.some((service) => service.accounts.length > 0);
+  return hasDetectedAccounts || detectedBrowserServices.size > 0 ? "detected" : "mullvad";
 }
 
 function isCompleteNativeCatalog(catalog: NativeApp[]): boolean {
@@ -990,65 +934,6 @@ function isCompleteNativeCatalog(catalog: NativeApp[]): boolean {
   return catalog.length === supportedNativeAppIds.size
     && ids.size === supportedNativeAppIds.size
     && [...supportedNativeAppIds].every((appId) => ids.has(appId));
-}
-
-function hasSelectedInstalledNativeApps(): boolean {
-  return selectedNativeApps().some((app) => app.availability === "installed" && app.isolatedProfileAvailable);
-}
-
-function onboardingConnectionApps(): HomeAppCatalogEntry[] {
-  return homeAppsFromServices(services)
-    .filter((app) => app.visibility === "launch" && app.launchState === "available")
-    .filter((app) => !hasExplicitOnboardingAppSelection || selectedOnboardingApps.has(app.id));
-}
-
-function selectNextConnectApp(): boolean {
-  const next = onboardingConnectionApps().find((app) => !handledOnboardingConnectApps.has(app.id));
-  onboardingConnectAppId = next?.id ?? null;
-  return next !== undefined;
-}
-
-function resetOnboardingConnections(): void {
-  handledOnboardingConnectApps.clear();
-  onboardingConnectAppId = null;
-}
-
-function advanceOnboardingConnection(appId: HomeAppId | null): void {
-  if (appId) handledOnboardingConnectApps.add(appId);
-  clearServiceOnboardingResume();
-  const hasNext = selectNextConnectApp();
-  activeService = null;
-  activeHomeAppId = null;
-  route = "onboarding";
-  if (!hasNext) {
-    onboardingRoute = "pro";
-    render();
-    return;
-  }
-  onboardingRoute = "apps";
-  render();
-}
-
-async function ensureNativeCatalogForAppChoice(): Promise<boolean> {
-  if (!hasSelectedNativeAppChoice()) return true;
-  if (nativeCatalogBusy) return false;
-  nativeCatalogBusy = true;
-  renderNow();
-  try {
-    const catalog = await withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs);
-    if (!isCompleteNativeCatalog(catalog)) {
-      showToast("Couldn’t check Windows apps. Try again.");
-      return false;
-    }
-    nativeApps = catalog;
-    return true;
-  } catch {
-    showToast("Couldn’t check Windows apps. Try again.");
-    return false;
-  } finally {
-    nativeCatalogBusy = false;
-    render();
-  }
 }
 
 function selectedNativeAppIntent(appId: HomeAppId): NativeAppId | undefined {
@@ -1059,7 +944,6 @@ function selectedNativeAppIntent(appId: HomeAppId): NativeAppId | undefined {
   if (existingNativeSessionRequested(appId)) return nativeId;
   if (savedAccountMode === "use" && savedNativeApps.has(nativeId) && catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable) return nativeId;
   const onboardingDedicatedIntent = onboardingServiceSetup
-    && selectedOnboardingApps.has(appId)
     && savedAccountMode !== "clean"
     && nativeSessionModeForApp(nativeId) === "dedicated"
     && catalogApp?.availability === "installed"
@@ -1210,24 +1094,6 @@ function detectedAppsContent(): string {
       ? `<div class="empty-state"><strong>Current browser sessions ready</strong><p>Exact account names stay in your browser. Open an app from Home to use its current signed-in session.</p></div>`
       : `<div class="empty-state"><strong>No accounts detected</strong><p>You can add services from Home later.</p></div>`;
   return `<h1 id="route-heading" tabindex="-1">Detected services</h1><div class="detected-launch-mode"><label for="detected-launch-select">Provider default</label><select id="detected-launch-select"><option value="use" ${savedAccountMode !== "clean" ? "selected" : ""}>Current desktop session · provider-wide</option><option value="clean" ${savedAccountMode === "clean" ? "selected" : ""}>Isolated OSL profiles only</option></select></div><div class="detected-account-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
-}
-
-function installMissingAppsContent(): string {
-  const missing = selectedNativeApps().filter((app) => app.availability !== "installed");
-  const rows = missing.length
-    ? missing.map((app) => app.availability === "installable"
-      ? `<label class="saved-account-app"><span>${nativeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Optional Windows install</small></span></span><input type="checkbox" data-first-install="${app.id}" ${selectedFirstInstallApps.has(app.id) ? "checked" : ""}/></label>`
-      : `<div class="saved-account-app unavailable"><span>${nativeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Install unavailable on this PC</small></span></span></div>`).join("")
-    : `<div class="empty-state"><strong>No missing desktop apps</strong><p>Your selected desktop apps are already installed, or use the web.</p></div>`;
-  return `<h1 id="route-heading" tabindex="-1">Install missing apps</h1><p class="compact-lead onboarding-centered-copy">Optional installs start through Windows after Continue.</p><div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-install-apps" type="button">Continue</button></div>`;
-}
-
-function onboardingAppsContent(): string {
-  const apps = onboardingConnectionApps().filter((app) => !handledOnboardingConnectApps.has(app.id));
-  const choices = apps.length
-    ? `<div class="onboarding-app-grid" role="radiogroup" aria-label="Apps left to connect">${apps.map((app) => `<button type="button" role="radio" class="onboarding-app ${onboardingConnectAppId === app.id ? "selected" : ""}" data-connect-app-choice="${app.id}" aria-checked="${onboardingConnectAppId === app.id}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
-    : `<div class="empty-state"><strong>Selected apps reviewed</strong><p>Finish setup.</p></div>`;
-  return `<h1 id="route-heading" tabindex="-1">Connect your apps</h1><p class="compact-lead onboarding-centered-copy">Open each selected app, or skip it for now.</p>${choices}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-connect-app" type="button" ${onboardingConnectAppId ? "" : "disabled"}>Open selected app</button><button class="browser-import-skip" id="skip-connect-app" type="button">${onboardingConnectAppId ? "Not now" : "Continue"}</button></div>`;
 }
 
 function browserImportContent(): string {
@@ -1405,11 +1271,12 @@ function bindBrowserImportControls(): void {
       if (detectedKey) localStorage.setItem(detectedKey, JSON.stringify([...detectedBrowserServices]));
       savedAccountMode = "use";
       persistSavedAccountPreferences();
-      const needsFollowUp = result.sessionOnlySources.length > 0 || result.passwordFollowUpSources.length > 0;
-      showToast(result.failedSources.length > 0
-        ? `Imported ${result.succeededSources.length} of ${result.selectedSources.length} browsers; failed sources were skipped safely`
-        : needsFollowUp ? "Imported supported data; existing sessions stay available" : "Browser import finished");
-      onboardingRoute = "detected";
+      // Failed sources are skipped safely under the hood; the completion toast
+      // never surfaces failure wording.
+      showToast("Browser import finished");
+      const nextRoute = routeAfterBrowserStep();
+      onboardingRoute = nextRoute;
+      if (nextRoute === "mullvad") void refreshMullvadSetup();
       nativeApps = await loadNativeApps().catch(() => nativeApps);
     } catch (failure) {
       browserImportFailureNotice = localActionError(failure, "Browser import did not finish");
@@ -1438,7 +1305,7 @@ function bindBrowserImportControls(): void {
     if (pendingKey) localStorage.removeItem(pendingKey);
     browserImportBusy = false;
     browserImportCancelling = false;
-    onboardingRoute = "detected";
+    onboardingRoute = routeAfterBrowserStep();
     nativeApps = await loadNativeApps().catch(() => nativeApps);
     render();
     void refreshMullvadSetup();
@@ -1478,7 +1345,7 @@ function importIdentityForm(): string {
 }
 
 function recoveryContent(): string {
-  if (!recoveryBundle) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
+  if (!recoveryBundle) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="browser">Continue</button>`;
   const accountRecovery = recoveryBundle.identityPhrase ? `<code>${escapeHtml(recoveryBundle.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
   return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article><details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
 }
@@ -1498,17 +1365,12 @@ function sendingSetupContent(): string {
   return `<h1 id="route-heading" tabindex="-1">Privacy and sending</h1><h2 class="setup-section-heading">Choose how to send</h2><div class="send-choice-grid">${option("clipboard", "Copy", "safe", "Safest")}${option("double", "Double Enter", "caution", "", "Can possibly break ToS")}${option("single", "Single Enter", "danger", "", "Breaks some ToS · risky")}</div>${risk}<div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
 }
 
-function coverDraftSetupContent(): string {
-  const typedCover = [..."LOOKS GOOD"].map((character) => `<i>${character === " " ? "&nbsp;" : character}</i>`).join("");
-  return `<h1 id="route-heading" tabindex="-1">Choose cover insertion</h1><div class="cover-mode-compare" aria-label="Free and Pro cover insertion"><article class="cover-mode-choice selected"><span>Free</span><strong>Insert on send</strong><small>Press Enter. The whole cover appears together.</small><span class="cover-composer cover-atomic-composer" aria-label="LOOKS GOOD appears at once"><em class="cover-atomic-preview">LOOKS GOOD</em><b aria-hidden="true">↵</b></span></article><article class="cover-mode-choice cover-mode-pro" aria-label="Pro pending: AI cover types with you"><span>Pro · pending</span><strong>Type naturally</strong><small>AI writes the cover one character at a time.</small><span class="cover-composer cover-typing-preview" aria-label="LOOKS GOOD types one character at a time"><em aria-hidden="true">${typedCover}</em><b class="cover-caret" aria-hidden="true"></b></span></article></div><p class="send-mode-truth">OSL stops if it cannot verify the exact destination.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-cover-draft" type="button">Continue</button></div>`;
-}
-
 function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
   const stealth = role === "stealth";
   const configured = stealth ? passwordRoleStatus?.stealthPasswordSet : passwordRoleStatus?.burnPasswordSet;
   const title = stealth ? "Stealth password" : "Burn password";
   const detail = stealth ? "Opens an empty workspace without loading your private data." : "Erases OSL data from this device when entered at sign in.";
-  const next = stealth ? "burnpass" : "mullvad";
+  const next = stealth ? "burnpass" : "privacy";
   if (configured) {
     return `<h1 id="route-heading" tabindex="-1">${title}</h1><div class="password-role-ready"><span class="status-tag">Set</span><p>${detail}</p></div><div class="setup-footer onboarding-actions"><button class="button primary" data-password-role-next="${next}" type="button">Continue</button></div>`;
   }
@@ -1542,14 +1404,11 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   const routes: Partial<Record<OnboardingRoute, OnboardingRoute>> = {
     browser: "recovery",
     detected: "browser",
-    apps: "detected",
-    pro: "apps",
-    sending: "pro",
-    cover: "sending",
-    passwords: "cover",
+    mullvad: "detected",
+    sending: "mullvad",
+    passwords: "sending",
     burnpass: "passwords",
-    mullvad: "burnpass",
-    privacy: "mullvad",
+    privacy: "burnpass",
     scrub: "privacy",
   };
   return routes[current] ?? "welcome";
@@ -1611,7 +1470,6 @@ function saveScrubSetupPlan(mode: ScrubSetupPlan["mode"]): void {
 
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboarding as OnboardingRoute; render(); }));
-  document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
   bindSavedAccountControls();
   bindBrowserImportControls();
   bindPasswordVisibility();
@@ -1641,64 +1499,18 @@ function bindOnboarding(): void {
     recoveryBundle = null;
     recoverySavedAcknowledged = false;
     resetOnboardingBranch();
-    resetOnboardingConnections();
-    onboardingAppChoicesConfirmed = false;
     onboardingRoute = "browser";
     render();
     void refreshBrowserImportReadiness();
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
-    const appId = button.dataset.onboardingAppChoice as HomeAppId;
-    if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
-    else selectedOnboardingApps.add(appId);
-    hasExplicitOnboardingAppSelection = true;
-    localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
-    onboardingConnectAppId = null;
-    render();
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-connect-app-choice]").forEach((button) => button.addEventListener("click", () => {
-    const appId = button.dataset.connectAppChoice as HomeAppId;
-    if (!onboardingConnectionApps().some((app) => app.id === appId) || handledOnboardingConnectApps.has(appId)) return;
-    onboardingConnectAppId = appId;
-    render();
-  }));
-  document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", async () => {
-    if (!await ensureNativeCatalogForAppChoice()) return;
-    persistCombinedHomeChoices();
-    onboardingAppChoicesConfirmed = true;
-    resetOnboardingConnections();
-    if (selectNextConnectApp()) {
-      onboardingRoute = "apps";
-      render();
-      return;
-    }
-    onboardingRoute = "pro";
-    render();
   });
   document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
     if (savedAccountMode === "ask") savedAccountMode = nativeApps.some((app) => app.availability === "installed") ? "use" : "clean";
     if (savedAccountMode === "use") nativeApps.filter((app) => app.availability === "installed").forEach((app) => savedNativeApps.add(app.id));
     persistSavedAccountPreferences();
     persistDetectedAccountChoices();
-    onboardingAppChoicesConfirmed = false;
-    onboardingRoute = "apps";
+    onboardingRoute = "mullvad";
     render();
-  });
-  document.querySelector<HTMLButtonElement>("#continue-install-apps")?.addEventListener("click", () => {
-    const selectedInstalls = [...selectedFirstInstallApps];
-    selectedFirstInstallApps.clear();
-    if (selectedInstalls.length) {
-      savedAccountMode = "use";
-      selectedInstalls.forEach((appId) => savedNativeApps.add(appId));
-      persistSavedAccountPreferences();
-      enqueueBackgroundInstalls(selectedInstalls);
-    } else if (!hasSelectedInstalledNativeApps() && savedAccountMode === "ask") {
-      savedAccountMode = "clean";
-      persistSavedAccountPreferences();
-    }
-    selectNextConnectApp();
-    onboardingRoute = "apps";
-    render();
+    void refreshMullvadSetup();
   });
   document.querySelector<HTMLSelectElement>("#detected-launch-select")?.addEventListener("change", (event) => {
     savedAccountMode = (event.currentTarget as HTMLSelectElement).value === "clean" ? "clean" : "use";
@@ -1714,27 +1526,6 @@ function bindOnboarding(): void {
     row?.classList.toggle("detected-account-osl", choice === "osl");
     row?.classList.toggle("detected-account-existing", choice === "existing");
   }));
-  document.querySelector<HTMLButtonElement>("#skip-connect-app")?.addEventListener("click", () => {
-    if (onboardingConnectAppId) handledOnboardingConnectApps.add(onboardingConnectAppId);
-    if (selectNextConnectApp()) onboardingRoute = "apps";
-    else onboardingRoute = "pro";
-    render();
-  });
-  document.querySelector<HTMLButtonElement>("#continue-connect-app")?.addEventListener("click", () => {
-    const app = homeAppsFromServices(services).find((candidate) => candidate.id === onboardingConnectAppId);
-    const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
-    if (!app || !service || app.launchState !== "available") {
-      showToast("This app is unavailable right now");
-      return;
-    }
-    beginServiceOnboarding();
-    activeService = service;
-    activeHomeAppId = app.id;
-    route = "service";
-    serviceGuideStep = 0;
-    persistServiceGuideState();
-    render();
-  });
   document.querySelector("#onboarding-back")?.addEventListener("click", () => {
     onboardingRoute = previousSetupRoute(onboardingRoute);
     render();
@@ -1762,14 +1553,13 @@ function bindOnboarding(): void {
     render();
   });
   document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
-    if (onboardingRoute !== "sending" && onboardingRoute !== "privacy") return;
+    if (onboardingRoute !== "sending") return;
     if (setup.sendMode === "manual") setup.sendMode = "clipboard";
     if (!canCompleteSetup(setup)) return;
     setup.placementMode = "atomic";
-    onboardingRoute = "cover";
+    onboardingRoute = "passwords";
     render();
   });
-  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = button.dataset.passwordRoleNext as OnboardingRoute;
@@ -1793,7 +1583,7 @@ function bindOnboarding(): void {
     render();
   });
   document.querySelector<HTMLInputElement>("#onboarding-screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
-  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "privacy"; render(); });
+  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
   document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
   document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
   document.querySelectorAll<HTMLButtonElement>("[data-mullvad-choice]").forEach((button) => button.addEventListener("click", () => {
@@ -1804,7 +1594,7 @@ function bindOnboarding(): void {
   document.querySelector("#continue-mullvad")?.addEventListener("click", () => {
     if (!mullvadPreference) return;
     if (mullvadPreference === "auto" && mullvadStatus.availability === "installed") void openMullvad().catch(() => undefined);
-    onboardingRoute = "privacy";
+    onboardingRoute = "sending";
     render();
   });
   document.querySelectorAll<HTMLInputElement>("[data-setup-privacy]").forEach((input) => input.addEventListener("change", () => {
@@ -1894,7 +1684,6 @@ async function completeOnboarding(): Promise<void> {
     onboardingComplete = true;
     clearServiceOnboardingResume();
     resetOnboardingBranch();
-    resetOnboardingConnections();
     // A newly-created identity is already unlocked. Load its signed invite and
     // local People state before Home renders so friend setup never incorrectly
     // tells the user to unlock again.
@@ -2091,7 +1880,7 @@ function bindPasswordForm(): void {
           void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") render(); });
           void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") render(); });
         }
-        else onboardingRoute = pendingOnboardingRoute() ?? "pro";
+        else onboardingRoute = pendingOnboardingRoute() ?? "browser";
       }
       secret = "";
       password.value = "";
@@ -2124,7 +1913,7 @@ function bindPasswordForm(): void {
         passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
         secret = "";
         if (setupMode || !onboardingComplete) {
-          onboardingRoute = setupMode ? "pro" : pendingOnboardingRoute() ?? "pro";
+          onboardingRoute = setupMode ? "browser" : pendingOnboardingRoute() ?? "browser";
           route = "onboarding";
           showToast("Password is configured. Continue setup.");
         } else {
@@ -2142,9 +1931,10 @@ function bindPasswordForm(): void {
           core = await loadCoreIntegration();
           services = await loadLinkedServices().catch(() => services);
           passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
-          onboardingRoute = "pro";
+          onboardingRoute = "browser";
           showToast("Account created. Continue setup.");
           render();
+          void refreshBrowserImportReadiness();
           return;
         }
         onboardingRoute = "unlock";
@@ -2217,9 +2007,10 @@ function bindImportForm(): void {
       core = refreshedCore;
       if (core.readiness.bootstrapStatus === "ready" && core.readiness.unlocked) {
         resetOnboardingBranch();
-        onboardingRoute = "pro";
+        onboardingRoute = "browser";
         showToast("Account recovered. Continue setup.");
         render();
+        void refreshBrowserImportReadiness();
         return;
       }
       if (core.readiness.bootstrapStatus === "passwordRequired") {
@@ -2333,16 +2124,7 @@ function workspaceContent(): string {
   if (route === "notes") return notesWorkspaceMarkup(oslNotes, activeOslNoteId, oslNotesLoading, oslNotesError);
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
-  const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const rememberedHomeApps = new Set<HomeAppId>(hasExplicitOnboardingAppSelection
-    ? selectedOnboardingApps
-    : [
-        ...selectedOnboardingApps,
-        ...launchableHomeApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId)).map((app) => app.id),
-      ]);
-  const homeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
-    ? launchableHomeApps.filter((app) => rememberedHomeApps.has(app.id))
-    : launchableHomeApps;
+  const homeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const modules = [
     { id: "osl-chats", name: "OSL Chat", available: true },
     { id: "osl-notes", name: "OSL Notes", available: true },
@@ -2448,10 +2230,6 @@ function activeHomeAppName(): string {
 
 function homeAppLogo(app: HomeAppCatalogEntry): string {
   return app.provider ? providerLogo(app.provider) : app.serviceId ? serviceLogo(app.serviceId) : "";
-}
-
-function nativeAppLogo(app: NativeApp): string {
-  return app.id === "outlook" ? providerLogo("outlook") : serviceLogo(app.id);
 }
 
 type PeopleListMode = "home" | "manage" | "service";
@@ -4018,8 +3796,8 @@ async function navigateWorkspace(requestedRoute: Route, options: WorkspaceNaviga
   if (route === "settings" && settingsSection === "account") newIdentityRecoveryPhrase = null;
   if (onboardingServiceSetup && requestedRoute === "home") {
     clearServiceGuide();
-    advanceOnboardingConnection(activeHomeAppId);
-    return;
+    route = "onboarding";
+    onboardingRoute = "browser";
   } else {
     route = requestedRoute;
     if (options.profileSettings) settingsSection = "account";
@@ -4256,7 +4034,11 @@ function bindWorkspace(): void {
   document.querySelector("#service-guide-skip")?.addEventListener("click", () => {
     if (onboardingServiceSetup) {
       clearServiceGuide();
-      advanceOnboardingConnection(activeHomeAppId);
+      route = "onboarding";
+      onboardingRoute = "browser";
+      activeService = null;
+      activeHomeAppId = null;
+      render();
       return;
     }
     clearServiceGuide();
@@ -4265,7 +4047,11 @@ function bindWorkspace(): void {
   document.querySelector("#service-guide-finish")?.addEventListener("click", () => {
     if (onboardingServiceSetup) {
       clearServiceGuide();
-      advanceOnboardingConnection(activeHomeAppId);
+      route = "onboarding";
+      onboardingRoute = "browser";
+      activeService = null;
+      activeHomeAppId = null;
+      render();
       return;
     }
     clearServiceGuide();
@@ -4276,7 +4062,7 @@ function bindWorkspace(): void {
       clearServiceOnboardingResume();
       clearServiceGuide();
       route = "onboarding";
-      onboardingRoute = "apps";
+      onboardingRoute = "browser";
       activeService = null;
       activeHomeAppId = null;
       await closeActiveServiceSurface();
@@ -4451,13 +4237,6 @@ async function startBackgroundInstall(appId: NativeAppId): Promise<void> {
     backgroundInstallIds.delete(appId);
     render();
   }
-}
-
-function enqueueBackgroundInstalls(appIds: NativeAppId[]): void {
-  const unique = [...new Set(appIds)].filter((appId) => supportedNativeAppIds.has(appId));
-  backgroundInstallQueue = backgroundInstallQueue.then(async () => {
-    for (const appId of unique) await startBackgroundInstall(appId);
-  }).catch(() => undefined);
 }
 
 function nativeHostFailureMessage(reason: string, name: string): string {
@@ -4690,9 +4469,13 @@ async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService,
 }
 
 async function continueOnboardingFromService(): Promise<void> {
-  const completedAppId = activeHomeAppId;
   await closeActiveServiceSurface();
-  advanceOnboardingConnection(completedAppId);
+  route = "onboarding";
+  onboardingRoute = "browser";
+  activeService = null;
+  activeHomeAppId = null;
+  render();
+  void refreshBrowserImportReadiness();
 }
 
 function currentHomeTileIds(): string[] {
@@ -5449,11 +5232,10 @@ async function activatePro(event: SubmitEvent): Promise<void> {
   if (submit) { submit.disabled = true; submit.textContent = "Activating…"; }
   try {
     licenseState = await validateHubActivationCode(activationCode);
-    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "sending";
     render();
     showToast(licenseState.access === "free" ? "This code does not include active Pro access" : "Pro activated on this device");
   } catch (failure) {
-    if (submit) { submit.disabled = false; submit.textContent = route === "onboarding" && onboardingRoute === "pro" ? "Continue" : "Activate Pro"; }
+    if (submit) { submit.disabled = false; submit.textContent = "Activate Pro"; }
     showToast(localActionError(failure, "Activation failed. Check the code and try again."));
   }
 }
@@ -5940,7 +5722,7 @@ async function bootstrap(): Promise<void> {
       route = "onboarding";
     } else {
       route = preferences.onboardingComplete ? "home" : "onboarding";
-      if (!preferences.onboardingComplete) onboardingRoute = pendingOnboardingRoute() ?? "pro";
+      if (!preferences.onboardingComplete) onboardingRoute = pendingOnboardingRoute() ?? "browser";
     }
     renderNow();
     if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
