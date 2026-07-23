@@ -2089,6 +2089,50 @@ pub fn cmd_osl_persist_outbound(
     Ok(())
 }
 
+/// Persist plaintext already authenticated by a trusted first-party OSL Chat
+/// receive path. This is an internal Rust API, not a renderer command: the
+/// caller must derive the sender and channel from the verified peer context.
+pub fn cmd_osl_persist_inbound(
+    state: &AppState,
+    channel_id: String,
+    message_id: String,
+    sender_osl_user_id: String,
+    plaintext: String,
+) -> Result<(), String> {
+    if channel_id.is_empty()
+        || channel_id.len() > 160
+        || message_id.is_empty()
+        || message_id.len() > 96
+        || sender_osl_user_id.is_empty()
+        || sender_osl_user_id.len() > 160
+        || plaintext.is_empty()
+    {
+        return Err("OSL: invalid first-party chat history row".to_owned());
+    }
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    store
+        .put(&StoredMessage {
+            discord_message_id: message_id,
+            channel_id,
+            sender_discord_id: sender_osl_user_id.clone(),
+            sender_osl_user_id,
+            plaintext,
+            decrypted_at: now,
+            burned: false,
+        })
+        .map_err(|error| format!("OSL: first-party chat history: {error}"))
+}
+
 /// JS-facing DTO mirror of [`store::StoredMessage`]. The store
 /// crate intentionally does not depend on `serde` (it's a pure
 /// at-rest layer); this DTO crosses the IPC boundary and is the
@@ -5267,6 +5311,13 @@ pub fn cmd_osl_control_inbox_drain(
                 continue;
             }
         };
+        // Native-overlay relay notices are user content transported through
+        // this authenticated inbox, not core control messages. Leave them in
+        // place without attempting dispatch, deletion, or error reporting;
+        // the separately-capable trusted overlay drain owns them.
+        if crate::wire_v2::is_native_overlay_relay_bundle(&bundle) {
+            continue;
+        }
         let content = format!("DPC0::{}", STANDARD.encode(&bundle));
         // The inbox stores sender_id as the sender's OSL user_id, but
         // the decrypt/apply path (resolve_sender_pubkey, peer_map

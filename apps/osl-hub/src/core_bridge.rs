@@ -174,9 +174,13 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
-    let password_gate_required = ipc::commands::cmd_osl_password_status()
-        .map(|value| value.is_set)
-        .unwrap_or(true);
+    let password_gate_required = if cfg!(feature = "discord-qa-shell") {
+        false
+    } else {
+        ipc::commands::cmd_osl_password_status()
+            .map(|value| value.is_set)
+            .unwrap_or(true)
+    };
     let unlocked = !password_gate_required || ipc::main_password::get_file_storage_key().is_some();
     // The original Discord command resolves the identity through a
     // Discord-snowflake row in peer_map.json. A native OSL Privacy identity is
@@ -193,15 +197,28 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     } else {
         None
     };
-    let bootstrap_status = classify_bootstrap_status(
-        state.bootstrap_attempted,
-        status.identity_loaded,
-        password_gate_required,
-        unlocked,
-        status.keyserver_initialised,
-        state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,
-        active_osl_user_id.is_some(),
-    );
+    // The disposable QA shell must paint and claim Discord while its freshly
+    // generated public identity registers in the background. Protected-send
+    // commands still enforce registration themselves; only the setup UI gate
+    // is bypassed in this compile-time-only build.
+    let bootstrap_status = if cfg!(feature = "discord-qa-shell")
+        && state.bootstrap_attempted
+        && status.identity_loaded
+        && unlocked
+        && active_osl_user_id.is_some()
+    {
+        "ready"
+    } else {
+        classify_bootstrap_status(
+            state.bootstrap_attempted,
+            status.identity_loaded,
+            password_gate_required,
+            unlocked,
+            status.keyserver_initialised,
+            state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,
+            active_osl_user_id.is_some(),
+        )
+    };
     CoreReadiness {
         original_core_linked: true,
         bootstrap_attempted: state.bootstrap_attempted,
@@ -230,7 +247,7 @@ fn classify_bootstrap_status(
 ) -> &'static str {
     if !bootstrap_attempted {
         "notAttempted"
-    } else if !identity_loaded || !password_set {
+    } else if !identity_loaded || (!password_set && !cfg!(feature = "discord-qa-shell")) {
         // First-run Settings decides whether the missing local prerequisite is
         // identity creation/import or main-password setup. Keep this distinct
         // from an existing password gate awaiting user input.

@@ -7,6 +7,8 @@
 
 export interface Env {
   DB: D1Database;
+  /** Opaque, end-to-end encrypted attachment bodies. No object metadata. */
+  ATTACHMENTS: R2Bucket;
   RATE_LIMIT: KVNamespace;
   /** Server-only key used to make short-lived rate-limit identifiers opaque. */
   RATE_LIMIT_HASH_KEY: string;

@@ -3,15 +3,18 @@ import { isTauriRuntime } from "./preferences";
 
 export type ServiceId = "discord" | "telegram" | "instagram" | "snapchat" | "email" | "x" | "slack" | "linkedin" | "teams" | "messenger" | "signal" | "whatsapp";
 export type ConnectionState = "demoLinked" | "notLinked";
-export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "fastmail" | "yahoo" | "zoho" | "aol" | "gmx" | "maildotcom";
+export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "fastmail" | "yahoo" | "zoho" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
 export type LaunchState = "available" | "comingSoon";
-export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom";
+export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type HomeAppId = Exclude<ServiceId, "email" | "slack" | "linkedin" | "teams"> | OfferedEmailProvider | "slack" | "linkedin";
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
-export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp";
-export type BrowserImportId = "chrome" | "edge" | "firefox" | "brave" | "opera" | "vivaldi";
+export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp" | "outlook";
+export type NativeSessionMode = "dedicated" | "existingSession";
+export type DiscordSessionMode = NativeSessionMode;
+export type BrowserImportId = "chrome" | "edge" | "firefox" | "brave" | "opera" | "duckduckgo";
+export type BrowserAccountMode = "existingBrowser" | "isolatedOsl";
 
 export interface BrowserImportStatus {
   id: BrowserImportId;
@@ -25,6 +28,14 @@ export interface BrowserAccountImportAction {
   opened: true;
   mode: "firefoxMigrationWizard";
   manualExportRequired: boolean;
+}
+
+export interface ProtectedBrowserImportAction {
+  selectedSources: BrowserImportId[];
+  started: true;
+  mode: "firefoxMigrationWizard";
+  sourceSelected: boolean;
+  manualFallback: string | null;
 }
 
 export interface NativeApp {
@@ -49,15 +60,49 @@ export interface MullvadAction {
   started: true;
 }
 
+export interface MullvadWindowHostAction {
+  status: "hosted" | "resized" | "focused" | "restored" | "unsupported" | "failed";
+  reason: "none" | "platformUnsupported" | "appNotInstalled" | "existingSessionUnavailable" | "existingSessionAmbiguous" | "windowIdentityChanged" | "ownerWindowUnavailable" | "guiRecoveryRejected" | "windowHostRejected" | "windowOwnerRejected" | "windowStyleRejected" | "windowDpiRejected" | "windowVisibilityRejected" | "windowBoundsRejected" | "windowSiblingRejected" | "windowOperationRejected" | "notHosted";
+  mode: "none" | "existingMullvadSession";
+  captureProtected: false;
+}
+
 export interface NativeWindowHostAction {
   id: NativeAppId;
   status: "hosted" | "resized" | "focused" | "detached" | "unsupported" | "failed";
-  reason: "none" | "platformUnsupported" | "secondaryInstanceUnverified" | "appNotInstalled" | "profileUnavailable" | "launchFailed" | "windowNotFound" | "windowIdentityChanged" | "ownerWindowUnavailable" | "hostWindowUnavailable" | "windowOperationRejected" | "notHosted";
-  mode: "none" | "ownedBorderless";
+  reason: "none" | "platformUnsupported" | "secondaryInstanceUnverified" | "appNotInstalled" | "profileUnavailable" | "channelNotOwned" | "noChannelAvailable" | "launchFailed" | "windowNotFound" | "profileInitializationFailed" | "windowIdentityChanged" | "ownerWindowUnavailable" | "hostWindowUnavailable" | "childHierarchyRejected" | "childStyleRejected" | "childProcessRejected" | "childDpiRejected" | "childVisibilityRejected" | "childBoundsRejected" | "childSiblingRejected" | "borrowedPlacementRejected" | "borrowedStyleRejected" | "borrowedVisibilityRejected" | "borrowedBoundsRejected" | "windowOperationRejected" | "notHosted" | "existingSessionUnavailable" | "existingSessionAmbiguous";
+  mode: "none" | "ownedBorderless" | "existingNativeCompanion";
+  captureProtected: boolean;
+}
+
+export function parseDiscordSessionMode(raw: unknown): DiscordSessionMode {
+  return raw === "existingSession" ? raw : "dedicated";
+}
+
+export function parseNativeSessionMode(raw: unknown): NativeSessionMode {
+  return parseDiscordSessionMode(raw);
 }
 
 export interface FirefoxStatus {
   availability: "installed" | "installable" | "unavailable";
+}
+
+export interface BrowserCompanionStatus {
+  status: "available" | "unsupported";
+  browserId: BrowserImportId | null;
+  displayName: string | null;
+  reason: "none" | "platformUnsupported" | "defaultBrowserUnsupported" | "defaultBrowserUntrusted";
+  captureProtected: false;
+  containment: "bestEffort";
+}
+
+export interface BrowserCompanionAction {
+  status: "hosted" | "resized" | "focused" | "detached" | "unsupported" | "failed";
+  browserId: BrowserImportId | null;
+  reason: "none" | "platformUnsupported" | "defaultBrowserUnsupported" | "defaultBrowserUntrusted" | "selectedBrowserUnavailable" | "nativeAppRequired" | "isolatedProfileUnsupported" | "profileUnavailable" | "launchFailed" | "windowNotFound" | "windowAmbiguous" | "windowIdentityChanged" | "ownerWindowUnavailable" | "windowOperationRejected" | "notHosted";
+  mode: "none" | "existingBrowserCompanion" | "isolatedBrowserCompanion";
+  captureProtected: false;
+  containment: "bestEffort";
 }
 
 export interface LinkedAccount {
@@ -120,18 +165,19 @@ export interface NotificationIntegrationEligibility {
 
 const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
-const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom"];
+const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
-const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp"];
-const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"];
+const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
+const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
+  "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ];
 const nativePreviewApps: readonly NativeApp[] = [
-  { id: "discord", displayName: "Discord", availability: "installable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "discord", displayName: "Discord", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "telegram", displayName: "Telegram", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "signal", displayName: "Signal", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "whatsapp", displayName: "WhatsApp", availability: "installable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "outlook", displayName: "Outlook", availability: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -160,6 +206,7 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("aol", "AOL Mail", "email", "aol"),
   homeApp("gmx", "GMX", "email", "gmx"),
   homeApp("maildotcom", "Mail.com", "email", "maildotcom"),
+  homeApp("icloud", "iCloud Mail", "email", "icloud"),
   homeApp("slack", "Slack", "slack", null, "later", "comingSoon"),
   homeApp("linkedin", "LinkedIn messaging", "linkedin", null, "later", "comingSoon"),
 ];
@@ -262,6 +309,41 @@ export async function beginBrowserAccountImport(): Promise<BrowserAccountImportA
   return raw as unknown as BrowserAccountImportAction;
 }
 
+/**
+ * Frontend merge contract for the protected multi-browser importer.
+ * No executable, URL, profile path, or arbitrary argument can cross this boundary.
+ */
+export async function beginProtectedBrowserImport(browserIds: readonly BrowserImportId[]): Promise<ProtectedBrowserImportAction> {
+  const selectedSources = [...browserIds];
+  if (!isTauriRuntime()
+    || selectedSources.length !== 1
+    || !selectedSources.every((id) => browserImportIds.includes(id))) {
+    throw new Error("protected browser import unavailable");
+  }
+  const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources });
+  if (!isExactRecord(raw, ["selectedSources", "started", "mode", "sourceSelected", "manualFallback"])
+    || !Array.isArray(raw.selectedSources)
+    || raw.selectedSources.length !== selectedSources.length
+    || raw.selectedSources.some((id, index) => id !== selectedSources[index])
+    || raw.started !== true
+    || raw.mode !== "firefoxMigrationWizard"
+    || typeof raw.sourceSelected !== "boolean"
+    || (raw.manualFallback !== null
+      && (typeof raw.manualFallback !== "string"
+        || raw.manualFallback.length < 1
+        || raw.manualFallback.length > 180
+        || /[\u0000-\u001f\u007f]/.test(raw.manualFallback)))
+    || (raw.sourceSelected ? raw.manualFallback !== null : raw.manualFallback === null)) {
+    throw new Error("invalid protected browser import response");
+  }
+  return raw as unknown as ProtectedBrowserImportAction;
+}
+
+export async function finishProtectedBrowserImport(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("finish_protected_browser_import");
+}
+
 export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {
   if (!Array.isArray(raw) || raw.length > browserImportIds.length) throw new Error("invalid browser import catalog");
   const seen = new Set<BrowserImportId>();
@@ -278,26 +360,29 @@ export function parseBrowserImports(raw: unknown): BrowserImportStatus[] {
 
 function parseNativeWindowHostAction(raw: unknown, expectedId?: NativeAppId): NativeWindowHostAction {
   const statuses = ["hosted", "resized", "focused", "detached", "unsupported", "failed"];
-  const reasons = ["none", "platformUnsupported", "secondaryInstanceUnverified", "appNotInstalled", "profileUnavailable", "launchFailed", "windowNotFound", "windowIdentityChanged", "ownerWindowUnavailable", "hostWindowUnavailable", "windowOperationRejected", "notHosted"];
-  if (!isExactRecord(raw, ["id", "status", "reason", "mode"])
+  const reasons = ["none", "platformUnsupported", "secondaryInstanceUnverified", "appNotInstalled", "profileUnavailable", "channelNotOwned", "noChannelAvailable", "launchFailed", "windowNotFound", "profileInitializationFailed", "windowIdentityChanged", "ownerWindowUnavailable", "hostWindowUnavailable", "childHierarchyRejected", "childStyleRejected", "childProcessRejected", "childDpiRejected", "childVisibilityRejected", "childBoundsRejected", "childSiblingRejected", "borrowedPlacementRejected", "borrowedStyleRejected", "borrowedVisibilityRejected", "borrowedBoundsRejected", "windowOperationRejected", "notHosted", "existingSessionUnavailable", "existingSessionAmbiguous"];
+  if (!isExactRecord(raw, ["id", "status", "reason", "mode", "captureProtected"])
     || !nativeAppIds.includes(raw.id as NativeAppId)
     || (expectedId !== undefined && raw.id !== expectedId)
     || !statuses.includes(String(raw.status))
     || !reasons.includes(String(raw.reason))
-    || !["none", "ownedBorderless"].includes(String(raw.mode))) {
+    || !["none", "ownedBorderless", "existingNativeCompanion"].includes(String(raw.mode))
+    || typeof raw.captureProtected !== "boolean") {
     throw new Error("invalid native window host response");
   }
   const success = ["hosted", "resized", "focused", "detached"].includes(String(raw.status));
-  if ((success && (raw.reason !== "none" || raw.mode !== "ownedBorderless"))
+  if ((success && (raw.reason !== "none" || !["ownedBorderless", "existingNativeCompanion"].includes(String(raw.mode))))
     || (!success && raw.mode !== "none")) {
     throw new Error("invalid native window host response");
   }
   return raw as unknown as NativeWindowHostAction;
 }
 
-export async function hostNativeAppWindow(appId: NativeAppId): Promise<NativeWindowHostAction> {
+export async function hostNativeAppWindow(appId: NativeAppId, discordSessionMode: NativeSessionMode = "dedicated"): Promise<NativeWindowHostAction> {
   if (!isTauriRuntime() || !nativeAppIds.includes(appId)) throw new Error("native host unavailable");
-  return parseNativeWindowHostAction(await invoke<unknown>("host_native_app_window", { appId }), appId);
+  const boundedMode = parseNativeSessionMode(discordSessionMode);
+  if (appId !== "discord" && appId !== "telegram" && appId !== "signal" && appId !== "whatsapp" && appId !== "outlook" && boundedMode !== "dedicated") throw new Error("native host unavailable");
+  return parseNativeWindowHostAction(await invoke<unknown>("host_native_app_window", { appId, discordSessionMode: boundedMode }), appId);
 }
 
 export async function resizeNativeAppWindow(): Promise<NativeWindowHostAction> {
@@ -313,6 +398,44 @@ export async function focusNativeAppWindow(): Promise<NativeWindowHostAction> {
 export async function detachNativeAppWindow(): Promise<NativeWindowHostAction> {
   if (!isTauriRuntime()) throw new Error("native host unavailable");
   return parseNativeWindowHostAction(await invoke<unknown>("detach_native_app_window"));
+}
+
+function parseMullvadWindowHostAction(raw: unknown): MullvadWindowHostAction {
+  const statuses = ["hosted", "resized", "focused", "restored", "unsupported", "failed"];
+  const reasons = ["none", "platformUnsupported", "appNotInstalled", "existingSessionUnavailable", "existingSessionAmbiguous", "windowIdentityChanged", "ownerWindowUnavailable", "guiRecoveryRejected", "windowHostRejected", "windowOwnerRejected", "windowStyleRejected", "windowDpiRejected", "windowVisibilityRejected", "windowBoundsRejected", "windowSiblingRejected", "windowOperationRejected", "notHosted"];
+  if (!isExactRecord(raw, ["status", "reason", "mode", "captureProtected"])
+    || !statuses.includes(String(raw.status))
+    || !reasons.includes(String(raw.reason))
+    || !["none", "existingMullvadSession"].includes(String(raw.mode))
+    || raw.captureProtected !== false) {
+    throw new Error("invalid Mullvad window host response");
+  }
+  const success = ["hosted", "resized", "focused", "restored"].includes(String(raw.status));
+  if ((success && (raw.reason !== "none" || raw.mode !== "existingMullvadSession"))
+    || (!success && raw.mode !== "none")) {
+    throw new Error("invalid Mullvad window host response");
+  }
+  return raw as unknown as MullvadWindowHostAction;
+}
+
+export async function hostMullvadWindow(): Promise<MullvadWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("Mullvad host unavailable");
+  return parseMullvadWindowHostAction(await invoke<unknown>("host_mullvad_window"));
+}
+
+export async function resizeMullvadWindow(): Promise<MullvadWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("Mullvad host unavailable");
+  return parseMullvadWindowHostAction(await invoke<unknown>("resize_mullvad_window"));
+}
+
+export async function focusMullvadWindow(): Promise<MullvadWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("Mullvad host unavailable");
+  return parseMullvadWindowHostAction(await invoke<unknown>("focus_mullvad_window"));
+}
+
+export async function restoreMullvadWindow(): Promise<MullvadWindowHostAction> {
+  if (!isTauriRuntime()) throw new Error("Mullvad host unavailable");
+  return parseMullvadWindowHostAction(await invoke<unknown>("restore_mullvad_window"));
 }
 
 export function parseNativeApps(raw: unknown): NativeApp[] {
@@ -349,6 +472,84 @@ export async function launchFirefoxService(serviceId: HomeAppId): Promise<void> 
   if (!isTauriRuntime() || !firefoxServiceIds.includes(serviceId)) throw new Error("Firefox launch unavailable");
   const raw = await invoke<unknown>("launch_firefox_service", { serviceId });
   if (!isExactRecord(raw, ["serviceId", "started"]) || raw.serviceId !== serviceId || raw.started !== true) throw new Error("invalid Firefox launch response");
+}
+
+export function parseBrowserCompanionStatus(raw: unknown): BrowserCompanionStatus {
+  if (!isExactRecord(raw, ["status", "browserId", "displayName", "reason", "captureProtected", "containment"])
+    || !["available", "unsupported"].includes(raw.status as string)
+    || !(raw.browserId === null || browserImportIds.includes(raw.browserId as BrowserImportId))
+    || !(raw.displayName === null || isDisplayString(raw.displayName, 80))
+    || !["none", "platformUnsupported", "defaultBrowserUnsupported", "defaultBrowserUntrusted"].includes(raw.reason as string)
+    || raw.captureProtected !== false
+    || raw.containment !== "bestEffort") {
+    throw new Error("invalid default browser companion status");
+  }
+  if ((raw.status === "available") !== (raw.browserId !== null && raw.displayName !== null && raw.reason === "none")) {
+    throw new Error("invalid default browser companion status");
+  }
+  return raw as unknown as BrowserCompanionStatus;
+}
+
+export function parseBrowserCompanionAction(raw: unknown): BrowserCompanionAction {
+  const statuses = ["hosted", "resized", "focused", "detached", "unsupported", "failed"];
+  const reasons = ["none", "platformUnsupported", "defaultBrowserUnsupported", "defaultBrowserUntrusted", "selectedBrowserUnavailable", "nativeAppRequired", "isolatedProfileUnsupported", "profileUnavailable", "launchFailed", "windowNotFound", "windowAmbiguous", "windowIdentityChanged", "ownerWindowUnavailable", "windowOperationRejected", "notHosted"];
+  if (!isExactRecord(raw, ["status", "browserId", "reason", "mode", "captureProtected", "containment"])
+    || !statuses.includes(raw.status as string)
+    || !(raw.browserId === null || browserImportIds.includes(raw.browserId as BrowserImportId))
+    || !reasons.includes(raw.reason as string)
+    || !["none", "existingBrowserCompanion", "isolatedBrowserCompanion"].includes(raw.mode as string)
+    || raw.captureProtected !== false
+    || raw.containment !== "bestEffort") {
+    throw new Error("invalid default browser companion action");
+  }
+  const success = ["hosted", "resized", "focused", "detached"].includes(raw.status as string);
+  if (success !== (raw.browserId !== null && raw.reason === "none" && raw.mode !== "none")) {
+    throw new Error("invalid default browser companion action");
+  }
+  return raw as unknown as BrowserCompanionAction;
+}
+
+export async function loadDefaultBrowserCompanionStatus(): Promise<BrowserCompanionStatus> {
+  if (!isTauriRuntime()) return { status: "unsupported", browserId: null, displayName: null, reason: "platformUnsupported", captureProtected: false, containment: "bestEffort" };
+  return parseBrowserCompanionStatus(await invoke<unknown>("get_default_browser_companion_status"));
+}
+
+export async function hostBrowserCompanion(
+  serviceId: HomeAppId,
+  browserId: BrowserImportId | null,
+  accountMode: BrowserAccountMode,
+): Promise<BrowserCompanionAction> {
+  if (!isTauriRuntime()
+    || !firefoxServiceIds.includes(serviceId)
+    || !(browserId === null || browserImportIds.includes(browserId))
+    || !["existingBrowser", "isolatedOsl"].includes(accountMode)) {
+    throw new Error("browser companion unavailable");
+  }
+  return parseBrowserCompanionAction(await invoke<unknown>("host_default_browser_companion", {
+    serviceId,
+    browserId,
+    accountMode,
+  }));
+}
+
+/** Compatibility wrapper for callers that have not yet exposed browser choice. */
+export async function hostDefaultBrowserCompanion(serviceId: HomeAppId): Promise<BrowserCompanionAction> {
+  return hostBrowserCompanion(serviceId, null, "existingBrowser");
+}
+
+export async function resizeDefaultBrowserCompanion(): Promise<BrowserCompanionAction> {
+  if (!isTauriRuntime()) throw new Error("default browser companion unavailable");
+  return parseBrowserCompanionAction(await invoke<unknown>("resize_default_browser_companion"));
+}
+
+export async function focusDefaultBrowserCompanion(): Promise<BrowserCompanionAction> {
+  if (!isTauriRuntime()) throw new Error("default browser companion unavailable");
+  return parseBrowserCompanionAction(await invoke<unknown>("focus_default_browser_companion"));
+}
+
+export async function detachDefaultBrowserCompanion(): Promise<BrowserCompanionAction> {
+  if (!isTauriRuntime()) throw new Error("default browser companion unavailable");
+  return parseBrowserCompanionAction(await invoke<unknown>("detach_default_browser_companion"));
 }
 
 export async function installFirefox(): Promise<void> {

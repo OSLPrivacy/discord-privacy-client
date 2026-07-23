@@ -1,15 +1,30 @@
+pub mod browser_companion;
 pub mod burn_contract;
 pub mod control_contract;
+pub mod discord_carrier_geometry;
 pub mod external_overlay;
+pub(crate) mod firefox_migration_coordinator;
 pub mod models;
+pub mod mullvad_window_host;
 pub mod native_apps;
+pub mod native_attachment_jobs;
+pub mod native_discord_adapter;
 pub mod native_window_host;
+#[cfg(feature = "core")]
+pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;
+#[cfg(feature = "core")]
+pub mod pro_context_cover;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
+
+// Native executable verification is exercised only by Windows callers. Keep
+// its fail-closed types available to cross-platform manifests and tests.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) mod windows_executable_trust;
 
 mod atomic_file;
 
@@ -22,6 +37,8 @@ pub mod broker;
 pub mod cleanup;
 #[cfg(feature = "core")]
 pub mod core_bridge;
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
+pub mod discord_qa_identity;
 #[cfg(feature = "core")]
 pub mod identity_registry;
 #[cfg(feature = "core")]

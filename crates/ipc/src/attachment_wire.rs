@@ -76,10 +76,35 @@ pub const MAX_FILENAME_LEN: usize = 1024;
 /// pushes a borderline upload over the cap.
 pub const MAX_ATTACHMENT_BYTES: usize = 23 * 1024 * 1024;
 
+/// Native file-handle streaming path. Legacy renderer/base64 APIs retain the
+/// smaller bound above so a large attachment can never be materialized in IPC.
+pub const MAX_STREAMED_ATTACHMENT_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Types Windows may execute directly or through a script host. These are
+/// never eligible for the native automatic-open path, even if MIME support is
+/// expanded later.
+pub fn is_blocked_automatic_open_filename(name: &str) -> bool {
+    let Some(ext) = name.rsplit('.').next().map(str::to_ascii_lowercase) else {
+        return true;
+    };
+    matches!(
+        ext.as_str(),
+        "ade" | "adp" | "app" | "bat" | "cmd" | "com" | "cpl" | "dll" | "docm" | "exe"
+            | "gadget" | "hta" | "inf" | "ins" | "isp" | "jar" | "js" | "jse"
+            | "htm" | "html" | "lnk" | "msc" | "msi" | "msp" | "mst" | "pif" | "pl" | "pptm" | "ps1"
+            | "ps1xml" | "ps2" | "ps2xml" | "psc1" | "psc2" | "reg" | "scf"
+            | "scr" | "sct" | "sh" | "shb" | "shs" | "svg" | "sys" | "url" | "vb"
+            | "vbe" | "vbs" | "ws" | "wsc" | "wsf" | "wsh" | "xlsm"
+    )
+}
+
 /// MIME table for the supported attachment types. Receiver uses
 /// this to construct the blob URL with the correct content-type so
 /// the browser renders the result as an image or video element.
 pub fn mime_for_filename(name: &str) -> Option<&'static str> {
+    if is_blocked_automatic_open_filename(name) {
+        return None;
+    }
     let ext = name.rsplit('.').next()?.to_ascii_lowercase();
     match ext.as_str() {
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -89,6 +114,26 @@ pub fn mime_for_filename(name: &str) -> Option<&'static str> {
         "mp4" => Some("video/mp4"),
         "webm" => Some("video/webm"),
         "mov" => Some("video/quicktime"),
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        "wav" => Some("audio/wav"),
+        "flac" => Some("audio/flac"),
+        "pdf" => Some("application/pdf"),
+        "txt" => Some("text/plain"),
+        "md" => Some("text/markdown"),
+        "csv" => Some("text/csv"),
+        "json" => Some("application/json"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        "odt" => Some("application/vnd.oasis.opendocument.text"),
+        "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
+        "odp" => Some("application/vnd.oasis.opendocument.presentation"),
+        "zip" => Some("application/zip"),
+        "7z" => Some("application/x-7z-compressed"),
+        "rar" => Some("application/vnd.rar"),
+        "tar" => Some("application/x-tar"),
+        "gz" => Some("application/gzip"),
         _ => None,
     }
 }
@@ -764,8 +809,8 @@ mod tests {
     fn unsupported_extension_rejected() {
         let key = fresh_key();
         let plain = vec![0u8; 10];
-        let err = seal_attachment(key, &plain, "passwords.zip").unwrap_err();
-        matches!(err, AttachmentWireError::UnsupportedExtension);
+        let err = seal_attachment(key, &plain, "payload.exe").unwrap_err();
+        assert!(matches!(err, AttachmentWireError::UnsupportedExtension));
     }
 
     #[test]
@@ -826,7 +871,14 @@ mod tests {
         assert_eq!(mime_for_filename("a.mp4"), Some("video/mp4"));
         assert_eq!(mime_for_filename("a.webm"), Some("video/webm"));
         assert_eq!(mime_for_filename("a.mov"), Some("video/quicktime"));
-        assert_eq!(mime_for_filename("a.txt"), None);
+        assert_eq!(mime_for_filename("a.txt"), Some("text/plain"));
+        assert_eq!(mime_for_filename("a.pdf"), Some("application/pdf"));
+        assert_eq!(mime_for_filename("a.zip"), Some("application/zip"));
+        assert_eq!(mime_for_filename("run.exe"), None);
+        assert_eq!(mime_for_filename("script.ps1"), None);
+        assert!(is_blocked_automatic_open_filename("RUN.CMD"));
+        assert!(is_blocked_automatic_open_filename("payload.js"));
+        assert!(!is_blocked_automatic_open_filename("report.pdf"));
         assert_eq!(mime_for_filename("no_extension"), None);
     }
 

@@ -7,15 +7,32 @@
     <title>OSL private composer</title>
   </head>
   <body>
-    <main class="overlay-shell" aria-label="OSL private composer">
-      <span class="trust-mark" title="This field belongs to OSL, not the app underneath" aria-label="OSL-owned field">OSL</span>
-      <label class="draft-field" for="protected-draft">
-        <span class="sr-only">Private message</span>
-        <textarea id="protected-draft" rows="1" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes" placeholder="Private message"></textarea>
-      </label>
-      <div class="draft-status">
-        <span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true">0 / 1000 bytes</span>
+    <main class="overlay-shell" aria-label="OSL protected Discord conversation">
+      <strong id="friend-label" class="sr-only">Private message</strong>
+      <div id="osl-message-list" class="transcript-mount" aria-label="Messages prepared or opened in this OSL panel"></div>
+      <section id="write-pane" aria-label="Private message composer">
+        <div class="composer-box">
+          <span class="trust-mark" title="This composer belongs to OSL, not Discord" aria-label="OSL-owned composer">OSL</span>
+          <label class="draft-field" for="protected-draft"><span class="sr-only">Private message</span><textarea id="protected-draft" rows="2" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes overlay-status" placeholder="Message privately through OSL"></textarea></label>
+          <div class="composer-toolbar">
+            <output id="overlay-status" role="status" aria-live="polite">Checking protection…</output>
+            <span id="draft-bytes" class="draft-status" role="status" aria-live="polite" aria-atomic="true"></span>
+            <button id="choose-attachment" class="composer-action" type="button" aria-label="Attach a protected file" title="Attach a protected file" disabled>+</button>
+            <button id="prepare-protected" class="send-action" type="button" disabled>Send</button>
+          </div>
+        </div>
+      </section>
+      <div class="overlay-runtime-controls" hidden>
+        <button id="covertext-mode" type="button" aria-pressed="true" disabled>Covertext</button>
+        <button id="burn-protected-chat" type="button" disabled>Burn</button>
+        <select id="protected-send-mode" disabled><option value="button">Button</option><option value="double">Double Enter</option><option value="single">Single Enter · Experimental</option></select>
+        <select id="protected-placement-mode" disabled><option value="atomic">Instant</option><option value="compatibility">Match typing · Pro</option></select>
+        <select id="protected-ttl" disabled><option value="3600">1 hour</option><option value="86400">1 day</option><option value="259200">3 days</option><option value="604800">7 days</option></select>
+        <span id="current-expiry">Current: checking…</span>
+        <input id="protected-view-once" type="checkbox" disabled/>
+        <input id="protected-decrypt-display" type="checkbox" disabled/>
       </div>
+      <footer class="sr-only">Discord stays separate. When OSL can verify its composer, Covertext can place a local OSL decoy line there; otherwise the message travels only through OSL. AI Covertext is unavailable until a verified local model pack is installed, and no cloud AI is used. Ordinary Windows capture sees a black composer area instead of this private panel.</footer>
     </main>
     <script type="module" src="/src/overlay.ts"></script>
   </body>

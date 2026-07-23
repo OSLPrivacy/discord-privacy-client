@@ -65,24 +65,30 @@ describe("simplified truthful settings", () => {
     expect(source).not.toContain("setServiceHostLayout");
   });
 
-  it("lists isolated embedded profiles without shared-browser actions", () => {
-    expect(source).toContain("Open each account in its own OSL profile.");
+  it("lists apps with one trusted browser preference and no import controls", () => {
+    expect(source).toContain("Browser for web apps");
+    expect(source).toContain('data-preferred-browser=""');
+    expect(source).toContain('browser.id !== "duckduckgo"');
     expect(source).not.toContain('data-firefox-launch=');
     expect(source).not.toContain('data-install-firefox');
     expect(source).not.toContain("downloadSetupCsv");
   });
 
-  it("keeps account-opening choices editable without duplicating onboarding browser import", () => {
+  it("keeps the global browser choice editable without duplicating onboarding import", () => {
     const start = source.indexOf("function serviceAccountsSettingsContent");
     const end = source.indexOf("function privacySettingsContent", start);
     const apps = source.slice(start, end);
-    expect(apps).toContain("Account opening");
-    expect(apps).toContain('data-saved-account-mode="use"');
-    expect(apps).toContain('data-saved-account-mode="clean"');
-    expect(apps).toContain('data-saved-native="${app.id}"');
-    expect(apps).toContain("Use selected apps");
-    expect(apps).toContain("Use web profiles");
-    expect(apps).toContain("Only checked installed apps may open");
+    expect(apps).toContain("Browser for web apps");
+    expect(apps).toContain("preferredBrowserId");
+    expect(apps).toContain("browserImports.filter");
+    expect(apps).toContain('data-preferred-browser="${browser.id}"');
+    expect(source).toContain(">Use existing account</button>");
+    expect(source).toContain(">Use separate account</button>");
+    expect(apps).toContain('role="radiogroup"');
+    expect(apps).toContain('aria-checked="${defaultSelected}"');
+    expect(apps).toContain("account-opening-content");
+    expect(apps).not.toContain("Selected desktop apps");
+    expect(apps).not.toContain("Isolated web profiles");
     expect(apps).not.toContain("data-browser-import");
     expect(apps).not.toContain("Prepare export in");
     expect(apps).not.toContain("data-browser-password-import");

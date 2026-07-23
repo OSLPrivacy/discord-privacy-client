@@ -10,24 +10,38 @@ vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
 import {
   beginBrowserAccountImport,
+  beginProtectedBrowserImport,
+  finishProtectedBrowserImport,
   createEmbeddedServiceAccount,
   closeEmbeddedServiceHost,
+  detachDefaultBrowserCompanion,
   detachNativeAppWindow,
+  focusDefaultBrowserCompanion,
   focusNativeAppWindow,
+  focusMullvadWindow,
   hostNativeAppWindow,
+  hostBrowserCompanion,
+  hostDefaultBrowserCompanion,
+  hostMullvadWindow,
   installFirefox,
   installNativeApp,
   installMullvad,
   launchFirefoxService,
   loadBrowserImports,
+  loadDefaultBrowserCompanionStatus,
   loadFirefoxStatus,
   loadMullvadStatus,
   openBrowserImport,
   openMullvad,
   openEmbeddedHomeApp,
   openEmbeddedServiceAccount,
+  parseDiscordSessionMode,
+  parseNativeSessionMode,
   removeEmbeddedServiceAccount,
   resizeNativeAppWindow,
+  resizeDefaultBrowserCompanion,
+  resizeMullvadWindow,
+  restoreMullvadWindow,
   setupEmbeddedHomeApp,
   type HomeAppCatalogEntry,
   type LinkedService,
@@ -129,10 +143,80 @@ describe("native window host IPC", () => {
   });
 
   it("hosts one exact allowlisted app through the narrow command", async () => {
-    const response = { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless" };
+    const response = { id: "discord", status: "hosted", reason: "none", mode: "existingNativeCompanion", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("discord", "existingSession")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "discord", discordSessionMode: "existingSession" });
+  });
+
+  it.each(["existingSessionUnavailable", "existingSessionAmbiguous"])("preserves the bounded existing-session failure reason %s", async (reason) => {
+    const response = { id: "discord", status: "failed", reason, mode: "none", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("discord", "existingSession")).resolves.toEqual(response);
+  });
+
+  it.each([
+    "childHierarchyRejected",
+    "childStyleRejected",
+    "childProcessRejected",
+    "childDpiRejected",
+    "childVisibilityRejected",
+    "childBoundsRejected",
+    "childSiblingRejected",
+  ])("preserves the bounded protected-child failure stage %s", async (reason) => {
+    const response = { id: "signal", status: "failed", reason, mode: "none", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("signal", "dedicated")).resolves.toEqual(response);
+  });
+
+  it.each([
+    "borrowedPlacementRejected",
+    "borrowedStyleRejected",
+    "borrowedVisibilityRejected",
+    "borrowedBoundsRejected",
+  ])("preserves the bounded borrowed-window failure stage %s", async (reason) => {
+    const response = { id: "signal", status: "failed", reason, mode: "none", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("signal", "existingSession")).resolves.toEqual(response);
+  });
+
+  it("defaults malformed or missing Discord session choices to the dedicated profile", async () => {
+    expect(parseDiscordSessionMode(null)).toBe("dedicated");
+    expect(parseDiscordSessionMode("existing")).toBe("dedicated");
+    expect(parseDiscordSessionMode("existingSession")).toBe("existingSession");
+    const response = { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless", captureProtected: false };
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(hostNativeAppWindow("discord")).resolves.toEqual(response);
-    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "discord" });
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "discord", discordSessionMode: "dedicated" });
+  });
+
+  it("allows explicit existing sessions only for the supported native apps", async () => {
+    expect(parseNativeSessionMode("existingSession")).toBe("existingSession");
+    const response = { id: "telegram", status: "hosted", reason: "none", mode: "existingNativeCompanion", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("telegram", "existingSession")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "telegram", discordSessionMode: "existingSession" });
+
+    mocks.invoke.mockResolvedValueOnce({ id: "whatsapp", status: "hosted", reason: "none", mode: "existingNativeCompanion", captureProtected: false });
+    await expect(hostNativeAppWindow("whatsapp", "existingSession")).resolves.toMatchObject({ id: "whatsapp", status: "hosted" });
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "whatsapp", discordSessionMode: "existingSession" });
+
+    mocks.invoke.mockResolvedValueOnce({ id: "signal", status: "hosted", reason: "none", mode: "existingNativeCompanion", captureProtected: false });
+    await expect(hostNativeAppWindow("signal", "existingSession")).resolves.toMatchObject({ id: "signal", status: "hosted" });
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "signal", discordSessionMode: "existingSession" });
+  });
+
+  it("hosts Outlook only as an existing native account", async () => {
+    const response = { id: "outlook", status: "hosted", reason: "none", mode: "existingNativeCompanion", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("outlook", "existingSession")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "outlook", discordSessionMode: "existingSession" });
+  });
+
+  it("preserves the dedicated Telegram initialization failure reason", async () => {
+    const response = { id: "telegram", status: "failed", reason: "profileInitializationFailed", mode: "none", captureProtected: false };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(hostNativeAppWindow("telegram")).resolves.toEqual(response);
   });
 
   it("starts installation only for an exact allowlisted app", async () => {
@@ -157,11 +241,33 @@ describe("native window host IPC", () => {
     ]);
   });
 
+  it("borrows Mullvad through fixed argument-free commands and rejects capture claims", async () => {
+    const hosted = { status: "hosted", reason: "none", mode: "existingMullvadSession", captureProtected: false };
+    mocks.invoke
+      .mockResolvedValueOnce(hosted)
+      .mockResolvedValueOnce({ ...hosted, status: "resized" })
+      .mockResolvedValueOnce({ ...hosted, status: "focused" })
+      .mockResolvedValueOnce({ ...hosted, status: "restored" });
+    await expect(hostMullvadWindow()).resolves.toEqual(hosted);
+    await expect(resizeMullvadWindow()).resolves.toMatchObject({ status: "resized" });
+    await expect(focusMullvadWindow()).resolves.toMatchObject({ status: "focused" });
+    await expect(restoreMullvadWindow()).resolves.toMatchObject({ status: "restored" });
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["host_mullvad_window"],
+      ["resize_mullvad_window"],
+      ["focus_mullvad_window"],
+      ["restore_mullvad_window"],
+    ]);
+
+    mocks.invoke.mockResolvedValueOnce({ ...hosted, captureProtected: true });
+    await expect(hostMullvadWindow()).rejects.toThrow("invalid Mullvad window host response");
+  });
+
   it("uses argument-free lifecycle commands for resize, focus, and detach", async () => {
     mocks.invoke
-      .mockResolvedValueOnce({ id: "discord", status: "resized", reason: "none", mode: "ownedBorderless" })
-      .mockResolvedValueOnce({ id: "discord", status: "focused", reason: "none", mode: "ownedBorderless" })
-      .mockResolvedValueOnce({ id: "discord", status: "detached", reason: "none", mode: "ownedBorderless" });
+      .mockResolvedValueOnce({ id: "discord", status: "resized", reason: "none", mode: "ownedBorderless", captureProtected: false })
+      .mockResolvedValueOnce({ id: "discord", status: "focused", reason: "none", mode: "ownedBorderless", captureProtected: false })
+      .mockResolvedValueOnce({ id: "discord", status: "detached", reason: "none", mode: "ownedBorderless", captureProtected: false });
     await expect(resizeNativeAppWindow()).resolves.toMatchObject({ status: "resized" });
     await expect(focusNativeAppWindow()).resolves.toMatchObject({ status: "focused" });
     await expect(detachNativeAppWindow()).resolves.toMatchObject({ status: "detached" });
@@ -173,10 +279,11 @@ describe("native window host IPC", () => {
   });
 
   it.each([
-    { id: "telegram", status: "hosted", reason: "none", mode: "ownedBorderless" },
-    { id: "discord", status: "hosted", reason: "windowNotFound", mode: "ownedBorderless" },
-    { id: "discord", status: "failed", reason: "windowNotFound", mode: "ownedBorderless" },
-    { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless", extra: true },
+    { id: "telegram", status: "hosted", reason: "none", mode: "ownedBorderless", captureProtected: false },
+    { id: "discord", status: "hosted", reason: "windowNotFound", mode: "ownedBorderless", captureProtected: false },
+    { id: "discord", status: "failed", reason: "windowNotFound", mode: "ownedBorderless", captureProtected: false },
+    { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless", captureProtected: false, extra: true },
+    { id: "discord", status: "hosted", reason: "none", mode: "ownedBorderless" },
   ])("rejects malformed or mismatched host responses %#", async (response) => {
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(hostNativeAppWindow("discord")).rejects.toThrow("invalid native window host response");
@@ -212,6 +319,58 @@ describe("browser-owned import IPC", () => {
     ]);
   });
 
+  it("uses exact truthful commands for selected and default browser companions", async () => {
+    const status = { status: "available", browserId: "opera", displayName: "Opera", reason: "none", captureProtected: false, containment: "bestEffort" };
+    const hosted = { status: "hosted", browserId: "opera", reason: "none", mode: "existingBrowserCompanion", captureProtected: false, containment: "bestEffort" };
+    const resized = { ...hosted, status: "resized" };
+    const focused = { ...hosted, status: "focused" };
+    const detached = { ...hosted, status: "detached" };
+    mocks.invoke
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(hosted)
+      .mockResolvedValueOnce(resized)
+      .mockResolvedValueOnce(focused)
+      .mockResolvedValueOnce(detached);
+
+    await expect(loadDefaultBrowserCompanionStatus()).resolves.toEqual(status);
+    await expect(hostDefaultBrowserCompanion("instagram")).resolves.toEqual(hosted);
+    await expect(resizeDefaultBrowserCompanion()).resolves.toEqual(resized);
+    await expect(focusDefaultBrowserCompanion()).resolves.toEqual(focused);
+    await expect(detachDefaultBrowserCompanion()).resolves.toEqual(detached);
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["get_default_browser_companion_status"],
+      ["host_default_browser_companion", { serviceId: "instagram", browserId: null, accountMode: "existingBrowser" }],
+      ["resize_default_browser_companion"],
+      ["focus_default_browser_companion"],
+      ["detach_default_browser_companion"],
+    ]);
+  });
+
+  it("rejects untruthful browser-companion receipts and widened service ids", async () => {
+    mocks.invoke.mockResolvedValueOnce({ status: "available", browserId: "chrome", displayName: "Chrome", reason: "none", captureProtected: true, containment: "bestEffort" });
+    await expect(loadDefaultBrowserCompanionStatus()).rejects.toThrow("invalid default browser companion status");
+    mocks.invoke.mockResolvedValueOnce({ status: "hosted", browserId: "chrome", reason: "none", mode: "existingBrowserCompanion", captureProtected: false, containment: "locked" });
+    await expect(hostDefaultBrowserCompanion("gmail")).rejects.toThrow("invalid default browser companion action");
+    mocks.invoke.mockClear();
+    await expect(hostDefaultBrowserCompanion("discord")).rejects.toThrow("browser companion unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("passes only fixed browser and account-mode enums to the companion", async () => {
+    const isolated = { status: "hosted", browserId: "firefox", reason: "none", mode: "isolatedBrowserCompanion", captureProtected: false, containment: "bestEffort" };
+    mocks.invoke.mockResolvedValueOnce(isolated);
+    await expect(hostBrowserCompanion("icloud", "firefox", "isolatedOsl")).resolves.toEqual(isolated);
+    expect(mocks.invoke).toHaveBeenCalledWith("host_default_browser_companion", {
+      serviceId: "icloud", browserId: "firefox", accountMode: "isolatedOsl",
+    });
+    mocks.invoke.mockClear();
+    await expect(hostBrowserCompanion("discord", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
+    await expect(hostBrowserCompanion("outlook", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
+    await expect(hostBrowserCompanion("gmail", "../firefox" as "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
+    await expect(hostBrowserCompanion("gmail", "firefox", "fresh" as "isolatedOsl")).rejects.toThrow("browser companion unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
   it("starts one argument-free Firefox migration and validates the exact result", async () => {
     const response = {
       preferredSource: "edge",
@@ -223,6 +382,37 @@ describe("browser-owned import IPC", () => {
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(beginBrowserAccountImport()).resolves.toEqual(response);
     expect(mocks.invoke).toHaveBeenCalledWith("begin_browser_account_import");
+  });
+
+  it("passes only one exact queued browser enum to the protected importer", async () => {
+    const response = { selectedSources: ["edge"], started: true, mode: "firefoxMigrationWizard", sourceSelected: true, manualFallback: null };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(beginProtectedBrowserImport(["edge"])).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("begin_protected_browser_import", { browserIds: ["edge"] });
+  });
+
+  it("permits the explicit existing-session mode for Signal", async () => {
+    mocks.invoke.mockResolvedValueOnce({ id: "signal", status: "hosted", reason: "none", mode: "existingNativeCompanion", captureProtected: false });
+    await expect(hostNativeAppWindow("signal", "existingSession")).resolves.toMatchObject({ id: "signal", status: "hosted" });
+    expect(mocks.invoke).toHaveBeenCalledWith("host_native_app_window", { appId: "signal", discordSessionMode: "existingSession" });
+  });
+
+  it("closes only the retained protected import process between queued sources", async () => {
+    mocks.invoke.mockResolvedValueOnce(undefined);
+    await expect(finishProtectedBrowserImport()).resolves.toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledWith("finish_protected_browser_import");
+  });
+
+  it("rejects widened protected-import input and receipts", async () => {
+    await expect(beginProtectedBrowserImport([])).rejects.toThrow("protected browser import unavailable");
+    await expect(beginProtectedBrowserImport(["edge", "chrome"])).rejects.toThrow("protected browser import unavailable");
+    await expect(beginProtectedBrowserImport(["chrome", "chrome"])).rejects.toThrow("protected browser import unavailable");
+    await expect(beginProtectedBrowserImport(["chrome --evil" as "chrome"])).rejects.toThrow("protected browser import unavailable");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    mocks.invoke.mockResolvedValueOnce({ selectedSources: ["edge"], started: true, mode: "protectedInApp", sourceSelected: true, manualFallback: null });
+    await expect(beginProtectedBrowserImport(["chrome"])).rejects.toThrow("invalid protected browser import response");
+    mocks.invoke.mockResolvedValueOnce({ selectedSources: ["chrome"], started: true, mode: "firefoxMigrationWizard", sourceSelected: false, manualFallback: null });
+    await expect(beginProtectedBrowserImport(["chrome"])).rejects.toThrow("invalid protected browser import response");
   });
 
   it("uses only the exact Firefox status, install, and allowlisted service commands", async () => {

@@ -1,6 +1,6 @@
 :root {
-  font-family: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  color: #e8e8e8;
+  font-family: "Inter Variable", Inter, "gg sans", "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  color: #dbdee1;
   background: transparent;
   font-synthesis: none;
 }
@@ -8,6 +8,7 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
 body { padding: 0; }
+[hidden] { display: none !important; }
 
 .sr-only {
   position: absolute;
@@ -21,29 +22,65 @@ body { padding: 0; }
   border: 0;
 }
 
+/* One bounded OSL surface: a central protected transcript and bottom composer.
+   It does not inspect, restyle, or borrow content from Discord. */
 .overlay-shell {
   position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   width: 100%;
   height: 100%;
-  padding: 6px 10px;
-  border: 1px solid rgba(255, 255, 255, .12);
-  border-radius: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #313338;
+  border: 1px solid rgba(73, 214, 255, .42);
+}
+
+.transcript-mount {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.transcript-mount > .osl-discord-transcript {
+  min-height: 0;
+  border: 0;
+}
+
+#write-pane {
+  min-width: 0;
+  padding: 0 14px 14px;
+  background: #313338;
+}
+
+.composer-box {
+  position: relative;
+  width: 100%;
+  min-height: 76px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 9px;
-  background: rgba(24, 24, 26, .985);
-  box-shadow: none;
+  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-rows: minmax(40px, auto) 30px;
+  overflow: hidden;
+  background: #383a40;
 }
 
 .trust-mark {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+  justify-self: center;
+  width: 27px;
+  height: 20px;
+  margin-top: 10px;
+  border: 1px solid #23a6be;
+  border-radius: 4px;
   display: grid;
   place-items: center;
-  min-width: 28px;
-  height: 22px;
-  border: 1px solid rgba(6, 182, 212, .74);
-  color: #67e8f9;
-  background: rgba(6, 182, 212, .08);
+  color: #a5f3fc;
+  background: #164e5a;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .08em;
@@ -51,38 +88,108 @@ body { padding: 0; }
   user-select: none;
 }
 
-.draft-field { min-width: 0; display: grid; align-content: center; }
+.draft-field {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  display: block;
+}
+
 .draft-field textarea {
   width: 100%;
-  min-height: 25px;
-  max-height: 25px;
-  padding: 2px 0;
+  min-height: 40px;
+  max-height: 32vh;
+  padding: 9px 12px 2px 0;
   border: 0;
-  resize: none;
-  overflow: hidden;
-  color: #e8e8e8;
+  outline: 0;
+  resize: vertical;
+  color: #dbdee1;
   background: transparent;
   font: inherit;
   font-size: 14px;
   line-height: 20px;
 }
-.draft-field textarea::placeholder { color: #888; }
-.draft-field textarea:focus { outline: none; }
-.overlay-shell:focus-within {
-  border-color: rgba(6, 182, 212, .8);
-  outline: 1px solid rgba(6, 182, 212, .35);
-  outline-offset: -2px;
+
+.draft-field textarea::placeholder { color: #949ba4; }
+
+.composer-box:focus-within {
+  border-color: rgba(73, 214, 255, .72);
+  box-shadow: inset 0 0 0 1px rgba(73, 214, 255, .14);
 }
 
+.composer-toolbar {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  padding: 1px 5px 5px 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+#overlay-status,
 .draft-status {
-  grid-column: 3;
-  display: block;
-  color: #9aa0a6;
+  min-width: 0;
+  overflow: hidden;
+  color: #949ba4;
   font-size: 11px;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: .5;
+}
+
+#overlay-status { margin-right: auto; }
+.draft-status { max-width: 9rem; }
+
+.composer-action,
+.send-action {
+  min-height: 25px;
+  border-radius: 4px;
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer-action {
+  width: 27px;
+  padding: 0;
+  border: 1px solid #5c5e66;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.send-action {
+  min-width: 52px;
+  padding: 0 9px;
+  border: 0;
+  background: #5865f2;
+}
+
+.composer-action:hover:not(:disabled) { background: #4e5058; }
+.send-action:hover:not(:disabled) { background: #4752c4; }
+.composer-action:focus-visible,
+.send-action:focus-visible { outline: 2px solid #a5f3fc; outline-offset: 1px; }
+.composer-action:disabled,
+.send-action:disabled { cursor: not-allowed; opacity: .48; }
+
+@media (max-width: 680px) {
+  #write-pane { padding: 0 8px 8px; }
+  .draft-status { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: .01ms !important; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .overlay-shell { border-color: Highlight; }
+  .composer-box { border-color: CanvasText; }
 }

@@ -132,21 +132,21 @@ const SERVICES: &[ServiceManifest] = &[
         display_name: "Discord",
         initial_url: "https://discord.com/app",
         allowed_hosts: &["discord.com"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "telegram",
         display_name: "Telegram",
         initial_url: "https://web.telegram.org/a/",
         allowed_hosts: &["web.telegram.org"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "whatsapp",
         display_name: "WhatsApp",
         initial_url: "https://web.whatsapp.com/",
         allowed_hosts: &["web.whatsapp.com"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "instagram",
@@ -220,18 +220,6 @@ const EMAIL_GMAIL: ServiceManifest = ServiceManifest {
     allowed_hosts: &["mail.google.com", "accounts.google.com"],
     launch_active: true,
 };
-const EMAIL_OUTLOOK: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Outlook",
-    initial_url: "https://outlook.live.com/mail/0/",
-    allowed_hosts: &[
-        "outlook.live.com",
-        "login.live.com",
-        "account.live.com",
-        "login.microsoftonline.com",
-    ],
-    launch_active: true,
-};
 const EMAIL_PROTON: ServiceManifest = ServiceManifest {
     id: "email",
     display_name: "Proton Mail",
@@ -288,6 +276,13 @@ const EMAIL_MAIL_COM: ServiceManifest = ServiceManifest {
     allowed_hosts: &["www.mail.com", "login.mail.com", "navigator-lxa.mail.com"],
     launch_active: true,
 };
+const EMAIL_ICLOUD: ServiceManifest = ServiceManifest {
+    id: "email",
+    display_name: "iCloud Mail",
+    initial_url: "https://www.icloud.com/mail/",
+    allowed_hosts: &["www.icloud.com", "idmsa.apple.com"],
+    launch_active: true,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ServiceHostError {
@@ -337,7 +332,9 @@ pub fn service_manifest_for_provider(
     }
     Ok(match provider.unwrap_or_default() {
         EmailProvider::Gmail => &EMAIL_GMAIL,
-        EmailProvider::Outlook => &EMAIL_OUTLOOK,
+        // Outlook is native-only. Keep its reviewed web manifest as inert
+        // navigation-policy metadata, but never create an embedded profile.
+        EmailProvider::Outlook => return Err(ServiceHostError::ServiceUnavailable),
         EmailProvider::Proton => &EMAIL_PROTON,
         EmailProvider::Tuta => &EMAIL_TUTA,
         EmailProvider::Fastmail => &EMAIL_FASTMAIL,
@@ -346,6 +343,7 @@ pub fn service_manifest_for_provider(
         EmailProvider::Aol => &EMAIL_AOL,
         EmailProvider::Gmx => &EMAIL_GMX,
         EmailProvider::Maildotcom => &EMAIL_MAIL_COM,
+        EmailProvider::Icloud => &EMAIL_ICLOUD,
     })
 }
 
@@ -1766,10 +1764,22 @@ mod tests {
     }
 
     #[test]
+    fn native_messengers_never_launch_through_the_embedded_browser_host() {
+        for service_id in ["discord", "telegram", "signal", "whatsapp"] {
+            let manifest = service_manifest(service_id).unwrap();
+            assert!(!manifest.launch_active, "{service_id}");
+            assert_eq!(
+                validated_initial_url(manifest),
+                Err(ServiceHostError::ServiceUnavailable),
+                "{service_id}"
+            );
+        }
+    }
+
+    #[test]
     fn email_providers_use_only_fixed_exact_https_origins() {
         let cases = [
             (EmailProvider::Gmail, "mail.google.com"),
-            (EmailProvider::Outlook, "outlook.live.com"),
             (EmailProvider::Proton, "mail.proton.me"),
             (EmailProvider::Tuta, "app.tuta.com"),
             (EmailProvider::Fastmail, "app.fastmail.com"),
@@ -1778,6 +1788,7 @@ mod tests {
             (EmailProvider::Aol, "mail.aol.com"),
             (EmailProvider::Gmx, "www.gmx.com"),
             (EmailProvider::Maildotcom, "www.mail.com"),
+            (EmailProvider::Icloud, "www.icloud.com"),
         ];
         for (provider, expected_host) in cases {
             let manifest = service_manifest_for_provider("email", Some(provider)).unwrap();
@@ -1790,6 +1801,14 @@ mod tests {
                 &Url::parse(&format!("https://{expected_host}.evil.example/")).unwrap()
             ));
         }
+    }
+
+    #[test]
+    fn outlook_is_native_only_and_has_no_embedded_profile() {
+        assert_eq!(
+            service_manifest_for_provider("email", Some(EmailProvider::Outlook)),
+            Err(ServiceHostError::ServiceUnavailable)
+        );
     }
 
     #[test]

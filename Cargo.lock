@@ -2558,6 +2558,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "message-lifecycle"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2957,6 +2966,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "osl-cover-draft"
+version = "0.0.1"
+dependencies = [
+ "sha2",
+ "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]

@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
+        shield: fileURLToPath(new URL("./shield.html", import.meta.url)),
       },
     },
   },

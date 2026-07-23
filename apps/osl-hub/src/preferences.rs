@@ -120,6 +120,7 @@ mod tests {
             send_mode: SendMode::SingleEnter,
             placement_mode: PlacementMode::Compatibility,
             show_plaintext_preview: false,
+            window_capture_enabled: true,
             acknowledge_experimental_send_risk: true,
         };
 
@@ -167,6 +168,7 @@ mod tests {
             send_mode: SendMode::DoubleEnter,
             placement_mode: PlacementMode::Compatibility,
             show_plaintext_preview: true,
+            window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
         };
 
@@ -191,6 +193,7 @@ mod tests {
             send_mode: SendMode::Manual,
             placement_mode: PlacementMode::Atomic,
             show_plaintext_preview: false,
+            window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
         };
         state.save(expected.clone()).unwrap();

@@ -23,7 +23,7 @@
 //! ## Padding
 //!
 //! Plaintext is padded to the smallest fitting bucket:
-//! 256 KB / 1 MB / 5 MB / 10 MB / 25 MB. Padding is applied **before**
+//! 256 KB through 512 MB. Padding is applied **before**
 //! AEAD across the whole stream, so it lives inside the AEAD ciphertext
 //! and is authenticated by the per-chunk tags — it cannot be stripped
 //! without invalidating an AEAD tag.
@@ -74,6 +74,7 @@ use crate::aead;
 use crate::error::{Error, Result};
 use crate::hkdf;
 use crate::random;
+use zeroize::Zeroize;
 
 /// Attachment-padding buckets per the design doc.
 pub const ATTACHMENT_BUCKETS: &[u64] = &[
@@ -82,7 +83,14 @@ pub const ATTACHMENT_BUCKETS: &[u64] = &[
     5 * 1024 * 1024,
     10 * 1024 * 1024,
     25 * 1024 * 1024,
+    50 * 1024 * 1024,
+    100 * 1024 * 1024,
+    250 * 1024 * 1024,
+    512 * 1024 * 1024 + 16 * 1024,
 ];
+
+/// Product-level plaintext ceiling for native streaming attachments.
+pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Per-chunk plaintext window. The streaming construction never holds
 /// more than this many bytes of plaintext in memory at once.
@@ -104,13 +112,16 @@ const STREAM_MAGIC: [u8; 7] = *b"DPCATT\x01";
 
 /// Largest plaintext that fits in any attachment bucket.
 pub fn max_attachment_plaintext_size() -> u64 {
-    *ATTACHMENT_BUCKETS
-        .last()
-        .expect("ATTACHMENT_BUCKETS is non-empty")
-        - LENGTH_PREFIX_SIZE as u64
+    MAX_ATTACHMENT_PLAINTEXT_BYTES
 }
 
 fn pick_bucket(plaintext_len: u64) -> Result<u64> {
+    if plaintext_len > MAX_ATTACHMENT_PLAINTEXT_BYTES {
+        return Err(Error::PaddingOverflow {
+            max: MAX_ATTACHMENT_PLAINTEXT_BYTES as usize,
+            got: usize::try_from(plaintext_len).unwrap_or(usize::MAX),
+        });
+    }
     let needed =
         plaintext_len
             .checked_add(LENGTH_PREFIX_SIZE as u64)
@@ -272,7 +283,7 @@ impl StreamHeader {
                     "attachment stream header: plaintext_len overflows padded length".into(),
                 )
             })?;
-        if padded_plaintext_len > bucket_size {
+        if plaintext_len > MAX_ATTACHMENT_PLAINTEXT_BYTES || padded_plaintext_len > bucket_size {
             return Err(Error::Internal(format!(
                 "attachment stream header: plaintext_len {} exceeds bucket_size {} payload \
                  capacity",
@@ -338,6 +349,13 @@ pub struct StreamEncryptor {
     pending: Vec<u8>,
     length_prefix_pending: [u8; LENGTH_PREFIX_SIZE],
     length_prefix_emitted: bool,
+}
+
+impl Drop for StreamEncryptor {
+    fn drop(&mut self) {
+        self.pending.zeroize();
+        self.length_prefix_pending.zeroize();
+    }
 }
 
 impl StreamEncryptor {
@@ -437,9 +455,11 @@ impl StreamEncryptor {
             self.pending.extend_from_slice(&input[..take]);
             input = &input[take..];
             if self.pending.len() == ATTACHMENT_CHUNK_SIZE {
-                let chunk =
+                let mut chunk =
                     std::mem::replace(&mut self.pending, Vec::with_capacity(ATTACHMENT_CHUNK_SIZE));
-                let ct = self.emit_chunk(&chunk)?;
+                let result = self.emit_chunk(&chunk);
+                chunk.zeroize();
+                let ct = result?;
                 out.extend_from_slice(&ct);
             }
         }
@@ -449,7 +469,22 @@ impl StreamEncryptor {
     /// Flush remaining plaintext (zero-padded to the bucket boundary)
     /// and emit all remaining chunks. Errors if fewer plaintext bytes
     /// were fed via `write` than the declared `plaintext_len`.
-    pub fn finalize(mut self) -> Result<Vec<u8>> {
+    pub fn finalize(self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        self.finalize_into(|chunk| {
+            out.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Finalize without aggregating the padded ciphertext. `emit` is called
+    /// once per fixed-size ciphertext chunk, so file/network consumers can
+    /// preserve the 16 KiB plaintext-memory bound even for the 25 MiB bucket.
+    pub fn finalize_into<F>(mut self, mut emit: F) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
         if self.plaintext_consumed != self.header.plaintext_len {
             return Err(Error::Internal(format!(
                 "attachment encrypt: finalize with consumed {} != declared plaintext_len {}",
@@ -458,27 +493,29 @@ impl StreamEncryptor {
         }
         self.ensure_length_prefix();
 
-        let mut out = Vec::new();
         // Flush whatever's in `pending`, padded with zeros.
         if !self.pending.is_empty() {
             self.pending.resize(ATTACHMENT_CHUNK_SIZE, 0);
-            let chunk = std::mem::take(&mut self.pending);
-            let ct = self.emit_chunk(&chunk)?;
-            out.extend_from_slice(&ct);
+            let mut chunk = std::mem::take(&mut self.pending);
+            let result = self.emit_chunk(&chunk);
+            chunk.zeroize();
+            let ct = result?;
+            emit(&ct)?;
         }
         // Emit any remaining all-zero chunks up to bucket size.
-        let zero_chunk = vec![0u8; ATTACHMENT_CHUNK_SIZE];
+        let mut zero_chunk = vec![0u8; ATTACHMENT_CHUNK_SIZE];
         while self.chunk_index < self.header.total_chunks {
             let ct = self.emit_chunk(&zero_chunk)?;
-            out.extend_from_slice(&ct);
+            emit(&ct)?;
         }
+        zero_chunk.zeroize();
         if self.chunk_index != self.header.total_chunks {
             return Err(Error::Internal(format!(
                 "attachment encrypt: finalize with chunk_index {} != total_chunks {}",
                 self.chunk_index, self.header.total_chunks
             )));
         }
-        Ok(out)
+        Ok(())
     }
 }
 
@@ -579,6 +616,7 @@ impl StreamDecryptor {
         let take = std::cmp::min(chunk.len() as u64, want_more) as usize;
         let user = chunk[..take].to_vec();
         // chunk[take..] is authenticated zero-padding; drop it.
+        chunk.zeroize();
         self.plaintext_emitted += take as u64;
         Ok(user)
     }

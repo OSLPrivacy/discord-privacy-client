@@ -73,6 +73,7 @@ describe("Rust preference conversion", () => {
       sendMode: "single",
       placementMode: "compatibility",
       showPlaintextPreview: false,
+      windowCaptureEnabled: true,
       acknowledgeExperimentalSendRisk: true,
     })).toEqual({
       onboardingComplete: true,
@@ -83,6 +84,7 @@ describe("Rust preference conversion", () => {
         acceptedRiskForMode: "single",
       },
       showPlaintextPreview: false,
+      windowCaptureEnabled: true,
     });
   });
 
@@ -92,6 +94,7 @@ describe("Rust preference conversion", () => {
       sendMode: "hidden-auto",
       placementMode: "compatibility",
       showPlaintextPreview: false,
+      windowCaptureEnabled: true,
       acknowledgeExperimentalSendRisk: true,
     }).onboardingComplete).toBe(false);
   });
@@ -102,6 +105,7 @@ describe("Rust preference conversion", () => {
       sendMode: "manual",
       placementMode: "atomic",
       showPlaintextPreview: true,
+      windowCaptureEnabled: true,
       acknowledgeExperimentalSendRisk: false,
       silentlyEnableAutomation: true,
     }).onboardingComplete).toBe(false);
@@ -117,6 +121,7 @@ describe("Rust preference conversion", () => {
         acceptedRiskForMode: "single",
       },
       showPlaintextPreview: true,
+      windowCaptureEnabled: true,
     });
     expect(serialized.acknowledgeExperimentalSendRisk).toBe(false);
     expect(serialized.onboardingComplete).toBe(false);
@@ -128,6 +133,7 @@ describe("Rust preference conversion", () => {
       sendMode: "double",
       placementMode: "atomic",
       showPlaintextPreview: true,
+      windowCaptureEnabled: true,
       acknowledgeExperimentalSendRisk: false,
     }).onboardingComplete).toBe(false);
   });

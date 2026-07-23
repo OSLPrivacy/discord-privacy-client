@@ -77,7 +77,11 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let Ok(password_status) = ipc::commands::cmd_osl_password_status() else {
         return unavailable_readiness(identity_loaded);
     };
-    let unlocked = !password_status.is_set || ipc::main_password::get_file_storage_key().is_some();
+    let qa_device_gate =
+        cfg!(feature = "discord-qa-shell") && ipc::main_password::get_file_storage_key().is_some();
+    let unlocked = qa_device_gate
+        || !password_status.is_set
+        || ipc::main_password::get_file_storage_key().is_some();
     let lockout = ipc::commands::cmd_osl_lockout_status().ok();
     let remaining = lockout
         .as_ref()
@@ -91,7 +95,7 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
 
     readiness_from(
         identity_loaded,
-        password_status.is_set,
+        password_status.is_set || qa_device_gate,
         unlocked,
         attempts,
         remaining,

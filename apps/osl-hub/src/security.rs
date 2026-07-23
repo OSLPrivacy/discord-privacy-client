@@ -15,6 +15,7 @@ use ipc::peer_map::{PeerEntry, WhitelistEntry};
 use ipc::scope::{Scope, ScopeInput, ScopeKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::core_bridge::HubCoreState;
 
@@ -24,6 +25,14 @@ const MAX_FRIEND_CODE_BYTES: usize = 8 * 1024;
 const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
+const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
+const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
+const MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE: usize = 256;
+const MAX_ATTACHMENT_BURN_ENTRIES_TOTAL: usize = 2_048;
+const MAX_PEER_REPLAY_SCOPES: usize = 512;
+const MAX_PEER_REPLAY_ENTRIES_PER_SCOPE: usize = 4_096;
+const MAX_PEER_REPLAY_ENTRIES_TOTAL: usize = 32_768;
+const PEER_OPEN_ERROR: &str = "This encrypted message could not be opened";
 const MAX_ALIAS_BYTES: usize = 80;
 const MAX_ALIAS_CHARS: usize = 48;
 const MAX_VISIBLE_WHITELIST_SCOPES: usize = 512;
@@ -170,6 +179,36 @@ struct SecurityPreferences {
     manual_approved_scopes: BTreeSet<String>,
     #[serde(default)]
     burned_manual_scopes: BTreeSet<String>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerReplayLedger {
+    version: u32,
+    #[serde(default)]
+    consumed_by_scope: BTreeMap<String, BTreeMap<String, i64>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentBurnEntry {
+    object_id: String,
+    fetch_token: String,
+    expires_at: i64,
+}
+
+impl Drop for AttachmentBurnEntry {
+    fn drop(&mut self) {
+        self.fetch_token.zeroize();
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentBurnLedger {
+    version: u32,
+    #[serde(default)]
+    entries_by_scope: BTreeMap<String, Vec<AttachmentBurnEntry>>,
 }
 
 pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, String> {
@@ -628,7 +667,9 @@ pub fn manual_peer_scope_id(
     account_id: &str,
     person_id: &str,
 ) -> Result<String, String> {
-    crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
+    if service_id != "osl-chat" || account_id != "osl-main" {
+        crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
+    }
     crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())?;
     validate_person_id(person_id)?;
     let mut hash = Sha256::new();
@@ -725,6 +766,257 @@ fn record_peer_prose_blob_at_path(
     let mut blobs = load_scope_blobs_strict_with_key(path, file_key)?;
     ipc::scope_blobs_file::record_blob(&mut blobs, scope.storage_key(), blob_id);
     write_scope_blobs_with_key(path, &blobs, file_key)
+}
+
+/// Retain the capability needed to burn an uploaded attachment. This ledger
+/// is encrypted with the account storage key, bounded independently from the
+/// prose ledger, and never crosses renderer IPC.
+pub fn record_peer_attachment_burn_capability(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    object_id: String,
+    mut fetch_token: String,
+    expires_at: i64,
+) -> Result<(), String> {
+    let result = (|| {
+        let file_key = require_unlocked()?;
+        let scope: Scope = scope_input
+            .try_into()
+            .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+        let dir = config_dir()?;
+        record_peer_attachment_burn_capability_at_path(
+            security,
+            &dir.join(ATTACHMENT_BURN_FILE),
+            scope.storage_key(),
+            object_id,
+            &fetch_token,
+            expires_at,
+            ipc::main_password::now_unix_secs_pub(),
+            &file_key,
+        )
+    })();
+    fetch_token.zeroize();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_peer_attachment_burn_capability_at_path(
+    security: &HubSecurityState,
+    path: &Path,
+    storage_key: String,
+    object_id: String,
+    fetch_token: &str,
+    expires_at: i64,
+    now: i64,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    validate_attachment_burn_entry(&object_id, &fetch_token, expires_at, now)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security state is unavailable".to_owned())?;
+    let mut ledger = load_attachment_burn_ledger_with_key(path, file_key)?;
+    prune_expired_attachment_burn_entries(&mut ledger, now);
+    let total = ledger
+        .entries_by_scope
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    let entries = ledger.entries_by_scope.entry(storage_key).or_default();
+    if let Some(existing) = entries
+        .iter_mut()
+        .find(|entry| entry.object_id == object_id)
+    {
+        existing.fetch_token.zeroize();
+        existing.fetch_token = fetch_token.to_owned();
+        existing.expires_at = expires_at;
+    } else {
+        if entries.len() >= MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE
+            || total >= MAX_ATTACHMENT_BURN_ENTRIES_TOTAL
+        {
+            return Err("OSL attachment burn ledger is full".to_owned());
+        }
+        entries.push(AttachmentBurnEntry {
+            object_id,
+            fetch_token: fetch_token.to_owned(),
+            expires_at,
+        });
+    }
+    ledger.version = 1;
+    write_encrypted_json_with_key(path, &ledger, file_key)
+        .map_err(|_| "OSL attachment burn ledger could not be persisted".to_owned())
+}
+
+pub fn remove_peer_attachment_burn_capability(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    object_id: &str,
+) -> Result<(), String> {
+    let file_key = require_unlocked()?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security state is unavailable".to_owned())?;
+    let path = config_dir()?.join(ATTACHMENT_BURN_FILE);
+    let mut ledger = load_attachment_burn_ledger_with_key(&path, &file_key)?;
+    if let Some(entries) = ledger.entries_by_scope.get_mut(&scope.storage_key()) {
+        entries.retain(|entry| entry.object_id != object_id);
+        if entries.is_empty() {
+            ledger.entries_by_scope.remove(&scope.storage_key());
+        }
+    }
+    write_encrypted_json_with_key(&path, &ledger, &file_key)
+        .map_err(|_| "OSL attachment burn ledger could not be persisted".to_owned())
+}
+
+/// Atomically marks one authenticated peer message consumed for its exact
+/// local scope. Callers must complete this before returning plaintext.
+pub fn consume_peer_message(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    message_id: &str,
+    expires_at: i64,
+    now: i64,
+) -> Result<(), String> {
+    let file_key = require_unlocked().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let dir = config_dir().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    consume_peer_message_at_path(
+        security,
+        &dir.join(PEER_REPLAY_FILE),
+        &scope.storage_key(),
+        message_id,
+        expires_at,
+        now,
+        &file_key,
+    )
+    .map_err(|_| PEER_OPEN_ERROR.to_owned())
+}
+
+/// Read the durable encrypted replay ledger after a relay was authenticated.
+/// This lets a later drain finish deleting an inbox row when the prior DELETE
+/// failed after local consumption, without displaying the plaintext twice.
+pub fn peer_message_was_consumed(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    message_id: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let valid_message_id = message_id.strip_prefix("peer-").is_some_and(|value| {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !valid_message_id {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    let file_key = require_unlocked().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let dir = config_dir().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let mut ledger =
+        load_encrypted_json_with_key::<PeerReplayLedger>(&dir.join(PEER_REPLAY_FILE), &file_key)?;
+    if !matches!(ledger.version, 0 | 1) {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    prune_peer_replay_ledger(&mut ledger, now);
+    Ok(ledger
+        .consumed_by_scope
+        .get(&scope.storage_key())
+        .is_some_and(|entries| entries.contains_key(message_id)))
+}
+
+fn consume_peer_message_at_path(
+    security: &HubSecurityState,
+    path: &Path,
+    storage_key: &str,
+    message_id: &str,
+    expires_at: i64,
+    now: i64,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let valid_message_id = message_id.strip_prefix("peer-").is_some_and(|value| {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !valid_message_id || storage_key.is_empty() || storage_key.len() > 512 {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let mut ledger = load_encrypted_json_with_key::<PeerReplayLedger>(path, file_key)?;
+    if !matches!(ledger.version, 0 | 1) {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    prune_peer_replay_ledger(&mut ledger, now);
+    if ledger
+        .consumed_by_scope
+        .get(storage_key)
+        .is_some_and(|scope| scope.contains_key(message_id))
+    {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    let total_entries = ledger
+        .consumed_by_scope
+        .values()
+        .map(BTreeMap::len)
+        .sum::<usize>();
+    let scope_is_new = !ledger.consumed_by_scope.contains_key(storage_key);
+    let scope_entries = ledger
+        .consumed_by_scope
+        .get(storage_key)
+        .map_or(0, BTreeMap::len);
+    if expires_at <= now
+        || (scope_is_new && ledger.consumed_by_scope.len() >= MAX_PEER_REPLAY_SCOPES)
+        || scope_entries >= MAX_PEER_REPLAY_ENTRIES_PER_SCOPE
+        || total_entries >= MAX_PEER_REPLAY_ENTRIES_TOTAL
+    {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    ledger.version = 1;
+    ledger
+        .consumed_by_scope
+        .entry(storage_key.to_owned())
+        .or_default()
+        .insert(message_id.to_owned(), expires_at);
+    write_encrypted_json_with_key(path, &ledger, file_key)
+}
+
+fn prune_peer_replay_ledger(ledger: &mut PeerReplayLedger, now: i64) {
+    ledger.consumed_by_scope.retain(|_, messages| {
+        messages.retain(|_, expires_at| *expires_at > now);
+        !messages.is_empty()
+    });
+}
+
+fn remove_peer_replay_scope_at_path(
+    path: &Path,
+    storage_key: &str,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let mut ledger = load_encrypted_json_with_key::<PeerReplayLedger>(path, file_key)?;
+    if !matches!(ledger.version, 0 | 1) {
+        return Err("OSL peer replay state has an unsupported version".to_owned());
+    }
+    if ledger.consumed_by_scope.remove(storage_key).is_some() {
+        write_encrypted_json_with_key(path, &ledger, file_key)?;
+    }
+    Ok(())
 }
 
 fn ensure_manual_peer_available(
@@ -1017,14 +1309,22 @@ pub fn burn_manual_peer_scope(
     let prefs_path = dir.join(SECURITY_PREFS_FILE);
     let ttl_path = dir.join("scope_ttl.json");
     let blobs_path = dir.join("scope_blobs.json");
+    let attachments_path = dir.join(ATTACHMENT_BURN_FILE);
+    let replay_path = dir.join(PEER_REPLAY_FILE);
     let storage_key = scope.storage_key();
 
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
     let mut ttl = load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&ttl_path)?;
     let mut blobs = load_scope_blobs_strict(&blobs_path)?;
+    let file_key = require_unlocked()?;
+    let mut attachments = load_attachment_burn_ledger_with_key(&attachments_path, &file_key)?;
+    let whitelist_entries_removed =
+        usize::from(prefs.manual_approved_scopes.contains(&storage_key));
     let blob_ids = revoke_manual_scope_state(&mut prefs, &mut ttl, &mut blobs, &storage_key);
     write_encrypted_json(&prefs_path, &prefs)?;
     write_encrypted_json(&ttl_path, &ttl)?;
+    remove_peer_replay_scope_at_path(&replay_path, &storage_key, &file_key)
+        .map_err(|_| "OSL manual peer replay state could not be removed".to_owned())?;
 
     // Manual copy/paste send/open passes no service message id and does not
     // persist plaintext rows. Its relay channel binding is intentionally
@@ -1045,12 +1345,48 @@ pub fn burn_manual_peer_scope(
         ipc::scope_blobs_file::record_blob(&mut blobs, storage_key.clone(), blob_id.clone());
     }
     write_scope_blobs(&blobs_path, &blobs)?;
-    let remote_blob_deletions_failed = failed_blob_ids.len();
+    let attachment_entries = take_attachment_burn_entries(&mut attachments, &storage_key);
+    let attachment_client = ipc::cipher_store_client::CipherStoreClient::new(
+        ipc::cipher_store_client::resolve_cipher_store_base_url(&dir),
+    )
+    .map_err(|_| "OSL attachment cleanup is unavailable".to_owned())?;
+    let mut failed_attachment_entries = Vec::new();
+    let mut remote_attachments_deleted = 0usize;
+    for entry in attachment_entries {
+        let mut token = match parse_attachment_fetch_token(&entry.fetch_token) {
+            Ok(token) => token,
+            Err(_) => {
+                failed_attachment_entries.push(entry);
+                continue;
+            }
+        };
+        let deleted = attachment_client
+            .delete_attachment(&entry.object_id, &token)
+            .is_ok();
+        token.zeroize();
+        if deleted {
+            remote_attachments_deleted = remote_attachments_deleted.saturating_add(1);
+        } else {
+            failed_attachment_entries.push(entry);
+        }
+    }
+    let remote_attachment_deletions_failed = failed_attachment_entries.len();
+    if !failed_attachment_entries.is_empty() {
+        attachments
+            .entries_by_scope
+            .insert(storage_key.clone(), failed_attachment_entries);
+    }
+    write_encrypted_json_with_key(&attachments_path, &attachments, &file_key)
+        .map_err(|_| "OSL attachment burn ledger could not be persisted".to_owned())?;
+    let remote_blobs_deleted = remote_blobs_deleted.saturating_add(remote_attachments_deleted);
+    let remote_blob_deletions_failed = failed_blob_ids
+        .len()
+        .saturating_add(remote_attachment_deletions_failed);
     Ok(HubScopeBurnResult {
         storage_key,
         rows_destroyed,
         channels_destroyed: 1,
-        whitelist_entries_removed: 0,
+        whitelist_entries_removed,
         remote_blobs_deleted,
         remote_blob_deletions_failed,
         remote_cleanup_complete: remote_blob_deletions_failed == 0,
@@ -1461,6 +1797,89 @@ fn load_scope_blobs_strict_with_key(
     let plain = ipc::main_password::decrypt_at_rest(&bytes, key)
         .map_err(|_| "OSL scope blob ledger could not be opened".to_owned())?;
     serde_json::from_slice(&plain).map_err(|_| "OSL scope blob ledger is malformed".to_owned())
+}
+
+fn load_attachment_burn_ledger_with_key(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<AttachmentBurnLedger, String> {
+    let ledger = load_encrypted_json_with_key::<AttachmentBurnLedger>(path, key)
+        .map_err(|_| "OSL attachment burn ledger could not be opened".to_owned())?;
+    if ledger.version > 1
+        || ledger.entries_by_scope.len() > MAX_PEER_REPLAY_SCOPES
+        || ledger
+            .entries_by_scope
+            .values()
+            .any(|entries| entries.len() > MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE)
+        || ledger
+            .entries_by_scope
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+            > MAX_ATTACHMENT_BURN_ENTRIES_TOTAL
+        || ledger.entries_by_scope.values().flatten().any(|entry| {
+            !canonical_lower_hex(&entry.object_id, 32)
+                || !canonical_lower_hex(&entry.fetch_token, 32)
+                || entry.expires_at <= 0
+        })
+    {
+        return Err("OSL attachment burn ledger is malformed".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn validate_attachment_burn_entry(
+    object_id: &str,
+    fetch_token: &str,
+    expires_at: i64,
+    now: i64,
+) -> Result<(), String> {
+    if !canonical_lower_hex(object_id, 32)
+        || !canonical_lower_hex(fetch_token, 32)
+        || expires_at <= now
+        || expires_at > now.saturating_add(604_800)
+    {
+        return Err("OSL attachment burn capability is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn canonical_lower_hex(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn prune_expired_attachment_burn_entries(ledger: &mut AttachmentBurnLedger, now: i64) {
+    ledger.entries_by_scope.retain(|_, entries| {
+        entries.retain(|entry| entry.expires_at > now);
+        !entries.is_empty()
+    });
+}
+
+fn take_attachment_burn_entries(
+    ledger: &mut AttachmentBurnLedger,
+    storage_key: &str,
+) -> Vec<AttachmentBurnEntry> {
+    ledger
+        .entries_by_scope
+        .remove(storage_key)
+        .unwrap_or_default()
+}
+
+fn parse_attachment_fetch_token(value: &str) -> Result<[u8; 16], String> {
+    if !canonical_lower_hex(value, 32) {
+        return Err("OSL attachment burn capability is invalid".to_owned());
+    }
+    let mut token = [0u8; 16];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(chunk)
+            .map_err(|_| "OSL attachment burn capability is invalid".to_owned())?;
+        token[index] = u8::from_str_radix(text, 16)
+            .map_err(|_| "OSL attachment burn capability is invalid".to_owned())?;
+    }
+    Ok(token)
 }
 
 fn write_encrypted_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -1901,6 +2320,191 @@ mod tests {
             1
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn peer_replay_ledger_is_encrypted_scope_bound_pruned_and_burnable() {
+        let file_key = [0x73; 32];
+        let path = std::env::temp_dir().join(format!(
+            "osl-peer-replay-{}-{}.json",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        let security = HubSecurityState::default();
+        let first_id = "peer-00112233445566778899aabbccddeeff";
+        let second_id = "peer-ffeeddccbbaa99887766554433221100";
+        let now = 1_700_000_000;
+
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-a",
+            first_id,
+            now + 60,
+            now,
+            &file_key,
+        )
+        .unwrap();
+        assert!(ipc::main_password::has_enc_magic(
+            &std::fs::read(&path).unwrap()
+        ));
+        assert_eq!(
+            consume_peer_message_at_path(
+                &security,
+                &path,
+                "dm:discord-a",
+                first_id,
+                now + 60,
+                now,
+                &file_key,
+            )
+            .unwrap_err(),
+            PEER_OPEN_ERROR
+        );
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-b",
+            first_id,
+            now + 180,
+            now,
+            &file_key,
+        )
+        .unwrap();
+
+        // Once the original record expires, pruning permits the same random
+        // identifier again without retaining stale state forever.
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-a",
+            first_id,
+            now + 120,
+            now + 61,
+            &file_key,
+        )
+        .unwrap();
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-a",
+            second_id,
+            now + 120,
+            now + 61,
+            &file_key,
+        )
+        .unwrap();
+        remove_peer_replay_scope_at_path(&path, "dm:discord-a", &file_key).unwrap();
+        let ledger: PeerReplayLedger = load_encrypted_json_with_key(&path, &file_key).unwrap();
+        assert!(!ledger.consumed_by_scope.contains_key("dm:discord-a"));
+        assert!(ledger.consumed_by_scope.contains_key("dm:discord-b"));
+
+        let mut bounded = PeerReplayLedger {
+            version: 1,
+            ..PeerReplayLedger::default()
+        };
+        let scope_entries = bounded
+            .consumed_by_scope
+            .entry("dm:bounded".to_owned())
+            .or_default();
+        for index in 0..MAX_PEER_REPLAY_ENTRIES_PER_SCOPE {
+            scope_entries.insert(format!("peer-{index:032x}"), now + 300);
+        }
+        write_encrypted_json_with_key(&path, &bounded, &file_key).unwrap();
+        assert_eq!(
+            consume_peer_message_at_path(
+                &security,
+                &path,
+                "dm:bounded",
+                "peer-ffffffffffffffffffffffffffffffff",
+                now + 300,
+                now,
+                &file_key,
+            )
+            .unwrap_err(),
+            PEER_OPEN_ERROR
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
+    }
+
+    #[test]
+    fn attachment_burn_ledger_is_encrypted_bounded_expiring_and_retryable() {
+        let file_key = [0x42; 32];
+        let path = std::env::temp_dir().join(format!(
+            "osl-attachment-burn-{}-{}.json",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        let security = HubSecurityState::default();
+        let now = 1_700_000_000;
+        let token_a = "00112233445566778899aabbccddeeff";
+        let token_b = "ffeeddccbbaa99887766554433221100";
+        record_peer_attachment_burn_capability_at_path(
+            &security,
+            &path,
+            "dm:a".to_owned(),
+            "00112233445566778899aabbccddeeff".to_owned(),
+            token_a,
+            now + 60,
+            now,
+            &file_key,
+        )
+        .unwrap();
+        record_peer_attachment_burn_capability_at_path(
+            &security,
+            &path,
+            "dm:b".to_owned(),
+            "ffeeddccbbaa99887766554433221100".to_owned(),
+            token_b,
+            now + 120,
+            now,
+            &file_key,
+        )
+        .unwrap();
+        let encrypted = std::fs::read(&path).unwrap();
+        assert!(ipc::main_password::has_enc_magic(&encrypted));
+        assert!(!encrypted
+            .windows(token_a.len())
+            .any(|window| window == token_a.as_bytes()));
+
+        let mut ledger = load_attachment_burn_ledger_with_key(&path, &file_key).unwrap();
+        prune_expired_attachment_burn_entries(&mut ledger, now + 61);
+        assert!(!ledger.entries_by_scope.contains_key("dm:a"));
+        let failed = take_attachment_burn_entries(&mut ledger, "dm:b");
+        assert_eq!(failed.len(), 1);
+        ledger.entries_by_scope.insert("dm:b".to_owned(), failed);
+        write_encrypted_json_with_key(&path, &ledger, &file_key).unwrap();
+        let retry = load_attachment_burn_ledger_with_key(&path, &file_key).unwrap();
+        assert_eq!(retry.entries_by_scope["dm:b"].len(), 1);
+
+        assert!(validate_attachment_burn_entry(
+            "00112233445566778899AABBCCDDEEFF",
+            token_a,
+            now + 60,
+            now
+        )
+        .is_err());
+
+        let mut oversized = AttachmentBurnLedger {
+            version: 1,
+            ..AttachmentBurnLedger::default()
+        };
+        oversized.entries_by_scope.insert(
+            "dm:oversized".to_owned(),
+            (0..=MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE)
+                .map(|index| AttachmentBurnEntry {
+                    object_id: format!("{index:032x}"),
+                    fetch_token: token_a.to_owned(),
+                    expires_at: now + 120,
+                })
+                .collect(),
+        );
+        write_encrypted_json_with_key(&path, &oversized, &file_key).unwrap();
+        assert!(load_attachment_burn_ledger_with_key(&path, &file_key).is_err());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
     }
 
     #[test]
