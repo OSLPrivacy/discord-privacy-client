@@ -278,7 +278,7 @@ describe("home interaction regressions", () => {
     expect(source).toContain("hostNativeAppWindow(appId, requestedMode)");
     expect(source).toContain("hostDeadlineMs");
     expect(source).toContain("activeNativeHostMode === requestedMode");
-    expect(source).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
+    expect(source).toContain('selectedNativeApps().filter((app) => app.availability !== "installed")');
     expect(source).toContain("outlookSessionModeChoices()");
     expect(source).toContain("savedNativeApps.has(nativeId)");
     expect(source).toContain('catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable');

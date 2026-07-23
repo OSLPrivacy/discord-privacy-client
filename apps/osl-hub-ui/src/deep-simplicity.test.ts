@@ -27,11 +27,14 @@ describe("radical simplicity on deep screens", () => {
     expect(styles).toContain(".settings-disclosure");
   });
 
-  it("keeps unavailable Scrub automation behind the manual scan", () => {
+  it("keeps transport-gated Scrub automation behind the manual scan", () => {
     const scrub = functionSource("privacySettingsContent", "clearPrivacyScanState");
     expect(scrub.indexOf('for="privacy-export-input"')).toBeLessThan(scrub.indexOf("autoscrub-disclosure"));
     expect(scrub).toContain("Before deleting anything");
-    expect(scrub).toContain("does not delete app messages");
+    expect(scrub).toContain("Only a provider readback can verify removal within its stated coverage");
+    expect(scrub).toContain("Automatic deletion is unavailable in this build");
+    expect(scrub).toContain("native one-shot reviewed-consent capability");
+    expect(scrub).toContain("Connect IMAP for read-only verification");
   });
 
   it("keeps Burn limits visible and secondary options collapsed", () => {

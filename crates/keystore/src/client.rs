@@ -104,6 +104,30 @@ pub struct RegisterResponse {
 pub const REG_DOMAIN: &str = "OSL-REGISTER-v1";
 /// Domain-separation + version tag for authenticated rotation.
 pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
+pub const USERNAME_CLAIM_DOMAIN: &str = "OSL-USERNAME-CLAIM-v1";
+
+pub fn is_normalized_username(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (3..=30).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+}
+
+pub fn username_claim_msg(
+    username: &str,
+    user_id: &str,
+    friend_code: &str,
+    request_id: &str,
+    timestamp_ms: i64,
+) -> Vec<u8> {
+    format!(
+        "{USERNAME_CLAIM_DOMAIN}\n{username}\n{user_id}\n{friend_code}\n{request_id}\n{timestamp_ms}"
+    )
+    .into_bytes()
+}
 
 /// REG_MSG bytes — byte-identical to the server's `buildRegMsg`:
 ///
@@ -164,6 +188,18 @@ pub struct PubkeysResponse {
     /// this field at all; `#[serde(default)]` lets them parse.
     #[serde(default)]
     pub ik_ratchet_initial_pub: Option<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct UsernameClaimResponse {
+    pub username: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct UsernameLookupResponse {
+    pub username: String,
+    pub friend_code: String,
 }
 
 /// One-time prekey returned by `/v1/prekey-bundle/:user_id`. `None`
@@ -537,6 +573,83 @@ impl KeyServerClient {
         let resp = self.send_request("GET", &path, None)?;
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// Claim or update one already-normalized public username. The server
+    /// verifies this signature against the currently registered Ed25519 key
+    /// and independently verifies the exact signed friend invite.
+    pub fn claim_username(
+        &self,
+        identity: &Identity,
+        username: &str,
+        friend_code: &str,
+    ) -> Result<UsernameClaimResponse> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport(
+                "username must already be normalized (3-30 lowercase letters, digits, or interior underscores)".to_owned(),
+            ));
+        }
+        if !friend_code.starts_with("OSLFR1.") || friend_code.len() > 8199 {
+            return Err(Error::Transport("friend code is not valid".to_owned()));
+        }
+        let request_id = fresh_request_id();
+        let timestamp_ms = unix_timestamp_ms();
+        let message = username_claim_msg(
+            username,
+            &identity.user_id,
+            friend_code,
+            &request_id,
+            timestamp_ms,
+        );
+        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &message);
+        #[derive(Serialize)]
+        struct ClaimBody<'a> {
+            username: &'a str,
+            user_id: &'a str,
+            friend_code: &'a str,
+            request_id: &'a str,
+            timestamp_ms: i64,
+            signature_b64: String,
+        }
+        let body = ClaimBody {
+            username,
+            user_id: &identity.user_id,
+            friend_code,
+            request_id: &request_id,
+            timestamp_ms,
+            signature_b64: STANDARD.encode(signature.as_bytes()),
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "POST",
+            "/v1/usernames/claim",
+            Some(("application/json", &body_json)),
+        )?;
+        check_2xx(&response)?;
+        Ok(serde_json::from_slice(&response.body)?)
+    }
+
+    /// Resolve one exact normalized username. There is no prefix, fuzzy, or
+    /// bulk search API, so callers cannot use this method for directory scans.
+    pub fn lookup_username(&self, username: &str) -> Result<UsernameLookupResponse> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport(
+                "username must already be normalized".to_owned(),
+            ));
+        }
+        let path = format!("/v1/usernames/{}", urlencode_segment(username));
+        let response = self.send_request("GET", &path, None)?;
+        check_2xx(&response)?;
+        let parsed: UsernameLookupResponse = serde_json::from_slice(&response.body)?;
+        if parsed.username != username
+            || !parsed.friend_code.starts_with("OSLFR1.")
+            || parsed.friend_code.len() > 8199
+        {
+            return Err(Error::Transport(
+                "username lookup response was invalid".to_owned(),
+            ));
+        }
+        Ok(parsed)
     }
 
     /// `GET /v1/prekey-bundle/:user_id`. Atomically pops one OPK

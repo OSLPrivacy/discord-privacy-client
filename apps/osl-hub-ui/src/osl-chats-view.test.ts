@@ -17,6 +17,7 @@ function friend(overrides: Partial<OslChatFriend> = {}): OslChatFriend {
     preview: "See you soon",
     previewVisible: true,
     unreadCount: 0,
+    muted: false,
     ...overrides,
   };
 }
@@ -116,5 +117,12 @@ describe("OSL chats view", () => {
     const markup = oslChatsViewMarkup(model());
     expect(markup).not.toContain("<script");
     expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group/iu);
+  });
+
+  it("renders unread count, muted state, and a right-click context target per friend row", () => {
+    const markup = oslChatsViewMarkup(model({ friends: [friend({ unreadCount: 4, muted: true })] }));
+    expect(markup).toContain('data-osl-chat-context="friend-1"');
+    expect(markup).toContain('aria-label="4 unread"');
+    expect(markup).toContain('aria-label="Muted"');
   });
 });

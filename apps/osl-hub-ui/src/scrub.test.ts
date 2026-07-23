@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LocalPrivacyFinding, PrivacyRiskCategory } from "./adapters";
-import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubDeletionContract, scrubSignalGroupFor } from "./scrub";
+import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubDeletionAllowed, scrubDeletionContract, scrubSignalGroupFor } from "./scrub";
 
 function finding(category: PrivacyRiskCategory): LocalPrivacyFinding {
   return {
@@ -15,6 +15,7 @@ function finding(category: PrivacyRiskCategory): LocalPrivacyFinding {
     reason: "Review in context.",
     localPreview: "Local preview",
     canRequestDelete: true,
+    attachmentPath: null,
   };
 }
 
@@ -45,17 +46,36 @@ describe("local Scrub category preferences", () => {
 
   it("exports a fail-closed contract for future paced deletion adapters", () => {
     expect(scrubDeletionContract).toEqual({
+      browserUiAutomationAllowed: false,
+      privateApiAllowed: false,
+      narrowSemanticHostedPortAllowed: true,
+      documentedProviderDeleteApiAllowed: true,
       unattendedDeletionAllowed: false,
       completeEditableReviewRequiredEveryBatch: true,
       finalConfirmationRequiredEveryBatch: true,
       requestedDeletionCountsAsVerified: false,
-      browserUiAutomationAllowed: false,
       desktopUiAutomationAllowed: false,
       privateProviderApisAllowed: false,
       humanBehaviorMimicryAllowed: false,
       documentedProviderDeleteApiRequired: true,
-      stopOn: ["rate_limit", "challenge", "content_mismatch", "verification_failure"],
+      stopOn: ["captcha", "rate_limit", "challenge", "account_change", "schema_drift", "unknown", "content_mismatch", "verification_failure"],
     });
     expect(Object.isFrozen(scrubDeletionContract)).toBe(true);
+  });
+
+  it("rejects disabled, browser-automation, private-API, and incomplete-stop deletion paths", () => {
+    const safe = {
+      deletionEnabled: true,
+      mechanism: "documented_provider_delete_api" as const,
+      stopOn: scrubDeletionContract.stopOn,
+      requestedDeletionCountsAsVerified: false,
+    };
+    expect(scrubDeletionAllowed(safe)).toBe(true);
+    expect(scrubDeletionAllowed({ ...safe, mechanism: "hosted_semantic_delete_port" })).toBe(true);
+    expect(scrubDeletionAllowed({ ...safe, deletionEnabled: false })).toBe(false);
+    expect(scrubDeletionAllowed({ ...safe, mechanism: "browser_ui_automation" })).toBe(false);
+    expect(scrubDeletionAllowed({ ...safe, mechanism: "private_api" })).toBe(false);
+    expect(scrubDeletionAllowed({ ...safe, stopOn: ["rate_limit"] })).toBe(false);
+    expect(scrubDeletionAllowed({ ...safe, requestedDeletionCountsAsVerified: true })).toBe(false);
   });
 });

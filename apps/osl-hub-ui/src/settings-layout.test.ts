@@ -102,4 +102,14 @@ describe("simplified truthful settings", () => {
     expect(appearance).not.toContain("data-sidebar-move");
     expect(appearance).not.toContain("data-sidebar-toggle");
   });
+
+  it("opens Developer source only through the fixed native repository command", () => {
+    const start = source.indexOf("function developerSettingsContent");
+    const end = source.indexOf("async function submitOslProfile", start);
+    const developer = source.slice(start, end);
+    expect(developer).toContain("data-source-repository");
+    expect(developer).not.toContain("target=\"_blank\"");
+    expect(developer).not.toContain("href=\"https://github.com");
+    expect(source).toContain("openHubSourceRepository()");
+  });
 });

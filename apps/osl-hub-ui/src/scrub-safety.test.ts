@@ -13,7 +13,7 @@ describe("Scrub safety contract", () => {
     expect(source).toContain("select-all-scrub");
     expect(source).toContain("clear-scrub-selection");
     expect(source).toContain("Review selected");
-    expect(source).toContain("delete each message yourself");
+    expect(source).toContain("This review step does not delete anything.");
     const privacyStart = source.indexOf("function privacySettingsContent");
     const privacyEnd = source.indexOf("function privacyScanResultsMarkup", privacyStart);
     const privacyUi = source.slice(privacyStart, privacyEnd);
@@ -21,11 +21,19 @@ describe("Scrub safety contract", () => {
     expect(privacyUi).not.toContain("if (!proActive)");
   });
 
-  it("keeps AutoScrub Pro off and prevents unattended deletion claims", () => {
+  it("keeps AutoScrub Pro transport-gated and prevents unattended deletion claims", () => {
     expect(source).toContain("AutoScrub assistant");
-    expect(source).toContain("PRO · COMING SOON");
-    expect(source).toContain("Nothing happens until you review and confirm every batch.");
+    expect(source).toContain("PRO · TRANSPORT-GATED");
+    expect(source).toContain("Final confirmation");
+    expect(source).toContain("live-confirmed");
+    expect(source).toContain("summarizeAutoScrubReceipt");
+    expect(source).not.toContain("all removed");
+    expect(source).toContain('let autoScrubPathId: AutoScrubProviderId = "gmail-web"');
+    expect(source).toContain("Automatic deletion");
     expect(source).toContain("Unavailable in this build");
+    expect(source).toContain("Connect IMAP for read-only verification");
+    expect(source).toContain("native one-shot reviewed-consent capability");
+    expect(source).toContain('autoScrubPathId === "discord" ? "discord" : "telegram"');
     expect(categories).toContain("completeEditableReviewRequiredEveryBatch: true");
     expect(categories).toContain("finalConfirmationRequiredEveryBatch: true");
     expect(categories).toContain("browserUiAutomationAllowed: false");
@@ -33,13 +41,14 @@ describe("Scrub safety contract", () => {
     expect(categories).toContain("privateProviderApisAllowed: false");
     expect(categories).toContain("humanBehaviorMimicryAllowed: false");
     expect(categories).toContain("documentedProviderDeleteApiRequired: true");
+    expect(categories).toContain("narrowSemanticHostedPortAllowed: true");
   });
 
   it("requires confirmation and never simulates platform deletion", () => {
     expect(source).toContain('id="confirm-scrub-list"');
     expect(source).not.toMatch(/function confirmScrubSelection[\s\S]*?window\.confirm/);
-    expect(source).toContain("Nothing is deleted by this build.");
-    expect(source).toContain("This build only gives manual directions. It does not delete app messages.");
+    expect(source).toContain("This review step does not delete anything.");
+    expect(source).toContain("Only a provider readback can verify removal");
     expect(source).not.toContain("Platform messages deleted");
   });
 

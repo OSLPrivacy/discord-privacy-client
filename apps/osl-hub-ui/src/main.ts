@@ -13,8 +13,10 @@ import {
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import {
-  escapeHtml,
   beginProtectedBrowserImport,
+  cancelProtectedBrowserImport,
+  createProtectedBrowserImportOperationId,
+  escapeHtml,
   finishProtectedBrowserImport,
   closeEmbeddedServiceHost,
   configuredTopStripApps,
@@ -29,13 +31,15 @@ import {
   hostBrowserCompanion,
   hostNativeAppWindow,
   hostMullvadWindow,
-  installNativeApp,
   installMullvad,
+  installNativeApp,
   loadFirefoxStatus,
-  installFirefox,
   loadLinkedServices,
+  launchFirefoxService,
+  launchSystemBrowserService,
   loadMullvadStatus,
   loadNativeApps,
+  openMullvad,
   openEmbeddedHomeApp,
   parseDiscordSessionMode,
   parseNativeSessionMode,
@@ -85,13 +89,14 @@ import {
   type HubLicenseState,
   type HubPasswordRoleStatus,
 } from "./core";
-import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, type UpdateStatus } from "./updates";
+import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, scanLocalPrivacy, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadOslProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, saveOslProfile, setActiveHubFriendPermission, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalMessageCandidate, type LocalPrivacyScanResult, type ManualPeerContext, type OslChatOpenedBatch, type OslProfile, type OslProfileEffect, type OslProfileFrame, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
+import mullvadLogoUrl from "./mullvad-logo.svg?url";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
 import { withNativeDeadline } from "./native-deadline";
@@ -99,14 +104,22 @@ import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
-import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
-import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
+import { type ScrubAccountSelection, type ScrubIndexStatus } from "./scrub-index";
+import { persistLocalScrubExport } from "./scrub-local";
+import { runAutoScrubBatch, summarizeAutoScrubReceipt, unavailableAutoScrubCapabilities, type AutoScrubCapability, type AutoScrubProviderId } from "./autoscrub-flow";
+import { configureScrubImapAccount, createDesktopAutoScrubBridge, prepareScrubImapFindings, type ScrubImapLocator } from "./scrub-imap-ipc";
+import type { ProviderDeletionReceipt, ScopePolicy } from "./scrub-delete-engine";
+import { parseScrubSetupPlan, validateCoverageReceipt, type ScrubCoverageReceipt, type ScrubSetupPlan } from "./scrub-plan";
+import { isActiveSetupRoute, parseSetupPrivacyChoices, parseSetupResumeCheckpoint, setupPrivacyChoiceIds, type ScrubSetupStep, type SetupPrivacyChoiceId } from "./setup-persistence";
+import { applyAccessibilityPreferences, loadAccessibilityPreferences, saveAccessibilityPreferences, type AccessibilityPreferences, type TextScale } from "./accessibility-preference";
+import { applyThemeMod, parseThemeMod, themeModStorageKey, type ThemeMod } from "./theme-mod";
+import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 
 type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "recovery" | "mullvad" | "sending" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "recovery" | "mullvad" | "sending" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy" | "scrub";
+type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "accessibility" | "developer" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -159,18 +172,17 @@ let mullvadAutoStart = false;
 let mullvadAutoStartAttempted = false;
 let mullvadWindowHosted = false;
 let mullvadReturnRoute: "onboarding" | "home" = "home";
+let mullvadPreference: "auto" | "off" | null = null;
 let browserImports: BrowserImportStatus[] = [];
+let selectedBrowserImports = new Set<BrowserImportId>();
+let browserImportSelectionInitialized = false;
 let browserReadinessBusy = false;
 let browserImportBusy = false;
 let browserImportFailureNotice = "";
-let selectedBrowserImportIds = new Set<BrowserImportStatus["id"]>();
-let browserImportQueue: BrowserImportStatus["id"][] = [];
-let browserImportQueueIndex = 0;
-let browserImportAwaitingConfirmation = false;
-let browserImportSourceSelected = false;
-let browserImportRunEpoch = 0;
 let browserImportCancelling = false;
-let browserImportOperation: ReturnType<typeof beginProtectedBrowserImport> | null = null;
+let browserImportOperation: { operationId: string; result: ReturnType<typeof beginProtectedBrowserImport> } | null = null;
+let browserImportProgress = "";
+let detectedBrowserServices = new Set<HomeAppId>();
 let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
 let defaultBrowserCompanionStatus: BrowserCompanionStatus = { status: "unsupported", browserId: null, displayName: null, reason: "platformUnsupported", captureProtected: false, containment: "bestEffort" };
 let useDefaultBrowserCompanion = localStorage.getItem("osl-default-browser-companion-v1") === "true";
@@ -194,6 +206,11 @@ let hasExplicitOnboardingAppSelection = false;
 let onboardingConnectAppId: HomeAppId | null = null;
 const handledOnboardingConnectApps = new Set<HomeAppId>();
 let backgroundInstallQueue: Promise<void> = Promise.resolve();
+const detectedAccountChoices = new Map<string, "existing" | "osl">();
+let scrubSetupStep: ScrubSetupStep = "intro";
+let selectedOnboardingScrubAccounts = new Set<string>();
+let onboardingScrubMode: "scrub" | "autoscrub" = "scrub";
+let setupPrivacyChoices = parseSetupPrivacyChoices(null);
 let nativeActionBusy = false;
 type DiscordQaHostState = "starting" | "hosted" | "failed";
 let discordQaHostState: DiscordQaHostState = "starting";
@@ -211,6 +228,12 @@ let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhr
 let recoverySavedAcknowledged = false;
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
+let accessibilityPreferences = loadAccessibilityPreferences(localStorage);
+let activeThemeMod: ThemeMod | null = parseThemeMod(localStorage.getItem(themeModStorageKey));
+let oslProfile: OslProfile | null = null;
+let claimedOslUsername: string | null = null;
+let profileDraftAvatar: string | null | undefined;
+let profileSaving = false;
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -241,20 +264,9 @@ let windowCaptureEnabled = true;
 let hubIdentities: HubIdentitySlot[] = [];
 let newIdentityRecoveryPhrase: string | null = null;
 let hubPeople: HubPerson[] = [];
-let activeOslChatPersonId: string | null = null;
-let activeOslChatContext: ManualPeerContext | null = null;
-let oslChatDraft = "";
-let oslChatViewOnce = false;
-let oslChatBusy = false;
-let oslChatBackgroundBusy = false;
-let oslChatOperationEpoch = 0;
-const oslChatMessages = new Map<string, OslChatMessage[]>();
-const oslChatUnread = new Map<string, number>();
-let oslChatPreviewsVisible = true;
-let oslChatMutedPeople = new Set<string>();
-let oslChatSettingsPersonId: string | null = null;
-let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
-let privacyScanResult: LocalPrivacyScanResult | null = null;
+let privacyScanResult: PersistedLocalPrivacyScanResult | null = null;
+let privacyScanStatus: ScrubIndexStatus | null = null;
+let privacyCoverageReceipt: ScrubCoverageReceipt | null = null;
 let privacyScanFileName: string | null = null;
 let privacyScanBusy = false;
 let enabledScrubSignals = new Set<ScrubSignalGroup>(defaultScrubSignalGroups);
@@ -262,6 +274,13 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
+let autoScrubCapabilities: readonly AutoScrubCapability[] = unavailableAutoScrubCapabilities;
+let autoScrubAccountId = "";
+let autoScrubPathId: AutoScrubProviderId = "gmail-web";
+let autoScrubBusy = false;
+let autoScrubDryRunReceipt: ProviderDeletionReceipt | null = null;
+let autoScrubExecutionReceipt: ProviderDeletionReceipt | null = null;
+let autoScrubError = "";
 let lastFocusKey = "";
 let lastOnboardingMarkup: string | null = null;
 let renderedOnboardingRoute: OnboardingRoute | null = null;
@@ -283,6 +302,22 @@ let ownedConfirmationBusy = false;
 let ownedConfirmationError = "";
 let navigationIntentEpoch = 0;
 let bootstrapEpoch = 0;
+let activeOslChatPersonId: string | null = null;
+let activeOslChatContext: ManualPeerContext | null = null;
+let oslChatDraft = "";
+let oslChatViewOnce = false;
+let oslChatBusy = false;
+let oslChatBackgroundBusy = false;
+let oslChatOperationEpoch = 0;
+const oslChatMessages = new Map<string, OslChatMessage[]>();
+const oslChatUnread = new Map<string, number>();
+const oslChatPendingViewOnce = new Map<string, Set<string>>();
+let oslChatPreviewsVisible = true;
+let oslChatMutedPeople = new Set<string>();
+let oslChatRemoteAccessConfirmed = new Set<string>();
+let friendDefaultOslChatEnabled = false;
+let oslChatSettingsPersonId: string | null = null;
+let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 
 const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
@@ -293,6 +328,7 @@ const notificationScopeStorageKey = "osl-hub-notification-scope-suggestions";
 const notificationChatStorageKey = "osl-hub-notification-chats-v1";
 const notificationSecurityStorageKey = "osl-hub-notification-security-v1";
 const mullvadAutoStartStorageKey = "osl-mullvad-autostart-v1";
+const screenshotProtectionStorageKey = "osl-hub-screenshot-protection";
 const scrubSignalsStorageKey = "osl-hub-scrub-signals-v1";
 const serviceGuideStorageKey = "osl-hub-service-guide-v1";
 const homeTileOrderStorageKey = "osl-home-tile-order-v1";
@@ -310,15 +346,22 @@ const selectedOnboardingAppsStorageKey = "osl-selected-apps-v1";
 const savedAccountsReadyStorageKey = "osl-browser-accounts-ready-v1";
 const preferredBrowserStorageKey = "osl-preferred-browser-v1";
 const completedBrowserImportsStorageKey = "osl-browser-import-sources-v1";
+const detectedBrowserServicesStorageKey = "osl-browser-detected-services-v1";
+const mullvadStartupStorageKey = "osl-mullvad-open-on-start-v1";
+const setupPrivacyStorageKey = "osl-setup-privacy-v1";
+const detectedAccountChoicesStorageKey = "osl-detected-account-opening-v1";
 const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
 const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
 const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
+const scrubSetupPlanStorageKey = "osl-scrub-setup-plan-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
 let nativeDiscordCovertextEnabled = true;
 const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
+const oslChatRemoteAccessStorageKey = "osl-chat-remote-access-v1";
+const friendDefaultOslChatStorageKey = "osl-friend-default-chat-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
@@ -331,10 +374,7 @@ const bootCoreDeadlineMs = 4_000;
 const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
 const nativeCatalogDecisionDeadlineMs = 8_000;
-const firefoxInstallDecisionDeadlineMs = 120_000;
-// The backend fork flips this only after begin_protected_browser_import ships
-// with the exact selected-ID contract declared in services.ts.
-const protectedBrowserImportReady = true;
+const protectedBrowserImportSourceDeadlineMs = 90_000;
 
 type OnboardingBranch = {
   detected: boolean;
@@ -351,6 +391,11 @@ function loadOnboardingBranch(): OnboardingBranch {
 }
 
 let onboardingBranch = loadOnboardingBranch();
+
+function resetOnboardingBranch(): void {
+  onboardingBranch = { detected: false, install: false };
+  localStorage.removeItem(onboardingBranchStorageKey);
+}
 
 function experimentalSendConsentId(mode: SendMode, serviceId: string, accountId: string): string {
   return `${mode}:${serviceId}:${accountId}`;
@@ -385,63 +430,43 @@ function parseSavedAccountMode(raw: string | null): SavedAccountMode {
   return raw === "use" || raw === "clean" ? raw : "ask";
 }
 
-function pendingOnboardingRoute(): OnboardingRoute | null {
-  const pending = localStorage.getItem(onboardingResumeStorageKey);
-  if (pending === "pro"
-    || pending === "privacy"
-    || pending === "sending"
-    || pending === "cover"
-    || pending === "passwords"
-    || pending === "burnpass"
-    || pending === "mullvad"
-    || pending === "browser"
-    || pending === "tutorial") return pending;
-  if (pending !== null) localStorage.removeItem(onboardingResumeStorageKey);
-  return null;
+function identityScopedStorageKey(base: string): string | null {
+  const owner = core.readiness.activeOslUserId;
+  return owner ? `${base}:${encodeURIComponent(owner)}` : null;
 }
 
-function persistCurrentOnboardingRoute(): void {
-  if (onboardingRoute === "pro"
-    || onboardingRoute === "privacy"
-    || onboardingRoute === "sending"
-    || onboardingRoute === "cover"
-    || onboardingRoute === "passwords"
-    || onboardingRoute === "burnpass"
-    || onboardingRoute === "mullvad"
-    || onboardingRoute === "browser"
-    || onboardingRoute === "tutorial") {
-    localStorage.setItem(onboardingResumeStorageKey, onboardingRoute);
-  }
+function pendingOnboardingRoute(): OnboardingRoute | null {
+  const key = identityScopedStorageKey(onboardingResumeStorageKey);
+  const checkpoint = key ? parseSetupResumeCheckpoint(localStorage.getItem(key)) : null;
+  if (!checkpoint) return null;
+  scrubSetupStep = checkpoint.scrubStep;
+  return checkpoint.route;
+}
+
+function persistOnboardingResume(routeToPersist = onboardingRoute, step = scrubSetupStep): void {
+  const key = identityScopedStorageKey(onboardingResumeStorageKey);
+  if (!key || !isActiveSetupRoute(routeToPersist)) return;
+  localStorage.setItem(key, JSON.stringify({ route: routeToPersist, scrubStep: routeToPersist === "scrub" ? step : "intro" }));
 }
 
 function beginServiceOnboarding(): void {
   onboardingServiceSetup = true;
+  const key = identityScopedStorageKey(onboardingResumeStorageKey);
+  if (key) localStorage.removeItem(key);
   localStorage.removeItem(onboardingResumeStorageKey);
 }
 
 function markServiceOnboardingOpened(): void {
   if (!onboardingServiceSetup) return;
-  localStorage.setItem(onboardingResumeStorageKey, "apps");
+  persistOnboardingResume("browser", "intro");
 }
 
 function clearServiceOnboardingResume(): void {
   onboardingServiceSetup = false;
+  const key = identityScopedStorageKey(onboardingResumeStorageKey);
+  if (key) localStorage.removeItem(key);
+  // Remove the pre-identity legacy checkpoint; it must never cross identities.
   localStorage.removeItem(onboardingResumeStorageKey);
-}
-
-function persistOnboardingBranch(): void {
-  localStorage.setItem(onboardingBranchStorageKey, JSON.stringify(onboardingBranch));
-}
-
-function resetOnboardingBranch(): void {
-  onboardingBranch = { detected: false, install: false };
-  localStorage.removeItem(onboardingBranchStorageKey);
-}
-
-function markOnboardingBranch(route: OnboardingRoute): void {
-  if (route === "detected") onboardingBranch.detected = true;
-  if (route === "install") onboardingBranch.install = true;
-  persistOnboardingBranch();
 }
 
 function applyTheme(choice: ThemeChoice): void {
@@ -483,6 +508,16 @@ function loadUiPreferences(): void {
     hasExplicitOnboardingAppSelection = selectedAppsRaw !== null;
     const selectedApps = JSON.parse(selectedAppsRaw ?? "[]") as unknown;
     if (Array.isArray(selectedApps)) selectedApps.filter((id): id is HomeAppId => typeof id === "string").slice(0, 32).forEach((id) => selectedOnboardingApps.add(id));
+    const mutedPeople = JSON.parse(localStorage.getItem(oslChatMutedStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(mutedPeople)) oslChatMutedPeople = new Set(mutedPeople.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
+    const remoteAccess = JSON.parse(localStorage.getItem(oslChatRemoteAccessStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(remoteAccess)) oslChatRemoteAccessConfirmed = new Set(remoteAccess.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
+    const unread = JSON.parse(localStorage.getItem(oslChatUnreadStorageKey) ?? "{}") as unknown;
+    if (typeof unread === "object" && unread !== null && !Array.isArray(unread)) {
+      for (const [personId, count] of Object.entries(unread).slice(0, 512)) {
+        if (personId.length <= 180 && Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 10_000) oslChatUnread.set(personId, Number(count));
+      }
+    }
   } catch {
     sidebarOrder = [];
     hiddenServices.clear();
@@ -492,6 +527,9 @@ function loadUiPreferences(): void {
     savedNativeApps.clear();
     selectedOnboardingApps.clear();
     hasExplicitOnboardingAppSelection = localStorage.getItem(selectedOnboardingAppsStorageKey) !== null;
+    oslChatMutedPeople.clear();
+    oslChatRemoteAccessConfirmed.clear();
+    oslChatUnread.clear();
   }
   savedAccountMode = parseSavedAccountMode(localStorage.getItem(savedAccountModeStorageKey));
   discordSessionMode = parseDiscordSessionMode(localStorage.getItem(discordSessionModeStorageKey));
@@ -520,22 +558,6 @@ function loadUiPreferences(): void {
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   oslChatPreviewsVisible = localStorage.getItem(oslChatPreviewStorageKey) !== "false";
   try {
-    const mutedPeople = JSON.parse(localStorage.getItem(oslChatMutedStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(mutedPeople)) {
-      oslChatMutedPeople = new Set(mutedPeople.filter((personId): personId is string => typeof personId === "string" && personId.length > 0 && personId.length <= 180).slice(0, 512));
-    }
-  } catch { oslChatMutedPeople.clear(); }
-  try {
-    const unread = JSON.parse(localStorage.getItem(oslChatUnreadStorageKey) ?? "{}") as unknown;
-    if (typeof unread === "object" && unread !== null && !Array.isArray(unread)) {
-      for (const [personId, count] of Object.entries(unread).slice(0, 512)) {
-        if (personId.length > 0 && personId.length <= 180 && Number.isSafeInteger(count) && Number(count) > 0 && Number(count) <= 10_000) {
-          oslChatUnread.set(personId, Number(count));
-        }
-      }
-    }
-  } catch { oslChatUnread.clear(); }
-  try {
     const notices = JSON.parse(localStorage.getItem(oslChatNotificationStorageKey) ?? "[]") as unknown;
     if (Array.isArray(notices)) {
       const parsed = notices.slice(0, 20).filter((item): item is AppNotification => typeof item === "object" && item !== null
@@ -546,14 +568,24 @@ function loadUiPreferences(): void {
       if (parsed.length) appNotifications = parsed;
     }
   } catch { /* malformed local notification metadata is ignored */ }
-  screenshotProtectionEnabled = true;
   mullvadAutoStart = localStorage.getItem(mullvadAutoStartStorageKey) === "true";
+  friendDefaultOslChatEnabled = localStorage.getItem(friendDefaultOslChatStorageKey) === "true";
+  screenshotProtectionEnabled = localStorage.getItem(screenshotProtectionStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
+  mullvadPreference = localStorage.getItem(mullvadStartupStorageKey) === "true" ? "auto" : localStorage.getItem(mullvadStartupStorageKey) === "false" ? "off" : null;
+  setupPrivacyChoices = parseSetupPrivacyChoices(localStorage.getItem(setupPrivacyStorageKey));
+  try {
+    const savedChoices = JSON.parse(localStorage.getItem(detectedAccountChoicesStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(savedChoices)) for (const entry of savedChoices) {
+      if (Array.isArray(entry) && typeof entry[0] === "string" && (entry[1] === "existing" || entry[1] === "osl")) detectedAccountChoices.set(entry[0], entry[1]);
+    }
+  } catch {
+    detectedAccountChoices.clear();
+  }
 }
 
 function activeBrowserAccountsReadyStorageKey(): string | null {
-  const owner = core.readiness.activeOslUserId;
-  return owner ? `${savedAccountsReadyStorageKey}:${encodeURIComponent(owner)}` : null;
+  return identityScopedStorageKey(savedAccountsReadyStorageKey);
 }
 
 function activeOwnerStorageKey(base: string): string | null {
@@ -576,8 +608,11 @@ function persistBrowserAccountPreferences(): void {
 }
 
 function activeBrowserImportPendingStorageKey(): string | null {
-  const owner = core.readiness.activeOslUserId;
-  return owner ? `${browserImportPendingStorageKey}:${encodeURIComponent(owner)}` : null;
+  return identityScopedStorageKey(browserImportPendingStorageKey);
+}
+
+function activeDetectedBrowserServicesStorageKey(): string | null {
+  return identityScopedStorageKey(detectedBrowserServicesStorageKey);
 }
 
 function refreshActiveBrowserAccountsReady(): void {
@@ -592,67 +627,20 @@ function refreshActiveBrowserAccountsReady(): void {
     const stored = imported ? JSON.parse(localStorage.getItem(imported) ?? "[]") as unknown : [];
     if (Array.isArray(stored)) stored.filter(supportedBrowserId).forEach((id) => completedBrowserImportIds.add(id));
   } catch { completedBrowserImportIds.clear(); }
-  const pendingKey = activeBrowserImportPendingStorageKey();
-  if (!pendingKey || localStorage.getItem(pendingKey) === null) {
-    browserImportQueue = [];
-    browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
-    browserImportSourceSelected = false;
-    return;
-  }
-  try {
-    const pending = JSON.parse(localStorage.getItem(pendingKey) ?? "null") as {
-      sources?: unknown;
-      index?: unknown;
-      awaitingConfirmation?: unknown;
-      sourceSelected?: unknown;
-    } | null;
-    const supported = new Set<BrowserImportStatus["id"]>(["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"]);
-    if (!pending
-      || !Array.isArray(pending.sources)
-      || pending.sources.length < 1
-      || pending.sources.length > supported.size
-      || !pending.sources.every((id): id is BrowserImportStatus["id"] => typeof id === "string" && supported.has(id as BrowserImportStatus["id"]))
-      || new Set(pending.sources).size !== pending.sources.length
-      || !Number.isInteger(pending.index)
-      || (pending.index as number) < 0
-      || (pending.index as number) >= pending.sources.length
-      || typeof pending.awaitingConfirmation !== "boolean"
-      || typeof pending.sourceSelected !== "boolean") {
-      localStorage.removeItem(pendingKey);
-      browserImportQueue = [];
-      browserImportQueueIndex = 0;
-      browserImportAwaitingConfirmation = false;
-      browserImportSourceSelected = false;
-      return;
+  detectedBrowserServices.clear();
+  const detectedKey = activeDetectedBrowserServicesStorageKey();
+  if (detectedKey !== null) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(detectedKey) ?? "[]") as unknown;
+      if (Array.isArray(parsed)) for (const id of parsed) {
+        if (typeof id === "string" && importedFirefoxHomeAppIds.has(id as HomeAppId)) detectedBrowserServices.add(id as HomeAppId);
+      }
+    } catch {
+      localStorage.removeItem(detectedKey);
     }
-    browserImportQueue = [...pending.sources];
-    browserImportQueueIndex = pending.index as number;
-    browserImportAwaitingConfirmation = pending.awaitingConfirmation;
-    browserImportSourceSelected = pending.sourceSelected;
-    selectedBrowserImportIds = new Set(browserImportQueue);
-  } catch {
-    localStorage.removeItem(pendingKey);
-    browserImportQueue = [];
-    browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
-    browserImportSourceSelected = false;
   }
-}
-
-function persistBrowserImportQueue(): void {
-  const key = activeBrowserImportPendingStorageKey();
-  if (!key) return;
-  if (browserImportQueue.length === 0) {
-    localStorage.removeItem(key);
-    return;
-  }
-  localStorage.setItem(key, JSON.stringify({
-    sources: browserImportQueue,
-    index: browserImportQueueIndex,
-    awaitingConfirmation: browserImportAwaitingConfirmation,
-    sourceSelected: browserImportSourceSelected,
-  }));
+  const pendingKey = activeBrowserImportPendingStorageKey();
+  if (!savedAccountsReady && pendingKey !== null) localStorage.removeItem(pendingKey);
 }
 
 function saveHomeTilePreferences(): void {
@@ -890,8 +878,8 @@ async function reopenActiveNativeCompanion(): Promise<void> {
 }
 
 function renderOnboarding(): void {
-  persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  if (isActiveSetupRoute(onboardingRoute)) persistOnboardingResume();
+  const setupScreen = ["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad", "scrub"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<button class="onboarding-back-dock" id="onboarding-back" type="button">Back</button>`
     : "";
@@ -934,16 +922,18 @@ function onboardingContent(): string {
   if (onboardingRoute === "unlock") return identityPasswordForm("Unlock OSL", "Unlock", "unlock");
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
-  if (onboardingRoute === "tutorial") return tutorialContent();
   if (onboardingRoute === "detected") return detectedAppsContent();
-  if (onboardingRoute === "install") return installMissingAppsContent();
-  if (onboardingRoute === "apps") return onboardingAppsContent();
   if (onboardingRoute === "browser") return browserImportContent();
   if (onboardingRoute === "mullvad") return mullvadSetupContent();
   if (onboardingRoute === "cover") return coverDraftSetupContent();
+  if (onboardingRoute === "tutorial") return tutorialContent();
+  if (onboardingRoute === "install") return installMissingAppsContent();
+  if (onboardingRoute === "apps") return onboardingAppsContent();
+  if (onboardingRoute === "sending") return sendingSetupContent();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
   if (onboardingRoute === "privacy") return onboardingPrivacyContent();
+  if (onboardingRoute === "scrub") return scrubSetupContent();
   if (onboardingRoute === "decoy") return `<section class="decoy-workspace" aria-labelledby="route-heading"><h1 id="route-heading" tabindex="-1">Workspace</h1><p>No recent items.</p><button class="button ghost" id="close-decoy" type="button">Close</button></section>`;
 
   return sendingSetupContent();
@@ -972,13 +962,6 @@ function tutorialContent(): string {
   return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Choose what appears on Home. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Detected</h2>${choices(detected, "Detected apps")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${nativeCatalogBusy ? "Checking Windows…" : "Continue"}</button></div>`;
 }
 
-async function enterCombinedAppChoice(): Promise<void> {
-  const catalog = await withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs).catch(() => null);
-  if (catalog && isCompleteNativeCatalog(catalog)) nativeApps = catalog;
-  onboardingRoute = "tutorial";
-  render();
-}
-
 function persistCombinedHomeChoices(): void {
   hasExplicitOnboardingAppSelection = true;
   localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
@@ -1001,10 +984,6 @@ function isCompleteNativeCatalog(catalog: NativeApp[]): boolean {
 
 function hasSelectedInstalledNativeApps(): boolean {
   return selectedNativeApps().some((app) => app.availability === "installed" && app.isolatedProfileAvailable);
-}
-
-function hasSelectedMissingNativeApps(): boolean {
-  return selectedNativeApps().some((app) => app.availability !== "installed");
 }
 
 function onboardingConnectionApps(): HomeAppCatalogEntry[] {
@@ -1075,6 +1054,15 @@ function selectedNativeAppIntent(appId: HomeAppId): NativeAppId | undefined {
     && catalogApp?.availability === "installed"
     && catalogApp.isolatedProfileAvailable;
   return onboardingDedicatedIntent ? nativeId : undefined;
+}
+
+function providerWideInstalledNativeApp(appId: HomeAppId): NativeApp | undefined {
+  const nativeId = appId as NativeAppId;
+  if (savedAccountMode !== "use" || !supportedNativeAppIds.has(nativeId) || !savedNativeApps.has(nativeId)) return undefined;
+  const service = services.find((candidate) => candidate.id === (nativeId as unknown as ServiceId));
+  const anyAccountOverridden = service?.accounts.some((account) => detectedAccountChoices.get(detectedAccountChoiceKey(service.id, account.id)) === "osl") ?? false;
+  if (anyAccountOverridden) return undefined;
+  return nativeApps.find((candidate) => candidate.id === nativeId && candidate.availability === "installed" && candidate.isolatedProfileAvailable);
 }
 
 function nativeSessionModeForApp(appId: NativeAppId): NativeSessionMode {
@@ -1178,21 +1166,39 @@ function selectedBrowserHasImportReceipt(): boolean {
   return browserId !== null && completedBrowserImportIds.has(browserId);
 }
 
+function detectedAccountChoiceKey(serviceId: string, accountId: string): string {
+  return `${serviceId}:${accountId}`;
+}
+
+function persistDetectedAccountChoices(): void {
+  const valid = new Set(services.flatMap((service) => service.accounts.map((account) => detectedAccountChoiceKey(service.id, account.id))));
+  for (const appId of detectedBrowserServices) valid.add(detectedAccountChoiceKey("browser", appId));
+  for (const key of detectedAccountChoices.keys()) if (!valid.has(key)) detectedAccountChoices.delete(key);
+  localStorage.setItem(detectedAccountChoicesStorageKey, JSON.stringify([...detectedAccountChoices]));
+}
+
 function detectedAppsContent(): string {
-  const installed = selectedNativeApps().filter((app) => app.availability === "installed");
-  const rows = installed.length
-    ? installed.map((app) => `<label class="saved-account-app"><span>${nativeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed on this PC</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${app.id === "discord" || savedNativeApps.has(app.id) ? "checked" : ""} ${app.id === "discord" ? "disabled" : ""}/></label>`).join("")
-    : `<div class="empty-state"><strong>No selected desktop apps were detected</strong><p>OSL can still use isolated web profiles.</p></div>`;
-  const discordChoices = installed.some((app) => app.id === "discord")
-    ? nativeSessionModeSettingChoices("discord", "Discord")
-    : "";
-  const telegramChoices = installed.some((app) => app.id === "telegram")
-    ? nativeSessionModeSettingChoices("telegram", "Telegram")
-    : "";
-  const signalChoices = installed.some((app) => app.id === "signal") ? nativeSessionModeSettingChoices("signal", "Signal") : "";
-  const whatsappChoices = installed.some((app) => app.id === "whatsapp") ? nativeSessionModeSettingChoices("whatsapp", "WhatsApp") : "";
-  const outlookChoices = installed.some((app) => app.id === "outlook") ? nativeSessionModeSettingChoices("outlook", "Outlook") : "";
-  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose detected desktop apps.</p>${discordChoices}${telegramChoices}${signalChoices}${whatsappChoices}${outlookChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
+  const installedIds = new Set(nativeApps.filter((app) => app.availability === "installed").map((app) => app.id));
+  const accounts = services.flatMap((service) => service.accounts.map((account) => ({ service, account })));
+  const configuredAppIds = new Set(accounts.map(({ service, account }) => service.id === "email" && account.provider ? account.provider : service.id));
+  const browserApps = homeAppsFromServices(services).filter((app) => detectedBrowserServices.has(app.id) && !configuredAppIds.has(app.id));
+  const accountRows = accounts.map(({ service, account }) => {
+      const id = detectedAccountChoiceKey(service.id, account.id);
+      const choice = detectedAccountChoices.get(id) ?? "existing";
+      const source = installedIds.has(service.id as NativeAppId) ? "Installed app" : savedAccountsReady ? "Imported browser data" : "OSL profile";
+      return `<article class="detected-account-row detected-account-${choice}" data-detected-account-row="${escapeHtml(id)}"><span class="detected-account-logo service-brand-badge" data-service-brand="${service.id}">${serviceLogo(service.id)}</span><span class="detected-account-name"><strong>${escapeHtml(service.displayName)}</strong><small>${escapeHtml(account.displayHandle || account.label)}</small><em>${source}</em></span><label><span class="sr-only">How to open ${escapeHtml(account.label)}</span><select data-detected-account="${escapeHtml(id)}" aria-label="How to open ${escapeHtml(account.label)}"><option value="existing" ${choice === "existing" ? "selected" : ""}>Use current desktop session · provider-wide</option><option value="osl" ${choice === "osl" ? "selected" : ""}>Use isolated OSL profile · this account</option></select></label></article>`;
+    }).join("");
+  const browserRows = browserApps.map((app) => {
+    const id = detectedAccountChoiceKey("browser", app.id);
+    const choice = detectedAccountChoices.get(id) ?? "existing";
+    return `<article class="detected-account-row detected-account-${choice}" data-detected-account-row="${escapeHtml(id)}"><span class="detected-account-logo">${homeAppLogo(app)}</span><span class="detected-account-name"><strong>${escapeHtml(app.displayName)}</strong><small>Current browser session</small><em>Found in selected browser history</em></span><label><span class="sr-only">How to open ${escapeHtml(app.displayName)}</span><select data-detected-account="${escapeHtml(id)}" aria-label="How to open ${escapeHtml(app.displayName)}"><option value="existing" ${choice === "existing" ? "selected" : ""}>Use current browser session</option><option value="osl" ${choice === "osl" ? "selected" : ""}>Create isolated OSL profile</option></select></label></article>`;
+  }).join("");
+  const rows = accountRows || browserRows
+    ? `${accountRows}${browserRows}`
+    : savedAccountsReady
+      ? `<div class="empty-state"><strong>Current browser sessions ready</strong><p>Exact account names stay in your browser. Open an app from Home to use its current signed-in session.</p></div>`
+      : `<div class="empty-state"><strong>No accounts detected</strong><p>You can add services from Home later.</p></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Detected services</h1><div class="detected-launch-mode"><label for="detected-launch-select">Provider default</label><select id="detected-launch-select"><option value="use" ${savedAccountMode !== "clean" ? "selected" : ""}>Current desktop session · provider-wide</option><option value="clean" ${savedAccountMode === "clean" ? "selected" : ""}>Isolated OSL profiles only</option></select></div><div class="detected-account-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
 }
 
 function installMissingAppsContent(): string {
@@ -1215,29 +1221,44 @@ function onboardingAppsContent(): string {
 
 function browserImportContent(): string {
   const installed = browserImports.filter((browser) => browser.installed);
-  const queueActive = browserImportQueue.length > 0;
-  const detectedBrowsers = installed.length
-    ? `<fieldset class="browser-detected-sources" ${queueActive ? "disabled" : ""}><legend>Choose browsers</legend><label class="browser-detected-item browser-import-all"><span><strong>Import all detected browsers</strong><small>One click starts the protected import queue</small></span><input type="checkbox" data-browser-select-all aria-label="Import all detected browsers"/></label><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<span><strong>${escapeHtml(browser.displayName)}</strong><small>Import from this browser</small></span><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImportIds.has(browser.id) ? "checked" : ""}/></label>`).join("")}</div></fieldset>`
+  const selectedCount = installed.filter((browser) => selectedBrowserImports.has(browser.id)).length;
+  const allSelected = installed.length > 0 && selectedCount === installed.length;
+  const sources = installed.length
+    ? `<section class="browser-detected-sources" aria-label="Detected browsers"><div class="browser-detected-heading"><span>${selectedCount} selected</span><button type="button" id="toggle-all-browser-imports" ${browserImportBusy ? "disabled" : ""}>${allSelected ? "Clear all" : "Select all"}</button></div><div class="browser-detected-list">${installed.map((browser) => `<label class="browser-detected-item">${browserLogo(browser.id)}<strong>${escapeHtml(browser.displayName)}</strong><input type="checkbox" data-browser-source="${browser.id}" ${selectedBrowserImports.has(browser.id) ? "checked" : ""} ${browserImportBusy ? "disabled" : ""} aria-label="Import from ${escapeHtml(browser.displayName)}"></label>`).join("")}</div></section>`
     : `<p class="saved-account-truth">No supported browser detected.</p>`;
   const ready = savedAccountsReady
     ? `<div class="saved-account-browser-note"><strong>Browser import completed</strong><small>Account contents remain browser-owned.</small></div>`
     : "";
-  const failure = browserImportFailureNotice
-    ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>`
-    : "";
-  const currentSource = queueActive ? browserImportQueue[browserImportQueueIndex] : null;
-  const currentBrowser = currentSource ? browserImports.find((browser) => browser.id === currentSource) : null;
-  const currentName = currentBrowser?.displayName ?? currentSource ?? "browser";
-  const progress = queueActive
-    ? `<div class="saved-account-browser-note" aria-live="polite"><strong>${escapeHtml(currentName)} · ${browserImportQueueIndex + 1} of ${browserImportQueue.length}</strong><small>${browserImportSourceSelected ? `OSL selected ${escapeHtml(currentName)} and started Firefox's import.` : `OSL is opening ${escapeHtml(currentName)} in Firefox's importer.`} The next selected browser starts automatically.</small></div>`
-    : "";
-  const selectionReady = selectedBrowserImportIds.size > 0;
-  const importEnabled = selectionReady && protectedBrowserImportReady && !browserReadinessBusy && !browserImportBusy;
-  const importLabel = browserImportBusy
-    ? (firefoxStatus.availability === "installed" ? "Opening import…" : "Preparing protected import…")
-    : selectionReady ? "Import selected" : "Choose browsers";
-  const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : queueActive ? "Cancel import" : "Not now";
-  return `<h1 id="route-heading" tabindex="-1">Bring your logins</h1><p class="compact-lead onboarding-centered-copy">Optional. Choose every browser you want to import from.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Choose once here. Firefox asks you to approve each selected browser in order.</p>`;
+  const failure = browserImportFailureNotice ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>` : "";
+  const importEnabled = selectedCount > 0 && firefoxStatus.availability === "installed" && !browserReadinessBusy && !browserImportBusy;
+  const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : browserImportBusy ? "Cancel import" : "Not now";
+  const primaryLabel = browserImportBusy ? escapeHtml(browserImportProgress || "Working…") : `Import selected${selectedCount ? ` (${selectedCount})` : ""}`;
+  return `<h1 id="route-heading" tabindex="-1">Import browser data</h1><p class="compact-lead onboarding-centered-copy">Choose only the browsers you want to import.</p>${sources}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${primaryLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Stays inside OSL. Windows may ask before protected passwords are used.</p>`;
+}
+
+async function importOneBrowser(source: BrowserImportId, position: number, total: number): Promise<Awaited<ReturnType<typeof beginProtectedBrowserImport>>> {
+  browserImportProgress = `Browser ${position} of ${total}`;
+  render();
+  const operationId = createProtectedBrowserImportOperationId();
+  const operation = { operationId, result: beginProtectedBrowserImport([source], operationId) };
+  browserImportOperation = operation;
+  let deadlineTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    deadlineTimer = globalThis.setTimeout(() => {
+      void cancelProtectedBrowserImport(operationId).finally(() => {
+        reject(new Error("This browser took too long and was closed safely. Try again."));
+      });
+    }, protectedBrowserImportSourceDeadlineMs);
+  });
+  try {
+    const result = await Promise.race([operation.result, deadline]);
+    await finishProtectedBrowserImport(operationId);
+    return result;
+  } finally {
+    if (deadlineTimer !== undefined) globalThis.clearTimeout(deadlineTimer);
+    if (browserImportOperation === operation) browserImportOperation = null;
+    void operation.result.catch(() => undefined);
+  }
 }
 
 function persistSavedAccountPreferences(): void {
@@ -1330,12 +1351,6 @@ function bindSavedAccountControls(): void {
     else savedNativeApps.delete(appId);
     persistSavedAccountPreferences();
   }));
-  document.querySelectorAll<HTMLInputElement>("[data-first-install]").forEach((input) => input.addEventListener("change", () => {
-    const appId = input.dataset.firstInstall as NativeAppId;
-    if (!supportedNativeAppIds.has(appId)) return;
-    if (input.checked) selectedFirstInstallApps.add(appId);
-    else selectedFirstInstallApps.delete(appId);
-  }));
   document.querySelectorAll<HTMLButtonElement>("[data-background-install]").forEach((button) => button.addEventListener("click", () => {
     void startBackgroundInstall(button.dataset.backgroundInstall as NativeAppId);
   }));
@@ -1343,133 +1358,76 @@ function bindSavedAccountControls(): void {
 
 function bindBrowserImportControls(): void {
   document.querySelectorAll<HTMLInputElement>("[data-browser-source]").forEach((input) => input.addEventListener("change", () => {
-    const browserId = input.dataset.browserSource as BrowserImportStatus["id"];
-    browserImportFailureNotice = "";
-    if (input.checked) selectedBrowserImportIds.add(browserId);
-    else selectedBrowserImportIds.delete(browserId);
+    if (browserImportBusy) return;
+    const source = input.dataset.browserSource as BrowserImportId;
+    if (!browserImports.some((browser) => browser.installed && browser.id === source)) return;
+    if (input.checked) selectedBrowserImports.add(source);
+    else selectedBrowserImports.delete(source);
     render();
   }));
-  const startProtectedBrowserImport = async (): Promise<void> => {
-    if (!protectedBrowserImportReady || selectedBrowserImportIds.size === 0 || browserImportBusy) return;
-    const runEpoch = ++browserImportRunEpoch;
-    browserImportFailureNotice = "";
-    browserImportQueue = [...selectedBrowserImportIds];
-    browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
-    browserImportSourceSelected = false;
-    persistBrowserImportQueue();
+  document.querySelector<HTMLButtonElement>("#toggle-all-browser-imports")?.addEventListener("click", () => {
+    if (browserImportBusy) return;
+    const installed = browserImports.filter((browser) => browser.installed).map((browser) => browser.id);
+    const allSelected = installed.length > 0 && installed.every((source) => selectedBrowserImports.has(source));
+    selectedBrowserImports = new Set(allSelected ? [] : installed);
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", async () => {
+    if (browserImportBusy || savedAccountsReady) return;
+    const selected = browserImports.filter((browser) => browser.installed && selectedBrowserImports.has(browser.id)).map((browser) => browser.id);
+    if (selected.length === 0) return;
     browserImportBusy = true;
+    browserImportFailureNotice = "";
     render();
     try {
-      await ensureFirefoxForProtectedImport();
-      for (let index = 0; index < browserImportQueue.length; index += 1) {
-        if (runEpoch !== browserImportRunEpoch) return;
-        browserImportQueueIndex = index;
-        browserImportSourceSelected = false;
-        persistBrowserImportQueue();
-        render();
-        const currentSource = browserImportQueue[index];
-        if (!currentSource) throw new Error("Browser import queue is invalid");
-        const operation = beginProtectedBrowserImport([currentSource]);
-        browserImportOperation = operation;
-        const result = await operation.finally(() => {
-          if (browserImportOperation === operation) browserImportOperation = null;
-        });
-        if (runEpoch !== browserImportRunEpoch) return;
-        await finishProtectedBrowserImport();
-        if (!result.sourceSelected) {
-          const name = browserImports.find((browser) => browser.id === currentSource)?.displayName ?? currentSource;
-          throw new Error(`${name} could not be selected safely. Nothing was imported from it.`);
-        }
-        browserImportSourceSelected = true;
-        browserImportFailureNotice = "";
-        if (index + 1 < browserImportQueue.length) {
-          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-        }
-      }
-      if (runEpoch !== browserImportRunEpoch) return;
+      const results = [];
+      for (const [index, source] of selected.entries()) results.push(await importOneBrowser(source, index + 1, selected.length));
+      if (results.some((result, index) => !result.sourceSelected || result.selectedSources.length !== 1 || result.selectedSources[0] !== selected[index])) throw new Error("The detected browser queue could not be completed safely.");
       const readyKey = activeBrowserAccountsReadyStorageKey();
       if (readyKey) localStorage.setItem(readyKey, "true");
       savedAccountsReady = true;
-      browserImportQueue.forEach((id) => completedBrowserImportIds.add(id));
-      if (!preferredBrowserId) preferredBrowserId = browserImportQueue[0] ?? null;
-      persistBrowserAccountPreferences();
-      browserImportQueue = [];
-      browserImportQueueIndex = 0;
-      browserImportSourceSelected = false;
-      persistBrowserImportQueue();
-      resetOnboardingBranch();
-      resetOnboardingConnections();
-      showToast("Browser import finished");
-      await enterCombinedAppChoice();
+      detectedBrowserServices = new Set(results.flatMap((result) => result.detectedServices));
+      const detectedKey = activeDetectedBrowserServicesStorageKey();
+      if (detectedKey) localStorage.setItem(detectedKey, JSON.stringify([...detectedBrowserServices]));
+      savedAccountMode = "use";
+      persistSavedAccountPreferences();
+      const needsFollowUp = results.some((result) => result.sessionOnlySources.length || result.passwordFollowUpSources.length);
+      showToast(needsFollowUp ? "Imported supported data; existing sessions stay available" : "Browser import finished");
+      onboardingRoute = "detected";
+      nativeApps = await loadNativeApps().catch(() => nativeApps);
     } catch (failure) {
-      if (runEpoch !== browserImportRunEpoch) return;
-      browserImportQueue = [];
-      browserImportQueueIndex = 0;
-      browserImportSourceSelected = false;
-      persistBrowserImportQueue();
-      browserImportFailureNotice = localActionError(failure, "Browser import did not start");
+      browserImportFailureNotice = localActionError(failure, "Browser import did not finish");
       showToast(browserImportFailureNotice);
     } finally {
-      if (runEpoch === browserImportRunEpoch) {
-        browserImportBusy = false;
-        render();
-      }
+      browserImportBusy = false;
+      browserImportProgress = "";
+      render();
     }
-  };
-  document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", () => {
-    void startProtectedBrowserImport();
-  });
-  document.querySelector<HTMLInputElement>("[data-browser-select-all]")?.addEventListener("change", (event) => {
-    const input = event.currentTarget as HTMLInputElement;
-    if (!input.checked || browserImportBusy) return;
-    selectedBrowserImportIds = new Set(
-      browserImports.filter((browser) => browser.installed).map((browser) => browser.id),
-    );
-    browserImportFailureNotice = "";
-    render();
-    void startProtectedBrowserImport();
   });
   document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", async () => {
     if (browserImportCancelling) return;
     browserImportCancelling = true;
-    browserImportRunEpoch += 1;
-    const activeOperation = browserImportOperation;
     render();
-    await finishProtectedBrowserImport().catch(() => undefined);
-    await activeOperation?.catch(() => undefined);
-    await finishProtectedBrowserImport().catch(() => undefined);
+    const operation = browserImportOperation;
+    try {
+      if (operation) await cancelProtectedBrowserImport(operation.operationId);
+      await operation?.result.catch(() => undefined);
+    } catch (failure) {
+      browserImportFailureNotice = localActionError(failure, "This browser import belongs to another OSL identity or operation");
+      browserImportCancelling = false;
+      render();
+      return;
+    }
     browserImportOperation = null;
-    browserImportBusy = false;
     const pendingKey = activeBrowserImportPendingStorageKey();
     if (pendingKey) localStorage.removeItem(pendingKey);
-    browserImportQueue = [];
-    browserImportQueueIndex = 0;
-    browserImportAwaitingConfirmation = false;
-    browserImportSourceSelected = false;
+    browserImportBusy = false;
     browserImportCancelling = false;
-    resetOnboardingBranch();
-    resetOnboardingConnections();
-    await enterCombinedAppChoice();
+    onboardingRoute = "detected";
+    nativeApps = await loadNativeApps().catch(() => nativeApps);
+    render();
+    void refreshMullvadSetup();
   });
-}
-
-async function ensureFirefoxForProtectedImport(): Promise<void> {
-  let status = await loadFirefoxStatus();
-  firefoxStatus = status;
-  if (status.availability === "installed") return;
-  if (status.availability !== "installable") {
-    throw new Error("Protected browser import is unavailable on this PC");
-  }
-  await installFirefox();
-  const deadline = Date.now() + firefoxInstallDecisionDeadlineMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-    status = await loadFirefoxStatus();
-    firefoxStatus = status;
-    if (status.availability === "installed") return;
-  }
-  throw new Error("Firefox installation did not finish. Try Import selected again.");
 }
 
 async function refreshBrowserImportReadiness(): Promise<void> {
@@ -1481,7 +1439,15 @@ async function refreshBrowserImportReadiness(): Promise<void> {
     withNativeDeadline(loadFirefoxStatus(), "Refresh Firefox", nativeCatalogDecisionDeadlineMs).catch(() => null),
   ]);
   try {
-    if (catalog) browserImports = catalog;
+    if (catalog) {
+      browserImports = catalog;
+      const installed = new Set(catalog.filter((browser) => browser.installed).map((browser) => browser.id));
+      selectedBrowserImports = new Set([...selectedBrowserImports].filter((source) => installed.has(source)));
+      if (!browserImportSelectionInitialized && installed.size > 0) {
+        selectedBrowserImports = installed;
+        browserImportSelectionInitialized = true;
+      }
+    }
     if (currentFirefoxStatus) firefoxStatus = currentFirefoxStatus;
     if (!catalog && !currentFirefoxStatus) throw new Error("browser readiness unavailable");
   } catch {
@@ -1505,16 +1471,16 @@ function recoveryContent(): string {
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
   const setup = mode === "setup";
   if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
-  return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
+  return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error account-create-status"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><p class="account-create-status" id="account-create-status" aria-live="polite"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
 function sendingSetupContent(): string {
   const selectedMode: SendMode = setup.sendMode === "manual" ? "clipboard" : setup.sendMode;
-  const option = (mode: SendMode, title: string, detail: string, badge = "") => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${title}</strong>${badge ? `<small class="send-mode-badge">${badge}</small>` : ""}</span><small>${detail}</small></button>`;
+  const option = (mode: SendMode, title: string, tone: "safe" | "caution" | "danger", badge = "", warning = "") => `<div class="send-choice send-choice-${tone} ${selectedMode === mode ? "selected" : ""}"><button type="button" data-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${title}</strong>${badge ? `<small class="send-mode-badge">${badge}</small>` : ""}</span>${manualSendingAnimationMarkup(mode)}</button>${warning ? `<small class="send-choice-warning">${warning}</small>` : ""}</div>`;
   const risk = needsRiskAcceptance(selectedMode)
     ? `<label class="send-risk"><input id="accept-send-risk" type="checkbox" ${setup.acceptedRisk && setup.acceptedRiskForMode === selectedMode ? "checked" : ""}/><span><strong>I understand</strong><small>Experimental sending can target the wrong chat if an app changes. OSL stops unless it can verify the exact app, account, chat, and composer. Each account asks again.</small></span></label>`
     : "";
-  return `<h1 id="route-heading" tabindex="-1">Privacy and sending</h1>${captureSetupMarkup()}<h2 class="setup-section-heading">Choose how to send</h2>${manualSendingAnimationMarkup(selectedMode)}<div class="send-mode-list">${option("clipboard", "Copy", "Encrypts and copies. Never presses Send.", "Recommended")}${option("double", "Double Enter", "First Enter prepares. A second distinct Enter sends after another exact check.", "Experimental")}${option("single", "Single Enter", "One Enter prepares and sends after an exact recheck.", "Highest risk")}</div>${risk}<p class="send-mode-truth">If OSL cannot prove the destination, it copies the encrypted text and sends nothing.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Privacy and sending</h1>${captureSetupMarkup()}<h2 class="setup-section-heading">Choose how to send</h2><div class="send-choice-grid">${option("clipboard", "Copy", "safe", "Safest")}${option("double", "Double Enter", "caution", "", "Can possibly break ToS")}${option("single", "Single Enter", "danger", "", "Breaks some ToS · risky")}</div>${risk}<div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
 }
 
 function captureSetupMarkup(): string {
@@ -1540,9 +1506,9 @@ function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
 }
 
 function onboardingPrivacyContent(): string {
-  // Resume older interrupted setups on the new combined page instead of
-  // forcing users through the retired capture-only screen.
-  return sendingSetupContent();
+  const toggle = (id: SetupPrivacyChoiceId, title: string, detail: string) => `<label class="setup-status-row interactive"><span><strong>${title}</strong><small>${detail}</small></span><input type="checkbox" data-setup-privacy="${id}" ${setupPrivacyChoices.has(id) ? "checked" : ""}/></label>`;
+  const unavailable = (title: string, detail: string) => `<div class="setup-status-row" aria-disabled="true"><span><strong>${title}</strong><small>${detail}</small></span><em>Coming later</em></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Privacy</h1><section class="privacy-toggle-group"><h2>On screen</h2><div class="setup-list"><label class="setup-status-row interactive"><span><strong>Windows capture resistance</strong><small>Exclude OSL from ordinary Windows capture.</small></span><input id="onboarding-screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label>${toggle("hide-notifications", "Hide notification content", "Show the app, not the message.")}${unavailable("Disable link previews", "Preview blocking is not available in this build.")}</div></section><section class="privacy-toggle-group"><h2>Links</h2><div class="setup-list">${unavailable("IP-grabber protection", "Link reputation checks are not available in this build.")}${unavailable("Open links in your default browser", "External-link routing is not available in this build.")}</div></section><section class="privacy-toggle-group"><h2>When away</h2><div class="setup-list">${unavailable("Auto-lock on idle", "Idle locking is not available in this build.")}${unavailable("Clear copied messages", "Timed clipboard clearing is not available in this build.")}</div></section><section class="decrypt-display-note"><strong>Decrypt display</strong><span>Set per protected chat.</span></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
 }
 
 function mullvadSetupContent(): string {
@@ -1555,7 +1521,8 @@ function mullvadSetupContent(): string {
   const notice = mullvadSetupNotice
     ? `<p class="mullvad-setup-notice" role="status">${escapeHtml(mullvadSetupNotice)}</p>`
     : "";
-  return `<section class="mullvad-setup" aria-labelledby="route-heading"><h1 id="route-heading" tabindex="-1">Mullvad</h1><p>Optional network privacy.</p><div class="mullvad-actions">${action}</div>${notice}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-mullvad" type="button">Continue</button><button class="text-button" id="skip-mullvad" type="button">Not now</button></div></section>`;
+  const choice = (value: "auto" | "off", title: string) => `<button class="mullvad-choice ${mullvadPreference === value ? "selected" : ""}" type="button" data-mullvad-choice="${value}" aria-pressed="${mullvadPreference === value}">${title}</button>`;
+  return `<section class="mullvad-setup" aria-labelledby="route-heading"><div class="mullvad-mark" aria-hidden="true"><img src="${mullvadLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Mullvad</h1><p>Optional network privacy.</p><div class="mullvad-actions">${action}</div>${notice}<div class="mullvad-choice-list">${choice("auto", "Open Mullvad when OSL starts")}${choice("off", "Don't do that")}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-mullvad" type="button" ${mullvadPreference ? "" : "disabled"}>Continue</button><button class="text-button" id="skip-mullvad" type="button">Not now</button></div></section>`;
 }
 
 function scrubCategoryChooserMarkup(compact = false): string {
@@ -1570,18 +1537,73 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
     cover: "sending",
     passwords: "cover",
     burnpass: "passwords",
-    mullvad: "burnpass",
-    browser: "mullvad",
+    mullvad: "detected",
+    browser: "recovery",
     tutorial: "browser",
-    detected: "tutorial",
+    detected: "browser",
     install: onboardingBranch.detected ? "detected" : "tutorial",
     apps: onboardingBranch.install
       ? "install"
       : onboardingBranch.detected
         ? "detected"
         : "tutorial",
+    scrub: "privacy",
   };
   return routes[current] ?? "welcome";
+}
+
+function scrubSetupContent(): string {
+  const accounts = scrubAccountSelections();
+  if (scrubSetupStep === "intro") return `<section class="scrub-intro"><div class="scrub-hero" aria-hidden="true"><span class="scrub-hero-card"><i></i><i></i><i></i><b></b></span><span class="scrub-hero-sweep"></span></div><h1 id="route-heading" tabindex="-1">Scrub</h1><p>This device only. Nothing is deleted without explicit confirmation.</p><div class="scrub-intro-actions"><button class="button" id="skip-scrub-setup" type="button">Finish setup</button><button class="button primary" id="start-scrub-setup" type="button">Do Scrub</button></div></section>`;
+  const cards = accounts.length
+    ? `<div class="scrub-account-grid">${accounts.map(({ selection, service, account }) => { const id = `${selection.serviceId}:${selection.accountId}`; return `<button class="scrub-account-choice ${selectedOnboardingScrubAccounts.has(id) ? "selected" : ""}" type="button" data-scrub-target="${escapeHtml(id)}" aria-pressed="${selectedOnboardingScrubAccounts.has(id)}"><span class="scrub-account-logo service-brand-badge" data-service-brand="${selection.serviceId}">${serviceLogo(selection.serviceId as ServiceId)}</span><strong>${escapeHtml(account)}</strong><small>${escapeHtml(service)}</small></button>`; }).join("")}</div>`
+    : `<div class="empty-state"><strong>No connected accounts yet</strong><p>You can run Scrub later from Home.</p></div>`;
+  if (scrubSetupStep === "accounts") return `<h1 id="route-heading" tabindex="-1">Choose accounts</h1><div class="scrub-selection-controls"><button class="text-button" id="select-all-scrub" type="button">Select all</button><button class="text-button" id="clear-scrub-selection" type="button">Clear</button></div>${cards}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-scrub-accounts" type="button">Continue</button></div>`;
+  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  return `<h1 id="route-heading" tabindex="-1">Configure Scrub</h1><h2 class="setup-section-heading">Mode</h2><div class="send-mode-list"><button class="send-mode-option ${onboardingScrubMode === "scrub" ? "selected" : ""}" type="button" data-scrub-mode="scrub"><span><strong>Scrub</strong><small class="send-mode-badge">Recommended</small></span><small>Review every match before removing anything.</small></button><button class="send-mode-option ${onboardingScrubMode === "autoscrub" ? "selected" : ""} ${proActive ? "" : "disabled"}" type="button" data-scrub-mode="autoscrub" ${proActive ? "" : "disabled"}><span><strong>AutoScrub</strong><small class="send-mode-badge">Pro</small></span><small>Use the saved plan automatically.</small></button></div><h2 class="setup-section-heading">Categories</h2>${scrubCategoryChooserMarkup(true)}<p class="scrub-config-safety"><strong>Review before removing.</strong> Nothing is deleted during setup; later removal still requires explicit confirmation on an editable list.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-scrub-setup" type="button">Save &amp; finish</button></div>`;
+}
+
+function scrubAccountSelections(): Array<{ selection: ScrubAccountSelection; service: string; account: string }> {
+  const servicePattern = /^[a-z0-9_-]{1,32}$/u;
+  const accountPattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
+  return services.flatMap((service) => service.accounts.flatMap((account) => {
+    if (!servicePattern.test(service.id) || !accountPattern.test(account.id)) return [];
+    return [{ selection: { serviceId: service.id, accountId: account.id }, service: service.displayName, account: account.label }];
+  })).slice(0, 32);
+}
+
+function activeScrubSetupPlanStorageKey(): string | null {
+  return identityScopedStorageKey(scrubSetupPlanStorageKey);
+}
+
+function applySavedScrubSetupPlan(): void {
+  const key = activeScrubSetupPlanStorageKey();
+  const raw = key ? localStorage.getItem(key) : null;
+  if (raw === null) return;
+  const available = new Set(scrubAccountSelections().map(({ selection }) => `${selection.serviceId}:${selection.accountId}`));
+  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const plan = parseScrubSetupPlan(raw, available, defaultScrubSignalGroups, proActive);
+  onboardingScrubMode = plan.mode === "autoscrub" ? "autoscrub" : "scrub";
+  selectedOnboardingScrubAccounts = new Set(plan.targetIds);
+  enabledScrubSignals = new Set(plan.signalGroups);
+  const target = scrubAccountSelections().find(({ selection }) => plan.targetIds.includes(`${selection.serviceId}:${selection.accountId}`));
+  if (!target) return;
+  if (target.selection.serviceId === "email") autoScrubPathId = "gmail-web";
+  else if (target.selection.serviceId === "discord") autoScrubPathId = "discord";
+  else if (target.selection.serviceId === "telegram") autoScrubPathId = "telegram-web";
+  else return;
+  autoScrubAccountId = target.selection.accountId;
+}
+
+function saveScrubSetupPlan(mode: ScrubSetupPlan["mode"]): void {
+  const key = activeScrubSetupPlanStorageKey();
+  if (!key) return;
+  const plan = parseScrubSetupPlan(JSON.stringify({
+    mode,
+    targetIds: [...selectedOnboardingScrubAccounts],
+    signalGroups: [...enabledScrubSignals],
+  }), new Set(scrubAccountSelections().map(({ selection }) => `${selection.serviceId}:${selection.accountId}`)), defaultScrubSignalGroups, licenseState.access === "pro" || licenseState.access === "offlineGrace");
+  localStorage.setItem(key, JSON.stringify(plan));
 }
 
 function bindOnboarding(): void {
@@ -1635,13 +1657,13 @@ function bindOnboarding(): void {
     await completeOnboarding();
   });
   document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
-    if (savedAccountMode === "ask") savedAccountMode = savedNativeApps.size ? "use" : "clean";
+    if (savedAccountMode === "ask") savedAccountMode = nativeApps.some((app) => app.availability === "installed") ? "use" : "clean";
+    if (savedAccountMode === "use") nativeApps.filter((app) => app.availability === "installed").forEach((app) => savedNativeApps.add(app.id));
     persistSavedAccountPreferences();
-    const next = hasSelectedMissingNativeApps() ? "install" : "apps";
-    markOnboardingBranch(next);
-    if (next === "apps") selectNextConnectApp();
-    onboardingRoute = next;
+    persistDetectedAccountChoices();
+    onboardingRoute = "mullvad";
     render();
+    void refreshMullvadSetup();
   });
   document.querySelector<HTMLButtonElement>("#continue-install-apps")?.addEventListener("click", () => {
     const selectedInstalls = [...selectedFirstInstallApps];
@@ -1659,9 +1681,19 @@ function bindOnboarding(): void {
     onboardingRoute = "apps";
     render();
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-connect-app-choice]").forEach((button) => button.addEventListener("click", () => {
-    onboardingConnectAppId = button.dataset.connectAppChoice as HomeAppId;
-    render();
+  document.querySelector<HTMLSelectElement>("#detected-launch-select")?.addEventListener("change", (event) => {
+    savedAccountMode = (event.currentTarget as HTMLSelectElement).value === "clean" ? "clean" : "use";
+    persistSavedAccountPreferences();
+  });
+  document.querySelectorAll<HTMLSelectElement>("[data-detected-account]").forEach((select) => select.addEventListener("change", () => {
+    const id = select.dataset.detectedAccount;
+    if (!id) return;
+    const choice = select.value === "osl" ? "osl" : "existing";
+    detectedAccountChoices.set(id, choice);
+    persistDetectedAccountChoices();
+    const row = document.querySelector<HTMLElement>(`[data-detected-account-row="${CSS.escape(id)}"]`);
+    row?.classList.toggle("detected-account-osl", choice === "osl");
+    row?.classList.toggle("detected-account-existing", choice === "existing");
   }));
   document.querySelector<HTMLButtonElement>("#skip-connect-app")?.addEventListener("click", () => {
     if (onboardingConnectAppId) handledOnboardingConnectApps.add(onboardingConnectAppId);
@@ -1689,6 +1721,11 @@ function bindOnboarding(): void {
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
+  });
+  document.querySelector("#skip-onboarding")?.addEventListener("click", () => {
+    clearServiceOnboardingResume();
+    if (onboardingRoute === "scrub") void completeOnboarding();
+    else { onboardingRoute = "scrub"; scrubSetupStep = "intro"; render(); }
   });
   document.querySelectorAll<HTMLButtonElement>("[data-send-mode]").forEach((button) => button.addEventListener("click", () => {
     const mode = button.dataset.sendMode as SendMode;
@@ -1728,17 +1765,58 @@ function bindOnboarding(): void {
     if (next === "browser") void refreshBrowserImportReadiness();
     if (next === "mullvad") void refreshMullvadSetup();
   }));
-  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
+  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => {
+    notificationPreviewContent = !setupPrivacyChoices.has("hide-notifications");
+    localStorage.setItem(notificationPreviewStorageKey, String(notificationPreviewContent));
+    onboardingRoute = "scrub";
+    scrubSetupStep = "intro";
+    render();
+  });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
     windowCaptureEnabled = (event.currentTarget as HTMLInputElement).checked;
     screenshotProtectionEnabled = await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
     if (windowCaptureEnabled && !screenshotProtectionEnabled) showToast("Windows capture resistance is unavailable on this device");
     render();
   });
-  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "browser"; render(); void refreshBrowserImportReadiness(); });
-  document.querySelector("#continue-mullvad")?.addEventListener("click", () => { onboardingRoute = "browser"; render(); void refreshBrowserImportReadiness(); });
+  document.querySelector<HTMLInputElement>("#onboarding-screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
+  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
   document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
   document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
+  document.querySelectorAll<HTMLButtonElement>("[data-mullvad-choice]").forEach((button) => button.addEventListener("click", () => {
+    mullvadPreference = button.dataset.mullvadChoice === "auto" ? "auto" : "off";
+    localStorage.setItem(mullvadStartupStorageKey, String(mullvadPreference === "auto"));
+    render();
+  }));
+  document.querySelector("#continue-mullvad")?.addEventListener("click", () => {
+    if (!mullvadPreference) return;
+    if (mullvadPreference === "auto" && mullvadStatus.availability === "installed") void openMullvad().catch(() => undefined);
+    onboardingRoute = "sending";
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>("[data-setup-privacy]").forEach((input) => input.addEventListener("change", () => {
+    const id = input.dataset.setupPrivacy;
+    if (!id || !setupPrivacyChoiceIds.includes(id as SetupPrivacyChoiceId)) return;
+    const choice = id as SetupPrivacyChoiceId;
+    if (input.checked) setupPrivacyChoices.add(choice); else setupPrivacyChoices.delete(choice);
+    localStorage.setItem(setupPrivacyStorageKey, JSON.stringify([...setupPrivacyChoices]));
+  }));
+  document.querySelector("#skip-scrub-setup")?.addEventListener("click", () => { saveScrubSetupPlan("skip"); void completeOnboarding(); });
+  document.querySelector("#start-scrub-setup")?.addEventListener("click", () => { scrubSetupStep = "accounts"; selectedOnboardingScrubAccounts = new Set(scrubAccountSelections().map(({ selection }) => `${selection.serviceId}:${selection.accountId}`)); render(); });
+  document.querySelector("#continue-scrub-accounts")?.addEventListener("click", () => { scrubSetupStep = "options"; render(); });
+  document.querySelector("#select-all-scrub")?.addEventListener("click", () => { selectedOnboardingScrubAccounts = new Set(scrubAccountSelections().map(({ selection }) => `${selection.serviceId}:${selection.accountId}`)); render(); });
+  document.querySelector("#clear-scrub-selection")?.addEventListener("click", () => { selectedOnboardingScrubAccounts.clear(); render(); });
+  document.querySelectorAll<HTMLButtonElement>("[data-scrub-target]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.scrubTarget; if (!id) return; if (selectedOnboardingScrubAccounts.has(id)) selectedOnboardingScrubAccounts.delete(id); else selectedOnboardingScrubAccounts.add(id); render(); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-scrub-mode]").forEach((button) => button.addEventListener("click", () => { onboardingScrubMode = button.dataset.scrubMode === "autoscrub" ? "autoscrub" : "scrub"; render(); }));
+  document.querySelectorAll<HTMLInputElement>("[data-scrub-category]").forEach((input) => input.addEventListener("change", () => {
+    const group = input.dataset.scrubCategory as ScrubSignalGroup;
+    if (input.checked) enabledScrubSignals.add(group); else enabledScrubSignals.delete(group);
+    localStorage.setItem(scrubSignalsStorageKey, JSON.stringify([...enabledScrubSignals]));
+  }));
+  document.querySelector("#finish-scrub-setup")?.addEventListener("click", () => {
+    saveScrubSetupPlan(onboardingScrubMode);
+    void completeOnboarding();
+  });
+  document.querySelector("#complete-onboarding")?.addEventListener("click", () => void completeOnboarding());
   document.querySelector("#close-decoy")?.addEventListener("click", () => void getCurrentWindow().close().catch(() => undefined));
 }
 
@@ -1900,6 +1978,7 @@ function bindPasswordForm(): void {
   const confirm = document.querySelector<HTMLInputElement>("#identity-password-confirm");
   const submit = document.querySelector<HTMLButtonElement>("#identity-password-submit");
   const error = document.querySelector<HTMLElement>("#password-error");
+  const createStatus = document.querySelector<HTMLElement>("#account-create-status");
   if (!form || !password || !submit || !error) return;
   const validate = (): void => {
     const valid = form.dataset.passwordMode === "setup"
@@ -1924,14 +2003,23 @@ function bindPasswordForm(): void {
     if (!setupMode) password.value = "";
     try {
       if (setupMode) {
+        if (createStatus) createStatus.textContent = "Creating encryption keys…";
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity();
+        if (createStatus) createStatus.textContent = "Securing this device…";
         const passwordResult = await setupHubMainPassword(secret);
-        core = await loadCoreIntegration();
+        if (createStatus) createStatus.textContent = "Loading your account…";
+        const [loadedCore, linkedServices, roleStatus] = await Promise.all([
+          loadCoreIntegration(),
+          loadLinkedServices().catch(() => services),
+          loadHubPasswordRoleStatus().catch(() => null),
+        ]);
+        core = loadedCore;
         // The locked bootstrap intentionally cannot read the encrypted
         // service registry. Refresh it immediately after the first password
         // installs the storage key, before the setup app chooser is shown.
-        services = await loadLinkedServices().catch(() => services);
-        passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
+        services = linkedServices;
+        passwordRoleStatus = roleStatus;
         recoveryBundle = {
           userId: identity?.userId ?? core.readiness.activeOslUserId ?? "Local OSL identity",
           identityPhrase: identity?.identityRecoveryPhrase ?? null,
@@ -1992,11 +2080,15 @@ function bindPasswordForm(): void {
       secret = "";
       password.value = "";
       if (confirm) confirm.value = "";
+      form.removeAttribute("aria-busy");
       render();
       if (discordQaShell && core.readiness.unlocked) void startDiscordQaShell();
       if (route === "onboarding" && onboardingRoute === "browser") void refreshBrowserImportReadiness();
       if (route === "onboarding" && onboardingRoute === "mullvad") void refreshMullvadSetup();
     } catch (failure) {
+      secret = "";
+      form.removeAttribute("aria-busy");
+      if (createStatus) createStatus.textContent = "";
       const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check OSL account", bootPreferenceDeadlineMs).catch(() => null);
       if (!refreshedCore) {
         secret = "";
@@ -2261,10 +2353,11 @@ function workspaceContent(): string {
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
   const organizeButton = (label: string) => `<button class="home-section-action" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}" title="${homeEditMode ? "Done" : `Customize ${label}`}">${homeCommandIcon("organize")}</button>`;
   const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><h1 id="route-heading" class="sr-only" tabindex="-1">Home</h1><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
-  const activeIdentity = hubIdentities.find((identity) => identity.active);
-  const profileName = activeIdentity?.label?.trim() || "OSL Profile";
-  const profileInitial = profileName.slice(0, 1).toLocaleUpperCase();
-  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
+  const profileVisual = oslProfile?.avatar
+    ? `<img src="${escapeHtml(oslProfile.avatar)}" alt=""/>`
+    : `<span aria-hidden="true">${escapeHtml((oslProfile?.displayName || "OSL").slice(0, 1).toUpperCase())}</span>`;
+  const profileStyle = oslProfile ? ` style="--profile-accent:${oslProfile.accentColor};--profile-banner:${oslProfile.bannerColor}" data-profile-frame="${oslProfile.frame}" data-profile-effect="${oslProfile.effect}"` : "";
+  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary"><section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="OSL Profile"${profileStyle}>${profileVisual}<strong>${escapeHtml(oslProfile?.displayName ?? "OSL Profile")}</strong></button></main>`;
 }
 
 function oslChatContent(): string {
@@ -2272,14 +2365,16 @@ function oslChatContent(): string {
   const friends = hubPeople.map((person) => {
     const messages = oslChatMessages.get(person.personId) ?? [];
     const last = messages.at(-1);
+    const hasPendingViewOnce = (oslChatPendingViewOnce.get(person.personId)?.size ?? 0) > 0;
     return {
       personId: person.personId,
       nickname: person.alias ?? "Unnamed friend",
       verified: person.safetyNumberVerified && !person.pendingKeyChange,
       ready: person.personId === activeOslChatPersonId && activeOslChatContext?.scopeApproved === true,
-      preview: last?.body ?? null,
+      preview: hasPendingViewOnce ? "View-once message" : last?.body ?? null,
       previewVisible: !pro || oslChatPreviewsVisible,
       unreadCount: oslChatUnread.get(person.personId) ?? 0,
+      muted: oslChatMutedPeople.has(person.personId),
     };
   });
   const approval = activeOslChatPersonId && activeOslChatContext && !activeOslChatContext.scopeApproved
@@ -2398,7 +2493,7 @@ function friendsDialogMarkup(): string {
   const inviteCard = friendCode && friendDisplayId
     ? `<section class="friend-invite" aria-labelledby="friend-id-label"><div><span id="friend-id-label">Your friend ID</span><code>${escapeHtml(compactFriendId(friendDisplayId))}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send the invite to someone you trust so they can add you.</p></section>`
     : `<div class="empty-inline friend-code-unavailable">Your invite appears after OSL is unlocked.</div>`;
-  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off after adding someone. Compare the verification code another way, then approve each chat separately.</p><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
+  return `<dialog class="friends-dialog" id="friends-dialog" aria-labelledby="friends-dialog-title"><div class="friends-dialog-card"><header><h2 id="friends-dialog-title">Friends</h2><button class="icon-button" id="friends-dialog-close" aria-label="Close friends">×</button></header><form id="add-friend-username-form" class="friend-add-form"><label for="friend-username-input"><span>OSL username</span><input id="friend-username-input" minlength="3" maxlength="30" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required/></label><label for="friend-username-nickname-input"><span>Name them on this device</span><input id="friend-username-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button primary">Add friend</button></form><p class="form-status" id="friend-form-status" role="status"></p><p class="scope-approval-note">Encrypted chats stay off until you compare the safety number another way and approve each chat separately.</p><details class="settings-disclosure friend-invite-fallback"><summary>Use a long invite instead</summary><form id="add-friend-form" class="friend-add-form"><label for="friend-code-input"><span>Paste their invite</span><input id="friend-code-input" placeholder="OSL invite" autocomplete="off" autocapitalize="none" spellcheck="false"/></label><label for="friend-nickname-input"><span>Name them on this device</span><input id="friend-nickname-input" maxlength="48" placeholder="Nickname (optional)" autocomplete="off" spellcheck="false"/></label><button class="button">Add from invite</button></form></details><div class="people-list home-people-list">${peopleListMarkup("manage", friendsDialogPageSize, pageStart)}</div>${pagination}${inviteCard}</div></dialog>`;
 }
 
 function nativeDiscordProtectPickerMarkup(): string {
@@ -2517,8 +2612,11 @@ function serviceAccountPickerContent(): string {
   const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
   const accounts = app ? embeddedAccountsForHomeApp(app, services) : [];
   const name = escapeHtml(activeHomeAppName());
-  const choices = accounts.map((account) => `<button class="service-account-choice" data-service-account="${escapeHtml(account.id)}"><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>${escapeHtml(account.label)}</strong><small>OSL profile</small></button>`).join("");
-  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card service-account-picker"><button class="text-back" id="native-app-back">← Apps</button><h1>Choose ${name} profile</h1><div class="service-account-choices">${choices}</div><button class="button" id="add-service-profile">Add another profile</button></section></main>`;
+  const currentSession = app && providerWideInstalledNativeApp(app.id)
+    ? `<button class="service-account-choice" data-service-current-session type="button"><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>Current desktop session</strong><small>Provider-wide · opens whichever account the desktop app currently shows</small></button>`
+    : "";
+  const choices = accounts.map((account) => `<button class="service-account-choice" data-service-account="${escapeHtml(account.id)}" type="button"><span>${serviceLogo(activeService?.id ?? "discord")}</span><strong>${escapeHtml(account.label)}</strong><small>Isolated OSL profile · exact account</small></button>`).join("");
+  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card service-account-picker"><button class="text-back" id="native-app-back">← Apps</button><h1>Choose how to open ${name}</h1><div class="service-account-choices">${currentSession}${choices}</div><button class="button" id="add-service-profile">Add another profile</button></section></main>`;
 }
 
 function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): string {
@@ -2554,7 +2652,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["accessibility", "Accessibility"], ["developer", "Developer"], ["about", "About"]];
   return `<main class="content-viewport settings-page"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="page"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
 }
 
@@ -2565,6 +2663,8 @@ function settingsSectionContent(): string {
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
+  if (settingsSection === "accessibility") return accessibilitySettingsContent();
+  if (settingsSection === "developer") return developerSettingsContent();
   return updateSettingsContent();
 }
 
@@ -2674,15 +2774,40 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   privacyScanBusy = true;
   render();
   try {
-    const candidates = importLocalMessageExport(await file.text(), {
-      serviceId: "local_import",
-      accountId: "manual-export",
-      conversationId: "privacy-scan",
-    });
-    if (!candidates?.length) throw new Error("No supported messages were found");
-    const result = await scanLocalPrivacy(candidates);
-    if (!result) throw new Error("The trusted local scanner was unavailable");
-    privacyScanResult = result;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let candidates: LocalMessageCandidate[] | null = null;
+    try {
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (decoded.trimStart().startsWith("[")) {
+        candidates = importLocalMessageExport(decoded, {
+          serviceId: "local_import",
+          accountId: "manual-export",
+          conversationId: "privacy-scan",
+        });
+      }
+    } catch {
+      candidates = null;
+    }
+    if (!candidates?.length) {
+      candidates = [{
+        serviceId: "local_import",
+        accountId: "manual-export",
+        conversationId: "privacy-scan",
+        messageLocator: "local-attachment-1",
+        authoredBySelf: false,
+        createdAtUnixMs: null,
+        text: "",
+        attachments: [{
+          attachmentId: "local-attachment-1",
+          displayName: file.name.slice(0, 64) || "unnamed attachment",
+          contentBase64: bytesToBase64(bytes),
+        }],
+      }];
+    }
+    const persisted = await persistLocalScrubExport(candidates);
+    privacyScanResult = persisted.scan;
+    privacyScanStatus = persisted.status;
+    privacyCoverageReceipt = persisted.receipt;
     selectedScrubFindings.clear();
     scrubResultsPage = 0;
     scrubReviewOpen = false;
@@ -2690,12 +2815,23 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
     privacyScanFileName = file.name.slice(0, 96);
   } catch (failure) {
     privacyScanResult = null;
+    privacyScanStatus = null;
+    privacyCoverageReceipt = null;
     privacyScanFileName = null;
     showToast(localActionError(failure, "The export could not be scanned locally"));
   } finally {
     privacyScanBusy = false;
     render();
   }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function sendingSettingsContent(): string {
@@ -2714,7 +2850,7 @@ function sendingSettingsContent(): string {
   const consentRows = needsRiskAcceptance(selectedMode) && accounts.length
     ? `<div class="send-account-consents"><strong>Account approvals</strong>${accounts.map((account) => `<div><span>${escapeHtml(account.service)} · ${escapeHtml(account.account)}</span><small>${hasExperimentalSendConsent(selectedMode, account.serviceId, account.accountId) ? "Approved on this device" : "Will ask before first use"}</small></div>`).join("")}</div>`
     : "";
-  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send.</p>`}${consentRows}</div></details>`;
+  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send. If OSL cannot prove the destination, it copies the encrypted text and sends nothing.</p>`}${consentRows}</div></details>`;
 }
 
 async function changeSendingMode(mode: SendMode): Promise<void> {
@@ -2745,18 +2881,95 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
-  const autoScrubPlan = proActive ? "PRO ACTIVE · COMING SOON" : "PRO · COMING SOON";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card" aria-disabled="true"><p>Coming soon. It schedules local scans and prepares an editable list. Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details><button class="button compact" type="button" disabled>Unavailable in this build</button></section></details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
+  const assistedDeleteWarning = `<details class="safety-disclosure"><summary>Deletion coverage</summary><div><p>Automatic removal is enabled only for a live-confirmed documented adapter with exact item readback. Hosted-session deletion for Gmail web, Discord, and Telegram web is unavailable in this build.</p><p>Exports can be scanned locally, but they cannot prove that a provider copy was removed.</p></div></details>`;
+  const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose file"}</label><input id="privacy-export-input" class="sr-only" type="file" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>${assistedDeleteWarning}`;
+  const autoScrubPlan = proActive ? "PRO · TRANSPORT-GATED" : "PRO REQUIRED";
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages and attachments never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review a file</h3><p>Choose a message export or attachment of any type. OSL reports exactly what it could and could not inspect.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary>${autoScrubMarkup(proActive)}</details><details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, providers, exports, and backups may retain copies.</p><p>Only a provider readback can verify removal within its stated coverage. Exports, backups, recipients, and other copies may remain.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Automatic deletion</span><strong>Unavailable in this build</strong></div><div class="setting-line"><span>Read-only adapters</span><strong>Local exports and configured IMAP</strong></div><label class="setting-line interactive"><span><strong>Windows capture resistance</strong><small>Asks Windows to exclude OSL from ordinary screen capture. Cameras, malware, and modified recipients can still capture content.</small></span><input id="screenshot-protection" type="checkbox" ${screenshotProtectionEnabled ? "checked" : ""}/></label></details>`;
 }
+
+function autoScrubAccountIds(): string[] {
+  const serviceId: ServiceId = autoScrubPathId === "gmail-web" || autoScrubPathId === "imap" ? "email" : autoScrubPathId === "discord" ? "discord" : "telegram";
+  const linked = services.find((service) => service.id === serviceId)?.accounts.map((account) => account.id) ?? [];
+  const imported = privacyScanResult?.findings.filter((finding) => finding.serviceId === serviceId).map((finding) => finding.accountId) ?? [];
+  return [...new Set([...linked, ...imported])];
+}
+
+function selectedImapLocators(): ScrubImapLocator[] {
+  if (!autoScrubAccountId) return [];
+  return selectedScrubItems().flatMap(({ finding }) => finding.serviceId === "email" && finding.accountId === autoScrubAccountId && finding.authoredBySelf && finding.canRequestDelete && finding.createdAtUnixMs !== null && !finding.messageLocator.startsWith("local-import-")
+    ? [{ accountId: finding.accountId, mailbox: finding.conversationId, messageId: finding.messageLocator, sinceDate: finding.createdAtUnixMs }]
+    : []);
+}
+
+function autoScrubReceiptMarkup(receipt: ProviderDeletionReceipt | null): string {
+  if (!receipt) return "";
+  const summary = summarizeAutoScrubReceipt(receipt);
+  const items = receipt.items.map((item) => `<li><strong>${escapeHtml(item.outcome)}</strong><span>${escapeHtml(item.itemId)} · ${escapeHtml(item.detail)}</span></li>`).join("");
+  return `<section class="autoscrub-receipt" aria-live="polite"><strong>${escapeHtml(summary.heading)}</strong><p>${escapeHtml(summary.detail)}</p><ul>${items}</ul></section>`;
+}
+
+function autoScrubMarkup(proActive: boolean): string {
+  const accounts = autoScrubAccountIds();
+  if (!autoScrubAccountId || !accounts.includes(autoScrubAccountId)) autoScrubAccountId = accounts[0] ?? "";
+  const capability = autoScrubCapabilities.find((item) => item.providerId === autoScrubPathId) ?? unavailableAutoScrubCapabilities.find((item) => item.providerId === autoScrubPathId) ?? unavailableAutoScrubCapabilities[0];
+  const eligible = autoScrubPathId === "imap" ? selectedImapLocators().length : 0;
+  const active = proActive && capability.liveConfirmed && Boolean(autoScrubAccountId);
+  const providers = autoScrubCapabilities.map((item) => `<li><span><strong>${escapeHtml(item.label)}</strong><small>${item.primary ? "PRIMARY · " : "OPTIONAL · "}${escapeHtml(item.coverage)}</small></span><b class="status-tag ${item.liveConfirmed ? "active" : ""}">${item.liveConfirmed ? "ACTIVE" : "PARKED"}</b>${item.unavailableReason ? `<p>${escapeHtml(item.unavailableReason)}</p>` : ""}</li>`).join("");
+  const pathOptions = autoScrubCapabilities.map((item) => `<option value="${escapeHtml(item.providerId)}" ${item.providerId === autoScrubPathId ? "selected" : ""}>${escapeHtml(item.label)}${item.primary ? " — primary" : " — optional"}</option>`).join("");
+  const accountOptions = accounts.map((id) => `<option value="${escapeHtml(id)}" ${id === autoScrubAccountId ? "selected" : ""}>${escapeHtml(id)}</option>`).join("");
+  const unavailableReason = !proActive ? "AutoScrub requires Pro." : !capability.liveConfirmed ? capability.unavailableReason ?? "This path has not live-confirmed the selected signed-in account." : eligible === 0 ? autoScrubPathId === "imap" ? "Select sent email findings with real Message-ID and date locators. Plain-text lines and ambiguous exports stay manual." : "Load and review your own items in the signed-in service window." : "";
+  return `<section class="autoscrub-card" aria-disabled="${!active}"><header><div><span class="privacy-local-mark">DELETE ENGINE · REVIEW REQUIRED</span><h3>One reviewed batch</h3></div><button class="button compact" id="refresh-autoscrub" type="button" ${autoScrubBusy ? "disabled" : ""}>Check live path</button></header><p>Automatic deletion is unavailable in this build. OSL can still create a local reviewed list and use read-only provider inspection where configured. It will not send a delete command without a native one-shot reviewed-consent capability.</p><label class="autoscrub-account"><span>Deletion path</span><select id="autoscrub-path">${pathOptions}</select></label><ul class="autoscrub-providers">${providers}</ul>${accounts.length ? `<label class="autoscrub-account"><span>Account</span><select id="autoscrub-account">${accountOptions}</select></label>` : `<p>No matching account is available.</p>`}${unavailableReason ? `<p class="autoscrub-unavailable"><strong>Unavailable:</strong> ${escapeHtml(unavailableReason)}</p>` : ""}<label class="autoscrub-confirm"><input id="autoscrub-final-confirmation" type="checkbox" disabled/><span><strong>Final confirmation</strong><small>Deletion remains disabled until native reviewed consent is available.</small></span></label><button class="button primary" id="run-autoscrub" type="button" disabled>Deletion unavailable</button>${autoScrubError ? `<p class="autoscrub-error" role="alert">${escapeHtml(autoScrubError)}</p>` : ""}${autoScrubReceiptMarkup(autoScrubDryRunReceipt)}${autoScrubReceiptMarkup(autoScrubExecutionReceipt)}<details class="autoscrub-connect"><summary>Connect IMAP for read-only verification</summary><form id="autoscrub-imap-form"><label>Account<select id="autoscrub-imap-account" required>${accountOptions}</select></label><label>IMAP host<input id="autoscrub-imap-host" autocomplete="off" required/></label><label>Username<input id="autoscrub-imap-username" autocomplete="username" required/></label><label>Credential type<select id="autoscrub-imap-auth-kind"><option value="appPassword">App password</option><option value="oauthBearer">OAuth bearer token</option></select></label><label>Credential<input id="autoscrub-imap-secret" type="password" autocomplete="current-password" required/></label><label>Mailbox<input id="autoscrub-imap-mailbox" value="Sent" required/></label><button class="button" type="submit" ${accounts.length ? "" : "disabled"}>Connect read-only IMAP</button><p>This path uses OS-backed secure storage and is cleared from live memory when its OSL identity locks or changes.</p></form></details><details><summary>Telegram TDLib</summary><p>Unavailable until its client is packaged and live-confirmed.</p></details><p>Account-deletion help links are temporarily unavailable until external links can be routed safely through the operating-system browser.</p></section>`;
+}
+
+async function refreshAutoScrubCapability(): Promise<void> {
+  if (!autoScrubAccountId) {
+    autoScrubCapabilities = unavailableAutoScrubCapabilities;
+    return;
+  }
+  autoScrubCapabilities = await createDesktopAutoScrubBridge([autoScrubAccountId]).capabilities().catch(() => unavailableAutoScrubCapabilities);
+}
+
+async function executeSelectedAutoScrubBatch(finalConfirmation: boolean): Promise<void> {
+  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const capability = autoScrubCapabilities.find((item) => item.providerId === autoScrubPathId);
+  const locators = selectedImapLocators();
+  if (autoScrubPathId !== "imap") throw new Error("The hosted-session command port has not been live-confirmed by this build");
+  if (!proActive || !capability?.liveConfirmed || !finalConfirmation || !autoScrubAccountId || locators.length === 0) throw new Error("AutoScrub confirmation or live transport is missing");
+  const bridge = createDesktopAutoScrubBridge([autoScrubAccountId]);
+  const result = await runAutoScrubBatch({
+    target: { providerId: "imap", accountId: autoScrubAccountId },
+    prepare: async (stepUp) => {
+      const findings = await prepareScrubImapFindings(locators, stepUp);
+      const itemIds = findings.map((finding) => finding.itemId);
+      const channelIds = [...new Set(findings.map((finding) => finding.channelId))];
+      const policy: ScopePolicy = { providerId: "imap", accountId: autoScrubAccountId, itemIds, channelIds, protectedChannelIds: [], protectedCorrespondentIds: [], maxCount: findings.length, minAgeMs: 0 };
+      return { providerId: "imap", accountId: autoScrubAccountId, findings, approved: policy, requested: policy };
+    },
+    capability,
+    bridge,
+    finalConfirmation,
+    onDryRun: (receipt) => {
+      autoScrubDryRunReceipt = receipt;
+      autoScrubExecutionReceipt = null;
+      render();
+    },
+  });
+  autoScrubExecutionReceipt = result.execution;
+}
+
 
 function clearPrivacyScanState(): void {
   privacyScanResult = null;
+  privacyScanStatus = null;
+  privacyCoverageReceipt = null;
   privacyScanFileName = null;
   selectedScrubFindings.clear();
   scrubResultsPage = 0;
   scrubReviewOpen = false;
   scrubReviewPage = 0;
+  autoScrubDryRunReceipt = null;
+  autoScrubExecutionReceipt = null;
+  autoScrubError = "";
 }
 
 function privacyScanResultsMarkup(): string {
@@ -2771,7 +2984,7 @@ function privacyScanResultsMarkup(): string {
   const selected = [...selectedScrubFindings].filter((index) => matching.some((item) => item.index === index)).length;
   const selectionControls = matching.length ? `<div class="scrub-selection-controls"><button class="text-button" id="select-all-scrub" type="button">Select all ${matching.length}</button><button class="text-button" id="clear-scrub-selection" type="button" ${selected ? "" : "disabled"}>Clear selection</button></div>` : "";
   const pagination = pageCount > 1 ? `<nav class="scrub-pagination" aria-label="Scrub result pages"><button class="button compact" data-scrub-page="${scrubResultsPage - 1}" ${scrubResultsPage === 0 ? "disabled" : ""}>Previous</button><span>${scrubResultsPage + 1} / ${pageCount}</span><button class="button compact" data-scrub-page="${scrubResultsPage + 1}" ${scrubResultsPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>` : "";
-  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">LOCAL · NOT SAVED</span></header>${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
+  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages · ${privacyScanResult.attachmentsScanned} attachments scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">${privacyScanStatus?.persistedEncrypted ? "ENCRYPTED · THIS DEVICE" : "LOCAL"}</span></header>${scrubCoverageReceiptMarkup()}${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
 }
 
 function scrubFindingLabel(category: LocalPrivacyScanResult["findings"][number]["category"]): string {
@@ -2785,7 +2998,8 @@ function scrubFindingMarkup(finding: LocalPrivacyScanResult["findings"][number],
   const sentCopy = finding.canRequestDelete
     ? "The file says you sent this. Check the exact message in the app."
     : "OSL cannot tell who sent this from the file. Check the exact message in the app.";
-  return `<article class="privacy-finding ${selected ? "selected" : ""}"><label class="scrub-finding-select"><input type="checkbox" ${inputAttribute}="${index}" ${selected ? "checked" : ""}/><strong>${escapeHtml(scrubFindingLabel(finding.category))}</strong></label><div class="scrub-finding-field"><span>Why OSL showed this</span><p>${escapeHtml(finding.reason)}</p></div><blockquote>${escapeHtml(finding.localPreview)}</blockquote><div class="scrub-finding-field"><span>Where to find it</span><p>${escapeHtml(finding.serviceId)} · ${escapeHtml(finding.conversationId)} · ${escapeHtml(finding.messageLocator)}</p></div><div class="scrub-finding-field"><span>Check that you sent this</span><p>${sentCopy}</p></div></article>`;
+  const attachmentLocation = finding.attachmentPath ? ` · ${escapeHtml(finding.attachmentPath)}` : "";
+  return `<article class="privacy-finding ${selected ? "selected" : ""}"><label class="scrub-finding-select"><input type="checkbox" ${inputAttribute}="${index}" ${selected ? "checked" : ""}/><strong>${escapeHtml(scrubFindingLabel(finding.category))}</strong></label><div class="scrub-finding-field"><span>Why OSL showed this</span><p>${escapeHtml(finding.reason)}</p></div><blockquote>${escapeHtml(finding.localPreview)}</blockquote><div class="scrub-finding-field"><span>Where to find it</span><p>${escapeHtml(finding.serviceId)} · ${escapeHtml(finding.conversationId)} · ${escapeHtml(finding.messageLocator)}${attachmentLocation}</p></div><div class="scrub-finding-field"><span>Check that you sent this</span><p>${sentCopy}</p></div></article>`;
 }
 
 function selectedScrubItems(): Array<{ finding: LocalPrivacyScanResult["findings"][number]; index: number }> {
@@ -2803,7 +3017,19 @@ function scrubReviewDialogMarkup(): string {
   const pageStart = scrubReviewPage * scrubReviewPageSize;
   const items = selected.slice(pageStart, pageStart + scrubReviewPageSize).map(({ finding, index }) => scrubFindingMarkup(finding, index, "review")).join("");
   const pagination = pageCount > 1 ? `<nav class="scrub-pagination" aria-label="Review pages"><button class="button compact" data-scrub-review-page="${scrubReviewPage - 1}" ${scrubReviewPage === 0 ? "disabled" : ""}>Previous</button><span>${scrubReviewPage + 1} / ${pageCount}</span><button class="button compact" data-scrub-review-page="${scrubReviewPage + 1}" ${scrubReviewPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>` : "";
-  return `<dialog class="scrub-review-dialog" id="scrub-review-dialog" aria-labelledby="scrub-review-heading"><div class="scrub-review-card"><header><div><p class="eyebrow">Manual Scrub</p><h2 id="scrub-review-heading">Confirm your list</h2></div><button class="icon-button" id="close-scrub-review" type="button" aria-label="Close review">×</button></header><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Review every checked item before continuing.</p><div class="scrub-review-summary"><strong>${selected.length} selected</strong><span>Nothing is deleted by this build.</span></div><div class="scrub-review-items">${items || `<div class="empty-state"><strong>Nothing selected</strong><p>Close this window and choose the messages you want to review.</p></div>`}</div>${pagination}<footer><p>Confirming only prepares manual directions. It does not contact or change any app.</p><div><button class="button ghost" id="close-scrub-review-footer" type="button">Back</button><button class="button primary" id="confirm-scrub-list" type="button" ${selected.length ? "" : "disabled"}>Confirm this list</button></div></footer></div></dialog>`;
+  return `<dialog class="scrub-review-dialog" id="scrub-review-dialog" aria-labelledby="scrub-review-heading"><div class="scrub-review-card"><header><div><p class="eyebrow">Manual Scrub</p><h2 id="scrub-review-heading">Confirm your list</h2></div><button class="icon-button" id="close-scrub-review" type="button" aria-label="Close review">×</button></header><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Review every checked item before continuing.</p>${scrubCoverageReceiptMarkup()}<div class="scrub-review-summary"><strong>${selected.length} selected</strong><span>This review step does not delete anything.</span></div><div class="scrub-review-items">${items || `<div class="empty-state"><strong>Nothing selected</strong><p>Close this window and choose the messages you want to review.</p></div>`}</div>${pagination}<footer><p>Confirming keeps the editable list. Any supported AutoScrub batch still requires a dry-run and final confirmation.</p><div><button class="button ghost" id="close-scrub-review-footer" type="button">Back</button><button class="button primary" id="confirm-scrub-list" type="button" ${selected.length ? "" : "disabled"}>Confirm this list</button></div></footer></div></dialog>`;
+}
+
+function scrubCoverageReceiptMarkup(): string {
+  if (!privacyCoverageReceipt || !validateCoverageReceipt(privacyCoverageReceipt)) return "";
+  const receipt = privacyCoverageReceipt;
+  const date = (value: number | null): string => value === null ? "Unknown" : new Date(value).toLocaleString();
+  const complete = receipt.providerReportedComplete && receipt.gaps.length === 0 && receipt.uninspectedAttachments.length === 0;
+  const types = receipt.attachmentTypesScanned.length ? receipt.attachmentTypesScanned.map(escapeHtml).join(", ") : "none";
+  const uninspected = receipt.uninspectedAttachments.length
+    ? `<div class="scrub-uninspected"><strong>Could not inspect</strong><ul>${receipt.uninspectedAttachments.map((attachment) => `<li><span>${escapeHtml(attachment.path)} · ${escapeHtml(attachment.detectedType)}</span><small>${escapeHtml(attachment.reason.replaceAll("_", " "))}: ${escapeHtml(attachment.detail)}</small></li>`).join("")}</ul></div>`
+    : "";
+  return `<section class="scrub-review-summary coverage-receipt" aria-label="Scan coverage receipt"><strong>Coverage: ${complete ? "complete" : "incomplete"}</strong><span>${receipt.messagesScanned} text messages · ${receipt.attachmentsScanned} attachments checked</span><span>Images: ${receipt.imagesChecked ? "deep-inspected" : "not deep-inspected"} · Videos: ${receipt.videosChecked ? "deep-inspected" : "not deep-inspected"}</span><span>Attachment types scanned: ${types}</span><span>Oldest reachable: ${escapeHtml(date(receipt.oldestReachableAtUnixMs))}</span><span>Newest reachable: ${escapeHtml(date(receipt.newestReachableAtUnixMs))}</span>${receipt.gaps.map((gap) => `<span>Gap: ${escapeHtml(gap)}</span>`).join("")}${uninspected}</section>`;
 }
 
 function openScrubReviewDialogAfterRender(): void {
@@ -2871,6 +3097,81 @@ function bindScrubControls(): void {
     scrubReviewOpen = false;
     render();
   });
+  document.querySelector<HTMLSelectElement>("#autoscrub-account")?.addEventListener("change", async (event) => {
+    autoScrubAccountId = (event.currentTarget as HTMLSelectElement).value;
+    autoScrubCapabilities = unavailableAutoScrubCapabilities;
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    await refreshAutoScrubCapability();
+    render();
+  });
+  document.querySelector<HTMLSelectElement>("#autoscrub-path")?.addEventListener("change", async (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value as AutoScrubProviderId;
+    if (!autoScrubCapabilities.some((capability) => capability.providerId === value)) return;
+    autoScrubPathId = value;
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    autoScrubError = "";
+    await refreshAutoScrubCapability();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#refresh-autoscrub")?.addEventListener("click", async () => {
+    if (autoScrubBusy) return;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    render();
+    await refreshAutoScrubCapability();
+    autoScrubBusy = false;
+    render();
+  });
+  document.querySelector<HTMLFormElement>("#autoscrub-imap-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (autoScrubBusy) return;
+    const form = event.currentTarget as HTMLFormElement;
+    const accountId = form.querySelector<HTMLSelectElement>("#autoscrub-imap-account")?.value ?? "";
+    const host = form.querySelector<HTMLInputElement>("#autoscrub-imap-host")?.value.trim() ?? "";
+    const username = form.querySelector<HTMLInputElement>("#autoscrub-imap-username")?.value.trim() ?? "";
+    const authKind = form.querySelector<HTMLSelectElement>("#autoscrub-imap-auth-kind")?.value === "oauthBearer" ? "oauthBearer" as const : "appPassword" as const;
+    const secretInput = form.querySelector<HTMLInputElement>("#autoscrub-imap-secret");
+    const mailbox = form.querySelector<HTMLInputElement>("#autoscrub-imap-mailbox")?.value.trim() ?? "Sent";
+    let secret = secretInput?.value ?? "";
+    if (secretInput) secretInput.value = "";
+    if (!accountId || !host || !username || !secret) return;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    render();
+    try {
+      const result = await configureScrubImapAccount({ accountId, host, username, auth: { kind: authKind, secret }, defaultMailbox: mailbox });
+      secret = "";
+      if (!result.configured || !result.liveConfirmed) throw new Error(result.detail || "IMAP connection was not live-confirmed");
+      autoScrubAccountId = accountId;
+      autoScrubPathId = "imap";
+      await refreshAutoScrubCapability();
+    } catch (error) {
+      secret = "";
+      autoScrubError = error instanceof Error ? error.message : "IMAP connection could not be verified";
+    } finally {
+      autoScrubBusy = false;
+      render();
+    }
+  });
+  document.querySelector<HTMLButtonElement>("#run-autoscrub")?.addEventListener("click", async () => {
+    if (autoScrubBusy) return;
+    const confirmed = document.querySelector<HTMLInputElement>("#autoscrub-final-confirmation")?.checked === true;
+    autoScrubBusy = true;
+    autoScrubError = "";
+    autoScrubDryRunReceipt = null;
+    autoScrubExecutionReceipt = null;
+    render();
+    try {
+      await executeSelectedAutoScrubBatch(confirmed);
+    } catch (error) {
+      autoScrubError = error instanceof Error ? error.message : "AutoScrub stopped without a verified result";
+    } finally {
+      autoScrubBusy = false;
+      render();
+    }
+  });
 }
 
 function notificationSettingsContent(): string {
@@ -2895,7 +3196,21 @@ function identitySettingsContent(): string {
     ? hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)} · ${escapeHtml(identity.safetyNumber)}</small></div>${identity.active ? `<span class="status-tag">Active</span>` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("")
     : `<div class="empty-state"><strong>Identity list unavailable</strong><p>Unlock OSL to manage encrypted identity slots.</p></div>`;
   const recovery = newIdentityRecoveryPhrase ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>` : "";
-  return `<h2>Account</h2><p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+  return `<h2>Account</h2>${profileSettingsContent()}${settingsDivider()}${friendDefaultsSettingsContent()}${settingsDivider()}<p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+}
+
+function friendDefaultsSettingsContent(): string {
+  return `<section class="settings-section friend-defaults"><header><div><h3>Friend defaults</h3><p>Defaults apply only after you verify a friend’s safety number.</p></div></header><div class="settings-list"><label class="setting-line interactive"><span><strong>Enable OSL Chat when opened</strong><small>Automatically approve the exact first-party OSL Chat scope for verified friends you choose to open. Provider accounts remain separate.</small></span><input id="friend-default-osl-chat" type="checkbox" ${friendDefaultOslChatEnabled ? "checked" : ""}/></label></div></section>`;
+}
+
+function profileSettingsContent(): string {
+  const profile = oslProfile;
+  const avatar = profileDraftAvatar === undefined ? profile?.avatar ?? null : profileDraftAvatar;
+  const avatarMarkup = avatar ? `<img src="${escapeHtml(avatar)}" alt=""/>` : `<span aria-hidden="true">${escapeHtml((profile?.displayName || "OSL").slice(0, 1).toUpperCase())}</span>`;
+  const frames: OslProfileFrame[] = ["none", "thin", "double", "glow"];
+  const effects: OslProfileEffect[] = ["none", "gradient", "pulse", "shimmer"];
+  const usernameStatus = profile?.usernameCandidate && claimedOslUsername === profile.usernameCandidate ? `@${escapeHtml(profile.usernameCandidate)} is friendable` : "Saving reserves this username";
+  return `<section class="settings-section osl-profile-settings"><header><div><h3>OSL profile</h3><p>Your encrypted profile and public friend identity.</p></div></header><form id="osl-profile-form"><div class="profile-editor-preview" style="--profile-accent:${profile?.accentColor ?? "#06b6d4"};--profile-banner:${profile?.bannerColor ?? "#141414"}" data-profile-frame="${profile?.frame ?? "none"}" data-profile-effect="${profile?.effect ?? "none"}">${avatarMarkup}</div><div class="profile-editor-fields"><label>OSL name<input name="displayName" maxlength="64" value="${escapeHtml(profile?.displayName ?? "")}" autocomplete="nickname" required/></label><label>Username<input name="username" minlength="3" maxlength="30" pattern="[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?" value="${escapeHtml(profile?.usernameCandidate ?? "")}" placeholder="your_name" autocomplete="username" autocapitalize="none" spellcheck="false" required/><small>${usernameStatus}</small></label><label class="profile-status-field">Status<input name="status" maxlength="160" value="${escapeHtml(profile?.status ?? "")}" placeholder="Optional"/></label><label>Accent<input name="accentColor" type="color" value="${profile?.accentColor ?? "#06b6d4"}"/></label><label>Banner<input name="bannerColor" type="color" value="${profile?.bannerColor ?? "#141414"}"/></label><label>Frame<select name="frame">${frames.map((value) => `<option value="${value}" ${profile?.frame === value ? "selected" : ""}>${value}</option>`).join("")}</select></label><label>Effect<select name="effect">${effects.map((value) => `<option value="${value}" ${profile?.effect === value ? "selected" : ""}>${value}</option>`).join("")}</select></label></div><div class="profile-avatar-actions"><label class="button" for="osl-profile-avatar-file">Choose image or GIF</label><input class="sr-only" id="osl-profile-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif"/><label>or HTTPS image URL<input id="osl-profile-avatar-url" type="url" maxlength="2048" value="${avatar?.startsWith("https://") ? escapeHtml(avatar) : ""}" placeholder="https://…"/></label>${avatar ? `<button class="button ghost" id="osl-profile-avatar-remove" type="button">Remove image</button>` : ""}</div><footer><span id="osl-profile-status" role="status"></span><button class="button primary" type="submit" ${profileSaving ? "disabled" : ""}>${profileSaving ? "Saving…" : "Save profile"}</button></footer></form></section>`;
 }
 
 function activationSettingsContent(): string {
@@ -2911,7 +3226,100 @@ function formatUnixDate(seconds: number): string {
 }
 
 function appearanceSettingsContent(): string {
-  return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
+  const custom = activeThemeMod ? `<p class="setting-status"><span class="dot"></span>${escapeHtml(activeThemeMod.name)} theme mod active</p>` : "";
+  return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>${custom}`;
+}
+
+function accessibilitySettingsContent(): string {
+  const toggle = (id: keyof Pick<AccessibilityPreferences, "highContrast" | "reduceMotion" | "largeTargets">, title: string, detail: string): string => `<label class="setting-line interactive"><span><strong>${title}</strong><small>${detail}</small></span><input type="checkbox" data-accessibility-toggle="${id}" ${accessibilityPreferences[id] ? "checked" : ""}/></label>`;
+  return `<h2>Accessibility</h2><p>These choices apply immediately and stay on this device.</p><section class="settings-list accessibility-settings"><label class="setting-line interactive"><span><strong>Text size</strong><small>Increase text throughout OSL.</small></span><select id="accessibility-text-scale" aria-label="Text size"><option value="100" ${accessibilityPreferences.textScale === 100 ? "selected" : ""}>Default</option><option value="112" ${accessibilityPreferences.textScale === 112 ? "selected" : ""}>Large</option><option value="125" ${accessibilityPreferences.textScale === 125 ? "selected" : ""}>Larger</option><option value="150" ${accessibilityPreferences.textScale === 150 ? "selected" : ""}>Largest</option></select></label>${toggle("highContrast", "High contrast", "Strengthen borders, text, and focus indicators.")}${toggle("reduceMotion", "Reduce motion", "Remove nonessential transitions and animations.")}${toggle("largeTargets", "Larger controls", "Keep buttons and interactive rows at least 44 pixels tall.")}</section>`;
+}
+
+function developerSettingsContent(): string {
+  const modState = activeThemeMod ? `<span class="status-tag active">${escapeHtml(activeThemeMod.name)}</span>` : `<span class="status-tag">None installed</span>`;
+  return `<h2>Developer</h2><p>Build OSL from source or install a data-only theme mod.</p><section class="settings-section developer-settings"><header><div><h3>Source</h3><p>Clone the repository, install the UI dependencies, then run the local Vite preview.</p></div><button class="button compact" data-source-repository type="button">GitHub</button></header><pre><code>git clone https://github.com/OSLPrivacy/discord-privacy-client.git
+cd discord-privacy-client/apps/osl-hub-ui
+npm ci
+npm run dev</code></pre></section><section class="settings-section developer-settings"><header><div><h3>Theme mods</h3><p>Theme mods are JSON data only. Scripts, remote CSS, and unknown fields are rejected.</p></div>${modState}</header><div class="settings-actions"><label class="button" for="theme-mod-input">Install theme mod</label><input class="sr-only" id="theme-mod-input" type="file" accept="application/json,.json"/>${activeThemeMod ? `<button class="button ghost" id="remove-theme-mod" type="button">Remove</button>` : ""}</div><details class="settings-disclosure"><summary>Theme mod format</summary><pre><code>{
+  &quot;version&quot;: 1,
+  &quot;name&quot;: &quot;My theme&quot;,
+  &quot;colors&quot;: {
+    &quot;brand&quot;: &quot;#06b6d4&quot;,
+    &quot;background&quot;: &quot;#0a0a0a&quot;,
+    &quot;panel&quot;: &quot;#141414&quot;,
+    &quot;text&quot;: &quot;#e8e8e8&quot;,
+    &quot;muted&quot;: &quot;#9aa0a6&quot;
+  },
+  &quot;radius&quot;: 6
+}</code></pre></details></section>`;
+}
+
+async function submitOslProfile(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  if (profileSaving) return;
+  const form = event.currentTarget as HTMLFormElement;
+  const field = (name: string): string => (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value.trim() ?? "";
+  const displayName = field("displayName");
+  const usernameCandidate = field("username").replace(/^@/u, "").toLowerCase();
+  if (!isNormalizedOslUsername(usernameCandidate)) {
+    showToast("Use 3–30 lowercase letters, numbers, or interior underscores");
+    return;
+  }
+  const frame = field("frame") as OslProfileFrame;
+  const effect = field("effect") as OslProfileEffect;
+  const avatarUrl = document.querySelector<HTMLInputElement>("#osl-profile-avatar-url")?.value.trim() ?? "";
+  const avatar = profileDraftAvatar !== undefined
+    ? profileDraftAvatar
+    : avatarUrl || (oslProfile?.avatar?.startsWith("data:image/") ? oslProfile.avatar : null);
+  const next: OslProfile = {
+    displayName,
+    usernameCandidate,
+    avatar,
+    accentColor: field("accentColor").toLowerCase(),
+    bannerColor: field("bannerColor").toLowerCase(),
+    frame,
+    effect,
+    status: field("status"),
+  };
+  profileSaving = true;
+  render();
+  const saved = await saveOslProfile(next);
+  profileSaving = false;
+  if (!saved) { showToast("OSL profile could not be saved"); render(); return; }
+  oslProfile = saved;
+  const status = await getOslUsernameStatus(saved.usernameCandidate);
+  claimedOslUsername = status?.ownedByActiveIdentity ? status.username : null;
+  profileDraftAvatar = undefined;
+  showToast(claimedOslUsername ? "OSL profile saved" : "Profile saved · username will verify when OSL is online");
+  render();
+}
+
+function bindOslProfileControls(): void {
+  document.querySelector<HTMLFormElement>("#osl-profile-form")?.addEventListener("submit", (event) => void submitOslProfile(event));
+  document.querySelector<HTMLInputElement>("#osl-profile-avatar-file")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) || file.size > 2 * 1024 * 1024) {
+      showToast("Choose a PNG, JPEG, WebP, or GIF up to 2 MiB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result !== "string" || !reader.result.startsWith(`data:${file.type};base64,`)) {
+        showToast("Profile image could not be read");
+        return;
+      }
+      profileDraftAvatar = reader.result;
+      render();
+    });
+    reader.addEventListener("error", () => showToast("Profile image could not be read"));
+    reader.readAsDataURL(file);
+  });
+  document.querySelector<HTMLButtonElement>("#osl-profile-avatar-remove")?.addEventListener("click", () => {
+    profileDraftAvatar = null;
+    render();
+  });
 }
 
 async function prepareServiceBurn(): Promise<void> {
@@ -3560,12 +3968,55 @@ function bindLocalProtectedSheet(): void {
   }));
 }
 
+interface WorkspaceNavigationOptions {
+  profileSettings?: boolean;
+  settingsTarget?: SettingsSection;
+  openFriends?: boolean;
+}
+
+async function navigateWorkspace(requestedRoute: Route, options: WorkspaceNavigationOptions = {}): Promise<void> {
+  const intent = ++navigationIntentEpoch;
+  if (options.openFriends) friendsDialogOpen = false;
+  await Promise.resolve();
+  if (intent !== navigationIntentEpoch) return;
+  if (route === "osl-chat") {
+    if (oslChatBusy || !(await closeOslChatContext())) { showToast("OSL Chat could not close safely"); return; }
+    discardOpenedOslChatMessages();
+    resetOslChatUiState(false);
+  }
+  if (activeEmbeddedHost || activeNativeHostId || activeDefaultBrowserCompanion) await closeActiveServiceSurface();
+  if (route === "settings" && settingsSection === "scrub") clearPrivacyScanState();
+  if (route === "settings" && settingsSection === "account") newIdentityRecoveryPhrase = null;
+  if (onboardingServiceSetup && requestedRoute === "home") {
+    clearServiceGuide();
+    advanceOnboardingConnection(activeHomeAppId);
+    return;
+  } else {
+    route = requestedRoute;
+    if (options.profileSettings) settingsSection = "account";
+    if (options.settingsTarget) settingsSection = options.settingsTarget;
+    if (settingsSection === "scrub") applySavedScrubSetupPlan();
+  }
+  activeService = null;
+  activeHomeAppId = null;
+  appLaunchPendingId = null;
+  serviceAccountPickerOpen = false;
+  friendsDialogOpen = options.openFriends === true && route === "home";
+  if (friendsDialogOpen) friendsDialogPage = 0;
+  render();
+}
+
 function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
+  }));
+  document.querySelectorAll<HTMLElement>("[data-osl-chat-context]").forEach((row) => row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    oslChatSettingsPersonId = row.dataset.oslChatContext ?? null;
+    render();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-settings]").forEach((button) => button.addEventListener("click", () => {
     oslChatSettingsPersonId = button.dataset.oslChatSettings ?? null;
@@ -3631,38 +4082,8 @@ function bindWorkspace(): void {
       if (control) control.disabled = true;
     }
   }
-  document.querySelectorAll<HTMLButtonElement>("[data-route]").forEach((button) => button.addEventListener("click", async () => {
-    const intent = ++navigationIntentEpoch;
-    const requestedRoute = button.dataset.route as Route;
-    await Promise.resolve();
-    if (intent !== navigationIntentEpoch) return;
-    if (route === "osl-chat") {
-      if (oslChatBusy) {
-        showToast("Finish the secure message check first");
-        return;
-      }
-      if (!(await closeOslChatContext())) {
-        showToast("OSL Chat could not close safely");
-        return;
-      }
-      discardOpenedOslChatMessages();
-      resetOslChatUiState(false);
-    }
-    if (activeEmbeddedHost || activeNativeHostId || activeDefaultBrowserCompanion) await closeActiveServiceSurface();
-    if (route === "settings" && settingsSection === "scrub") clearPrivacyScanState();
-    if (route === "settings" && settingsSection === "account") newIdentityRecoveryPhrase = null;
-    if (onboardingServiceSetup && requestedRoute === "home") {
-      clearServiceGuide();
-      advanceOnboardingConnection(activeHomeAppId);
-      return;
-    }
-    route = requestedRoute;
-    if (button.hasAttribute("data-profile-settings")) settingsSection = "account";
-    activeService = null;
-    activeHomeAppId = null;
-    appLaunchPendingId = null;
-    serviceAccountPickerOpen = false;
-    render();
+  document.querySelectorAll<HTMLButtonElement>("[data-route]").forEach((button) => button.addEventListener("click", () => {
+    void navigateWorkspace(button.dataset.route as Route, { profileSettings: button.hasAttribute("data-profile-settings") });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-service]").forEach((button) => button.addEventListener("click", () => { const service = services.find((item) => item.id === button.dataset.service); if (service) openServiceRoute(service, null); }));
   document.querySelectorAll<HTMLButtonElement>("[data-home-app]").forEach((button) => button.addEventListener("click", () => {
@@ -3679,15 +4100,25 @@ function bindWorkspace(): void {
     if (settingsSection === "scrub" && next !== "scrub") clearPrivacyScanState();
     if (settingsSection === "account" && next !== "account") newIdentityRecoveryPhrase = null;
     settingsSection = next;
+    if (next === "scrub") applySavedScrubSetupPlan();
     render();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
+  bindOslProfileControls();
+  document.querySelector<HTMLInputElement>("#friend-default-osl-chat")?.addEventListener("change", (event) => {
+    friendDefaultOslChatEnabled = (event.currentTarget as HTMLInputElement).checked;
+    localStorage.setItem(friendDefaultOslChatStorageKey, String(friendDefaultOslChatEnabled));
+    showToast("Friend defaults updated");
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => {
+    void navigateWorkspace("settings", { settingsTarget: "notifications" });
+  }));
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
+  document.querySelector<HTMLInputElement>("#screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { privacyScanResult = null; privacyScanFileName = null; selectedScrubFindings.clear(); scrubReviewOpen = false; render(); });
   bindScrubControls();
@@ -3723,11 +4154,55 @@ function bindWorkspace(): void {
     applyTheme(next);
     render();
   }));
+  document.querySelector<HTMLSelectElement>("#accessibility-text-scale")?.addEventListener("change", (event) => {
+    const next = Number((event.currentTarget as HTMLSelectElement).value);
+    if (![100, 112, 125, 150].includes(next)) return;
+    accessibilityPreferences = { ...accessibilityPreferences, textScale: next as TextScale };
+    saveAccessibilityPreferences(localStorage, accessibilityPreferences);
+    applyAccessibilityPreferences(document.documentElement, accessibilityPreferences);
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>("[data-accessibility-toggle]").forEach((input) => input.addEventListener("change", () => {
+    const key = input.dataset.accessibilityToggle;
+    if (key !== "highContrast" && key !== "reduceMotion" && key !== "largeTargets") return;
+    accessibilityPreferences = { ...accessibilityPreferences, [key]: input.checked };
+    saveAccessibilityPreferences(localStorage, accessibilityPreferences);
+    applyAccessibilityPreferences(document.documentElement, accessibilityPreferences);
+    render();
+  }));
+  document.querySelector<HTMLInputElement>("#theme-mod-input")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || file.size > 8 * 1024) { showToast("Theme mod must be a small JSON file"); return; }
+    void file.text().then((raw) => {
+      const parsed = parseThemeMod(raw);
+      if (!parsed) { showToast("Theme mod is invalid or contains unsupported fields"); return; }
+      activeThemeMod = parsed;
+      localStorage.setItem(themeModStorageKey, JSON.stringify(parsed));
+      applyThemeMod(document.documentElement, parsed);
+      showToast(`${parsed.name} installed`);
+      render();
+    }).catch(() => showToast("Theme mod could not be read"));
+  });
+  document.querySelector<HTMLButtonElement>("#remove-theme-mod")?.addEventListener("click", () => {
+    activeThemeMod = null;
+    localStorage.removeItem(themeModStorageKey);
+    applyThemeMod(document.documentElement, null);
+    showToast("Theme mod removed");
+    render();
+  });
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
   document.querySelector<HTMLButtonElement>("#embedded-service-setup")?.addEventListener("click", () => void setupEmbeddedApp(false));
   document.querySelector<HTMLButtonElement>("#add-service-profile")?.addEventListener("click", () => void setupEmbeddedApp(true));
+  document.querySelector<HTMLButtonElement>("[data-service-current-session]")?.addEventListener("click", () => {
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
+    const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
+    const native = app ? providerWideInstalledNativeApp(app.id) : undefined;
+    if (app && service && native) void openNativeHostedApp(app, service, native.id);
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-service-account]").forEach((button) => button.addEventListener("click", () => {
     const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId);
     const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
@@ -3760,7 +4235,7 @@ function bindWorkspace(): void {
       clearServiceOnboardingResume();
       clearServiceGuide();
       route = "onboarding";
-      onboardingRoute = "apps";
+      onboardingRoute = "browser";
       activeService = null;
       activeHomeAppId = null;
       await closeActiveServiceSurface();
@@ -3809,9 +4284,7 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-verify-person]").forEach((button) => button.addEventListener("click", () => requestFriendVerification(button.dataset.verifyPerson ?? "", button.dataset.safetyNumber ?? "")));
   document.querySelectorAll<HTMLButtonElement>("[data-allow-person]").forEach((button) => button.addEventListener("click", () => void allowPersonHere(button.dataset.allowPerson ?? "")));
   document.querySelectorAll<HTMLElement>("[data-open-friends]").forEach((button) => button.addEventListener("click", () => {
-    friendsDialogOpen = true;
-    friendsDialogPage = 0;
-    render();
+    void navigateWorkspace("home", { openFriends: true });
   }));
   document.querySelector("#friends-dialog-close")?.addEventListener("click", () => {
     friendsDialogOpen = false;
@@ -3825,6 +4298,7 @@ function bindWorkspace(): void {
     friendsDialogPage = next;
     render();
   }));
+  document.querySelector<HTMLFormElement>("#add-friend-username-form")?.addEventListener("submit", (event) => void submitFriendUsername(event));
   document.querySelector<HTMLFormElement>("#add-friend-form")?.addEventListener("submit", (event) => void submitFriendCode(event));
   document.querySelectorAll<HTMLFormElement>("[data-nickname-person]").forEach((form) => form.addEventListener("submit", (event) => void saveFriendNickname(event)));
   document.querySelector<HTMLButtonElement>("#copy-friend-code")?.addEventListener("click", () => void copyFriendInvite());
@@ -3867,6 +4341,20 @@ async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promis
     const nativeIntent = selectedNativeAppIntent(app.id);
     if (nativeIntent) {
       void openNativeHostedApp(app, service, nativeIntent);
+    } else if (savedAccountsReady && firefoxStatus.availability === "installed" && importedFirefoxHomeAppIds.has(app.id)) {
+      try {
+        const isolatedBrowserProfile = detectedAccountChoices.get(detectedAccountChoiceKey("browser", app.id)) === "osl";
+        if (savedAccountMode === "use" && !isolatedBrowserProfile) {
+          await launchSystemBrowserService(app.id);
+          showToast(`${app.displayName} opened in your current browser session`);
+        } else {
+          await launchFirefoxService(app.id);
+          showToast(`${app.displayName} opened in your isolated OSL Firefox profile`);
+        }
+      } catch {
+        if (app.linked) void openEmbeddedApp(app, service);
+        else openServiceRoute(service, app.provider, app.id, true);
+      }
     } else if (defaultBrowserCompanionEligible(app.id)) {
       if (selectedBrowserHasImportReceipt() && !browserSessionModeConfirmed) openServiceRoute(service, app.provider, app.id, true);
       else void openBrowserCompanionApp(app, service);
@@ -4080,7 +4568,7 @@ async function setupEmbeddedApp(forceNewProfile = false): Promise<void> {
   try {
     const service = services.find((candidate) => candidate.id === app.serviceId);
     if (!service) throw new Error("This app is unavailable right now");
-    const nativeIntent = selectedNativeAppIntent(app.id);
+    const nativeIntent = forceNewProfile ? undefined : selectedNativeAppIntent(app.id);
     if (nativeIntent) {
       nativeActionBusy = false;
       await openNativeHostedApp(app, service, nativeIntent);
@@ -4133,7 +4621,7 @@ async function openEmbeddedApp(app: HomeAppCatalogEntry, service: LinkedService,
   serviceAccountPickerOpen = false;
   render();
   try {
-    const nativeIntent = selectedNativeAppIntent(app.id);
+    const nativeIntent = accountId ? undefined : selectedNativeAppIntent(app.id);
     if (nativeIntent) {
       nativeActionBusy = false;
       await openNativeHostedApp(app, service, nativeIntent);
@@ -4215,12 +4703,14 @@ function openHomeModule(id: string): void {
     if (first) void openOslChat(first.personId);
     else {
       friendsDialogOpen = true;
+      friendsDialogPage = 0;
       render();
     }
   } else if (id === "osl-servers") {
     route = "osl-servers";
     render();
   } else if (id === "scrub") {
+    applySavedScrubSetupPlan();
     route = "settings";
     settingsSection = "scrub";
     render();
@@ -4233,8 +4723,19 @@ function openHomeModule(id: string): void {
   }
 }
 
-function oslChatTimestamp(): string {
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date());
+function oslChatTimestamp(seconds?: number): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(seconds === undefined ? new Date() : new Date(seconds * 1_000));
+}
+
+function persistOslChatUnread(): void {
+  localStorage.setItem(oslChatUnreadStorageKey, JSON.stringify(Object.fromEntries([...oslChatUnread.entries()].slice(0, 512))));
+}
+
+function historyMessages(context: ManualPeerContext, rows: NonNullable<Awaited<ReturnType<typeof listOslChatHistory>>>): OslChatMessage[] {
+  return rows.slice().reverse().map((row) => {
+    const incoming = row.senderOslUserId === context.peerOslUserId;
+    return { messageId: row.messageId, direction: incoming ? "incoming" : "outgoing", body: row.plaintext, state: incoming ? "received" : "sent", timestampLabel: oslChatTimestamp(row.decryptedAt) } as OslChatMessage;
+  });
 }
 
 async function openOslChat(personId: string): Promise<void> {
@@ -4267,23 +4768,19 @@ async function openOslChat(personId: string): Promise<void> {
       showToast("OSL Chat could not open");
       return;
     }
-    activeOslChatContext = context;
-    if (context.scopeApproved) {
+    let resolvedContext = context;
+    if (!resolvedContext.scopeApproved && friendDefaultOslChatEnabled) {
+      const enabled = await setActiveHubFriendPermission(resolvedContext.contextToken, personId, true, false);
+      if (enabled) {
+        resolvedContext = { ...resolvedContext, scopeApproved: true };
+        hubPeople = await listHubPeople() ?? hubPeople;
+      }
+    }
+    activeOslChatContext = resolvedContext;
+    if (resolvedContext.scopeApproved) {
       const history = await listOslChatHistory();
       if (epoch !== oslChatOperationEpoch) return;
-      if (history) {
-        const durableMessages: OslChatMessage[] = history.slice().reverse().map((row) => {
-          const incoming = row.senderOslUserId === context.peerOslUserId;
-          return {
-            messageId: row.messageId,
-            direction: incoming ? "incoming" : "outgoing",
-            body: row.plaintext,
-            state: incoming ? "received" : "sent",
-            timestampLabel: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(row.decryptedAt * 1_000)),
-          };
-        });
-        oslChatMessages.set(personId, [...durableMessages, ...queuedViewOnce].slice(-200));
-      }
+      if (history) oslChatMessages.set(personId, [...historyMessages(resolvedContext, history), ...queuedViewOnce].slice(-200));
       oslChatAttachments = await listOslChatAttachments() ?? [];
       shouldRefresh = true;
     }
@@ -4294,10 +4791,6 @@ async function openOslChat(personId: string): Promise<void> {
     }
   }
   if (shouldRefresh && epoch === oslChatOperationEpoch) await refreshOslChat();
-}
-
-function persistOslChatUnread(): void {
-  localStorage.setItem(oslChatUnreadStorageKey, JSON.stringify(Object.fromEntries([...oslChatUnread.entries()].slice(0, 512))));
 }
 
 function persistOslChatNotifications(): void {
@@ -4311,35 +4804,47 @@ function mergePersistedOslChatNotifications(items: AppNotification[] | null): Ap
   return merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index).slice(0, 20);
 }
 
-function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedBatch, background: boolean): void {
+function commitOslChatBatch(personId: string, batch: OslChatOpenedBatch, background: boolean): void {
   const messages = [...(oslChatMessages.get(personId) ?? [])];
+  let unreadAdded = 0;
   for (const acknowledgment of batch.acknowledgments) {
     const message = messages.find((candidate) => candidate.messageId === acknowledgment.messageId);
     if (message) message.state = acknowledgment.status;
   }
+  if (batch.acknowledgments.length) {
+    oslChatRemoteAccessConfirmed.add(personId);
+    localStorage.setItem(oslChatRemoteAccessStorageKey, JSON.stringify([...oslChatRemoteAccessConfirmed].slice(0, 512)));
+  }
   for (const incoming of batch.messages) {
+    if (background && incoming.viewOnceConsumed) {
+      // Fail closed if an older backend reveals a view-once payload during a
+      // metadata-only poll. Never let that plaintext cross into Home state.
+      unreadAdded += 1;
+      continue;
+    }
     const localMessageId = `received-${crypto.randomUUID()}`;
-    messages.push({
-      messageId: localMessageId,
-      direction: "incoming",
-      body: incoming.plaintext,
-      state: incoming.viewOnceConsumed ? "opened" : "received",
-      timestampLabel: oslChatTimestamp(),
-    });
-    if (background) {
-      oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
-      if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
-        appNotifications = [{
-          id: localMessageId,
-          title: "OSL Chat",
-          detail: "New encrypted message",
-          createdAt: "Now",
-        }, ...(appNotifications ?? [])].slice(0, 20);
-      }
+    messages.push({ messageId: localMessageId, direction: "incoming", body: incoming.plaintext, state: incoming.viewOnceConsumed ? "opened" : "received", timestampLabel: oslChatTimestamp() });
+    if (background) unreadAdded += 1;
+  }
+  if (background && batch.pendingViewOnce.length) {
+    const pending = oslChatPendingViewOnce.get(personId) ?? new Set<string>();
+    for (const item of batch.pendingViewOnce) if (!pending.has(item.messageId)) {
+      pending.add(item.messageId);
+      unreadAdded += 1;
+    }
+    oslChatPendingViewOnce.set(personId, pending);
+  } else if (!background) {
+    oslChatPendingViewOnce.delete(personId);
+  }
+  if (background && unreadAdded) {
+    oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + unreadAdded));
+    if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
+      const localNotificationId = `osl-chat-${crypto.randomUUID()}`;
+      appNotifications = [{ id: localNotificationId, title: "OSL Chat", detail: "New encrypted message", createdAt: "Now" }, ...(appNotifications ?? [])].slice(0, 20);
     }
   }
   oslChatMessages.set(personId, messages.slice(-200));
-  if (background && batch.messages.length) {
+  if (background && unreadAdded) {
     persistOslChatUnread();
     if (notificationsEnabled) persistOslChatNotifications();
     renderWhenIdle();
@@ -4362,18 +4867,12 @@ async function syncOslChatsInBackground(): Promise<void> {
       if (!context) continue;
       try {
         if (!context.scopeApproved) continue;
-        const batch = await openOslChatText();
+        const batch = await openOslChatText(false);
         if (batch) commitOslChatBatch(person.personId, batch, true);
         const history = await listOslChatHistory();
         if (history) {
           const existingViewOnce = (oslChatMessages.get(person.personId) ?? []).filter((message) => message.state === "opened");
-          oslChatMessages.set(person.personId, [...history.slice().reverse().map((row) => ({
-            messageId: row.messageId,
-            direction: row.senderOslUserId === context.peerOslUserId ? "incoming" as const : "outgoing" as const,
-            body: row.plaintext,
-            state: row.senderOslUserId === context.peerOslUserId ? "received" as const : "sent" as const,
-            timestampLabel: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(row.decryptedAt * 1_000)),
-          })), ...existingViewOnce].slice(-200));
+          oslChatMessages.set(person.personId, [...historyMessages(context, history), ...existingViewOnce].slice(-200));
         }
       } finally {
         await closeOslChatContext();
@@ -4498,14 +4997,8 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
     render();
     return;
   }
-  const messages = [...(oslChatMessages.get(personId) ?? []), {
-    messageId: sent.messageId,
-    direction: "outgoing" as const,
-    body: draft,
-    state: "sent" as const,
-    timestampLabel: oslChatTimestamp(),
-  }];
-  oslChatMessages.set(personId, messages);
+  const outgoing: OslChatMessage = { messageId: sent.messageId, direction: "outgoing", body: draft, state: "sent", timestampLabel: oslChatTimestamp() };
+  oslChatMessages.set(personId, [...(oslChatMessages.get(personId) ?? []), outgoing].slice(-200));
   oslChatDraft = "";
   oslChatViewOnce = false;
   oslChatBusy = false;
@@ -4519,7 +5012,10 @@ function resetOslChatUiState(clearMessages: boolean): void {
   oslChatDraft = "";
   oslChatBusy = false;
   oslChatAttachments = [];
-  if (clearMessages) oslChatMessages.clear();
+  if (clearMessages) {
+    oslChatMessages.clear();
+    oslChatPendingViewOnce.clear();
+  }
 }
 
 function discardOpenedOslChatMessages(): void {
@@ -4566,6 +5062,39 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   hubPeople = await listHubPeople() ?? hubPeople;
   render();
   showToast("Friend added. Encrypted chats are still off.");
+}
+
+async function submitFriendUsername(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const form = event.currentTarget as HTMLFormElement;
+  const input = form.querySelector<HTMLInputElement>("#friend-username-input");
+  const nicknameInput = form.querySelector<HTMLInputElement>("#friend-username-nickname-input");
+  const button = form.querySelector<HTMLButtonElement>('button[type="submit"], button:not([type])');
+  const status = document.querySelector<HTMLElement>("#friend-form-status");
+  const username = (input?.value ?? "").trim().replace(/^@/u, "").toLowerCase();
+  if (!isNormalizedOslUsername(username)) {
+    if (status) status.textContent = "Use 3–30 lowercase letters, numbers, or interior underscores.";
+    input?.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = "Finding exact username…";
+  const result = await addOslFriendByUsername(username, nicknameInput?.value ?? "");
+  if (button) button.disabled = false;
+  if (!result) {
+    if (status) status.textContent = "That exact username could not be added. Nothing changed.";
+    return;
+  }
+  hubPeople = await listHubPeople() ?? hubPeople;
+  if (result.disposition === "key_change_requires_verification") {
+    if (status) status.textContent = "Their encryption identity changed. Review the new safety number.";
+  }
+  if (!result.safetyNumberVerified) {
+    requestFriendVerification(result.personId, result.safetyNumber);
+    return;
+  }
+  render();
+  showToast(result.disposition === "already_present" ? "Friend already added" : "Friend added");
 }
 
 async function saveFriendNickname(event: SubmitEvent): Promise<void> {
@@ -4627,6 +5156,21 @@ async function changeNotifications(input: HTMLInputElement): Promise<void> {
   render();
 }
 
+async function changeScreenshotProtection(input: HTMLInputElement): Promise<void> {
+  const requested = input.checked;
+  input.disabled = true;
+  if (!(await setScreenshotProtection(requested))) {
+    input.checked = screenshotProtectionEnabled;
+    input.disabled = false;
+    showToast("Windows capture resistance could not be changed");
+    return;
+  }
+  screenshotProtectionEnabled = requested;
+  localStorage.setItem(screenshotProtectionStorageKey, String(requested));
+  input.disabled = false;
+  showToast(requested ? "Windows capture resistance enabled" : "Windows capture resistance disabled");
+}
+
 async function refreshIdentitySlots(): Promise<void> {
   hubIdentities = await listHubIdentities() ?? [];
 }
@@ -4636,10 +5180,11 @@ async function refreshIdentityScopedState(): Promise<void> {
     throw new Error("OSL Chat could not close before changing identity state");
   }
   resetOslChatUiState(true);
-  const [nextCore, nextIdentities, profile, people, linkedServices, notifications] = await Promise.all([
+  const [nextCore, nextIdentities, friendProfile, profile, people, linkedServices, notifications] = await Promise.all([
     loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
     listHubIdentities().then((value) => value ?? []),
     loadFriendProfile(),
+    loadOslProfile(),
     listHubPeople().then((value) => value ?? []),
     loadLinkedServices().catch(() => []),
     notificationsEnabled ? loadAppNotifications() : Promise.resolve([]),
@@ -4647,8 +5192,12 @@ async function refreshIdentityScopedState(): Promise<void> {
   core = nextCore;
   refreshActiveBrowserAccountsReady();
   hubIdentities = nextIdentities;
-  friendCode = profile?.friendCode ?? null;
-  friendDisplayId = profile?.oslUserId ?? null;
+  friendCode = friendProfile?.friendCode ?? null;
+  friendDisplayId = friendProfile?.oslUserId ?? null;
+  oslProfile = profile;
+  const usernameStatus = profile ? await getOslUsernameStatus(profile.usernameCandidate) : null;
+  claimedOslUsername = usernameStatus?.ownedByActiveIdentity ? usernameStatus.username : null;
+  profileDraftAvatar = undefined;
   hubPeople = people;
   services = linkedServices;
   appNotifications = mergePersistedOslChatNotifications(notifications);
@@ -4955,6 +5504,7 @@ function bindUpdateControls(): void {
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-update-close]").forEach((button) => button.addEventListener("click", () => document.querySelector<HTMLDialogElement>("#update-dialog")?.close()));
   document.querySelectorAll<HTMLButtonElement>("[data-update-read]").forEach((button) => button.addEventListener("click", async () => { if (!(await openHubReleasesPage())) showToast("Could not open the fixed OSL releases page"); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-source-repository]").forEach((button) => button.addEventListener("click", async () => { if (!(await openHubSourceRepository())) showToast("Could not open the fixed OSL source repository"); }));
   document.querySelectorAll<HTMLButtonElement>("[data-update-install]").forEach((button) => button.addEventListener("click", () => void installUpdateAfterClick()));
 }
 
@@ -5031,6 +5581,13 @@ function startReadyWorkspaceLoads(): void {
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
+  void loadOslProfile().then(async (profile) => {
+    oslProfile = profile;
+    profileDraftAvatar = undefined;
+    const usernameStatus = profile ? await getOslUsernameStatus(profile.usernameCandidate) : null;
+    claimedOslUsername = usernameStatus?.ownedByActiveIdentity ? usernameStatus.username : null;
+    if (route === "home" || (route === "settings" && settingsSection === "account")) renderWhenIdle();
+  });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
     appNotifications = enabled ? mergePersistedOslChatNotifications(await loadAppNotifications()) : null;
@@ -5127,6 +5684,8 @@ async function bootstrap(): Promise<void> {
   const attempt = ++bootstrapEpoch;
   mullvadAutoStartAttempted = false;
   applyTheme(themeChoice);
+  applyAccessibilityPreferences(document.documentElement, accessibilityPreferences);
+  applyThemeMod(document.documentElement, activeThemeMod);
   loadUiPreferences();
   root.innerHTML = `<div class="app-frame">${desktopTitlebar()}<main class="loading-screen"><div class="loading-seal" aria-hidden="true"><img class="osl-logo loading-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><span class="sr-only">Opening OSL</span></main></div>`;
   bindDesktopTitlebar();
@@ -5160,6 +5719,7 @@ async function bootstrap(): Promise<void> {
     setup = preferences.setup;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
     onboardingComplete = preferences.onboardingComplete;
+    if (onboardingComplete && mullvadPreference === "auto") void openMullvad().catch(() => undefined);
     if (core.readiness.bootstrapStatus === "setupRequired") {
       onboardingRoute = "welcome";
       route = "onboarding";
@@ -5184,6 +5744,7 @@ async function bootstrap(): Promise<void> {
       if (currentLicenseState) licenseState = currentLicenseState;
       if (currentBrowserCompanionStatus) defaultBrowserCompanionStatus = currentBrowserCompanionStatus;
       if (browserCatalog) browserImports = browserCatalog;
+      applySavedScrubSetupPlan();
       renderWhenIdle();
       if (discordQaShell) void startDiscordQaShell();
       else void recoverNativeHostAfterRendererLoad();
@@ -5291,16 +5852,17 @@ void desktopWindow.onFocusChanged(({ payload }) => {
   if (payload) scheduleNativeHostRealignment();
 }).catch(() => undefined);
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void syncOslChatsInBackground();
   if (document.visibilityState !== "hidden" || !newIdentityRecoveryPhrase) return;
   newIdentityRecoveryPhrase = null;
   if (route === "settings" && settingsSection === "account") render();
 });
 window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
 window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
-void bootstrap();
 function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
   window.setTimeout(() => {
     void syncOslChatsInBackground().finally(() => scheduleOslChatBackgroundSync());
   }, delayMs);
 }
 scheduleOslChatBackgroundSync(1_000);
+void bootstrap();

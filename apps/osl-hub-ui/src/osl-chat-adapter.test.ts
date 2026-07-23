@@ -42,15 +42,15 @@ describe("first-party OSL Chat IPC", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("close_osl_chat_context");
   });
 
-  it("delivers bounded text and strictly parses the authenticated inbox batch", async () => {
+  it("delivers bounded text with explicit view-once flags and strictly parses the authenticated inbox batch", async () => {
     mocks.invoke
       .mockResolvedValueOnce({ messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: 2_000_000_000, personToPersonE2ee: true, viewOnce: false, deliveredToOslInbox: true })
       .mockResolvedValueOnce({ messages: [{ plaintext: "hello\nworld", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: false, expiresAt: 2_000_000_000 }], pendingViewOnce: [], acknowledgments: [], fetched: 1 });
     await expect(prepareOslChatText("hello\nworld")).resolves.toMatchObject({ deliveredToOslInbox: true });
-    await expect(openOslChatText()).resolves.toMatchObject({ fetched: 1 });
+    await expect(openOslChatText(false)).resolves.toMatchObject({ fetched: 1 });
     expect(mocks.invoke.mock.calls).toEqual([
       ["prepare_osl_chat_text", { plaintext: "hello\nworld", viewOnce: false }],
-      ["open_osl_chat_text"],
+      ["open_osl_chat_text", { revealViewOnce: false }],
     ]);
   });
 
@@ -60,6 +60,12 @@ describe("first-party OSL Chat IPC", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
     mocks.invoke.mockResolvedValueOnce({ messages: [{ plaintext: "unsafe", contextVerified: false }], acknowledgments: [], fetched: 1 });
     await expect(openOslChatText()).resolves.toBeNull();
+  });
+
+  it("defaults to revealing view-once messages when no flag is supplied", async () => {
+    mocks.invoke.mockResolvedValueOnce({ messages: [], pendingViewOnce: [], acknowledgments: [], fetched: 0 });
+    await expect(openOslChatText()).resolves.toMatchObject({ fetched: 0 });
+    expect(mocks.invoke).toHaveBeenCalledWith("open_osl_chat_text", { revealViewOnce: true });
   });
 
   it("strictly parses bounded encrypted-at-rest history rows", async () => {

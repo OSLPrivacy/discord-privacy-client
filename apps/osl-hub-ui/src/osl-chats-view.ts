@@ -18,6 +18,7 @@ export interface OslChatFriend {
   preview: string | null;
   previewVisible: boolean;
   unreadCount: number;
+  muted: boolean;
 }
 
 export interface OslChatMessage {
@@ -88,9 +89,11 @@ function friendPreview(friend: OslChatFriend): string {
 
 function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: boolean): string {
   const active = friend.personId === activePersonId;
-  return `<div class="osl-chat-friend${active ? " is-active" : ""}" data-person-id="${escapeHtml(friend.personId)}">
+  const unread = friend.unreadCount > 0 ? `<span class="osl-chat-unread" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</span>` : "";
+  const muted = friend.muted ? '<span class="osl-chat-muted" aria-label="Muted">Muted</span>' : "";
+  return `<div class="osl-chat-friend${active ? " is-active" : ""}" data-person-id="${escapeHtml(friend.personId)}" data-osl-chat-context="${escapeHtml(friend.personId)}">
     <button class="osl-chat-friend-open" type="button" data-osl-chat-open="${escapeHtml(friend.personId)}" ${active ? 'aria-current="true"' : ""} ${busy || !friend.verified ? 'disabled aria-disabled="true"' : ""}>
-      ${avatar(friend.nickname)}<span class="osl-chat-friend-copy"><strong>${escapeHtml(friend.nickname)}</strong>${friendPreview(friend)}</span><span class="osl-chat-kind" title="Direct message">${chatIcon}</span>
+      ${avatar(friend.nickname)}<span class="osl-chat-friend-copy"><strong>${escapeHtml(friend.nickname)}</strong>${friendPreview(friend)}</span>${muted}${unread}<span class="osl-chat-kind" title="Direct message">${chatIcon}</span>
     </button>
     <button class="osl-chat-friend-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Settings for ${escapeHtml(friend.nickname)}">${settingsIcon}</button>
   </div>`;

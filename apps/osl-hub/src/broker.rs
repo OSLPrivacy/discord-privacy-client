@@ -103,6 +103,16 @@ struct ManualPeerContext {
     scope: ScopeInput,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct OslChatContextSnapshot {
+    pub context_token: String,
+    pub person_id: String,
+    pub peer_osl_user_id: String,
+    pub conversation_binding: String,
+    pub self_osl_user_id: String,
+    pub scope: ScopeInput,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ContextAuthority {
     PeerMessaging,
@@ -454,6 +464,20 @@ impl HubBrokerState {
             inner.active = None;
         }
         Ok(())
+    }
+
+    pub(crate) fn osl_chat_snapshot(&self) -> Result<OslChatContextSnapshot, String> {
+        let context_token = self.active_osl_chat_context_token()?;
+        let manual = self.manual_peer_for(&context_token)?;
+        let context = self.context_for(&context_token)?;
+        Ok(OslChatContextSnapshot {
+            context_token,
+            person_id: manual.person_id,
+            peer_osl_user_id: manual.peer_osl_user_id,
+            conversation_binding: context.conversation_id,
+            self_osl_user_id: context.self_osl_id,
+            scope: manual.scope,
+        })
     }
 
     pub fn manual_permission_target(
@@ -4201,7 +4225,7 @@ fn prune_local_ledger_context(
 }
 
 fn validate_context(context: &HubConversationContext) -> Result<(), String> {
-    if context.service_id != "osl-chat" {
+    if context.service_id != "osl-chat" || context.account_id != "osl-main" {
         service_manifest(&context.service_id).map_err(|error| error.to_string())?;
     }
     validate_opaque_id(&context.account_id).map_err(|error| error.to_string())?;
@@ -4698,6 +4722,30 @@ mod tests {
             security::manual_peer_scope_id("instagram", "client-one-profile", "hub-person-bob",)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn first_party_osl_chat_uses_only_fixed_service_and_account() {
+        let broker = HubBrokerState::default();
+        let activated = activate_owned_osl_chat_context(
+            &broker,
+            "osl-alice",
+            ManualPeerBinding {
+                person_id: "hub-person-bob".to_owned(),
+                peer_osl_user_id: "osl-bob".to_owned(),
+                peer_x25519_public: [2; 32],
+                peer_mlkem768_public: [2; 1184],
+            },
+        )
+        .unwrap();
+        assert_eq!(activated.lease.service_id, "osl-chat");
+        assert_eq!(activated.lease.account_id, "osl-main");
+        assert_eq!(
+            broker.active_osl_chat_context_token().unwrap(),
+            activated.lease.context_token
+        );
+        broker.clear_osl_chat_context().unwrap();
+        assert!(broker.active_osl_chat_context_token().is_err());
     }
 
     #[test]

@@ -21,17 +21,41 @@ export const defaultScrubSignalGroups: readonly ScrubSignalGroup[] = scrubSignal
 
 /** Permanent fail-closed contract for any future service-specific delete adapter. */
 export const scrubDeletionContract = Object.freeze({
+  browserUiAutomationAllowed: false,
+  privateApiAllowed: false,
+  narrowSemanticHostedPortAllowed: true,
+  documentedProviderDeleteApiAllowed: true,
   unattendedDeletionAllowed: false,
   completeEditableReviewRequiredEveryBatch: true,
   finalConfirmationRequiredEveryBatch: true,
   requestedDeletionCountsAsVerified: false,
-  browserUiAutomationAllowed: false,
   desktopUiAutomationAllowed: false,
   privateProviderApisAllowed: false,
   humanBehaviorMimicryAllowed: false,
   documentedProviderDeleteApiRequired: true,
-  stopOn: ["rate_limit", "challenge", "content_mismatch", "verification_failure"] as const,
+  stopOn: ["captcha", "rate_limit", "challenge", "account_change", "schema_drift", "unknown", "content_mismatch", "verification_failure"] as const,
 });
+
+export interface ScrubDeletionCapability {
+  deletionEnabled: boolean;
+  mechanism: "none" | "hosted_semantic_delete_port" | "documented_provider_delete_api" | "browser_ui_automation" | "private_api";
+  stopOn: readonly string[];
+  requestedDeletionCountsAsVerified: boolean;
+}
+
+export function scrubDeletionAllowed(capability: ScrubDeletionCapability): boolean {
+  return capability.deletionEnabled
+    && (capability.mechanism === "hosted_semantic_delete_port" || capability.mechanism === "documented_provider_delete_api")
+    && scrubDeletionContract.browserUiAutomationAllowed === false
+    && scrubDeletionContract.privateApiAllowed === false
+    && scrubDeletionContract.narrowSemanticHostedPortAllowed
+    && scrubDeletionContract.documentedProviderDeleteApiAllowed
+    && scrubDeletionContract.unattendedDeletionAllowed === false
+    && scrubDeletionContract.completeEditableReviewRequiredEveryBatch
+    && scrubDeletionContract.finalConfirmationRequiredEveryBatch
+    && scrubDeletionContract.stopOn.every((condition) => capability.stopOn.includes(condition))
+    && capability.requestedDeletionCountsAsVerified === false;
+}
 
 const categoryGroups: Record<PrivacyRiskCategory, ScrubSignalGroup> = {
   credential: "personal",

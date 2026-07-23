@@ -29,7 +29,7 @@ describe("bundled preview security boundary", () => {
   it("packages local assets without a development server", () => {
     const config = JSON.parse(readRelative("../../osl-hub/tauri.conf.json")) as {
       build: Record<string, unknown>;
-      app: { security: { csp: string } };
+      app: { security: { csp: string }; windows: Array<{ decorations: boolean; resizable: boolean; shadow: boolean }> };
     };
 
     expect(config.build.frontendDist).toBe("../osl-hub-ui/dist");
@@ -37,6 +37,7 @@ describe("bundled preview security boundary", () => {
     expect(config.app.security.csp).toContain("connect-src ipc: http://ipc.localhost");
     expect(config.app.security.csp).not.toMatch(/connect-src[^;]*(?:https:|wss:|\*)/u);
     expect(config.app.security.csp).toContain("frame-src 'none'");
+    expect(config.app.windows[0]).toMatchObject({ decorations: false, resizable: true, shadow: false });
 
     const viteConfig = readRelative("../vite.config.ts");
     expect(viteConfig).toContain("modulePreload: false");
@@ -62,15 +63,27 @@ describe("bundled preview security boundary", () => {
       "core:window:allow-start-dragging",
       "core:window:allow-toggle-maximize",
       "allow-get-onboarding-preferences",
+      "allow-configure-scrub-imap-account",
+      "allow-get-scrub-imap-capability",
+      "allow-reauth-scrub-imap-account",
+      "allow-scrub-imap-enumerate",
+      "allow-scrub-imap-inspect",
+      "allow-scrub-imap-delete",
+      "allow-scrub-imap-verify",
+      "allow-claim-hub-username",
+      "allow-add-hub-friend-by-username",
       "allow-list-hub-app-notifications",
       "allow-set-hub-notifications-enabled",
       "allow-set-hub-screenshot-protection",
       "allow-copy-hub-friend-invite",
       "allow-save-onboarding-preferences",
       "allow-scan-local-privacy",
+      "allow-get-osl-profile",
+      "allow-save-osl-profile",
       "allow-initialize-scrub-index",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
+      "allow-get-scrub-index-scan",
       "allow-pause-scrub-index",
       "allow-resume-scrub-index",
       "allow-cancel-scrub-index",
@@ -95,6 +108,7 @@ describe("bundled preview security boundary", () => {
       "allow-check-hub-for-updates",
       "allow-install-hub-update",
       "allow-open-hub-releases-page",
+      "allow-open-hub-source-repository",
       "allow-list-native-apps",
       "allow-install-native-app",
       "allow-get-mullvad-status",
@@ -111,7 +125,9 @@ describe("bundled preview security boundary", () => {
       "allow-begin-browser-account-import",
       "allow-begin-protected-browser-import",
       "allow-finish-protected-browser-import",
+      "allow-cancel-protected-browser-import",
       "allow-launch-firefox-service",
+      "allow-launch-system-browser-service",
       "allow-get-default-browser-companion-status",
       "allow-host-default-browser-companion",
       "allow-resize-default-browser-companion",
@@ -139,6 +155,11 @@ describe("bundled preview security boundary", () => {
       "allow-remove-service-account",
       "allow-activate-local-loopback-context",
       "allow-activate-manual-peer-context",
+      "allow-activate-osl-chat-context",
+      "allow-close-osl-chat-context",
+      "allow-prepare-osl-chat-text",
+      "allow-open-osl-chat-text",
+      "allow-list-osl-chat-history",
       "allow-prepare-peer-prose-text",
       "allow-open-peer-prose-text",
       "allow-prepare-encrypted-text",
@@ -179,6 +200,7 @@ describe("bundled preview security boundary", () => {
       ["allow-get-firefox-status", "get_firefox_status"],
       ["allow-install-firefox", "install_firefox"],
       ["allow-launch-firefox-service", "launch_firefox_service"],
+      ["allow-launch-system-browser-service", "launch_system_browser_service"],
       ["allow-get-default-browser-companion-status", "get_default_browser_companion_status"],
       ["allow-host-default-browser-companion", "host_default_browser_companion"],
       ["allow-resize-default-browser-companion", "resize_default_browser_companion"],

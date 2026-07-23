@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { LocalMessageCandidate } from "./adapters";
+import { parsePersistedLocalPrivacyScan, type LocalMessageCandidate, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { isTauriRuntime } from "./preferences";
 
 export type ScrubIndexSource = "explicit_export" | "osl_visible_data";
@@ -133,6 +133,14 @@ export async function getScrubIndexStatus(): Promise<ScrubIndexStatus | null> {
   requireNative();
   const raw = await invoke<unknown>("get_scrub_index_status");
   return raw === null ? null : parseScrubIndexStatus(raw);
+}
+
+export async function getScrubIndexScan(importId: string): Promise<PersistedLocalPrivacyScanResult> {
+  requireNative();
+  if (!validImportId(importId)) throw new Error("invalid Scrub import identifier");
+  const result = parsePersistedLocalPrivacyScan(await invoke<unknown>("get_scrub_index_scan", { importId }));
+  if (!result) throw new Error("invalid persisted Scrub scan");
+  return result;
 }
 
 export async function pauseScrubIndex(importId: string): Promise<ScrubIndexStatus> {

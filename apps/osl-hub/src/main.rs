@@ -37,6 +37,7 @@ use osl_privacy_hub::native_discord_adapter::{
 use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, NativeWindowHostReason, NativeWindowHostResult, NativeWindowHostState,
 };
+use osl_privacy_hub::osl_profile::{HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
@@ -44,8 +45,13 @@ use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
+use osl_privacy_hub::scrub_imap::{
+    self, ConfigureImapRequest, ImapAccountRequest, ImapCapability, ImapDeleteResult,
+    ImapEnumeration, ImapInspection, ImapItemRequest, ImapVerification, ScrubImapState,
+};
 use osl_privacy_hub::scrub_index::{
-    ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexState, ScrubIndexStatus,
+    selection_requires_registry_ownership, ScrubIndexChunkRequest, ScrubIndexInitializeRequest,
+    ScrubIndexState, ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
@@ -56,7 +62,9 @@ use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
-use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
+use osl_privacy_hub::updates::{
+    bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
+};
 use serde::Serialize;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -103,6 +111,108 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
 }
 
 #[tauri::command]
+async fn configure_scrub_imap_account(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    request: ConfigureImapRequest,
+) -> Result<ImapCapability, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::configure(&app.state::<ScrubImapState>(), &owner, request)
+    })
+    .await
+    .map_err(|_| "IMAP configuration worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_imap_capability(
+    core: State<'_, HubCoreState>,
+    state: State<'_, ScrubImapState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ImapAccountRequest,
+) -> Result<ImapCapability, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    Ok(scrub_imap::capability(&state, &owner, &request.account_id))
+}
+
+#[tauri::command]
+async fn reauth_scrub_imap_account(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    request: ImapAccountRequest,
+) -> Result<ImapCapability, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::reauthenticate(&app.state::<ScrubImapState>(), &owner, &request.account_id)
+    })
+    .await
+    .map_err(|_| "IMAP re-authentication worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_enumerate(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    request: ImapItemRequest,
+) -> Result<ImapEnumeration, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::enumerate(&app.state::<ScrubImapState>(), &owner, &request)
+    })
+    .await
+    .map_err(|_| "IMAP enumeration worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_inspect(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    request: ImapItemRequest,
+) -> Result<ImapInspection, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::inspect(&app.state::<ScrubImapState>(), &owner, &request)
+    })
+    .await
+    .map_err(|_| "IMAP inspection worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_delete(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    request: ImapItemRequest,
+) -> Result<ImapDeleteResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::delete(&app.state::<ScrubImapState>(), &owner, &request)
+    })
+    .await
+    .map_err(|_| "IMAP deletion worker was unavailable".to_owned())?
+}
+
+#[tauri::command]
+async fn scrub_imap_verify(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    request: ImapItemRequest,
+) -> Result<ImapVerification, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        scrub_imap::verify(&app.state::<ScrubImapState>(), &owner, &request)
+    })
+    .await
+    .map_err(|_| "IMAP verification worker was unavailable".to_owned())
+}
+
+#[tauri::command]
 fn save_onboarding_preferences(
     state: State<'_, PreviewState>,
     preferences: OnboardingPreferences,
@@ -114,9 +224,82 @@ fn save_onboarding_preferences(
 async fn scan_local_privacy(
     messages: Vec<LocalMessageCandidate>,
 ) -> Result<LocalPrivacyScanResult, String> {
+    privacy_scan::validate_attachment_input_batch(&messages)?;
     tokio::task::spawn_blocking(move || privacy_scan::scan_local_messages(messages))
         .await
         .map_err(|_| "The local privacy scan was interrupted".to_owned())
+}
+
+#[tauri::command]
+async fn get_osl_profile(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Option<HubProfileDto>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    tokio::task::spawn_blocking(move || osl_privacy_hub::osl_profile::get_active_profile(&owner))
+        .await
+        .map_err(|_| "OSL profile read was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn save_osl_profile(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    profile: HubProfileInput,
+) -> Result<HubProfileDto, String> {
+    let _session = session.transition.lock().await;
+    tokio::task::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let owner = active_unlocked_osl_user_id(&core)?;
+        let previous = osl_privacy_hub::osl_profile::get_active_profile(&owner)?;
+        let exported = security::export_friend_code(&core)?;
+        let identity = core
+            .osl
+            .identity
+            .lock()
+            .map_err(|_| "OSL identity state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+        let keyserver = core
+            .osl
+            .keyserver
+            .lock()
+            .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL keyserver is not initialized".to_owned())?;
+        // Local encrypted persistence happens before the public claim, but
+        // only after every local dependency is available. A local write
+        // failure can therefore never mutate or strand a public reservation.
+        let saved = osl_privacy_hub::osl_profile::save_active_profile(&owner, profile)?;
+        match keyserver.claim_username(&identity, &saved.username_candidate, &exported.friend_code)
+        {
+            Ok(claimed)
+                if claimed.username == saved.username_candidate && claimed.user_id == owner =>
+            {
+                Ok(saved)
+            }
+            Ok(_) => {
+                osl_privacy_hub::osl_profile::restore_active_profile(&owner, previous)?;
+                Err("OSL username claim returned the wrong identity".to_owned())
+            }
+            Err(claim_error) => match keyserver.lookup_username(&saved.username_candidate) {
+                // A response can be lost after the server commits. Read back
+                // exact signed ownership before deciding whether to roll back.
+                Ok(found) if found.friend_code == exported.friend_code => Ok(saved),
+                Ok(_) => {
+                    osl_privacy_hub::osl_profile::restore_active_profile(&owner, previous)?;
+                    Err(format!("OSL username could not be claimed: {claim_error}"))
+                }
+                // Offline is indeterminate. Keep the locally requested value
+                // for later read-only reconciliation; never guess or mutate a
+                // second username as compensation.
+                Err(_) => Ok(saved),
+            },
+        }
+    })
+    .await
+    .map_err(|_| "OSL profile save was interrupted".to_owned())?
 }
 
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
@@ -159,17 +342,33 @@ async fn initialize_scrub_index(
 ) -> Result<ScrubIndexStatus, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
-    if request.source == osl_privacy_hub::scrub_index::ScrubIndexSource::OslVisibleData {
-        for selection in &request.selections {
-            let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
-                .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
-            registry.require_owned(&owner, service, &selection.account_id)?;
+    for selection in &request.selections {
+        if !selection_requires_registry_ownership(request.source, selection)? {
+            continue;
         }
+        let service = osl_privacy_hub::services::service_kind_from_id(&selection.service_id)
+            .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
+        registry.require_owned(&owner, service, &selection.account_id)?;
     }
     let state = state.inner().clone();
     tokio::task::spawn_blocking(move || state.initialize(&owner, request))
         .await
         .map_err(|_| "Scrub initialization was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn get_scrub_index_scan(
+    state: State<'_, ScrubIndexState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    import_id: String,
+) -> Result<LocalPrivacyScanResult, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.read_scan(&owner, &import_id))
+        .await
+        .map_err(|_| "Scrub review loading was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -379,9 +578,11 @@ async fn unlock_hub_password_gate(
         VerifiedGateRole::Wrong => Ok(HubGateUnlockResult::wrong(verification)),
         VerifiedGateRole::Main => {
             let readiness = startup_gate::readiness_after_main(&app.state::<HubCoreState>());
+            schedule_deferred_registration(&app);
             Ok(HubGateUnlockResult::unlocked(verification, readiness))
         }
         VerifiedGateRole::Stealth => {
+            app.state::<ScrubImapState>().revoke_all();
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
@@ -392,6 +593,7 @@ async fn unlock_hub_password_gate(
             Ok(HubGateUnlockResult::decoy(verification))
         }
         VerifiedGateRole::Burn => {
+            app.state::<ScrubImapState>().revoke_all();
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
@@ -450,12 +652,36 @@ async fn setup_hub_main_password(
     app: tauri::AppHandle,
     password: String,
 ) -> Result<HubMainPasswordSetupResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
+    let setup_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = setup_app.state::<HubCoreState>();
         password_lifecycle::setup_main_password(&state, password)
     })
     .await
-    .map_err(|_| "OSL password setup worker failed".to_string())?
+    .map_err(|_| "OSL password setup worker failed".to_string())?;
+    if result.is_ok() {
+        schedule_deferred_registration(&app);
+    }
+    result
+}
+
+fn schedule_deferred_registration(app: &tauri::AppHandle) {
+    if !app.state::<HubCoreState>().begin_deferred_registration() {
+        return;
+    }
+    let registration_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let worker_app = registration_app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            worker_app
+                .state::<HubCoreState>()
+                .register_after_local_bootstrap();
+        })
+        .await;
+        registration_app
+            .state::<HubCoreState>()
+            .settle_deferred_registration();
+    });
 }
 
 #[tauri::command]
@@ -647,28 +873,40 @@ async fn install_hub_update(
 
 #[tauri::command]
 fn open_hub_releases_page() -> Result<(), String> {
+    open_fixed_system_url(
+        RELEASES_URL,
+        "The fixed OSL releases page could not be opened",
+    )
+}
+
+#[tauri::command]
+fn open_hub_source_repository() -> Result<(), String> {
+    open_fixed_system_url(
+        SOURCE_REPOSITORY_URL,
+        "The fixed OSL source repository could not be opened",
+    )
+}
+
+fn open_fixed_system_url(url: &'static str, failure: &'static str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut command = std::process::Command::new("rundll32.exe");
-        command.args(["url.dll,FileProtocolHandler", RELEASES_URL]);
+        command.args(["url.dll,FileProtocolHandler", url]);
         command
     };
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("open");
-        command.arg(RELEASES_URL);
+        command.arg(url);
         command
     };
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
-        command.arg(RELEASES_URL);
+        command.arg(url);
         command
     };
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| "The fixed OSL releases page could not be opened".to_owned())
+    command.spawn().map(|_| ()).map_err(|_| failure.to_owned())
 }
 
 #[tauri::command]
@@ -728,7 +966,11 @@ async fn begin_browser_account_import(
         .path()
         .app_local_data_dir()
         .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
-    native_apps::begin_browser_account_import(&app_local_data_dir, &owner)
+    let operation_id = crypto::random::random_bytes(16)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    native_apps::begin_browser_account_import(&app_local_data_dir, &owner, &operation_id)
 }
 
 #[tauri::command]
@@ -737,15 +979,23 @@ async fn begin_protected_browser_import(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
     browser_ids: Vec<BrowserImportId>,
+    operation_id: String,
 ) -> Result<ProtectedBrowserImportResult, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
+    let owner_window = main_window_hwnd(&app)?;
     let app_local_data_dir = app
         .path()
         .app_local_data_dir()
         .map_err(|_| "The OSL Firefox profile directory is unavailable".to_owned())?;
     tauri::async_runtime::spawn_blocking(move || {
-        native_apps::begin_protected_browser_import(&app_local_data_dir, &owner, browser_ids)
+        native_apps::begin_protected_browser_import(
+            &app_local_data_dir,
+            &owner,
+            &operation_id,
+            browser_ids,
+            owner_window,
+        )
     })
     .await
     .map_err(|_| "The protected browser import worker stopped unexpectedly".to_owned())?
@@ -755,10 +1005,23 @@ async fn begin_protected_browser_import(
 async fn finish_protected_browser_import(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
+    operation_id: String,
 ) -> Result<(), String> {
     let _session = session.transition.lock().await;
-    let _owner = active_unlocked_osl_user_id(&core)?;
-    native_apps::finish_protected_browser_import()
+    let owner = active_unlocked_osl_user_id(&core)?;
+    native_apps::finish_protected_browser_import(&owner, &operation_id)
+}
+
+#[tauri::command]
+async fn cancel_protected_browser_import(
+    core: State<'_, HubCoreState>,
+    operation_id: String,
+) -> Result<(), String> {
+    // Cancellation deliberately does not wait for the account-transition
+    // mutex: begin holds it for the bounded worker lifetime, and the exact
+    // owner + operation capability is what authorizes an in-flight cancel.
+    let owner = active_unlocked_osl_user_id(&core)?;
+    native_apps::cancel_protected_browser_import(&owner, &operation_id)
 }
 
 #[tauri::command]
@@ -837,6 +1100,17 @@ fn focus_default_browser_companion(app: tauri::AppHandle) -> BrowserCompanionAct
 #[tauri::command]
 fn detach_default_browser_companion(app: tauri::AppHandle) -> BrowserCompanionAction {
     app.state::<BrowserCompanionState>().detach()
+}
+
+#[tauri::command]
+async fn launch_system_browser_service(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: FirefoxServiceId,
+) -> Result<FirefoxLaunchResult, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    native_apps::launch_system_browser_service(service_id)
 }
 
 #[cfg(target_os = "windows")]
@@ -2278,6 +2552,117 @@ async fn add_hub_friend(
     security::add_friend_code(&core, &security_state, friend_code, alias)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubUsernameClaim {
+    username: String,
+    osl_user_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubUsernameStatus {
+    username: String,
+    owned_by_active_identity: bool,
+}
+
+#[tauri::command]
+async fn get_hub_username_status(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubUsernameStatus, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let _owner = active_unlocked_osl_user_id(&core)?;
+        let exported = security::export_friend_code(&core)?;
+        let keyserver = core
+            .osl
+            .keyserver
+            .lock()
+            .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL keyserver is not initialized".to_owned())?;
+        let found = keyserver
+            .lookup_username(&username)
+            .map_err(|error| format!("OSL username ownership is unavailable: {error}"))?;
+        Ok(HubUsernameStatus {
+            username: found.username,
+            owned_by_active_identity: found.friend_code == exported.friend_code,
+        })
+    })
+    .await
+    .map_err(|error| format!("OSL username status worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn claim_hub_username(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubUsernameClaim, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let exported = security::export_friend_code(&core)?;
+        let identity = core
+            .osl
+            .identity
+            .lock()
+            .map_err(|_| "OSL identity state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+        let keyserver = core
+            .osl
+            .keyserver
+            .lock()
+            .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL keyserver is not initialized".to_owned())?;
+        let claimed = keyserver
+            .claim_username(&identity, &username, &exported.friend_code)
+            .map_err(|error| format!("OSL username could not be claimed: {error}"))?;
+        Ok(HubUsernameClaim {
+            username: claimed.username,
+            osl_user_id: claimed.user_id,
+        })
+    })
+    .await
+    .map_err(|error| format!("OSL username worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn add_hub_friend_by_username(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let security_state = app.state::<HubSecurityState>();
+        let _owner = active_unlocked_osl_user_id(&core)?;
+        let keyserver = core
+            .osl
+            .keyserver
+            .lock()
+            .map_err(|_| "OSL keyserver state is unavailable".to_owned())?
+            .clone()
+            .ok_or_else(|| "OSL keyserver is not initialized".to_owned())?;
+        let resolved = keyserver
+            .lookup_username(&username)
+            .map_err(|error| format!("OSL username could not be resolved: {error}"))?;
+        if resolved.username != username {
+            return Err("OSL username lookup did not match the requested username".to_owned());
+        }
+        security::add_friend_code(&core, &security_state, resolved.friend_code, alias)
+    })
+    .await
+    .map_err(|error| format!("OSL username worker failed: {error}"))?
+}
+
 #[tauri::command]
 async fn verify_hub_friend_safety_number(
     core: State<'_, HubCoreState>,
@@ -2598,6 +2983,7 @@ async fn switch_hub_identity(
     slot_id: String,
 ) -> Result<HubIdentitySwitchResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<ScrubImapState>().revoke_all();
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
     native_discord_overlay::clear_and_hide(&app);
@@ -2622,6 +3008,7 @@ async fn burn_active_hub_identity(
     session: State<'_, HubAccountSessionState>,
 ) -> Result<HubIdentityBurnResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<ScrubImapState>().revoke_all();
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
     native_discord_overlay::clear_and_hide(&app);
@@ -2648,6 +3035,7 @@ async fn execute_hub_full_cleanup(
     session: State<'_, HubAccountSessionState>,
 ) -> Result<HubFullCleanupResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<ScrubImapState>().revoke_all();
     let host = app.state::<ServiceHostState>();
     service_host::desktop::shutdown(&app, &host).await?;
     native_discord_overlay::clear_and_hide(&app);
@@ -2745,6 +3133,7 @@ async fn burn_hub_service_account(
     confirmed_burn_id: String,
 ) -> Result<HubServiceBurnResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<ScrubImapState>().revoke_all();
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let registry = app.state::<ServiceRegistryState>();
@@ -2843,6 +3232,7 @@ async fn burn_active_hub_context(
     context_token: String,
 ) -> Result<HubScopeBurnResult, String> {
     let _session = session.transition.lock().await;
+    app.state::<ScrubImapState>().revoke_all();
     tauri::async_runtime::spawn_blocking(move || {
         let broker_state = app.state::<HubBrokerState>();
         let core = app.state::<HubCoreState>();
@@ -3019,12 +3409,12 @@ fn main() {
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
             app.manage(ScrubIndexState::default());
-            let registration_app = app.handle().clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                registration_app
-                    .state::<HubCoreState>()
-                    .register_after_local_bootstrap();
-            });
+            app.manage(ScrubImapState::default());
+            // Snapshot identity availability before scheduling. On first run
+            // this remains unscheduled until password setup finishes its
+            // verified local bootstrap; an identity created moments later can
+            // therefore never race this launch worker into a duplicate call.
+            schedule_deferred_registration(app.handle());
             // A failed browser-profile deletion can leave a large tombstone.
             // Retrying it synchronously here would hold the first paint behind
             // an unbounded recursive filesystem walk. Tombstones are already
@@ -3038,14 +3428,24 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_onboarding_preferences,
+            configure_scrub_imap_account,
+            get_scrub_imap_capability,
+            reauth_scrub_imap_account,
+            scrub_imap_enumerate,
+            scrub_imap_inspect,
+            scrub_imap_delete,
+            scrub_imap_verify,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             scan_local_privacy,
+            get_osl_profile,
+            save_osl_profile,
             initialize_scrub_index,
             append_scrub_index_chunk,
             get_scrub_index_status,
+            get_scrub_index_scan,
             pause_scrub_index,
             resume_scrub_index,
             cancel_scrub_index,
@@ -3070,6 +3470,7 @@ fn main() {
             check_hub_for_updates,
             install_hub_update,
             open_hub_releases_page,
+            open_hub_source_repository,
             list_native_apps,
             install_native_app,
             get_mullvad_status,
@@ -3082,7 +3483,9 @@ fn main() {
             begin_browser_account_import,
             begin_protected_browser_import,
             finish_protected_browser_import,
+            cancel_protected_browser_import,
             launch_firefox_service,
+            launch_system_browser_service,
             get_default_browser_companion_status,
             host_default_browser_companion,
             resize_default_browser_companion,
@@ -3135,6 +3538,9 @@ fn main() {
             export_hub_friend_code,
             copy_hub_friend_invite,
             add_hub_friend,
+            claim_hub_username,
+            get_hub_username_status,
+            add_hub_friend_by_username,
             verify_hub_friend_safety_number,
             list_hub_people,
             set_hub_friend_nickname,

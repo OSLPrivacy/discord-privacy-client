@@ -94,6 +94,51 @@ description = "Allow only the trusted OSL header to enable or disable the fixed 
 commands.allow = ["set_native_discord_covertext_enabled"]
 
 [[permission]]
+identifier = "allow-configure-scrub-imap-account"
+description = "Verify one explicit TLS IMAP endpoint and store its authentication only in the operating-system credential store."
+commands.allow = ["configure_scrub_imap_account"]
+
+[[permission]]
+identifier = "allow-get-scrub-imap-capability"
+description = "Report whether one exact IMAP account is configured and live-confirmed in the current process without returning credentials."
+commands.allow = ["get_scrub_imap_capability"]
+
+[[permission]]
+identifier = "allow-reauth-scrub-imap-account"
+description = "Perform a fresh TLS authentication and mailbox selection for one configured IMAP account and rotate its short-lived authentication epoch."
+commands.allow = ["reauth_scrub_imap_account"]
+
+[[permission]]
+identifier = "allow-scrub-imap-enumerate"
+description = "Search one selected mailbox by exact Message-ID and optional date, returning server-derived deletion findings only."
+commands.allow = ["scrub_imap_enumerate"]
+
+[[permission]]
+identifier = "allow-scrub-imap-inspect"
+description = "Read identity headers for one exact IMAP deletion finding without reading or returning message content."
+commands.allow = ["scrub_imap_inspect"]
+
+[[permission]]
+identifier = "allow-scrub-imap-delete"
+description = "After fresh authentication and an exact own-message fingerprint match, mark one IMAP UID deleted and issue only scoped UID EXPUNGE."
+commands.allow = ["scrub_imap_delete"]
+
+[[permission]]
+identifier = "allow-scrub-imap-verify"
+description = "Verify one exact IMAP Message-ID by server readback and return confirmed-deleted, confirmed-not-deleted, or UNKNOWN."
+commands.allow = ["scrub_imap_verify"]
+
+[[permission]]
+identifier = "allow-claim-hub-username"
+description = "Claim one exact normalized username using the active identity's signed public friend invite; private keys never cross IPC."
+commands.allow = ["claim_hub_username"]
+
+[[permission]]
+identifier = "allow-add-hub-friend-by-username"
+description = "Resolve one exact username to a signed friend invite and pass it through the existing trusted friend-code validation path."
+commands.allow = ["add_hub_friend_by_username"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
@@ -124,6 +169,16 @@ description = "Scan bounded caller-provided visible message text in local proces
 commands.allow = ["scan_local_privacy"]
 
 [[permission]]
+identifier = "allow-get-osl-profile"
+description = "Read the active identity's bounded authenticated encrypted local OSL profile; the username is only a local candidate."
+commands.allow = ["get_osl_profile"]
+
+[[permission]]
+identifier = "allow-save-osl-profile"
+description = "Validate and save the active identity's bounded authenticated encrypted local OSL profile without claiming username reservation or remote lookup."
+commands.allow = ["save_osl_profile"]
+
+[[permission]]
 identifier = "allow-initialize-scrub-index"
 description = "Initialize one bounded encrypted local-only Scrub index for explicitly selected profiles owned by the active OSL identity."
 commands.allow = ["initialize_scrub_index"]
@@ -137,6 +192,11 @@ commands.allow = ["append_scrub_index_chunk"]
 identifier = "allow-get-scrub-index-status"
 description = "Read bounded progress metadata for the active identity's encrypted local Scrub index."
 commands.allow = ["get_scrub_index_status"]
+
+[[permission]]
+identifier = "allow-get-scrub-index-scan"
+description = "Decrypt the active identity's bounded authenticated Scrub chunks in memory and reproduce local review findings without writing plaintext."
+commands.allow = ["get_scrub_index_scan"]
 
 [[permission]]
 identifier = "allow-pause-scrub-index"
@@ -269,6 +329,11 @@ description = "Open the single compiled-in OSL GitHub releases page in the syste
 commands.allow = ["open_hub_releases_page"]
 
 [[permission]]
+identifier = "allow-open-hub-source-repository"
+description = "Open only the compiled-in OSL GitHub source repository in the system browser; accepts no URL input."
+commands.allow = ["open_hub_source_repository"]
+
+[[permission]]
 identifier = "allow-list-native-apps"
 description = "Report installed status for the four fixed Windows-native messaging applications without exposing executable paths."
 commands.allow = ["list_native_apps"]
@@ -340,13 +405,18 @@ commands.allow = ["begin_browser_account_import"]
 
 [[permission]]
 identifier = "allow-begin-protected-browser-import"
-description = "After explicit local consent, validate a bounded list of detected browser IDs and open Firefox's fixed migration wizard in the active OSL identity's isolated profile; no credential, path, URL, or arbitrary argument crosses IPC."
+description = "After explicit local consent, validate a bounded list of detected browser IDs and run the fixed importer queue in the active OSL identity's isolated profile; no credential, path, URL, or arbitrary argument crosses IPC."
 commands.allow = ["begin_protected_browser_import"]
 
 [[permission]]
 identifier = "allow-finish-protected-browser-import"
-description = "Close only the exact retained OSL-owned Firefox migration process after a queued import finishes or is skipped."
+description = "Close only the exact retained OSL-owned Firefox migration process after an import finishes, is cancelled, or is skipped."
 commands.allow = ["finish_protected_browser_import"]
+
+[[permission]]
+identifier = "allow-cancel-protected-browser-import"
+description = "Cancel only the exact active identity-bound protected browser import operation."
+commands.allow = ["cancel_protected_browser_import"]
 
 [[permission]]
 identifier = "allow-launch-firefox-service"
@@ -377,6 +447,11 @@ commands.allow = ["focus_default_browser_companion"]
 identifier = "allow-detach-default-browser-companion"
 description = "Restore and hide only the exact default-browser app window created and retained by OSL."
 commands.allow = ["detach_default_browser_companion"]
+
+[[permission]]
+identifier = "allow-launch-system-browser-service"
+description = "Open one reviewed service origin in the Windows-selected current browser session without reading cookies, tokens, passwords, or profile paths."
+commands.allow = ["launch_system_browser_service"]
 
 [[permission]]
 identifier = "allow-host-native-app-window"
@@ -422,6 +497,31 @@ commands.allow = ["activate_local_loopback_context"]
 identifier = "allow-activate-manual-peer-context"
 description = "Activate one renderer-selected existing friend for the exact active owned service account; recipient keys and the symmetric manual-DM binding are derived locally without inspecting the remote service page."
 commands.allow = ["activate_manual_peer_context"]
+
+[[permission]]
+identifier = "allow-activate-osl-chat-context"
+description = "Bind one verified friend to the fixed first-party OSL Chat scope from the trusted main window."
+commands.allow = ["activate_osl_chat_context"]
+
+[[permission]]
+identifier = "allow-close-osl-chat-context"
+description = "Revoke the active first-party OSL Chat lease from the trusted main window."
+commands.allow = ["close_osl_chat_context"]
+
+[[permission]]
+identifier = "allow-prepare-osl-chat-text"
+description = "Encrypt and deliver bounded text for the active approved first-party OSL Chat."
+commands.allow = ["prepare_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-text"
+description = "Receive first-party OSL Chat text only after capture resistance is active."
+commands.allow = ["open_osl_chat_text"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-history"
+description = "Read bounded encrypted-at-rest history for the active first-party OSL Chat after capture resistance is active."
+commands.allow = ["list_osl_chat_history"]
 
 [[permission]]
 identifier = "allow-prepare-peer-prose-text"

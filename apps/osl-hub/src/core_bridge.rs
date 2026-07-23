@@ -7,6 +7,7 @@
 
 use ipc::AppState;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 pub struct HubCoreState {
@@ -15,6 +16,10 @@ pub struct HubCoreState {
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
     pub(crate) lifecycle_lock: Mutex<()>,
+    /// Ensures launch/setup can schedule at most one best-effort registration
+    /// worker in this process. Explicit registration paths remain free to
+    /// retry after a later offline result.
+    registration_scheduled: AtomicBool,
 }
 
 impl Default for HubCoreState {
@@ -23,6 +28,7 @@ impl Default for HubCoreState {
             osl: AppState::new(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
+            registration_scheduled: AtomicBool::new(false),
         }
     }
 }
@@ -35,6 +41,7 @@ impl HubCoreState {
             osl: AppState::new(),
             bootstrap_attempted: true,
             lifecycle_lock: Mutex::new(()),
+            registration_scheduled: AtomicBool::new(false),
         };
         crate::original_bootstrap::run_autostart_local(&state.osl);
         state
@@ -42,6 +49,51 @@ impl HubCoreState {
 
     pub fn register_after_local_bootstrap(&self) {
         crate::original_bootstrap::register_after_local_bootstrap(&self.osl);
+    }
+
+    /// Claim the single deferred registration worker for this process.
+    ///
+    /// The identity check is deliberately local and bounded. Marking the
+    /// state pending before the worker is spawned keeps readiness truthful
+    /// even if the webview reads it before the blocking worker begins.
+    pub fn begin_deferred_registration(&self) -> bool {
+        let identity_loaded = self
+            .osl
+            .identity
+            .lock()
+            .map(|identity| identity.is_some())
+            .unwrap_or(false);
+        if !identity_loaded
+            || self
+                .registration_scheduled
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
+            return false;
+        }
+        self.osl
+            .set_cloud_registration_state(ipc::state::CloudRegistrationState::Pending);
+        true
+    }
+
+    /// A completed worker must never leave the UI claiming that registration
+    /// is still in progress. Normal network outcomes settle themselves in the
+    /// IPC core; this closes only panic/early-return paths.
+    pub fn settle_deferred_registration(&self) {
+        if self.osl.cloud_registration_state() != ipc::state::CloudRegistrationState::Pending {
+            return;
+        }
+        let identity_loaded = self
+            .osl
+            .identity
+            .lock()
+            .map(|identity| identity.is_some())
+            .unwrap_or(false);
+        self.osl.set_cloud_registration_state(if identity_loaded {
+            ipc::state::CloudRegistrationState::Offline
+        } else {
+            ipc::state::CloudRegistrationState::NotAttempted
+        });
     }
 }
 
@@ -289,20 +341,9 @@ pub fn unlock_main_password(
             return Err("OSL encrypted state could not be reloaded safely".to_string());
         }
 
-        // The cold-start bootstrap intentionally skips network work so the
-        // password screen paints immediately. Once unlock has loaded the
-        // sealed identity, prove its current public keys to Cloudflare before
-        // returning a protection-ready state. A client object alone is not a
-        // successful registration.
-        ipc::commands::ensure_keyserver_registered(
-            &state.osl,
-            &ipc::commands::resolve_keyserver_base_url(&config_dir),
-            None,
-        );
-
-        // An existing device password can legitimately be unlocked before a
-        // new isolated OSL Privacy identity is created/imported. Do not deadlock that
-        // safe setup path by requiring identity/keyserver readiness here.
+        // Unlock is a local security transition. The desktop command schedules
+        // the process-wide deferred registration worker only after this reload
+        // succeeds, so an offline keyserver cannot hold the password gate.
         Ok(readiness(state))
     })();
     if outcome.is_err() {
@@ -477,6 +518,36 @@ mod tests {
         assert!(!status.identity_loaded);
         assert!(!status.group_sender_keys_enabled);
         assert!(!status.remote_service_has_native_access);
+    }
+
+    #[test]
+    fn deferred_registration_requires_identity_and_is_claimed_once() {
+        let state = HubCoreState::default();
+        assert!(!state.begin_deferred_registration());
+        assert_eq!(
+            state.osl.cloud_registration_state(),
+            ipc::state::CloudRegistrationState::NotAttempted
+        );
+
+        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [23; 16],
+            "osl_registration_probe".to_owned(),
+        ));
+        assert!(state.begin_deferred_registration());
+        assert_eq!(
+            state.osl.cloud_registration_state(),
+            ipc::state::CloudRegistrationState::Pending
+        );
+        assert!(!state.begin_deferred_registration());
+        assert_eq!(
+            state.osl.cloud_registration_state(),
+            ipc::state::CloudRegistrationState::Pending
+        );
+        state.settle_deferred_registration();
+        assert_eq!(
+            state.osl.cloud_registration_state(),
+            ipc::state::CloudRegistrationState::Offline
+        );
     }
 
     #[test]

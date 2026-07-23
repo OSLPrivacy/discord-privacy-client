@@ -17,7 +17,7 @@ describe("first-party OSL Chat plaintext boundary", () => {
   it("enables capture resistance before requesting encrypted-at-rest history", () => {
     const open = functionBody("openOslChat", "approveOslChat");
     expect(open.indexOf("await setScreenshotProtection(true)")).toBeLessThan(open.indexOf("await listOslChatHistory()"));
-    expect(open).toContain("if (context.scopeApproved)");
+    expect(open).toContain("if (resolvedContext.scopeApproved)");
   });
 
   it("also enforces capture resistance at the native history IPC boundary", () => {
@@ -57,8 +57,8 @@ describe("first-party OSL Chat plaintext boundary", () => {
 
   it("keeps destructive receive navigation locked and reports conservative receipts", () => {
     expect(source).toContain('id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}');
-    expect(source).toContain('state: "sent" as const');
-    expect(source).not.toContain('state: "delivered" as const');
+    expect(source).toContain('state: "sent"');
+    expect(source).not.toContain('state: "delivered"');
   });
 
   it("escapes decrypted friend previews before inserting Home markup", () => {

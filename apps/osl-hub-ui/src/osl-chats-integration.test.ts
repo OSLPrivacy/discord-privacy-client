@@ -26,7 +26,7 @@ describe("first-party OSL Chats integration", () => {
   it("uses the established encrypted route for view-once without persisting it to history", () => {
     expect(source).toContain("prepareOslChatText(draft, oslChatViewOnce)");
     expect(source).toContain('message.state === "opened"');
-    expect(source).toContain("[...durableMessages, ...queuedViewOnce].slice(-200)");
+    expect(source).toContain("[...historyMessages(resolvedContext, history), ...queuedViewOnce].slice(-200)");
     expect(source).toContain('filter((message) => message.state !== "opened")');
     expect(source.match(/discardOpenedOslChatMessages\(\)/gu)?.length).toBeGreaterThanOrEqual(3);
   });

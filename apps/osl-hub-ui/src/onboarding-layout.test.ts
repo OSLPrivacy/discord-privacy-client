@@ -38,9 +38,10 @@ describe("clean onboarding sign in", () => {
     expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Enter your password<\/h1>/);
     expect(source).toContain(">Enter your password</h1>");
     expect(source).toContain('id="identity-password-submit" type="submit" disabled>Unlock</button>');
-    expect(styles).toMatch(/\.unlock-form\s*\{\s*gap:\s*12px;/);
-    expect(styles).toMatch(/\.unlock-form \.unlock-error:empty\s*\{\s*display:\s*none;/);
-    expect(styles).toMatch(/\.onboarding-unlock \.unlock-card > \.text-back\s*\{\s*margin-top:\s*0;/);
+    const unlock = functionSource("identityPasswordForm", "sendingSetupContent");
+    expect(unlock).not.toContain("Stays on this device.");
+    expect(styles).toMatch(/\.unlock-form\s*\{[^}]*gap:\s*12px/s);
+    expect(styles).toMatch(/\.unlock-form \.password-input-row,[\s\S]*?\.unlock-card > \.text-back\s*\{[^}]*width:\s*100%/s);
   });
 
   it("uses a crisp accessible password visibility control", () => {
@@ -78,200 +79,81 @@ describe("clean onboarding sign in", () => {
     expect(binding).toContain('button.dataset.windowControlBound === "true"');
     expect(binding).toContain('button.dataset.windowControlBound = "true"');
   });
+
+  it("shows truthful progress and prevents duplicate account creation while busy", () => {
+    const form = functionSource("identityPasswordForm", "sendingSetupContent");
+    const binding = functionSource("bindPasswordForm", "bindImportForm");
+    expect(form).toContain('id="account-create-status" aria-live="polite"');
+    expect(binding).toContain('form.setAttribute("aria-busy", "true")');
+    expect(binding).toContain('submit.textContent = setupMode ? "Creating account…" : "Unlocking…"');
+    expect(binding).toContain('createStatus.textContent = "Creating encryption keys…"');
+    expect(binding).toContain('await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))');
+    expect(binding).toContain('createStatus.textContent = "Securing this device…"');
+    expect(binding).toContain('createStatus.textContent = "Loading your account…"');
+  });
 });
 
 describe("fresh-account continuation", () => {
-  it("persists and resumes every current post-account setup step without accepting legacy app routes", () => {
-    const pending = functionSource("pendingOnboardingRoute", "beginServiceOnboarding");
-    const renderOnboarding = functionSource("renderOnboarding", "onboardingContent");
-    const bootstrap = source.slice(source.indexOf("async function bootstrap"));
-    for (const route of ["pro", "privacy", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"]) {
-      expect(pending).toContain(`pending === "${route}"`);
-    }
-    expect(pending).not.toContain('pending === "apps"');
-    expect(pending).not.toContain('pending === "detected"');
-    expect(pending).not.toContain('pending === "install"');
-    expect(pending).toContain("localStorage.removeItem(onboardingResumeStorageKey)");
-    expect(renderOnboarding).toContain("persistCurrentOnboardingRoute()");
-    expect(source).not.toContain('pendingOnboardingRoute() ?? "mullvad"');
-    expect(bootstrap).toContain('pendingOnboardingRoute() ?? "pro"');
+  it("uses one unified detected-services page after protected browser import", () => {
+    const detected = functionSource("detectedAppsContent", "browserImportContent");
+    expect(detected).toContain("Detected services");
+    expect(detected).toContain('data-detected-account="${escapeHtml(id)}"');
+    expect(detected).toContain('class="detected-account-logo service-brand-badge"');
+    expect(detected).toContain('data-service-brand="${service.id}"');
+    expect(detected).toContain("Use current desktop session · provider-wide");
+    expect(detected).toContain("Use isolated OSL profile · this account");
+    expect(detected).toContain("Found in selected browser history");
+    expect(detected).toContain('detectedAccountChoiceKey("browser", app.id)');
+    expect(detected).toContain('id="continue-detected-apps"');
   });
 
-  it("combines detected and remaining apps in one chooser", () => {
-    const choice = functionSource("tutorialContent", "selectedNativeApps");
-    expect(choice).toContain("Choose apps");
-    expect(choice).toContain("Detected");
-    expect(choice).toContain("Other apps");
-    expect(choice).toContain("app.linked");
-    expect(choice).toContain('native?.availability === "installed"');
-    expect(choice).toContain("savedAccountsReady && importedFirefoxHomeAppIds.has(app.id)");
-    expect(choice).toContain('data-onboarding-app-choice="${app.id}"');
-    expect(choice).toContain("Nothing opens during setup");
-    expect(choice).toContain('nativeCatalogBusy ? "Checking Windows…" : "Continue"');
-  });
-
-  it("routes browser import directly through the combined chooser to Home", () => {
+  it("keeps the final setup route order explicit", () => {
     const previous = functionSource("previousSetupRoute", "bindOnboarding");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const browserBinding = functionSource("bindBrowserImportControls", "importIdentityForm");
-    expect(browserBinding).toMatch(/Browser import finished[\s\S]*?await enterCombinedAppChoice\(\)/);
-    expect(browserBinding).toMatch(/#continue-browser-import[\s\S]*?await enterCombinedAppChoice\(\)/);
-    expect(browserBinding).not.toContain("retry the same source once");
-    expect(browserBinding).toMatch(/catch \(failure\)[\s\S]*?browserImportQueue = \[\][\s\S]*?persistBrowserImportQueue\(\)/);
-    expect(browserBinding).toMatch(/activeOperation[\s\S]*?finishProtectedBrowserImport[\s\S]*?await activeOperation[\s\S]*?finishProtectedBrowserImport/);
-    expect(browserBinding).toContain("Nothing was imported from it");
-    expect(browserBinding).not.toContain("manually in Firefox");
-    expect(previous).toContain('tutorial: "browser"');
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?await completeOnboarding\(\)/);
+    expect(previous).toContain('browser: "recovery"');
+    expect(previous).toContain('detected: "browser"');
+    expect(previous).toContain('sending: "pro"');
+    expect(previous).toContain('passwords: "cover"');
+    expect(previous).toContain('privacy: "pro"');
+    expect(previous).toContain('scrub: "privacy"');
+    expect(binding).toMatch(/#continue-detected-apps[\s\S]*?onboardingRoute = "mullvad"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "scrub"/);
   });
 
-  it("persists Home choices without installing, opening, or adopting native sessions", () => {
+  it("configures each detected account independently", () => {
+    const detected = functionSource("detectedAppsContent", "browserImportContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    const intent = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
-    expect(intent).toContain("selectedOnboardingAppsStorageKey");
-    expect(intent).toContain("selectedOnboardingApps");
-    expect(intent).not.toContain("savedNativeApps");
-    expect(intent).not.toContain("persistSavedAccountPreferences");
-    expect(intent).not.toContain("installNativeApp");
-    expect(intent).not.toContain("openNativeHostedApp");
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?completeOnboarding\(\)/);
+    expect(detected).toContain('data-detected-account="${escapeHtml(id)}"');
+    expect(detected).toContain('data-detected-account-row="${escapeHtml(id)}"');
+    expect(detected).toContain('id="detected-launch-select"');
+    expect(binding).toContain('querySelectorAll<HTMLSelectElement>("[data-detected-account]")');
+    expect(binding).toContain('detectedAccountChoices.set(id');
+    expect(binding).toContain('CSS.escape(id)');
+    expect(binding).toContain('classList.toggle("detected-account-osl"');
+    expect(binding).toContain('document.querySelector<HTMLSelectElement>("#detected-launch-select")');
   });
 
-  it("never infers native-app routing from an unknown catalog", () => {
-    const completeness = functionSource("isCompleteNativeCatalog", "hasSelectedInstalledNativeApps");
-    const chooser = functionSource("ensureNativeCatalogForAppChoice", "selectedNativeAppIntent");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(completeness).toContain("catalog.length === supportedNativeAppIds.size");
-    expect(completeness).toContain("ids.size === supportedNativeAppIds.size");
-    expect(completeness).toContain("every((appId) => ids.has(appId))");
-    expect(chooser).toContain("hasSelectedNativeAppChoice()");
-    expect(chooser).not.toContain("nativeAppsReady");
-    expect(chooser).toContain('withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs)');
-    expect(chooser).toContain("if (!isCompleteNativeCatalog(catalog))");
-    expect(chooser).toContain("Couldn’t check Windows apps. Try again.");
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?await ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
-  });
-
-  it("shows every installed native app while requiring isolation support only for separate profiles", () => {
-    const installedChoice = functionSource("hasSelectedInstalledNativeApps", "hasSelectedMissingNativeApps");
-    const nativeSelection = functionSource("selectedNativeAppIntent", "detectedAppsContent");
-    const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
-    const discordChoices = functionSource("discordSessionModeChoices", "detectedAppsContent");
-    const telegramChoices = functionSource("telegramSessionModeChoices", "detectedAppsContent");
-    expect(installedChoice).toContain('app.availability === "installed" && app.isolatedProfileAvailable');
-    expect(nativeSelection).toContain('if (!nativeSessionModeConfirmed(nativeId)) return undefined;');
-    expect(nativeSelection).toContain('if (existingNativeSessionRequested(appId)) return nativeId;');
-    expect(nativeSelection).toContain('savedAccountMode === "use" && savedNativeApps.has(nativeId) && catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable');
-    expect(nativeSelection).toContain("onboardingServiceSetup");
-    expect(nativeSelection).toContain("selectedOnboardingApps.has(appId)");
-    expect(nativeSelection).toContain('savedAccountMode !== "clean"');
-    expect(nativeSelection).toContain('nativeSessionModeForApp(nativeId) === "dedicated"');
-    expect(detected).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
-    expect(discordChoices).toContain('data-discord-session-mode="dedicated"');
-    expect(discordChoices).toContain('data-discord-session-mode="existingSession"');
-    expect(discordChoices).toContain(">Use existing account</button>");
-    expect(discordChoices).toContain(">Use separate account</button>");
-    expect(discordChoices).toContain('role="group"');
-    expect(discordChoices).not.toContain('role="radio"');
-    expect(detected).toContain('nativeSessionModeSettingChoices("discord", "Discord")');
-    expect(telegramChoices).toContain('data-telegram-session-mode="existingSession"');
-    expect(telegramChoices).toContain('data-telegram-session-mode="dedicated"');
-    expect(telegramChoices).toContain(">Use existing account</button>");
-    expect(telegramChoices).toContain(">Use separate account</button>");
-    expect(detected).toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("signal", "Signal")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
-    expect(source).toContain('data-signal-session-mode="existingSession"');
-    expect(source).toContain('data-signal-session-mode="dedicated"');
-    expect(source).toContain('aria-label="Open Signal"');
-    expect(source).toContain('data-whatsapp-session-mode="existingSession"');
-    expect(source).toContain('data-whatsapp-session-mode="dedicated"');
-    expect(source).toContain('if (supportedNativeAppIds.has(app.id as NativeAppId))');
-    expect(source).toContain("A separate ${app.displayName} app account is unavailable");
-    expect(detected).toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(source).toContain('appId === "whatsapp"');
-    expect(source).toMatch(/serviceGuideContent[\s\S]*?activeHomeAppId === "telegram"[\s\S]*?telegramSessionModeChoices\(\)/);
-    expect(source).not.toMatch(/const sessionChoices = onboardingServiceSetup[\s\S]*?\? ""/);
-    expect(source).not.toContain("Uses your signed-in ${name} window without copying its session.");
-    expect(source).not.toContain("${name} stays outside OSL capture protection.");
-  });
-
-  it("turns one app choice into a persisted Home tile without opening it", () => {
-    const defaultIntent = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(binding).toMatch(/data-onboarding-app-choice[\s\S]*?selectedOnboardingApps\.add\(appId\)/);
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
-    expect(defaultIntent).toContain("selectedOnboardingAppsStorageKey");
-    expect(defaultIntent).not.toContain("savedNativeApps");
-    expect(binding).not.toMatch(/#continue-app-choice[\s\S]*?openNativeHostedApp/);
-  });
-
-  it("records an explicit empty app choice instead of treating it as legacy no-preference state", () => {
-    const persistence = functionSource("persistCombinedHomeChoices", "selectedNativeApps");
-    const workspace = functionSource("workspaceContent", "peopleListMarkup");
-    expect(persistence).toContain("hasExplicitOnboardingAppSelection = true");
-    expect(workspace).toContain("hasExplicitOnboardingAppSelection || rememberedHomeApps.size");
-    expect(workspace).toMatch(/hasExplicitOnboardingAppSelection \|\| rememberedHomeApps\.size[\s\S]*?launchableHomeApps\.filter/);
-  });
-
-  it("does not open each selected service during fresh setup", () => {
-    const apps = functionSource("tutorialContent", "selectedNativeApps");
-    const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(apps).not.toContain("Connect your apps");
-    expect(apps).not.toContain("Open selected app");
-    expect(apps).not.toContain("data-connect-app-choice");
-    expect(binding).toMatch(/#continue-app-choice[\s\S]*?await completeOnboarding\(\)/);
-  });
-
-  it("offers multi-source selection behind one protected importer contract", () => {
-    const tutorial = functionSource("tutorialContent", "selectedNativeApps");
+  it("keeps saved-account migration on its own local-only page without account discovery claims", () => {
     const browser = functionSource("browserImportContent", "persistSavedAccountPreferences");
     const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
-    expect(tutorial).not.toContain("data-browser-import");
-    expect(browser).toContain("Bring your logins");
-    expect(browser).toContain("Optional.");
-    expect(browser).toContain("browserLogo(browser.id)");
-    expect(browser).toContain('<fieldset class="browser-detected-sources"');
-    expect(browser).toContain("Choose browsers");
-    expect(browser).toContain("Import all detected browsers");
-    expect(browser).toContain("data-browser-select-all");
-    expect(browser).toContain("One click starts the protected import queue");
-    expect(browser).toContain('data-browser-source="${browser.id}"');
-    expect(browser).toContain("selectedBrowserImportIds.has(browser.id)");
-    expect(browser).toContain("Import from this browser");
+    expect(browser).toContain("Import browser data");
+    expect(browser).toContain("Choose only the browsers you want to import.");
     expect(browser).toContain('id="import-saved-accounts"');
     expect(browser).not.toContain('id="install-firefox"');
+    expect(browser).toContain('firefoxStatus.availability === "installed"');
     expect(browser.match(/id="import-saved-accounts"/g)).toHaveLength(1);
-    expect(browser).toContain('id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}');
-    expect(browser).toContain('browserImportCancelling ? "Closing Firefox…" : queueActive ? "Cancel import" : "Not now"');
-    expect(browser).not.toContain("Manual export");
-    expect(browser).not.toContain("Prepare export in");
-    expect(browser).not.toContain("How it works");
-    expect(browser).toContain("Choose browsers");
-    expect(browser).toContain('selectionReady ? "Import selected" : "Choose browsers"');
-    expect(browser).not.toContain("Import selected · pending");
-    expect(browser).toContain("Choose once here. Firefox asks you to approve each selected browser in order.");
-    expect(browser).toContain("OSL selected");
-    expect(browser).toContain("browserImportQueueIndex + 1");
-    expect(browser).not.toContain("Done with");
-    expect(browser).not.toMatch(/Finish \$\{escapeHtml\(currentName\)\}/);
-    expect(browser).toContain('class="button primary" id="import-saved-accounts"');
-    expect(browser.match(/class="button primary"/g)).toHaveLength(1);
-    expect(binding).toContain("!protectedBrowserImportReady || selectedBrowserImportIds.size === 0");
-    expect(binding).toContain("browserImportQueue = [...selectedBrowserImportIds]");
-    expect(binding).toContain('querySelector<HTMLInputElement>("[data-browser-select-all]")');
-    expect(binding).toContain("browserImports.filter((browser) => browser.installed)");
-    expect(binding).toMatch(/data-browser-select-all[\s\S]*?render\(\)[\s\S]*?startProtectedBrowserImport\(\)/);
-    expect(binding.match(/beginProtectedBrowserImport\(\[currentSource\]\)/g)).toHaveLength(1);
-    expect(binding).toContain("for (let index = 0; index < browserImportQueue.length; index += 1)");
-    expect(binding).toContain("beginProtectedBrowserImport([currentSource])");
-    expect(binding).toContain("await finishProtectedBrowserImport()");
-    expect(binding).toContain("if (runEpoch !== browserImportRunEpoch) return");
-    expect(binding).toMatch(/beginProtectedBrowserImport\(\[currentSource\]\)[\s\S]*?finishProtectedBrowserImport\(\)[\s\S]*?savedAccountsReady = true[\s\S]*?await enterCombinedAppChoice\(\)/);
-    expect(binding).toMatch(/#continue-browser-import[\s\S]*?browserImportRunEpoch \+= 1[\s\S]*?finishProtectedBrowserImport\(\)/);
-    expect(binding).not.toContain("beginBrowserAccountImport()");
-    expect(binding).not.toContain("openBrowserImport(");
+    expect(browser).toContain('id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}');
+    expect(browser).toContain("Stays inside OSL");
+    expect(browser).toContain('data-browser-source="${browser.id}"');
+    expect(browser).toContain('id="toggle-all-browser-imports"');
+    expect(browser).toContain("Import selected");
+    expect(binding).toContain("selectedBrowserImports.has(browser.id)");
+    expect(binding).toContain("selectedBrowserImports.add(source)");
+    expect(binding).toContain("selectedBrowserImports.delete(source)");
+    expect(source).toContain("beginProtectedBrowserImport([source], operationId)");
+    expect(source).toContain("finishProtectedBrowserImport(operationId)");
+    expect(binding).toContain('onboardingRoute = "detected"');
     expect(binding).not.toContain("window.confirm");
     expect(source).not.toContain("browserPasswordImportOptIn");
     expect(source).not.toContain("data-browser-password-import");
@@ -296,37 +178,24 @@ describe("fresh-account continuation", () => {
     expect(source).toContain("focusDefaultBrowserCompanion()");
   });
 
-  it("places the combined app choice immediately after browser import", () => {
-    const browser = functionSource("browserImportContent", "persistSavedAccountPreferences");
-    const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
-    const entry = functionSource("enterCombinedAppChoice", "persistCombinedHomeChoices");
-    expect(browser).not.toContain("unsupported");
-    expect(browser).not.toContain("unavailable in this build");
-    expect(binding).toMatch(/#continue-browser-import[\s\S]*?await enterCombinedAppChoice\(\)/);
-    expect(binding).toContain("ensureFirefoxForProtectedImport()");
-    expect(binding).not.toContain("beginBrowserAccountImport()");
-    expect(binding).not.toContain("#install-firefox");
-    expect(binding).not.toContain("window.confirm");
-    expect(entry).not.toContain("selectedOnboardingApps.add");
-    expect(entry).not.toContain("selectedOnboardingAppsStorageKey");
+  it("keeps browser import vertically scrollable without a bottom scrollbar", () => {
+    expect(styles).toMatch(/\.onboarding-shell\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
+    expect(styles).toMatch(/\.browser-detected-sources\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/);
+    expect(styles).toMatch(/\.onboarding-panel\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/);
   });
 
-  it("turns Import selected into one bounded action even when Firefox still needs installation", () => {
-    const browser = functionSource("browserImportContent", "persistSavedAccountPreferences");
-    const binding = functionSource("bindBrowserImportControls", "refreshBrowserImportReadiness");
-    const readiness = functionSource("ensureFirefoxForProtectedImport", "refreshBrowserImportReadiness");
-    expect(browser).toContain("browserImportBusy");
-    expect(browser).toContain("Preparing protected import…");
-    expect(browser).toContain("browserImportFailureNotice");
-    expect(browser).toContain('role="alert"');
-    expect(binding).toContain("await ensureFirefoxForProtectedImport()");
-    expect(binding).toContain("const operation = beginProtectedBrowserImport([currentSource])");
-    expect(binding).toContain("const result = await operation.finally");
-    expect(binding).toContain('browserImportFailureNotice = localActionError(failure, "Browser import did not start")');
-    expect(binding.indexOf("await ensureFirefoxForProtectedImport()")).toBeLessThan(binding.indexOf("beginProtectedBrowserImport([currentSource])"));
-    expect(readiness).toContain("await installFirefox()");
-    expect(readiness).toContain("firefoxInstallDecisionDeadlineMs");
-    expect(readiness).toContain('status.availability === "installed"');
+  it("opens and completes only the selected browser imports with one explicit OSL action", () => {
+    const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
+    const worker = functionSource("importOneBrowser", "persistSavedAccountPreferences");
+    expect(binding).toMatch(/#import-saved-accounts[\s\S]*?browserImports\.filter\(\(browser\) => browser\.installed && selectedBrowserImports\.has\(browser\.id\)\)[\s\S]*?importOneBrowser\(source, index \+ 1, selected\.length\)[\s\S]*?savedAccountsReady = true[\s\S]*?onboardingRoute = "detected"/);
+    expect(worker).toContain("beginProtectedBrowserImport([source], operationId)");
+    expect(worker).toContain("finishProtectedBrowserImport(operationId)");
+    expect(worker).toContain("protectedBrowserImportSourceDeadlineMs");
+    expect(worker).toContain("cancelProtectedBrowserImport(operationId)");
+    expect(binding).toContain("cancelProtectedBrowserImport(operation.operationId)");
+    expect(binding).toContain("selected.length === 0");
+    expect(binding).not.toContain("#install-firefox");
+    expect(binding).not.toContain("window.confirm");
   });
 
   it("refreshes browser and Firefox readiness when the import page is entered or resumed", () => {
@@ -346,15 +215,16 @@ describe("fresh-account continuation", () => {
     expect(bootstrap).toMatch(/onboardingRoute === "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
   });
 
-  it("keeps prior completed-import state scoped to the active OSL identity", () => {
+  it("scopes completed browser import to the active OSL identity", () => {
+    const identityKey = functionSource("identityScopedStorageKey", "pendingOnboardingRoute");
     const key = functionSource("activeBrowserAccountsReadyStorageKey", "refreshActiveBrowserAccountsReady");
     const refresh = functionSource("refreshActiveBrowserAccountsReady", "saveHomeTilePreferences");
     const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
-    expect(key).toContain("core.readiness.activeOslUserId");
-    expect(key).toContain("encodeURIComponent(owner)");
-    expect(key).toContain("return owner ?");
+    expect(identityKey).toContain("core.readiness.activeOslUserId");
+    expect(identityKey).toContain("encodeURIComponent(owner)");
+    expect(key).toContain("identityScopedStorageKey(savedAccountsReadyStorageKey)");
     expect(refresh).toContain("savedAccountsReady = key !== null");
-    expect(binding).toMatch(/for \(let index = 0; index < browserImportQueue\.length; index \+= 1\)[\s\S]*?localStorage\.setItem\(readyKey, "true"\)/);
+    expect(binding).toMatch(/for \(const \[index, source\] of selected\.entries\(\)\)[\s\S]*?localStorage\.setItem\(readyKey, "true"\)/);
     expect(binding).toMatch(/localStorage\.setItem\(readyKey, "true"\)[\s\S]*?savedAccountsReady = true/);
     expect(source).not.toMatch(/localStorage\.setItem\(savedAccountsReadyStorageKey\s*,/);
   });
@@ -363,12 +233,12 @@ describe("fresh-account continuation", () => {
     const pendingKey = functionSource("activeBrowserImportPendingStorageKey", "refreshActiveBrowserAccountsReady");
     const refresh = functionSource("refreshActiveBrowserAccountsReady", "saveHomeTilePreferences");
     const binding = functionSource("bindBrowserImportControls", "refreshBrowserImportReadiness");
-    expect(pendingKey).toContain("core.readiness.activeOslUserId");
-    expect(pendingKey).toContain("encodeURIComponent(owner)");
-    expect(pendingKey).toContain("browserImportPendingStorageKey");
-    expect(refresh).not.toContain("browserMigrationAwaitingConfirmation");
+    expect(pendingKey).toContain("identityScopedStorageKey(browserImportPendingStorageKey)");
+    expect(refresh).toContain("savedAccountsReady = key !== null");
+    expect(refresh).toContain("localStorage.removeItem(pendingKey)");
     expect(source).toMatch(/function commitRender[\s\S]*?refreshActiveBrowserAccountsReady\(\)/);
-    expect(binding).not.toContain("beginBrowserAccountImport()");
+    expect(source).toMatch(/beginProtectedBrowserImport\(\[source\], operationId\)[\s\S]*?savedAccountsReady = true/);
+    expect(binding).toMatch(/activeBrowserAccountsReadyStorageKey\(\)[\s\S]*?localStorage\.setItem\(readyKey, "true"\)/);
     expect(binding).toMatch(/#continue-browser-import[\s\S]*?localStorage\.removeItem\(pendingKey\)/);
     expect(source).not.toMatch(/localStorage\.setItem\(browserImportPendingStorageKey\s*,/);
   });
@@ -388,9 +258,38 @@ describe("fresh-account continuation", () => {
     expect(functionSource("completeOnboarding", "bindPasswordForm")).toContain("clearServiceOnboardingResume()");
   });
 
+  it("persists every active setup route and Scrub substep for only the active identity", () => {
+    const key = functionSource("identityScopedStorageKey", "pendingOnboardingRoute");
+    const pending = functionSource("pendingOnboardingRoute", "persistOnboardingResume");
+    const persist = functionSource("persistOnboardingResume", "markServiceOnboardingOpened");
+    const onboardingRender = functionSource("renderOnboarding", "onboardingContent");
+    expect(key).toContain("core.readiness.activeOslUserId");
+    expect(key).toContain("encodeURIComponent(owner)");
+    expect(pending).toContain("parseSetupResumeCheckpoint");
+    expect(pending).toContain("scrubSetupStep = checkpoint.scrubStep");
+    expect(persist).toContain("isActiveSetupRoute(routeToPersist)");
+    expect(persist).toContain('routeToPersist === "scrub" ? step : "intro"');
+    expect(onboardingRender).toContain("persistOnboardingResume()");
+  });
+
+  it("loads the identity-scoped Scrub plan through validation before seeding Settings", () => {
+    const apply = functionSource("applySavedScrubSetupPlan", "saveScrubSetupPlan");
+    const save = functionSource("saveScrubSetupPlan", "bindOnboarding");
+    const moduleOpen = functionSource("openHomeModule", "oslChatTimestamp");
+    expect(apply).toContain("activeScrubSetupPlanStorageKey()");
+    expect(apply).toContain("parseScrubSetupPlan");
+    expect(apply).toContain("selectedOnboardingScrubAccounts = new Set(plan.targetIds)");
+    expect(apply).toContain("enabledScrubSignals = new Set(plan.signalGroups)");
+    expect(apply).toContain("autoScrubAccountId = target.selection.accountId");
+    expect(save).toContain("parseScrubSetupPlan");
+    expect(moduleOpen).toMatch(/id === "scrub"[\s\S]*?applySavedScrubSetupPlan\(\)/);
+  });
+
   it("shows the recovery title without the removed grey subtitle", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     expect(recovery).toContain("Save your recovery kit");
+    expect(recovery).toContain("Account recovery");
+    expect(recovery).toContain("Password recovery");
     expect(recovery).not.toContain("OSL cannot retrieve these later");
     expect(recovery).not.toContain('class="compact-lead"');
   });
@@ -422,9 +321,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
-    expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
-    expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
+    expect(onboardingRender).toContain('["pro", "privacy", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad", "scrub"].includes(onboardingRoute)');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
   });
 
@@ -448,25 +345,21 @@ describe("fresh-account continuation", () => {
   it("uses the approved order and defers Scrub until after onboarding", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const completion = functionSource("completeOnboarding", "bindPasswordForm");
-    const previous = functionSource("previousSetupRoute", "bindOnboarding");
-    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "sending"/);
-    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "cover"/);
-    expect(binding).toMatch(/#continue-cover-draft[\s\S]*?onboardingRoute = "passwords"/);
-    expect(source).toContain('data-onboarding-password-next="${next}"');
-    expect(functionSource("onboardingPasswordRoleContent", "mullvadSetupContent")).toContain('stealth ? "burnpass" : "mullvad"');
+    const scrub = functionSource("scrubSetupContent", "scrubAccountSelections");
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "passwords"/);
+    expect(source).toContain('data-password-role-next="${next}"');
     expect(binding).toContain('button.dataset.passwordRoleNext as OnboardingRoute');
-    expect(functionSource("bindBrowserImportControls", "importIdentityForm")).toMatch(/#continue-browser-import[\s\S]*?enterCombinedAppChoice\(\)/);
-    expect(previous).toContain('pro: "recovery"');
-    expect(previous).toContain('privacy: "pro"');
-    expect(previous).toContain('sending: "pro"');
-    expect(previous).toContain('cover: "sending"');
-    expect(previous).toContain('passwords: "cover"');
-    expect(previous).toContain('burnpass: "passwords"');
-    expect(previous).toContain('mullvad: "burnpass"');
-    expect(previous).toContain('browser: "mullvad"');
-    expect(previous).toContain('tutorial: "browser"');
-    expect(functionSource("onboardingContent", "tutorialContent")).not.toContain('onboardingRoute === "scrub"');
-    expect(binding).not.toContain("initializeOnboardingScrub");
+    expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "scrub"/);
+    expect(binding).toMatch(/#finish-scrub-setup[\s\S]*?saveScrubSetupPlan\(onboardingScrubMode\)[\s\S]*?completeOnboarding\(\)/);
+    expect(functionSource("saveScrubSetupPlan", "bindOnboarding")).toContain("activeScrubSetupPlanStorageKey()");
+    expect(source).toContain('id="route-heading" tabindex="-1">Scrub');
+    expect(source).toContain('id="start-scrub-setup"');
+    expect(source).toContain('id="continue-scrub-accounts"');
+    expect(source).not.toContain('id="initialize-scrub"');
+    expect(scrub).not.toContain('id="privacy-export-input"');
+    expect(source).not.toContain("function onboardingScrubContent");
+    expect(source).not.toContain('id="onboarding-start-scrub"');
     expect(completion.indexOf("await loadNativeApps()")).toBeGreaterThan(completion.indexOf("await saveOnboardingPreferences"));
     expect(completion).toContain('route = "home"');
   });
@@ -498,7 +391,9 @@ describe("fresh-account continuation", () => {
     expect(content).not.toMatch(/mullvad-connected|mullvad-autostart|refresh-mullvad|Mullvad pixels|does not copy or read/);
     expect(binding).toContain('runMullvadSetupAction("install")');
     expect(binding).toContain('runMullvadSetupAction("open")');
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
+    expect(content).toContain('data-mullvad-choice="${value}"');
+    expect(binding).toContain('localStorage.setItem(mullvadStartupStorageKey');
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
   });
 
   it("keeps Mullvad installation and hosting behind one setup action", () => {
@@ -525,14 +420,18 @@ describe("fresh-account continuation", () => {
   it("offers guarded sending choices without overstating placement support", () => {
     const content = functionSource("sendingSetupContent", "coverDraftSetupContent");
     expect(content).toContain("Choose how to send");
-    expect(content).toContain("manualSendingAnimationMarkup(selectedMode)");
-    expect(source).toContain('step(1, "Write")');
-    expect(source).toContain('step(2, "Encrypt")');
-    expect(source).toContain('step(4, finalStep)');
-    expect(content).toContain("Never presses Send");
+    expect(content).toContain("manualSendingAnimationMarkup(mode)");
+    expect(content).toContain('option("clipboard", "Copy", "safe", "Safest")');
     expect(content).toContain('option("double", "Double Enter"');
     expect(content).toContain('option("single", "Single Enter"');
-    expect(content).toContain("If OSL cannot prove the destination");
+    expect(content).toContain("Can possibly break ToS");
+    expect(content).toContain("Breaks some ToS · risky");
+    const animation = functionSource("manualSendingAnimationMarkup", "passwordEyeIcon");
+    expect(animation).toContain('step(1, "Write")');
+    expect(animation).toContain('step(2, "Encrypt")');
+    expect(animation).toContain('step(4, finalStep)');
+    expect(animation).not.toContain("encrypt · copy");
+    expect(animation).not.toContain("verify · send");
   });
 
   it("shows a restrained animated atomic-versus-typing comparison", () => {
@@ -585,6 +484,20 @@ describe("fresh-account continuation", () => {
     expect(onboardingBinding).toMatch(/button\[data-skip-onboarding-password-role\][\s\S]*?onboardingRoute = next/);
     expect(binding).toContain("form.dataset.onboardingPasswordNext as OnboardingRoute");
     expect(binding).not.toContain("form.dataset.passwordRoleNext");
+  });
+
+  it("shows Scrub account handles beside existing service logos and leaves the intro hero unringed", () => {
+    const scrub = functionSource("scrubSetupContent", "scrubAccountSelections");
+    const targets = functionSource("scrubAccountSelections", "activeScrubSetupPlanStorageKey");
+    expect(scrub).toContain("serviceLogo(selection.serviceId as ServiceId)");
+    expect(scrub).toContain('class="scrub-account-logo service-brand-badge"');
+    expect(scrub).toContain('data-service-brand="${selection.serviceId}"');
+    expect(styles).toMatch(/\.service-brand-badge\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*11px !important;/);
+    expect(styles).toContain('.service-brand-badge[data-service-brand="discord"] { --service-brand: #5865f2; }');
+    expect(styles).toContain('.service-brand-badge[data-service-brand="telegram"] { --service-brand: #26a5e4; }');
+    expect(styles).toContain('.service-brand-badge[data-service-brand="signal"] { --service-brand: #3a76f0; }');
+    expect(targets).toContain("account.label");
+    expect(styles).not.toContain(".scrub-hero::before");
   });
 
   it("re-reads readiness when password setup reports a failure", () => {

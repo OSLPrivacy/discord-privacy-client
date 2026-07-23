@@ -1,13 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
-import {
-  parseNativeDiscordOverlayOpenedBatch,
-  parseNativeDiscordOverlayPrepared,
-  type NativeDiscordOverlayOpenedBatch,
-  type NativeDiscordOverlayPrepared,
-} from "./overlay-state";
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
+export interface HubUsernameClaim { username: string; oslUserId: string; }
+export interface HubUsernameStatus { username: string; ownedByActiveIdentity: boolean; }
+export interface HubAddFriendResult {
+  disposition: "added" | "already_present" | "key_change_requires_verification";
+  personId: string;
+  oslUserId: string;
+  safetyNumber: string;
+  codeSignatureValid: true;
+  safetyNumberVerified: boolean;
+}
+export type OslProfileFrame = "none" | "thin" | "double" | "glow";
+export type OslProfileEffect = "none" | "gradient" | "pulse" | "shimmer";
+export interface OslProfile {
+  displayName: string;
+  usernameCandidate: string;
+  avatar: string | null;
+  accentColor: string;
+  bannerColor: string;
+  frame: OslProfileFrame;
+  effect: OslProfileEffect;
+  status: string;
+}
 export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
 export interface LocalProtectedText {
   capsule: string;
@@ -57,6 +73,31 @@ export interface OslChatHistoryRow {
   senderOslUserId: string;
   plaintext: string;
   decryptedAt: number;
+}
+export interface OslChatPreparedText {
+  messageId: string;
+  expiresAt: number;
+  personToPersonE2ee: true;
+  viewOnce: boolean;
+  deliveredToOslInbox: true;
+}
+export interface OslChatOpenedText {
+  plaintext: string;
+  contextVerified: true;
+  personToPersonE2ee: true;
+  viewOnceConsumed: boolean;
+  expiresAt: number;
+}
+export interface OslChatAcknowledgment {
+  messageId: string;
+  status: "received" | "opened";
+  acknowledgedAt: number;
+}
+export interface OslChatOpenedBatch {
+  messages: OslChatOpenedText[];
+  pendingViewOnce: Array<{ messageId: string; expiresAt: number; personToPersonE2ee: true }>;
+  acknowledgments: OslChatAcknowledgment[];
+  fetched: number;
 }
 export interface PreparedHubAttachment {
   sealedB64: string;
@@ -119,6 +160,12 @@ export interface LocalMessageCandidate {
   authoredBySelf: boolean;
   createdAtUnixMs: number | null;
   text: string;
+  attachments?: LocalAttachmentCandidate[];
+}
+export interface LocalAttachmentCandidate {
+  attachmentId: string;
+  displayName: string;
+  contentBase64: string;
 }
 export interface LocalPrivacyFinding extends Omit<LocalMessageCandidate, "text"> {
   category: PrivacyRiskCategory;
@@ -126,6 +173,15 @@ export interface LocalPrivacyFinding extends Omit<LocalMessageCandidate, "text">
   reason: string;
   localPreview: string;
   canRequestDelete: boolean;
+  attachmentPath: string | null;
+}
+export type UninspectedAttachmentReason = "unsupported" | "encrypted" | "malformed" | "limit_exceeded" | "unsafe_archive_entry" | "model_not_installed" | "dependency_not_installed" | "image_only_pdf_needs_ocr";
+export interface UninspectedAttachment {
+  attachmentId: string;
+  path: string;
+  detectedType: string;
+  reason: UninspectedAttachmentReason;
+  detail: string;
 }
 export interface LocalPrivacyScanResult {
   findings: LocalPrivacyFinding[];
@@ -134,6 +190,14 @@ export interface LocalPrivacyScanResult {
   truncated: boolean;
   analysisLocation: "this_device_only";
   persisted: false;
+  attachmentsScanned: number;
+  imagesChecked: boolean;
+  videosChecked: boolean;
+  attachmentTypesScanned: string[];
+  uninspectedAttachments: UninspectedAttachment[];
+}
+export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
+  persisted: true;
 }
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
@@ -229,16 +293,15 @@ export async function closeOslChatContext(): Promise<boolean> {
   catch { return false; }
 }
 
-export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<NativeDiscordOverlayPrepared | null> {
+export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<OslChatPreparedText | null> {
   if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean") return null;
-  try {
-    return parseNativeDiscordOverlayPrepared(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce }));
-  } catch { return null; }
+  try { return parseOslChatPreparedText(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce })); }
+  catch { return null; }
 }
 
-export async function openOslChatText(): Promise<NativeDiscordOverlayOpenedBatch | null> {
+export async function openOslChatText(revealViewOnce = true): Promise<OslChatOpenedBatch | null> {
   if (!isTauriRuntime()) return null;
-  try { return parseNativeDiscordOverlayOpenedBatch(await invoke<unknown>("open_osl_chat_text")); }
+  try { return parseOslChatOpenedBatch(await invoke<unknown>("open_osl_chat_text", { revealViewOnce })); }
   catch { return null; }
 }
 
@@ -480,11 +543,72 @@ export async function copyHubFriendInvite(friendCode: string): Promise<boolean> 
   } catch { return false; }
 }
 
+export async function loadOslProfile(): Promise<OslProfile | null> {
+  if (!isTauriRuntime()) return null;
+  try { return parseOslProfile(await invoke<unknown>("get_osl_profile")); }
+  catch { return null; }
+}
+
+export async function saveOslProfile(profile: OslProfile): Promise<OslProfile | null> {
+  if (!isTauriRuntime() || !parseOslProfile(profile)) return null;
+  try { return parseOslProfile(await invoke<unknown>("save_osl_profile", { profile })); }
+  catch { return null; }
+}
+
 export async function addOslFriend(code: string, nickname = ""): Promise<boolean> {
   const trimmed = nickname.trim();
   if (!isTauriRuntime() || !/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code) || !validFriendNickname(trimmed)) return false;
   try { await invoke("add_hub_friend", { friendCode: code, alias: trimmed || null }); return true; }
   catch { return false; }
+}
+
+export function isNormalizedOslUsername(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length >= 3
+    && value.length <= 30
+    && /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/.test(value);
+}
+
+export async function claimOslUsername(username: string): Promise<HubUsernameClaim | null> {
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
+  try { return parseHubUsernameClaim(await invoke<unknown>("claim_hub_username", { username })); }
+  catch { return null; }
+}
+
+export async function getOslUsernameStatus(username: string): Promise<HubUsernameStatus | null> {
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
+  try {
+    const raw = await invoke<unknown>("get_hub_username_status", { username });
+    if (!isRecord(raw) || !exact(raw, ["username", "ownedByActiveIdentity"])) return null;
+    if (raw.username !== username || typeof raw.ownedByActiveIdentity !== "boolean") return null;
+    return raw as unknown as HubUsernameStatus;
+  } catch { return null; }
+}
+
+export async function addOslFriendByUsername(username: string, nickname = ""): Promise<HubAddFriendResult | null> {
+  const trimmed = nickname.trim();
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username) || !validFriendNickname(trimmed)) return null;
+  try {
+    return parseHubAddFriendResult(await invoke<unknown>("add_hub_friend_by_username", {
+      username,
+      alias: trimmed || null,
+    }));
+  } catch { return null; }
+}
+
+export function parseHubUsernameClaim(raw: unknown): HubUsernameClaim | null {
+  if (!isRecord(raw) || !exact(raw, ["username", "oslUserId"])) return null;
+  if (!isNormalizedOslUsername(raw.username) || !safe(raw.oslUserId, 256)) return null;
+  return raw as unknown as HubUsernameClaim;
+}
+
+export function parseHubAddFriendResult(raw: unknown): HubAddFriendResult | null {
+  if (!isRecord(raw) || !exact(raw, ["disposition", "personId", "oslUserId", "safetyNumber", "codeSignatureValid", "safetyNumberVerified"])) return null;
+  if (!["added", "already_present", "key_change_requires_verification"].includes(String(raw.disposition))) return null;
+  if (!safe(raw.personId, 180) || !safe(raw.oslUserId, 256) || !safe(raw.safetyNumber, 180)) return null;
+  if (raw.codeSignatureValid !== true || typeof raw.safetyNumberVerified !== "boolean") return null;
+  if (raw.disposition === "added" && raw.safetyNumberVerified) return null;
+  return raw as unknown as HubAddFriendResult;
 }
 
 export async function listHubPeople(): Promise<HubPerson[] | null> {
@@ -528,6 +652,20 @@ export function parseHubPerson(raw: unknown): HubPerson | null {
   const whitelistedScopes = raw.whitelistedScopes.map(parseHubPersonWhitelistScope);
   if (!whitelistedScopes.every((scope): scope is HubPersonWhitelistScope => scope !== null)) return null;
   return { ...raw, whitelistedScopes } as unknown as HubPerson;
+}
+
+export function parseOslProfile(raw: unknown): OslProfile | null {
+  if (!isRecord(raw) || !exact(raw, ["displayName", "usernameCandidate", "avatar", "accentColor", "bannerColor", "frame", "effect", "status"])) return null;
+  if (!boundedOptionalText(raw.displayName, 64, 192, false)
+    || typeof raw.usernameCandidate !== "string"
+    || !isNormalizedOslUsername(raw.usernameCandidate)
+    || !validProfileAvatar(raw.avatar)
+    || typeof raw.accentColor !== "string" || !/^#[0-9a-f]{6}$/u.test(raw.accentColor)
+    || typeof raw.bannerColor !== "string" || !/^#[0-9a-f]{6}$/u.test(raw.bannerColor)
+    || !["none", "thin", "double", "glow"].includes(String(raw.frame))
+    || !["none", "gradient", "pulse", "shimmer"].includes(String(raw.effect))
+    || !boundedOptionalText(raw.status, 160, 512, true)) return null;
+  return raw as unknown as OslProfile;
 }
 
 function parseHubPersonWhitelistScope(raw: unknown): HubPersonWhitelistScope | null {
@@ -669,16 +807,36 @@ export function parseFullCleanup(raw: unknown): HubFullCleanupResult | null {
 }
 
 export function parseLocalPrivacyScan(raw: unknown): LocalPrivacyScanResult | null {
-  if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"])) return null;
-  if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > 2_000 || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== false) return null;
+  return parsePrivacyScan(raw, false);
+}
+
+export function parsePersistedLocalPrivacyScan(raw: unknown): PersistedLocalPrivacyScanResult | null {
+  return parsePrivacyScan(raw, true);
+}
+
+function parsePrivacyScan(raw: unknown, persisted: false): LocalPrivacyScanResult | null;
+function parsePrivacyScan(raw: unknown, persisted: true): PersistedLocalPrivacyScanResult | null;
+function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null {
+  if (!isRecord(raw) || !exact(raw, ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted", "attachmentsScanned", "imagesChecked", "videosChecked", "attachmentTypesScanned", "uninspectedAttachments"])) return null;
+  if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > 2_000 || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== persisted) return null;
+  if (!boundedCount(raw.attachmentsScanned)
+    || typeof raw.imagesChecked !== "boolean"
+    || typeof raw.videosChecked !== "boolean"
+    || !Array.isArray(raw.attachmentTypesScanned)
+    || raw.attachmentTypesScanned.length > 64
+    || !raw.attachmentTypesScanned.every((value) => safePlaintext(value, 80))
+    || new Set(raw.attachmentTypesScanned).size !== raw.attachmentTypesScanned.length
+    || !Array.isArray(raw.uninspectedAttachments)
+    || raw.uninspectedAttachments.length > 1_000
+    || !raw.uninspectedAttachments.every(validUninspectedAttachment)) return null;
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
-  return { ...raw, findings } as LocalPrivacyScanResult;
+  return { ...raw, findings } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {
-  if (!isRecord(raw) || !exact(raw, ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete"])) return null;
-  if (!safeId(raw.serviceId, 32) || !safePlaintext(raw.accountId, 128) || !safePlaintext(raw.conversationId, 256) || !safePlaintext(raw.messageLocator, 256) || typeof raw.authoredBySelf !== "boolean" || !(raw.createdAtUnixMs === null || Number.isSafeInteger(raw.createdAtUnixMs)) || !["credential", "recovery_material", "payment_card", "government_identity", "precise_location", "profanity", "sexual_content", "sensitive_health", "controlled_substances", "potentially_unlawful_conduct", "work_sensitive_information"].includes(String(raw.category)) || !Number.isSafeInteger(raw.confidence) || Number(raw.confidence) < 0 || Number(raw.confidence) > 100 || !safePlaintext(raw.reason, 240) || !safePlaintext(raw.localPreview, 256) || typeof raw.canRequestDelete !== "boolean") return null;
+  if (!isRecord(raw) || !exact(raw, ["serviceId", "accountId", "conversationId", "messageLocator", "authoredBySelf", "createdAtUnixMs", "category", "confidence", "reason", "localPreview", "canRequestDelete", "attachmentPath"])) return null;
+  if (!safeId(raw.serviceId, 32) || !safePlaintext(raw.accountId, 128) || !safePlaintext(raw.conversationId, 256) || !safePlaintext(raw.messageLocator, 256) || typeof raw.authoredBySelf !== "boolean" || !(raw.createdAtUnixMs === null || Number.isSafeInteger(raw.createdAtUnixMs)) || !["credential", "recovery_material", "payment_card", "government_identity", "precise_location", "profanity", "sexual_content", "sensitive_health", "controlled_substances", "potentially_unlawful_conduct", "work_sensitive_information"].includes(String(raw.category)) || !Number.isSafeInteger(raw.confidence) || Number(raw.confidence) < 0 || Number(raw.confidence) > 100 || !safePlaintext(raw.reason, 240) || !safePlaintext(raw.localPreview, 256) || typeof raw.canRequestDelete !== "boolean" || !(raw.attachmentPath === null || safePlaintext(raw.attachmentPath, 1_024))) return null;
   if (raw.canRequestDelete && !raw.authoredBySelf) return null;
   return raw as unknown as LocalPrivacyFinding;
 }
@@ -690,7 +848,31 @@ function validLocalCandidate(candidate: LocalMessageCandidate): boolean {
     && safePlaintext(candidate.messageLocator, 256)
     && typeof candidate.authoredBySelf === "boolean"
     && (candidate.createdAtUnixMs === null || Number.isSafeInteger(candidate.createdAtUnixMs))
-    && safePlaintext(candidate.text, 8 * 1024);
+    && ((safePlaintext(candidate.text, 8 * 1024)) || (candidate.text === "" && Boolean(candidate.attachments?.length)))
+    && (candidate.attachments === undefined || (Array.isArray(candidate.attachments)
+      && candidate.attachments.length > 0
+      && candidate.attachments.length <= 64
+      && candidate.attachments.every(validLocalAttachment)));
+}
+
+function validLocalAttachment(attachment: LocalAttachmentCandidate): boolean {
+  return isRecord(attachment)
+    && exact(attachment, ["attachmentId", "displayName", "contentBase64"])
+    && safePlaintext(attachment.attachmentId, 256)
+    && safePlaintext(attachment.displayName, 1_024)
+    && typeof attachment.contentBase64 === "string"
+    && attachment.contentBase64.length <= 12 * 1024 * 1024
+    && attachment.contentBase64.length % 4 === 0
+    && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(attachment.contentBase64);
+}
+
+function validUninspectedAttachment(value: unknown): boolean {
+  if (!isRecord(value) || !exact(value, ["attachmentId", "path", "detectedType", "reason", "detail"])) return false;
+  return safePlaintext(value.attachmentId, 256)
+    && safePlaintext(value.path, 1_024)
+    && safePlaintext(value.detectedType, 80)
+    && ["unsupported", "encrypted", "malformed", "limit_exceeded", "unsafe_archive_entry", "model_not_installed", "dependency_not_installed", "image_only_pdf_needs_ocr"].includes(String(value.reason))
+    && safePlaintext(value.detail, 240);
 }
 
 function parseIdentityCreation(raw: unknown): HubIdentityCreation | null {
@@ -752,6 +934,56 @@ export function parseManualPeerContext(raw: unknown): ManualPeerContext | null {
     || !isContextId(raw.peerOslUserId)
     || typeof raw.scopeApproved !== "boolean") return null;
   return raw as unknown as ManualPeerContext;
+}
+
+function parseOslChatPreparedText(raw: unknown): OslChatPreparedText | null {
+  if (!isRecord(raw) || !exact(raw, ["messageId", "expiresAt", "personToPersonE2ee", "viewOnce", "deliveredToOslInbox"])) return null;
+  if (!safe(raw.messageId, 96)
+    || !Number.isSafeInteger(raw.expiresAt)
+    || Number(raw.expiresAt) <= 0
+    || raw.personToPersonE2ee !== true
+    || typeof raw.viewOnce !== "boolean"
+    || raw.deliveredToOslInbox !== true) return null;
+  return raw as unknown as OslChatPreparedText;
+}
+
+function parseOslChatOpenedText(raw: unknown): OslChatOpenedText | null {
+  if (!isRecord(raw) || !exact(raw, ["plaintext", "contextVerified", "personToPersonE2ee", "viewOnceConsumed", "expiresAt"])) return null;
+  if (!isHubPlaintext(raw.plaintext)
+    || raw.contextVerified !== true
+    || raw.personToPersonE2ee !== true
+    || typeof raw.viewOnceConsumed !== "boolean"
+    || !Number.isSafeInteger(raw.expiresAt)
+    || Number(raw.expiresAt) <= 0) return null;
+  return raw as unknown as OslChatOpenedText;
+}
+
+function parseOslChatOpenedBatch(raw: unknown): OslChatOpenedBatch | null {
+  if (!isRecord(raw) || !exact(raw, ["messages", "pendingViewOnce", "acknowledgments", "fetched"])
+    || !Array.isArray(raw.messages) || raw.messages.length > 64
+    || !Array.isArray(raw.pendingViewOnce) || raw.pendingViewOnce.length > 64
+    || !Array.isArray(raw.acknowledgments) || raw.acknowledgments.length > 64
+    || !Number.isSafeInteger(raw.fetched) || Number(raw.fetched) < 0 || Number(raw.fetched) > 64) return null;
+  const messages = raw.messages.map(parseOslChatOpenedText);
+  const pendingViewOnce = raw.pendingViewOnce.map((entry) => {
+    if (!isRecord(entry) || !exact(entry, ["messageId", "expiresAt", "personToPersonE2ee"])
+      || !safe(entry.messageId, 96) || !Number.isSafeInteger(entry.expiresAt)
+      || Number(entry.expiresAt) <= 0 || entry.personToPersonE2ee !== true) return null;
+    return entry as { messageId: string; expiresAt: number; personToPersonE2ee: true };
+  });
+  const acknowledgments = raw.acknowledgments.map((entry) => {
+    if (!isRecord(entry) || !exact(entry, ["messageId", "status", "acknowledgedAt"])
+      || !safe(entry.messageId, 96) || (entry.status !== "received" && entry.status !== "opened")
+      || !Number.isSafeInteger(entry.acknowledgedAt) || Number(entry.acknowledgedAt) <= 0) return null;
+    return entry as unknown as OslChatAcknowledgment;
+  });
+  if (messages.some((entry) => entry === null) || pendingViewOnce.some((entry) => entry === null) || acknowledgments.some((entry) => entry === null)) return null;
+  return {
+    messages: messages as OslChatOpenedText[],
+    pendingViewOnce: pendingViewOnce as OslChatOpenedBatch["pendingViewOnce"],
+    acknowledgments: acknowledgments as OslChatAcknowledgment[],
+    fetched: raw.fetched as number,
+  };
 }
 
 export function parsePreparedPeerProseText(raw: unknown): PreparedPeerProseText | null {
@@ -841,6 +1073,24 @@ function boundedUtf8Text(value: unknown, maxBytes: number): value is string {
     && value.length > 0
     && new TextEncoder().encode(value).length <= maxBytes
     && !/[\u0000\u007f]/.test(value);
+}
+
+function boundedOptionalText(value: unknown, maxChars: number, maxBytes: number, allowEmpty: boolean): value is string {
+  return typeof value === "string"
+    && (allowEmpty || value.length > 0)
+    && [...value].length <= maxChars
+    && new TextEncoder().encode(value).length <= maxBytes
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function validProfileAvatar(value: unknown): value is string | null {
+  if (value === null) return true;
+  if (typeof value !== "string" || value.length > 2_800_000) return false;
+  if (/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/u.test(value)) return true;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password && value.length <= 2_048;
+  } catch { return false; }
 }
 
 function safeContextToken(value: unknown): value is string {

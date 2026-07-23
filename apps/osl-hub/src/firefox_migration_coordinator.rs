@@ -14,6 +14,9 @@ const WIZARD_HEADINGS: &[&str] = &[
 ];
 const SOURCE_SELECTOR_AUTOMATION_ID: &str = "browser-profile-selector";
 const IMPORT_AUTOMATION_ID: &str = "import";
+const COMPLETE_HEADINGS: &[&str] = &["Data import complete"];
+const COMPLETE_BUTTONS: &[&str] = &["Done"];
+const MANUAL_PASSWORD_SKIP_BUTTONS: &[&str] = &["Skip"];
 const FIREFOX_MIGRATION_WINDOW_CLASSES: &[&str] = &["MozillaWindowClass", "MozillaDialogClass"];
 
 fn is_firefox_migration_window_class(class_name: &str) -> bool {
@@ -42,6 +45,18 @@ fn source_profile_prefix(source: BrowserImportId) -> &'static str {
     }
 }
 
+fn manual_password_heading(source: BrowserImportId) -> String {
+    let source_name = match source {
+        BrowserImportId::Chrome => "Chrome",
+        BrowserImportId::Edge => "Microsoft Edge",
+        BrowserImportId::Firefox => "Firefox",
+        BrowserImportId::Brave => "Brave",
+        BrowserImportId::Opera => "Opera",
+        BrowserImportId::DuckDuckGo => "DuckDuckGo",
+    };
+    format!("How to import passwords from {source_name}")
+}
+
 fn exact_unique_match(names: &[String], allowlist: &[&str]) -> Result<usize, String> {
     let matches = names
         .iter()
@@ -60,7 +75,8 @@ fn exact_unique_match(names: &[String], allowlist: &[&str]) -> Result<usize, Str
 mod windows_impl {
     use super::{
         exact_unique_match, is_firefox_migration_window_class, source_names, source_profile_prefix,
-        BrowserImportId, IMPORT_AUTOMATION_ID, SOURCE_SELECTOR_AUTOMATION_ID, WIZARD_HEADINGS,
+        BrowserImportId, COMPLETE_BUTTONS, COMPLETE_HEADINGS, IMPORT_AUTOMATION_ID,
+        MANUAL_PASSWORD_SKIP_BUTTONS, SOURCE_SELECTOR_AUTOMATION_ID, WIZARD_HEADINGS,
     };
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
@@ -84,16 +100,92 @@ mod windows_impl {
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
+    use windows_sys::Win32::System::StationsAndDesktops::{
+        CloseDesktop, GetThreadDesktop, OpenDesktopW, SetThreadDesktop,
+    };
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
-        SetForegroundWindow, ShowWindow, SW_RESTORE, WM_CLOSE,
+        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
+        IsWindowVisible, PostMessageW, SetForegroundWindow, ShowWindow, SW_SHOWNOACTIVATE,
+        WM_CLOSE,
     };
 
     const WINDOW_WAIT: Duration = Duration::from_secs(8);
     const PROFILE_ITEM_WAIT: Duration = Duration::from_secs(2);
+    const IMPORT_WAIT: Duration = Duration::from_secs(90);
     const TREE_LIMIT: usize = 512;
 
+    fn restore_foreground(window: isize) {
+        if window == 0 || unsafe { IsWindow(window as SysHwnd) } == 0 {
+            return;
+        }
+        let target = window as SysHwnd;
+        let current_foreground = unsafe { GetForegroundWindow() };
+        if current_foreground == target {
+            return;
+        }
+        let current_thread = unsafe { GetCurrentThreadId() };
+        let foreground_thread = if !current_foreground.is_null() {
+            unsafe { GetWindowThreadProcessId(current_foreground, std::ptr::null_mut()) }
+        } else {
+            0
+        };
+        let target_thread = unsafe { GetWindowThreadProcessId(target, std::ptr::null_mut()) };
+        let attached_foreground = foreground_thread != 0
+            && foreground_thread != current_thread
+            && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
+        let attached_target = target_thread != 0
+            && target_thread != current_thread
+            && target_thread != foreground_thread
+            && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
+        unsafe {
+            ShowWindow(target, SW_SHOWNOACTIVATE);
+            SetForegroundWindow(target);
+            if attached_target {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+            if attached_foreground {
+                AttachThreadInput(current_thread, foreground_thread, 0);
+            }
+        }
+    }
+
     struct ComGuard(bool);
+
+    struct DesktopGuard {
+        original: isize,
+        hidden: isize,
+    }
+
+    impl DesktopGuard {
+        fn enter(name: &str) -> Result<Self, String> {
+            let name_wide = name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+            let hidden = unsafe { OpenDesktopW(name_wide.as_ptr(), 0, 0, 0x1000_0000) };
+            if hidden.is_null() || unsafe { SetThreadDesktop(hidden) } == 0 {
+                if !hidden.is_null() {
+                    unsafe { CloseDesktop(hidden) };
+                }
+                return Err("The private OSL browser-import desktop is unavailable".to_owned());
+            }
+            Ok(Self {
+                original: original as isize,
+                hidden: hidden as isize,
+            })
+        }
+    }
+
+    impl Drop for DesktopGuard {
+        fn drop(&mut self) {
+            unsafe {
+                SetThreadDesktop(self.original as _);
+                CloseDesktop(self.hidden as _);
+            }
+        }
+    }
 
     struct WindowCandidates {
         root_process_id: u32,
@@ -440,21 +532,78 @@ mod windows_impl {
             .map_err(|_| "Firefox would not start the selected import".to_owned())
     }
 
+    fn finish_import(
+        automation: &IUIAutomation,
+        root: &IUIAutomationElement,
+        window: SysHwnd,
+        window_process_id: u32,
+        source: BrowserImportId,
+        restore_window: isize,
+    ) -> Result<bool, String> {
+        let deadline = Instant::now() + IMPORT_WAIT;
+        let manual_heading = super::manual_password_heading(source);
+        let mut skipped_manual_password_export = false;
+        while Instant::now() < deadline {
+            restore_foreground(restore_window);
+            if unsafe { IsWindow(window) } == 0 {
+                return Ok(skipped_manual_password_export);
+            }
+            let elements = descendants(automation, root, window_process_id)?;
+            if !exact_elements(
+                &elements,
+                &[manual_heading.as_str()],
+                &[UIA_TextControlTypeId],
+            )
+            .is_empty()
+            {
+                let skip = exact_elements(
+                    &elements,
+                    MANUAL_PASSWORD_SKIP_BUTTONS,
+                    &[UIA_ButtonControlTypeId],
+                );
+                match skip.as_slice() {
+                    [button] => {
+                        invoke_action(button)?;
+                        skipped_manual_password_export = true;
+                        std::thread::sleep(Duration::from_millis(150));
+                        continue;
+                    }
+                    [] => {}
+                    _ => {
+                        return Err("Firefox exposed ambiguous password-import controls".to_owned())
+                    }
+                }
+            }
+            if !exact_elements(&elements, COMPLETE_HEADINGS, &[UIA_TextControlTypeId]).is_empty() {
+                let done = exact_elements(&elements, COMPLETE_BUTTONS, &[UIA_ButtonControlTypeId]);
+                match done.as_slice() {
+                    [button] => {
+                        invoke_action(button)?;
+                        restore_foreground(restore_window);
+                        return Ok(skipped_manual_password_export);
+                    }
+                    [] => {}
+                    _ => return Err("Firefox exposed ambiguous completion controls".to_owned()),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err("Firefox import did not reach a verified completion screen within 90 seconds".to_owned())
+    }
+
     fn coordinate_window(
         automation: &IUIAutomation,
         window: SysHwnd,
         window_process_id: u32,
         source: BrowserImportId,
-    ) -> Result<(), String> {
+        owner_window: isize,
+    ) -> Result<bool, String> {
         unsafe {
-            ShowWindow(window, SW_RESTORE);
-            SetForegroundWindow(window);
+            ShowWindow(window, SW_SHOWNOACTIVATE);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        restore_foreground(owner_window);
         let root = unsafe { automation.ElementFromHandle(HWND(window as isize)) }
             .map_err(|_| "Firefox migration window is unavailable".to_owned())?;
-        unsafe { root.SetFocus() }
-            .map_err(|_| "Firefox migration window could not receive focus".to_owned())?;
         let elements = descendants(automation, &root, window_process_id)?;
         require_exact_one(
             exact_elements(&elements, WIZARD_HEADINGS, &[UIA_TextControlTypeId]),
@@ -491,14 +640,30 @@ mod windows_impl {
                 select_source(&profile)?;
             }
         }
+        restore_foreground(owner_window);
         std::thread::sleep(Duration::from_millis(150));
         let refreshed = descendants(automation, &root, window_process_id)?;
         let action =
             exact_automation_id(&refreshed, IMPORT_AUTOMATION_ID, UIA_ButtonControlTypeId)?;
-        invoke_action(&action)
+        invoke_action(&action)?;
+        restore_foreground(owner_window);
+        finish_import(
+            automation,
+            &root,
+            window,
+            window_process_id,
+            source,
+            owner_window,
+        )
     }
 
-    pub(super) fn coordinate(process_id: u32, source: BrowserImportId) -> Result<(), String> {
+    pub(super) fn coordinate(
+        process_id: u32,
+        source: BrowserImportId,
+        owner_window: isize,
+        desktop_name: &str,
+    ) -> Result<bool, String> {
+        let _desktop = DesktopGuard::enter(desktop_name)?;
         let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let _guard = ComGuard(initialized);
         let automation: IUIAutomation =
@@ -507,13 +672,23 @@ mod windows_impl {
         let deadline = Instant::now() + WINDOW_WAIT;
         let mut last_error = "Firefox migration window did not appear".to_owned();
         while Instant::now() < deadline {
+            restore_foreground(owner_window);
             let windows = firefox_windows(process_id);
             if windows.len() > 1 {
                 return Err("Firefox exposed ambiguous migration windows".to_owned());
             }
             if let Some((window, window_process_id)) = windows.first() {
-                match coordinate_window(&automation, *window, *window_process_id, source) {
-                    Ok(()) => return Ok(()),
+                match coordinate_window(
+                    &automation,
+                    *window,
+                    *window_process_id,
+                    source,
+                    owner_window,
+                ) {
+                    Ok(password_follow_up) => {
+                        restore_foreground(owner_window);
+                        return Ok(password_follow_up);
+                    }
                     Err(error) => last_error = error,
                 }
             }
@@ -522,7 +697,8 @@ mod windows_impl {
         Err(last_error)
     }
 
-    pub(super) fn close(process_id: u32) -> Result<(), String> {
+    pub(super) fn close(process_id: u32, desktop_name: &str) -> Result<(), String> {
+        let _desktop = DesktopGuard::enter(desktop_name)?;
         let windows = firefox_windows(process_id);
         match windows.as_slice() {
             [] => Ok(()),
@@ -533,7 +709,8 @@ mod windows_impl {
         }
     }
 
-    pub(super) fn is_closed(process_id: u32) -> Result<(), String> {
+    pub(super) fn is_closed(process_id: u32, desktop_name: &str) -> Result<(), String> {
+        let _desktop = DesktopGuard::enter(desktop_name)?;
         firefox_windows(process_id)
             .is_empty()
             .then_some(())
@@ -542,36 +719,46 @@ mod windows_impl {
 }
 
 #[cfg(target_os = "windows")]
-pub fn coordinate(process_id: u32, source: BrowserImportId) -> Result<(), String> {
-    windows_impl::coordinate(process_id, source)
+pub fn coordinate(
+    process_id: u32,
+    source: BrowserImportId,
+    owner_window: isize,
+    desktop_name: &str,
+) -> Result<bool, String> {
+    windows_impl::coordinate(process_id, source, owner_window, desktop_name)
 }
 
-pub fn close(process_id: u32) -> Result<(), String> {
+pub fn close(process_id: u32, desktop_name: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        windows_impl::close(process_id)
+        windows_impl::close(process_id, desktop_name)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = process_id;
+        let _ = (process_id, desktop_name);
         Err("Firefox migration coordination is available only on Windows".to_owned())
     }
 }
 
-pub fn is_closed(process_id: u32) -> Result<(), String> {
+pub fn is_closed(process_id: u32, desktop_name: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        windows_impl::is_closed(process_id)
+        windows_impl::is_closed(process_id, desktop_name)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = process_id;
+        let _ = (process_id, desktop_name);
         Err("Firefox migration coordination is available only on Windows".to_owned())
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn coordinate(_process_id: u32, _source: BrowserImportId) -> Result<(), String> {
+pub fn coordinate(
+    _process_id: u32,
+    _source: BrowserImportId,
+    _owner_window: isize,
+    _desktop_name: &str,
+) -> Result<bool, String> {
     Err("Firefox migration coordination is available only on Windows".to_owned())
 }
 
@@ -593,6 +780,13 @@ mod tests {
             source_profile_prefix(BrowserImportId::Edge),
             "Microsoft Edge — "
         );
+        assert_eq!(
+            manual_password_heading(BrowserImportId::Chrome),
+            "How to import passwords from Chrome"
+        );
+        assert_eq!(COMPLETE_HEADINGS, &["Data import complete"]);
+        assert_eq!(COMPLETE_BUTTONS, &["Done"]);
+        assert_eq!(MANUAL_PASSWORD_SKIP_BUTTONS, &["Skip"]);
     }
 
     #[test]

@@ -449,12 +449,18 @@ describe("optional OSL Privacy adapters", () => {
         reason: "This looks like a credential.",
         localPreview: "password: example",
         canRequestDelete: true,
+        attachmentPath: null,
       }],
       messagesScanned: 1,
       messagesRejected: 0,
       truncated: false,
       analysisLocation: "this_device_only",
       persisted: false,
+      attachmentsScanned: 0,
+      imagesChecked: false,
+      videosChecked: false,
+      attachmentTypesScanned: [],
+      uninspectedAttachments: [],
     });
     expect(result?.analysisLocation).toBe("this_device_only");
     expect(parseLocalPrivacyScan({ ...result, analysisLocation: "cloud" })).toBeNull();
@@ -467,10 +473,12 @@ describe("optional OSL Privacy adapters", () => {
         findings: [{
           serviceId: "instagram", accountId: "qa", conversationId: "chat", messageLocator: "message",
           authoredBySelf: true, createdAtUnixMs: null, category, confidence: 70,
-          reason: "Review this message in context.", localPreview: "local", canRequestDelete: true,
+          reason: "Review this message in context.", localPreview: "local", canRequestDelete: true, attachmentPath: null,
         }],
         messagesScanned: 1, messagesRejected: 0, truncated: false,
         analysisLocation: "this_device_only", persisted: false,
+        attachmentsScanned: 0, imagesChecked: false, videosChecked: false,
+        attachmentTypesScanned: [], uninspectedAttachments: [],
       });
       expect(result?.findings[0]?.category).toBe(category);
     }
@@ -478,11 +486,28 @@ describe("optional OSL Privacy adapters", () => {
       findings: [{
         serviceId: "instagram", accountId: "qa", conversationId: "chat", messageLocator: "message",
         authoredBySelf: true, createdAtUnixMs: null, category: "criminal_verdict", confidence: 100,
-        reason: "Bad category.", localPreview: "local", canRequestDelete: true,
+        reason: "Bad category.", localPreview: "local", canRequestDelete: true, attachmentPath: null,
       }],
       messagesScanned: 1, messagesRejected: 0, truncated: false,
       analysisLocation: "this_device_only", persisted: false,
+      attachmentsScanned: 0, imagesChecked: false, videosChecked: false,
+      attachmentTypesScanned: [], uninspectedAttachments: [],
     });
     expect(invalid).toBeNull();
+  });
+
+  it("preserves honest uninspected attachment reasons and rejects invented capability output", () => {
+    const scan = {
+      findings: [], messagesScanned: 1, messagesRejected: 0, truncated: false,
+      analysisLocation: "this_device_only", persisted: false,
+      attachmentsScanned: 1, imagesChecked: false, videosChecked: false,
+      attachmentTypesScanned: ["png"],
+      uninspectedAttachments: [{
+        attachmentId: "photo", path: "photo.png", detectedType: "png",
+        reason: "model_not_installed", detail: "Install the verified local image model pack.",
+      }],
+    } as const;
+    expect(parseLocalPrivacyScan(scan)?.uninspectedAttachments[0]?.reason).toBe("model_not_installed");
+    expect(parseLocalPrivacyScan({ ...scan, uninspectedAttachments: [{ ...scan.uninspectedAttachments[0], reason: "clean" }] })).toBeNull();
   });
 });

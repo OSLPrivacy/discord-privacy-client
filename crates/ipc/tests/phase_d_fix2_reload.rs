@@ -249,10 +249,10 @@ fn reload_handles_decrypt_failure_gracefully() {
 
     // Now switch to key B. Commit 3 contract: a key IS installed
     // (post-gate) and peer_map.json won't decrypt under it ⇒
-    // sealed by a different key ⇒ quarantine-by-rename, NOT a
-    // permanent surfaced error. The loader then sees no file and
-    // leaves state at default; a fresh one is recreated under key B
-    // by the downstream self-entry/re-encrypt path.
+    // sealed by a different key ⇒ quarantine-by-rename plus an
+    // explicit reload error. The gate treats that error as fatal and
+    // keeps the session locked rather than silently starting from an
+    // empty security policy under key B.
     let key_b = [0xBBu8; 32];
     set_file_storage_key(Some(key_b));
     let state = AppState::new();
@@ -262,9 +262,11 @@ fn reload_handles_decrypt_failure_gracefully() {
         "decrypt under wrong key must not 'succeed'"
     );
     assert!(
-        !report.errors.iter().any(|e| e.starts_with("peer_map:")),
-        "wrong-key peer_map must be quarantined, not surfaced as a \
-         permanent error; got {:?}",
+        report
+            .errors
+            .iter()
+            .any(|e| e.starts_with("peer_map.json:")),
+        "wrong-key peer_map must be quarantined and surfaced to the gate; got {:?}",
         report.errors
     );
     // The original file was renamed aside (non-destructive), not

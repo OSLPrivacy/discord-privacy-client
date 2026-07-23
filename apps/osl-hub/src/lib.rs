@@ -1,3 +1,4 @@
+pub mod attachment_scan;
 pub mod browser_companion;
 pub mod burn_contract;
 pub mod control_contract;
@@ -10,6 +11,8 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_discord_adapter;
 pub mod native_window_host;
+#[cfg(feature = "core")]
+pub mod osl_chat;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
 pub mod preferences;
@@ -44,7 +47,11 @@ pub mod identity_registry;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
 #[cfg(feature = "core")]
+pub mod osl_profile;
+#[cfg(feature = "core")]
 pub mod password_lifecycle;
+#[cfg(feature = "core")]
+pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 #[cfg(feature = "core")]

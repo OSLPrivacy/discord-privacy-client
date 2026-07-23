@@ -667,6 +667,9 @@ pub fn manual_peer_scope_id(
     account_id: &str,
     person_id: &str,
 ) -> Result<String, String> {
+    // First-party OSL Chat is not a hosted third-party service. Keep its
+    // service/account identifiers fixed here while retaining the existing
+    // manifest check for every provider-backed manual scope.
     if service_id != "osl-chat" || account_id != "osl-main" {
         crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
     }
