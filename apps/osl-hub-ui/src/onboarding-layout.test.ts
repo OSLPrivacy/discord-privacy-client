@@ -117,7 +117,7 @@ describe("fresh-account continuation", () => {
     expect(previous).toContain('privacy: "pro"');
     expect(previous).toContain('scrub: "privacy"');
     expect(binding).toMatch(/#continue-detected-apps[\s\S]*?onboardingRoute = "mullvad"/);
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
     expect(binding).toMatch(/#continue-onboarding-privacy[\s\S]*?onboardingRoute = "scrub"/);
   });
 
@@ -346,7 +346,7 @@ describe("fresh-account continuation", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     const completion = functionSource("completeOnboarding", "bindPasswordForm");
     const scrub = functionSource("scrubSetupContent", "scrubAccountSelections");
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
     expect(binding).toMatch(/onboardingRoute !== "sending"[\s\S]*?canCompleteSetup\(setup\)[\s\S]*?onboardingRoute = "passwords"/);
     expect(source).toContain('data-password-role-next="${next}"');
     expect(binding).toContain('button.dataset.passwordRoleNext as OnboardingRoute');
@@ -393,7 +393,7 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain('runMullvadSetupAction("open")');
     expect(content).toContain('data-mullvad-choice="${value}"');
     expect(binding).toContain('localStorage.setItem(mullvadStartupStorageKey');
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "sending"/);
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "privacy"/);
   });
 
   it("keeps Mullvad installation and hosting behind one setup action", () => {

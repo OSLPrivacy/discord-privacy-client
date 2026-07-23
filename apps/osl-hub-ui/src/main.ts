@@ -1779,7 +1779,7 @@ function bindOnboarding(): void {
     render();
   });
   document.querySelector<HTMLInputElement>("#onboarding-screenshot-protection")?.addEventListener("change", (event) => void changeScreenshotProtection(event.currentTarget as HTMLInputElement));
-  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
+  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "privacy"; render(); });
   document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
   document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
   document.querySelectorAll<HTMLButtonElement>("[data-mullvad-choice]").forEach((button) => button.addEventListener("click", () => {
@@ -1790,7 +1790,7 @@ function bindOnboarding(): void {
   document.querySelector("#continue-mullvad")?.addEventListener("click", () => {
     if (!mullvadPreference) return;
     if (mullvadPreference === "auto" && mullvadStatus.availability === "installed") void openMullvad().catch(() => undefined);
-    onboardingRoute = "sending";
+    onboardingRoute = "privacy";
     render();
   });
   document.querySelectorAll<HTMLInputElement>("[data-setup-privacy]").forEach((input) => input.addEventListener("change", () => {
