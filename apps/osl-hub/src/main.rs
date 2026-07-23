@@ -101,11 +101,12 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "OSL Privacy is unavailable".to_owned())?;
-    let protection = if enabled {
-        runtime::ScreenshotProtection::On
-    } else {
-        runtime::ScreenshotProtection::Off
-    };
+    // Screenshot protection disabled site-wide (owner request): the main OSL
+    // window always allows ordinary OS capture so the app can be screenshotted.
+    // Requests to enable are accepted (Ok) so plaintext-gated features such as
+    // OSL Chat still proceed — they simply run without capture resistance.
+    let _ = enabled;
+    let protection = runtime::ScreenshotProtection::Off;
     screenshot::apply_to_window(&window, protection)
         .map_err(|_| "Windows capture resistance could not be changed".to_owned())
 }
