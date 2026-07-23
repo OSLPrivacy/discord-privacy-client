@@ -375,7 +375,7 @@ const oslChatRemoteAccessStorageKey = "osl-chat-remote-access-v1";
 const friendDefaultOslChatStorageKey = "osl-friend-default-chat-v1";
 const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
-  "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;

@@ -182,7 +182,7 @@ const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "instagram", "snapchat", "x", "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ];
 const nativePreviewApps: readonly NativeApp[] = [
   { id: "discord", displayName: "Discord", availability: "installable", isolatedProfileAvailable: true, supportsOverlay: false },

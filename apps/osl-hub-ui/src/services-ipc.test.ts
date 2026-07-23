@@ -366,7 +366,7 @@ describe("browser-owned import IPC", () => {
     });
     mocks.invoke.mockClear();
     await expect(hostBrowserCompanion("discord", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
-    await expect(hostBrowserCompanion("outlook", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
+    await expect(hostBrowserCompanion("slack", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
     await expect(hostBrowserCompanion("gmail", "../firefox" as "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
     await expect(hostBrowserCompanion("gmail", "firefox", "fresh" as "isolatedOsl")).rejects.toThrow("browser companion unavailable");
     expect(mocks.invoke).not.toHaveBeenCalled();
