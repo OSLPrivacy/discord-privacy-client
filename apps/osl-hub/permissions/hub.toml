@@ -19,6 +19,11 @@ description = "After exact visual revalidation, encrypt one bounded OSL draft to
 commands.allow = ["prepare_whatsapp_qa_protected_text"]
 
 [[permission]]
+identifier = "allow-open-whatsapp-qa-protected-text"
+description = "Open one explicitly pasted OSL carrier only after exact WhatsApp visual revalidation; never reads provider content, clipboard, history, or private storage."
+commands.allow = ["open_whatsapp_qa_protected_text"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]

@@ -21,14 +21,17 @@ describe("dedicated WhatsApp QA build surface", () => {
     expect(source).not.toMatch(/host-focus|host-resize|host-detach|Focus claimed window|Realign|Detach safely/iu);
   });
 
-  it("has no browser, setup, install, provider, credential, or send authority", () => {
+  it("has no browser, setup, install, provider, credential, or provider-send authority", () => {
     const source = read("./whatsapp-qa.ts");
     expect(source).not.toMatch(/https?:\/\//u);
     expect(source).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|<iframe/iu);
     expect(source).not.toMatch(/createHubOslIdentity|importHubOslIdentity|setupHubMainPassword|installNativeApp|openServiceHost/iu);
     expect(source).not.toMatch(/prepare.*protected|encrypt|decryptHub|sendMessage|attachment.*invoke/iu);
+    expect(source.match(/\binvoke(?:<[^>]+>)?\s*\(/g)).toHaveLength(4);
+    expect(source).toContain('invoke("open_whatsapp_qa_protected_text", { coverText })');
+    expect(source).toContain("does not read WhatsApp or your clipboard automatically");
     expect(source).toContain("OSL controls appear only after exact chat verification");
-    expect(source).not.toMatch(/Protect text|Decrypt|Burn|Covertext|Image \+ caption|File \+ caption/u);
+    expect(source).not.toMatch(/Protect text|Burn|Covertext|Image \+ caption|File \+ caption/u);
   });
 
   it("keeps screenshot calibration explicit, bounded, and fail closed", () => {
@@ -47,5 +50,8 @@ describe("dedicated WhatsApp QA build surface", () => {
     expect(receipts).toContain("contentPersisted: false");
     expect(receipts).toContain("privateStorageRead: false");
     expect(receipts).toContain("foregroundChanged: false");
+    const opened = read("./whatsapp-protected-open.ts");
+    expect(opened).toContain("providerStorageRead: false");
+    expect(opened).toContain("providerHistoryChanged: false");
   });
 });

@@ -8,6 +8,7 @@ import {
   parseWhatsAppVisualBindingConfirmReceipt,
   type WhatsAppVisualBindingBeginReceipt,
 } from "./whatsapp-visual-binding";
+import { parseWhatsAppProtectedOpenReceipt } from "./whatsapp-protected-open";
 import "./whatsapp-qa.css";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -55,6 +56,19 @@ app.innerHTML = `
       </div>
       <p id="binding-status" class="binding-status" role="status" aria-live="polite"></p>
     </section>
+    <section id="protected-open" class="protected-open" hidden aria-labelledby="protected-open-title">
+      <div>
+        <p class="eyebrow">Trusted OSL display</p>
+        <h2 id="protected-open-title">Open received protected text</h2>
+        <p>Copy the carrier from the bound WhatsApp chat, then paste it here. OSL does not read WhatsApp or your clipboard automatically.</p>
+      </div>
+      <textarea id="protected-carrier" rows="3" spellcheck="false" autocomplete="off" placeholder="Paste protected carrier"></textarea>
+      <div class="protected-open-actions">
+        <button id="protected-open-button" type="button">Open locally</button>
+        <span id="protected-open-status" role="status" aria-live="polite"></span>
+      </div>
+      <pre id="protected-plaintext" hidden aria-label="Decrypted protected text"></pre>
+    </section>
     <p id="whatsapp-qa-ready" class="helper-ready" role="status">Verifying OSL and WhatsApp Desktop…</p>
   </main>`;
 
@@ -70,6 +84,11 @@ const bindingBegin = document.querySelector<HTMLButtonElement>("#binding-begin")
 const bindingConfirm = document.querySelector<HTMLButtonElement>("#binding-confirm")!;
 const bindingAttestation = document.querySelector<HTMLInputElement>("#binding-attestation")!;
 const bindingStatus = document.querySelector<HTMLElement>("#binding-status")!;
+const protectedOpen = document.querySelector<HTMLElement>("#protected-open")!;
+const protectedCarrier = document.querySelector<HTMLTextAreaElement>("#protected-carrier")!;
+const protectedOpenButton = document.querySelector<HTMLButtonElement>("#protected-open-button")!;
+const protectedOpenStatus = document.querySelector<HTMLElement>("#protected-open-status")!;
+const protectedPlaintext = document.querySelector<HTMLElement>("#protected-plaintext")!;
 let activeBinding: WhatsAppVisualBindingBeginReceipt | null = null;
 let nativeWindowClaimed = false;
 
@@ -116,6 +135,11 @@ function resetBinding(): void {
   bindingConfirm.disabled = true;
   bindingBegin.disabled = false;
   bindingStatus.textContent = "";
+  protectedOpen.hidden = true;
+  protectedCarrier.value = "";
+  protectedPlaintext.textContent = "";
+  protectedPlaintext.hidden = true;
+  protectedOpenStatus.textContent = "";
 }
 
 function openBinding(): void {
@@ -163,6 +187,7 @@ async function confirmVisualBinding(): Promise<void> {
     hostBadge.classList.add("ok");
     hostStatus.textContent = "Exact account, paired peer chat, composer, and transcript visually bound";
     bindingStatus.textContent = "Binding verified. Protected controls may now be requested for this exact context.";
+    protectedOpen.hidden = false;
     bindingAttestation.disabled = true;
   } catch {
     activeBinding = null;
@@ -174,6 +199,28 @@ async function confirmVisualBinding(): Promise<void> {
     bindingBegin.disabled = false;
     bindingStatus.textContent = "Binding was rejected or changed. Protected controls remain locked.";
     hostBadge.classList.remove("ok");
+  }
+}
+
+async function openProtectedCarrier(): Promise<void> {
+  const coverText = protectedCarrier.value.trim();
+  if (!coverText || protectedOpenButton.disabled) return;
+  protectedOpenButton.disabled = true;
+  protectedPlaintext.textContent = "";
+  protectedPlaintext.hidden = true;
+  protectedOpenStatus.textContent = "Revalidating the bound chat and opening locally…";
+  try {
+    const receipt = parseWhatsAppProtectedOpenReceipt(
+      await invoke("open_whatsapp_qa_protected_text", { coverText }),
+    );
+    protectedPlaintext.textContent = receipt.plaintext;
+    protectedPlaintext.hidden = false;
+    protectedCarrier.value = "";
+    protectedOpenStatus.textContent = "Opened with peer E2EE · WhatsApp history unchanged";
+  } catch {
+    protectedOpenStatus.textContent = "Could not open. The carrier, peer, replay state, or visual binding was rejected.";
+  } finally {
+    protectedOpenButton.disabled = false;
   }
 }
 
@@ -191,6 +238,7 @@ async function claim(): Promise<void> {
     hostStatus.textContent = complete
       ? "Exact account, chat, recipients, composer, and transcript verified · protected composer ready"
       : `Official WhatsApp Desktop claimed · protected composer locked (${receipt.status})`;
+    protectedOpen.hidden = !complete;
   } catch {
     hostStatus.textContent = "Official WhatsApp Desktop claimed · protection verification failed closed";
   }
@@ -211,6 +259,7 @@ bindingAttestation.addEventListener("change", () => {
   bindingConfirm.disabled = !bindingAttestation.checked || !activeBinding;
 });
 bindingConfirm.addEventListener("click", () => void confirmVisualBinding());
+protectedOpenButton.addEventListener("click", () => void openProtectedCarrier());
 
 void loadCoreIntegration().then(({ readiness }) => {
   if (readiness.unlocked && readiness.identityLoaded) void claim();

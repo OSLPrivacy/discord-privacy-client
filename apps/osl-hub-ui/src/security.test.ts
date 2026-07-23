@@ -66,6 +66,7 @@ describe("bundled preview security boundary", () => {
       "allow-get-whatsapp-qa-protection-status",
       "allow-begin-whatsapp-visual-binding",
       "allow-confirm-whatsapp-visual-binding",
+      "allow-open-whatsapp-qa-protected-text",
     ]);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([

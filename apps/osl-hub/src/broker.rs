@@ -643,13 +643,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     {
         return Err("WhatsApp QA visual context commitment is invalid".to_owned());
     }
-    let scope_id = format!("wa-{}", &visual_context_sha256[..48]);
-    let scope = ScopeInput {
-        kind: ScopeKind::Dm,
-        id: scope_id.clone(),
-        server_id: None,
-        channel_id: Some(scope_id),
-    };
+    let scope = whatsapp_qa_peer_scope(core, &verified)?;
     prepare_verified_peer_prose_text(core, security_state, verified, scope, plaintext)
 }
 
@@ -751,7 +745,65 @@ pub fn open_peer_prose_text(
     if verified.peer_osl_user_id != manual.peer_osl_user_id {
         return Err("This encrypted message could not be opened".to_owned());
     }
-    let display = security::scope_security(manual.scope.clone())?;
+    open_verified_peer_prose_text(core, verified, manual.scope, cover_text)
+}
+
+/// QA-only receive seam for an explicitly pasted carrier. The caller must
+/// independently revalidate the exact WhatsApp visual binding before and
+/// after this function. No provider content or clipboard is read here.
+pub fn open_whatsapp_qa_peer_prose_text(
+    core: &HubCoreState,
+    verified: ManualPeerBinding,
+    visual_context_sha256: &str,
+    cover_text: String,
+) -> Result<OpenedPeerProseMessage, String> {
+    if visual_context_sha256.len() != 64
+        || !visual_context_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let scope = whatsapp_qa_peer_scope(core, &verified)?;
+    open_verified_peer_prose_text(core, verified, scope, cover_text)
+}
+
+fn whatsapp_qa_peer_scope(
+    core: &HubCoreState,
+    verified: &ManualPeerBinding,
+) -> Result<ScopeInput, String> {
+    let self_osl_user_id = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    // The visual commitment is deliberately not the relay scope: the two
+    // endpoints see different account/chat headers. The verified OSL identity
+    // pair yields the same authenticated scope on both VMs, while main.rs
+    // separately binds every operation to the exact local visual commitment.
+    let scope_id =
+        manual_dm_channel_binding("whatsapp", &self_osl_user_id, &verified.peer_osl_user_id)?;
+    Ok(ScopeInput {
+        kind: ScopeKind::Dm,
+        id: scope_id.clone(),
+        server_id: None,
+        channel_id: Some(scope_id),
+    })
+}
+
+fn open_verified_peer_prose_text(
+    core: &HubCoreState,
+    verified: ManualPeerBinding,
+    scope: ScopeInput,
+    cover_text: String,
+) -> Result<OpenedPeerProseMessage, String> {
+    if cover_text.is_empty() || cover_text.len() > MAX_PROSE_COVER_BYTES {
+        return Err("This encrypted message could not be opened".to_owned());
+    }
+    let display = security::scope_security(scope.clone())?;
     if !display.decrypt_display_enabled {
         return Err("Turn on decrypted text for this conversation before opening it".to_owned());
     }
@@ -759,7 +811,7 @@ pub fn open_peer_prose_text(
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
     let recovered = peer_prose_token_or_generic(ipc::prose_token::prose_token_recv(
         &dir,
-        &manual.scope,
+        &scope,
         &cover_text,
     ))?;
     verify_manual_v3(core, &verified, &recovered.wire, ManualWireSender::Peer)
@@ -1999,13 +2051,13 @@ mod tests {
             manual_dm_channel_binding("discord", &alice.user_id, &bob.user_id).unwrap(),
             manual_dm_channel_binding("discord", &bob.user_id, &alice.user_id).unwrap()
         );
-
         let alice_binding = ManualPeerBinding {
             person_id: "hub-person-alice".to_owned(),
             peer_osl_user_id: alice.user_id.clone(),
             peer_x25519_public: *alice.x25519_public.as_bytes(),
             peer_mlkem768_public: alice.mlkem_public_bytes,
         };
+        let bob_whatsapp_scope = whatsapp_qa_peer_scope(&core, &alice_binding).unwrap();
         let reply =
             prepare_direct_manual_v3(&core, &alice_binding, "private reply".to_owned()).unwrap();
         verify_manual_v3(
@@ -2016,6 +2068,8 @@ mod tests {
         )
         .unwrap();
         *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        let alice_whatsapp_scope = whatsapp_qa_peer_scope(&core, &binding).unwrap();
+        assert_eq!(alice_whatsapp_scope, bob_whatsapp_scope);
         assert_eq!(
             decrypt_direct_manual_v3(&core, &reply).unwrap(),
             "private reply"
