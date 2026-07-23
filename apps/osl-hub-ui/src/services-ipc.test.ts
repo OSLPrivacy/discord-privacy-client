@@ -393,7 +393,7 @@ describe("browser-owned import IPC", () => {
 
   it("passes the complete exact browser queue in one protected import command", async () => {
     const operationId = "0123456789abcdef0123456789abcdef";
-    const response = { operationId, selectedSources: ["edge", "chrome", "firefox"], passwordFollowUpSources: ["edge", "chrome"], sessionOnlySources: ["firefox"], detectedServices: ["gmail", "x"], started: true, mode: "firefoxMigrationWizard", sourceSelected: true, manualFallback: null };
+    const response = { operationId, selectedSources: ["edge", "chrome", "firefox"], succeededSources: ["edge", "chrome", "firefox"], failedSources: [], passwordFollowUpSources: ["edge", "chrome"], sessionOnlySources: ["firefox"], detectedServices: ["gmail", "x"], started: true, mode: "firefoxMigrationWizard", sourceSelected: true, manualFallback: null };
     mocks.invoke.mockResolvedValueOnce(response);
     await expect(beginProtectedBrowserImport(["edge", "chrome", "firefox"], operationId)).resolves.toEqual(response);
     expect(mocks.invoke).toHaveBeenCalledWith("begin_protected_browser_import", { browserIds: ["edge", "chrome", "firefox"], operationId });
@@ -418,10 +418,53 @@ describe("browser-owned import IPC", () => {
     await expect(beginProtectedBrowserImport(["chrome", "edge", "firefox", "brave", "opera", "duckduckgo", "extra" as "chrome"], operationId)).rejects.toThrow("protected browser import unavailable");
     await expect(beginProtectedBrowserImport(["chrome"], "not-an-operation")).rejects.toThrow("protected browser import unavailable");
     expect(mocks.invoke).not.toHaveBeenCalled();
-    mocks.invoke.mockResolvedValueOnce({ selectedSources: ["edge"], passwordFollowUpSources: [], sessionOnlySources: [], detectedServices: [], started: true, mode: "protectedInApp", sourceSelected: true, manualFallback: null });
+    mocks.invoke.mockResolvedValueOnce({ selectedSources: ["edge"], succeededSources: ["edge"], failedSources: [], passwordFollowUpSources: [], sessionOnlySources: [], detectedServices: [], started: true, mode: "protectedInApp", sourceSelected: true, manualFallback: null });
     await expect(beginProtectedBrowserImport(["chrome"], operationId)).rejects.toThrow("invalid protected browser import response");
-    mocks.invoke.mockResolvedValueOnce({ operationId, selectedSources: ["chrome"], passwordFollowUpSources: [], sessionOnlySources: [], detectedServices: [], started: true, mode: "firefoxMigrationWizard", sourceSelected: false, manualFallback: null });
+    mocks.invoke.mockResolvedValueOnce({ operationId, selectedSources: ["chrome"], succeededSources: ["chrome"], failedSources: [], passwordFollowUpSources: [], sessionOnlySources: [], detectedServices: [], started: true, mode: "firefoxMigrationWizard", sourceSelected: false, manualFallback: null });
     await expect(beginProtectedBrowserImport(["chrome"], operationId)).rejects.toThrow("invalid protected browser import response");
+  });
+
+  it("accepts a complete fail-closed partial browser import result", async () => {
+    const operationId = "0123456789abcdef0123456789abcdef";
+    const response = {
+      operationId,
+      selectedSources: ["edge", "chrome"],
+      succeededSources: ["edge"],
+      failedSources: [{ source: "chrome", reason: "Browser history could not be opened" }],
+      passwordFollowUpSources: ["edge"],
+      sessionOnlySources: [],
+      detectedServices: ["gmail"],
+      started: true,
+      mode: "firefoxMigrationWizard",
+      sourceSelected: true,
+      manualFallback: null,
+    };
+    mocks.invoke.mockResolvedValueOnce(response);
+    await expect(beginProtectedBrowserImport(["edge", "chrome"], operationId)).resolves.toEqual(response);
+  });
+
+  it("rejects overlapping, incomplete, or malformed partial import results", async () => {
+    const operationId = "0123456789abcdef0123456789abcdef";
+    const base = {
+      operationId,
+      selectedSources: ["edge", "chrome"],
+      succeededSources: ["edge"],
+      failedSources: [{ source: "chrome", reason: "Browser history could not be opened" }],
+      passwordFollowUpSources: [],
+      sessionOnlySources: [],
+      detectedServices: [],
+      started: true,
+      mode: "firefoxMigrationWizard",
+      sourceSelected: true,
+      manualFallback: null,
+    };
+    mocks.invoke
+      .mockResolvedValueOnce({ ...base, failedSources: [{ source: "edge", reason: "overlap" }] })
+      .mockResolvedValueOnce({ ...base, failedSources: [] })
+      .mockResolvedValueOnce({ ...base, failedSources: [{ source: "chrome", reason: "\n" }] });
+    await expect(beginProtectedBrowserImport(["edge", "chrome"], operationId)).rejects.toThrow("invalid protected browser import response");
+    await expect(beginProtectedBrowserImport(["edge", "chrome"], operationId)).rejects.toThrow("invalid protected browser import response");
+    await expect(beginProtectedBrowserImport(["edge", "chrome"], operationId)).rejects.toThrow("invalid protected browser import response");
   });
 
   it("uses only the exact Firefox status, install, and allowlisted service commands", async () => {

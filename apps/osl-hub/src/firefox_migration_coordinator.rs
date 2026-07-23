@@ -218,11 +218,13 @@ mod windows_impl {
         let mut class_name = [0u16; 64];
         let length =
             unsafe { GetClassNameW(window, class_name.as_mut_ptr(), class_name.len() as i32) };
-        if length > 0
-            && is_firefox_migration_window_class(&String::from_utf16_lossy(
-                &class_name[..length as usize],
-            ))
-        {
+        let class = usize::try_from(length)
+            .ok()
+            .filter(|length| *length <= class_name.len())
+            .and_then(|length| class_name.get(..length));
+        if class.is_some_and(|class| {
+            is_firefox_migration_window_class(&String::from_utf16_lossy(class))
+        }) {
             candidates.windows.push((window, process_id));
         }
         1
@@ -289,6 +291,8 @@ mod windows_impl {
         root: &IUIAutomationElement,
         process_id: u32,
     ) -> Result<Vec<IUIAutomationElement>, String> {
+        let process_id = i32::try_from(process_id)
+            .map_err(|_| "Firefox returned an invalid accessibility process id".to_owned())?;
         // Firefox's native dialog can place an accessibility-provider pane
         // from another process at the top of the raw tree. Traverse only the
         // already verified window subtree, then retain elements owned by the
@@ -307,7 +311,7 @@ mod windows_impl {
         for index in 0..count {
             let element = unsafe { found.GetElement(index) }
                 .map_err(|_| "Windows accessibility is unavailable".to_owned())?;
-            if unsafe { element.CurrentProcessId() }.ok() == Some(process_id as i32) {
+            if unsafe { element.CurrentProcessId() }.ok() == Some(process_id) {
                 elements.push(element);
             }
         }
@@ -318,11 +322,12 @@ mod windows_impl {
         automation: &IUIAutomation,
         process_id: u32,
     ) -> Result<Vec<IUIAutomationElement>, String> {
+        let process_id = i32::try_from(process_id)
+            .map_err(|_| "Firefox returned an invalid accessibility process id".to_owned())?;
         let desktop = unsafe { automation.GetRootElement() }
             .map_err(|_| "Windows accessibility is unavailable".to_owned())?;
         let condition = unsafe {
-            automation
-                .CreatePropertyCondition(UIA_ProcessIdPropertyId, &VARIANT::from(process_id as i32))
+            automation.CreatePropertyCondition(UIA_ProcessIdPropertyId, &VARIANT::from(process_id))
         }
         .map_err(|_| "Windows accessibility is unavailable".to_owned())?;
         let found = unsafe { desktop.FindAll(TreeScope_Descendants, &condition) }
@@ -336,7 +341,7 @@ mod windows_impl {
         for index in 0..count {
             let element = unsafe { found.GetElement(index) }
                 .map_err(|_| "Windows accessibility is unavailable".to_owned())?;
-            if unsafe { element.CurrentProcessId() }.ok() == Some(process_id as i32) {
+            if unsafe { element.CurrentProcessId() }.ok() == Some(process_id) {
                 elements.push(element);
             }
         }
@@ -384,7 +389,10 @@ mod windows_impl {
             })
             .collect::<Vec<_>>();
         let index = exact_unique_match(&observed, names)?;
-        Ok(elements[index].clone())
+        elements
+            .get(index)
+            .cloned()
+            .ok_or_else(|| "Firefox migration control changed during verification".to_owned())
     }
 
     fn exact_automation_id(
@@ -459,6 +467,8 @@ mod windows_impl {
         process_id: u32,
         prefix: &str,
     ) -> Result<IUIAutomationElement, String> {
+        let accessibility_process_id = i32::try_from(process_id)
+            .map_err(|_| "Firefox returned an invalid accessibility process id".to_owned())?;
         let deadline = Instant::now() + PROFILE_ITEM_WAIT;
         loop {
             if let Ok(mut element) = unsafe { automation.GetFocusedElement() } {
@@ -466,7 +476,7 @@ mod windows_impl {
                     .map_err(|_| "Windows accessibility is unavailable".to_owned())?;
                 for _ in 0..8 {
                     let is_verified_popup = unsafe { element.CurrentProcessId() }.ok()
-                        == Some(process_id as i32)
+                        == Some(accessibility_process_id)
                         && unsafe { element.CurrentControlType() }.ok()
                             == Some(UIA_WindowControlTypeId)
                         && unsafe { element.CurrentNativeWindowHandle() }
@@ -588,7 +598,10 @@ mod windows_impl {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        Err("Firefox import did not reach a verified completion screen within 90 seconds".to_owned())
+        Err(
+            "Firefox import did not reach a verified completion screen within 90 seconds"
+                .to_owned(),
+        )
     }
 
     fn coordinate_window(

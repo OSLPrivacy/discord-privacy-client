@@ -33,6 +33,8 @@ export interface BrowserAccountImportAction {
 export interface ProtectedBrowserImportAction {
   operationId: string;
   selectedSources: BrowserImportId[];
+  succeededSources: BrowserImportId[];
+  failedSources: Array<{ source: BrowserImportId; reason: string }>;
   passwordFollowUpSources: BrowserImportId[];
   sessionOnlySources: BrowserImportId[];
   detectedServices: HomeAppId[];
@@ -339,9 +341,11 @@ export async function beginProtectedBrowserImport(
     throw new Error("protected browser import unavailable");
   }
   const raw = await invoke<unknown>("begin_protected_browser_import", { browserIds: selectedSources, operationId });
-  if (!isExactRecord(raw, ["operationId", "selectedSources", "passwordFollowUpSources", "sessionOnlySources", "detectedServices", "started", "mode", "sourceSelected", "manualFallback"])) {
+  if (!isExactRecord(raw, ["operationId", "selectedSources", "succeededSources", "failedSources", "passwordFollowUpSources", "sessionOnlySources", "detectedServices", "started", "mode", "sourceSelected", "manualFallback"])) {
     throw new Error("invalid protected browser import response");
   }
+  const succeededSources = raw.succeededSources;
+  const failedSources = raw.failedSources;
   const passwordFollowUpSources = raw.passwordFollowUpSources;
   const sessionOnlySources = raw.sessionOnlySources;
   const detectedServices = raw.detectedServices;
@@ -349,11 +353,25 @@ export async function beginProtectedBrowserImport(
     || !Array.isArray(raw.selectedSources)
     || raw.selectedSources.length !== selectedSources.length
     || raw.selectedSources.some((id, index) => id !== selectedSources[index])
+    || !Array.isArray(succeededSources)
+    || succeededSources.length < 1
+    || succeededSources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || new Set(succeededSources).size !== succeededSources.length
+    || !Array.isArray(failedSources)
+    || failedSources.some((failure) => !isExactRecord(failure, ["source", "reason"])
+      || !selectedSources.includes(failure.source as BrowserImportId)
+      || typeof failure.reason !== "string"
+      || failure.reason.length < 1
+      || failure.reason.length > 180
+      || /[\u0000-\u001f\u007f]/.test(failure.reason))
+    || new Set(failedSources.map((failure) => failure.source)).size !== failedSources.length
+    || failedSources.some((failure) => succeededSources.includes(failure.source))
+    || succeededSources.length + failedSources.length !== selectedSources.length
     || !Array.isArray(passwordFollowUpSources)
-    || passwordFollowUpSources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || passwordFollowUpSources.some((id) => !succeededSources.includes(id as BrowserImportId))
     || new Set(passwordFollowUpSources).size !== passwordFollowUpSources.length
     || !Array.isArray(sessionOnlySources)
-    || sessionOnlySources.some((id) => !selectedSources.includes(id as BrowserImportId))
+    || sessionOnlySources.some((id) => !succeededSources.includes(id as BrowserImportId))
     || new Set(sessionOnlySources).size !== sessionOnlySources.length
     || sessionOnlySources.some((id) => passwordFollowUpSources.includes(id))
     || !Array.isArray(detectedServices)

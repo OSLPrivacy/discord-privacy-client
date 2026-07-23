@@ -183,7 +183,6 @@ let browserImportBusy = false;
 let browserImportFailureNotice = "";
 let browserImportCancelling = false;
 let browserImportOperation: { operationId: string; result: ReturnType<typeof beginProtectedBrowserImport> } | null = null;
-let browserImportProgress = "";
 let detectedBrowserServices = new Set<HomeAppId>();
 let firefoxStatus: FirefoxStatus = { availability: "unavailable" };
 let defaultBrowserCompanionStatus: BrowserCompanionStatus = { status: "unsupported", browserId: null, displayName: null, reason: "platformUnsupported", captureProtected: false, containment: "bestEffort" };
@@ -385,7 +384,7 @@ const bootCoreDeadlineMs = 4_000;
 const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
 const nativeCatalogDecisionDeadlineMs = 8_000;
-const protectedBrowserImportSourceDeadlineMs = 90_000;
+const protectedBrowserImportDeadlineMs = 180_000;
 let lastTrustedActivityAt = Date.now();
 let autoLockCheckTimer: number | undefined;
 let autoLockInProgress = false;
@@ -1244,23 +1243,21 @@ function browserImportContent(): string {
   const failure = browserImportFailureNotice ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>` : "";
   const importEnabled = selectedCount > 0 && firefoxStatus.availability === "installed" && !browserReadinessBusy && !browserImportBusy;
   const secondaryLabel = browserImportCancelling ? "Closing Firefox…" : browserImportBusy ? "Cancel import" : "Not now";
-  const primaryLabel = browserImportBusy ? escapeHtml(browserImportProgress || "Working…") : `Import selected${selectedCount ? ` (${selectedCount})` : ""}`;
+  const primaryLabel = browserImportBusy ? "Importing…" : `Import selected${selectedCount ? ` (${selectedCount})` : ""}`;
   return `<h1 id="route-heading" tabindex="-1">Import browser data</h1><p class="compact-lead onboarding-centered-copy">Choose only the browsers you want to import.</p>${sources}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${primaryLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">Stays inside OSL. Windows may ask before protected passwords are used.</p>`;
 }
 
-async function importOneBrowser(source: BrowserImportId, position: number, total: number): Promise<Awaited<ReturnType<typeof beginProtectedBrowserImport>>> {
-  browserImportProgress = `Browser ${position} of ${total}`;
-  render();
+async function importSelectedBrowsers(selected: readonly BrowserImportId[]): Promise<Awaited<ReturnType<typeof beginProtectedBrowserImport>>> {
   const operationId = createProtectedBrowserImportOperationId();
-  const operation = { operationId, result: beginProtectedBrowserImport([source], operationId) };
+  const operation = { operationId, result: beginProtectedBrowserImport(selected, operationId) };
   browserImportOperation = operation;
   let deadlineTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     deadlineTimer = globalThis.setTimeout(() => {
       void cancelProtectedBrowserImport(operationId).finally(() => {
-        reject(new Error("This browser took too long and was closed safely. Try again."));
+        reject(new Error("Browser import took too long and was closed safely. Try again."));
       });
-    }, protectedBrowserImportSourceDeadlineMs);
+    }, protectedBrowserImportDeadlineMs);
   });
   try {
     const result = await Promise.race([operation.result, deadline]);
@@ -1392,19 +1389,26 @@ function bindBrowserImportControls(): void {
     browserImportFailureNotice = "";
     render();
     try {
-      const results = [];
-      for (const [index, source] of selected.entries()) results.push(await importOneBrowser(source, index + 1, selected.length));
-      if (results.some((result, index) => !result.sourceSelected || result.selectedSources.length !== 1 || result.selectedSources[0] !== selected[index])) throw new Error("The detected browser queue could not be completed safely.");
+      const result = await importSelectedBrowsers(selected);
+      if (!result.sourceSelected
+        || result.selectedSources.length !== selected.length
+        || result.selectedSources.some((source, index) => source !== selected[index])) {
+        throw new Error("The detected browser queue could not be completed safely.");
+      }
       const readyKey = activeBrowserAccountsReadyStorageKey();
       if (readyKey) localStorage.setItem(readyKey, "true");
       savedAccountsReady = true;
-      detectedBrowserServices = new Set(results.flatMap((result) => result.detectedServices));
+      completedBrowserImportIds = new Set(result.succeededSources);
+      persistBrowserAccountPreferences();
+      detectedBrowserServices = new Set(result.detectedServices);
       const detectedKey = activeDetectedBrowserServicesStorageKey();
       if (detectedKey) localStorage.setItem(detectedKey, JSON.stringify([...detectedBrowserServices]));
       savedAccountMode = "use";
       persistSavedAccountPreferences();
-      const needsFollowUp = results.some((result) => result.sessionOnlySources.length || result.passwordFollowUpSources.length);
-      showToast(needsFollowUp ? "Imported supported data; existing sessions stay available" : "Browser import finished");
+      const needsFollowUp = result.sessionOnlySources.length > 0 || result.passwordFollowUpSources.length > 0;
+      showToast(result.failedSources.length > 0
+        ? `Imported ${result.succeededSources.length} of ${result.selectedSources.length} browsers; failed sources were skipped safely`
+        : needsFollowUp ? "Imported supported data; existing sessions stay available" : "Browser import finished");
       onboardingRoute = "detected";
       nativeApps = await loadNativeApps().catch(() => nativeApps);
     } catch (failure) {
@@ -1412,7 +1416,6 @@ function bindBrowserImportControls(): void {
       showToast(browserImportFailureNotice);
     } finally {
       browserImportBusy = false;
-      browserImportProgress = "";
       render();
     }
   });

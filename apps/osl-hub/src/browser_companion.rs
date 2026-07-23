@@ -333,7 +333,7 @@ mod windows {
             Ok((browser_id, _)) => BrowserCompanionStatus {
                 status: BrowserCompanionStatusKind::Available,
                 browser_id: Some(browser_id),
-                display_name: Some(crate::native_apps::browser_display_name(browser_id)),
+                display_name: crate::native_apps::browser_display_name(browser_id),
                 reason: BrowserCompanionReason::None,
                 capture_protected: false,
                 containment: "bestEffort",
@@ -423,7 +423,9 @@ mod windows {
             .into_iter()
             .map(|(window, _)| window)
             .collect::<HashSet<_>>();
-        let url = crate::native_apps::firefox_service_url(service_id);
+        let Some(url) = crate::native_apps::firefox_service_url(service_id) else {
+            return BrowserCompanionAction::failed(BrowserCompanionReason::WindowOperationRejected);
+        };
         let mut command = Command::new(executable.path());
         match account_mode {
             BrowserAccountMode::ExistingBrowser => {
@@ -701,7 +703,8 @@ mod windows {
         {
             return None;
         }
-        let value = OsString::from_wide(&buffer[..length.saturating_sub(1) as usize]);
+        let value_length = length.saturating_sub(1) as usize;
+        let value = OsString::from_wide(buffer.get(..value_length)?);
         PathBuf::from(value).canonicalize().ok()
     }
 
@@ -717,7 +720,7 @@ mod windows {
             match candidates.as_slice() {
                 [candidate] => {
                     if stable == Some(*candidate) {
-                        samples += 1;
+                        samples = samples.saturating_add(1);
                     } else {
                         stable = Some(*candidate);
                         samples = 1;
@@ -817,9 +820,8 @@ mod windows {
             {
                 return None;
             }
-            PathBuf::from(OsString::from_wide(&buffer[..length as usize]))
-                .canonicalize()
-                .ok()
+            let path = buffer.get(..length as usize)?;
+            PathBuf::from(OsString::from_wide(path)).canonicalize().ok()
         })();
         unsafe {
             CloseHandle(process);
@@ -846,10 +848,16 @@ mod windows {
             return None;
         }
         let mut client: RECT = std::mem::zeroed();
-        if GetClientRect(parent, &mut client) == 0
-            || client.right <= client.left
-            || client.bottom - client.top <= TRUSTED_VERTICAL_RESERVE
-        {
+        if GetClientRect(parent, &mut client) == 0 {
+            return None;
+        }
+        let Some(width) = client.right.checked_sub(client.left) else {
+            return None;
+        };
+        let Some(height) = client.bottom.checked_sub(client.top) else {
+            return None;
+        };
+        if width <= 0 || height <= TRUSTED_VERTICAL_RESERVE {
             return None;
         }
         let mut origin = POINT {
@@ -862,8 +870,10 @@ mod windows {
         Some(RECT {
             left: origin.x,
             top: origin.y,
-            right: origin.x + client.right - client.left,
-            bottom: origin.y + client.bottom - TRUSTED_VERTICAL_RESERVE,
+            right: origin.x.checked_add(width)?,
+            bottom: origin
+                .y
+                .checked_add(height.checked_sub(TRUSTED_VERTICAL_RESERVE)?)?,
         })
     }
 
@@ -887,13 +897,19 @@ mod windows {
             (hosted.previous_ex_style | WS_EX_APPWINDOW as isize) & !(WS_EX_TOOLWINDOW as isize),
         );
         ShowWindow(hosted.window as HWND, SW_RESTORE);
+        let Some(width) = target.right.checked_sub(target.left) else {
+            return false;
+        };
+        let Some(height) = target.bottom.checked_sub(target.top) else {
+            return false;
+        };
         if SetWindowPos(
             hosted.window as HWND,
             HWND_TOP,
             target.left,
             target.top,
-            target.right - target.left,
-            target.bottom - target.top,
+            width,
+            height,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW,
         ) == 0
         {

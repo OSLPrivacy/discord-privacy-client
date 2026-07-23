@@ -111,7 +111,15 @@ pub struct BrowserAccountImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct ProtectedBrowserImportResult {
     pub operation_id: String,
+    /// The exact validated request queue. This remains stable even when one
+    /// source fails so the renderer can bind the result to its request.
     pub selected_sources: Vec<BrowserImportId>,
+    /// Sources whose migration completed, including sources intentionally
+    /// handed to the existing-session companion.
+    pub succeeded_sources: Vec<BrowserImportId>,
+    /// Per-source failures. A failure here does not prevent later sources from
+    /// being attempted.
+    pub failed_sources: Vec<ProtectedBrowserImportFailure>,
     pub detected_services: Vec<FirefoxServiceId>,
     pub password_follow_up_sources: Vec<BrowserImportId>,
     pub session_only_sources: Vec<BrowserImportId>,
@@ -119,6 +127,13 @@ pub struct ProtectedBrowserImportResult {
     pub mode: &'static str,
     pub source_selected: bool,
     pub manual_fallback: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedBrowserImportFailure {
+    pub source: BrowserImportId,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -264,7 +279,9 @@ fn retire_protected_browser_import(
         .terminal
         .push((owner_osl_user_id.to_owned(), operation_id.to_owned()));
     if authority.terminal.len() > 16 {
-        authority.terminal.remove(0);
+        // The push above proves the vector is non-empty, but avoid an indexed
+        // removal in this abort-on-panic process anyway.
+        authority.terminal.drain(..1);
     }
     Ok(true)
 }
@@ -1114,58 +1131,64 @@ fn append_bounded_profile_histories(
     profile_root: &Path,
     history_name: &str,
     allow_profile: impl Fn(&str) -> bool,
-) {
-    let Ok(root_metadata) = std::fs::symlink_metadata(profile_root) else {
-        return;
+) -> Result<(), String> {
+    let root_metadata = match std::fs::symlink_metadata(profile_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Browser history profile metadata is unavailable".to_owned()),
     };
     if !root_metadata.is_dir() || metadata_is_reparse_like(&root_metadata) {
-        return;
+        return Err("Browser history profile root is not a plain directory".to_owned());
     }
-    let Ok(entries) = std::fs::read_dir(profile_root) else {
-        return;
-    };
+    let entries = std::fs::read_dir(profile_root)
+        .map_err(|_| "Browser history profiles could not be enumerated".to_owned())?;
     // `take` bounds both successful entries and per-entry read errors.
-    for entry in entries.take(MAX_HISTORY_PROFILE_ENTRIES).flatten() {
-        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
-            continue;
-        };
+    for entry in entries.take(MAX_HISTORY_PROFILE_ENTRIES) {
+        let entry = entry.map_err(|_| "A browser history profile is unavailable".to_owned())?;
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|_| "A browser history profile could not be verified".to_owned())?;
         if !metadata.is_dir() || metadata_is_reparse_like(&metadata) {
-            continue;
+            return Err("A browser history profile is not a plain directory".to_owned());
         }
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
+            return Err("A browser history profile name is invalid".to_owned());
         };
         if allow_profile(&name) {
             append_history_and_wal(candidates, entry.path().join(history_name));
         }
     }
+    Ok(())
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn history_path_chain_is_non_reparse(root: &Path, history: &Path) -> bool {
-    let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
-        return false;
+fn history_path_chain_is_non_reparse(root: &Path, history: &Path) -> Result<bool, String> {
+    let root_metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("Browser history storage is unavailable".to_owned()),
     };
     if !root_metadata.is_dir() || metadata_is_reparse_like(&root_metadata) {
-        return false;
+        return Err("Browser history storage is not a plain directory".to_owned());
     }
     let Ok(relative) = history.strip_prefix(root) else {
-        return false;
+        return Err("Browser history escaped its trusted storage root".to_owned());
     };
     let mut current = root.to_path_buf();
     for component in relative.components() {
         if !matches!(component, std::path::Component::Normal(_)) {
-            return false;
+            return Err("Browser history contains an invalid path component".to_owned());
         }
         current.push(component.as_os_str());
-        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
-            return false;
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err("Browser history metadata is unavailable".to_owned()),
         };
         if metadata_is_reparse_like(&metadata) {
-            return false;
+            return Err("Browser history contains a reparse point".to_owned());
         }
     }
-    true
+    Ok(true)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1173,7 +1196,7 @@ fn browser_history_candidates(
     source: BrowserImportId,
     local: &Path,
     roaming: &Path,
-) -> Vec<PathBuf> {
+) -> Result<Vec<PathBuf>, String> {
     let mut candidates = Vec::new();
     if let Some(root) = chromium_history_root(local, source) {
         append_bounded_profile_histories(
@@ -1181,16 +1204,18 @@ fn browser_history_candidates(
             &root,
             "History",
             is_bounded_chromium_profile_name,
-        );
-        return candidates;
+        )?;
+        return Ok(candidates);
     }
     match source {
-        BrowserImportId::Firefox => append_bounded_profile_histories(
-            &mut candidates,
-            &roaming.join(r"Mozilla\Firefox\Profiles"),
-            "places.sqlite",
-            |_| true,
-        ),
+        BrowserImportId::Firefox => {
+            append_bounded_profile_histories(
+                &mut candidates,
+                &roaming.join(r"Mozilla\Firefox\Profiles"),
+                "places.sqlite",
+                |_| true,
+            )?;
+        }
         BrowserImportId::Opera => {
             for relative in [
                 r"Opera Software\Opera Stable\History",
@@ -1204,16 +1229,16 @@ fn browser_history_candidates(
         BrowserImportId::DuckDuckGo => {}
         BrowserImportId::Chrome | BrowserImportId::Edge | BrowserImportId::Brave => {}
     }
-    candidates
+    Ok(candidates)
 }
 
 #[cfg(any(target_os = "windows", test))]
 fn host_matches(host: &[u8], expected: &str) -> bool {
     let expected = expected.as_bytes();
     host.eq_ignore_ascii_case(expected)
-        || (host.len() > expected.len()
-            && host[host.len() - expected.len()..].eq_ignore_ascii_case(expected)
-            && host[host.len() - expected.len() - 1] == b'.')
+        || host
+            .strip_suffix(expected)
+            .is_some_and(|prefix| prefix.last().is_some_and(|separator| *separator == b'.'))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1256,30 +1281,39 @@ fn service_for_history_host(host: &[u8]) -> Option<FirefoxServiceId> {
 #[cfg(any(target_os = "windows", test))]
 fn detect_services_in_history_bytes(bytes: &[u8], detected: &mut Vec<FirefoxServiceId>) {
     let mut index = 0usize;
-    while index + 3 < bytes.len() {
-        if &bytes[index..index + 3] != b"://" {
-            index += 1;
+    while let Some(marker_end) = index.checked_add(3) {
+        let Some(marker) = bytes.get(index..marker_end) else {
+            break;
+        };
+        if marker != b"://" {
+            index = index.saturating_add(1);
             continue;
         }
-        let host_start = index + 3;
+        let host_start = marker_end;
         let mut host_end = host_start;
-        while host_end < bytes.len()
-            && host_end - host_start <= 253
-            && !matches!(
-                bytes[host_end],
-                b'/' | b'?' | b'#' | b':' | b'\0' | b'\r' | b'\n' | b'\t' | b' '
-            )
+        while host_end
+            .checked_sub(host_start)
+            .is_some_and(|length| length <= 253)
+            && bytes.get(host_end).is_some_and(|byte| {
+                !matches!(
+                    *byte,
+                    b'/' | b'?' | b'#' | b':' | b'\0' | b'\r' | b'\n' | b'\t' | b' '
+                )
+            })
         {
-            host_end += 1;
+            host_end = host_end.saturating_add(1);
         }
         if host_end > host_start {
-            if let Some(service) = service_for_history_host(&bytes[host_start..host_end]) {
+            if let Some(service) = bytes
+                .get(host_start..host_end)
+                .and_then(service_for_history_host)
+            {
                 if !detected.contains(&service) {
                     detected.push(service);
                 }
             }
         }
-        index = host_end.max(index + 1);
+        index = host_end.max(index.saturating_add(1));
     }
 }
 
@@ -1288,38 +1322,65 @@ fn detect_services_in_history_file(
     path: &Path,
     remaining_bytes: &mut u64,
     detected: &mut Vec<FirefoxServiceId>,
-) {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return;
+) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Browser history metadata is unavailable".to_owned()),
     };
     if !metadata.is_file() || metadata_is_reparse_like(&metadata) {
-        return;
+        return Err("Browser history is not a plain file".to_owned());
     }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return;
-    };
-    let length = metadata.len();
+    let file =
+        std::fs::File::open(path).map_err(|_| "Browser history could not be opened".to_owned())?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|_| "Browser history could not be verified after opening".to_owned())?;
+    if !opened_metadata.is_file()
+        || metadata_is_reparse_like(&opened_metadata)
+        || opened_metadata.len() != metadata.len()
+    {
+        return Err("Browser history changed or became unsafe while opening".to_owned());
+    }
+    let length = opened_metadata.len();
     if length == 0 || length > MAX_HISTORY_FILE_BYTES || length > *remaining_bytes {
-        return;
+        return Err("Browser history has an invalid or unsafe size".to_owned());
     }
+    // Read no more than the size verified above even if a live browser grows
+    // its database while discovery is in progress.
+    let mut file = file.take(length);
     let mut buffer = vec![0u8; HISTORY_READ_BUFFER_BYTES];
     let mut carry = Vec::new();
     let mut read_total = 0u64;
     loop {
-        let Ok(read) = file.read(&mut buffer) else {
-            return;
-        };
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| "Browser history could not be read".to_owned())?;
         if read == 0 {
             break;
         }
-        read_total += read as u64;
-        carry.extend_from_slice(&buffer[..read]);
+        let Some(next_total) = read_total.checked_add(read as u64) else {
+            return Err("Browser history exceeded its safe read bound".to_owned());
+        };
+        read_total = next_total;
+        let Some(chunk) = buffer.get(..read) else {
+            return Err("Browser history returned an invalid read length".to_owned());
+        };
+        carry.extend_from_slice(chunk);
         detect_services_in_history_bytes(&carry, detected);
         if carry.len() > HISTORY_URL_CARRY_BYTES {
-            carry.drain(..carry.len() - HISTORY_URL_CARRY_BYTES);
+            let trim = carry.len().saturating_sub(HISTORY_URL_CARRY_BYTES);
+            carry.drain(..trim);
         }
     }
     *remaining_bytes = remaining_bytes.saturating_sub(read_total);
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+struct BrowserHistoryDetection {
+    services: Vec<FirefoxServiceId>,
+    failed_sources: Vec<ProtectedBrowserImportFailure>,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1327,8 +1388,9 @@ fn detect_browser_history_services_from_roots(
     selected_sources: &[BrowserImportId],
     local: &Path,
     roaming: &Path,
-) -> Vec<FirefoxServiceId> {
+) -> BrowserHistoryDetection {
     let mut detected = Vec::new();
+    let mut failed_sources = Vec::new();
     let mut remaining_bytes = MAX_HISTORY_IMPORT_BYTES;
     for source in selected_sources {
         let trusted_root = match source {
@@ -1337,13 +1399,47 @@ fn detect_browser_history_services_from_roots(
                 roaming
             }
         };
-        for path in browser_history_candidates(*source, local, roaming) {
-            if !history_path_chain_is_non_reparse(trusted_root, &path) {
+        let candidates = match browser_history_candidates(*source, local, roaming) {
+            Ok(candidates) => candidates,
+            Err(reason) => {
+                failed_sources.push(ProtectedBrowserImportFailure {
+                    source: *source,
+                    reason,
+                });
                 continue;
             }
-            detect_services_in_history_file(&path, &mut remaining_bytes, &mut detected);
-            if remaining_bytes == 0 || detected.len() == FIREFOX_SERVICES.len() {
+        };
+        let mut source_failure = None;
+        let mut source_detected = Vec::new();
+        for path in candidates {
+            match history_path_chain_is_non_reparse(trusted_root, &path) {
+                Ok(false) => continue,
+                Ok(true) => {}
+                Err(error) => {
+                    source_failure = Some(error);
+                    break;
+                }
+            }
+            if let Err(error) =
+                detect_services_in_history_file(&path, &mut remaining_bytes, &mut source_detected)
+            {
+                source_failure = Some(error);
                 break;
+            }
+            if remaining_bytes == 0 || source_detected.len() == FIREFOX_SERVICES.len() {
+                break;
+            }
+        }
+        if let Some(reason) = source_failure {
+            failed_sources.push(ProtectedBrowserImportFailure {
+                source: *source,
+                reason,
+            });
+        } else {
+            for service in source_detected {
+                if !detected.contains(&service) {
+                    detected.push(service);
+                }
             }
         }
         if remaining_bytes == 0 || detected.len() == FIREFOX_SERVICES.len() {
@@ -1352,22 +1448,59 @@ fn detect_browser_history_services_from_roots(
     }
     // Keep the public result stable in the same fixed order as OSL's service
     // catalog, independent of directory enumeration order.
-    FIREFOX_SERVICES
+    let services = FIREFOX_SERVICES
         .iter()
         .map(|(service, _)| *service)
         .filter(|service| detected.contains(service))
-        .collect()
+        .collect();
+    BrowserHistoryDetection {
+        services,
+        failed_sources,
+    }
 }
 
 #[cfg(target_os = "windows")]
-fn detect_browser_history_services(selected_sources: &[BrowserImportId]) -> Vec<FirefoxServiceId> {
-    let Some(local) = known_folder(KnownFolder::Local) else {
-        return Vec::new();
+fn detect_browser_history_services(
+    selected_sources: &[BrowserImportId],
+) -> BrowserHistoryDetection {
+    let local = known_folder(KnownFolder::Local);
+    let roaming = known_folder(KnownFolder::Roaming);
+    let mut scannable = Vec::new();
+    let mut failed_sources = Vec::new();
+    for source in selected_sources.iter().copied() {
+        let unavailable = match source {
+            BrowserImportId::Chrome | BrowserImportId::Edge | BrowserImportId::Brave => local
+                .is_none()
+                .then_some("Windows local browser storage is unavailable"),
+            BrowserImportId::Firefox | BrowserImportId::Opera => roaming
+                .is_none()
+                .then_some("Windows roaming browser storage is unavailable"),
+            // No history-file contract is claimed for packaged DuckDuckGo.
+            BrowserImportId::DuckDuckGo => None,
+        };
+        if let Some(reason) = unavailable {
+            failed_sources.push(ProtectedBrowserImportFailure {
+                source,
+                reason: reason.to_owned(),
+            });
+        } else {
+            scannable.push(source);
+        }
+    }
+    let fallback = local.as_ref().or(roaming.as_ref());
+    let Some(fallback) = fallback else {
+        return BrowserHistoryDetection {
+            services: Vec::new(),
+            failed_sources,
+        };
     };
-    let Some(roaming) = known_folder(KnownFolder::Roaming) else {
-        return Vec::new();
-    };
-    detect_browser_history_services_from_roots(selected_sources, &local, &roaming)
+    let mut detected = detect_browser_history_services_from_roots(
+        &scannable,
+        local.as_deref().unwrap_or(fallback),
+        roaming.as_deref().unwrap_or(fallback),
+    );
+    detected.failed_sources.splice(0..0, failed_sources);
+    detected
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1505,7 +1638,8 @@ fn browser_import_present(_browser: &BrowserImportManifest) -> bool {
 pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, String> {
     #[cfg(target_os = "windows")]
     {
-        let browser = browser_import_manifest(id);
+        let browser = browser_import_manifest(id)
+            .ok_or_else(|| "The selected browser has no trusted import manifest".to_owned())?;
         let executable = browser_import_executable(browser).ok_or_else(|| {
             format!(
                 "{} is not installed in a supported Windows location",
@@ -1590,30 +1724,61 @@ pub fn begin_protected_browser_import(
             validate_protected_browser_import_sources(selected_sources, &available_sources)?;
         claim_protected_browser_import(owner_osl_user_id, operation_id)?;
         let run = || -> Result<ProtectedBrowserImportResult, String> {
-            let detected_services = detect_browser_history_services(&unique);
+            let history_detection = detect_browser_history_services(&unique);
+            let detected_services = history_detection.services;
             let firefox = firefox_executable().ok_or_else(|| {
                 "Firefox is required for OSL's browser-owned account migration".to_owned()
             })?;
             let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
             let mut password_follow_up_sources = Vec::new();
             let mut session_only_sources = Vec::new();
+            let mut succeeded_sources = Vec::new();
+            let mut failed_sources = history_detection.failed_sources;
             for (index, source) in unique.iter().copied().enumerate() {
+                if failed_sources
+                    .iter()
+                    .any(|failure| failure.source == source)
+                {
+                    continue;
+                }
                 // Current Firefox cannot complete Firefox-profile migration here,
                 // and Opera's migration never completed in a bounded hidden live
                 // run. Preserve those real sessions through OSL's existing-browser
                 // companion instead of opening a flow that cannot finish.
                 if browser_import_uses_existing_session(source) {
                     session_only_sources.push(source);
+                    succeeded_sources.push(source);
                     continue;
                 }
-                let firefox_process =
-                    spawn_firefox_migration_wizard(&firefox, &profile).map_err(|_| {
-                        "The OSL Firefox migration wizard could not be opened".to_owned()
-                    })?;
-                if !firefox_process.is_running().map_err(|_| {
-                    "The OSL Firefox import process could not be verified".to_owned()
-                })? {
-                    return Err("The OSL Firefox migration wizard closed before opening".to_owned());
+                let firefox_process = match spawn_firefox_migration_wizard(&firefox, &profile) {
+                    Ok(process) => process,
+                    Err(_) => {
+                        failed_sources.push(ProtectedBrowserImportFailure {
+                            source,
+                            reason: "The OSL Firefox migration wizard could not be opened"
+                                .to_owned(),
+                        });
+                        continue;
+                    }
+                };
+                match firefox_process.is_running() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        failed_sources.push(ProtectedBrowserImportFailure {
+                            source,
+                            reason: "The OSL Firefox migration wizard closed before opening"
+                                .to_owned(),
+                        });
+                        continue;
+                    }
+                    Err(_) => {
+                        failed_sources.push(ProtectedBrowserImportFailure {
+                            source,
+                            reason: "The OSL Firefox import process could not be verified"
+                                .to_owned(),
+                        });
+                        continue;
+                    }
                 }
                 let process_id = firefox_process.id();
                 let desktop_name = firefox_process.desktop_name.clone();
@@ -1628,25 +1793,39 @@ pub fn begin_protected_browser_import(
                     owner_window,
                     &desktop_name,
                 ) {
-                    Ok(true) => password_follow_up_sources.push(source),
-                    Ok(false) => {}
+                    Ok(true) => {
+                        password_follow_up_sources.push(source);
+                        succeeded_sources.push(source);
+                    }
+                    Ok(false) => succeeded_sources.push(source),
                     Err(error) => {
+                        // Exact-process cleanup is a security boundary. Continue
+                        // only after it succeeds; otherwise fail the operation.
                         close_protected_browser_import_process()?;
-                        return Err(error);
+                        failed_sources.push(ProtectedBrowserImportFailure {
+                            source,
+                            reason: error,
+                        });
+                        continue;
                     }
                 }
                 // Firefox can leave a normal new-tab window behind after Done.
                 // Close the exact retained OSL-owned process before the next
                 // source; ordinary Firefox processes and profiles are untouched.
                 close_protected_browser_import_process()?;
-                if index + 1 < unique.len() {
+                if index < unique.len().saturating_sub(1) {
                     thread::sleep(Duration::from_millis(300));
                 }
+            }
+            if succeeded_sources.is_empty() {
+                return Err("None of the selected browser imports completed".to_owned());
             }
             mark_protected_browser_import_ready(owner_osl_user_id, operation_id)?;
             Ok(ProtectedBrowserImportResult {
                 operation_id: operation_id.to_owned(),
                 selected_sources: unique,
+                succeeded_sources,
+                failed_sources,
                 detected_services,
                 password_follow_up_sources,
                 session_only_sources,
@@ -1722,11 +1901,8 @@ fn preferred_browser_import_source(sources: &[BrowserImportId]) -> Option<Browse
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn browser_import_manifest(id: BrowserImportId) -> &'static BrowserImportManifest {
-    BROWSER_IMPORTS
-        .iter()
-        .find(|browser| browser.id == id)
-        .expect("every browser import enum has a fixed manifest")
+fn browser_import_manifest(id: BrowserImportId) -> Option<&'static BrowserImportManifest> {
+    BROWSER_IMPORTS.iter().find(|browser| browser.id == id)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1753,7 +1929,7 @@ fn browser_import_executable(browser: &BrowserImportManifest) -> Option<TrustedE
 /// crosses the IPC boundary.
 #[cfg(target_os = "windows")]
 pub(crate) fn trusted_browser_executable(id: BrowserImportId) -> Option<TrustedExecutable> {
-    browser_import_executable(browser_import_manifest(id))
+    browser_import_executable(browser_import_manifest(id)?)
 }
 
 #[cfg(target_os = "windows")]
@@ -1806,20 +1982,22 @@ fn decode_duckduckgo_location(stdout: &[u8]) -> Option<PathBuf> {
 #[cfg(any(target_os = "windows", test))]
 fn duckduckgo_package_full_name_matches(full_name: &str) -> bool {
     let parts = full_name.split('_').collect::<Vec<_>>();
-    if parts.len() != 5
-        || parts[0] != DUCKDUCKGO_PACKAGE_NAME
-        || !matches!(parts[2], "x64" | "x86" | "arm64" | "neutral")
-        || !parts[3].is_empty()
-        || !(8..=20).contains(&parts[4].len())
-        || !parts[4]
+    let [name, version, architecture, resource_id, publisher_id] = parts.as_slice() else {
+        return false;
+    };
+    if *name != DUCKDUCKGO_PACKAGE_NAME
+        || !matches!(*architecture, "x64" | "x86" | "arm64" | "neutral")
+        || !resource_id.is_empty()
+        || !(8..=20).contains(&publisher_id.len())
+        || !publisher_id
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     {
         return false;
     }
-    let version = parts[1].split('.').collect::<Vec<_>>();
-    version.len() == 4
-        && version.iter().all(|component| {
+    let version_components = version.split('.').collect::<Vec<_>>();
+    version_components.len() == 4
+        && version_components.iter().all(|component| {
             !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
         })
 }
@@ -2023,7 +2201,8 @@ pub fn launch_firefox_service(
         let firefox = firefox_executable()
             .ok_or_else(|| "Firefox is not installed in a supported Windows location".to_owned())?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
-        let url = firefox_service_url(service_id);
+        let url = firefox_service_url(service_id)
+            .ok_or_else(|| "The selected Firefox service has no trusted URL".to_owned())?;
         spawn_firefox_tab(&firefox, &profile, url)
             .map_err(|_| "Firefox could not be launched".to_owned())?;
         Ok(FirefoxLaunchResult {
@@ -2051,7 +2230,9 @@ pub fn launch_system_browser_service(
             .encode_wide()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
-        let target = std::ffi::OsStr::new(firefox_service_url(service_id))
+        let url = firefox_service_url(service_id)
+            .ok_or_else(|| "The selected browser service has no trusted URL".to_owned())?;
+        let target = std::ffi::OsStr::new(url)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
@@ -2111,11 +2292,10 @@ pub fn install_firefox() -> Result<FirefoxInstallResult, String> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
+pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> Option<&'static str> {
     FIREFOX_SERVICES
         .iter()
         .find_map(|(candidate, url)| (*candidate == service_id).then_some(*url))
-        .expect("every Firefox service enum has one fixed URL")
 }
 
 #[cfg(target_os = "windows")]
@@ -2147,8 +2327,8 @@ pub(crate) fn trusted_browser_executable_at(
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub(crate) fn browser_display_name(id: BrowserImportId) -> &'static str {
-    browser_import_manifest(id).display_name
+pub(crate) fn browser_display_name(id: BrowserImportId) -> Option<&'static str> {
+    browser_import_manifest(id).map(|browser| browser.display_name)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -2611,15 +2791,17 @@ fn whatsapp_package_registration_is_valid(full_name: &str, program_files: &Path)
 #[cfg(any(target_os = "windows", test))]
 fn whatsapp_package_full_name_matches(full_name: &str) -> bool {
     let parts = full_name.split('_').collect::<Vec<_>>();
-    if parts.len() != 5
-        || !whatsapp_package_identity_matches(parts[0], parts[4], parts[3])
-        || !matches!(parts[2], "x64" | "x86" | "arm64" | "neutral")
+    let [name, version, architecture, resource_id, publisher_id] = parts.as_slice() else {
+        return false;
+    };
+    if !whatsapp_package_identity_matches(name, publisher_id, resource_id)
+        || !matches!(*architecture, "x64" | "x86" | "arm64" | "neutral")
     {
         return false;
     }
-    let version = parts[1].split('.').collect::<Vec<_>>();
-    version.len() == 4
-        && version.iter().all(|component| {
+    let version_components = version.split('.').collect::<Vec<_>>();
+    version_components.len() == 4
+        && version_components.iter().all(|component| {
             !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
         })
 }
@@ -3191,7 +3373,7 @@ fn spawn_firefox_migration_wizard(
         if !command_line.is_empty() {
             command_line.push(b' ' as u16);
         }
-        append_windows_quoted_argument(&mut command_line, argument);
+        append_windows_quoted_argument(&mut command_line, argument)?;
     }
     command_line.push(0);
     let executable_wide = executable
@@ -3248,24 +3430,48 @@ fn spawn_firefox_migration_wizard(
 }
 
 #[cfg(target_os = "windows")]
-fn append_windows_quoted_argument(command_line: &mut Vec<u16>, argument: &std::ffi::OsStr) {
+fn append_windows_quoted_argument(
+    command_line: &mut Vec<u16>,
+    argument: &std::ffi::OsStr,
+) -> std::io::Result<()> {
     command_line.push(b'"' as u16);
     let mut backslashes = 0usize;
     for unit in argument.encode_wide() {
         if unit == b'\\' as u16 {
-            backslashes += 1;
+            backslashes = backslashes.checked_add(1).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Firefox migration argument is too long",
+                )
+            })?;
             continue;
         }
         if unit == b'"' as u16 {
-            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+            let escaped = backslashes
+                .checked_mul(2)
+                .and_then(|count| count.checked_add(1))
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Firefox migration argument is too long",
+                    )
+                })?;
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, escaped));
         } else {
             command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
         }
         backslashes = 0;
         command_line.push(unit);
     }
-    command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    let escaped = backslashes.checked_mul(2).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Firefox migration argument is too long",
+        )
+    })?;
+    command_line.extend(std::iter::repeat_n(b'\\' as u16, escaped));
     command_line.push(b'"' as u16);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3282,6 +3488,10 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn browser_import_manifest_for_test(id: BrowserImportId) -> &'static BrowserImportManifest {
+        browser_import_manifest(id).expect("fixed browser manifest")
     }
 
     #[test]
@@ -3446,6 +3656,30 @@ mod tests {
         let json = serde_json::to_value(firefox).unwrap();
         assert_eq!(json["serviceId"], "maildotcom");
         assert_eq!(json["started"], true);
+
+        let protected = ProtectedBrowserImportResult {
+            operation_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            selected_sources: vec![BrowserImportId::Chrome, BrowserImportId::Edge],
+            succeeded_sources: vec![BrowserImportId::Edge],
+            failed_sources: vec![ProtectedBrowserImportFailure {
+                source: BrowserImportId::Chrome,
+                reason: "Browser history could not be opened".to_owned(),
+            }],
+            detected_services: Vec::new(),
+            password_follow_up_sources: Vec::new(),
+            session_only_sources: Vec::new(),
+            started: true,
+            mode: "firefoxMigrationWizard",
+            source_selected: true,
+            manual_fallback: None,
+        };
+        let json = serde_json::to_value(protected).unwrap();
+        assert_eq!(
+            json["selectedSources"],
+            serde_json::json!(["chrome", "edge"])
+        );
+        assert_eq!(json["succeededSources"], serde_json::json!(["edge"]));
+        assert_eq!(json["failedSources"][0]["source"], "chrome");
     }
 
     #[test]
@@ -3496,7 +3730,7 @@ mod tests {
                     && !component.contains(['/', '\\'])
             }));
         for (index, (service_id, url)) in FIREFOX_SERVICES.iter().enumerate() {
-            assert_eq!(firefox_service_url(*service_id), *url);
+            assert_eq!(firefox_service_url(*service_id), Some(*url));
             assert!(url.starts_with("https://"));
             assert!(!url.contains('@'));
             assert!(!url.contains('?'));
@@ -3557,54 +3791,56 @@ mod tests {
             }
         }
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Chrome).display_name,
+            browser_import_manifest_for_test(BrowserImportId::Chrome).display_name,
             "Chrome"
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::DuckDuckGo).display_name,
+            browser_import_manifest_for_test(BrowserImportId::DuckDuckGo).display_name,
             "DuckDuckGo"
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Opera).candidates,
+            browser_import_manifest_for_test(BrowserImportId::Opera).candidates,
             &[ExecutableCandidate {
                 folder: KnownFolder::Local,
                 relative_path: r"Programs\Opera\opera.exe",
             }]
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::DuckDuckGo).candidates,
+            browser_import_manifest_for_test(BrowserImportId::DuckDuckGo).candidates,
             &[]
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Chrome).publisher_attestation,
+            browser_import_manifest_for_test(BrowserImportId::Chrome).publisher_attestation,
             BrowserPublisherAttestation::Verified(ExecutablePublisher::Chrome)
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Edge).publisher_attestation,
+            browser_import_manifest_for_test(BrowserImportId::Edge).publisher_attestation,
             BrowserPublisherAttestation::Verified(ExecutablePublisher::Edge)
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Firefox).publisher_attestation,
+            browser_import_manifest_for_test(BrowserImportId::Firefox).publisher_attestation,
             BrowserPublisherAttestation::Verified(ExecutablePublisher::Firefox)
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Brave).publisher_attestation,
+            browser_import_manifest_for_test(BrowserImportId::Brave).publisher_attestation,
             BrowserPublisherAttestation::Verified(ExecutablePublisher::Brave)
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Opera).publisher_attestation,
+            browser_import_manifest_for_test(BrowserImportId::Opera).publisher_attestation,
             BrowserPublisherAttestation::Verified(ExecutablePublisher::Opera)
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::DuckDuckGo).publisher_attestation,
+            browser_import_manifest_for_test(BrowserImportId::DuckDuckGo).publisher_attestation,
             BrowserPublisherAttestation::Verified(ExecutablePublisher::DuckDuckGo)
         );
         assert_eq!(
-            attested_browser_publisher(browser_import_manifest(BrowserImportId::Opera)),
+            attested_browser_publisher(browser_import_manifest_for_test(BrowserImportId::Opera)),
             Some(ExecutablePublisher::Opera)
         );
         assert_eq!(
-            attested_browser_publisher(browser_import_manifest(BrowserImportId::DuckDuckGo)),
+            attested_browser_publisher(browser_import_manifest_for_test(
+                BrowserImportId::DuckDuckGo
+            )),
             Some(ExecutablePublisher::DuckDuckGo)
         );
         for browser_id in [
@@ -3723,7 +3959,8 @@ mod tests {
         std::fs::create_dir_all(chrome.join("Profile 2")).expect("numbered profile");
         std::fs::create_dir_all(chrome.join("Guest Profile")).expect("guest profile");
 
-        let candidates = browser_history_candidates(BrowserImportId::Chrome, &local, &roaming);
+        let candidates = browser_history_candidates(BrowserImportId::Chrome, &local, &roaming)
+            .expect("bounded Chrome candidates");
         assert_eq!(candidates.len(), 4);
         assert!(candidates.iter().all(|path| {
             path.ends_with("History") || path.as_os_str().to_string_lossy().ends_with("History-wal")
@@ -3732,7 +3969,9 @@ mod tests {
             .iter()
             .all(|path| !path.to_string_lossy().contains("Guest Profile")));
         assert!(
-            browser_history_candidates(BrowserImportId::DuckDuckGo, &local, &roaming).is_empty()
+            browser_history_candidates(BrowserImportId::DuckDuckGo, &local, &roaming)
+                .expect("DuckDuckGo deliberately has no history candidates")
+                .is_empty()
         );
         std::fs::remove_dir_all(root).expect("remove history-candidates test root");
     }
@@ -3753,14 +3992,16 @@ mod tests {
         bytes.extend_from_slice(b"https://www.facebook.com/messages/t/1\0");
         std::fs::write(&history, bytes).expect("bounded history fixture");
 
+        let detection = detect_browser_history_services_from_roots(
+            &[BrowserImportId::Chrome],
+            &local,
+            &roaming,
+        );
         assert_eq!(
-            detect_browser_history_services_from_roots(
-                &[BrowserImportId::Chrome],
-                &local,
-                &roaming,
-            ),
+            detection.services,
             vec![FirefoxServiceId::Messenger, FirefoxServiceId::Yahoo]
         );
+        assert!(detection.failed_sources.is_empty());
 
         let oversized = chromium_history_root(&local, BrowserImportId::Edge)
             .expect("fixed Edge root")
@@ -3773,7 +4014,9 @@ mod tests {
             .expect("sparse oversized fixture");
         let mut remaining = MAX_HISTORY_IMPORT_BYTES;
         let mut detected = Vec::new();
-        detect_services_in_history_file(&oversized, &mut remaining, &mut detected);
+        assert!(
+            detect_services_in_history_file(&oversized, &mut remaining, &mut detected).is_err()
+        );
         assert!(detected.is_empty());
         assert_eq!(remaining, MAX_HISTORY_IMPORT_BYTES);
         std::fs::remove_dir_all(root).expect("remove history-stream test root");
@@ -3797,14 +4040,19 @@ mod tests {
             chromium_history_root(&local, BrowserImportId::Chrome).expect("fixed Chrome root");
         std::fs::create_dir_all(&chrome).expect("Chrome root");
         symlink(&outside, chrome.join("Default")).expect("linked profile");
-        assert!(browser_history_candidates(BrowserImportId::Chrome, &local, &roaming).is_empty());
+        assert!(browser_history_candidates(BrowserImportId::Chrome, &local, &roaming).is_err());
 
         let profile = chrome.join("Profile 1");
         std::fs::create_dir_all(&profile).expect("real profile");
         symlink(&outside_history, profile.join("History")).expect("linked history");
         let mut remaining = MAX_HISTORY_IMPORT_BYTES;
         let mut detected = Vec::new();
-        detect_services_in_history_file(&profile.join("History"), &mut remaining, &mut detected);
+        assert!(detect_services_in_history_file(
+            &profile.join("History"),
+            &mut remaining,
+            &mut detected
+        )
+        .is_err());
         assert!(detected.is_empty());
         assert_eq!(remaining, MAX_HISTORY_IMPORT_BYTES);
         std::fs::remove_dir_all(root).expect("remove history-links test root");

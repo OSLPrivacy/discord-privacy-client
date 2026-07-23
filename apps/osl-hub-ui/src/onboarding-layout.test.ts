@@ -156,7 +156,7 @@ describe("fresh-account continuation", () => {
     expect(binding).toContain("selectedBrowserImports.has(browser.id)");
     expect(binding).toContain("selectedBrowserImports.add(source)");
     expect(binding).toContain("selectedBrowserImports.delete(source)");
-    expect(source).toContain("beginProtectedBrowserImport([source], operationId)");
+    expect(source).toContain("beginProtectedBrowserImport(selected, operationId)");
     expect(source).toContain("finishProtectedBrowserImport(operationId)");
     expect(binding).toContain('onboardingRoute = "detected"');
     expect(binding).not.toContain("window.confirm");
@@ -191,12 +191,19 @@ describe("fresh-account continuation", () => {
 
   it("opens and completes only the selected browser imports with one explicit OSL action", () => {
     const binding = functionSource("bindBrowserImportControls", "importIdentityForm");
-    const worker = functionSource("importOneBrowser", "persistSavedAccountPreferences");
-    expect(binding).toMatch(/#import-saved-accounts[\s\S]*?browserImports\.filter\(\(browser\) => browser\.installed && selectedBrowserImports\.has\(browser\.id\)\)[\s\S]*?importOneBrowser\(source, index \+ 1, selected\.length\)[\s\S]*?savedAccountsReady = true[\s\S]*?onboardingRoute = "detected"/);
-    expect(worker).toContain("beginProtectedBrowserImport([source], operationId)");
+    const worker = functionSource("importSelectedBrowsers", "persistSavedAccountPreferences");
+    expect(binding).toMatch(/#import-saved-accounts[\s\S]*?browserImports\.filter\(\(browser\) => browser\.installed && selectedBrowserImports\.has\(browser\.id\)\)[\s\S]*?importSelectedBrowsers\(selected\)[\s\S]*?savedAccountsReady = true[\s\S]*?onboardingRoute = "detected"/);
+    expect(worker).toContain("beginProtectedBrowserImport(selected, operationId)");
     expect(worker).toContain("finishProtectedBrowserImport(operationId)");
-    expect(worker).toContain("protectedBrowserImportSourceDeadlineMs");
+    expect(worker).toContain("protectedBrowserImportDeadlineMs");
     expect(worker).toContain("cancelProtectedBrowserImport(operationId)");
+    expect(source).not.toContain("Browser ${position} of ${total}");
+    expect(source).not.toContain("for (const [index, source] of selected.entries())");
+    expect(binding).toContain("completedBrowserImportIds = new Set(result.succeededSources)");
+    expect(binding).toContain("detectedBrowserServices = new Set(result.detectedServices)");
+    expect(binding).toContain('savedAccountMode = "use"');
+    expect(binding).toContain("persistSavedAccountPreferences()");
+    expect(binding).toContain("result.failedSources.length > 0");
     expect(binding).toContain("cancelProtectedBrowserImport(operation.operationId)");
     expect(binding).toContain("selected.length === 0");
     expect(binding).not.toContain("#install-firefox");
@@ -229,7 +236,7 @@ describe("fresh-account continuation", () => {
     expect(identityKey).toContain("encodeURIComponent(owner)");
     expect(key).toContain("identityScopedStorageKey(savedAccountsReadyStorageKey)");
     expect(refresh).toContain("savedAccountsReady = key !== null");
-    expect(binding).toMatch(/for \(const \[index, source\] of selected\.entries\(\)\)[\s\S]*?localStorage\.setItem\(readyKey, "true"\)/);
+    expect(binding).toMatch(/importSelectedBrowsers\(selected\)[\s\S]*?localStorage\.setItem\(readyKey, "true"\)/);
     expect(binding).toMatch(/localStorage\.setItem\(readyKey, "true"\)[\s\S]*?savedAccountsReady = true/);
     expect(source).not.toMatch(/localStorage\.setItem\(savedAccountsReadyStorageKey\s*,/);
   });
@@ -242,7 +249,7 @@ describe("fresh-account continuation", () => {
     expect(refresh).toContain("savedAccountsReady = key !== null");
     expect(refresh).toContain("localStorage.removeItem(pendingKey)");
     expect(source).toMatch(/function commitRender[\s\S]*?refreshActiveBrowserAccountsReady\(\)/);
-    expect(source).toMatch(/beginProtectedBrowserImport\(\[source\], operationId\)[\s\S]*?savedAccountsReady = true/);
+    expect(source).toMatch(/beginProtectedBrowserImport\(selected, operationId\)[\s\S]*?savedAccountsReady = true/);
     expect(binding).toMatch(/activeBrowserAccountsReadyStorageKey\(\)[\s\S]*?localStorage\.setItem\(readyKey, "true"\)/);
     expect(binding).toMatch(/#continue-browser-import[\s\S]*?localStorage\.removeItem\(pendingKey\)/);
     expect(source).not.toMatch(/localStorage\.setItem\(browserImportPendingStorageKey\s*,/);
