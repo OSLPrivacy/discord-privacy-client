@@ -63,8 +63,7 @@ describe("bundled preview security boundary", () => {
       "allow-unlock-hub-password-gate",
       "allow-claim-whatsapp-qa-window",
       "allow-resize-whatsapp-qa-window",
-      "allow-focus-whatsapp-qa-window",
-      "allow-detach-whatsapp-qa-window",
+      "allow-get-whatsapp-qa-protection-status",
     ]);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([

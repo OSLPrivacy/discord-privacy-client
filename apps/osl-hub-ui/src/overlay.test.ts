@@ -50,30 +50,34 @@ describe("trusted composer overlay", () => {
     ]));
   });
 
-  it("retains its zero-authority source but is not packaged by the WhatsApp-only QA build", () => {
+  it("packages a zero-authority source for the verification-gated WhatsApp window", () => {
     const vite = readRelative("../vite.config.ts");
     const source = readRelative("./overlay.ts");
-    const native = readRelative("../../osl-hub/src/service_host.rs");
-    expect(vite).not.toContain('overlay: fileURLToPath(new URL("./overlay.html"');
+    const native = readRelative("../../osl-hub/src/native_whatsapp_overlay.rs");
+    expect(vite).toContain('overlay: fileURLToPath(new URL("./overlay.html"');
     expect(source).not.toMatch(/\binvoke\s*\(/);
     expect(source).not.toMatch(/\bfetch\s*\(/);
     expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB/);
-    expect(native).toContain('const OVERLAY_WEBVIEW_LABEL: &str = "composer-overlay"');
+    expect(native).toContain('OVERLAY_LABEL: &str = "composer-overlay"');
     expect(native).toContain("WebviewUrl::App(PathBuf::from(OVERLAY_ASSET))");
-    expect(native).toContain(".transparent(true)");
-    expect(native).toContain(".set_bounds(");
-    expect(native).toContain("ensure_hidden_overlay(&app, &main_window)");
-    expect(native).not.toContain("overlay.show()");
+    expect(native).toContain(".transparent(false)");
+    expect(native).toContain(".position(");
+    expect(native).toContain(".inner_size(");
+    expect(native).toContain("verified_overlay_rect");
+    expect(native).toContain("ScreenshotProtection::On");
+    expect(native).toContain(".show()");
+    expect(native).not.toContain("set_focus");
   });
 
   it("looks like a minimal composer but keeps an unmistakable OSL trust mark", () => {
     const html = readRelative("../overlay.html");
     const css = readRelative("./overlay.css");
     expect(html).toContain('class="trust-mark"');
-    expect(html).toContain("This field belongs to OSL");
+    expect(html).toContain("This field belongs to OSL, not WhatsApp");
+    expect(html).toContain('id="protected-send"');
     expect(html).not.toContain("Manual handoff");
     expect(html).not.toContain("protected draft");
-    expect(css).toContain("grid-template-columns: auto minmax(0, 1fr) auto");
+    expect(css).toContain("grid-template-columns: auto minmax(0, 1fr) auto auto");
     expect(css).toContain("border-radius: 0");
     expect(css).not.toMatch(/box-shadow:\s*0 12px 34px/);
   });

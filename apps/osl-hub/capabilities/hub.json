@@ -13,7 +13,6 @@
     "allow-unlock-hub-password-gate",
     "allow-claim-whatsapp-qa-window",
     "allow-resize-whatsapp-qa-window",
-    "allow-focus-whatsapp-qa-window",
-    "allow-detach-whatsapp-qa-window"
+    "allow-get-whatsapp-qa-protection-status"
   ]
 }

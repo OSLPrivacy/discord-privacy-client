@@ -43,6 +43,8 @@ def main() -> int:
     parser.add_argument("--vm", required=True, choices=sorted(ALLOWED_VMS))
     parser.add_argument("--invocation", required=True)
     parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument("--graceful-relaunch", action="store_true")
+    parser.add_argument("--verified-relaunch", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{7,63}", args.invocation):
         raise ValueError("invalid invocation ID")
@@ -53,7 +55,10 @@ def main() -> int:
     session_id = discovery.get("SessionId")
     if not isinstance(session_id, int) or not 1 <= session_id <= 65535:
         raise ValueError("invalid interactive session ID")
-    armed = run_command(args.vm, ARM, [f"InvocationId={args.invocation}", f"SessionId={session_id}"])
+    if args.graceful_relaunch and args.verified_relaunch:
+        raise ValueError("select only one relaunch mode")
+    mode = "verifiedRelaunch" if args.verified_relaunch else ("gracefulRelaunch" if args.graceful_relaunch else "observe")
+    armed = run_command(args.vm, ARM, [f"InvocationId={args.invocation}", f"SessionId={session_id}", f"Mode={mode}"])
     if armed.get("Status") not in {"armed", "alreadyArmed", "alreadyCompleted"}:
         raise RuntimeError("UIA probe did not arm safely")
 

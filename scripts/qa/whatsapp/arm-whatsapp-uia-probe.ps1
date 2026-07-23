@@ -5,7 +5,10 @@ param(
 
   [Parameter(Mandatory = $true)]
   [ValidateRange(1, 65535)]
-  [int]$SessionId
+  [int]$SessionId,
+
+  [ValidateSet('observe', 'gracefulRelaunch', 'verifiedRelaunch')]
+  [string]$Mode = 'observe'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +42,7 @@ if (Test-Path -LiteralPath $invocationRoot) {
   $actualHash = (Get-FileHash -LiteralPath $wrapperPath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($existing.InvocationId -cne $InvocationId -or [int]$existing.SessionId -ne $SessionId -or
       $existing.InteractiveUser -cne $interactiveUser -or $existing.ResultPath -cne $resultPath -or
+      $existing.Mode -cne $Mode -or
       $existing.WrapperSha256 -cne $actualHash) {
     throw 'existing invocation identity mismatch'
   }
@@ -58,6 +62,7 @@ $request = [ordered]@{
   SessionId = $SessionId
   InteractiveUser = $interactiveUser
   ResultPath = $resultPath
+  Mode = $Mode
 }
 $requestTemporary = "$requestPath.tmp"
 $request | Export-Clixml -LiteralPath $requestTemporary -Depth 3
@@ -70,6 +75,7 @@ Set-StrictMode -Version Latest
 
 $packageName = '5319275A.WhatsAppDesktop'
 $packageFamily = '5319275A.WhatsAppDesktop_cv1g1gvanyjgm'
+$appUserModelId = '5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App'
 $publisherId = 'cv1g1gvanyjgm'
 $processName = 'WhatsApp.Root.exe'
 $windowClass = 'WinUIDesktopWin32WindowClass'
@@ -93,6 +99,7 @@ using System.Text;
 public static class OslQaWindowInventory {
   public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr state);
   [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr state);
+  [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr state);
   [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll", SetLastError=true)] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder value, int capacity);
@@ -100,6 +107,26 @@ public static class OslQaWindowInventory {
   [DllImport("oleacc.dll")]
   private static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint objectId, ref Guid interfaceId,
     [MarshalAs(UnmanagedType.Interface)] out object accessible);
+  [DllImport("user32.dll", EntryPoint="SystemParametersInfoW", SetLastError=true)]
+  private static extern bool SystemParametersInfoGet(uint action, uint parameter, out bool value, uint flags);
+  [DllImport("user32.dll", EntryPoint="SystemParametersInfoW", SetLastError=true)]
+  private static extern bool SystemParametersInfoSet(uint action, uint parameter, IntPtr value, uint flags);
+  [DllImport("user32.dll", SetLastError=true)]
+  private static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam,
+    uint flags, uint timeout, out IntPtr result);
+  public static bool ScreenReaderHint() {
+    bool value;
+    if (!SystemParametersInfoGet(0x0046, 0, out value, 0)) throw new InvalidOperationException("screen reader hint unavailable");
+    return value;
+  }
+  public static void SetScreenReaderHint(bool enabled) {
+    if (!SystemParametersInfoSet(0x0047, enabled ? 1u : 0u, IntPtr.Zero, 0x0002))
+      throw new InvalidOperationException("screen reader hint update rejected");
+  }
+  public static bool RequestGracefulClose(IntPtr hwnd) {
+    IntPtr result;
+    return SendMessageTimeout(hwnd, 0x0010, IntPtr.Zero, IntPtr.Zero, 0x0002, 2000, out result) != IntPtr.Zero;
+  }
   public static object AccessibleClient(IntPtr hwnd) {
     if (hwnd == IntPtr.Zero) return null;
     var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");
@@ -122,6 +149,15 @@ public static class OslQaWindowInventory {
       return true;
     }, IntPtr.Zero);
     return found.ToArray();
+  }
+  public static IntPtr[] Descendants(IntPtr root) {
+    var found = new List<IntPtr>();
+    EnumChildWindows(root, (hwnd, state) => { found.Add(hwnd); return found.Count < 128; }, IntPtr.Zero);
+    return found.ToArray();
+  }
+  public static uint WindowProcessId(IntPtr hwnd) { uint pid; GetWindowThreadProcessId(hwnd, out pid); return pid; }
+  public static string WindowClass(IntPtr hwnd) {
+    var value = new StringBuilder(256); GetClassName(hwnd, value, value.Capacity); return value.ToString();
   }
 }
 "@
@@ -162,7 +198,7 @@ function Get-SafeAutomationId([string]$value) {
 
 function Get-SafeClassName([string]$value) {
   $token = Get-StructuralToken $value
-  if (-not $token -or $token -cnotmatch '(?i)(window|button|pane|panel|list|item|view|control|edit|textblock|image|scroll|grid|root|content|frame|presenter|border|canvas|stack|navigation|tab|menu|toolbar)') {
+  if (-not $token -or $token -cnotmatch '(?i)(window|button|pane|panel|list|item|view|control|edit|textblock|image|scroll|grid|root|content|frame|presenter|border|canvas|stack|navigation|tab|menu|toolbar|chrome|render|widget|host)') {
     return $null
   }
   return $token
@@ -198,6 +234,18 @@ function Get-QuantizedRect($rect, $rootRect) {
   )
 }
 
+$originalScreenReaderHint=$false
+$screenReaderHintChanged=$false
+$screenReaderHintRestored=$false
+$appRelaunched=$false
+$gracefulCloseOnly=$false
+$processesTerminated=0
+$overrideKey='HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+$overrideNames=@($appUserModelId, $processName)
+$overridePrevious=@{}
+$overrideKeyExisted=Test-Path -LiteralPath $overrideKey
+$overrideRestored=$false
+$accessibilityFlagObserved=$false
 try {
   if ([Security.Principal.WindowsIdentity]::GetCurrent().Name -cne $request.InteractiveUser -or
       [Diagnostics.Process]::GetCurrentProcess().SessionId -ne [int]$request.SessionId) {
@@ -205,6 +253,13 @@ try {
   }
   $actualWrapperSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($actualWrapperSha256 -cne $request.WrapperSha256) { throw 'interactive runner hash mismatch' }
+
+  $originalScreenReaderHint=[OslQaWindowInventory]::ScreenReaderHint()
+  if(-not $originalScreenReaderHint){
+    [OslQaWindowInventory]::SetScreenReaderHint($true)
+    $screenReaderHintChanged=$true
+    Start-Sleep -Milliseconds 500
+  }
 
   $package = Get-ExactPackage
   $expectedExecutable = [IO.Path]::GetFullPath((Join-Path $package.Location $processName))
@@ -218,6 +273,84 @@ try {
   $windows = [OslQaWindowInventory]::Exact($pidValue, $windowClass, $windowTitle)
   if ($windows.Count -ne 1) { throw 'exact WhatsApp main window is unavailable or ambiguous' }
 
+  if ($request.Mode -cin @('gracefulRelaunch', 'verifiedRelaunch')) {
+    if (-not [OslQaWindowInventory]::RequestGracefulClose($windows[0])) {
+      throw 'exact WhatsApp window rejected graceful close'
+    }
+    $gracefulCloseOnly=$true
+    $closeDeadline=[DateTime]::UtcNow.AddSeconds(20)
+    do {
+      Start-Sleep -Milliseconds 250
+      $remaining=@(Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction SilentlyContinue)
+    } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $closeDeadline)
+    if ($remaining.Count -gt 0) {
+      if ($request.Mode -cne 'verifiedRelaunch') {
+        throw 'exact WhatsApp process did not exit after graceful close'
+      }
+      $verified=@(Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" | Where-Object {
+        $_.Name -ceq $processName -and [int]$_.SessionId -eq [int]$request.SessionId -and
+        [string]$_.CreationDate -ceq $creationIdentity -and $_.ExecutablePath -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase)
+      })
+      if ($verified.Count -ne 1) { throw 'exact WhatsApp process changed before bounded restart' }
+      Stop-Process -Id $pidValue -Force
+      $processesTerminated=1
+      $gracefulCloseOnly=$false
+      $terminateDeadline=[DateTime]::UtcNow.AddSeconds(10)
+      do {
+        Start-Sleep -Milliseconds 100
+        $remaining=@(Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction SilentlyContinue)
+      } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $terminateDeadline)
+      if ($remaining.Count -gt 0) { throw 'exact WhatsApp process did not terminate within bound' }
+    }
+
+    [void](New-Item -Path $overrideKey -Force)
+    foreach($name in $overrideNames){
+      $existingValue=Get-ItemProperty -LiteralPath $overrideKey -Name $name -ErrorAction SilentlyContinue
+      if($null -ne $existingValue){$overridePrevious[$name]=[string]$existingValue.$name}else{$overridePrevious[$name]=$null}
+      Set-ItemProperty -LiteralPath $overrideKey -Name $name -Type String -Value '--force-renderer-accessibility=complete'
+    }
+    Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$appUserModelId"
+    $appRelaunched=$true
+    $launchDeadline=[DateTime]::UtcNow.AddSeconds(90)
+    do {
+      Start-Sleep -Milliseconds 250
+      $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'WhatsApp.Root.exe'" | Where-Object {
+        [int]$_.SessionId -eq [int]$request.SessionId -and $_.ExecutablePath -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase)
+      })
+      if ($processes.Count -eq 1) {
+        $pidValue=[uint32]$processes[0].ProcessId
+        $creationIdentity=[string]$processes[0].CreationDate
+        $windows=[OslQaWindowInventory]::Exact($pidValue, $windowClass, $windowTitle)
+      }
+    } while (($processes.Count -ne 1 -or $windows.Count -ne 1) -and [DateTime]::UtcNow -lt $launchDeadline)
+    if ($processes.Count -ne 1 -or $windows.Count -ne 1) {
+      throw 'exact WhatsApp accessibility relaunch did not become ready'
+    }
+    $flagDeadline=[DateTime]::UtcNow.AddSeconds(30)
+    do {
+      Start-Sleep -Milliseconds 250
+      $flagged=@(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" | Where-Object {
+        [int]$_.SessionId -eq [int]$request.SessionId -and $_.CommandLine -and
+        $_.CommandLine.Contains('--force-renderer-accessibility=complete')
+      })
+      $accessibilityFlagObserved=$flagged.Count -gt 0
+    } while (-not $accessibilityFlagObserved -and [DateTime]::UtcNow -lt $flagDeadline)
+    if(-not $accessibilityFlagObserved){throw 'WhatsApp WebView did not receive the bounded accessibility override'}
+    foreach($name in $overrideNames){
+      if($null -eq $overridePrevious[$name]){Remove-ItemProperty -LiteralPath $overrideKey -Name $name -ErrorAction Stop}
+      else{Set-ItemProperty -LiteralPath $overrideKey -Name $name -Type String -Value $overridePrevious[$name]}
+    }
+    if(-not $overrideKeyExisted){
+      $remainingNames=@((Get-ItemProperty -LiteralPath $overrideKey).PSObject.Properties.Name | Where-Object {$_ -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$'})
+      if($remainingNames.Count -eq 0){Remove-Item -LiteralPath $overrideKey -Force}
+    }
+    $overrideRestored=$true
+  } elseif ($request.Mode -cne 'observe') {
+    throw 'UIA probe mode is invalid'
+  }
+
   $rootElement = [Windows.Automation.AutomationElement]::FromHandle($windows[0])
   if ($null -eq $rootElement -or $rootElement.Current.ProcessId -ne [int]$pidValue) {
     throw 'UIA root identity mismatch'
@@ -229,10 +362,13 @@ try {
   if (-not $rootHash) { throw 'UIA root runtime identity unavailable' }
   $queue.Enqueue([pscustomobject]@{ Element = $rootElement; Depth = 0; ParentHash = $null })
   $nodes = [Collections.Generic.List[object]]::new()
+  $hitTestNodes = [Collections.Generic.List[object]]::new()
+  $descendantWindows = [Collections.Generic.List[object]]::new()
   $truncated = $false
+  $captureStarted=[DateTime]::UtcNow
 
   while ($queue.Count -gt 0) {
-    if (([DateTime]::UtcNow - $started).TotalSeconds -ge $deadlineSeconds) { throw 'UIA probe deadline exceeded' }
+    if (([DateTime]::UtcNow - $captureStarted).TotalSeconds -ge $deadlineSeconds) { throw 'UIA probe deadline exceeded' }
     if ($nodes.Count -ge $maximumNodes) { $truncated = $true; break }
     $item = $queue.Dequeue()
     $element = $item.Element
@@ -277,7 +413,7 @@ try {
       if ([int]$item.Depth -lt $maximumDepth) {
         $child = $walker.GetFirstChild($element)
         while ($null -ne $child) {
-          if (([DateTime]::UtcNow - $started).TotalSeconds -ge $deadlineSeconds) { throw 'UIA probe deadline exceeded' }
+          if (([DateTime]::UtcNow - $captureStarted).TotalSeconds -ge $deadlineSeconds) { throw 'UIA probe deadline exceeded' }
           $queue.Enqueue([pscustomobject]@{ Element = $child; Depth = [int]$item.Depth + 1; ParentHash = $runtimeHash })
           if ($queue.Count + $nodes.Count -gt ($maximumNodes * 2)) { $truncated = $true; break }
           $child = $walker.GetNextSibling($child)
@@ -287,6 +423,59 @@ try {
       }
     } catch [Windows.Automation.ElementNotAvailableException] {
       throw 'UIA tree changed during bounded capture'
+    }
+  }
+
+  $trustedBrowserPids=@(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" | Where-Object {
+    [int]$_.SessionId -eq [int]$request.SessionId -and $_.CommandLine -and
+    $_.CommandLine.Contains('--force-renderer-accessibility=complete')
+  } | ForEach-Object {[int]$_.ProcessId})
+  foreach($childWindow in [OslQaWindowInventory]::Descendants($windows[0])){
+    if($descendantWindows.Count -ge 128){break}
+    $childPid=[int][OslQaWindowInventory]::WindowProcessId($childWindow)
+    if($childPid -ne [int]$pidValue -and $childPid -notin $trustedBrowserPids){continue}
+    try{
+      $childElement=[Windows.Automation.AutomationElement]::FromHandle($childWindow)
+      $childCurrent=$childElement.Current
+      $childWalker=[Windows.Automation.TreeWalker]::RawViewWalker
+      $descendantWindows.Add([ordered]@{
+        ProcessKind=if($childPid -eq [int]$pidValue){'host'}else{'verifiedWebView'}
+        ClassName=Get-SafeClassName ([OslQaWindowInventory]::WindowClass($childWindow))
+        ControlType=[string]$childCurrent.ControlType.ProgrammaticName
+        FrameworkId=Get-SafeFrameworkId ([string]$childCurrent.FrameworkId)
+        GeometryQ16=Get-QuantizedRect $childCurrent.BoundingRectangle $rootRect
+        HasRawChild=$null -ne $childWalker.GetFirstChild($childElement)
+      })
+    }catch [Windows.Automation.ElementNotAvailableException]{continue}
+  }
+  $seenHitIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($xPercent in @(15,30,45,60,75,90)){
+    foreach($yPercent in @(8,20,35,50,65,78,88,94,97)){
+      if (([DateTime]::UtcNow - $captureStarted).TotalSeconds -ge $deadlineSeconds) { throw 'UIA probe deadline exceeded' }
+      $point=[Windows.Point]::new(
+        $rootRect.X + ($rootRect.Width * $xPercent / 100.0),
+        $rootRect.Y + ($rootRect.Height * $yPercent / 100.0)
+      )
+      try{
+        $hit=[Windows.Automation.AutomationElement]::FromPoint($point)
+        if($null -eq $hit){continue}
+        $hitCurrent=$hit.Current
+        $hitPid=[int]$hitCurrent.ProcessId
+        if($hitPid -ne [int]$pidValue -and $hitPid -notin $trustedBrowserPids){continue}
+        $hitHash=Get-StructuralHash ([int[]]$hit.GetRuntimeId())
+        if(-not $hitHash -or -not $seenHitIds.Add($hitHash)){continue}
+        $hitTestNodes.Add([ordered]@{
+          RuntimeHash=$hitHash
+          ProcessKind=if($hitPid -eq [int]$pidValue){'host'}else{'verifiedWebView'}
+          ControlType=[string]$hitCurrent.ControlType.ProgrammaticName
+          AutomationId=Get-SafeAutomationId ([string]$hitCurrent.AutomationId)
+          ClassName=Get-SafeClassName ([string]$hitCurrent.ClassName)
+          FrameworkId=Get-SafeFrameworkId ([string]$hitCurrent.FrameworkId)
+          GeometryQ16=Get-QuantizedRect $hitCurrent.BoundingRectangle $rootRect
+          Enabled=[bool]$hitCurrent.IsEnabled
+          Offscreen=[bool]$hitCurrent.IsOffscreen
+        })
+      }catch [Windows.Automation.ElementNotAvailableException]{continue}
     }
   }
 
@@ -316,12 +505,17 @@ try {
     Truncated = $truncated
     Limits = [ordered]@{ MaximumNodes = $maximumNodes; MaximumDepth = $maximumDepth; DeadlineSeconds = $deadlineSeconds; GeometryQuantum = [int]$geometryQuantum }
     Nodes = $nodes
+    HitTestNodeCount = $hitTestNodes.Count
+    HitTestNodes = $hitTestNodes
+    DescendantWindowCount = $descendantWindows.Count
+    DescendantWindows = $descendantWindows
     ForegroundChanged = $false
     InputInjected = $false
     ProviderStorageRead = $false
     ContentPropertiesRead = $false
-    AppLaunched = $false
-    ProcessesTerminated = 0
+    AppLaunched = $appRelaunched
+    GracefulCloseOnly = $gracefulCloseOnly
+    ProcessesTerminated = $processesTerminated
   }
 } catch {
   $terminal = [ordered]@{
@@ -341,11 +535,37 @@ try {
     InputInjected = $false
     ProviderStorageRead = $false
     ContentPropertiesRead = $false
-    AppLaunched = $false
-    ProcessesTerminated = 0
+    AppLaunched = $appRelaunched
+    GracefulCloseOnly = $gracefulCloseOnly
+    ProcessesTerminated = $processesTerminated
     Error = 'whatsapp-uia-structure-probe-failed-closed'
     ExceptionType = $_.Exception.GetType().Name
   }
+} finally {
+  if($screenReaderHintChanged){
+    try{
+      [OslQaWindowInventory]::SetScreenReaderHint($originalScreenReaderHint)
+      $screenReaderHintRestored=([OslQaWindowInventory]::ScreenReaderHint() -eq $originalScreenReaderHint)
+    }catch{$screenReaderHintRestored=$false}
+  }else{$screenReaderHintRestored=$true}
+  if($request.Mode -cne 'observe' -and -not $overrideRestored){
+    try{
+      foreach($name in $overrideNames){
+        if($overridePrevious.ContainsKey($name) -and $null -ne $overridePrevious[$name]){
+          Set-ItemProperty -LiteralPath $overrideKey -Name $name -Type String -Value $overridePrevious[$name]
+        }else{Remove-ItemProperty -LiteralPath $overrideKey -Name $name -ErrorAction SilentlyContinue}
+      }
+      if(-not $overrideKeyExisted -and (Test-Path -LiteralPath $overrideKey)){
+        $remainingNames=@((Get-ItemProperty -LiteralPath $overrideKey).PSObject.Properties.Name | Where-Object {$_ -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$'})
+        if($remainingNames.Count -eq 0){Remove-Item -LiteralPath $overrideKey -Force}
+      }
+      $overrideRestored=$true
+    }catch{$overrideRestored=$false}
+  }elseif($request.Mode -ceq 'observe'){$overrideRestored=$true}
+  $terminal['AccessibilityHintTemporarilyEnabled']=$screenReaderHintChanged
+  $terminal['AccessibilityHintRestored']=$screenReaderHintRestored
+  $terminal['AccessibilityOverrideRestored']=$overrideRestored
+  $terminal['AccessibilityFlagObserved']=$accessibilityFlagObserved
 }
 
 $json = $terminal | ConvertTo-Json -Depth 8 -Compress
@@ -374,7 +594,7 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (
   '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $wrapperPath
 )
 $principal = New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds(30)) -MultipleInstances IgnoreNew
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromMinutes(4)) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
 Start-ScheduledTask -TaskName $taskName
 

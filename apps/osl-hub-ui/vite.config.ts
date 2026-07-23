@@ -10,6 +10,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         whatsappQa: fileURLToPath(new URL("./whatsapp-qa.html", import.meta.url)),
+        overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
       },
     },
   },

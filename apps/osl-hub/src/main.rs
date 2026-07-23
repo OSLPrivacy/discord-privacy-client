@@ -45,6 +45,9 @@ use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, Service
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
+use osl_privacy_hub::whatsapp_accessibility::{
+    WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
+};
 use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use serde::Serialize;
 #[cfg(feature = "whatsapp-qa-shell")]
@@ -55,12 +58,16 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-shell")]
 use zeroize::{Zeroize, Zeroizing};
 
+mod native_whatsapp_overlay;
 #[cfg(windows)]
 mod window_border;
 
 #[allow(dead_code)]
 #[path = "../../../src-tauri/src/screenshot.rs"]
 mod screenshot;
+
+#[derive(Default)]
+struct WhatsAppQaProtectionState(Mutex<WhatsAppAccessibilityState>);
 
 #[tauri::command]
 fn get_onboarding_preferences(
@@ -880,23 +887,56 @@ async fn claim_whatsapp_qa_window(
             "The WhatsApp QA audit receipt failed; the native window was detached".to_owned(),
         );
     }
+    let _ = refresh_whatsapp_qa_protection(&app);
     Ok(result)
+}
+
+fn refresh_whatsapp_qa_protection(
+    app: &tauri::AppHandle,
+) -> Result<WhatsAppVerificationReceipt, String> {
+    let protection = app.state::<WhatsAppQaProtectionState>();
+    let mut state = protection
+        .0
+        .lock()
+        .map_err(|_| "WhatsApp protection state is unavailable".to_owned())?;
+    let mut receipt = state.verify_current(&app.state::<WhatsAppQaHostState>());
+    if receipt.protected_controls_available {
+        let Some(window_rect) = receipt.window_rect else {
+            native_whatsapp_overlay::hide(app);
+            receipt.status = WhatsAppVerificationStatus::GeometryRejected;
+            receipt.protected_controls_available = false;
+            return Ok(receipt);
+        };
+        let Some(composer_rect) = receipt.composer_rect else {
+            native_whatsapp_overlay::hide(app);
+            receipt.status = WhatsAppVerificationStatus::GeometryRejected;
+            receipt.protected_controls_available = false;
+            return Ok(receipt);
+        };
+        if native_whatsapp_overlay::show_verified(app, window_rect, composer_rect).is_err() {
+            native_whatsapp_overlay::hide(app);
+            receipt.status = WhatsAppVerificationStatus::GeometryRejected;
+            receipt.protected_controls_available = false;
+        }
+    } else {
+        native_whatsapp_overlay::hide(app);
+    }
+    Ok(receipt)
+}
+
+#[tauri::command]
+fn get_whatsapp_qa_protection_status(
+    app: tauri::AppHandle,
+) -> Result<WhatsAppVerificationReceipt, String> {
+    refresh_whatsapp_qa_protection(&app)
 }
 
 #[tauri::command]
 fn resize_whatsapp_qa_window(app: tauri::AppHandle) -> Result<WhatsAppQaResult, String> {
     let parent = main_window_hwnd(&app)?;
-    Ok(app.state::<WhatsAppQaHostState>().resize(parent))
-}
-
-#[tauri::command]
-fn focus_whatsapp_qa_window(app: tauri::AppHandle) -> WhatsAppQaResult {
-    app.state::<WhatsAppQaHostState>().focus()
-}
-
-#[tauri::command]
-fn detach_whatsapp_qa_window(app: tauri::AppHandle) -> WhatsAppQaResult {
-    app.state::<WhatsAppQaHostState>().detach()
+    let result = app.state::<WhatsAppQaHostState>().resize(parent);
+    let _ = refresh_whatsapp_qa_protection(&app);
+    Ok(result)
 }
 
 fn with_indexed_context_write<T>(
@@ -1955,10 +1995,17 @@ fn main() {
             app.manage(ServiceHostState::default());
             app.manage(NativeWindowHostState::default());
             app.manage(WhatsAppQaHostState::default());
+            app.manage(WhatsAppQaProtectionState::default());
             app.manage(HubAccountSessionState::default());
             app.manage(HubUpdaterState::default());
             app.manage(HubNotificationState::default());
             app.manage(ScrubIndexState::default());
+            #[cfg(feature = "whatsapp-qa-shell")]
+            osl_privacy_hub::whatsapp_qa_pairing::publish_and_consume(
+                &config_dir.join("osl-core"),
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+            )?;
             let registration_app = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 registration_app
@@ -2027,8 +2074,7 @@ fn main() {
             detach_native_app_window,
             claim_whatsapp_qa_window,
             resize_whatsapp_qa_window,
-            focus_whatsapp_qa_window,
-            detach_whatsapp_qa_window,
+            get_whatsapp_qa_protection_status,
             create_service_account,
             open_service_host,
             close_service_host,

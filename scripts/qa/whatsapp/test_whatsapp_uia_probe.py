@@ -52,12 +52,16 @@ class WhatsAppUiaProbeStaticTests(unittest.TestCase):
         )
         for pattern in forbidden:
             self.assertNotRegex(self.arm, pattern)
+        self.assertIn("AutomationElement]::FromPoint", self.arm)
+        self.assertIn("ProcessKind=if", self.arm)
+        self.assertIn("EnumChildWindows", self.arm)
+        self.assertIn("DescendantWindows", self.arm)
 
-    def test_no_input_foreground_launch_storage_or_private_api(self) -> None:
+    def test_no_input_foreground_storage_or_private_api(self) -> None:
         forbidden = (
             r"SetForegroundWindow", r"ShowWindow", r"SetFocus", r"SendInput", r"mouse_event",
-            r"keybd_event", r"SendKeys", r"[.]Click\(", r"Start-Process[^\n]+WhatsApp",
-            r"Stop-Process", r"taskkill", r"Remove-AppxPackage", r"Reset-AppxPackage",
+            r"keybd_event", r"SendKeys", r"[.]Click\(",
+            r"taskkill", r"Remove-AppxPackage", r"Reset-AppxPackage",
             r"Get-ChildItem[^\n]+WhatsApp", r"AppData[^\n]+WhatsApp", r"LocalState",
             r"SQLite", r"WebSocket", r"https?://", r"Authorization",
         )
@@ -65,9 +69,32 @@ class WhatsAppUiaProbeStaticTests(unittest.TestCase):
             self.assertNotRegex(self.arm, rf"(?i){pattern}")
         for receipt in (
             "ForegroundChanged = $false", "InputInjected = $false", "ProviderStorageRead = $false",
-            "ContentPropertiesRead = $false", "AppLaunched = $false", "ProcessesTerminated = 0",
+            "ContentPropertiesRead = $false", "ProcessesTerminated = 0",
         ):
             self.assertIn(receipt, self.arm)
+
+    def test_accessibility_hint_is_transient_and_always_restored(self) -> None:
+        self.assertIn("SPI_GETSCREENREADER", self.arm.replace("0x0046", "SPI_GETSCREENREADER"))
+        self.assertIn("SetScreenReaderHint($originalScreenReaderHint)", self.arm)
+        self.assertIn("} finally {", self.arm)
+        self.assertIn("AccessibilityHintRestored", self.arm)
+        self.assertIn("$result.AccessibilityHintRestored -ne $true", self.poll)
+
+    def test_accessibility_relaunch_is_exact_graceful_and_process_scoped(self) -> None:
+        self.assertIn("ValidateSet('observe', 'gracefulRelaunch', 'verifiedRelaunch')", self.arm)
+        self.assertIn("RequestGracefulClose", self.arm)
+        self.assertIn("--force-renderer-accessibility=complete", self.arm)
+        self.assertIn("AdditionalBrowserArguments", self.arm)
+        self.assertIn("shell:AppsFolder\\$appUserModelId", self.arm)
+        self.assertIn("AccessibilityOverrideRestored", self.arm)
+        self.assertIn("AccessibilityFlagObserved", self.arm)
+        self.assertIn("msedgewebview2.exe", self.arm)
+        self.assertIn("Stop-Process -Id $pidValue -Force", self.arm)
+        self.assertIn("CreationDate -ceq $creationIdentity", self.arm)
+        self.assertIn("ProcessesTerminated = 0", self.arm)
+        self.assertIn("--graceful-relaunch", self.orchestrator)
+        self.assertIn("--verified-relaunch", self.orchestrator)
+        self.assertIn("GracefulCloseOnly", self.poll)
 
     def test_output_is_redacted_bounded_and_atomic(self) -> None:
         for cap in ("$maximumNodes = 512", "$maximumDepth = 12", "$maximumOutputBytes = 262144", "$deadlineSeconds = 15"):
@@ -96,6 +123,7 @@ class WhatsAppUiaProbeStaticTests(unittest.TestCase):
             self.assertIn(phrase, self.arm)
         self.assertIn("Status = 'failedClosed'", self.arm)
         self.assertIn("NodeCount = 0", self.arm)
+        self.assertNotIn("[DateTime]::UtcNow - $started).TotalSeconds -ge $deadlineSeconds", self.arm)
 
     def test_poll_revalidates_read_only_contract(self) -> None:
         for fixed in (

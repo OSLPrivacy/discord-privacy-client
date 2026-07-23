@@ -27,7 +27,7 @@ describe("dedicated WhatsApp QA build surface", () => {
     expect(source).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|<iframe/iu);
     expect(source).not.toMatch(/createHubOslIdentity|importHubOslIdentity|setupHubMainPassword|installNativeApp|openServiceHost/iu);
     expect(source).not.toMatch(/prepare.*protected|encrypt|decryptHub|sendMessage|attachment.*invoke/iu);
-    expect(source).toContain('type="button" disabled>Protect text');
-    expect(source).toContain('type="button" disabled>Decrypt');
+    expect(source).toContain("OSL controls appear only after exact chat verification");
+    expect(source).not.toMatch(/Protect text|Decrypt|Burn|Covertext|Image \+ caption|File \+ caption/u);
   });
 });

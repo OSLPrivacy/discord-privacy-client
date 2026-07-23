@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createWhatsAppQaShell, parseWhatsAppQaReceipt, type WhatsAppQaDependencies, type WhatsAppQaReceipt, type WhatsAppQaStatus } from "./whatsapp-qa-shell";
 
 const receipt = (status: WhatsAppQaStatus): WhatsAppQaReceipt => ({ provider: "whatsapp", status, reason: "none", mode: "existingNativeCompanion", captureProtected: false });
-const deps = (): WhatsAppQaDependencies => ({ claim: vi.fn().mockResolvedValue(receipt("hosted")), resize: vi.fn().mockResolvedValue(receipt("resized")), focus: vi.fn().mockResolvedValue(receipt("focused")), detach: vi.fn().mockResolvedValue(receipt("detached")) });
+const deps = (): WhatsAppQaDependencies => ({ claim: vi.fn().mockResolvedValue(receipt("hosted")), resize: vi.fn().mockResolvedValue(receipt("resized")) });
 
 describe("WhatsApp Desktop-only QA shell", () => {
   it("has no provider, install, browser, credential, or dedicated-profile authority", async () => {
@@ -28,7 +28,5 @@ describe("WhatsApp Desktop-only QA shell", () => {
     await expect(shell.resize()).resolves.toMatchObject({ phase:"failed", reason:"notHosted" });
     const fresh=createWhatsAppQaShell(deps()); await fresh.open();
     await expect(fresh.resize()).resolves.toMatchObject({ phase:"open" });
-    await expect(fresh.focus()).resolves.toMatchObject({ phase:"open" });
-    await expect(fresh.close()).resolves.toMatchObject({ phase:"idle" });
   });
 });

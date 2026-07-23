@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type WhatsAppQaStatus = "hosted" | "resized" | "focused" | "detached" | "failed";
+export type WhatsAppQaStatus = "hosted" | "resized" | "failed";
 export type WhatsAppQaReason = "none" | "platformUnsupported" | "appNotInstalled" | "existingSessionUnavailable" | "existingSessionAmbiguous" | "windowIdentityChanged" | "ownerWindowUnavailable" | "windowOperationRejected" | "notHosted";
 
 export interface WhatsAppQaReceipt {
@@ -24,12 +24,10 @@ export interface WhatsAppQaState {
 export interface WhatsAppQaDependencies {
   claim(): Promise<WhatsAppQaReceipt>;
   resize(): Promise<WhatsAppQaReceipt>;
-  focus(): Promise<WhatsAppQaReceipt>;
-  detach(): Promise<WhatsAppQaReceipt>;
 }
 
 const reasons: readonly WhatsAppQaReason[] = ["none", "platformUnsupported", "appNotInstalled", "existingSessionUnavailable", "existingSessionAmbiguous", "windowIdentityChanged", "ownerWindowUnavailable", "windowOperationRejected", "notHosted"];
-const statuses: readonly WhatsAppQaStatus[] = ["hosted", "resized", "focused", "detached", "failed"];
+const statuses: readonly WhatsAppQaStatus[] = ["hosted", "resized", "failed"];
 
 function exactRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,8 +52,6 @@ const invokeReceipt = async (command: string): Promise<WhatsAppQaReceipt> => {
 const defaults: WhatsAppQaDependencies = {
   claim: () => invokeReceipt("claim_whatsapp_qa_window"),
   resize: () => invokeReceipt("resize_whatsapp_qa_window"),
-  focus: () => invokeReceipt("focus_whatsapp_qa_window"),
-  detach: () => invokeReceipt("detach_whatsapp_qa_window"),
 };
 
 const initial = (): WhatsAppQaState => ({ phase: "idle", reason: null, browserFallbackAllowed: false, installAllowed: false, credentialsAccepted: false, sessionMode: "existingSession" });
@@ -75,7 +71,5 @@ export function createWhatsAppQaShell(deps: WhatsAppQaDependencies = defaults) {
       catch { return fail(null); } finally { pending = false; }
     },
     async resize(): Promise<WhatsAppQaState> { if (state.phase !== "open" || pending) return fail("notHosted"); try { const receipt = await deps.resize(); return accept(receipt, "resized") ? snapshot() : fail(receipt.reason); } catch { return fail(null); } },
-    async focus(): Promise<WhatsAppQaState> { if (state.phase !== "open" || pending) return fail("notHosted"); try { const receipt = await deps.focus(); return accept(receipt, "focused") ? snapshot() : fail(receipt.reason); } catch { return fail(null); } },
-    async close(): Promise<WhatsAppQaState> { if (state.phase !== "open" || pending) return fail("notHosted"); try { const receipt = await deps.detach(); return accept(receipt, "detached") ? (state = initial(), snapshot()) : fail(receipt.reason); } catch { return fail(null); } },
   };
 }

@@ -259,14 +259,9 @@ description = "Revalidate and align only the exact WhatsApp window already claim
 commands.allow = ["resize_whatsapp_qa_window"]
 
 [[permission]]
-identifier = "allow-focus-whatsapp-qa-window"
-description = "Focus only the exact WhatsApp window already claimed by the QA host after identity revalidation."
-commands.allow = ["focus_whatsapp_qa_window"]
-
-[[permission]]
-identifier = "allow-detach-whatsapp-qa-window"
-description = "Stop QA tethering and restore the borrowed WhatsApp window without terminating or altering its session."
-commands.allow = ["detach_whatsapp_qa_window"]
+identifier = "allow-get-whatsapp-qa-protection-status"
+description = "Revalidate the exact WhatsApp accessibility binding and return only redacted semantic commitments and geometry."
+commands.allow = ["get_whatsapp_qa_protection_status"]
 
 [[permission]]
 identifier = "allow-open-service-host"

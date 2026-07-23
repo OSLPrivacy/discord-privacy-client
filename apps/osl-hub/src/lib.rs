@@ -12,6 +12,8 @@ pub mod services;
 pub mod updates;
 pub mod whatsapp_accessibility;
 pub mod whatsapp_qa_host;
+#[cfg(feature = "core")]
+pub mod whatsapp_qa_pairing;
 
 mod atomic_file;
 
