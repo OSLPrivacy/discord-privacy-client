@@ -80,6 +80,8 @@ class WhatsAppDeployPowerShellTests(unittest.TestCase):
         self.assertIn("LogonType Interactive", POWERSHELL)
         self.assertIn("RunLevel Limited", POWERSHELL)
         self.assertIn("alreadyInstalledPreserved", POWERSHELL)
+        self.assertIn("-not $initialInstall -and $primaryBefore.Count -gt 1", POWERSHELL)
+        self.assertIn("if($primaryBefore.Count -eq 0) { [void](Start-ExactOsl", POWERSHELL)
         self.assertIn("Remove-Item -LiteralPath $exeBackup,$loaderBackup", POWERSHELL)
         self.assertIn("Unregister-ScheduledTask", POWERSHELL)
 

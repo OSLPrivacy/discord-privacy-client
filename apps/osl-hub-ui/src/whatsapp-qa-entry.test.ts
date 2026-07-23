@@ -30,4 +30,22 @@ describe("dedicated WhatsApp QA build surface", () => {
     expect(source).toContain("OSL controls appear only after exact chat verification");
     expect(source).not.toMatch(/Protect text|Decrypt|Burn|Covertext|Image \+ caption|File \+ caption/u);
   });
+
+  it("keeps screenshot calibration explicit, bounded, and fail closed", () => {
+    const source = read("./whatsapp-qa.ts");
+    const receipts = read("./whatsapp-visual-binding.ts");
+    expect(source).toContain("Bind current chat");
+    expect(source).toContain("begin_whatsapp_visual_binding");
+    expect(source).toContain("confirm_whatsapp_visual_binding");
+    expect(source).toContain("attested: true");
+    expect(source).toContain("if (!nativeWindowClaimed");
+    expect(source).toContain("Protected controls remain locked");
+    expect(receipts).toContain('"accountHeader"');
+    expect(receipts).toContain('"chatHeader"');
+    expect(receipts).toContain('"composer"');
+    expect(receipts).toContain('"transcript"');
+    expect(receipts).toContain("contentPersisted: false");
+    expect(receipts).toContain("privateStorageRead: false");
+    expect(receipts).toContain("foregroundChanged: false");
+  });
 });

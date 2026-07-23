@@ -36,6 +36,35 @@ struct PairingStatus {
     verified: bool,
 }
 
+pub fn verified_peer_person_id(account_dir: &Path) -> Result<String, String> {
+    let bytes = crate::atomic_file::read_recoverable_bounded(
+        &account_dir.join(PAIRING_STATUS_FILENAME),
+        MAX_OFFER_BYTES,
+        "WhatsApp QA pairing status",
+    )?
+    .ok_or_else(|| "WhatsApp QA peer pairing is unavailable".to_owned())?;
+    let status: PairingStatus = serde_json::from_slice(&bytes)
+        .map_err(|_| "WhatsApp QA pairing status is invalid".to_owned())?;
+    if status.version != VERSION
+        || !status.verified
+        || status.peer_person_id.is_empty()
+        || status.peer_person_id.len() > 160
+        || status.peer_osl_user_id.is_empty()
+        || status.peer_osl_user_id.len() > 160
+        || status.peer_safety_number.is_empty()
+        || status.peer_safety_number.len() > 160
+        || status.peer_offer_sha256.len() != 64
+        || !status
+            .peer_offer_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || status.peer_person_id.chars().any(char::is_control)
+    {
+        return Err("WhatsApp QA pairing status is invalid".to_owned());
+    }
+    Ok(status.peer_person_id)
+}
+
 pub fn publish_and_consume(
     account_dir: &Path,
     core: &HubCoreState,

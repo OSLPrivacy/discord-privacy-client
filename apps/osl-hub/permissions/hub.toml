@@ -4,6 +4,21 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-begin-whatsapp-visual-binding"
+description = "Capture four fixed regions of the exact claimed WhatsApp window in volatile memory, reduce them to non-content visual commitments, discard the pixels, and request explicit local confirmation."
+commands.allow = ["begin_whatsapp_visual_binding"]
+
+[[permission]]
+identifier = "allow-confirm-whatsapp-visual-binding"
+description = "Bind the pending fixed-region commitments to the exact claimed WhatsApp generation only after explicit local attestation; reads no provider storage and persists no screenshot."
+commands.allow = ["confirm_whatsapp_visual_binding"]
+
+[[permission]]
+identifier = "allow-prepare-whatsapp-qa-protected-text"
+description = "After exact visual revalidation, encrypt one bounded OSL draft to only the verified dedicated QA peer and return a carrier for explicit placement; never types into or sends through WhatsApp."
+commands.allow = ["prepare_whatsapp_qa_protected_text"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]

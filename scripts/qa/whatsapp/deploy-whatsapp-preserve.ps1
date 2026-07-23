@@ -201,11 +201,12 @@ $package=Get-OfficialWhatsAppPackage $interactiveUser
 $whatsAppBefore=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
 $windowsBefore=@(Get-WhatsAppWindowSnapshot $whatsAppBefore)
 $primaryBefore=@(Get-ExactOslPrimary)
-if(($initialInstall -and $primaryBefore.Count -ne 0) -or (-not $initialInstall -and $primaryBefore.Count -ne 1)) {
+if(($initialInstall -and $primaryBefore.Count -ne 0) -or (-not $initialInstall -and $primaryBefore.Count -gt 1)) {
   throw 'exact OSL primary process state is unavailable or ambiguous'
 }
 
 if(-not $initialInstall -and (Get-Sha256 $oslPath) -ceq $exeExpected -and (Get-Sha256 $loaderPath) -ceq $loaderExpected) {
+  if($primaryBefore.Count -eq 0) { [void](Start-ExactOsl $interactiveUser);$taskRegistered=$true }
   $whatsAppAfter=@(Get-WhatsAppProcessSnapshot ([string]$package.InstallLocation))
   $windowsAfter=@(Get-WhatsAppWindowSnapshot $whatsAppAfter)
   if(-not (Test-ExactSnapshot $whatsAppBefore $whatsAppAfter) -or -not (Test-ExactSnapshot $windowsBefore $windowsAfter)) {
@@ -242,10 +243,12 @@ try {
     [IO.File]::Move($exeStage,$oslPath);$installedExe=$true
     [IO.File]::Move($loaderStage,$loaderPath);$installedLoader=$true
   } else {
-    Stop-Process -Id ([int]$primaryBefore[0].ProcessId) -Force
-    $stopDeadline=[DateTime]::UtcNow.AddSeconds($StopTimeoutSeconds)
-    while(@(Get-ExactOslProcesses).Count -ne 0 -and [DateTime]::UtcNow -lt $stopDeadline) { Start-Sleep -Milliseconds 200 }
-    if(@(Get-ExactOslProcesses).Count -ne 0) { throw 'exact OSL process or guardian did not stop within the bounded deadline' }
+    if($primaryBefore.Count -eq 1) {
+      Stop-Process -Id ([int]$primaryBefore[0].ProcessId) -Force
+      $stopDeadline=[DateTime]::UtcNow.AddSeconds($StopTimeoutSeconds)
+      while(@(Get-ExactOslProcesses).Count -ne 0 -and [DateTime]::UtcNow -lt $stopDeadline) { Start-Sleep -Milliseconds 200 }
+      if(@(Get-ExactOslProcesses).Count -ne 0) { throw 'exact OSL process or guardian did not stop within the bounded deadline' }
+    }
     [IO.File]::Replace($exeStage,$oslPath,$exeBackup,$true);$replacedExe=$true
     [IO.File]::Replace($loaderStage,$loaderPath,$loaderBackup,$true);$replacedLoader=$true
   }

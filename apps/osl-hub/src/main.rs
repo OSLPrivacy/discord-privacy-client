@@ -47,6 +47,7 @@ use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole}
 use osl_privacy_hub::updates::{bounded_plain_notes, bounded_version, RELEASES_URL};
 use osl_privacy_hub::whatsapp_accessibility::{
     WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
+    WhatsAppVisualBindingBeginReceipt, WhatsAppVisualBindingConfirmReceipt,
 };
 use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use serde::Serialize;
@@ -68,6 +69,19 @@ mod screenshot;
 
 #[derive(Default)]
 struct WhatsAppQaProtectionState(Mutex<WhatsAppAccessibilityState>);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhatsAppQaPreparedMessage {
+    provider: &'static str,
+    status: &'static str,
+    cover_text: String,
+    expires_at: i64,
+    person_to_person_e2ee: bool,
+    context_binding_sha256: String,
+    automatic_placement: bool,
+    real_message_sent: bool,
+}
 
 #[tauri::command]
 fn get_onboarding_preferences(
@@ -929,6 +943,97 @@ fn get_whatsapp_qa_protection_status(
     app: tauri::AppHandle,
 ) -> Result<WhatsAppVerificationReceipt, String> {
     refresh_whatsapp_qa_protection(&app)
+}
+
+#[tauri::command]
+fn begin_whatsapp_visual_binding(
+    app: tauri::AppHandle,
+) -> Result<WhatsAppVisualBindingBeginReceipt, String> {
+    native_whatsapp_overlay::hide(&app);
+    let protection = app.state::<WhatsAppQaProtectionState>();
+    let mut state = protection
+        .0
+        .lock()
+        .map_err(|_| "WhatsApp protection state is unavailable".to_owned())?;
+    state.begin_visual_binding(&app.state::<WhatsAppQaHostState>())
+}
+
+#[tauri::command]
+fn confirm_whatsapp_visual_binding(
+    app: tauri::AppHandle,
+    capture_id: String,
+    attested: bool,
+) -> Result<WhatsAppVisualBindingConfirmReceipt, String> {
+    let protection = app.state::<WhatsAppQaProtectionState>();
+    let mut state = protection
+        .0
+        .lock()
+        .map_err(|_| "WhatsApp protection state is unavailable".to_owned())?;
+    let receipt =
+        state.confirm_visual_binding(&app.state::<WhatsAppQaHostState>(), &capture_id, attested)?;
+    if native_whatsapp_overlay::show_verified(&app, receipt.window_rect, receipt.composer_rect)
+        .is_err()
+    {
+        state.clear();
+        native_whatsapp_overlay::hide(&app);
+        return Err("The protected composer geometry was rejected".to_owned());
+    }
+    Ok(receipt)
+}
+
+#[tauri::command]
+async fn prepare_whatsapp_qa_protected_text(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    plaintext: String,
+) -> Result<WhatsAppQaPreparedMessage, String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let before = refresh_whatsapp_qa_protection(&app)?;
+        if before.status != WhatsAppVerificationStatus::Verified
+            || !before.protected_controls_available
+        {
+            return Err("The exact WhatsApp visual binding is no longer verified".to_owned());
+        }
+        let context_binding_sha256 = before
+            .context_binding_sha256
+            .clone()
+            .ok_or_else(|| "The WhatsApp context commitment is unavailable".to_owned())?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+        let peer_person_id = osl_privacy_hub::whatsapp_qa_pairing::verified_peer_person_id(
+            &config_dir.join("osl-core"),
+        )?;
+        let peer = security::manual_peer_binding(&app.state::<HubCoreState>(), peer_person_id)?;
+        let prepared = broker::prepare_whatsapp_qa_peer_prose_text(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            peer,
+            &context_binding_sha256,
+            plaintext,
+        )?;
+        let after = refresh_whatsapp_qa_protection(&app)?;
+        if after.status != WhatsAppVerificationStatus::Verified
+            || !after.protected_controls_available
+            || after.context_binding_sha256.as_deref() != Some(context_binding_sha256.as_str())
+        {
+            return Err("The WhatsApp visual context changed during encryption".to_owned());
+        }
+        Ok(WhatsAppQaPreparedMessage {
+            provider: "whatsapp",
+            status: "readyForExplicitPlacement",
+            cover_text: prepared.cover_text,
+            expires_at: prepared.expires_at,
+            person_to_person_e2ee: prepared.person_to_person_e2ee,
+            context_binding_sha256,
+            automatic_placement: false,
+            real_message_sent: false,
+        })
+    })
+    .await
+    .map_err(|_| "WhatsApp protected-message preparation was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -2075,6 +2180,9 @@ fn main() {
             claim_whatsapp_qa_window,
             resize_whatsapp_qa_window,
             get_whatsapp_qa_protection_status,
+            begin_whatsapp_visual_binding,
+            confirm_whatsapp_visual_binding,
+            prepare_whatsapp_qa_protected_text,
             create_service_account,
             open_service_host,
             close_service_host,

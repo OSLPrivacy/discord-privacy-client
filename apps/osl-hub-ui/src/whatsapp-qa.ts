@@ -2,6 +2,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { loadCoreIntegration } from "./core";
 import { createWhatsAppQaShell, type WhatsAppQaReason, type WhatsAppQaState } from "./whatsapp-qa-shell";
+import {
+  isCompleteWhatsAppVisualBinding,
+  parseWhatsAppVisualBindingBeginReceipt,
+  parseWhatsAppVisualBindingConfirmReceipt,
+  type WhatsAppVisualBindingBeginReceipt,
+} from "./whatsapp-visual-binding";
 import "./whatsapp-qa.css";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -20,7 +26,34 @@ app.innerHTML = `
     <section id="host-panel" class="protection-strip" hidden aria-label="Protection status">
       <span id="host-badge" class="status-dot" aria-hidden="true"></span>
       <p id="host-status" role="status">Verifying the exact WhatsApp window…</p>
+      <button id="bind-current-chat" class="bind-trigger" type="button" hidden>Bind current chat</button>
       <span class="scope">OSL controls appear only after exact chat verification</span>
+    </section>
+    <section id="visual-binding" class="binding-card" hidden aria-labelledby="binding-title">
+      <div class="binding-heading">
+        <div>
+          <p class="eyebrow">One-time QA calibration</p>
+          <h1 id="binding-title">Bind the visible peer chat</h1>
+        </div>
+        <button id="binding-close" class="icon-button" type="button" aria-label="Close visual binding">×</button>
+      </div>
+      <div id="binding-intro">
+        <p>In WhatsApp, open the one-to-one conversation with this VM’s paired OSL QA peer. Keep the correct account and chat visible.</p>
+        <ol class="binding-regions" aria-label="Fixed regions OSL checks">
+          <li>Account header</li><li>Chat header</li><li>Composer</li><li>Transcript frame</li>
+        </ol>
+        <p class="privacy-note">OSL captures only these fixed regions to create local visual anchors. It does not retain screenshot content or read WhatsApp storage.</p>
+        <button id="binding-begin" type="button">Check fixed regions</button>
+      </div>
+      <div id="binding-confirm-step" hidden>
+        <p>The fixed regions were captured locally. Confirm only if the visible account and one-to-one chat are correct.</p>
+        <label class="binding-attestation">
+          <input id="binding-attestation" type="checkbox">
+          <span>I confirm this WhatsApp account is the intended QA account and the visible chat is with the paired QA peer.</span>
+        </label>
+        <button id="binding-confirm" type="button" disabled>Confirm and bind</button>
+      </div>
+      <p id="binding-status" class="binding-status" role="status" aria-live="polite"></p>
     </section>
     <p id="whatsapp-qa-ready" class="helper-ready" role="status">Verifying OSL and WhatsApp Desktop…</p>
   </main>`;
@@ -29,6 +62,16 @@ const qa = createWhatsAppQaShell();
 const hostPanel = document.querySelector<HTMLElement>("#host-panel")!;
 const hostStatus = document.querySelector<HTMLElement>("#host-status")!;
 const hostBadge = document.querySelector<HTMLElement>("#host-badge")!;
+const bindTrigger = document.querySelector<HTMLButtonElement>("#bind-current-chat")!;
+const bindingCard = document.querySelector<HTMLElement>("#visual-binding")!;
+const bindingIntro = document.querySelector<HTMLElement>("#binding-intro")!;
+const bindingConfirmStep = document.querySelector<HTMLElement>("#binding-confirm-step")!;
+const bindingBegin = document.querySelector<HTMLButtonElement>("#binding-begin")!;
+const bindingConfirm = document.querySelector<HTMLButtonElement>("#binding-confirm")!;
+const bindingAttestation = document.querySelector<HTMLInputElement>("#binding-attestation")!;
+const bindingStatus = document.querySelector<HTMLElement>("#binding-status")!;
+let activeBinding: WhatsAppVisualBindingBeginReceipt | null = null;
+let nativeWindowClaimed = false;
 
 interface ProtectionReceipt {
   provider: "whatsapp";
@@ -57,10 +100,81 @@ function renderHost(state: WhatsAppQaState): void {
   hostBadge.setAttribute("aria-label", state.phase === "open" ? "Native window claimed" : state.phase === "opening" ? "Checking" : "Failed closed");
   hostBadge.classList.toggle("claimed", state.phase === "open");
   hostBadge.classList.remove("ok");
+  nativeWindowClaimed = state.phase === "open";
+  bindTrigger.hidden = !nativeWindowClaimed;
   hostStatus.textContent = state.phase === "open"
     ? "Official WhatsApp Desktop claimed · protected composer waiting for exact chat binding"
     : state.phase === "opening" ? "Claiming exactly one official WhatsApp Desktop window…"
     : state.reason ? reasonText[state.reason] : "The exact native-window operation failed closed.";
+}
+
+function resetBinding(): void {
+  activeBinding = null;
+  bindingIntro.hidden = false;
+  bindingConfirmStep.hidden = true;
+  bindingAttestation.checked = false;
+  bindingConfirm.disabled = true;
+  bindingBegin.disabled = false;
+  bindingStatus.textContent = "";
+}
+
+function openBinding(): void {
+  if (!nativeWindowClaimed) return;
+  resetBinding();
+  bindingCard.hidden = false;
+  bindingBegin.focus();
+}
+
+async function beginVisualBinding(): Promise<void> {
+  if (!nativeWindowClaimed || activeBinding) return;
+  bindingBegin.disabled = true;
+  bindingStatus.textContent = "Checking the four fixed regions…";
+  try {
+    activeBinding = parseWhatsAppVisualBindingBeginReceipt(
+      await invoke("begin_whatsapp_visual_binding"),
+    );
+    bindingIntro.hidden = true;
+    bindingConfirmStep.hidden = false;
+    bindingStatus.textContent = "Fixed-region check complete. Review the attestation.";
+    bindingAttestation.focus();
+  } catch {
+    activeBinding = null;
+    bindingBegin.disabled = false;
+    bindingStatus.textContent = "Visual binding could not be started. Protected controls remain locked.";
+  }
+}
+
+async function confirmVisualBinding(): Promise<void> {
+  if (!nativeWindowClaimed || !activeBinding || !bindingAttestation.checked) return;
+  const captureId = activeBinding.captureId;
+  bindingConfirm.disabled = true;
+  bindingAttestation.disabled = true;
+  bindingStatus.textContent = "Verifying account, peer chat, composer, and transcript…";
+  try {
+    const receipt = parseWhatsAppVisualBindingConfirmReceipt(
+      await invoke("confirm_whatsapp_visual_binding", {
+        captureId,
+        attested: true,
+      }),
+    );
+    if (!isCompleteWhatsAppVisualBinding(receipt, captureId)) {
+      throw new Error("visual binding incomplete");
+    }
+    hostBadge.classList.add("ok");
+    hostStatus.textContent = "Exact account, paired peer chat, composer, and transcript visually bound";
+    bindingStatus.textContent = "Binding verified. Protected controls may now be requested for this exact context.";
+    bindingAttestation.disabled = true;
+  } catch {
+    activeBinding = null;
+    bindingAttestation.disabled = false;
+    bindingAttestation.checked = false;
+    bindingConfirm.disabled = true;
+    bindingIntro.hidden = false;
+    bindingConfirmStep.hidden = true;
+    bindingBegin.disabled = false;
+    bindingStatus.textContent = "Binding was rejected or changed. Protected controls remain locked.";
+    hostBadge.classList.remove("ok");
+  }
 }
 
 async function claim(): Promise<void> {
@@ -86,6 +200,17 @@ const currentWindow = getCurrentWindow();
 document.querySelector("#window-minimize")?.addEventListener("click", () => void currentWindow.minimize());
 document.querySelector("#window-maximize")?.addEventListener("click", () => void currentWindow.toggleMaximize());
 document.querySelector("#window-close")?.addEventListener("click", () => void currentWindow.close());
+bindTrigger.addEventListener("click", openBinding);
+document.querySelector("#binding-close")?.addEventListener("click", () => {
+  bindingCard.hidden = true;
+  resetBinding();
+  bindTrigger.focus();
+});
+bindingBegin.addEventListener("click", () => void beginVisualBinding());
+bindingAttestation.addEventListener("change", () => {
+  bindingConfirm.disabled = !bindingAttestation.checked || !activeBinding;
+});
+bindingConfirm.addEventListener("click", () => void confirmVisualBinding());
 
 void loadCoreIntegration().then(({ readiness }) => {
   if (readiness.unlocked && readiness.identityLoaded) void claim();

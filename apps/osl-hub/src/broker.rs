@@ -623,6 +623,43 @@ pub fn prepare_peer_prose_text(
         manual.person_id.clone(),
         manual.scope.clone(),
     )?;
+    prepare_verified_peer_prose_text(core, security_state, verified, manual.scope, plaintext)
+}
+
+/// QA-only seam used by the dedicated WhatsApp build after the exact native
+/// window, paired peer, chat headers, composer, and transcript have been
+/// explicitly visually bound. It does not place or send provider input.
+pub fn prepare_whatsapp_qa_peer_prose_text(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    verified: ManualPeerBinding,
+    visual_context_sha256: &str,
+    plaintext: String,
+) -> Result<PreparedPeerProseMessage, String> {
+    if visual_context_sha256.len() != 64
+        || !visual_context_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("WhatsApp QA visual context commitment is invalid".to_owned());
+    }
+    let scope_id = format!("wa-{}", &visual_context_sha256[..48]);
+    let scope = ScopeInput {
+        kind: ScopeKind::Dm,
+        id: scope_id.clone(),
+        server_id: None,
+        channel_id: Some(scope_id),
+    };
+    prepare_verified_peer_prose_text(core, security_state, verified, scope, plaintext)
+}
+
+fn prepare_verified_peer_prose_text(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    verified: ManualPeerBinding,
+    scope: ScopeInput,
+    plaintext: String,
+) -> Result<PreparedPeerProseMessage, String> {
     let encrypted = prepare_direct_manual_v3(core, &verified, plaintext)?;
     if verify_manual_v3(core, &verified, &encrypted, ManualWireSender::SelfIdentity).is_err() {
         return Err("OSL could not prepare a single manual peer message".to_owned());
@@ -630,25 +667,18 @@ pub fn prepare_peer_prose_text(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
-    let uploaded = ipc::prose_token::prose_token_send(&dir, &manual.scope, &encrypted, ttl_seconds)
+    let ttl_seconds = security::scope_security(scope.clone())?.ttl_seconds;
+    let uploaded = ipc::prose_token::prose_token_send(&dir, &scope, &encrypted, ttl_seconds)
         .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
-    if security::record_peer_prose_blob(
-        security_state,
-        manual.scope.clone(),
-        uploaded.blob_id.clone(),
-    )
-    .is_err()
+    if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
+        .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &manual.scope, &uploaded.blob_id).is_err() {
+        if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
             // A transient primary-ledger failure must not become an
             // untracked remote blob if the authenticated DELETE also fails.
             // Retry the encrypted recoverable ledger before returning failure.
-            let _ = security::record_peer_prose_blob(
-                security_state,
-                manual.scope.clone(),
-                uploaded.blob_id.clone(),
-            );
+            let _ =
+                security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }

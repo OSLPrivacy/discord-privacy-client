@@ -14,7 +14,7 @@ describe("trusted composer overlay", () => {
     expect(boundedProtectedDraft("x".repeat(1_001))).toHaveLength(1_000);
   });
 
-  it("has a separate zero-authority local capability", () => {
+  it("has one separate narrow local encryption capability", () => {
     const overlay = JSON.parse(readRelative("../../osl-hub/capabilities/composer-overlay.json")) as {
       local: boolean;
       webviews: string[];
@@ -30,7 +30,7 @@ describe("trusted composer overlay", () => {
     };
     expect(overlay.local).toBe(true);
     expect(overlay.webviews).toEqual(["composer-overlay"]);
-    expect(overlay.permissions).toEqual([]);
+    expect(overlay.permissions).toEqual(["allow-prepare-whatsapp-qa-protected-text"]);
     expect(overlay).not.toHaveProperty("remote");
     expect(overlay).not.toHaveProperty("windows");
     expect(hub.local).toBe(true);
@@ -50,12 +50,13 @@ describe("trusted composer overlay", () => {
     ]));
   });
 
-  it("packages a zero-authority source for the verification-gated WhatsApp window", () => {
+  it("packages a verification-gated WhatsApp composer with no network or storage", () => {
     const vite = readRelative("../vite.config.ts");
     const source = readRelative("./overlay.ts");
     const native = readRelative("../../osl-hub/src/native_whatsapp_overlay.rs");
     expect(vite).toContain('overlay: fileURLToPath(new URL("./overlay.html"');
-    expect(source).not.toMatch(/\binvoke\s*\(/);
+    expect(source).toContain('invoke("prepare_whatsapp_qa_protected_text"');
+    expect(source.match(/\binvoke\s*\(/g)).toHaveLength(1);
     expect(source).not.toMatch(/\bfetch\s*\(/);
     expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB/);
     expect(native).toContain('OVERLAY_LABEL: &str = "composer-overlay"');

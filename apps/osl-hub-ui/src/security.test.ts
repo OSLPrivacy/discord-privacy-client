@@ -42,7 +42,7 @@ describe("bundled preview security boundary", () => {
     expect(viteConfig).toContain("modulePreload: false");
   });
 
-  it("grants the WhatsApp QA UI only unlock, exact-host, and owner-window capabilities", () => {
+  it("grants the WhatsApp QA UI only unlock, exact-host, visual-binding, and owner-window capabilities", () => {
     const capability = JSON.parse(readRelative("../../osl-hub/capabilities/hub.json")) as {
       local: boolean;
       webviews: string[];
@@ -64,6 +64,8 @@ describe("bundled preview security boundary", () => {
       "allow-claim-whatsapp-qa-window",
       "allow-resize-whatsapp-qa-window",
       "allow-get-whatsapp-qa-protection-status",
+      "allow-begin-whatsapp-visual-binding",
+      "allow-confirm-whatsapp-visual-binding",
     ]);
     expect(capability.permissions).not.toEqual(
       expect.arrayContaining([

@@ -20,5 +20,18 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .status-dot.claimed { background: #e4b154; box-shadow: 0 0 0 3px #e4b15420; }
 .status-dot.ok { background: #42d5a2; box-shadow: 0 0 0 3px #42d5a220; }
 .scope { margin-left: auto; color: #70898a; font-size: 11px; white-space: nowrap; }
+.bind-trigger { flex: 0 0 auto; padding: 6px 10px; border-radius: 7px; font-size: 11px; }
+.binding-card { position: absolute; z-index: 4; top: 112px; right: 18px; width: min(430px, calc(100vw - 36px)); padding: 18px; border: 1px solid #285154; border-radius: 14px; background: #0b1a1beF; box-shadow: 0 18px 50px #0009; backdrop-filter: blur(16px); }
+.binding-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.binding-heading h1 { margin: 3px 0 12px; font-size: 18px; line-height: 1.25; }
+.eyebrow { margin: 0; color: #61dfe2; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.icon-button { width: 30px; height: 30px; padding: 0; border: 0; background: transparent; }
+.binding-card > div > p, .binding-card #binding-intro > p, .binding-card #binding-confirm-step > p { margin: 0 0 12px; color: #bed0d1; font-size: 12px; line-height: 1.5; }
+.binding-regions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; margin: 0 0 12px; padding-left: 20px; color: #e5f4f4; font-size: 12px; }
+.privacy-note { padding: 9px 10px; border: 1px solid #1e3b3d; border-radius: 8px; background: #081314; color: #8fa8a9 !important; }
+.binding-attestation { display: flex; align-items: flex-start; gap: 9px; margin: 3px 0 14px; padding: 11px; border: 1px solid #285154; border-radius: 9px; color: #e5f4f4; font-size: 12px; line-height: 1.45; cursor: pointer; }
+.binding-attestation input { width: 16px; height: 16px; flex: 0 0 auto; margin: 1px 0 0; accent-color: #42d5a2; }
+.binding-status { min-height: 18px; margin: 12px 0 0; color: #8eaaab; font-size: 11px; line-height: 1.4; }
 [hidden] { display: none !important; }
-@media (max-width: 760px) { body { min-width: 0; } .scope { display: none; } }
+@media (max-width: 760px) { body { min-width: 0; } .scope { display: none; } .binding-card { right: 10px; width: calc(100vw - 20px); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
