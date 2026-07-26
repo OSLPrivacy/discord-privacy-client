@@ -32,6 +32,42 @@ export async function sweepExpired(env: Env): Promise<number> {
   return deleted;
 }
 
+/// View-once link sweep. Two independent jobs, both unconditional:
+///
+///   1. **Destroy ciphertext** for every link whose reservation window
+///      has closed or whose 1-hour TTL has passed. This is what makes
+///      "the link dies after one view, or 60 seconds, whichever is
+///      first" enforceable: it happens whether or not the recipient's
+///      browser ever confirmed, and whether or not it is still running.
+///   2. **Purge receipts** a day after expiry. A receipt is a row with
+///      `data IS NULL` -- no ciphertext, no identifiers, only
+///      `retrieved_at` at second granularity and a count -- kept only so
+///      the sender can be told "Retrieved at HH:MM" or "Expired without
+///      being retrieved".
+///
+/// Returns the aggregate count for tests; production never logs it.
+export async function sweepExpiredLinks(env: Env): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  const burned = await env.DB.prepare(
+    `UPDATE view_once_links
+        SET data = NULL, size_bytes = 0, reserved_until = NULL, burned_at = ?
+      WHERE data IS NOT NULL
+        AND (expires_at < ? OR (reserved_until IS NOT NULL AND reserved_until < ?))`,
+  )
+    .bind(now, now, now)
+    .run();
+  await env.DB.prepare(
+    "DELETE FROM view_once_links WHERE data IS NULL AND expires_at < ?",
+  )
+    .bind(now - LINK_RECEIPT_RETENTION_SECONDS)
+    .run();
+  return burned.meta?.changes ?? 0;
+}
+
+/// Mirror of `RECEIPT_RETENTION_SECONDS` in `endpoints/link.ts`, kept
+/// here to avoid a cycle between the sweep and the endpoint module.
+const LINK_RECEIPT_RETENTION_SECONDS = 24 * 60 * 60;
+
 export async function sweepExpiredAttachments(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   let deleted = 0;

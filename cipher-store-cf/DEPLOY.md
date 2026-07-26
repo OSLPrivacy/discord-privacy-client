@@ -37,6 +37,13 @@ Worker-enforced atomic aggregate quota accounting. Apply both before deploying c
 that exposes attachment routes. Migration 0004 intentionally replaces the
 unshipped, empty 0003 attachment table rather than copying raw capabilities.
 
+Migration `0005_view_once_links.sql` adds the view-once link lane. Apply
+it before deploying code that exposes `/v1/link` or `/v/…`. The table has
+no key column and no identity column by construction; `data` is nullable
+because NULL *is* the burned state, and the residual row is a
+content-free receipt so the sender can be told "Retrieved at HH:MM" or
+"Expired without being retrieved".
+
 ## §3 Provision KV (rate-limit)
 
 ```sh
@@ -65,6 +72,27 @@ closed until the private bucket exists.
 Keep public access, public custom domains, event notifications, object
 metadata logging, and observability disabled. The Worker uses its in-process
 binding; there is no access key or secret to store.
+
+## §4b Enable the view-once link lane (optional, deliberate)
+
+`POST /v1/link` is **fail-closed**: it returns 503 until the keyserver's
+link-grant public key is installed. Leave it unset and the lane stays
+inert — the Worker will not create links at all. That is the correct
+default, because an ungated one-time link store is an open, logless,
+self-deleting file host.
+
+```sh
+# base64 Ed25519 public key of the keyserver's link-grant issuer
+npx wrangler secret put LINK_GRANT_PUBKEY_B64
+```
+
+Then, and only then, attach the aged link domain. The `[[routes]]` block
+in `wrangler.toml` is checked in **commented out** on purpose; uncomment
+it and set the real hostname. Before enabling the route:
+
+- the `abuse@<host>` mailbox must exist (every landing page publishes it);
+- the wildcard certificate must cover any random subdomains you intend to use;
+- verify `GET /v/<anything>` returns 200 with an identical body, `Content-Length` and `ETag` for a live id, an expired id and an id that never existed.
 
 ## §5 Deploy
 

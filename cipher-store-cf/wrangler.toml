@@ -60,3 +60,41 @@ bucket_name = "osl-cipher-attachments-prod"
 # an aggregate "swept N rows" count, never individual IDs.
 [triggers]
 crons = ["*/5 * * * *"]
+
+# ---------------------------------------------------------------------
+# Wave A3 — view-once link lane (`/v/<id>`)
+#
+# DOMAIN POSTURE. One neutral, unremarkable, aged domain. This is a
+# decision, not a default. Rotating a fleet of throwaway domains was
+# considered and rejected: a fleet is correlatable through public
+# Certificate Transparency logs, passive DNS and a shared origin IP, and
+# — more decisively — it is the textbook phishing/C2 signature. It risks
+# Safe Browsing flags, Discord's own link filter blocking the URL
+# outright, and registrar/Cloudflare enforcement against the ACCOUNT,
+# which would take down the cipher-store and the keyserver that the
+# strong OSL lane depends on. Per-link variety comes from the 16-byte
+# random path id, and optionally from random subdomains under a single
+# wildcard certificate.
+#
+# The route below is intentionally COMMENTED OUT. Enabling it is a
+# deliberate act by the operator once the aged domain and its wildcard
+# certificate exist; nothing in this repo should silently start serving
+# a public landing page.
+#
+# [[routes]]
+# pattern = "links.example.com/*"      # replace with the aged domain
+# custom_domain = true
+#
+# LINK CREATION IS FAIL-CLOSED. `POST /v1/link` is refused with 503
+# until `LINK_GRANT_PUBKEY_B64` is installed:
+#
+#   npx wrangler secret put LINK_GRANT_PUBKEY_B64
+#
+# It holds the base64 Ed25519 public key of the keyserver's link-grant
+# issuer. Without it this Worker will not create links at all — because
+# an ungated one-time link store is an open, logless, self-deleting file
+# host, i.e. a malware distribution service, and that is precisely what
+# gets the domain and the account taken down.
+#
+# ABUSE PATH. The landing page publishes `abuse@<host>`; that mailbox
+# must exist before the route is enabled.

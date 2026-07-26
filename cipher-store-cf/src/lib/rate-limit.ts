@@ -10,6 +10,7 @@
 ///   fetches:  3600 / hour
 ///   deletes:  600 / hour
 ///   attachment upload requests/fetches/deletes: 140 / 120 / 60 per hour
+///   view-once link create / fetch: 120 / 120 per hour
 ///
 /// Returns true when the action is allowed and the counter has
 /// been incremented; false when the cap has been hit (caller
@@ -126,7 +127,8 @@ export async function rateLimit(
     // Reads may remain available during a limiter outage. Anonymous writes
     // fail closed so a KV outage cannot become an unbounded D1 storage or
     // deletion-abuse window.
-    const allowed = bucket === "fetch" || bucket === "attachment-fetch";
+    const allowed =
+      bucket === "fetch" || bucket === "attachment-fetch" || bucket === "link-fetch";
     console.error("[rate-limit] limiter unavailable");
     return { allowed, remaining: 0 };
   }

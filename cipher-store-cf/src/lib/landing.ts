@@ -266,9 +266,9 @@ const LANDING_SCRIPT = `
     }
   }
 
-  // Images are decoded via createImageBitmap on an in-memory Blob:
-  // no <img> element, no object URL, nothing with a src a browser
-  // would offer to save. Deterrence, not prevention.
+  // Images are decoded via createImageBitmap on an in-memory Blob: no
+  // image element, no object URL, nothing with a src a browser would
+  // offer to save. Deterrence, not prevention.
   function drawImage(bytes, mime) {
     return createImageBitmap(new Blob([bytes], { type: mime })).then(function (bmp) {
       var scale = Math.min(1, 1400 / bmp.width, 1000 / bmp.height);

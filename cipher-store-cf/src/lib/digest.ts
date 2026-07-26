@@ -25,8 +25,11 @@ export function constantTimeEqualHex(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/// Accepts both the URL-safe and the standard base64 alphabet, with or
+/// without padding. Configuration values are commonly pasted in the
+/// standard alphabet; wire values use the URL-safe one.
 export function base64UrlToBytes(value: string): Uint8Array | null {
-  if (!/^[A-Za-z0-9_-]*$/.test(value)) return null;
+  if (!/^[A-Za-z0-9_\-+/]*$/.test(value)) return null;
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
   const full = padded + "=".repeat((4 - (padded.length % 4)) % 4);
   try {
