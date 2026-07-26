@@ -77,7 +77,11 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let Ok(password_status) = ipc::commands::cmd_osl_password_status() else {
         return unavailable_readiness(identity_loaded);
     };
-    let unlocked = !password_status.is_set || ipc::main_password::get_file_storage_key().is_some();
+    let qa_device_gate =
+        cfg!(feature = "discord-qa-shell") && ipc::main_password::get_file_storage_key().is_some();
+    let unlocked = qa_device_gate
+        || !password_status.is_set
+        || ipc::main_password::get_file_storage_key().is_some();
     let lockout = ipc::commands::cmd_osl_lockout_status().ok();
     let remaining = lockout
         .as_ref()
@@ -91,7 +95,7 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
 
     readiness_from(
         identity_loaded,
-        password_status.is_set,
+        password_status.is_set || qa_device_gate,
         unlocked,
         attempts,
         remaining,
@@ -383,10 +387,15 @@ fn initialise_keyserver(state: &AppState, dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static FILE_KEY_TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Deliberately the crate-wide lock, not a private one. Password setup mutates
+    // the process-wide unlocked-key and base-dir statics, so serialising only
+    // against this module's own tests is no protection at all: a sibling test in
+    // another module holding `GLOBAL_KEYSTORE_TEST_LOCK` would still run
+    // concurrently and read back the wrong key. Two mutexes over one global is
+    // the same as none.
+    use crate::GLOBAL_KEYSTORE_TEST_LOCK as FILE_KEY_TEST_LOCK;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()

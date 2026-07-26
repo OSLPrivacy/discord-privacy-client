@@ -15,6 +15,7 @@ export interface OnboardingPreferences {
   onboardingComplete: boolean;
   setup: SetupState;
   showPlaintextPreview: boolean;
+  windowCaptureEnabled: boolean;
 }
 
 export interface RustOnboardingPreferences {
@@ -22,6 +23,7 @@ export interface RustOnboardingPreferences {
   sendMode: SendMode;
   placementMode: PlacementMode;
   showPlaintextPreview: boolean;
+  windowCaptureEnabled: boolean;
   acknowledgeExperimentalSendRisk: boolean;
 }
 
@@ -36,6 +38,7 @@ export const defaultOnboardingPreferences: OnboardingPreferences = {
   onboardingComplete: false,
   setup: { ...defaultSetup },
   showPlaintextPreview: true,
+  windowCaptureEnabled: true,
 };
 
 const sendModeValues: readonly SendMode[] = ["manual", "clipboard", "double", "single"];
@@ -65,6 +68,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     "sendMode",
     "placementMode",
     "showPlaintextPreview",
+    "windowCaptureEnabled",
     "acknowledgeExperimentalSendRisk",
   ]);
   if (Object.keys(raw).length !== allowedKeys.size || Object.keys(raw).some((key) => !allowedKeys.has(key))) {
@@ -77,6 +81,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     || placementMode === null
     || typeof raw.onboardingComplete !== "boolean"
     || typeof raw.showPlaintextPreview !== "boolean"
+    || typeof raw.windowCaptureEnabled !== "boolean"
     || typeof raw.acknowledgeExperimentalSendRisk !== "boolean"
   ) return cloneDefaultPreferences();
 
@@ -92,6 +97,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
       acceptedRiskForMode: riskAccepted ? sendMode : null,
     },
     showPlaintextPreview: raw.showPlaintextPreview,
+    windowCaptureEnabled: raw.windowCaptureEnabled,
   };
 }
 
@@ -106,6 +112,7 @@ export function toRustOnboardingPreferences(preferences: OnboardingPreferences):
     sendMode: parsedSetup.sendMode,
     placementMode: parsedSetup.placementMode,
     showPlaintextPreview: preferences.showPlaintextPreview === true,
+    windowCaptureEnabled: preferences.windowCaptureEnabled === true,
     acknowledgeExperimentalSendRisk: acknowledged,
   };
 }
@@ -119,6 +126,7 @@ function cloneDefaultPreferences(): OnboardingPreferences {
     onboardingComplete: false,
     setup: { ...defaultSetup },
     showPlaintextPreview: true,
+    windowCaptureEnabled: true,
   };
 }
 

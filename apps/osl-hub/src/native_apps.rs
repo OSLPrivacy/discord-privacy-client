@@ -7,6 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::windows_executable_trust::ExecutablePublisher;
+#[cfg(target_os = "windows")]
+use crate::windows_executable_trust::{verify_executable, TrustedExecutable};
+
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStringExt;
 #[cfg(target_os = "windows")]
@@ -14,9 +18,11 @@ use std::os::windows::process::CommandExt;
 #[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 #[cfg(any(target_os = "windows", test))]
 use std::sync::Mutex;
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::thread;
 #[cfg(any(target_os = "windows", test))]
@@ -31,6 +37,7 @@ pub enum NativeAppId {
     Telegram,
     Signal,
     Whatsapp,
+    Outlook,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,7 +48,7 @@ pub enum BrowserImportId {
     Firefox,
     Brave,
     Opera,
-    Vivaldi,
+    DuckDuckGo,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -67,6 +74,64 @@ pub struct BrowserAccountImportResult {
     pub opened: bool,
     pub mode: &'static str,
     pub manual_export_required: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedBrowserImportResult {
+    pub selected_sources: Vec<BrowserImportId>,
+    pub started: bool,
+    pub mode: &'static str,
+    pub source_selected: bool,
+    pub manual_fallback: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+fn protected_browser_import_process() -> &'static Mutex<Option<Child>> {
+    static PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+    PROCESS.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn close_protected_browser_import_process() -> Result<(), String> {
+    let mut process = protected_browser_import_process()
+        .lock()
+        .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())?;
+    let Some(mut child) = process.take() else {
+        return Ok(());
+    };
+    match child.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            crate::firefox_migration_coordinator::close(child.id())?;
+            let root_process_id = child.id();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => return Ok(()),
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(None) => {
+                        child.kill().map_err(|_| {
+                            "The OSL Firefox import window could not be closed".to_owned()
+                        })?;
+                        child.wait().map_err(|_| {
+                            "The OSL Firefox import process could not be reaped".to_owned()
+                        })?;
+                        thread::sleep(Duration::from_millis(200));
+                        return crate::firefox_migration_coordinator::is_closed(root_process_id);
+                    }
+                    Err(_) => {
+                        return Err(
+                            "The OSL Firefox import process could not be verified".to_owned()
+                        )
+                    }
+                }
+            }
+        }
+        Err(_) => Err("The OSL Firefox import process could not be verified".to_owned()),
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -125,6 +190,7 @@ pub enum FirefoxServiceId {
     Aol,
     Gmx,
     Maildotcom,
+    Icloud,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -151,9 +217,7 @@ pub struct FirefoxInstallResult {
 enum KnownFolder {
     Local,
     Roaming,
-    #[cfg(any(target_os = "windows", test))]
     ProgramFiles,
-    #[cfg(any(target_os = "windows", test))]
     ProgramFilesX86,
 }
 
@@ -170,6 +234,7 @@ struct NativeAppManifest {
     package_id: &'static str,
     package_source: &'static str,
     candidates: &'static [ExecutableCandidate],
+    publisher: Option<ExecutablePublisher>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -179,12 +244,33 @@ struct BrowserImportManifest {
     display_name: &'static str,
     candidates: &'static [ExecutableCandidate],
     import_arguments: &'static [&'static str],
+    publisher_attestation: BrowserPublisherAttestation,
 }
 
-const DISCORD_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
-    folder: KnownFolder::Local,
-    relative_path: r"Discord\Update.exe",
-}];
+/// A browser becomes launchable only after its installed executable's exact
+/// Authenticode leaf organization has been observed and reviewed.  Keeping the
+/// pending package identity here makes the remaining attestation bounded
+/// without guessing a certificate subject from winget's display metadata.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(any(target_os = "windows", test))]
+enum BrowserPublisherAttestation {
+    Verified(ExecutablePublisher),
+}
+
+const DISCORD_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"Discord\Update.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"DiscordPTB\Update.exe",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::Local,
+        relative_path: r"DiscordCanary\Update.exe",
+    },
+];
 
 const TELEGRAM_CANDIDATES: &[ExecutableCandidate] = &[
     ExecutableCandidate {
@@ -207,6 +293,50 @@ const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
     relative_path: r"WhatsApp\WhatsApp.exe",
 }];
 
+// Classic Outlook is a signed Win32 desktop application. Restrict discovery
+// to Microsoft's documented Click-to-Run Office16 layout; never use the
+// user-writable App Paths registry or an executable-name search.
+const OUTLOOK_CLASSIC_CANDIDATES: &[ExecutableCandidate] = &[
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFiles,
+        relative_path: r"Microsoft Office\root\Office16\OUTLOOK.EXE",
+    },
+    ExecutableCandidate {
+        folder: KnownFolder::ProgramFilesX86,
+        relative_path: r"Microsoft Office\root\Office16\OUTLOOK.EXE",
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+const OUTLOOK_PACKAGE_NAME: &str = "Microsoft.OutlookForWindows";
+#[cfg(any(target_os = "windows", test))]
+const OUTLOOK_PACKAGE_PUBLISHER_ID: &str = "8wekyb3d8bbwe";
+#[cfg(any(target_os = "windows", test))]
+const OUTLOOK_PACKAGE_FAMILY_NAME: &str = "Microsoft.OutlookForWindows_8wekyb3d8bbwe";
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const OUTLOOK_PACKAGE_AUMID: &str = concat!(
+    "shell:AppsFolder\\Microsoft.OutlookForWindows_8wekyb3d8bbwe!",
+    "Microsoft.OutlookforWindows"
+);
+
+#[cfg(any(target_os = "windows", test))]
+const WHATSAPP_PACKAGE_NAME: &str = "5319275A.WhatsAppDesktop";
+
+#[cfg(any(target_os = "windows", test))]
+const WHATSAPP_PACKAGE_PUBLISHER_ID: &str = "cv1g1gvanyjgm";
+
+#[cfg(any(target_os = "windows", test))]
+const WHATSAPP_PACKAGE_FAMILY_NAME: &str = "5319275A.WhatsAppDesktop_cv1g1gvanyjgm";
+
+#[cfg(target_os = "windows")]
+const MAX_WHATSAPP_PACKAGE_COUNT: u32 = 32;
+
+#[cfg(target_os = "windows")]
+const MAX_WHATSAPP_PACKAGE_BUFFER_UNITS: u32 = 32_768;
+
+#[cfg(target_os = "windows")]
+const MAX_WHATSAPP_PACKAGE_ID_BYTES: u32 = 16_384;
+
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_APPS_DIRECTORY: &str = "WindowsApps";
 
@@ -215,6 +345,9 @@ const DESKTOP_APP_INSTALLER_PREFIX: &str = "microsoft.desktopappinstaller_";
 
 #[cfg(any(target_os = "windows", test))]
 const DESKTOP_APP_INSTALLER_PUBLISHER_ID: &str = "_8wekyb3d8bbwe";
+
+#[cfg(any(target_os = "windows", test))]
+const DESKTOP_APP_INSTALLER_FAMILY_NAME: &str = "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe";
 
 #[cfg(any(target_os = "windows", test))]
 const INSTALLER_FAILURE_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -256,6 +389,8 @@ static VERIFIED_INSTALLER_AVAILABLE: Mutex<InstallerAvailabilityCache> =
 
 #[cfg(any(target_os = "windows", test))]
 const MULLVAD_PACKAGE_ID: &str = "MullvadVPN.MullvadVPN";
+#[cfg(any(target_os = "windows", test))]
+const DISCORD_DEDICATED_PACKAGE_ID: &str = "Discord.Discord.PTB";
 
 #[cfg(any(target_os = "windows", test))]
 const MULLVAD_CANDIDATES: &[ExecutableCandidate] = &[
@@ -276,6 +411,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_id: "Discord.Discord",
         package_source: "winget",
         candidates: DISCORD_CANDIDATES,
+        publisher: Some(ExecutablePublisher::Discord),
     },
     NativeAppManifest {
         id: NativeAppId::Telegram,
@@ -283,6 +419,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_id: "Telegram.TelegramDesktop",
         package_source: "winget",
         candidates: TELEGRAM_CANDIDATES,
+        publisher: Some(ExecutablePublisher::Telegram),
     },
     NativeAppManifest {
         id: NativeAppId::Signal,
@@ -290,6 +427,7 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_id: "OpenWhisperSystems.Signal",
         package_source: "winget",
         candidates: SIGNAL_CANDIDATES,
+        publisher: Some(ExecutablePublisher::Signal),
     },
     NativeAppManifest {
         id: NativeAppId::Whatsapp,
@@ -297,6 +435,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_id: "9NKSQGP7F2NH",
         package_source: "msstore",
         candidates: WHATSAPP_CANDIDATES,
+        publisher: None,
+    },
+    NativeAppManifest {
+        id: NativeAppId::Outlook,
+        display_name: "Outlook",
+        // Outlook is commonly provisioned with Microsoft 365 rather than as
+        // an independently safe winget action. Missing Outlook remains
+        // unavailable instead of exposing a guessed installer command.
+        package_id: "",
+        package_source: "unavailable",
+        candidates: OUTLOOK_CLASSIC_CANDIDATES,
+        publisher: Some(ExecutablePublisher::Microsoft),
     },
 ];
 
@@ -349,36 +499,28 @@ const BRAVE_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
 ];
 
 #[cfg(any(target_os = "windows", test))]
-const OPERA_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
-    ExecutableCandidate {
-        folder: KnownFolder::Local,
-        relative_path: r"Programs\Opera\launcher.exe",
-    },
-    ExecutableCandidate {
-        folder: KnownFolder::ProgramFiles,
-        relative_path: r"Opera\launcher.exe",
-    },
-    ExecutableCandidate {
-        folder: KnownFolder::ProgramFilesX86,
-        relative_path: r"Opera\launcher.exe",
-    },
-];
+const OPERA_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
+    folder: KnownFolder::Local,
+    relative_path: r"Programs\Opera\opera.exe",
+}];
 
 #[cfg(any(target_os = "windows", test))]
-const VIVALDI_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[
-    ExecutableCandidate {
-        folder: KnownFolder::Local,
-        relative_path: r"Vivaldi\Application\vivaldi.exe",
-    },
-    ExecutableCandidate {
-        folder: KnownFolder::ProgramFiles,
-        relative_path: r"Vivaldi\Application\vivaldi.exe",
-    },
-    ExecutableCandidate {
-        folder: KnownFolder::ProgramFilesX86,
-        relative_path: r"Vivaldi\Application\vivaldi.exe",
-    },
-];
+const DUCKDUCKGO_IMPORT_CANDIDATES: &[ExecutableCandidate] = &[];
+#[cfg(any(target_os = "windows", test))]
+const DUCKDUCKGO_PACKAGE_NAME: &str = "DuckDuckGo.DesktopBrowser";
+#[cfg(any(target_os = "windows", test))]
+const DUCKDUCKGO_EXECUTABLE_RELATIVE_PATH: &str = r"WindowsBrowser\DuckDuckGo.exe";
+#[cfg(any(target_os = "windows", test))]
+const DUCKDUCKGO_LOCATION_SCRIPT: &str = concat!(
+    "$location = Get-AppxPackage -Name DuckDuckGo.DesktopBrowser ",
+    "-ErrorAction SilentlyContinue | Select-Object -First 1 ",
+    "-ExpandProperty InstallLocation; ",
+    "if (-not [string]::IsNullOrWhiteSpace([string]$location)) { ",
+    "$utf8 = [System.Text.UTF8Encoding]::new($false); ",
+    "$bytes = $utf8.GetBytes([string]$location); ",
+    "$stdout = [Console]::OpenStandardOutput(); ",
+    "$stdout.Write($bytes, 0, $bytes.Length); $stdout.Flush() }"
+);
 
 #[cfg(any(target_os = "windows", test))]
 const BROWSER_IMPORTS: &[BrowserImportManifest] = &[
@@ -387,41 +529,54 @@ const BROWSER_IMPORTS: &[BrowserImportManifest] = &[
         display_name: "Chrome",
         candidates: CHROME_IMPORT_CANDIDATES,
         import_arguments: &["--new-window", "chrome://password-manager/settings"],
+        publisher_attestation: BrowserPublisherAttestation::Verified(ExecutablePublisher::Chrome),
     },
     BrowserImportManifest {
         id: BrowserImportId::Edge,
         display_name: "Edge",
         candidates: EDGE_IMPORT_CANDIDATES,
         import_arguments: &["--new-window", "edge://settings/passwords"],
+        publisher_attestation: BrowserPublisherAttestation::Verified(ExecutablePublisher::Edge),
     },
     BrowserImportManifest {
         id: BrowserImportId::Firefox,
         display_name: "Firefox",
         candidates: FIREFOX_CANDIDATES,
         import_arguments: &["--new-window", "about:logins"],
+        publisher_attestation: BrowserPublisherAttestation::Verified(ExecutablePublisher::Firefox),
     },
     BrowserImportManifest {
         id: BrowserImportId::Brave,
         display_name: "Brave",
         candidates: BRAVE_IMPORT_CANDIDATES,
         import_arguments: &["--new-window", "brave://password-manager/settings"],
+        publisher_attestation: BrowserPublisherAttestation::Verified(ExecutablePublisher::Brave),
     },
     BrowserImportManifest {
         id: BrowserImportId::Opera,
         display_name: "Opera",
         candidates: OPERA_IMPORT_CANDIDATES,
         import_arguments: &["--new-window", "opera://password-manager/settings"],
+        publisher_attestation: BrowserPublisherAttestation::Verified(ExecutablePublisher::Opera),
     },
     BrowserImportManifest {
-        id: BrowserImportId::Vivaldi,
-        display_name: "Vivaldi",
-        candidates: VIVALDI_IMPORT_CANDIDATES,
-        import_arguments: &["--new-window", "vivaldi://password-manager/settings"],
+        id: BrowserImportId::DuckDuckGo,
+        display_name: "DuckDuckGo",
+        candidates: DUCKDUCKGO_IMPORT_CANDIDATES,
+        // DuckDuckGo documents this workflow through its native menu rather
+        // than a stable external settings URI. Launch only the verified app;
+        // never guess a private URI or pass a profile path.
+        import_arguments: &[],
+        publisher_attestation: BrowserPublisherAttestation::Verified(
+            ExecutablePublisher::DuckDuckGo,
+        ),
     },
 ];
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_PACKAGE_ID: &str = "Mozilla.Firefox";
+const FIREFOX_MIGRATION_SWITCH: &str = "--migration";
+const FIREFOX_WAIT_FOR_BROWSER_SWITCH: &str = "-wait-for-browser";
 
 /// Firefox data shares the same owner-hashed namespace as every embedded
 /// service profile. The browser itself receives only the resulting local path;
@@ -431,6 +586,8 @@ const FIREFOX_PROFILE_BASE_COMPONENT: &str = "service-profiles-v2";
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_PROFILE_COMPONENT: &str = "firefox-browser";
+#[cfg(any(target_os = "windows", test))]
+const FIREFOX_UIA_USER_PREF: &str = "user_pref(\"accessibility.uia.enable\", 1);\n";
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_CANDIDATES: &[ExecutableCandidate] = &[
@@ -471,6 +628,7 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
     (FirefoxServiceId::Aol, "https://mail.aol.com/"),
     (FirefoxServiceId::Gmx, "https://www.gmx.com/"),
     (FirefoxServiceId::Maildotcom, "https://www.mail.com/"),
+    (FirefoxServiceId::Icloud, "https://www.icloud.com/mail/"),
 ];
 
 #[cfg(any(target_os = "windows", test))]
@@ -483,6 +641,34 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         .expect("every native app enum has a fixed manifest")
 }
 
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn native_app_publisher(id: NativeAppId) -> Option<ExecutablePublisher> {
+    manifest(id).publisher
+}
+
+fn isolated_native_profile_available(id: NativeAppId) -> bool {
+    matches!(id, NativeAppId::Discord | NativeAppId::Telegram)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn outlook_native_executable_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::with_capacity(2);
+    if let Some(path) = outlook_store_executable_path() {
+        paths.push(path);
+    }
+    if let Some(path) = installed_executable(manifest(NativeAppId::Outlook))
+        .map(|trusted| trusted.path().to_owned())
+    {
+        paths.push(path);
+    }
+    paths
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn outlook_native_executable_paths() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
 pub fn list_native_apps() -> Vec<NativeAppStatus> {
     list_native_apps_with_installer_probe(installer_available_for_listing)
 }
@@ -493,7 +679,12 @@ fn list_native_apps_with_installer_probe(
     let mut statuses: Vec<_> = NATIVE_APPS
         .iter()
         .map(|app| {
-            let availability = if installed_executable(app).is_some() {
+            let installed = match app.id {
+                NativeAppId::Whatsapp => whatsapp_store_package_installed(),
+                NativeAppId::Outlook => !outlook_native_executable_paths().is_empty(),
+                _ => installed_executable(app).is_some(),
+            };
+            let availability = if installed {
                 NativeAppAvailability::Installed
             } else {
                 NativeAppAvailability::Unavailable
@@ -502,10 +693,7 @@ fn list_native_apps_with_installer_probe(
                 id: app.id,
                 display_name: app.display_name,
                 availability,
-                isolated_profile_available: matches!(
-                    app.id,
-                    NativeAppId::Telegram | NativeAppId::Signal
-                ),
+                isolated_profile_available: isolated_native_profile_available(app.id),
                 supports_overlay: false,
             }
         })
@@ -520,7 +708,9 @@ fn list_native_apps_with_installer_probe(
         && installer_available()
     {
         for status in &mut statuses {
-            if status.availability == NativeAppAvailability::Unavailable {
+            if status.availability == NativeAppAvailability::Unavailable
+                && status.id != NativeAppId::Outlook
+            {
                 status.availability = NativeAppAvailability::Installable;
             }
         }
@@ -538,7 +728,10 @@ pub fn list_browser_imports() -> Vec<BrowserImportStatus> {
             .map(|browser| BrowserImportStatus {
                 id: browser.id,
                 display_name: browser.display_name,
-                installed: browser_import_executable(browser).is_some(),
+                // Listing is only a fast presence hint for the setup UI. The
+                // action path below still performs the full publisher and
+                // file-identity verification before it launches anything.
+                installed: browser_import_present(browser),
             })
             .collect()
     }
@@ -546,6 +739,23 @@ pub fn list_browser_imports() -> Vec<BrowserImportStatus> {
     {
         Vec::new()
     }
+}
+
+#[cfg(target_os = "windows")]
+fn browser_import_present(browser: &BrowserImportManifest) -> bool {
+    if browser.id == BrowserImportId::DuckDuckGo {
+        return duckduckgo_store_executable().is_some();
+    }
+    browser.candidates.iter().any(|candidate| {
+        known_folder(candidate.folder)
+            .map(|folder| folder.join(candidate.relative_path).is_file())
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+fn browser_import_present(_browser: &BrowserImportManifest) -> bool {
+    false
 }
 
 /// Opens one browser-owned password-manager/export surface after an explicit
@@ -563,7 +773,7 @@ pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, S
                 browser.display_name
             )
         })?;
-        spawn_detached(&executable, browser.import_arguments).map_err(|_| {
+        spawn_trusted_detached(&executable, browser.import_arguments).map_err(|_| {
             format!(
                 "{} could not open its password manager",
                 browser.display_name
@@ -579,9 +789,9 @@ pub fn open_browser_import(id: BrowserImportId) -> Result<BrowserImportResult, S
 }
 
 /// Opens Firefox's own migration wizard inside OSL's isolated Firefox profile.
-/// Detection, source choice, profile path, executable, arguments, and target
-/// page are all fixed natively. Firefox—not OSL—reads supported browser data,
-/// requests OS/browser authorization, and owns any CSV file picker.
+/// Detection, source choice, profile path, executable, and arguments are fixed
+/// natively. Firefox—not OSL—reads supported browser data, requests OS/browser
+/// authorization, and owns any CSV file picker.
 pub fn begin_browser_account_import(
     app_local_data_dir: &std::path::Path,
     owner_osl_user_id: &str,
@@ -599,8 +809,16 @@ pub fn begin_browser_account_import(
             "Firefox is required for OSL's browser-owned account migration".to_owned()
         })?;
         let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
-        spawn_firefox_migration_wizard(&firefox, &profile)
-            .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
+        let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
+            .map_err(|_| "The OSL Firefox import settings could not be opened".to_owned())?;
+        thread::sleep(Duration::from_millis(900));
+        if firefox_process
+            .try_wait()
+            .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
+            .is_some()
+        {
+            return Err("The OSL Firefox import settings closed before opening".to_owned());
+        }
         Ok(BrowserAccountImportResult {
             preferred_source,
             detected_sources,
@@ -619,6 +837,94 @@ pub fn begin_browser_account_import(
     }
 }
 
+/// Starts the browser-owned migration flow for a bounded set chosen in OSL.
+/// OSL never accepts paths, profiles, URLs, credentials, or browser arguments.
+pub fn begin_protected_browser_import(
+    app_local_data_dir: &std::path::Path,
+    owner_osl_user_id: &str,
+    selected_sources: Vec<BrowserImportId>,
+) -> Result<ProtectedBrowserImportResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        close_protected_browser_import_process()?;
+        if selected_sources.len() != 1 {
+            return Err("Open exactly one queued browser import at a time".to_owned());
+        }
+        let mut unique = Vec::with_capacity(selected_sources.len());
+        for id in selected_sources {
+            if unique.contains(&id)
+                || browser_import_executable(browser_import_manifest(id)).is_none()
+            {
+                return Err("A selected browser is unavailable".to_owned());
+            }
+            unique.push(id);
+        }
+        let firefox = firefox_executable().ok_or_else(|| {
+            "Firefox is required for OSL's browser-owned account migration".to_owned()
+        })?;
+        let profile = ensure_firefox_profile(app_local_data_dir, owner_osl_user_id)?;
+        let mut firefox_process = spawn_firefox_migration_wizard(&firefox, &profile)
+            .map_err(|_| "The OSL Firefox migration wizard could not be opened".to_owned())?;
+        thread::sleep(Duration::from_millis(900));
+        if firefox_process
+            .try_wait()
+            .map_err(|_| "The OSL Firefox import process could not be verified".to_owned())?
+            .is_some()
+        {
+            return Err("The OSL Firefox migration wizard closed before opening".to_owned());
+        }
+        let process_id = firefox_process.id();
+        let coordination = crate::firefox_migration_coordinator::coordinate(process_id, unique[0]);
+        *protected_browser_import_process()
+            .lock()
+            .map_err(|_| "The OSL Firefox import process state is unavailable".to_owned())? =
+            Some(firefox_process);
+        if coordination.is_ok() {
+            // Firefox closes the migration wizard after its own Import action
+            // finishes. Wait for that exact OSL-owned window so the renderer
+            // can advance a multi-browser queue without asking for a second
+            // confirmation. The retained process is still the only process
+            // finish_protected_browser_import may close or terminate.
+            let deadline = Instant::now() + Duration::from_secs(300);
+            loop {
+                if crate::firefox_migration_coordinator::is_closed(process_id).is_ok() {
+                    close_protected_browser_import_process()?;
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err("Firefox import did not finish within five minutes".to_owned());
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Ok(ProtectedBrowserImportResult {
+            selected_sources: unique,
+            started: true,
+            mode: "firefoxMigrationWizard",
+            source_selected: coordination.is_ok(),
+            manual_fallback: coordination.err(),
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app_local_data_dir, owner_osl_user_id, selected_sources);
+        Err("Browser account migration is available only on Windows".to_owned())
+    }
+}
+
+/// Closes only the exact isolated Firefox migration process retained above.
+/// The user's normal Firefox process and profiles are never enumerated or touched.
+pub fn finish_protected_browser_import() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        close_protected_browser_import_process()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Browser account migration is available only on Windows".to_owned())
+    }
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn preferred_browser_import_source(sources: &[BrowserImportId]) -> Option<BrowserImportId> {
     // Prefer Firefox's direct Windows migrators before Chrome's specialized
@@ -628,7 +934,7 @@ fn preferred_browser_import_source(sources: &[BrowserImportId]) -> Option<Browse
         BrowserImportId::Edge,
         BrowserImportId::Brave,
         BrowserImportId::Opera,
-        BrowserImportId::Vivaldi,
+        BrowserImportId::DuckDuckGo,
         BrowserImportId::Chrome,
         BrowserImportId::Firefox,
     ]
@@ -644,16 +950,119 @@ fn browser_import_manifest(id: BrowserImportId) -> &'static BrowserImportManifes
         .expect("every browser import enum has a fixed manifest")
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn attested_browser_publisher(browser: &BrowserImportManifest) -> Option<ExecutablePublisher> {
+    match browser.publisher_attestation {
+        BrowserPublisherAttestation::Verified(publisher) => Some(publisher),
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn browser_import_executable(browser: &BrowserImportManifest) -> Option<PathBuf> {
+fn browser_import_executable(browser: &BrowserImportManifest) -> Option<TrustedExecutable> {
+    if browser.id == BrowserImportId::DuckDuckGo {
+        return duckduckgo_store_executable();
+    }
+    let publisher = attested_browser_publisher(browser)?;
     browser.candidates.iter().find_map(|candidate| {
         let executable = known_folder(candidate.folder)?.join(candidate.relative_path);
-        executable.is_file().then_some(executable)
+        verify_executable(&executable, publisher).ok()
     })
 }
 
+/// Resolve one renderer-selected browser enum through the fixed manifest and
+/// re-verify its installed executable. No path, argument, or profile selector
+/// crosses the IPC boundary.
+#[cfg(target_os = "windows")]
+pub(crate) fn trusted_browser_executable(id: BrowserImportId) -> Option<TrustedExecutable> {
+    browser_import_executable(browser_import_manifest(id))
+}
+
+#[cfg(target_os = "windows")]
+fn duckduckgo_store_executable() -> Option<TrustedExecutable> {
+    let system_directory = system_directory()?;
+    let powershell = system_directory
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    if !powershell.is_file() {
+        return None;
+    }
+    let mut command = Command::new(powershell);
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            DUCKDUCKGO_LOCATION_SCRIPT,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout(command, APP_INSTALLER_PROBE_TIMEOUT).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = decode_duckduckgo_location(&output.stdout)?;
+    let program_files = known_folder(KnownFolder::ProgramFiles)?;
+    if !is_trusted_duckduckgo_package_path(&root, &program_files) {
+        return None;
+    }
+    verify_executable(
+        &root.join(DUCKDUCKGO_EXECUTABLE_RELATIVE_PATH),
+        ExecutablePublisher::DuckDuckGo,
+    )
+    .ok()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_duckduckgo_location(stdout: &[u8]) -> Option<PathBuf> {
+    let location = std::str::from_utf8(stdout).ok()?;
+    if location.is_empty() || location.contains(['\r', '\n', '\0']) || location.trim() != location {
+        return None;
+    }
+    Some(PathBuf::from(location))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn duckduckgo_package_full_name_matches(full_name: &str) -> bool {
+    let parts = full_name.split('_').collect::<Vec<_>>();
+    if parts.len() != 5
+        || parts[0] != DUCKDUCKGO_PACKAGE_NAME
+        || !matches!(parts[2], "x64" | "x86" | "arm64" | "neutral")
+        || !parts[3].is_empty()
+        || !(8..=20).contains(&parts[4].len())
+        || !parts[4]
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let version = parts[1].split('.').collect::<Vec<_>>();
+    version.len() == 4
+        && version.iter().all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_trusted_duckduckgo_package_path(path: &Path, program_files: &Path) -> bool {
+    if path_has_parent_component(path) {
+        return false;
+    }
+    let Some(package_directory_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.parent().is_some_and(|parent| {
+        path_file_name_eq(parent, WINDOWS_APPS_DIRECTORY)
+            && path_eq_ignore_ascii_case(parent.parent().unwrap_or(Path::new("")), program_files)
+    }) && duckduckgo_package_full_name_matches(package_directory_name)
+}
+
 #[cfg(all(test, not(target_os = "windows")))]
-fn browser_import_executable(_browser: &BrowserImportManifest) -> Option<std::path::PathBuf> {
+fn browser_import_executable(
+    _browser: &BrowserImportManifest,
+) -> Option<crate::windows_executable_trust::TrustedExecutable> {
     None
 }
 
@@ -665,6 +1074,12 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     #[cfg(target_os = "windows")]
     {
         let app = manifest(id);
+        if id == NativeAppId::Outlook {
+            return Err(
+                "Outlook installation is managed by Microsoft 365 or the Microsoft Store"
+                    .to_owned(),
+            );
+        }
         let winget = installer_executable()
             .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
         let arguments = [
@@ -690,6 +1105,35 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     {
         let _ = id;
         Err("Native app installation is available only on Windows".to_owned())
+    }
+}
+
+/// Installs the fixed official Discord PTB channel only when the normal
+/// Stable channel is already populated outside OSL. PTB gives OSL a separate
+/// signed native profile without reading, moving, or closing Stable Discord.
+pub fn install_discord_dedicated_channel() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let winget = installer_executable()
+            .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
+        let arguments = [
+            "install",
+            "--id",
+            DISCORD_DEDICATED_PACKAGE_ID,
+            "--exact",
+            "--source",
+            "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--silent",
+        ];
+        spawn_detached(&winget, &arguments)
+            .map_err(|_| "The dedicated Discord installer could not be started".to_owned())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Dedicated Discord installation is available only on Windows".to_owned())
     }
 }
 
@@ -792,6 +1236,9 @@ pub fn launch_firefox_service(
     owner_osl_user_id: &str,
     service_id: FirefoxServiceId,
 ) -> Result<FirefoxLaunchResult, String> {
+    if service_id == FirefoxServiceId::Outlook {
+        return Err("Outlook opens only through the verified native app".to_owned());
+    }
     #[cfg(target_os = "windows")]
     {
         let firefox = firefox_executable()
@@ -844,7 +1291,7 @@ pub fn install_firefox() -> Result<FirefoxInstallResult, String> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
+pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
     FIREFOX_SERVICES
         .iter()
         .find_map(|(candidate, url)| (*candidate == service_id).then_some(*url))
@@ -852,10 +1299,54 @@ fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
 }
 
 #[cfg(target_os = "windows")]
-fn firefox_executable() -> Option<PathBuf> {
+pub(crate) fn trusted_browser_executable_at(
+    path: &Path,
+) -> Option<(BrowserImportId, TrustedExecutable)> {
+    let canonical = path.canonicalize().ok()?;
+    if let Some(trusted) = duckduckgo_store_executable() {
+        if trusted.path() == canonical {
+            return Some((BrowserImportId::DuckDuckGo, trusted));
+        }
+    }
+    for browser in BROWSER_IMPORTS {
+        for candidate in browser.candidates {
+            let Some(expected) = known_folder(candidate.folder)
+                .and_then(|folder| folder.join(candidate.relative_path).canonicalize().ok())
+            else {
+                continue;
+            };
+            if expected == canonical {
+                let publisher = attested_browser_publisher(browser)?;
+                return verify_executable(&canonical, publisher)
+                    .ok()
+                    .map(|trusted| (browser.id, trusted));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn browser_display_name(id: BrowserImportId) -> &'static str {
+    browser_import_manifest(id).display_name
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn browser_uses_chromium_app_mode(id: BrowserImportId) -> bool {
+    matches!(
+        id,
+        BrowserImportId::Chrome
+            | BrowserImportId::Edge
+            | BrowserImportId::Brave
+            | BrowserImportId::Opera
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn firefox_executable() -> Option<TrustedExecutable> {
     FIREFOX_CANDIDATES.iter().find_map(|candidate| {
         let executable = known_folder(candidate.folder)?.join(candidate.relative_path);
-        executable.is_file().then_some(executable)
+        verify_executable(&executable, ExecutablePublisher::Firefox).ok()
     })
 }
 
@@ -889,7 +1380,87 @@ fn ensure_firefox_profile(
     if !canonical_profile.starts_with(&canonical_base) {
         return Err("The Firefox profile directory escaped local OSL storage".to_owned());
     }
+    ensure_firefox_migration_uia(&canonical_profile)?;
     Ok(canonical_profile)
+}
+
+/// Firefox can otherwise expose only an empty document shell to Windows UI
+/// Automation until an assistive-technology client has already activated it.
+/// This preference is written solely inside the OSL-owned migration profile;
+/// it never changes the user's ordinary Firefox profile.
+#[cfg(target_os = "windows")]
+fn ensure_firefox_migration_uia(profile: &Path) -> Result<(), String> {
+    use std::io::{Read, Write};
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    const MAX_USER_JS_BYTES: u64 = 64 * 1024;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    let path = profile.join("user.js");
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                || metadata.len() > MAX_USER_JS_BYTES
+            {
+                return Err("The OSL Firefox accessibility preference file is invalid".to_owned());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("The OSL Firefox accessibility preference is unavailable".to_owned()),
+    }
+
+    let mut current = String::new();
+    if path.exists() {
+        let mut source = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&path)
+            .map_err(|_| "The OSL Firefox accessibility preference could not be read".to_owned())?;
+        let opened = source.metadata().map_err(|_| {
+            "The OSL Firefox accessibility preference could not be verified".to_owned()
+        })?;
+        if !opened.is_file()
+            || opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || opened.len() > MAX_USER_JS_BYTES
+        {
+            return Err("The OSL Firefox accessibility preference file is invalid".to_owned());
+        }
+        source
+            .read_to_string(&mut current)
+            .map_err(|_| "The OSL Firefox accessibility preference could not be read".to_owned())?;
+    }
+    if current
+        .lines()
+        .any(|line| line.trim() == FIREFOX_UIA_USER_PREF.trim())
+    {
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&path)
+        .map_err(|_| "The OSL Firefox accessibility preference could not be written".to_owned())?;
+    let opened = file
+        .metadata()
+        .map_err(|_| "The OSL Firefox accessibility preference could not be verified".to_owned())?;
+    if !opened.is_file()
+        || opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || opened.len() > MAX_USER_JS_BYTES
+    {
+        return Err("The OSL Firefox accessibility preference file is invalid".to_owned());
+    }
+    if !current.is_empty() && !current.ends_with('\n') {
+        file.write_all(b"\n").map_err(|_| {
+            "The OSL Firefox accessibility preference could not be written".to_owned()
+        })?;
+    }
+    file.write_all(FIREFOX_UIA_USER_PREF.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "The OSL Firefox accessibility preference could not be committed".to_owned())
 }
 
 #[cfg(test)]
@@ -942,25 +1513,41 @@ fn ensure_plain_directory(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn firefox_executable() -> Option<std::path::PathBuf> {
+fn firefox_executable() -> Option<crate::windows_executable_trust::TrustedExecutable> {
     None
 }
 
 #[cfg(target_os = "windows")]
-fn installed_executable(app: &NativeAppManifest) -> Option<PathBuf> {
+fn installed_executable(app: &NativeAppManifest) -> Option<TrustedExecutable> {
+    let publisher = app.publisher?;
     if app.id == NativeAppId::Discord {
-        let install_root = known_folder(KnownFolder::Local)?.join("Discord");
-        return newest_discord_executable_under(&install_root);
+        return app.candidates.iter().find_map(|candidate| {
+            let local = known_folder(candidate.folder)?;
+            let updater = local.join(candidate.relative_path);
+            let install_root = updater.parent()?;
+            let executable_name = discord_executable_name(candidate.relative_path)?;
+            let executable =
+                newest_discord_channel_executable_under(install_root, executable_name)?;
+            verify_executable(&executable, publisher).ok()
+        });
     }
     app.candidates.iter().find_map(|candidate| {
         let root = known_folder(candidate.folder)?;
         let executable = root.join(candidate.relative_path);
-        executable.is_file().then_some(executable)
+        verify_executable(&executable, publisher).ok()
     })
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 pub(crate) fn newest_discord_executable_under(install_root: &Path) -> Option<PathBuf> {
+    newest_discord_channel_executable_under(install_root, "Discord.exe")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn newest_discord_channel_executable_under(
+    install_root: &Path,
+    executable_name: &str,
+) -> Option<PathBuf> {
     let mut candidates = std::fs::read_dir(install_root)
         .ok()?
         .filter_map(Result::ok)
@@ -968,12 +1555,22 @@ pub(crate) fn newest_discord_executable_under(install_root: &Path) -> Option<Pat
             let name = entry.file_name();
             let name = name.to_str()?;
             let version = discord_version_key(name)?;
-            let executable = entry.path().join("Discord.exe");
+            let executable = entry.path().join(executable_name);
             executable.is_file().then_some((version, executable))
         })
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
     candidates.pop().map(|(_, executable)| executable)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn discord_executable_name(update_relative_path: &str) -> Option<&'static str> {
+    match update_relative_path {
+        r"Discord\Update.exe" => Some("Discord.exe"),
+        r"DiscordPTB\Update.exe" => Some("DiscordPTB.exe"),
+        r"DiscordCanary\Update.exe" => Some("DiscordCanary.exe"),
+        _ => None,
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -991,15 +1588,364 @@ fn discord_version_key(directory_name: &str) -> Option<Vec<u64>> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn installed_executable(_app: &NativeAppManifest) -> Option<std::path::PathBuf> {
+fn installed_executable(
+    _app: &NativeAppManifest,
+) -> Option<crate::windows_executable_trust::TrustedExecutable> {
     None
+}
+
+/// Uses the current user's protected AppModel registration rather than a
+/// user-writable executable alias. Dedicated secondary WhatsApp profiles stay
+/// unsupported; this registration also anchors the consented existing-session
+/// companion path.
+#[cfg(target_os = "windows")]
+fn whatsapp_store_package_installed() -> bool {
+    whatsapp_store_package_root().is_some()
+}
+
+/// Resolve the executable only through the current user's exact AppX
+/// registration. WhatsApp's packaged executable is not independently
+/// Authenticode signed, so callers must never fall back to a user-writable
+/// alias or an executable-name search.
+#[cfg(target_os = "windows")]
+pub(crate) fn whatsapp_store_executable_path() -> Option<PathBuf> {
+    let root = whatsapp_store_package_root()?;
+    // A normal unpackaged desktop process can be denied redundant metadata
+    // reads inside WindowsApps even though the exact registered app can run.
+    // The package API and protected-root checks below are the trust boundary;
+    // process discovery later requires this exact canonical image path.
+    Some(root.join("WhatsApp.Root.exe"))
+}
+
+#[cfg(target_os = "windows")]
+fn whatsapp_store_package_root() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
+
+    let family = std::ffi::OsStr::new(WHATSAPP_PACKAGE_FAMILY_NAME)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut count = 0u32;
+    let mut buffer_length = 0u32;
+    let first = unsafe {
+        GetPackagesByPackageFamily(
+            family.as_ptr(),
+            &mut count,
+            std::ptr::null_mut(),
+            &mut buffer_length,
+            std::ptr::null_mut(),
+        )
+    };
+    if first != ERROR_INSUFFICIENT_BUFFER
+        || count == 0
+        || count > MAX_WHATSAPP_PACKAGE_COUNT
+        || !(1..=MAX_WHATSAPP_PACKAGE_BUFFER_UNITS).contains(&buffer_length)
+    {
+        return None;
+    }
+
+    let mut package_names = vec![std::ptr::null_mut(); count as usize];
+    let mut buffer = vec![0u16; buffer_length as usize];
+    let second = unsafe {
+        GetPackagesByPackageFamily(
+            family.as_ptr(),
+            &mut count,
+            package_names.as_mut_ptr(),
+            &mut buffer_length,
+            buffer.as_mut_ptr(),
+        )
+    };
+    if second != ERROR_SUCCESS
+        || count == 0
+        || count as usize > package_names.len()
+        || buffer_length as usize > buffer.len()
+    {
+        return None;
+    }
+
+    let program_files = known_folder(KnownFolder::ProgramFiles)?;
+    package_names[..count as usize]
+        .iter()
+        .find_map(|package_name| {
+            utf16_string_from_api_buffer(*package_name, &buffer[..buffer_length as usize])
+                .is_some_and(|full_name| {
+                    whatsapp_package_registration_is_valid(&full_name, &program_files)
+                })
+                .then(|| {
+                    utf16_string_from_api_buffer(*package_name, &buffer[..buffer_length as usize])
+                })
+                .flatten()
+                .and_then(|full_name| package_path_from_full_name(&full_name))
+        })
+}
+
+/// Resolve new Outlook only through the current user's exact Microsoft Store
+/// registration. The fixed package family and Windows package APIs prevent a
+/// user-writable alias or same-named executable from entering the host path.
+#[cfg(target_os = "windows")]
+fn outlook_store_executable_path() -> Option<PathBuf> {
+    let root = outlook_store_package_root()?;
+    let executable = root.join("olk.exe");
+    verify_executable(&executable, ExecutablePublisher::Microsoft)
+        .ok()
+        .map(|trusted| trusted.path().to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn outlook_store_package_root() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
+
+    let family = std::ffi::OsStr::new(OUTLOOK_PACKAGE_FAMILY_NAME)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut count = 0u32;
+    let mut buffer_length = 0u32;
+    if unsafe {
+        GetPackagesByPackageFamily(
+            family.as_ptr(),
+            &mut count,
+            std::ptr::null_mut(),
+            &mut buffer_length,
+            std::ptr::null_mut(),
+        )
+    } != ERROR_INSUFFICIENT_BUFFER
+        || count == 0
+        || count > MAX_WHATSAPP_PACKAGE_COUNT
+        || !(1..=MAX_WHATSAPP_PACKAGE_BUFFER_UNITS).contains(&buffer_length)
+    {
+        return None;
+    }
+    let mut package_names = vec![std::ptr::null_mut(); count as usize];
+    let mut buffer = vec![0u16; buffer_length as usize];
+    if unsafe {
+        GetPackagesByPackageFamily(
+            family.as_ptr(),
+            &mut count,
+            package_names.as_mut_ptr(),
+            &mut buffer_length,
+            buffer.as_mut_ptr(),
+        )
+    } != ERROR_SUCCESS
+        || count == 0
+        || count as usize > package_names.len()
+        || buffer_length as usize > buffer.len()
+    {
+        return None;
+    }
+    let program_files = known_folder(KnownFolder::ProgramFiles)?;
+    package_names[..count as usize]
+        .iter()
+        .filter_map(|package_name| {
+            utf16_string_from_api_buffer(*package_name, &buffer[..buffer_length as usize])
+        })
+        .find_map(|full_name| {
+            let (name, publisher_id, resource_id) = package_identity_from_full_name(&full_name)?;
+            if name != OUTLOOK_PACKAGE_NAME
+                || publisher_id != OUTLOOK_PACKAGE_PUBLISHER_ID
+                || !resource_id.is_empty()
+            {
+                return None;
+            }
+            let path = package_path_from_full_name(&full_name)?;
+            is_trusted_outlook_package_path(&path, &program_files).then_some(path)
+        })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_trusted_outlook_package_path(path: &Path, program_files: &Path) -> bool {
+    if path_has_parent_component(path) {
+        return false;
+    }
+    let Some(package_directory_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.parent().is_some_and(|parent| {
+        path_file_name_eq(parent, WINDOWS_APPS_DIRECTORY)
+            && path_eq_ignore_ascii_case(parent.parent().unwrap_or(Path::new("")), program_files)
+    }) && package_directory_name.starts_with(&format!("{OUTLOOK_PACKAGE_NAME}_"))
+        && package_directory_name.ends_with(&format!("__{OUTLOOK_PACKAGE_PUBLISHER_ID}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn whatsapp_store_package_installed() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn whatsapp_package_registration_is_valid(full_name: &str, program_files: &Path) -> bool {
+    if !whatsapp_package_full_name_matches(full_name) {
+        return false;
+    }
+    let Some(path) = package_path_from_full_name(full_name) else {
+        return false;
+    };
+    is_trusted_whatsapp_package_path(&path, program_files)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn whatsapp_package_full_name_matches(full_name: &str) -> bool {
+    let parts = full_name.split('_').collect::<Vec<_>>();
+    if parts.len() != 5
+        || !whatsapp_package_identity_matches(parts[0], parts[4], parts[3])
+        || !matches!(parts[2], "x64" | "x86" | "arm64" | "neutral")
+    {
+        return false;
+    }
+    let version = parts[1].split('.').collect::<Vec<_>>();
+    version.len() == 4
+        && version.iter().all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn package_identity_from_full_name(full_name: &str) -> Option<(String, String, String)> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Storage::Packaging::Appx::{
+        PackageIdFromFullName, PACKAGE_ID, PACKAGE_INFORMATION_BASIC,
+    };
+
+    let full_name = std::ffi::OsStr::new(full_name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut required = 0u32;
+    if unsafe {
+        PackageIdFromFullName(
+            full_name.as_ptr(),
+            PACKAGE_INFORMATION_BASIC,
+            &mut required,
+            std::ptr::null_mut(),
+        )
+    } != ERROR_INSUFFICIENT_BUFFER
+        || !(std::mem::size_of::<PACKAGE_ID>() as u32..=MAX_WHATSAPP_PACKAGE_ID_BYTES)
+            .contains(&required)
+    {
+        return None;
+    }
+    let words = (required as usize).div_ceil(std::mem::size_of::<usize>());
+    let mut buffer = vec![0usize; words];
+    let mut capacity = (words * std::mem::size_of::<usize>()) as u32;
+    if unsafe {
+        PackageIdFromFullName(
+            full_name.as_ptr(),
+            PACKAGE_INFORMATION_BASIC,
+            &mut capacity,
+            buffer.as_mut_ptr().cast::<u8>(),
+        )
+    } != 0
+        || capacity as usize > words * std::mem::size_of::<usize>()
+    {
+        return None;
+    }
+    let id = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<PACKAGE_ID>()) };
+    let utf16_buffer = unsafe {
+        std::slice::from_raw_parts(
+            buffer.as_ptr().cast::<u16>(),
+            words * std::mem::size_of::<usize>() / std::mem::size_of::<u16>(),
+        )
+    };
+    Some((
+        utf16_string_from_api_buffer(id.name, utf16_buffer)?,
+        utf16_string_from_api_buffer(id.publisherId, utf16_buffer)?,
+        if id.resourceId.is_null() {
+            String::new()
+        } else {
+            utf16_string_from_api_buffer(id.resourceId, utf16_buffer)?
+        },
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn package_path_from_full_name(full_name: &str) -> Option<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Storage::Packaging::Appx::GetPackagePathByFullName;
+
+    let full_name = std::ffi::OsStr::new(full_name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut required = 0u32;
+    if unsafe { GetPackagePathByFullName(full_name.as_ptr(), &mut required, std::ptr::null_mut()) }
+        != ERROR_INSUFFICIENT_BUFFER
+        || !(2..=MAX_WHATSAPP_PACKAGE_BUFFER_UNITS).contains(&required)
+    {
+        return None;
+    }
+    let mut path = vec![0u16; required as usize];
+    if unsafe { GetPackagePathByFullName(full_name.as_ptr(), &mut required, path.as_mut_ptr()) }
+        != 0
+        || required < 2
+        || required as usize > path.len()
+    {
+        return None;
+    }
+    let end = path.iter().position(|unit| *unit == 0)?;
+    (end > 0).then(|| PathBuf::from(std::ffi::OsString::from_wide(&path[..end])))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn utf16_string_from_api_buffer(pointer: *const u16, buffer: &[u16]) -> Option<String> {
+    if pointer.is_null() || buffer.is_empty() {
+        return None;
+    }
+    let start = buffer.as_ptr() as usize;
+    let byte_length = buffer.len().checked_mul(std::mem::size_of::<u16>())?;
+    let end = start.checked_add(byte_length)?;
+    let address = pointer as usize;
+    if address < start
+        || address >= end
+        || !(address - start).is_multiple_of(std::mem::align_of::<u16>())
+    {
+        return None;
+    }
+    let offset = (address - start) / std::mem::size_of::<u16>();
+    let remaining = &buffer[offset..];
+    let nul = remaining.iter().position(|unit| *unit == 0)?;
+    String::from_utf16(&remaining[..nul]).ok()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn whatsapp_package_identity_matches(name: &str, publisher_id: &str, resource_id: &str) -> bool {
+    name == WHATSAPP_PACKAGE_NAME
+        && publisher_id == WHATSAPP_PACKAGE_PUBLISHER_ID
+        && resource_id.is_empty()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_trusted_whatsapp_package_path(path: &Path, program_files: &Path) -> bool {
+    if path_has_parent_component(path) {
+        return false;
+    }
+    let Some(package_directory_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.parent().is_some_and(|parent| {
+        path_file_name_eq(parent, WINDOWS_APPS_DIRECTORY)
+            && path_eq_ignore_ascii_case(parent.parent().unwrap_or(Path::new("")), program_files)
+    }) && package_directory_name.starts_with(&format!("{WHATSAPP_PACKAGE_NAME}_"))
+        && package_directory_name.ends_with(&format!("__{WHATSAPP_PACKAGE_PUBLISHER_ID}"))
 }
 
 #[cfg(target_os = "windows")]
 fn installer_executable() -> Option<PathBuf> {
     let program_files = known_folder(KnownFolder::ProgramFiles)?;
-    let executable = resolve_winget_executable(&app_installer_winget_candidates(), &program_files)?;
-    executable.is_file().then_some(executable)
+    // The package APIs already bind this path to the current user's exact
+    // Desktop App Installer registration. An unpackaged process can be denied
+    // metadata reads inside WindowsApps even when CreateProcess is allowed, so
+    // do not turn that redundant stat into a false "not installed" result.
+    // A missing or damaged registration still fails closed when spawn runs.
+    resolve_winget_executable(&app_installer_winget_candidates(), &program_files)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1046,6 +1992,13 @@ fn installer_available_for_listing() -> bool {
 /// path is data only and must pass `is_trusted_winget_path` before launch.
 #[cfg(target_os = "windows")]
 fn app_installer_winget_candidates() -> Vec<PathBuf> {
+    let registered = registered_app_installer_winget_candidates();
+    if known_folder(KnownFolder::ProgramFiles)
+        .and_then(|program_files| resolve_winget_executable(&registered, &program_files))
+        .is_some()
+    {
+        return registered;
+    }
     let Some(system_directory) = system_directory() else {
         return Vec::new();
     };
@@ -1073,6 +2026,81 @@ fn app_installer_winget_candidates() -> Vec<PathBuf> {
         .filter(|output| output.status.success())
         .map(|output| decode_app_installer_locations(&output.stdout))
         .unwrap_or_default()
+}
+
+/// Reads the current user's exact App Installer package registration through
+/// the Windows package API. This avoids a cold PowerShell process on startup
+/// while retaining the same protected WindowsApps path checks downstream.
+#[cfg(target_os = "windows")]
+fn registered_app_installer_winget_candidates() -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
+
+    let family = std::ffi::OsStr::new(DESKTOP_APP_INSTALLER_FAMILY_NAME)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut count = 0u32;
+    let mut buffer_length = 0u32;
+    let first = unsafe {
+        GetPackagesByPackageFamily(
+            family.as_ptr(),
+            &mut count,
+            std::ptr::null_mut(),
+            &mut buffer_length,
+            std::ptr::null_mut(),
+        )
+    };
+    if first != ERROR_INSUFFICIENT_BUFFER
+        || count == 0
+        || count > MAX_WHATSAPP_PACKAGE_COUNT
+        || !(1..=MAX_WHATSAPP_PACKAGE_BUFFER_UNITS).contains(&buffer_length)
+    {
+        return Vec::new();
+    }
+    let mut package_names = vec![std::ptr::null_mut(); count as usize];
+    let mut buffer = vec![0u16; buffer_length as usize];
+    let second = unsafe {
+        GetPackagesByPackageFamily(
+            family.as_ptr(),
+            &mut count,
+            package_names.as_mut_ptr(),
+            &mut buffer_length,
+            buffer.as_mut_ptr(),
+        )
+    };
+    if second != ERROR_SUCCESS
+        || count == 0
+        || count as usize > package_names.len()
+        || buffer_length as usize > buffer.len()
+    {
+        return Vec::new();
+    }
+    let Some(windows_apps) = known_folder(KnownFolder::ProgramFiles)
+        .map(|program_files| program_files.join(WINDOWS_APPS_DIRECTORY))
+    else {
+        return Vec::new();
+    };
+    package_names[..count as usize]
+        .iter()
+        .filter_map(|package_name| {
+            let full_name =
+                utf16_string_from_api_buffer(*package_name, &buffer[..buffer_length as usize])?;
+            let (name, publisher_id, resource_id) = package_identity_from_full_name(&full_name)?;
+            if name != "Microsoft.DesktopAppInstaller"
+                || publisher_id != "8wekyb3d8bbwe"
+                || !resource_id.is_empty()
+            {
+                return None;
+            }
+            // Package full names come from Windows itself and are parsed above
+            // before being joined beneath the protected WindowsApps root. The
+            // final candidate still passes `is_trusted_winget_path` before use.
+            Some(windows_apps.join(full_name).join("winget.exe"))
+        })
+        .collect()
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1248,8 +2276,27 @@ fn spawn_detached(executable: &Path, arguments: &[&str]) -> std::io::Result<()> 
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_firefox_tab(executable: &Path, profile: &Path, url: &str) -> std::io::Result<()> {
-    Command::new(executable)
+fn spawn_trusted_detached(
+    executable: &TrustedExecutable,
+    arguments: &[&str],
+) -> std::io::Result<()> {
+    Command::new(executable.path())
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_firefox_tab(
+    executable: &TrustedExecutable,
+    profile: &Path,
+    url: &str,
+) -> std::io::Result<()> {
+    Command::new(executable.path())
         .arg("--profile")
         .arg(profile)
         .arg("--new-tab")
@@ -1262,18 +2309,21 @@ fn spawn_firefox_tab(executable: &Path, profile: &Path, url: &str) -> std::io::R
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_firefox_migration_wizard(executable: &Path, profile: &Path) -> std::io::Result<()> {
-    Command::new(executable)
+fn spawn_firefox_migration_wizard(
+    executable: &TrustedExecutable,
+    profile: &Path,
+) -> std::io::Result<Child> {
+    Command::new(executable.path())
         .arg("--no-remote")
         .arg("--profile")
         .arg(profile)
-        .arg("--migration")
+        .arg(FIREFOX_WAIT_FOR_BROWSER_SWITCH)
+        .arg(FIREFOX_MIGRATION_SWITCH)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(0x0800_0000)
         .spawn()
-        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -1294,16 +2344,21 @@ mod tests {
 
     #[test]
     fn manifest_is_exhaustive_unique_and_uses_fixed_packages() {
-        assert_eq!(NATIVE_APPS.len(), 4);
+        assert_eq!(NATIVE_APPS.len(), 5);
         for (index, app) in NATIVE_APPS.iter().enumerate() {
             assert!(!app.display_name.is_empty());
-            assert!(!app.package_id.is_empty());
-            assert!(!app.package_id.starts_with('-'));
-            assert!(app
-                .package_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
-            assert!(matches!(app.package_source, "winget" | "msstore"));
+            if app.id == NativeAppId::Outlook {
+                assert!(app.package_id.is_empty());
+                assert_eq!(app.package_source, "unavailable");
+            } else {
+                assert!(!app.package_id.is_empty());
+                assert!(!app.package_id.starts_with('-'));
+                assert!(app
+                    .package_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
+                assert!(matches!(app.package_source, "winget" | "msstore"));
+            }
             assert!(!app.candidates.is_empty());
             assert!(NATIVE_APPS[..index]
                 .iter()
@@ -1313,11 +2368,94 @@ mod tests {
                 assert!(!candidate.relative_path.starts_with(['/', '\\']));
                 assert!(!candidate.relative_path.contains(".."));
                 assert!(!candidate.relative_path.contains(':'));
-                assert!(candidate.relative_path.ends_with(".exe"));
+                assert!(candidate
+                    .relative_path
+                    .to_ascii_lowercase()
+                    .ends_with(".exe"));
             }
         }
         assert_eq!(manifest(NativeAppId::Discord).package_id, "Discord.Discord");
+        assert_eq!(
+            manifest(NativeAppId::Discord)
+                .candidates
+                .iter()
+                .map(|candidate| candidate.relative_path)
+                .collect::<Vec<_>>(),
+            vec![
+                r"Discord\Update.exe",
+                r"DiscordPTB\Update.exe",
+                r"DiscordCanary\Update.exe",
+            ]
+        );
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
+        assert_eq!(
+            native_app_publisher(NativeAppId::Discord),
+            Some(ExecutablePublisher::Discord)
+        );
+        assert_eq!(
+            native_app_publisher(NativeAppId::Telegram),
+            Some(ExecutablePublisher::Telegram)
+        );
+        assert_eq!(
+            native_app_publisher(NativeAppId::Signal),
+            Some(ExecutablePublisher::Signal)
+        );
+        assert_eq!(native_app_publisher(NativeAppId::Whatsapp), None);
+        assert_eq!(
+            native_app_publisher(NativeAppId::Outlook),
+            Some(ExecutablePublisher::Microsoft)
+        );
+        assert!(isolated_native_profile_available(NativeAppId::Discord));
+        assert!(isolated_native_profile_available(NativeAppId::Telegram));
+        assert!(!isolated_native_profile_available(NativeAppId::Signal));
+        assert!(!isolated_native_profile_available(NativeAppId::Whatsapp));
+        assert!(!isolated_native_profile_available(NativeAppId::Outlook));
+    }
+
+    #[test]
+    fn outlook_native_identities_are_fixed_and_store_path_is_protected() {
+        assert_eq!(
+            OUTLOOK_PACKAGE_FAMILY_NAME,
+            "Microsoft.OutlookForWindows_8wekyb3d8bbwe"
+        );
+        assert_eq!(
+            OUTLOOK_PACKAGE_AUMID,
+            "shell:AppsFolder\\Microsoft.OutlookForWindows_8wekyb3d8bbwe!Microsoft.OutlookforWindows"
+        );
+        assert_eq!(
+            manifest(NativeAppId::Outlook)
+                .candidates
+                .iter()
+                .map(|candidate| candidate.relative_path)
+                .collect::<Vec<_>>(),
+            vec![
+                r"Microsoft Office\root\Office16\OUTLOOK.EXE",
+                r"Microsoft Office\root\Office16\OUTLOOK.EXE",
+            ]
+        );
+        let program_files = Path::new("C:/Program Files");
+        let package = program_files
+            .join("WindowsApps/Microsoft.OutlookForWindows_1.2026.707.300_x64__8wekyb3d8bbwe");
+        assert!(is_trusted_outlook_package_path(&package, program_files));
+        for rejected in [
+            PathBuf::from(
+                "C:/Users/alice/Microsoft.OutlookForWindows_1.2026.707.300_x64__8wekyb3d8bbwe",
+            ),
+            program_files.join(
+                "WindowsApps/nested/Microsoft.OutlookForWindows_1.2026.707.300_x64__8wekyb3d8bbwe",
+            ),
+            program_files
+                .join("WindowsApps/Microsoft.OutlookForWindows_1.2026.707.300_x64__attacker"),
+        ] {
+            assert!(!is_trusted_outlook_package_path(&rejected, program_files));
+        }
+    }
+
+    #[test]
+    fn outlook_has_no_firefox_fallback() {
+        assert!(
+            launch_firefox_service(Path::new("."), "owner-a", FirefoxServiceId::Outlook).is_err()
+        );
     }
 
     #[test]
@@ -1335,6 +2473,12 @@ mod tests {
                 .as_bool()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn dedicated_discord_fallback_is_one_fixed_official_channel() {
+        assert_eq!(DISCORD_DEDICATED_PACKAGE_ID, "Discord.Discord.PTB");
+        assert!(install_discord_dedicated_channel().is_err());
     }
 
     #[test]
@@ -1386,8 +2530,14 @@ mod tests {
 
     #[test]
     fn firefox_manifest_is_exhaustive_and_https_only() {
-        assert_eq!(FIREFOX_SERVICES.len(), 11);
+        assert_eq!(FIREFOX_SERVICES.len(), 12);
         assert_eq!(FIREFOX_PACKAGE_ID, "Mozilla.Firefox");
+        assert_eq!(FIREFOX_MIGRATION_SWITCH, "--migration");
+        assert_eq!(FIREFOX_WAIT_FOR_BROWSER_SWITCH, "-wait-for-browser");
+        assert_eq!(
+            FIREFOX_UIA_USER_PREF,
+            "user_pref(\"accessibility.uia.enable\", 1);\n"
+        );
         assert_eq!(FIREFOX_CANDIDATES.len(), 4);
         assert_eq!(FIREFOX_PROFILE_BASE_COMPONENT, "service-profiles-v2");
         assert_eq!(FIREFOX_PROFILE_COMPONENT, "firefox-browser");
@@ -1430,28 +2580,29 @@ mod tests {
             (BrowserImportId::Firefox, "about:logins"),
             (BrowserImportId::Brave, "brave://password-manager/settings"),
             (BrowserImportId::Opera, "opera://password-manager/settings"),
-            (
-                BrowserImportId::Vivaldi,
-                "vivaldi://password-manager/settings",
-            ),
         ];
         assert_eq!(BROWSER_IMPORTS.len(), 6);
         for (index, browser) in BROWSER_IMPORTS.iter().enumerate() {
             assert!(!browser.display_name.is_empty());
-            assert!(!browser.candidates.is_empty());
-            assert_eq!(browser.import_arguments.first(), Some(&"--new-window"));
-            assert_eq!(browser.import_arguments.len(), 2);
-            assert_eq!(
-                browser.import_arguments[1],
-                expected_targets
-                    .iter()
-                    .find_map(|(id, target)| (*id == browser.id).then_some(*target))
-                    .expect("every browser id has one reviewed internal target")
-            );
-            assert!(!browser.import_arguments[1].starts_with("http:"));
-            assert!(!browser.import_arguments[1].starts_with("https:"));
-            assert!(!browser.import_arguments[1].starts_with("file:"));
-            assert!(!browser.import_arguments[1].starts_with("javascript:"));
+            if browser.id == BrowserImportId::DuckDuckGo {
+                assert!(browser.candidates.is_empty());
+                assert!(browser.import_arguments.is_empty());
+            } else {
+                assert!(!browser.candidates.is_empty());
+                assert_eq!(browser.import_arguments.first(), Some(&"--new-window"));
+                assert_eq!(browser.import_arguments.len(), 2);
+                assert_eq!(
+                    browser.import_arguments[1],
+                    expected_targets
+                        .iter()
+                        .find_map(|(id, target)| (*id == browser.id).then_some(*target))
+                        .expect("every unpackaged browser has one reviewed internal target")
+                );
+                assert!(!browser.import_arguments[1].starts_with("http:"));
+                assert!(!browser.import_arguments[1].starts_with("https:"));
+                assert!(!browser.import_arguments[1].starts_with("file:"));
+                assert!(!browser.import_arguments[1].starts_with("javascript:"));
+            }
             assert!(BROWSER_IMPORTS[..index]
                 .iter()
                 .all(|previous| previous.id != browser.id));
@@ -1468,9 +2619,62 @@ mod tests {
             "Chrome"
         );
         assert_eq!(
-            browser_import_manifest(BrowserImportId::Vivaldi).display_name,
-            "Vivaldi"
+            browser_import_manifest(BrowserImportId::DuckDuckGo).display_name,
+            "DuckDuckGo"
         );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Opera).candidates,
+            &[ExecutableCandidate {
+                folder: KnownFolder::Local,
+                relative_path: r"Programs\Opera\opera.exe",
+            }]
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::DuckDuckGo).candidates,
+            &[]
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Chrome).publisher_attestation,
+            BrowserPublisherAttestation::Verified(ExecutablePublisher::Chrome)
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Edge).publisher_attestation,
+            BrowserPublisherAttestation::Verified(ExecutablePublisher::Edge)
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Firefox).publisher_attestation,
+            BrowserPublisherAttestation::Verified(ExecutablePublisher::Firefox)
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Brave).publisher_attestation,
+            BrowserPublisherAttestation::Verified(ExecutablePublisher::Brave)
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::Opera).publisher_attestation,
+            BrowserPublisherAttestation::Verified(ExecutablePublisher::Opera)
+        );
+        assert_eq!(
+            browser_import_manifest(BrowserImportId::DuckDuckGo).publisher_attestation,
+            BrowserPublisherAttestation::Verified(ExecutablePublisher::DuckDuckGo)
+        );
+        assert_eq!(
+            attested_browser_publisher(browser_import_manifest(BrowserImportId::Opera)),
+            Some(ExecutablePublisher::Opera)
+        );
+        assert_eq!(
+            attested_browser_publisher(browser_import_manifest(BrowserImportId::DuckDuckGo)),
+            Some(ExecutablePublisher::DuckDuckGo)
+        );
+        for browser_id in [
+            BrowserImportId::Chrome,
+            BrowserImportId::Edge,
+            BrowserImportId::Brave,
+            BrowserImportId::Opera,
+        ] {
+            assert!(browser_uses_chromium_app_mode(browser_id));
+        }
+        assert!(!browser_uses_chromium_app_mode(BrowserImportId::Firefox));
+        assert!(!browser_uses_chromium_app_mode(BrowserImportId::DuckDuckGo));
     }
 
     #[test]
@@ -1489,13 +2693,20 @@ mod tests {
             Some(BrowserImportId::Edge)
         );
         assert_eq!(
-            preferred_browser_import_source(&[BrowserImportId::Firefox, BrowserImportId::Vivaldi,]),
-            Some(BrowserImportId::Vivaldi)
+            preferred_browser_import_source(&[
+                BrowserImportId::Firefox,
+                BrowserImportId::DuckDuckGo,
+            ]),
+            Some(BrowserImportId::DuckDuckGo)
         );
     }
 
     #[test]
     fn only_packaged_app_installer_winget_is_trusted() {
+        assert_eq!(
+            DESKTOP_APP_INSTALLER_FAMILY_NAME,
+            "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe"
+        );
         let program_files = Path::new("C:/Program Files");
         let packaged_winget = program_files.join(
             "WindowsApps/Microsoft.DesktopAppInstaller_1.29.279.0_x64__8wekyb3d8bbwe/winget.exe",
@@ -1508,6 +2719,144 @@ mod tests {
             resolve_winget_executable(std::slice::from_ref(&packaged_winget), program_files),
             Some(packaged_winget)
         );
+    }
+
+    #[test]
+    fn whatsapp_store_identity_is_exact_and_rejects_non_application_packages() {
+        assert_eq!(
+            WHATSAPP_PACKAGE_FAMILY_NAME,
+            "5319275A.WhatsAppDesktop_cv1g1gvanyjgm"
+        );
+        assert!(whatsapp_package_identity_matches(
+            "5319275A.WhatsAppDesktop",
+            "cv1g1gvanyjgm",
+            ""
+        ));
+        assert!(whatsapp_package_full_name_matches(
+            "5319275A.WhatsAppDesktop_2.2627.101.0_x64__cv1g1gvanyjgm"
+        ));
+        for rejected in [
+            "5319275A.WhatsAppDesktop_2.2627.101_x64__cv1g1gvanyjgm",
+            "5319275A.WhatsAppDesktop_2.2627.101.0_x64_en-us_cv1g1gvanyjgm",
+            "5319275A.WhatsAppDesktop_2.2627.101.0_x64__attacker",
+            "Attacker_2.2627.101.0_x64__cv1g1gvanyjgm",
+            "5319275A.WhatsAppDesktop_bad_x64__cv1g1gvanyjgm",
+        ] {
+            assert!(!whatsapp_package_full_name_matches(rejected));
+        }
+        assert!(!whatsapp_package_identity_matches(
+            "5319275A.WhatsAppDesktop.Resource",
+            "cv1g1gvanyjgm",
+            ""
+        ));
+        assert!(!whatsapp_package_identity_matches(
+            "5319275A.WhatsAppDesktop",
+            "attacker",
+            ""
+        ));
+        assert!(!whatsapp_package_identity_matches(
+            "5319275A.WhatsAppDesktop",
+            "cv1g1gvanyjgm",
+            "en-us"
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn current_user_whatsapp_registration_resolves_exact_packaged_executable() {
+        let executable = whatsapp_store_executable_path()
+            .expect("current user's exact WhatsApp AppX registration should resolve");
+        assert!(path_file_name_eq(&executable, "WhatsApp.Root.exe"));
+        let package_root = executable.parent().expect("packaged executable has a root");
+        let program_files = known_folder(KnownFolder::ProgramFiles)
+            .expect("Program Files known folder should resolve");
+        assert!(is_trusted_whatsapp_package_path(
+            package_root,
+            &program_files
+        ));
+    }
+
+    #[test]
+    fn package_api_text_accepts_the_main_packages_empty_resource_id() {
+        let buffer = [0u16, b'x' as u16, 0];
+        assert_eq!(
+            utf16_string_from_api_buffer(buffer.as_ptr(), &buffer),
+            Some(String::new())
+        );
+        assert_eq!(
+            utf16_string_from_api_buffer(unsafe { buffer.as_ptr().add(1) }, &buffer),
+            Some("x".to_owned())
+        );
+    }
+
+    #[test]
+    fn whatsapp_store_path_must_be_an_immediate_windows_apps_child() {
+        let program_files = Path::new("C:/Program Files");
+        let package = program_files
+            .join("WindowsApps/5319275A.WhatsAppDesktop_2.2527.4.0_x64__cv1g1gvanyjgm");
+        assert!(is_trusted_whatsapp_package_path(&package, program_files));
+        for rejected in [
+            PathBuf::from("C:/Users/alice/5319275A.WhatsAppDesktop_2.2527.4.0_x64__cv1g1gvanyjgm"),
+            program_files
+                .join("WindowsApps/nested/5319275A.WhatsAppDesktop_2.2527.4.0_x64__cv1g1gvanyjgm"),
+            program_files.join("WindowsApps/5319275A.WhatsAppDesktop_2.2527.4.0_x64__attacker"),
+            program_files.join("WindowsApps/../Windows/whatsapp.exe"),
+        ] {
+            assert!(!is_trusted_whatsapp_package_path(&rejected, program_files));
+        }
+    }
+
+    #[test]
+    fn duckduckgo_store_registration_and_executable_are_exact() {
+        assert!(
+            DUCKDUCKGO_LOCATION_SCRIPT.contains("Get-AppxPackage -Name DuckDuckGo.DesktopBrowser")
+        );
+        assert!(DUCKDUCKGO_LOCATION_SCRIPT.contains("UTF8Encoding"));
+        assert_eq!(
+            DUCKDUCKGO_EXECUTABLE_RELATIVE_PATH,
+            r"WindowsBrowser\DuckDuckGo.exe"
+        );
+        let location =
+            "C:/Program Files/WindowsApps/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm";
+        assert_eq!(
+            decode_duckduckgo_location(location.as_bytes()),
+            Some(PathBuf::from(location))
+        );
+        for rejected in [
+            b"".as_slice(),
+            b" C:/Program Files/WindowsApps/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm",
+            b"C:/Program Files/WindowsApps/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm\n",
+            b"C:/one\nC:/two",
+        ] {
+            assert_eq!(decode_duckduckgo_location(rejected), None);
+        }
+    }
+
+    #[test]
+    fn duckduckgo_store_path_must_be_an_immediate_windows_apps_child() {
+        let program_files = Path::new("C:/Program Files");
+        let package = program_files
+            .join("WindowsApps/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm");
+        assert!(duckduckgo_package_full_name_matches(
+            "DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm"
+        ));
+        assert!(is_trusted_duckduckgo_package_path(&package, program_files));
+        for rejected in [
+            PathBuf::from("C:/Users/alice/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm"),
+            program_files
+                .join("WindowsApps/nested/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm"),
+            program_files
+                .join("WindowsApps/FakeDuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm"),
+            program_files.join("WindowsApps/DuckDuckGo.DesktopBrowser_latest_x64__abcdefghijklm"),
+            program_files.join(
+                "WindowsApps/../Windows/DuckDuckGo.DesktopBrowser_0.165.4.0_x64__abcdefghijklm",
+            ),
+        ] {
+            assert!(!is_trusted_duckduckgo_package_path(
+                &rejected,
+                program_files
+            ));
+        }
     }
 
     #[test]
@@ -1578,6 +2927,28 @@ mod tests {
     }
 
     #[test]
+    fn discord_detection_maps_each_official_channel_to_its_signed_executable() {
+        let channels = [
+            (r"Discord\Update.exe", "Discord.exe"),
+            (r"DiscordPTB\Update.exe", "DiscordPTB.exe"),
+            (r"DiscordCanary\Update.exe", "DiscordCanary.exe"),
+        ];
+        for (index, (update_path, executable_name)) in channels.into_iter().enumerate() {
+            assert_eq!(discord_executable_name(update_path), Some(executable_name));
+            let root = unique_discord_test_root(&format!("discord-channel-{index}"));
+            let version = root.join("app-1.0.9999");
+            std::fs::create_dir_all(&version).unwrap();
+            std::fs::write(version.join(executable_name), b"channel executable").unwrap();
+            assert_eq!(
+                newest_discord_channel_executable_under(&root, executable_name),
+                Some(version.join(executable_name))
+            );
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert_eq!(discord_executable_name(r"DiscordBeta\Update.exe"), None);
+    }
+
+    #[test]
     fn native_app_refresh_probes_app_installer_once() {
         let calls = Cell::new(0);
         let statuses = list_native_apps_with_installer_probe(|| {
@@ -1588,9 +2959,14 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(statuses.len(), NATIVE_APPS.len());
         #[cfg(not(target_os = "windows"))]
-        assert!(statuses
-            .iter()
-            .all(|status| status.availability == NativeAppAvailability::Installable));
+        for status in statuses {
+            let expected = if status.id == NativeAppId::Outlook {
+                NativeAppAvailability::Unavailable
+            } else {
+                NativeAppAvailability::Installable
+            };
+            assert_eq!(status.availability, expected, "{:?}", status.id);
+        }
     }
 
     #[test]

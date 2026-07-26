@@ -30,6 +30,13 @@ Paste the printed `database_id` into `wrangler.toml` under
 npm run db:migrate:prod
 ```
 
+Migrations `0003_r2_attachments.sql` and
+`0004_attachment_capability_digests_and_quota.sql` create the private R2
+expiry index, replace raw bearer tokens with SHA-256 digests, and prepare
+Worker-enforced atomic aggregate quota accounting. Apply both before deploying code
+that exposes attachment routes. Migration 0004 intentionally replaces the
+unshipped, empty 0003 attachment table rather than copying raw capabilities.
+
 ## §3 Provision KV (rate-limit)
 
 ```sh
@@ -46,7 +53,20 @@ command-line argument:
 openssl rand -base64 48 | npx wrangler secret put RATE_LIMIT_HASH_KEY
 ```
 
-## §4 Deploy
+## §4 Provision private R2 attachment storage
+
+```sh
+npx wrangler r2 bucket create osl-cipher-attachments-prod
+```
+
+The checked-in `[[r2_buckets]]` binding is named `ATTACHMENTS`; its bucket name
+must match the resource just created. This intentionally makes deployment fail
+closed until the private bucket exists.
+Keep public access, public custom domains, event notifications, object
+metadata logging, and observability disabled. The Worker uses its in-process
+binding; there is no access key or secret to store.
+
+## §5 Deploy
 
 ```sh
 npm run deploy
@@ -58,7 +78,7 @@ deployed `*.workers.dev` URL and add a custom-domain route
 → Custom Domain) pointing at `ciphers.oslprivacy.com` (or whatever
 public subdomain you prefer — the client config will point here).
 
-## §5 Smoke test
+## §6 Smoke test
 
 ```sh
 # Upload with the shortest accepted TTL, then immediately delete.
@@ -81,7 +101,7 @@ curl -sX DELETE https://ciphers.oslprivacy.com/v1/blob/$ID \
 # expect: HTTP/2 204
 ```
 
-## §6 Disable observability
+## §7 Disable observability
 
 `wrangler.toml` explicitly disables Worker observability, invocation logs,
 persistence, traces, and sampling. After deployment, verify the Worker's
@@ -89,7 +109,7 @@ settings → Observability page still shows disabled. Do not override the checke
 in configuration from the dashboard; retained URL/status logs are outside the
 cipher store's intended data-minimisation boundary.
 
-## §7 Operational notes
+## §8 Operational notes
 
 - `wrangler tail` shows live request logs but writes nothing to
   disk unless you pipe it. **Do not** pipe to a file in production.

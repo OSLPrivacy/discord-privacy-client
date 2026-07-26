@@ -15,6 +15,7 @@ use ipc::peer_map::{PeerEntry, WhitelistEntry};
 use ipc::scope::{Scope, ScopeInput, ScopeKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::core_bridge::HubCoreState;
 
@@ -24,9 +25,35 @@ const MAX_FRIEND_CODE_BYTES: usize = 8 * 1024;
 const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
+const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
+const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
+/// Receiver-side bilateral-burn replay state. Encrypted at rest, and keyed
+/// entirely by pair-specific commitments — it contains no scope name, service
+/// name or account handle.
+const REVOCATION_LEDGER_FILE: &str = "hub_revocation_ledger.json";
+/// Durable sender-side revocation queue. Encrypted at rest.
+const REVOCATION_OUTBOX_FILE: &str = "hub_revocation_outbox.json";
+/// Sender-local monotonic `send_seq` / `burn_epoch` counters. Encrypted at rest.
+const REVOCATION_COUNTERS_FILE: &str = "hub_revocation_counters.json";
+/// Shown when a burn floor refuses content. Identical to [`PEER_OPEN_ERROR`] so
+/// "burned" and "could not be opened" are indistinguishable to a peer probing
+/// the UI.
+const REVOCATION_REFUSED_ERROR: &str = PEER_OPEN_ERROR;
+const MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE: usize = 256;
+const MAX_ATTACHMENT_BURN_ENTRIES_TOTAL: usize = 2_048;
+const MAX_PEER_REPLAY_SCOPES: usize = 512;
+const MAX_PEER_REPLAY_ENTRIES_PER_SCOPE: usize = 4_096;
+const MAX_PEER_REPLAY_ENTRIES_TOTAL: usize = 32_768;
+const PEER_OPEN_ERROR: &str = "This encrypted message could not be opened";
 const MAX_ALIAS_BYTES: usize = 80;
 const MAX_ALIAS_CHARS: usize = 48;
 const MAX_VISIBLE_WHITELIST_SCOPES: usize = 512;
+/// Roster key for the person-level DM approval. `WhitelistEntry::Dm` carries no
+/// conversation id, so it has no `Scope::storage_key`; this sentinel can never
+/// collide with a real key (every real key contains a `:` separator).
+const DM_REACH_STORAGE_KEY: &str = "dm";
+const MAX_REACH_NARROWED_SCOPES_PER_PERSON: usize = 512;
+const MAX_STORAGE_KEY_BYTES: usize = 512;
 const X25519_PUBLIC_BYTES: usize = 32;
 const ED25519_PUBLIC_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
@@ -77,6 +104,14 @@ pub struct PersonDto {
     pub whitelisted_scopes: Vec<PersonWhitelistScopeDto>,
     pub whitelisted_scopes_truncated: bool,
     pub pending_key_change: bool,
+    /// True when the user deliberately extended this person's trust to the
+    /// other scopes they share. Never set by an ordinary scope approval.
+    pub reach_broadened: bool,
+    /// When reach was last widened, for the roster's audit line.
+    pub reach_broadened_at: Option<String>,
+    /// Scope storage keys explicitly taken back from this person; they stay
+    /// denied while reach is broadened.
+    pub reach_narrowed_scopes: Vec<String>,
 }
 
 /// A local-only description of one approved encryption scope. It deliberately
@@ -87,6 +122,15 @@ pub struct PersonDto {
 pub struct PersonWhitelistScopeDto {
     pub kind: String,
     pub context_id: Option<String>,
+    /// Canonical storage key for this recorded approval — the bare `dm`
+    /// sentinel for the person-level DM entry, which carries no conversation
+    /// id. The roster sends this value back to revoke exactly one recorded
+    /// approval; OSL only ever matches it against keys it recorded itself, so
+    /// an unrecognised key revokes nothing.
+    pub storage_key: String,
+    /// Mirrors the recorded entry's `user_specific` flag: `true` when the
+    /// approval covers only this person inside a shared conversation.
+    pub user_specific: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +164,77 @@ pub struct HubScopeBurnResult {
     pub remote_cleanup_complete: bool,
     pub local_cleanup_complete: bool,
     pub channel_coverage_complete: bool,
+    /// Bilateral burn: how many peer revocation notices were queued for
+    /// delivery. Queued, not delivered — see `revocation_status`.
+    #[serde(default)]
+    pub revocations_queued: usize,
+    /// False when at least one peer's revocation could not even be queued (a
+    /// full outbox, or missing key state for that peer). The local burn still
+    /// happened; the operator is told the notice did not.
+    #[serde(default)]
+    pub revocation_queue_complete: bool,
+    /// The three separate claims, in the order they should be shown. Never
+    /// collapsed into one sentence and never rendered as "Deleted".
+    #[serde(default)]
+    pub claims: Vec<String>,
+}
+
+/// Delivery state of the burn notices for one conversation. Three separate
+/// claims plus one status string, per `docs/design/osl-gui-final-plan.md:494-500`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubRevocationStatusDto {
+    pub storage_key: String,
+    /// `Sent request` | `Acknowledged by peer` | `Not acknowledged`.
+    pub status: String,
+    pub peers_pending: usize,
+    pub peers_acknowledged: usize,
+    pub claims: Vec<String>,
+}
+
+/// One revocation the broker must seal and POST. The notice is already CBOR and
+/// carries only commitments; the broker's job is the `encrypt_v3` envelope
+/// (`MSG_TYPE_REVOCATION`) and the control-inbox POST on the revocation lane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubDueRevocation {
+    pub recipient_osl_user_id: String,
+    /// Keyserver routing label recorded at queue time.
+    ///
+    /// **Advisory.** The authoritative label is whatever the broker's own
+    /// `native_overlay_relay_scope_id` derives for this conversation — that
+    /// helper lives in `broker.rs` and is not reachable from here, so the queue
+    /// records the local storage key instead. The broker must derive the label at
+    /// send time. That is safe because the derivation is deterministic in the
+    /// identity pair, so every retry addresses the same lane and the collapse key
+    /// keeps pointing at the same row.
+    pub scope_id_label: String,
+    pub storage_key: String,
+    /// Base64 CBOR [`ipc::control_messages::RevocationNotice`].
+    pub notice_b64: String,
+    pub burn_id_hex: String,
+    /// Opaque `(scope, epoch)` collapse key for the keyserver revocation lane,
+    /// 64 lowercase hex. Must be passed verbatim to
+    /// `post_control_inbox_lane(.., Some("revocation"), Some(collapse_key_hex))`.
+    pub collapse_key_hex: String,
+    pub attempts: u32,
+}
+
+/// Outcome of applying one inbound peer revocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubInboundRevocation {
+    /// Base64 CBOR [`ipc::control_messages::RevocationAck`] to seal as
+    /// `MSG_TYPE_REVOCATION_ACK` and post back. Always present, including for a
+    /// refusal, so a peer always learns the outcome.
+    pub ack_b64: String,
+    /// Whether the burn is in force on this side. Applied and already-applied
+    /// are the same value here; see [`ipc::revocation::InboundDecision`].
+    pub applied: bool,
+    /// Which of our conversations it matched, when it matched one.
+    pub storage_key: Option<String>,
+    /// Highest sender sequence now refused in that conversation.
+    pub burn_floor: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -161,7 +276,7 @@ struct PeopleFile {
     people: BTreeMap<String, PersonMetadata>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct SecurityPreferences {
     version: u32,
     #[serde(default)]
@@ -170,6 +285,45 @@ struct SecurityPreferences {
     manual_approved_scopes: BTreeSet<String>,
     #[serde(default)]
     burned_manual_scopes: BTreeSet<String>,
+    /// Person-level reach narrowing: friend id → the scope storage keys the
+    /// user has explicitly taken back from that friend. A narrowed scope is
+    /// denied even while the friend's reach is broadened, so revoking one
+    /// conversation never requires switching reach off first. Recorded here
+    /// (alongside the other local trust decisions) rather than in the shared
+    /// peer-map schema, and always written before the matching grant is
+    /// removed so a failed write can only leave OSL more restrictive.
+    #[serde(default)]
+    reach_narrowed_scopes: BTreeMap<String, BTreeSet<String>>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerReplayLedger {
+    version: u32,
+    #[serde(default)]
+    consumed_by_scope: BTreeMap<String, BTreeMap<String, i64>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentBurnEntry {
+    object_id: String,
+    fetch_token: String,
+    expires_at: i64,
+}
+
+impl Drop for AttachmentBurnEntry {
+    fn drop(&mut self) {
+        self.fetch_token.zeroize();
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentBurnLedger {
+    version: u32,
+    #[serde(default)]
+    entries_by_scope: BTreeMap<String, Vec<AttachmentBurnEntry>>,
 }
 
 pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, String> {
@@ -377,21 +531,27 @@ pub fn verify_friend_safety_number(
             .peer_map
             .lock()
             .map_err(|_| "OSL peer state is unavailable".to_owned())? = peers;
-        return person_dto(core, &person_id, &people.people[&person_id]);
+        return person_dto(
+            core,
+            &person_id,
+            &people.people[&person_id],
+            &load_reach_narrowing()?,
+        );
     }
     metadata.safety_number_verified = true;
     let metadata = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
-    person_dto(core, &person_id, &metadata)
+    person_dto(core, &person_id, &metadata, &load_reach_narrowing()?)
 }
 
 pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
     require_unlocked()?;
     let people = load_encrypted_json::<PeopleFile>(&config_dir()?.join(PEOPLE_FILE))?;
+    let narrowing = load_reach_narrowing()?;
     people
         .people
         .iter()
-        .map(|(person_id, metadata)| person_dto(core, person_id, metadata))
+        .map(|(person_id, metadata)| person_dto(core, person_id, metadata, &narrowing))
         .collect()
 }
 
@@ -420,16 +580,27 @@ pub fn set_friend_alias(
     metadata.alias = alias;
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
-    person_dto(core, &person_id, &updated)
+    person_dto(core, &person_id, &updated, &load_reach_narrowing()?)
 }
 
+/// Grant or revoke one friend's approval for exactly one scope.
+///
+/// Deliberately reach-neutral: entries are always written non-broadened, so an
+/// ordinary approval can never widen a person's trust to the other scopes
+/// shared with them. Widening is a separate, recorded action —
+/// [`set_friend_scope_reach`].
+///
+/// Approving clears any recorded narrowing for the exact scope (the newer,
+/// narrower decision wins). Revoking records a narrowing whenever the friend's
+/// reach is broadened, so a revocation takes effect immediately and never
+/// requires switching reach off first. The narrowing is written before the
+/// grant is removed, so a failed write can only leave OSL more restrictive.
 pub fn set_friend_scope_permission(
     core: &HubCoreState,
     security: &HubSecurityState,
     person_id: String,
     scope_input: ScopeInput,
     enabled: bool,
-    broadened: bool,
 ) -> Result<(), String> {
     require_unlocked()?;
     validate_person_id(&person_id)?;
@@ -449,6 +620,11 @@ pub fn set_friend_scope_permission(
             .ok_or_else(|| "OSL friend is unknown".to_owned())?;
         ensure_friend_can_be_enabled(metadata)?;
     }
+    let prefs_path = dir.join(SECURITY_PREFS_FILE);
+    let previous_prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
+    let mut prefs = previous_prefs.clone();
+    prefs.version = 2;
+    let storage_key = scope.storage_key();
     let previous_peers = core
         .osl
         .peer_map
@@ -460,31 +636,40 @@ pub fn set_friend_scope_permission(
         .get_mut(&person_id)
         .ok_or_else(|| "OSL friend is unknown".to_owned())?;
     peer.outgoing_whitelists
-        .retain(|entry| !whitelist_matches(entry, &scope));
+        .retain(|entry| !whitelist_entry_matches_scope(entry, &scope));
     if enabled {
         peer.outgoing_whitelists
-            .push(whitelist_entry(&scope, broadened));
+            .push(whitelist_entry(&scope, false));
+        clear_reach_narrowing(&mut prefs, &person_id, &storage_key);
+    } else if person_reach_broadened_at(&peer.outgoing_whitelists).is_some()
+        && !record_reach_narrowing(&mut prefs, &person_id, &storage_key)
+    {
+        // The exclusion list is full: withdraw the person's reach entirely
+        // rather than leave a scope the user just revoked inside it.
+        collapse_person_reach(&mut peer.outgoing_whitelists);
     }
-    let mut whitelist_state = core
+    let previous_whitelist_state = core
         .osl
         .whitelist_state
         .lock()
         .map_err(|_| "OSL whitelist state is unavailable".to_owned())?
         .clone();
+    let mut whitelist_state = previous_whitelist_state.clone();
     if enabled {
-        let scope_state = whitelist_state.entry(scope.storage_key()).or_default();
+        let scope_state = whitelist_state.entry(storage_key.clone()).or_default();
         scope_state.encrypt_toggle = true;
         scope_state.auto_enabled = true;
     } else {
-        let another_approved_friend = peers.values().any(|candidate| {
-            candidate
-                .outgoing_whitelists
-                .iter()
-                .any(|entry| whitelist_matches(entry, &scope))
+        let another_approved_friend = peers.iter().any(|(candidate_id, candidate)| {
+            whitelist_matches(
+                &candidate.outgoing_whitelists,
+                &scope,
+                prefs.reach_narrowed_scopes.get(candidate_id),
+            )
         });
         revoke_auto_scope_if_uncovered(
             &mut whitelist_state,
-            &scope.storage_key(),
+            &storage_key,
             another_approved_friend,
         );
     }
@@ -497,8 +682,14 @@ pub fn set_friend_scope_permission(
     let whitelist_document = ipc::whitelist_state::WhitelistStateFile {
         migrated_c1: true,
         scopes: whitelist_state.clone(),
-        server_defaults,
+        server_defaults: server_defaults.clone(),
     };
+    // Revocation persists the restrictive record first: if the grant removal
+    // below fails, the scope is already excluded from any broadened reach.
+    if !enabled {
+        write_encrypted_json(&prefs_path, &prefs)
+            .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
+    }
     write_encrypted_json(&dir.join("peer_map.json"), &peers)
         .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
     // The legacy IPC convenience writer drops server_defaults and its raw
@@ -507,6 +698,22 @@ pub fn set_friend_scope_permission(
     if write_encrypted_json(&dir.join("whitelist_state.json"), &whitelist_document).is_err() {
         let _ = write_encrypted_json(&dir.join("peer_map.json"), &previous_peers);
         return Err("OSL whitelist could not be persisted".to_owned());
+    }
+    // An approval only relaxes the exclusion list, so it is written last: a
+    // failure here rolls the grant back instead of dropping the exclusion.
+    if enabled {
+        if let Err(error) = write_encrypted_json(&prefs_path, &prefs) {
+            let _ = write_encrypted_json(&dir.join("peer_map.json"), &previous_peers);
+            let _ = write_encrypted_json(
+                &dir.join("whitelist_state.json"),
+                &ipc::whitelist_state::WhitelistStateFile {
+                    migrated_c1: true,
+                    scopes: previous_whitelist_state,
+                    server_defaults,
+                },
+            );
+            return Err(error);
+        }
     }
     *core
         .osl
@@ -519,6 +726,273 @@ pub fn set_friend_scope_permission(
         .lock()
         .map_err(|_| "OSL whitelist state is unavailable".to_owned())? = whitelist_state;
     Ok(())
+}
+
+/// Extend or withdraw one verified friend's person-level reach.
+///
+/// This is the only path that may set `broadened`, and it exists precisely so
+/// that widening trust is a separate, deliberate act the roster can audit: the
+/// ordinary approve path always writes non-broadened entries and
+/// `Broker::manual_permission_target` still refuses a broadened request.
+///
+/// Reach extends trust the user already granted, so a friend with no recorded
+/// approval at all cannot be broadened. Reach is anchored on the person-level
+/// DM entry, so widening also records the DM approval itself — that is what
+/// "trust this person across the chats we share" means, and the roster lists it
+/// as its own revocable row. Withdrawing reach leaves the per-scope approvals
+/// (including the DM) exactly as they were and keeps every recorded narrowing,
+/// so re-broadening later cannot silently re-grant a scope the user took back.
+pub fn set_friend_scope_reach(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
+    person_id: String,
+    broadened: bool,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let metadata = people
+        .people
+        .get(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?
+        .clone();
+    if broadened {
+        ensure_friend_can_be_enabled(&metadata)?;
+    }
+    let previous_peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    let mut peers = previous_peers.clone();
+    let peer = peers
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    if broadened {
+        // Reach widens trust that already exists: either a recorded per-scope
+        // approval, or the approved conversation the caller is standing in.
+        let approved_here = manual_scope_preference_approved(
+            &load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?,
+            &Scope::dm(manual_peer_scope_id(service_id, account_id, &person_id)?).storage_key(),
+        );
+        if peer.outgoing_whitelists.is_empty() && !approved_here {
+            return Err("Approve this friend for one chat before widening their reach".to_owned());
+        }
+        let now = ipc::main_password::now_unix_secs_pub().to_string();
+        let mut recorded = false;
+        for entry in peer.outgoing_whitelists.iter_mut() {
+            if let WhitelistEntry::Dm {
+                broadened: entry_broadened,
+                enabled_at,
+            } = entry
+            {
+                *entry_broadened = true;
+                // The reach change is the audited event on this entry.
+                *enabled_at = Some(now.clone());
+                recorded = true;
+            }
+        }
+        if !recorded {
+            peer.outgoing_whitelists.push(WhitelistEntry::Dm {
+                broadened: true,
+                enabled_at: Some(now),
+            });
+        }
+    } else {
+        collapse_person_reach(&mut peer.outgoing_whitelists);
+    }
+    if peers
+        .get(&person_id)
+        .map(|entry| entry.outgoing_whitelists.len())
+        .unwrap_or_default()
+        > MAX_VISIBLE_WHITELIST_SCOPES
+    {
+        return Err("OSL friend has too many approved chats".to_owned());
+    }
+    write_encrypted_json(&dir.join("peer_map.json"), &peers)
+        .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
+    *core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())? = peers;
+    person_dto(core, &person_id, &metadata, &load_reach_narrowing()?)
+}
+
+/// Revoke exactly one recorded approval from the roster.
+///
+/// `storage_key` selects an approval OSL itself recorded — it is matched
+/// against the keys of that friend's own entries and never parsed into a new
+/// scope, so the renderer cannot name a conversation OSL never approved. A
+/// non-DM revocation also records a narrowing, so the scope stays denied while
+/// the friend's reach is broadened.
+pub fn revoke_friend_scope_entry(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    storage_key: String,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    validate_storage_key(&storage_key)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let metadata = people
+        .people
+        .get(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?
+        .clone();
+    let prefs_path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
+    prefs.version = 2;
+    let previous_peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    let mut peers = previous_peers.clone();
+    let peer = peers
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    let before = peer.outgoing_whitelists.len();
+    peer.outgoing_whitelists
+        .retain(|entry| whitelist_entry_storage_key(entry) != storage_key);
+    if peer.outgoing_whitelists.len() == before {
+        return Err("OSL friend approval is unknown".to_owned());
+    }
+    if storage_key != DM_REACH_STORAGE_KEY
+        && person_reach_broadened_at(&peer.outgoing_whitelists).is_some()
+        && !record_reach_narrowing(&mut prefs, &person_id, &storage_key)
+    {
+        collapse_person_reach(&mut peer.outgoing_whitelists);
+    }
+    // Restrictive record first: a failure below cannot leave the revoked scope
+    // reachable through a broadened reach.
+    write_encrypted_json(&prefs_path, &prefs)
+        .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
+    let whitelist_state = revoked_scope_whitelist_state(core, &peers, &prefs, &storage_key)?;
+    write_encrypted_json(&dir.join("peer_map.json"), &peers)
+        .map_err(|_| "OSL whitelist could not be persisted".to_owned())?;
+    if let Some((state, document)) = whitelist_state {
+        if write_encrypted_json(&dir.join("whitelist_state.json"), &document).is_err() {
+            let _ = write_encrypted_json(&dir.join("peer_map.json"), &previous_peers);
+            return Err("OSL whitelist could not be persisted".to_owned());
+        }
+        *core
+            .osl
+            .whitelist_state
+            .lock()
+            .map_err(|_| "OSL whitelist state is unavailable".to_owned())? = state;
+    }
+    *core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())? = peers;
+    person_dto(core, &person_id, &metadata, &prefs.reach_narrowed_scopes)
+}
+
+/// Drop the auto-enabled encryption toggle for a revoked scope when no friend
+/// still covers it. Returns `None` for the person-level DM key, which has no
+/// `whitelist_state.json` scope of its own.
+#[allow(clippy::type_complexity)]
+fn revoked_scope_whitelist_state(
+    core: &HubCoreState,
+    peers: &ipc::peer_map::PeerMap,
+    prefs: &SecurityPreferences,
+    storage_key: &str,
+) -> Result<
+    Option<(
+        ipc::whitelist_state::WhitelistState,
+        ipc::whitelist_state::WhitelistStateFile,
+    )>,
+    String,
+> {
+    let Some(scope) = Scope::parse(storage_key) else {
+        return Ok(None);
+    };
+    let mut whitelist_state = core
+        .osl
+        .whitelist_state
+        .lock()
+        .map_err(|_| "OSL whitelist state is unavailable".to_owned())?
+        .clone();
+    let another_approved_friend = peers.iter().any(|(candidate_id, candidate)| {
+        whitelist_matches(
+            &candidate.outgoing_whitelists,
+            &scope,
+            prefs.reach_narrowed_scopes.get(candidate_id),
+        )
+    });
+    revoke_auto_scope_if_uncovered(&mut whitelist_state, storage_key, another_approved_friend);
+    let server_defaults = core
+        .osl
+        .server_defaults
+        .lock()
+        .map_err(|_| "OSL server-default state is unavailable".to_owned())?
+        .clone();
+    let document = ipc::whitelist_state::WhitelistStateFile {
+        migrated_c1: true,
+        scopes: whitelist_state.clone(),
+        server_defaults,
+    };
+    Ok(Some((whitelist_state, document)))
+}
+
+/// Record that `storage_key` is explicitly taken back from `person_id`.
+/// Returns `false` when that friend's exclusion list is full; the caller then
+/// withdraws their reach instead, which is strictly more restrictive.
+fn record_reach_narrowing(
+    prefs: &mut SecurityPreferences,
+    person_id: &str,
+    storage_key: &str,
+) -> bool {
+    let keys = prefs
+        .reach_narrowed_scopes
+        .entry(person_id.to_owned())
+        .or_default();
+    if keys.contains(storage_key) {
+        return true;
+    }
+    if keys.len() >= MAX_REACH_NARROWED_SCOPES_PER_PERSON {
+        return false;
+    }
+    keys.insert(storage_key.to_owned());
+    true
+}
+
+/// Forget one recorded narrowing. Only an explicit approval of that exact scope
+/// clears it; withdrawing reach deliberately does not.
+fn clear_reach_narrowing(prefs: &mut SecurityPreferences, person_id: &str, storage_key: &str) {
+    let Some(keys) = prefs.reach_narrowed_scopes.get_mut(person_id) else {
+        return;
+    };
+    keys.remove(storage_key);
+    if keys.is_empty() {
+        prefs.reach_narrowed_scopes.remove(person_id);
+    }
+}
+
+/// Withdraw person-level reach without touching any per-scope approval.
+fn collapse_person_reach(entries: &mut [WhitelistEntry]) {
+    for entry in entries.iter_mut() {
+        if let WhitelistEntry::Dm { broadened, .. } = entry {
+            *broadened = false;
+        }
+    }
 }
 
 /// Resolve one existing, verified friend for manual peer messaging. This is
@@ -628,7 +1102,9 @@ pub fn manual_peer_scope_id(
     account_id: &str,
     person_id: &str,
 ) -> Result<String, String> {
-    crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
+    if service_id != "osl-chat" || account_id != "osl-main" {
+        crate::service_host::service_manifest(service_id).map_err(|error| error.to_string())?;
+    }
     crate::service_host::validate_opaque_id(account_id).map_err(|error| error.to_string())?;
     validate_person_id(person_id)?;
     let mut hash = Sha256::new();
@@ -725,6 +1201,257 @@ fn record_peer_prose_blob_at_path(
     let mut blobs = load_scope_blobs_strict_with_key(path, file_key)?;
     ipc::scope_blobs_file::record_blob(&mut blobs, scope.storage_key(), blob_id);
     write_scope_blobs_with_key(path, &blobs, file_key)
+}
+
+/// Retain the capability needed to burn an uploaded attachment. This ledger
+/// is encrypted with the account storage key, bounded independently from the
+/// prose ledger, and never crosses renderer IPC.
+pub fn record_peer_attachment_burn_capability(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    object_id: String,
+    mut fetch_token: String,
+    expires_at: i64,
+) -> Result<(), String> {
+    let result = (|| {
+        let file_key = require_unlocked()?;
+        let scope: Scope = scope_input
+            .try_into()
+            .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+        let dir = config_dir()?;
+        record_peer_attachment_burn_capability_at_path(
+            security,
+            &dir.join(ATTACHMENT_BURN_FILE),
+            scope.storage_key(),
+            object_id,
+            &fetch_token,
+            expires_at,
+            ipc::main_password::now_unix_secs_pub(),
+            &file_key,
+        )
+    })();
+    fetch_token.zeroize();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_peer_attachment_burn_capability_at_path(
+    security: &HubSecurityState,
+    path: &Path,
+    storage_key: String,
+    object_id: String,
+    fetch_token: &str,
+    expires_at: i64,
+    now: i64,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    validate_attachment_burn_entry(&object_id, &fetch_token, expires_at, now)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security state is unavailable".to_owned())?;
+    let mut ledger = load_attachment_burn_ledger_with_key(path, file_key)?;
+    prune_expired_attachment_burn_entries(&mut ledger, now);
+    let total = ledger
+        .entries_by_scope
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    let entries = ledger.entries_by_scope.entry(storage_key).or_default();
+    if let Some(existing) = entries
+        .iter_mut()
+        .find(|entry| entry.object_id == object_id)
+    {
+        existing.fetch_token.zeroize();
+        existing.fetch_token = fetch_token.to_owned();
+        existing.expires_at = expires_at;
+    } else {
+        if entries.len() >= MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE
+            || total >= MAX_ATTACHMENT_BURN_ENTRIES_TOTAL
+        {
+            return Err("OSL attachment burn ledger is full".to_owned());
+        }
+        entries.push(AttachmentBurnEntry {
+            object_id,
+            fetch_token: fetch_token.to_owned(),
+            expires_at,
+        });
+    }
+    ledger.version = 1;
+    write_encrypted_json_with_key(path, &ledger, file_key)
+        .map_err(|_| "OSL attachment burn ledger could not be persisted".to_owned())
+}
+
+pub fn remove_peer_attachment_burn_capability(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    object_id: &str,
+) -> Result<(), String> {
+    let file_key = require_unlocked()?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL security state is unavailable".to_owned())?;
+    let path = config_dir()?.join(ATTACHMENT_BURN_FILE);
+    let mut ledger = load_attachment_burn_ledger_with_key(&path, &file_key)?;
+    if let Some(entries) = ledger.entries_by_scope.get_mut(&scope.storage_key()) {
+        entries.retain(|entry| entry.object_id != object_id);
+        if entries.is_empty() {
+            ledger.entries_by_scope.remove(&scope.storage_key());
+        }
+    }
+    write_encrypted_json_with_key(&path, &ledger, &file_key)
+        .map_err(|_| "OSL attachment burn ledger could not be persisted".to_owned())
+}
+
+/// Atomically marks one authenticated peer message consumed for its exact
+/// local scope. Callers must complete this before returning plaintext.
+pub fn consume_peer_message(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    message_id: &str,
+    expires_at: i64,
+    now: i64,
+) -> Result<(), String> {
+    let file_key = require_unlocked().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let dir = config_dir().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    consume_peer_message_at_path(
+        security,
+        &dir.join(PEER_REPLAY_FILE),
+        &scope.storage_key(),
+        message_id,
+        expires_at,
+        now,
+        &file_key,
+    )
+    .map_err(|_| PEER_OPEN_ERROR.to_owned())
+}
+
+/// Read the durable encrypted replay ledger after a relay was authenticated.
+/// This lets a later drain finish deleting an inbox row when the prior DELETE
+/// failed after local consumption, without displaying the plaintext twice.
+pub fn peer_message_was_consumed(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    message_id: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let valid_message_id = message_id.strip_prefix("peer-").is_some_and(|value| {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !valid_message_id {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    let file_key = require_unlocked().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let dir = config_dir().map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let mut ledger =
+        load_encrypted_json_with_key::<PeerReplayLedger>(&dir.join(PEER_REPLAY_FILE), &file_key)?;
+    if !matches!(ledger.version, 0 | 1) {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    prune_peer_replay_ledger(&mut ledger, now);
+    Ok(ledger
+        .consumed_by_scope
+        .get(&scope.storage_key())
+        .is_some_and(|entries| entries.contains_key(message_id)))
+}
+
+fn consume_peer_message_at_path(
+    security: &HubSecurityState,
+    path: &Path,
+    storage_key: &str,
+    message_id: &str,
+    expires_at: i64,
+    now: i64,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let valid_message_id = message_id.strip_prefix("peer-").is_some_and(|value| {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !valid_message_id || storage_key.is_empty() || storage_key.len() > 512 {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| PEER_OPEN_ERROR.to_owned())?;
+    let mut ledger = load_encrypted_json_with_key::<PeerReplayLedger>(path, file_key)?;
+    if !matches!(ledger.version, 0 | 1) {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    prune_peer_replay_ledger(&mut ledger, now);
+    if ledger
+        .consumed_by_scope
+        .get(storage_key)
+        .is_some_and(|scope| scope.contains_key(message_id))
+    {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    let total_entries = ledger
+        .consumed_by_scope
+        .values()
+        .map(BTreeMap::len)
+        .sum::<usize>();
+    let scope_is_new = !ledger.consumed_by_scope.contains_key(storage_key);
+    let scope_entries = ledger
+        .consumed_by_scope
+        .get(storage_key)
+        .map_or(0, BTreeMap::len);
+    if expires_at <= now
+        || (scope_is_new && ledger.consumed_by_scope.len() >= MAX_PEER_REPLAY_SCOPES)
+        || scope_entries >= MAX_PEER_REPLAY_ENTRIES_PER_SCOPE
+        || total_entries >= MAX_PEER_REPLAY_ENTRIES_TOTAL
+    {
+        return Err(PEER_OPEN_ERROR.to_owned());
+    }
+    ledger.version = 1;
+    ledger
+        .consumed_by_scope
+        .entry(storage_key.to_owned())
+        .or_default()
+        .insert(message_id.to_owned(), expires_at);
+    write_encrypted_json_with_key(path, &ledger, file_key)
+}
+
+fn prune_peer_replay_ledger(ledger: &mut PeerReplayLedger, now: i64) {
+    ledger.consumed_by_scope.retain(|_, messages| {
+        messages.retain(|_, expires_at| *expires_at > now);
+        !messages.is_empty()
+    });
+}
+
+fn remove_peer_replay_scope_at_path(
+    path: &Path,
+    storage_key: &str,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let mut ledger = load_encrypted_json_with_key::<PeerReplayLedger>(path, file_key)?;
+    if !matches!(ledger.version, 0 | 1) {
+        return Err("OSL peer replay state has an unsupported version".to_owned());
+    }
+    if ledger.consumed_by_scope.remove(storage_key).is_some() {
+        write_encrypted_json_with_key(path, &ledger, file_key)?;
+    }
+    Ok(())
 }
 
 fn ensure_manual_peer_available(
@@ -881,6 +1608,14 @@ pub fn burn_scope(
     validate_burn_ids(&known_channel_ids, 512, "channel")?;
     validate_burn_ids(&burned_message_ids, 10_000, "message")?;
     let channels = burn_channels(&scope, known_channel_ids, channel_enumeration_complete)?;
+    // Resolve who must be told BEFORE anything is destroyed. Every recipient
+    // resolver filters on the whitelist entries this burn is about to remove, so
+    // a set captured afterwards is empty and the notice would go to nobody. The
+    // legacy client documents the same ordering requirement on
+    // `cmd_osl_send_burn_marker`; capturing here is read-only and cannot fail
+    // the burn.
+    let revocation_peers = revocation_peers_for_scope(core, &scope).unwrap_or_default();
+    let explicit_message_ids = burned_message_ids.clone();
     let _transition = security
         .transition
         .lock()
@@ -923,7 +1658,7 @@ pub fn burn_scope(
     for peer in peers.values_mut() {
         let before = peer.outgoing_whitelists.len();
         peer.outgoing_whitelists
-            .retain(|entry| !whitelist_matches(entry, &scope));
+            .retain(|entry| !whitelist_entry_matches_scope(entry, &scope));
         whitelist_entries_removed = whitelist_entries_removed
             .saturating_add(before.saturating_sub(peer.outgoing_whitelists.len()));
     }
@@ -974,6 +1709,23 @@ pub fn burn_scope(
     }
     write_scope_blobs(&blobs_path, &blobs_file)?;
     let remote_blob_deletions_failed = failed_blob_ids.len();
+
+    // Notice LAST. Everything above is unilateral, enforceable deletion that
+    // needed no peer cooperation: local rows gone, wrapped keys gone, remote
+    // cipher-store blobs gone. A peer who had not fetched a message can now
+    // never fetch it. The notice only has to cover the residue — peers who
+    // already fetched — and failing to queue it does not undo any of the above,
+    // so it is reported rather than propagated as an error.
+    let (revocations_queued, revocation_queue_complete) = queue_scope_revocations_locked(
+        core,
+        &scope.storage_key(),
+        &scope.storage_key(),
+        &revocation_peers,
+        &explicit_message_ids,
+        ipc::main_password::now_unix_secs_pub(),
+    )
+    .unwrap_or((0, false));
+
     Ok(HubScopeBurnResult {
         storage_key: scope.storage_key(),
         rows_destroyed,
@@ -984,6 +1736,9 @@ pub fn burn_scope(
         remote_cleanup_complete: remote_blob_deletions_failed == 0,
         local_cleanup_complete: true,
         channel_coverage_complete: true,
+        revocations_queued,
+        revocation_queue_complete,
+        claims: burn_claims(),
     })
 }
 
@@ -991,7 +1746,7 @@ pub fn burn_scope(
 /// the generic DM peer-map and burned-scope machinery, whose DM keys are
 /// friend-global and cannot represent an app-specific manual conversation.
 pub fn burn_manual_peer_scope(
-    _core: &HubCoreState,
+    core: &HubCoreState,
     security: &HubSecurityState,
     service_id: &str,
     account_id: &str,
@@ -1009,6 +1764,11 @@ pub fn burn_manual_peer_scope(
     {
         return Err("OSL manual peer scope is invalid".to_owned());
     }
+    // Resolved before the destructive sequence, for the same reason as in
+    // `burn_scope`: afterwards the approval this lookup depends on is gone.
+    let revocation_peers = manual_peer_binding(core, person_id.to_owned())
+        .map(|binding| vec![(binding.peer_osl_user_id, binding.peer_x25519_public)])
+        .unwrap_or_default();
     let _transition = security
         .transition
         .lock()
@@ -1017,14 +1777,22 @@ pub fn burn_manual_peer_scope(
     let prefs_path = dir.join(SECURITY_PREFS_FILE);
     let ttl_path = dir.join("scope_ttl.json");
     let blobs_path = dir.join("scope_blobs.json");
+    let attachments_path = dir.join(ATTACHMENT_BURN_FILE);
+    let replay_path = dir.join(PEER_REPLAY_FILE);
     let storage_key = scope.storage_key();
 
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
     let mut ttl = load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&ttl_path)?;
     let mut blobs = load_scope_blobs_strict(&blobs_path)?;
+    let file_key = require_unlocked()?;
+    let mut attachments = load_attachment_burn_ledger_with_key(&attachments_path, &file_key)?;
+    let whitelist_entries_removed =
+        usize::from(prefs.manual_approved_scopes.contains(&storage_key));
     let blob_ids = revoke_manual_scope_state(&mut prefs, &mut ttl, &mut blobs, &storage_key);
     write_encrypted_json(&prefs_path, &prefs)?;
     write_encrypted_json(&ttl_path, &ttl)?;
+    remove_peer_replay_scope_at_path(&replay_path, &storage_key, &file_key)
+        .map_err(|_| "OSL manual peer replay state could not be removed".to_owned())?;
 
     // Manual copy/paste send/open passes no service message id and does not
     // persist plaintext rows. Its relay channel binding is intentionally
@@ -1045,17 +1813,68 @@ pub fn burn_manual_peer_scope(
         ipc::scope_blobs_file::record_blob(&mut blobs, storage_key.clone(), blob_id.clone());
     }
     write_scope_blobs(&blobs_path, &blobs)?;
-    let remote_blob_deletions_failed = failed_blob_ids.len();
+    let attachment_entries = take_attachment_burn_entries(&mut attachments, &storage_key);
+    let attachment_client = ipc::cipher_store_client::CipherStoreClient::new(
+        ipc::cipher_store_client::resolve_cipher_store_base_url(&dir),
+    )
+    .map_err(|_| "OSL attachment cleanup is unavailable".to_owned())?;
+    let mut failed_attachment_entries = Vec::new();
+    let mut remote_attachments_deleted = 0usize;
+    for entry in attachment_entries {
+        let mut token = match parse_attachment_fetch_token(&entry.fetch_token) {
+            Ok(token) => token,
+            Err(_) => {
+                failed_attachment_entries.push(entry);
+                continue;
+            }
+        };
+        let deleted = attachment_client
+            .delete_attachment(&entry.object_id, &token)
+            .is_ok();
+        token.zeroize();
+        if deleted {
+            remote_attachments_deleted = remote_attachments_deleted.saturating_add(1);
+        } else {
+            failed_attachment_entries.push(entry);
+        }
+    }
+    let remote_attachment_deletions_failed = failed_attachment_entries.len();
+    if !failed_attachment_entries.is_empty() {
+        attachments
+            .entries_by_scope
+            .insert(storage_key.clone(), failed_attachment_entries);
+    }
+    write_encrypted_json_with_key(&attachments_path, &attachments, &file_key)
+        .map_err(|_| "OSL attachment burn ledger could not be persisted".to_owned())?;
+    let remote_blobs_deleted = remote_blobs_deleted.saturating_add(remote_attachments_deleted);
+    let remote_blob_deletions_failed = failed_blob_ids
+        .len()
+        .saturating_add(remote_attachment_deletions_failed);
+
+    // Notice last, after the unilateral destruction above.
+    let (revocations_queued, revocation_queue_complete) = queue_scope_revocations_locked(
+        core,
+        &storage_key,
+        &storage_key,
+        &revocation_peers,
+        &[],
+        ipc::main_password::now_unix_secs_pub(),
+    )
+    .unwrap_or((0, false));
+
     Ok(HubScopeBurnResult {
         storage_key,
         rows_destroyed,
         channels_destroyed: 1,
-        whitelist_entries_removed: 0,
+        whitelist_entries_removed,
         remote_blobs_deleted,
         remote_blob_deletions_failed,
         remote_cleanup_complete: remote_blob_deletions_failed == 0,
         local_cleanup_complete: true,
         channel_coverage_complete: true,
+        revocations_queued,
+        revocation_queue_complete,
+        claims: burn_claims(),
     })
 }
 
@@ -1073,6 +1892,648 @@ fn revoke_manual_scope_state(
         .insert(storage_key.to_owned(), false);
     ttl.entries.remove(storage_key);
     ipc::scope_blobs_file::take_blobs(blobs, storage_key)
+}
+
+// ---- Bilateral burn ----------------------------------------------------
+//
+// "if u burn the other person needs to burn ur stuff too."
+//
+// # Order of operations, which is the highest-value part of this whole feature
+//
+// Destroy first, notify second. Every caller below is invoked *after* the local
+// destruction in `burn_scope` / `burn_manual_peer_scope` has already committed.
+// That ordering is not a nicety:
+//
+// - Deleting our own source ciphertext (and the remote cipher-store blobs, and
+//   the keys) is **unilateral**. It needs no peer cooperation, no network, and
+//   no cooperation from a peer's client. A peer who has not yet fetched a
+//   message can never fetch it, so for that peer the burn is real, enforced
+//   deletion rather than a request.
+// - The notice only ever has to cover the residue: peers who already fetched.
+//
+// Reversing the order would be strictly worse — a notice sent first, then a
+// failed local deletion, leaves content alive *and* announces the intent.
+//
+// # What we can honestly claim
+//
+// Three separate claims, never merged (`docs/design/osl-gui-final-plan.md:496-500`):
+// [`ipc::revocation::CLAIM_CONTENT_EXPIRY`] (strong, lead with it),
+// [`ipc::revocation::CLAIM_LOCAL_REMOVAL`] (verifiable here),
+// [`ipc::revocation::CLAIM_RECIPIENT_COPIES`] (the honest bound). The delivery
+// line is `Sent request` / `Acknowledged by peer` / `Not acknowledged`, and per
+// `:494` it is never `Deleted`.
+//
+// `README.md:78-88` currently promises something stronger — "a burn notice goes
+// to the other members so their copies go dark too" — which reads as guaranteed
+// remote deletion and contradicts both the spec and this implementation. That is
+// an owner decision about the README, not a licence to build platform deletion,
+// and nothing here deletes a Discord message.
+
+/// The three claims, in display order.
+pub fn burn_claims() -> Vec<String> {
+    vec![
+        ipc::revocation::CLAIM_CONTENT_EXPIRY.to_owned(),
+        ipc::revocation::CLAIM_LOCAL_REMOVAL.to_owned(),
+        ipc::revocation::CLAIM_RECIPIENT_COPIES.to_owned(),
+    ]
+}
+
+/// Self identity X25519 public key, for commitment-key derivation.
+fn self_x25519_public(core: &HubCoreState) -> Result<[u8; X25519_PUBLIC_BYTES], String> {
+    let guard = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?;
+    let identity = guard
+        .as_ref()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    Ok(*identity.x25519_public.as_bytes())
+}
+
+/// Strict, fail-closed load of the receiver ledger.
+///
+/// `docs/design/burn-contract.md`: replay journals "fail closed instead of
+/// silently forgetting live replay state". So every caller treats an `Err` as
+/// "already burned" — never as "fresh". A malformed or over-large ledger is an
+/// error, not an empty ledger.
+fn load_revocation_ledger(
+    path: &Path,
+    file_key: &[u8; 32],
+) -> Result<ipc::revocation::RevocationLedger, String> {
+    let ledger =
+        load_encrypted_json_with_key::<ipc::revocation::RevocationLedger>(path, file_key)
+            .map_err(|_| "OSL burn state could not be opened".to_owned())?;
+    if ledger.version > 1
+        || ledger.scopes.len() > ipc::revocation::MAX_LEDGER_SCOPES
+        || ledger.total_journal_entries() > ipc::revocation::MAX_JOURNAL_ENTRIES_TOTAL
+        || ledger
+            .scopes
+            .values()
+            .any(|s| s.journal.len() > ipc::revocation::MAX_JOURNAL_ENTRIES_PER_SCOPE)
+        || ledger
+            .scopes
+            .keys()
+            .any(|slot| !canonical_lower_hex(slot, 64))
+        || ledger
+            .scopes
+            .values()
+            .flat_map(|s| s.journal.keys())
+            .any(|slot| !canonical_lower_hex(slot, 64))
+    {
+        return Err("OSL burn state is malformed".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn load_revocation_outbox(
+    path: &Path,
+    file_key: &[u8; 32],
+) -> Result<ipc::revocation::RevocationOutbox, String> {
+    let outbox = load_encrypted_json_with_key::<ipc::revocation::RevocationOutbox>(path, file_key)
+        .map_err(|_| "OSL burn queue could not be opened".to_owned())?;
+    if outbox.version > 1 || outbox.entries.len() > ipc::revocation::MAX_OUTBOX_ENTRIES {
+        return Err("OSL burn queue is malformed".to_owned());
+    }
+    Ok(outbox)
+}
+
+fn load_revocation_counters(
+    path: &Path,
+    file_key: &[u8; 32],
+) -> Result<ipc::revocation::SendCounters, String> {
+    let counters = load_encrypted_json_with_key::<ipc::revocation::SendCounters>(path, file_key)
+        .map_err(|_| "OSL burn counters could not be opened".to_owned())?;
+    if counters.version > 1
+        || counters.send_seq.len() > ipc::revocation::MAX_COUNTER_SCOPES
+        || counters.burn_epoch.len() > ipc::revocation::MAX_COUNTER_SCOPES
+    {
+        return Err("OSL burn counters are malformed".to_owned());
+    }
+    Ok(counters)
+}
+
+/// Allocate the next authenticated `send_seq` for one conversation with one peer.
+///
+/// The broker must call this once per outgoing protected message and carry the
+/// result **inside** the `encrypt_v3` envelope, alongside the scope commitment.
+/// Without it the receiver has nothing to compare against a burn floor and
+/// bilateral burn degrades to "trust the notice", which is exactly what the
+/// legacy client did.
+pub fn next_peer_send_seq(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    peer_x25519_public: &[u8; X25519_PUBLIC_BYTES],
+    storage_key: &str,
+) -> Result<u64, String> {
+    let file_key = require_unlocked()?;
+    validate_storage_key(storage_key)?;
+    let self_pub = self_x25519_public(core)?;
+    let commit_key = ipc::revocation::scope_commit_key(&self_pub, peer_x25519_public)
+        .map_err(|_| "OSL burn commitment key is unavailable".to_owned())?;
+    let commitment = ipc::revocation::scope_commitment(&commit_key, storage_key);
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    let path = config_dir()?.join(REVOCATION_COUNTERS_FILE);
+    let mut counters = load_revocation_counters(&path, &file_key)?;
+    let seq = counters
+        .next_send_seq(&commitment)
+        .map_err(|_| "OSL burn counters are full".to_owned())?;
+    counters.version = 1;
+    write_encrypted_json_with_key(&path, &counters, &file_key)
+        .map_err(|_| "OSL burn counters could not be persisted".to_owned())?;
+    Ok(seq)
+}
+
+/// The opaque commitment for one (peer, conversation), which the broker puts on
+/// the wire next to `send_seq`.
+pub fn peer_scope_commitment(
+    core: &HubCoreState,
+    peer_x25519_public: &[u8; X25519_PUBLIC_BYTES],
+    storage_key: &str,
+) -> Result<String, String> {
+    validate_storage_key(storage_key)?;
+    let self_pub = self_x25519_public(core)?;
+    let commit_key = ipc::revocation::scope_commit_key(&self_pub, peer_x25519_public)
+        .map_err(|_| "OSL burn commitment key is unavailable".to_owned())?;
+    Ok(STANDARD.encode(ipc::revocation::scope_commitment(
+        &commit_key,
+        storage_key,
+    )))
+}
+
+/// Gate one inbound protected message against the peer's burn floor, then record
+/// it. **Call before any plaintext is returned to a renderer.**
+///
+/// Fails closed three ways: a burnt sequence is refused, a sequence we cannot
+/// evaluate is refused, and a ledger we cannot read is refused. The error string
+/// is the generic open failure, so a peer cannot use the UI to learn whether a
+/// particular sequence was burnt.
+pub fn admit_peer_content_seq(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    peer_x25519_public: &[u8; X25519_PUBLIC_BYTES],
+    storage_key: &str,
+    send_seq: u64,
+) -> Result<(), String> {
+    let file_key = require_unlocked().map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    validate_storage_key(storage_key).map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    if send_seq == 0 {
+        // Sequences start at 1. A zero means the sender did not authenticate
+        // one, which makes the burn floor unenforceable for this message.
+        return Err(REVOCATION_REFUSED_ERROR.to_owned());
+    }
+    let self_pub = self_x25519_public(core).map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    let commit_key = ipc::revocation::scope_commit_key(&self_pub, peer_x25519_public)
+        .map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    let commitment = ipc::revocation::scope_commitment(&commit_key, storage_key);
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    let path = config_dir()
+        .map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?
+        .join(REVOCATION_LEDGER_FILE);
+    // A read error is "already burned", never "fresh".
+    let mut ledger =
+        load_revocation_ledger(&path, &file_key).map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    match ipc::revocation::accept_content(&ledger, &commitment, send_seq) {
+        ipc::revocation::ContentDecision::Accept => {}
+        _ => return Err(REVOCATION_REFUSED_ERROR.to_owned()),
+    }
+    ipc::revocation::record_content_accepted(&mut ledger, &commitment, send_seq)
+        .map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())?;
+    write_encrypted_json_with_key(&path, &ledger, &file_key)
+        .map_err(|_| REVOCATION_REFUSED_ERROR.to_owned())
+}
+
+/// Apply an inbound `MSG_TYPE_REVOCATION` from an authenticated peer.
+///
+/// `notice_b64` is the base64 CBOR body the broker recovered from the envelope;
+/// `peer_x25519_public` must be the key the envelope authenticated against, and
+/// `candidate_storage_keys` the conversations we hold for that peer. The
+/// commitment is matched by recomputation and constant-time comparison, so this
+/// function never learns which conversation the *peer* meant except by
+/// recognising one of our own.
+///
+/// The durable ledger write is the commit point: the ack is only produced after
+/// the burn floor is on disk, so a crash between the two cannot leave a peer
+/// believing a burn was honoured that we then forgot.
+pub fn apply_peer_revocation(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    peer_x25519_public: &[u8; X25519_PUBLIC_BYTES],
+    candidate_storage_keys: &[String],
+    notice_b64: &str,
+    now: i64,
+) -> Result<HubInboundRevocation, String> {
+    let file_key = require_unlocked()?;
+    let raw = STANDARD
+        .decode(notice_b64)
+        .map_err(|_| "OSL burn notice is malformed".to_owned())?;
+    let notice = ipc::control_messages::deserialize_revocation_notice(&raw)
+        .map_err(|_| "OSL burn notice is malformed".to_owned())?;
+    let self_pub = self_x25519_public(core)?;
+    let commit_key = ipc::revocation::scope_commit_key(&self_pub, peer_x25519_public)
+        .map_err(|_| "OSL burn commitment key is unavailable".to_owned())?;
+    let matched = ipc::revocation::match_scope_commitment(
+        &commit_key,
+        &notice.scope_commitment,
+        candidate_storage_keys.iter().map(String::as_str),
+    )
+    .map(str::to_owned);
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    let path = config_dir()?.join(REVOCATION_LEDGER_FILE);
+    let mut ledger = load_revocation_ledger(&path, &file_key)?;
+    let outcome = ipc::revocation::apply_inbound_revocation(&mut ledger, &commit_key, &notice, now)
+        .map_err(|_| "OSL burn state is full".to_owned())?;
+    ledger.version = 1;
+    // Durable first. Only then may an ack claim the burn is in force.
+    write_encrypted_json_with_key(&path, &ledger, &file_key)
+        .map_err(|_| "OSL burn state could not be persisted".to_owned())?;
+
+    // Forget this sender's cached attachment capabilities in the matched
+    // conversation. Text content in the Hub's manual-peer transport is never
+    // persisted as plaintext (see `burn_manual_peer_scope`), so the enforcement
+    // for text is the durable floor above plus `admit_peer_content_seq`.
+    if outcome.decision == ipc::revocation::InboundDecision::Applied {
+        if let Some(storage_key) = matched.as_deref() {
+            let attachments_path = config_dir()?.join(ATTACHMENT_BURN_FILE);
+            if let Ok(mut attachments) =
+                load_attachment_burn_ledger_with_key(&attachments_path, &file_key)
+            {
+                if attachments.entries_by_scope.remove(storage_key).is_some() {
+                    let _ = write_encrypted_json_with_key(
+                        &attachments_path,
+                        &attachments,
+                        &file_key,
+                    );
+                }
+            }
+        }
+    }
+
+    let burn_floor = ledger
+        .scopes
+        .values()
+        .map(|s| s.burn_floor)
+        .max()
+        .unwrap_or(0);
+    let ack_bytes = ipc::control_messages::serialize_revocation_ack(&outcome.ack)
+        .map_err(|_| "OSL burn receipt could not be encoded".to_owned())?;
+    Ok(HubInboundRevocation {
+        ack_b64: STANDARD.encode(&ack_bytes),
+        applied: outcome.ack.applied,
+        storage_key: matched,
+        burn_floor,
+    })
+}
+
+/// Honour a legacy `MSG_TYPE_BURN` (`0x01`) from an old peer.
+///
+/// Converted to a bounded revocation at "everything of theirs I currently hold"
+/// and applied through exactly the same path as a `0x0A`. It is specifically
+/// **not** recorded as a permanent scope flag: the legacy client's
+/// `peer_map.burned_scopes` behaviour turned one stale or replayed marker into a
+/// conversation that could never be used again, and that denial of service is
+/// fixed here for old peers too, without asking them to upgrade.
+pub fn apply_legacy_peer_burn(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    peer_x25519_public: &[u8; X25519_PUBLIC_BYTES],
+    storage_key: &str,
+    now: i64,
+) -> Result<HubInboundRevocation, String> {
+    let file_key = require_unlocked()?;
+    validate_storage_key(storage_key)?;
+    let self_pub = self_x25519_public(core)?;
+    let commit_key = ipc::revocation::scope_commit_key(&self_pub, peer_x25519_public)
+        .map_err(|_| "OSL burn commitment key is unavailable".to_owned())?;
+    let commitment = ipc::revocation::scope_commitment(&commit_key, storage_key);
+    let notice = {
+        let _transition = security
+            .transition
+            .lock()
+            .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+        let path = config_dir()?.join(REVOCATION_LEDGER_FILE);
+        let ledger = load_revocation_ledger(&path, &file_key)?;
+        ipc::revocation::legacy_burn_notice(&ledger, &commit_key, &commitment, now)
+    };
+    let notice_bytes = ipc::control_messages::serialize_revocation_notice(&notice)
+        .map_err(|_| "OSL burn notice could not be encoded".to_owned())?;
+    apply_peer_revocation(
+        core,
+        security,
+        peer_x25519_public,
+        std::slice::from_ref(&storage_key.to_owned()),
+        &STANDARD.encode(&notice_bytes),
+        now,
+    )
+}
+
+/// Queue one revocation notice per peer for a conversation we just burned.
+///
+/// Called **after** local destruction. `peers` is `(osl_user_id, x25519_public)`
+/// captured *before* the whitelist entries were removed — otherwise the peers who
+/// need the notice have already been filtered out of every recipient resolver,
+/// which is the ordering bug the legacy client documents on
+/// `cmd_osl_send_burn_marker`.
+///
+/// Returns `(queued, complete)`. `complete == false` means at least one peer's
+/// notice could not be queued and the operator must be shown
+/// `Not acknowledged` for the conversation — never a success.
+pub fn queue_scope_revocations(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    storage_key: &str,
+    scope_id_label: &str,
+    peers: &[(String, [u8; X25519_PUBLIC_BYTES])],
+    explicit_message_ids: &[String],
+    now: i64,
+) -> Result<(usize, bool), String> {
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    queue_scope_revocations_locked(
+        core,
+        storage_key,
+        scope_id_label,
+        peers,
+        explicit_message_ids,
+        now,
+    )
+}
+
+/// Body of [`queue_scope_revocations`], for callers already holding the
+/// security-transition lock. `std::sync::Mutex` is not reentrant, so `burn_scope`
+/// — which holds that lock across its whole destructive sequence — must use this
+/// entry point rather than the public one.
+fn queue_scope_revocations_locked(
+    core: &HubCoreState,
+    storage_key: &str,
+    scope_id_label: &str,
+    peers: &[(String, [u8; X25519_PUBLIC_BYTES])],
+    explicit_message_ids: &[String],
+    now: i64,
+) -> Result<(usize, bool), String> {
+    if peers.is_empty() {
+        return Ok((0, true));
+    }
+    let file_key = require_unlocked()?;
+    validate_storage_key(storage_key)?;
+    let self_pub = self_x25519_public(core)?;
+    let dir = config_dir()?;
+    let counters_path = dir.join(REVOCATION_COUNTERS_FILE);
+    let outbox_path = dir.join(REVOCATION_OUTBOX_FILE);
+    let mut counters = load_revocation_counters(&counters_path, &file_key)?;
+    let mut outbox = load_revocation_outbox(&outbox_path, &file_key)?;
+
+    let mut queued = 0usize;
+    let mut complete = true;
+    for (recipient_osl_user_id, peer_pub) in peers {
+        let Ok(commit_key) = ipc::revocation::scope_commit_key(&self_pub, peer_pub) else {
+            complete = false;
+            continue;
+        };
+        let commitment = ipc::revocation::scope_commitment(&commit_key, storage_key);
+        let Ok(burn_epoch) = counters.next_burn_epoch(&commitment) else {
+            complete = false;
+            continue;
+        };
+        // Everything we have ever said to this peer in this conversation.
+        let burn_upto_seq = counters.current_send_seq(&commitment);
+        let message_commitments: Vec<[u8; 32]> = explicit_message_ids
+            .iter()
+            .take(ipc::control_messages::MAX_REVOCATION_MESSAGE_COMMITMENTS)
+            .map(|id| ipc::revocation::message_commitment(&commit_key, &commitment, id))
+            .collect();
+        let burn_id =
+            ipc::revocation::burn_id(&commit_key, &commitment, burn_epoch, burn_upto_seq);
+        let collapse_key =
+            ipc::revocation::lane_collapse_key(&commit_key, &commitment, burn_epoch);
+        let notice = ipc::control_messages::RevocationNotice {
+            scope_commitment: commitment,
+            burn_epoch,
+            burn_upto_seq,
+            message_commitments,
+            burn_id,
+            issued_at: now,
+        };
+        let Ok(bytes) = ipc::control_messages::serialize_revocation_notice(&notice) else {
+            complete = false;
+            continue;
+        };
+        let entry = ipc::revocation::RevocationOutboxEntry {
+            recipient_id: recipient_osl_user_id.clone(),
+            scope_id_label: scope_id_label.to_owned(),
+            storage_key: storage_key.to_owned(),
+            burn_id_hex: lower_hex(&burn_id),
+            collapse_key_hex: lower_hex(&collapse_key),
+            burn_epoch,
+            burn_upto_seq,
+            notice_b64: STANDARD.encode(&bytes),
+            attempts: 0,
+            next_attempt_at: now,
+            acknowledged: false,
+            created_at: now,
+        };
+        if outbox.enqueue(entry).is_err() {
+            complete = false;
+            continue;
+        }
+        queued = queued.saturating_add(1);
+    }
+
+    counters.version = 1;
+    outbox.version = 1;
+    write_encrypted_json_with_key(&counters_path, &counters, &file_key)
+        .map_err(|_| "OSL burn counters could not be persisted".to_owned())?;
+    write_encrypted_json_with_key(&outbox_path, &outbox, &file_key)
+        .map_err(|_| "OSL burn queue could not be persisted".to_owned())?;
+    Ok((queued, complete))
+}
+
+/// Revocations due for a delivery attempt. The broker calls this on every drain
+/// and on a tick, seals each as `MSG_TYPE_REVOCATION`, and POSTs it on the
+/// revocation lane.
+pub fn due_revocations(
+    security: &HubSecurityState,
+    now: i64,
+) -> Result<Vec<HubDueRevocation>, String> {
+    let file_key = require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    let path = config_dir()?.join(REVOCATION_OUTBOX_FILE);
+    let outbox = load_revocation_outbox(&path, &file_key)?;
+    Ok(outbox
+        .due(now)
+        .into_iter()
+        .map(|e| HubDueRevocation {
+            recipient_osl_user_id: e.recipient_id.clone(),
+            scope_id_label: e.scope_id_label.clone(),
+            storage_key: e.storage_key.clone(),
+            notice_b64: e.notice_b64.clone(),
+            burn_id_hex: e.burn_id_hex.clone(),
+            collapse_key_hex: e.collapse_key_hex.clone(),
+            attempts: e.attempts,
+        })
+        .collect())
+}
+
+/// Record a delivery attempt (successful POST or not) and schedule the next one.
+///
+/// A successful POST is still only an attempt: the burn is not acknowledged
+/// until the peer's `0x0B` arrives, so this never marks an entry done.
+pub fn record_revocation_attempt(
+    security: &HubSecurityState,
+    burn_id_hex: &str,
+    now: i64,
+) -> Result<(), String> {
+    let file_key = require_unlocked()?;
+    if !canonical_lower_hex(burn_id_hex, 64) {
+        return Err("OSL burn identifier is invalid".to_owned());
+    }
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    let path = config_dir()?.join(REVOCATION_OUTBOX_FILE);
+    let mut outbox = load_revocation_outbox(&path, &file_key)?;
+    outbox.record_attempt(burn_id_hex, now);
+    write_encrypted_json_with_key(&path, &outbox, &file_key)
+        .map_err(|_| "OSL burn queue could not be persisted".to_owned())
+}
+
+/// Record an inbound `MSG_TYPE_REVOCATION_ACK`.
+///
+/// Returns `true` when the ack marked a queued revocation acknowledged. An ack
+/// with `applied == false` is a refusal: the entry stays queued for retry, so a
+/// peer cannot clear our queue by refusing.
+pub fn record_revocation_ack(
+    security: &HubSecurityState,
+    ack_b64: &str,
+) -> Result<bool, String> {
+    let file_key = require_unlocked()?;
+    let raw = STANDARD
+        .decode(ack_b64)
+        .map_err(|_| "OSL burn receipt is malformed".to_owned())?;
+    let ack = ipc::control_messages::deserialize_revocation_ack(&raw)
+        .map_err(|_| "OSL burn receipt is malformed".to_owned())?;
+    if !ack.applied {
+        return Ok(false);
+    }
+    let burn_id_hex = lower_hex(&ack.burn_id);
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    let path = config_dir()?.join(REVOCATION_OUTBOX_FILE);
+    let mut outbox = load_revocation_outbox(&path, &file_key)?;
+    let known = outbox
+        .entries
+        .iter()
+        .any(|e| e.burn_id_hex == burn_id_hex && !e.acknowledged);
+    if !known {
+        return Ok(false);
+    }
+    outbox.record_acknowledged(&burn_id_hex);
+    write_encrypted_json_with_key(&path, &outbox, &file_key)
+        .map_err(|_| "OSL burn queue could not be persisted".to_owned())?;
+    Ok(true)
+}
+
+/// Delivery status + the three claims for one conversation.
+pub fn revocation_status(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+) -> Result<HubRevocationStatusDto, String> {
+    let file_key = require_unlocked()?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL scope is invalid".to_owned())?;
+    let storage_key = scope.storage_key();
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL burn state is unavailable".to_owned())?;
+    let path = config_dir()?.join(REVOCATION_OUTBOX_FILE);
+    let outbox = load_revocation_outbox(&path, &file_key)?;
+    Ok(HubRevocationStatusDto {
+        status: outbox.status_for_scope(&storage_key).to_owned(),
+        peers_pending: outbox.pending_for_scope(&storage_key),
+        peers_acknowledged: outbox.acknowledged_for_scope(&storage_key),
+        storage_key,
+        claims: burn_claims(),
+    })
+}
+
+/// Peers to notify for a scope, resolved from the peer map **before** any
+/// whitelist entry is removed.
+fn revocation_peers_for_scope(
+    core: &HubCoreState,
+    scope: &Scope,
+) -> Result<Vec<(String, [u8; X25519_PUBLIC_BYTES])>, String> {
+    let peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    Ok(revocation_peers_from_map(&peers, scope))
+}
+
+/// Pure half of [`revocation_peers_for_scope`].
+///
+/// A peer is notified when they hold an approval covering this scope. A peer
+/// whose key state is missing or malformed is **skipped, not guessed at**: there
+/// is no key to seal a notice to, and the caller reports the conversation as not
+/// fully notified rather than silently claiming success.
+fn revocation_peers_from_map(
+    peers: &ipc::peer_map::PeerMap,
+    scope: &Scope,
+) -> Vec<(String, [u8; X25519_PUBLIC_BYTES])> {
+    let mut out: Vec<(String, [u8; X25519_PUBLIC_BYTES])> = Vec::new();
+    for peer in peers.values() {
+        if !peer
+            .outgoing_whitelists
+            .iter()
+            .any(|entry| whitelist_entry_matches_scope(entry, scope))
+        {
+            continue;
+        }
+        let Some(osl_user_id) = peer.osl_user_id.clone() else {
+            continue;
+        };
+        let Ok(peer_pub) = strict_peer_x25519_public(peer) else {
+            continue;
+        };
+        if out.iter().any(|(existing, _)| existing == &osl_user_id) {
+            continue;
+        }
+        out.push((osl_user_id, peer_pub));
+    }
+    // Deterministic order so a burn queues the same set every time and a test
+    // can assert on it.
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn lower_hex(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap_or('0'));
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap_or('0'));
+    }
+    out
 }
 
 fn parse_friend_code(value: &str) -> Result<SignedFriendCode, String> {
@@ -1154,10 +2615,19 @@ fn decode_transport_exact<const N: usize>(value: &str, label: &str) -> Result<[u
         .map_err(|_| format!("OSL friend code {label} has the wrong length"))
 }
 
+/// Read the recorded person-level reach narrowing for every friend. Loaded from
+/// the same encrypted local preferences file that already holds the other trust
+/// decisions, so the roster and every reach check see one source of truth.
+fn load_reach_narrowing() -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    Ok(load_encrypted_json::<SecurityPreferences>(&path)?.reach_narrowed_scopes)
+}
+
 fn person_dto(
     core: &HubCoreState,
     person_id: &str,
     metadata: &PersonMetadata,
+    reach_narrowing: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<PersonDto, String> {
     let peer_map = core
         .osl
@@ -1174,6 +2644,16 @@ fn person_dto(
         .take(MAX_VISIBLE_WHITELIST_SCOPES)
         .map(whitelist_scope_dto)
         .collect();
+    let reach_broadened_at = person_reach_broadened_at(whitelists);
+    let reach_narrowed_scopes = reach_narrowing
+        .get(person_id)
+        .map(|keys| {
+            keys.iter()
+                .take(MAX_REACH_NARROWED_SCOPES_PER_PERSON)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(PersonDto {
         person_id: person_id.to_owned(),
         osl_user_id: metadata.osl_user_id.clone(),
@@ -1192,18 +2672,27 @@ fn person_dto(
         whitelisted_scopes_truncated: whitelist_count > MAX_VISIBLE_WHITELIST_SCOPES,
         pending_key_change: metadata.pending_ed25519_public.is_some()
             || metadata.pending_key_bundle.is_some(),
+        reach_broadened: reach_broadened_at.is_some(),
+        reach_broadened_at: reach_broadened_at.flatten(),
+        reach_narrowed_scopes,
     })
 }
 
 fn whitelist_scope_dto(entry: &WhitelistEntry) -> PersonWhitelistScopeDto {
+    let user_specific = whitelist_entry_user_specific(entry);
+    let storage_key = whitelist_entry_storage_key(entry);
     match entry {
         WhitelistEntry::Dm { .. } => PersonWhitelistScopeDto {
             kind: "dm".to_owned(),
             context_id: None,
+            storage_key,
+            user_specific,
         },
         WhitelistEntry::Gc { id, .. } => PersonWhitelistScopeDto {
             kind: "group".to_owned(),
             context_id: bounded_context_id(id),
+            storage_key,
+            user_specific,
         },
         WhitelistEntry::ServerChannel {
             server_id,
@@ -1212,10 +2701,14 @@ fn whitelist_scope_dto(entry: &WhitelistEntry) -> PersonWhitelistScopeDto {
         } => PersonWhitelistScopeDto {
             kind: "channel".to_owned(),
             context_id: bounded_context_id(&format!("{server_id}:{channel_id}")),
+            storage_key,
+            user_specific,
         },
         WhitelistEntry::ServerFull { server_id, .. } => PersonWhitelistScopeDto {
             kind: "space".to_owned(),
             context_id: bounded_context_id(server_id),
+            storage_key,
+            user_specific,
         },
     }
 }
@@ -1274,7 +2767,13 @@ fn normalise_safety_number(value: &str) -> String {
     value.chars().filter(char::is_ascii_digit).collect()
 }
 
-fn whitelist_matches(entry: &WhitelistEntry, scope: &Scope) -> bool {
+/// Does this single recorded entry describe *exactly* this scope?
+///
+/// Entry identity only: it is what add/remove/burn bookkeeping matches on, so a
+/// per-scope revocation or burn can never delete an unrelated approval. It
+/// deliberately ignores person-level reach — cross-scope trust is answered by
+/// [`whitelist_matches`].
+fn whitelist_entry_matches_scope(entry: &WhitelistEntry, scope: &Scope) -> bool {
     match (entry, scope.kind) {
         (WhitelistEntry::Dm { .. }, ScopeKind::Dm) => true,
         (WhitelistEntry::Gc { id, .. }, ScopeKind::Gc) => id == &scope.id,
@@ -1294,6 +2793,97 @@ fn whitelist_matches(entry: &WhitelistEntry, scope: &Scope) -> bool {
         }
         _ => false,
     }
+}
+
+/// Is this person trusted in `scope`?
+///
+/// Person-level decision over every entry OSL recorded for one friend, plus the
+/// scope keys the user explicitly took back from them (`narrowed`).
+///
+/// | recorded for the person        | scope asked about | narrowed? | result |
+/// |-------------------------------|-------------------|-----------|--------|
+/// | nothing                       | any               | –         | denied |
+/// | `Dm { broadened: false }`     | Dm                | –         | allowed (exact) |
+/// | `Dm { broadened: false }`     | Gc / channel / space | –      | denied |
+/// | `Dm { broadened: true }`      | Dm                | –         | allowed (exact) |
+/// | `Dm { broadened: true }`      | Gc / channel / space | no     | allowed (reach) |
+/// | `Dm { broadened: true }`      | Gc / channel / space | yes    | denied (narrowing wins) |
+/// | `Gc { id }`                   | that Gc           | –         | allowed (exact) |
+/// | `Gc { id }`                   | another Gc / other kind | –   | denied |
+/// | `ServerChannel { s, c }`      | `ServerFull { s }` | –        | denied |
+/// | `ServerFull { s }`            | `ServerChannel { s, c }` | –  | denied |
+/// | any exact entry               | that scope        | yes       | allowed — an explicit approval of the exact scope is the narrower, later decision, and approving clears the narrowing |
+///
+/// Absence stays fail-closed and reach is only ever honoured when the user
+/// recorded it deliberately through [`set_friend_scope_reach`].
+fn whitelist_matches(
+    entries: &[WhitelistEntry],
+    scope: &Scope,
+    narrowed: Option<&BTreeSet<String>>,
+) -> bool {
+    if entries
+        .iter()
+        .any(|entry| whitelist_entry_matches_scope(entry, scope))
+    {
+        return true;
+    }
+    // A DM is the scope reach is anchored to; it is never granted by reach.
+    if scope.kind == ScopeKind::Dm {
+        return false;
+    }
+    if narrowed.is_some_and(|keys| keys.contains(&scope.storage_key())) {
+        return false;
+    }
+    person_reach_broadened_at(entries).is_some()
+}
+
+/// The recorded instant this person's reach was widened, or `None` when their
+/// trust is still limited to the scopes approved one by one.
+fn person_reach_broadened_at(entries: &[WhitelistEntry]) -> Option<Option<String>> {
+    entries.iter().find_map(|entry| match entry {
+        WhitelistEntry::Dm {
+            broadened: true,
+            enabled_at,
+        } => Some(enabled_at.clone()),
+        _ => None,
+    })
+}
+
+/// Canonical roster key for one recorded approval. `None` is impossible: the
+/// person-level DM entry uses [`DM_REACH_STORAGE_KEY`].
+fn whitelist_entry_storage_key(entry: &WhitelistEntry) -> String {
+    match entry {
+        WhitelistEntry::Dm { .. } => DM_REACH_STORAGE_KEY.to_owned(),
+        WhitelistEntry::Gc { id, .. } => Scope::gc(id.clone()).storage_key(),
+        WhitelistEntry::ServerChannel {
+            server_id,
+            channel_id,
+            ..
+        } => Scope::server_channel(server_id.clone(), channel_id.clone()).storage_key(),
+        WhitelistEntry::ServerFull { server_id, .. } => {
+            Scope::server_full(server_id.clone()).storage_key()
+        }
+    }
+}
+
+fn whitelist_entry_user_specific(entry: &WhitelistEntry) -> bool {
+    match entry {
+        // Reach, not per-conversation membership, is the DM entry's flag.
+        WhitelistEntry::Dm { .. } => false,
+        WhitelistEntry::Gc { user_specific, .. }
+        | WhitelistEntry::ServerChannel { user_specific, .. }
+        | WhitelistEntry::ServerFull { user_specific, .. } => *user_specific,
+    }
+}
+
+fn validate_storage_key(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_STORAGE_KEY_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err("OSL scope key is invalid".to_owned());
+    }
+    Ok(())
 }
 
 fn whitelist_entry(scope: &Scope, broadened: bool) -> WhitelistEntry {
@@ -1463,6 +3053,89 @@ fn load_scope_blobs_strict_with_key(
     serde_json::from_slice(&plain).map_err(|_| "OSL scope blob ledger is malformed".to_owned())
 }
 
+fn load_attachment_burn_ledger_with_key(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<AttachmentBurnLedger, String> {
+    let ledger = load_encrypted_json_with_key::<AttachmentBurnLedger>(path, key)
+        .map_err(|_| "OSL attachment burn ledger could not be opened".to_owned())?;
+    if ledger.version > 1
+        || ledger.entries_by_scope.len() > MAX_PEER_REPLAY_SCOPES
+        || ledger
+            .entries_by_scope
+            .values()
+            .any(|entries| entries.len() > MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE)
+        || ledger
+            .entries_by_scope
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+            > MAX_ATTACHMENT_BURN_ENTRIES_TOTAL
+        || ledger.entries_by_scope.values().flatten().any(|entry| {
+            !canonical_lower_hex(&entry.object_id, 32)
+                || !canonical_lower_hex(&entry.fetch_token, 32)
+                || entry.expires_at <= 0
+        })
+    {
+        return Err("OSL attachment burn ledger is malformed".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn validate_attachment_burn_entry(
+    object_id: &str,
+    fetch_token: &str,
+    expires_at: i64,
+    now: i64,
+) -> Result<(), String> {
+    if !canonical_lower_hex(object_id, 32)
+        || !canonical_lower_hex(fetch_token, 32)
+        || expires_at <= now
+        || expires_at > now.saturating_add(604_800)
+    {
+        return Err("OSL attachment burn capability is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn canonical_lower_hex(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn prune_expired_attachment_burn_entries(ledger: &mut AttachmentBurnLedger, now: i64) {
+    ledger.entries_by_scope.retain(|_, entries| {
+        entries.retain(|entry| entry.expires_at > now);
+        !entries.is_empty()
+    });
+}
+
+fn take_attachment_burn_entries(
+    ledger: &mut AttachmentBurnLedger,
+    storage_key: &str,
+) -> Vec<AttachmentBurnEntry> {
+    ledger
+        .entries_by_scope
+        .remove(storage_key)
+        .unwrap_or_default()
+}
+
+fn parse_attachment_fetch_token(value: &str) -> Result<[u8; 16], String> {
+    if !canonical_lower_hex(value, 32) {
+        return Err("OSL attachment burn capability is invalid".to_owned());
+    }
+    let mut token = [0u8; 16];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(chunk)
+            .map_err(|_| "OSL attachment burn capability is invalid".to_owned())?;
+        token[index] = u8::from_str_radix(text, 16)
+            .map_err(|_| "OSL attachment burn capability is invalid".to_owned())?;
+    }
+    Ok(token)
+}
+
 fn write_encrypted_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let key = require_unlocked()?;
     write_encrypted_json_with_key(path, value, &key)
@@ -1537,8 +3210,11 @@ mod tests {
     fn scope_match_is_service_neutral() {
         let scope = Scope::server_channel("space", "conversation");
         let entry = whitelist_entry(&scope, false);
-        assert!(whitelist_matches(&entry, &scope));
-        assert!(!whitelist_matches(&entry, &Scope::gc("conversation")));
+        assert!(whitelist_entry_matches_scope(&entry, &scope));
+        assert!(!whitelist_entry_matches_scope(
+            &entry,
+            &Scope::gc("conversation")
+        ));
     }
 
     #[test]
@@ -1569,7 +3245,9 @@ mod tests {
             }),
             PersonWhitelistScopeDto {
                 kind: "dm".to_owned(),
-                context_id: None
+                context_id: None,
+                storage_key: "dm".to_owned(),
+                user_specific: false,
             }
         );
         assert_eq!(
@@ -1579,11 +3257,192 @@ mod tests {
             }),
             PersonWhitelistScopeDto {
                 kind: "group".to_owned(),
-                context_id: Some("gc-1".to_owned())
+                context_id: Some("gc-1".to_owned()),
+                storage_key: "gc:gc-1".to_owned(),
+                user_specific: true,
             }
         );
         assert_eq!(bounded_context_id(&"x".repeat(513)), None);
         assert_eq!(bounded_context_id("unsafe\ncontext"), None);
+    }
+
+    fn dm_entry(broadened: bool) -> WhitelistEntry {
+        WhitelistEntry::Dm {
+            broadened,
+            enabled_at: Some("1770000000".to_owned()),
+        }
+    }
+
+    #[test]
+    fn person_reach_is_never_implied_by_an_ordinary_approval() {
+        let gc = Scope::gc("gc-1");
+        let channel = Scope::server_channel("space-1", "channel-1");
+        let space = Scope::server_full("space-1");
+        let dm = Scope::dm("peer-1");
+
+        // Absent entry stays fail-closed for every scope kind.
+        assert!(!whitelist_matches(&[], &dm, None));
+        assert!(!whitelist_matches(&[], &gc, None));
+        assert!(!whitelist_matches(&[], &channel, None));
+        assert!(!whitelist_matches(&[], &space, None));
+
+        // A plain DM approval covers the DM and nothing else.
+        let plain = [dm_entry(false)];
+        assert!(whitelist_matches(&plain, &dm, None));
+        assert!(!whitelist_matches(&plain, &gc, None));
+        assert!(!whitelist_matches(&plain, &channel, None));
+        assert!(!whitelist_matches(&plain, &space, None));
+
+        // Explicitly broadened reach covers the other scope kinds.
+        let broadened = [dm_entry(true)];
+        assert!(whitelist_matches(&broadened, &dm, None));
+        assert!(whitelist_matches(&broadened, &gc, None));
+        assert!(whitelist_matches(&broadened, &channel, None));
+        assert!(whitelist_matches(&broadened, &space, None));
+    }
+
+    #[test]
+    fn recorded_narrowing_beats_broadened_reach() {
+        let gc = Scope::gc("gc-1");
+        let other_gc = Scope::gc("gc-2");
+        let broadened = [dm_entry(true)];
+        let narrowed = BTreeSet::from([gc.storage_key()]);
+
+        assert!(!whitelist_matches(&broadened, &gc, Some(&narrowed)));
+        // Narrowing is per scope, not per person.
+        assert!(whitelist_matches(&broadened, &other_gc, Some(&narrowed)));
+
+        // An explicit approval of the exact scope is the later, narrower
+        // decision and wins; the ordinary approve path clears the narrowing.
+        let approved = [
+            dm_entry(true),
+            WhitelistEntry::Gc {
+                id: "gc-1".to_owned(),
+                user_specific: true,
+            },
+        ];
+        assert!(whitelist_matches(&approved, &gc, Some(&narrowed)));
+
+        // Narrowing never grants anything on its own.
+        assert!(!whitelist_matches(&[], &gc, Some(&narrowed)));
+    }
+
+    #[test]
+    fn per_scope_entries_do_not_leak_across_scope_kinds() {
+        let channel = Scope::server_channel("space-1", "channel-1");
+        let other_channel = Scope::server_channel("space-1", "channel-2");
+        let space = Scope::server_full("space-1");
+        let gc = Scope::gc("gc-1");
+
+        let channel_entry = [WhitelistEntry::ServerChannel {
+            server_id: "space-1".to_owned(),
+            channel_id: "channel-1".to_owned(),
+            user_specific: true,
+        }];
+        assert!(whitelist_matches(&channel_entry, &channel, None));
+        assert!(!whitelist_matches(&channel_entry, &other_channel, None));
+        assert!(!whitelist_matches(&channel_entry, &space, None));
+
+        let space_entry = [WhitelistEntry::ServerFull {
+            server_id: "space-1".to_owned(),
+            user_specific: true,
+        }];
+        assert!(whitelist_matches(&space_entry, &space, None));
+        assert!(!whitelist_matches(&space_entry, &channel, None));
+
+        let gc_entry = [WhitelistEntry::Gc {
+            id: "gc-1".to_owned(),
+            user_specific: true,
+        }];
+        assert!(whitelist_matches(&gc_entry, &gc, None));
+        assert!(!whitelist_matches(&gc_entry, &Scope::gc("gc-2"), None));
+        assert!(!whitelist_matches(&gc_entry, &Scope::dm("peer-1"), None));
+        // A group approval alone never widens into other scope kinds.
+        assert!(!whitelist_matches(&gc_entry, &space, None));
+    }
+
+    #[test]
+    fn reach_records_when_trust_was_widened_and_collapses_without_losing_scopes() {
+        let mut entries = vec![
+            dm_entry(true),
+            WhitelistEntry::Gc {
+                id: "gc-1".to_owned(),
+                user_specific: true,
+            },
+        ];
+        assert_eq!(
+            person_reach_broadened_at(&entries),
+            Some(Some("1770000000".to_owned()))
+        );
+        collapse_person_reach(&mut entries);
+        assert!(person_reach_broadened_at(&entries).is_none());
+        // Withdrawing reach keeps every per-scope approval, including the DM.
+        assert_eq!(entries.len(), 2);
+        assert!(whitelist_matches(&entries, &Scope::dm("peer-1"), None));
+        assert!(whitelist_matches(&entries, &Scope::gc("gc-1"), None));
+        assert!(!whitelist_matches(&entries, &Scope::gc("gc-2"), None));
+    }
+
+    #[test]
+    fn roster_keys_round_trip_to_the_scope_they_describe() {
+        assert_eq!(whitelist_entry_storage_key(&dm_entry(true)), "dm");
+        assert_eq!(
+            whitelist_entry_storage_key(&WhitelistEntry::Gc {
+                id: "gc-1".to_owned(),
+                user_specific: true
+            }),
+            Scope::gc("gc-1").storage_key()
+        );
+        assert_eq!(
+            whitelist_entry_storage_key(&WhitelistEntry::ServerChannel {
+                server_id: "space-1".to_owned(),
+                channel_id: "channel-1".to_owned(),
+                user_specific: true
+            }),
+            Scope::server_channel("space-1", "channel-1").storage_key()
+        );
+        assert_eq!(
+            whitelist_entry_storage_key(&WhitelistEntry::ServerFull {
+                server_id: "space-1".to_owned(),
+                user_specific: false
+            }),
+            Scope::server_full("space-1").storage_key()
+        );
+        // The person-level DM sentinel can never name a real conversation.
+        assert!(Scope::parse("dm").is_none());
+        assert!(validate_storage_key("").is_err());
+        assert!(validate_storage_key("gc:bad
+key").is_err());
+        assert!(validate_storage_key(&"x".repeat(MAX_STORAGE_KEY_BYTES + 1)).is_err());
+        assert!(validate_storage_key("gc:gc-1").is_ok());
+    }
+
+    #[test]
+    fn narrowing_ledger_is_bounded_and_only_cleared_by_an_explicit_approval() {
+        let mut prefs = SecurityPreferences::default();
+        assert!(record_reach_narrowing(&mut prefs, "hub-person-a", "gc:gc-1"));
+        assert!(record_reach_narrowing(&mut prefs, "hub-person-a", "gc:gc-1"));
+        assert_eq!(
+            prefs.reach_narrowed_scopes.get("hub-person-a"),
+            Some(&BTreeSet::from(["gc:gc-1".to_owned()]))
+        );
+        clear_reach_narrowing(&mut prefs, "hub-person-a", "gc:gc-2");
+        assert!(prefs.reach_narrowed_scopes.contains_key("hub-person-a"));
+        clear_reach_narrowing(&mut prefs, "hub-person-a", "gc:gc-1");
+        assert!(!prefs.reach_narrowed_scopes.contains_key("hub-person-a"));
+
+        for index in 0..MAX_REACH_NARROWED_SCOPES_PER_PERSON {
+            assert!(record_reach_narrowing(
+                &mut prefs,
+                "hub-person-b",
+                &format!("gc:gc-{index}")
+            ));
+        }
+        assert!(!record_reach_narrowing(
+            &mut prefs,
+            "hub-person-b",
+            "gc:overflow"
+        ));
     }
 
     #[test]
@@ -1904,6 +3763,191 @@ mod tests {
     }
 
     #[test]
+    fn peer_replay_ledger_is_encrypted_scope_bound_pruned_and_burnable() {
+        let file_key = [0x73; 32];
+        let path = std::env::temp_dir().join(format!(
+            "osl-peer-replay-{}-{}.json",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        let security = HubSecurityState::default();
+        let first_id = "peer-00112233445566778899aabbccddeeff";
+        let second_id = "peer-ffeeddccbbaa99887766554433221100";
+        let now = 1_700_000_000;
+
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-a",
+            first_id,
+            now + 60,
+            now,
+            &file_key,
+        )
+        .unwrap();
+        assert!(ipc::main_password::has_enc_magic(
+            &std::fs::read(&path).unwrap()
+        ));
+        assert_eq!(
+            consume_peer_message_at_path(
+                &security,
+                &path,
+                "dm:discord-a",
+                first_id,
+                now + 60,
+                now,
+                &file_key,
+            )
+            .unwrap_err(),
+            PEER_OPEN_ERROR
+        );
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-b",
+            first_id,
+            now + 180,
+            now,
+            &file_key,
+        )
+        .unwrap();
+
+        // Once the original record expires, pruning permits the same random
+        // identifier again without retaining stale state forever.
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-a",
+            first_id,
+            now + 120,
+            now + 61,
+            &file_key,
+        )
+        .unwrap();
+        consume_peer_message_at_path(
+            &security,
+            &path,
+            "dm:discord-a",
+            second_id,
+            now + 120,
+            now + 61,
+            &file_key,
+        )
+        .unwrap();
+        remove_peer_replay_scope_at_path(&path, "dm:discord-a", &file_key).unwrap();
+        let ledger: PeerReplayLedger = load_encrypted_json_with_key(&path, &file_key).unwrap();
+        assert!(!ledger.consumed_by_scope.contains_key("dm:discord-a"));
+        assert!(ledger.consumed_by_scope.contains_key("dm:discord-b"));
+
+        let mut bounded = PeerReplayLedger {
+            version: 1,
+            ..PeerReplayLedger::default()
+        };
+        let scope_entries = bounded
+            .consumed_by_scope
+            .entry("dm:bounded".to_owned())
+            .or_default();
+        for index in 0..MAX_PEER_REPLAY_ENTRIES_PER_SCOPE {
+            scope_entries.insert(format!("peer-{index:032x}"), now + 300);
+        }
+        write_encrypted_json_with_key(&path, &bounded, &file_key).unwrap();
+        assert_eq!(
+            consume_peer_message_at_path(
+                &security,
+                &path,
+                "dm:bounded",
+                "peer-ffffffffffffffffffffffffffffffff",
+                now + 300,
+                now,
+                &file_key,
+            )
+            .unwrap_err(),
+            PEER_OPEN_ERROR
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
+    }
+
+    #[test]
+    fn attachment_burn_ledger_is_encrypted_bounded_expiring_and_retryable() {
+        let file_key = [0x42; 32];
+        let path = std::env::temp_dir().join(format!(
+            "osl-attachment-burn-{}-{}.json",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        let security = HubSecurityState::default();
+        let now = 1_700_000_000;
+        let token_a = "00112233445566778899aabbccddeeff";
+        let token_b = "ffeeddccbbaa99887766554433221100";
+        record_peer_attachment_burn_capability_at_path(
+            &security,
+            &path,
+            "dm:a".to_owned(),
+            "00112233445566778899aabbccddeeff".to_owned(),
+            token_a,
+            now + 60,
+            now,
+            &file_key,
+        )
+        .unwrap();
+        record_peer_attachment_burn_capability_at_path(
+            &security,
+            &path,
+            "dm:b".to_owned(),
+            "ffeeddccbbaa99887766554433221100".to_owned(),
+            token_b,
+            now + 120,
+            now,
+            &file_key,
+        )
+        .unwrap();
+        let encrypted = std::fs::read(&path).unwrap();
+        assert!(ipc::main_password::has_enc_magic(&encrypted));
+        assert!(!encrypted
+            .windows(token_a.len())
+            .any(|window| window == token_a.as_bytes()));
+
+        let mut ledger = load_attachment_burn_ledger_with_key(&path, &file_key).unwrap();
+        prune_expired_attachment_burn_entries(&mut ledger, now + 61);
+        assert!(!ledger.entries_by_scope.contains_key("dm:a"));
+        let failed = take_attachment_burn_entries(&mut ledger, "dm:b");
+        assert_eq!(failed.len(), 1);
+        ledger.entries_by_scope.insert("dm:b".to_owned(), failed);
+        write_encrypted_json_with_key(&path, &ledger, &file_key).unwrap();
+        let retry = load_attachment_burn_ledger_with_key(&path, &file_key).unwrap();
+        assert_eq!(retry.entries_by_scope["dm:b"].len(), 1);
+
+        assert!(validate_attachment_burn_entry(
+            "00112233445566778899AABBCCDDEEFF",
+            token_a,
+            now + 60,
+            now
+        )
+        .is_err());
+
+        let mut oversized = AttachmentBurnLedger {
+            version: 1,
+            ..AttachmentBurnLedger::default()
+        };
+        oversized.entries_by_scope.insert(
+            "dm:oversized".to_owned(),
+            (0..=MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE)
+                .map(|index| AttachmentBurnEntry {
+                    object_id: format!("{index:032x}"),
+                    fetch_token: token_a.to_owned(),
+                    expires_at: now + 120,
+                })
+                .collect(),
+        );
+        write_encrypted_json_with_key(&path, &oversized, &file_key).unwrap();
+        assert!(load_attachment_burn_ledger_with_key(&path, &file_key).is_err());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
+    }
+
+    #[test]
     fn removing_last_auto_approved_friend_can_disable_scope_without_erasing_manual_choice() {
         let mut scopes = ipc::whitelist_state::WhitelistState::new();
         scopes.insert(
@@ -1928,5 +3972,203 @@ mod tests {
         );
         revoke_auto_scope_if_uncovered(&mut scopes, "dm:manual", false);
         assert!(scopes["dm:manual"].encrypt_toggle);
+    }
+
+    // ---- Bilateral burn ----
+
+    fn burn_peer(osl_user_id: &str, key_byte: u8, scope: &Scope) -> PeerEntry {
+        PeerEntry {
+            osl_user_id: Some(osl_user_id.to_owned()),
+            pubkey: Some(STANDARD.encode([key_byte; X25519_PUBLIC_BYTES])),
+            outgoing_whitelists: vec![whitelist_entry(scope, false)],
+            ..PeerEntry::default()
+        }
+    }
+
+    #[test]
+    fn burn_notice_recipients_are_resolved_from_approvals_not_guessed() {
+        let scope = Scope::gc("conversation-1");
+        let other = Scope::gc("conversation-2");
+        let mut peers = ipc::peer_map::PeerMap::new();
+        peers.insert("person-b".to_owned(), burn_peer("osl-b", 2, &scope));
+        peers.insert("person-a".to_owned(), burn_peer("osl-a", 1, &scope));
+        // Approved for a different conversation: not notified.
+        peers.insert("person-c".to_owned(), burn_peer("osl-c", 3, &other));
+        // Approved here but no usable key: skipped rather than guessed at.
+        peers.insert(
+            "person-d".to_owned(),
+            PeerEntry {
+                osl_user_id: Some("osl-d".to_owned()),
+                pubkey: None,
+                outgoing_whitelists: vec![whitelist_entry(&scope, false)],
+                ..PeerEntry::default()
+            },
+        );
+        // Approved here but no OSL identifier: nothing to address.
+        peers.insert(
+            "person-e".to_owned(),
+            PeerEntry {
+                osl_user_id: None,
+                pubkey: Some(STANDARD.encode([5u8; X25519_PUBLIC_BYTES])),
+                outgoing_whitelists: vec![whitelist_entry(&scope, false)],
+                ..PeerEntry::default()
+            },
+        );
+
+        let resolved = revocation_peers_from_map(&peers, &scope);
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["osl-a", "osl-b"]
+        );
+        assert_eq!(resolved[0].1, [1u8; X25519_PUBLIC_BYTES]);
+    }
+
+    #[test]
+    fn a_malformed_peer_key_never_yields_a_placeholder_recipient() {
+        let scope = Scope::dm("peer-1");
+        let mut peers = ipc::peer_map::PeerMap::new();
+        peers.insert(
+            "person-a".to_owned(),
+            PeerEntry {
+                osl_user_id: Some("osl-a".to_owned()),
+                // Valid base64, wrong length.
+                pubkey: Some(STANDARD.encode([7u8; 16])),
+                outgoing_whitelists: vec![whitelist_entry(&scope, false)],
+                ..PeerEntry::default()
+            },
+        );
+        assert!(revocation_peers_from_map(&peers, &scope).is_empty());
+    }
+
+    /// The three claims are distinct, ordered strongest-first, and none of them
+    /// says a platform copy was removed. `osl-gui-final-plan.md:494` forbids
+    /// ever rendering a burn as "Deleted".
+    #[test]
+    fn burn_claims_are_three_separate_honest_statements() {
+        let claims = burn_claims();
+        assert_eq!(claims.len(), 3);
+        assert_eq!(claims[0], ipc::revocation::CLAIM_CONTENT_EXPIRY);
+        assert_eq!(claims[1], ipc::revocation::CLAIM_LOCAL_REMOVAL);
+        assert_eq!(claims[2], ipc::revocation::CLAIM_RECIPIENT_COPIES);
+        assert!(claims[2].contains("no guarantee"));
+        for claim in &claims {
+            let lowered = claim.to_lowercase();
+            assert!(!lowered.contains("discord"));
+            assert!(!lowered.contains("their copies go dark"));
+        }
+    }
+
+    /// A burn floor refusal must be indistinguishable from any other failure to
+    /// open, or the UI becomes a "was that message burned?" oracle.
+    #[test]
+    fn a_burn_refusal_reads_exactly_like_any_other_open_failure() {
+        assert_eq!(REVOCATION_REFUSED_ERROR, PEER_OPEN_ERROR);
+        assert!(!REVOCATION_REFUSED_ERROR.to_lowercase().contains("burn"));
+    }
+
+    #[test]
+    fn burn_identifiers_render_as_canonical_lower_hex() {
+        let rendered = lower_hex(&[0x0fu8; 32]);
+        assert_eq!(rendered.len(), 64);
+        assert!(canonical_lower_hex(&rendered, 64));
+        assert_eq!(lower_hex(&[0u8; 32]), "0".repeat(64));
+        assert_eq!(lower_hex(&[0xffu8; 32]), "f".repeat(64));
+    }
+
+    /// The ledger loader is strict and fails closed. Every gate treats an `Err`
+    /// as "already burned", so a ledger that has been truncated, re-keyed or
+    /// hand-edited must produce an error rather than an empty ledger.
+    #[test]
+    fn a_malformed_burn_ledger_is_an_error_not_an_empty_one() {
+        use ipc::revocation::{JournalEntry, RevocationLedger, ScopeRevocationState};
+        let dir = std::env::temp_dir().join(format!(
+            "osl-burn-ledger-{}-{}",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("ledger.json");
+        let key = [9u8; 32];
+
+        // A version from the future is refused rather than partially trusted.
+        let mut future = RevocationLedger::default();
+        future.version = 7;
+        write_encrypted_json_with_key(&path, &future, &key).unwrap();
+        assert!(load_revocation_ledger(&path, &key).is_err());
+
+        // A slot key that is not a 32-byte commitment is refused: it cannot have
+        // been written by this code, so the file is not ours to trust.
+        let mut bogus = RevocationLedger::default();
+        bogus.version = 1;
+        bogus
+            .scopes
+            .insert("dm:plaintext-scope-name".to_owned(), ScopeRevocationState::default());
+        write_encrypted_json_with_key(&path, &bogus, &key).unwrap();
+        assert!(load_revocation_ledger(&path, &key).is_err());
+
+        // Same for a journal key.
+        let mut bad_journal = RevocationLedger::default();
+        bad_journal.version = 1;
+        bad_journal.scopes.insert(
+            lower_hex(&[1u8; 32]),
+            ScopeRevocationState {
+                high_water: 3,
+                last_burn_epoch: 1,
+                burn_floor: 3,
+                journal: BTreeMap::from([("not-a-burn-id".to_owned(), JournalEntry::default())]),
+            },
+        );
+        write_encrypted_json_with_key(&path, &bad_journal, &key).unwrap();
+        assert!(load_revocation_ledger(&path, &key).is_err());
+
+        // A plaintext (unencrypted) file is refused, not read.
+        std::fs::write(&path, b"{\"version\":1,\"scopes\":{}}").unwrap();
+        assert!(load_revocation_ledger(&path, &key).is_err());
+
+        // The wrong key is refused, not treated as a fresh ledger.
+        let mut good = RevocationLedger::default();
+        good.version = 1;
+        good.scopes
+            .insert(lower_hex(&[2u8; 32]), ScopeRevocationState::default());
+        write_encrypted_json_with_key(&path, &good, &key).unwrap();
+        assert!(load_revocation_ledger(&path, &[8u8; 32]).is_err());
+        // And the round trip works with the right key.
+        assert_eq!(load_revocation_ledger(&path, &key).unwrap(), good);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_malformed_burn_queue_or_counter_file_is_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "osl-burn-queue-{}-{}",
+            std::process::id(),
+            ipc::main_password::now_unix_secs_pub()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let key = [4u8; 32];
+
+        let outbox_path = dir.join("outbox.json");
+        let mut outbox = ipc::revocation::RevocationOutbox::default();
+        outbox.version = 9;
+        write_encrypted_json_with_key(&outbox_path, &outbox, &key).unwrap();
+        assert!(load_revocation_outbox(&outbox_path, &key).is_err());
+
+        let counters_path = dir.join("counters.json");
+        let mut counters = ipc::revocation::SendCounters::default();
+        counters.version = 9;
+        write_encrypted_json_with_key(&counters_path, &counters, &key).unwrap();
+        assert!(load_revocation_counters(&counters_path, &key).is_err());
+
+        // Absent files are legitimately empty; the strictness is about content.
+        assert_eq!(
+            load_revocation_outbox(&dir.join("missing.json"), &key).unwrap(),
+            ipc::revocation::RevocationOutbox::default()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

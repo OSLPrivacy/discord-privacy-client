@@ -25,6 +25,11 @@ export const scrubDeletionContract = Object.freeze({
   completeEditableReviewRequiredEveryBatch: true,
   finalConfirmationRequiredEveryBatch: true,
   requestedDeletionCountsAsVerified: false,
+  browserUiAutomationAllowed: false,
+  desktopUiAutomationAllowed: false,
+  privateProviderApisAllowed: false,
+  humanBehaviorMimicryAllowed: false,
+  documentedProviderDeleteApiRequired: true,
   stopOn: ["rate_limit", "challenge", "content_mismatch", "verification_failure"] as const,
 });
 

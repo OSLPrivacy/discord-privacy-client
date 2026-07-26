@@ -14,8 +14,17 @@ const MAX_OPAQUE_ID_LEN: usize = 64;
 static TOMBSTONE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "desktop")]
 const PROFILE_NAMESPACE: &str = "service-profiles-v2";
+// The desktop shell no longer reserves a separate titlebar row above the
+// trusted chrome: the drag region and window controls (minimize/maximize/
+// close) are docked directly into the existing TRUSTED_BAR_HEIGHT row
+// (osl-hub-ui/src/main.ts's ".desktop-top-row", inside the 54px workspace
+// header) instead of a standalone 44px strip that read as an empty pale bar.
+// The constant stays (rather than being threaded out of host_rect()) so the
+// geometry contract documents that zero pixels are reserved for it, and so a
+// future reintroduction of a real titlebar row only has to change this one
+// value.
 #[cfg(any(feature = "desktop", test))]
-const DESKTOP_TITLE_HEIGHT: u32 = 44;
+const DESKTOP_TITLE_HEIGHT: u32 = 0;
 #[cfg(any(feature = "desktop", test))]
 const TRUSTED_BAR_HEIGHT: u32 = 54;
 #[cfg(any(feature = "desktop", test))]
@@ -132,21 +141,21 @@ const SERVICES: &[ServiceManifest] = &[
         display_name: "Discord",
         initial_url: "https://discord.com/app",
         allowed_hosts: &["discord.com"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "telegram",
         display_name: "Telegram",
         initial_url: "https://web.telegram.org/a/",
         allowed_hosts: &["web.telegram.org"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "whatsapp",
         display_name: "WhatsApp",
         initial_url: "https://web.whatsapp.com/",
         allowed_hosts: &["web.whatsapp.com"],
-        launch_active: true,
+        launch_active: false,
     },
     ServiceManifest {
         id: "instagram",
@@ -220,18 +229,6 @@ const EMAIL_GMAIL: ServiceManifest = ServiceManifest {
     allowed_hosts: &["mail.google.com", "accounts.google.com"],
     launch_active: true,
 };
-const EMAIL_OUTLOOK: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Outlook",
-    initial_url: "https://outlook.live.com/mail/0/",
-    allowed_hosts: &[
-        "outlook.live.com",
-        "login.live.com",
-        "account.live.com",
-        "login.microsoftonline.com",
-    ],
-    launch_active: true,
-};
 const EMAIL_PROTON: ServiceManifest = ServiceManifest {
     id: "email",
     display_name: "Proton Mail",
@@ -288,6 +285,13 @@ const EMAIL_MAIL_COM: ServiceManifest = ServiceManifest {
     allowed_hosts: &["www.mail.com", "login.mail.com", "navigator-lxa.mail.com"],
     launch_active: true,
 };
+const EMAIL_ICLOUD: ServiceManifest = ServiceManifest {
+    id: "email",
+    display_name: "iCloud Mail",
+    initial_url: "https://www.icloud.com/mail/",
+    allowed_hosts: &["www.icloud.com", "idmsa.apple.com"],
+    launch_active: true,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ServiceHostError {
@@ -337,7 +341,9 @@ pub fn service_manifest_for_provider(
     }
     Ok(match provider.unwrap_or_default() {
         EmailProvider::Gmail => &EMAIL_GMAIL,
-        EmailProvider::Outlook => &EMAIL_OUTLOOK,
+        // Outlook is native-only. Keep its reviewed web manifest as inert
+        // navigation-policy metadata, but never create an embedded profile.
+        EmailProvider::Outlook => return Err(ServiceHostError::ServiceUnavailable),
         EmailProvider::Proton => &EMAIL_PROTON,
         EmailProvider::Tuta => &EMAIL_TUTA,
         EmailProvider::Fastmail => &EMAIL_FASTMAIL,
@@ -346,6 +352,7 @@ pub fn service_manifest_for_provider(
         EmailProvider::Aol => &EMAIL_AOL,
         EmailProvider::Gmx => &EMAIL_GMX,
         EmailProvider::Maildotcom => &EMAIL_MAIL_COM,
+        EmailProvider::Icloud => &EMAIL_ICLOUD,
     })
 }
 
@@ -1643,13 +1650,25 @@ mod tests {
 
     #[test]
     fn native_layout_uses_the_area_below_and_right_of_trusted_chrome() {
+        // The hub route's .app-frame is a single-row grid now (no more
+        // separate 44px titlebar strip above the trusted chrome): the window
+        // controls dock into the existing 54px row instead. DESKTOP_TITLE_HEIGHT
+        // is 0 to match, so this reserves exactly TRUSTED_BAR_HEIGHT pixels,
+        // not their sum. (Bare-shell screens with no other header to dock
+        // into — onboarding, boot recovery, initial loading — still opt back
+        // into a real 44px row via the ".with-titlebar" modifier, but they
+        // never host a borrowed native window, so that row is irrelevant to
+        // this geometry contract.)
         let bundled_styles = include_str!("../../osl-hub-ui/src/styles.css");
-        assert!(bundled_styles.contains("grid-template-rows: 44px minmax(0, 1fr);"));
+        assert!(bundled_styles.contains("grid-template-rows: minmax(0, 1fr);"));
+        assert!(bundled_styles.contains(".app-frame.with-titlebar"));
+        assert!(bundled_styles.contains(".desktop-top-row"));
         assert!(bundled_styles.contains("height: 54px;"));
-        assert_eq!(DESKTOP_TITLE_HEIGHT, 44);
+        assert_eq!(DESKTOP_TITLE_HEIGHT, 0);
         assert_eq!(TRUSTED_BAR_HEIGHT, 54);
         let rect = host_rect(1180, 780);
         let top_reserved = DESKTOP_TITLE_HEIGHT + TRUSTED_BAR_HEIGHT;
+        assert_eq!(top_reserved, TRUSTED_BAR_HEIGHT);
         assert_eq!(rect.x, 0);
         assert_eq!(rect.y, top_reserved);
         assert_eq!(rect.width, 1180);
@@ -1766,10 +1785,22 @@ mod tests {
     }
 
     #[test]
+    fn native_messengers_never_launch_through_the_embedded_browser_host() {
+        for service_id in ["discord", "telegram", "signal", "whatsapp"] {
+            let manifest = service_manifest(service_id).unwrap();
+            assert!(!manifest.launch_active, "{service_id}");
+            assert_eq!(
+                validated_initial_url(manifest),
+                Err(ServiceHostError::ServiceUnavailable),
+                "{service_id}"
+            );
+        }
+    }
+
+    #[test]
     fn email_providers_use_only_fixed_exact_https_origins() {
         let cases = [
             (EmailProvider::Gmail, "mail.google.com"),
-            (EmailProvider::Outlook, "outlook.live.com"),
             (EmailProvider::Proton, "mail.proton.me"),
             (EmailProvider::Tuta, "app.tuta.com"),
             (EmailProvider::Fastmail, "app.fastmail.com"),
@@ -1778,6 +1809,7 @@ mod tests {
             (EmailProvider::Aol, "mail.aol.com"),
             (EmailProvider::Gmx, "www.gmx.com"),
             (EmailProvider::Maildotcom, "www.mail.com"),
+            (EmailProvider::Icloud, "www.icloud.com"),
         ];
         for (provider, expected_host) in cases {
             let manifest = service_manifest_for_provider("email", Some(provider)).unwrap();
@@ -1790,6 +1822,14 @@ mod tests {
                 &Url::parse(&format!("https://{expected_host}.evil.example/")).unwrap()
             ));
         }
+    }
+
+    #[test]
+    fn outlook_is_native_only_and_has_no_embedded_profile() {
+        assert_eq!(
+            service_manifest_for_provider("email", Some(EmailProvider::Outlook)),
+            Err(ServiceHostError::ServiceUnavailable)
+        );
     }
 
     #[test]

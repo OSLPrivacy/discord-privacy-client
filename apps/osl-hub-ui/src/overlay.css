@@ -1,13 +1,71 @@
 :root {
-  font-family: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  color: #e8e8e8;
+  --osl-overlay-text: #dbdee1;
+  --osl-overlay-muted: #b5bac1;
+  --osl-overlay-brand: #5865f2;
+  --osl-composer-min-height: 76px;
+  --osl-composer-line-height: 20px;
+  /* The failed-send banner's band. Deliberately small and fixed: the protected
+     window is sized natively to Discord's measured composer rectangle (live:
+     736x58 logical px) and cannot be grown from here, so the band and the draft
+     have to share those 58 rows. 22px leaves the composer 36px, which still
+     clears one full --osl-composer-line-height line of the operator's own text
+     plus its padding. */
+  --osl-send-failure-band: 22px;
+  --osl-discord-zoom: 1;
+  --osl-discord-dpi-scale: 1;
+
+  /* The composer's fill is a MEASUREMENT or it is nothing.
+     `--osl-native-edit-background` is the colour the backend sampled out of the
+     operator's OWN Discord composer, so when it is present this is exactly
+     right. When it is absent the answer is `transparent`, and that is not a
+     degraded mode: the protected window sits directly over Discord's real
+     message box, so painting nothing shows Discord's own composer through, in
+     Discord's own colour, at zero risk of disagreeing with it.
+     This replaced `--osl-composer-bg: #383a40`, which was Discord's DEFAULT
+     dark-theme composer colour written down as a constant. It reached this
+     surface two ways -- the literal here, and `discordVisualCssVariables()`
+     re-deriving the same constant from a four-entry theme-pack table -- and on
+     an operator running a near-black Discord theme it painted a visibly lighter
+     slab inside the message box: a highlight rectangle behind the placeholder,
+     which is precisely the seam this overlay exists to avoid. A guessed colour
+     is strictly worse than no colour here, so no theme constant may ever be a
+     fallback on this chain again; see the matching skip list in overlay.ts. */
+  --osl-composer-fill: var(--osl-native-edit-background, transparent);
+
+  /* One chain, three users: this element, the composer draft and the carrier
+     rows. Every one of them paints text directly against Discord's own text, so
+     they must not be able to drift apart -- and every one of them starts from a
+     family name measured off Discord by accessibility, which is a *single*
+     family with no fallback of its own.
+
+     Discord's UI font first, for fidelity: OSL is trying to be invisible, not
+     branded. It is a webfont Discord ships inside its own renderer, so OSL's
+     separate WebView2 usually cannot resolve it by name -- which is exactly why
+     nothing may ever depend on it resolving. Inter is next because it is
+     bundled (overlay.ts imports @fontsource-variable/inter) and is metrically
+     close to gg sans, so it is the fallback that moves the fewest glyphs. The
+     generic keywords at the end are the floor: a sans, always, never a serif. */
+  --osl-discord-font-stack:
+    "gg sans", "Inter Variable", Inter, "Noto Sans", "Segoe UI Variable Text",
+    "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+
+  font-family: var(--osl-discord-font-stack);
+  color: var(--osl-overlay-text);
   background: transparent;
+  /* Kept deliberately. The measured native weight can land on a fallback that
+     has no matching cut, and synthesis would paper over that -- but a synthetic
+     bold is a smeared version of the wrong face, sitting pixels away from
+     Discord's real text on the same screen, which reads as more obviously
+     "not Discord" than a weight that is one step light. Inter Variable is the
+     first fallback that can actually resolve here and it carries a real 100-900
+     weight axis, so on the path that matters there is nothing to synthesize. */
   font-synthesis: none;
 }
 
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
 body { padding: 0; }
+[hidden] { display: none !important; }
 
 .sr-only {
   position: absolute;
@@ -21,68 +79,690 @@ body { padding: 0; }
   border: 0;
 }
 
+/* The protected surface stays visually subordinate to Discord. The only pixels
+   OSL owns are its composer and the individual message rows it is painting
+   decrypted text over; everything else is Discord, seen through this window.
+   The only persistent OSL cue is the composer's one-pixel cyan boundary, which
+   marks that this box is OSL's protected composer and not Discord's own -- the
+   note above `.composer-box::after` records why it must not be removed for the
+   sake of a seamless surface.
+
+   This background MUST stay transparent, and it is load-bearing, not cosmetic.
+   With the eye off the transcript layer is not in the DOM at all, and even with
+   it on OSL paints only the rows the backend has placed -- so any opaque colour
+   here would cover the operator's real conversation for no reason. A near-white
+   band measured across this surface is therefore never fixed here: it means the
+   protected window itself has lost per-pixel alpha and is compositing alpha-0
+   pixels against WebView2's own opaque backing. That is repaired natively, by
+   `enforce_transparent_protected_composer` in native_discord_overlay.rs.
+
+   The same defect, on a window sized to exactly the native composer rectangle,
+   is not a band: `.composer-box` is the only thing painting and its 8px
+   `border-radius` leaves four small alpha-0 arcs at its corners. Reports of
+   "little white lines" at the composer corners are that band, cropped to a
+   736x58 window. Measured live, the four arcs are the whole artefact: 20 pixels
+   that are light on every channel inside 6x6 boxes at the four corners, out of
+   68 that match neither the composer's interior nor Discord's background --
+   against the ~72 pixels an 8px radius actually leaves uncovered at four
+   corners. No rule in this sheet paints them; they are alpha-0 pixels showing
+   whatever is behind this page.
+   That backing is not this sheet's to correct, and the answer is still not an
+   opaque colour on this shell -- it is to stop leaving alpha-0 pixels inside a
+   window that OSL's composer otherwise covers edge to edge. See
+   `:root[data-native-composer-capture="true"] #write-pane` below, which closes
+   the four arcs with the composer's own measured fill and nothing else. */
 .overlay-shell {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(40px, var(--osl-composer-min-height));
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+}
+
+/* Per-row, never a panel. This layer paints nothing of its own: it is a
+   transparent, click-through coordinate space that individual rows are
+   absolutely positioned into, so every row OSL cannot place -- ordinary chat,
+   undecodable rows, history -- is simply Discord's own row, untouched. The
+   full-height surface this used to be is what blacked out the conversation. */
+.transcript-mount {
+  /* Explicit placement, never auto-placement. The transcript leaves the DOM
+     when the eye is off, and a hidden first child would otherwise let the
+     composer fall into the transcript row and paint at the top of this window
+     instead of over Discord's real composer at the bottom. */
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+
+.transcript-mount > .osl-discord-transcript,
+.osl-discord-transcript__viewport,
+.osl-discord-transcript__list {
+  background: transparent;
+  pointer-events: none;
+}
+
+.transcript-mount > .osl-discord-transcript {
+  min-height: 0;
+  max-inline-size: 100%;
+  margin: 0;
+  border: 0;
+}
+
+.osl-discord-transcript__viewport {
+  overflow: hidden;
+}
+
+.osl-discord-transcript__list {
+  position: relative;
+  display: block;
+  min-height: 100%;
+}
+
+.osl-discord-transcript__row {
+  pointer-events: none;
+}
+
+/* The one thing OSL paints over the message list: exactly the rectangle the
+   backend proved this Discord row occupies, in this row's own typography. */
+.osl-discord-transcript__row--carrier-bound {
+  position: absolute;
+  left: var(--osl-carrier-left);
+  top: var(--osl-carrier-top);
+  width: var(--osl-carrier-width);
+  height: var(--osl-carrier-height);
+  min-width: 0;
+  padding: 0;
+  display: block;
+  overflow: hidden;
+  color: var(--osl-carrier-foreground);
+  background: var(--osl-carrier-background);
+  /* `--osl-carrier-font-family` is one measured family name (see
+     discord-carrier-row-binding.ts) and is in practice `"gg sans"`, which this
+     process cannot resolve. The bare `sans-serif` this used to fall back to did
+     keep it off a serif, but it skipped straight past the bundled Inter to
+     whatever the generic sans happens to be -- on a row painted directly over
+     Discord's own message list, where a visibly different sans is the whole
+     defect. Same chain as everything else, so it lands on Inter instead.
+
+     The other four declarations take the measured value with NO fallback and
+     no clamp on purpose: this rule only applies while the row carries the
+     `--carrier-bound` class, which discord-carrier-row-binding.ts adds in the
+     same statement that writes all five variables and removes when it clears
+     them, so there is no state in which this rule is live and a measurement is
+     missing. Any size, weight, line height or letter spacing the backend
+     reports is rendered as reported -- including sizes below the 11px floor
+     that typography.test.ts holds OSL's own chrome to, which is exactly why
+     that floor is scoped away from this rule. */
+  font-family: var(--osl-carrier-font-family, "gg sans"), var(--osl-discord-font-stack);
+  font-size: var(--osl-carrier-font-size);
+  font-weight: var(--osl-carrier-font-weight);
+  line-height: var(--osl-carrier-line-height);
+  letter-spacing: var(--osl-carrier-letter-spacing);
+  pointer-events: auto;
+  content-visibility: visible;
+  contain: strict;
+}
+
+.osl-discord-transcript__row--carrier-bound > .osl-discord-transcript__avatar,
+.osl-discord-transcript__row--carrier-bound .osl-discord-transcript__meta,
+.osl-discord-transcript__row--carrier-bound .osl-discord-transcript__receipt {
+  display: none;
+}
+
+.osl-discord-transcript__row--carrier-bound .osl-discord-transcript__content,
+.osl-discord-transcript__row--carrier-bound .osl-discord-transcript__plaintext {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+.osl-discord-transcript__row--carrier-bound .osl-discord-transcript__plaintext {
+  overflow: hidden;
+  color: var(--osl-carrier-foreground);
+  background: var(--osl-carrier-background);
+  font: inherit;
+  line-height: var(--osl-carrier-line-height);
+  white-space: pre-wrap;
+}
+
+#write-pane {
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+}
+
+/* The lock may NEVER take the composer off screen.
+   `:root[data-osl-lock-engaged="false"] #write-pane { display: none; }` used to
+   live at this spot, and it stays banned: the lock controls ENCRYPTION and
+   nothing else, so it must not decide whether the operator has a composer at
+   all. What is DISPLAYED over Discord's message rows is the eye's business, and
+   the transcript layer above is what answers that. Its native counterpart -- the
+   guard bail that hid the window pair for the same lock state -- was removed with
+   it, in `native_discord_overlay.rs`. Do not reintroduce either half.
+
+   The rule below is NOT that rule coming back, and the difference is the whole
+   reason it is safe. The banned rule's defect was never the hiding; it was that
+   OSL's window still covered Discord's real message box while the composer inside
+   it went invisible, so the band became an invisible surface that swallowed every
+   click aimed at Discord's box. The operator could neither type into OSL nor into
+   Discord.
+
+   `data-osl-composer-band-surrendered` is not a re-derivation of the lock. It is
+   the native writer reporting that the window has been resized to Discord's
+   transcript rows and has vacated the composer band entirely -- proven where it is
+   written, with the surrendered rectangle's `y + height` equal to the measured
+   composer's `top` exactly. There is no OSL surface over the message box left to
+   swallow anything, so hiding the composer here uncovers Discord's box instead of
+   trapping it.
+
+   That is also why this is keyed on the native fact and not on
+   `data-osl-lock-engaged`, which is the same state on the eye-on/lock-off path and
+   would look equivalent. It is not: the attribute below can only be `"true"`
+   because the window already moved, so a renderer that ships ahead of its native
+   half simply keeps drawing its composer. Keying it on the lock is what would let
+   that build recreate the invisible click-eater exactly. */
+:root[data-osl-composer-band-surrendered="true"] #write-pane {
+  display: none;
+}
+
+/* ...and the row it left behind is given to the transcript, because this window
+   is now exactly the transcript band and every pixel of it is a Discord row OSL
+   is painting over.
+   Hiding the composer takes it out of the grid but not its track: on the base
+   path that track is `minmax(40px, var(--osl-composer-min-height))`, which does
+   not collapse when its only item is gone, so `.transcript-mount` -- grid row 1,
+   `overflow: hidden` -- would be 40-odd pixels shorter than the band and clip the
+   bottom rows it is placed against. Painted-row rectangles are absolute positions
+   inside that mount, so a short mount does not rescale them; it cuts them off.
+   Spanning instead of re-declaring `grid-template-rows`: every path here defines
+   exactly two tracks (this sheet's default, the captured-composer override and
+   the QA override), so `1 / -1` is the whole window on all three, and it beats
+   `.transcript-mount { grid-row: 1; }` on specificity rather than on source order
+   -- which the track redefinition would lose, sitting above both overrides. */
+:root[data-osl-composer-band-surrendered="true"] .transcript-mount {
+  grid-row: 1 / -1;
+}
+
+.composer-box {
   position: relative;
   width: 100%;
   height: 100%;
-  padding: 6px 10px;
-  border: 1px solid rgba(255, 255, 255, .12);
-  border-radius: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 9px;
-  background: rgba(24, 24, 26, .985);
-  box-shadow: none;
-}
-
-.trust-mark {
-  display: grid;
-  place-items: center;
-  min-width: 28px;
-  height: 22px;
-  border: 1px solid rgba(6, 182, 212, .74);
-  color: #67e8f9;
-  background: rgba(6, 182, 212, .08);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .08em;
-  line-height: 1;
-  user-select: none;
-}
-
-.draft-field { min-width: 0; display: grid; align-content: center; }
-.draft-field textarea {
-  width: 100%;
-  min-height: 25px;
-  max-height: 25px;
-  padding: 2px 0;
+  min-height: 0;
   border: 0;
-  resize: none;
+  border-radius: 8px;
+  display: flex;
+  align-items: stretch;
   overflow: hidden;
-  color: #e8e8e8;
+  background: var(--osl-composer-fill);
+}
+
+/* The one-pixel cyan boundary: OSL's "protection is on" indicator, and the only
+   persistent OSL cue on this surface.
+
+   It is not decoration. This ring is drawn only by OSL's own protected window,
+   which is the window that encrypts what is typed into it — so seeing the ring
+   is exactly how the operator tells OSL's composer apart from Discord's real
+   message box sitting directly underneath it, pixels away and looking the same.
+   Typing into the wrong one sends plaintext, and the ring is the only thing on
+   screen that says which one has the caret. Do not remove it to make the surface
+   seamless: it was removed once for that reason and the operator immediately
+   asked where their "OSL is on" indicator had gone.
+
+   It used to carry a second meaning as well — "the lock is engaged" — because
+   `#write-pane` was `display: none` whenever `data-osl-lock-engaged="false"`.
+   That rule is gone (see the note where it used to be, above `.composer-box`):
+   the lock is encryption only and may not decide whether the composer exists.
+   The ring's remaining meaning is the one above, and it is the load-bearing one.
+
+   Known cosmetic caveat: the ring traces OSL's own composer *window*, which is
+   sized to the measured native composer rect but does not match it exactly
+   (measured live: window 620,904,1356,962 against Discord's composer at roughly
+   620,900,1355,951). The few pixels of disagreement are why it can read as a
+   box floating around the message field rather than a border on it. That is a
+   geometry problem in the window sizing, not a reason to delete the cue. */
+.composer-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid rgba(73, 214, 255, .55);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.composer-box:focus-within::after {
+  border-color: rgba(73, 214, 255, .72);
+}
+
+/* A failed send has to be SEEN, not just announced.
+
+   #overlay-send-warning is announced (role="alert") and survives the churn on
+   #overlay-status, but it sits in `.composer-toolbar` -- and this window is
+   736x58 logical pixels, sized natively to Discord's measured composer rect.
+   At that height the toolbar is flex-shrunk to nothing, and under
+   `data-native-composer-capture` the rule further down sets it to
+   `display: none` outright. So a send that never reached Discord looked exactly like one that
+   did, which is the worst failure this surface can have: the operator believed
+   an encrypted message went out when nothing was sent at all.
+
+   This band is the pixels for that notice, and it lives INSIDE `.composer-box`
+   for the same reason the shell above must stay transparent: that rectangle is
+   the only thing OSL paints, so nothing here needs window height that does not
+   exist and nothing here can put an opaque colour over the operator's real
+   Discord. `.composer-box` already clips to its own 8px radius, so the band
+   inherits the composer's corners rather than adding alpha-0 arcs of its own.
+
+   z-index 2 is deliberate and is the whole reason the numbers on this surface
+   are spread out: the backdrop is 0, the draft is 1, and `.composer-box::after`
+   -- the cyan lock ring -- is 3. The band therefore covers the draft and is
+   itself crossed by the ring, so "protection is on" stays legible on top of a
+   failure notice instead of being hidden by it. */
+.send-failure {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--osl-send-failure-band);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 3px 0 6px;
+  color: #fff;
+  background: #8c1d2b;
+  /* Sized down from 11px: the band sits directly against Discord's own 14px
+     message text, and at 11px it read as louder than the conversation it is
+     annotating. 10px still clears the 22px band with room for the badge. */
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: auto;
+}
+
+.send-failure__badge {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: #7a1220;
+  background: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+/* One line, ellipsised. The band never grows into a second line: the height it
+   takes is height the operator's own draft loses, and the notice is composed of
+   fixed literals plus the backend's fixed carrier-status enum, so the leading
+   words already carry the meaning even when the tail is clipped. */
+.send-failure__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.send-failure__dismiss {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: inherit;
   background: transparent;
   font: inherit;
   font-size: 14px;
-  line-height: 20px;
-}
-.draft-field textarea::placeholder { color: #888; }
-.draft-field textarea:focus { outline: none; }
-.overlay-shell:focus-within {
-  border-color: rgba(6, 182, 212, .8);
-  outline: 1px solid rgba(6, 182, 212, .35);
-  outline-offset: -2px;
+  line-height: 1;
+  cursor: pointer;
 }
 
-.draft-status {
-  grid-column: 3;
+.send-failure__dismiss:hover { background: rgba(255, 255, 255, .18); }
+.send-failure__dismiss:focus-visible { outline: 2px solid #a5f3fc; outline-offset: 1px; }
+
+/* The band is an overlay, so the draft has to step out from under it or the
+   operator would lose sight of the very text the failure told them was kept.
+   Flow layout moves with padding. */
+:root[data-osl-send-failure="true"] .composer-box {
+  padding-top: var(--osl-send-failure-band);
+}
+
+/* The captured-composer layout does not: `.draft-field` is absolutely
+   positioned onto the measured native edit rectangle, and an absolutely
+   positioned child is laid out against its ancestor's PADDING box, so the rule
+   above cannot move it. Re-anchor it explicitly instead -- `left`/`width` are
+   untouched, so the draft keeps its measured horizontal alignment with
+   Discord's own text and only gives up the band's rows. `max()` keeps the
+   measured top when it is already below the band. */
+:root[data-osl-send-failure="true"][data-native-composer-capture="true"] .draft-field {
+  top: max(var(--osl-native-edit-top, 0px), var(--osl-send-failure-band));
+  bottom: 0;
+  height: auto;
+}
+
+:root[data-discord-visual-recipe="verified"] .composer-box {
+  max-width: min(100%, var(--osl-composer-width));
+  margin-inline: auto;
+}
+
+.trust-mark {
+  display: none;
+}
+
+.native-composer-backdrop {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--osl-native-composer-image, none);
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+.draft-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   display: block;
-  color: #9aa0a6;
+}
+
+/* Native may opt into an exact, bounded local composer capture. The capture
+   supplies the non-interactive chrome; the trusted OSL textarea occupies only
+   the separately measured edit rectangle and paints an opaque sampled color
+   so Discord's native placeholder can never show through. */
+:root[data-native-composer-capture="true"] .composer-box {
+  /* The window is already sized to the verified native composer rectangle, so
+     the recipe's nominal composer width must not shrink or re-centre it. */
+  max-width: none;
+  margin-inline: 0;
+  /* Same fill as the uncaptured composer above -- `--osl-composer-fill` already
+     resolves to the sampled colour whenever there is one, so this rule no
+     longer needs (or is allowed) a fallback of its own. */
+  background: var(--osl-composer-fill);
+}
+
+/* The composer row is the exact measured native rectangle, not a nominal
+   minimum. The capture is measured in physical pixels while WebView2 lays out
+   CSS pixels, so its physical aspect ratio reproduces the measured height once
+   Windows DPI scaling cancels out against the window's own width. */
+:root[data-native-composer-capture="true"] .overlay-shell {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+:root[data-native-composer-capture="true"] #write-pane {
+  height: auto;
+  aspect-ratio: var(--osl-native-composer-aspect-ratio, auto);
+  /* The four corner arcs, closed at the source. `.composer-box` covers this row
+     exactly (width and height 100%, no padding here, `max-width: none` and
+     `margin-inline: 0` on the captured path), so the ONLY pixels of this window
+     it does not paint are the four arcs its 8px `border-radius` cuts out of its
+     own corners -- roughly 72 alpha-0 pixels in total, which is the measured
+     artefact recorded in the note above `.overlay-shell`. Alpha-0 pixels show
+     whatever is behind this page, and when that backing is light they are the
+     operator's "little white lines".
+     They are covered here rather than masked by another layer: this is the
+     composer's own container taking the composer's own fill, so there is one
+     opaque rectangle on this surface instead of two, and it is the same
+     `--osl-composer-fill` token every other rule on this sheet resolves -- the
+     colour sampled out of the operator's real Discord input, never a constant.
+     When there is no capture that token is `transparent` and this rule cannot
+     apply at all: overlay.ts writes `--osl-native-edit-background` and this
+     attribute in the same statement, so a measured fill and this selector are
+     the same state. That is also why this is scoped instead of living on the
+     bare `#write-pane` rule, which stays transparent: under
+     `[data-discord-visual-recipe="verified"]` the composer is narrowed inside
+     this row, and filling the row there would repaint the highlighted band
+     behind the composer that was removed on the operator's instruction.
+     The radius itself stays 8px and the cyan ring still inherits it, so the
+     composer keeps Discord's rounded corners and the "OSL is on" cue is
+     untouched -- what changes is only that the pixels outside the arc are the
+     composer's measured colour instead of a hole. */
+  background: var(--osl-composer-fill);
+}
+
+:root[data-native-composer-capture="true"] .native-composer-backdrop {
+  display: block;
+}
+
+:root[data-native-composer-capture="true"] .draft-field {
+  position: absolute;
+  z-index: 1;
+  left: var(--osl-native-edit-left);
+  top: var(--osl-native-edit-top);
+  width: var(--osl-native-edit-width);
+  height: var(--osl-native-edit-height);
+  min-width: 0;
+  min-height: 0;
+}
+
+:root[data-native-composer-capture="true"] .draft-field textarea {
+  --osl-native-edit-layer: var(--osl-composer-fill);
+  /* This is the serif bug. `--osl-native-edit-font-family` is set by
+     overlay.ts from the one family name UIA measured on Discord's own input --
+     in practice `"gg sans"`, a webfont living inside Discord's renderer and not
+     installed on the system -- so this resolved to a single family this process
+     cannot load, with nothing behind it. WebView2 then fell all the way to its
+     default `standard` font, which is a serif: the operator typed into OSL and
+     got Times sitting on top of Discord's sans.
+     The measured family stays first, because when it *is* resolvable it is
+     exactly right; the shared chain behind it is what makes an unresolvable
+     measurement land on Inter instead of on the browser default.
+     The old `inherit` fallback is gone on purpose, and not just because it was
+     alone: a CSS-wide keyword is only legal as the whole value, so the moment
+     anything followed it, `font-family: inherit, "gg sans", ...` would be
+     invalid at computed-value time whenever the variable was unset -- and it
+     can still be unset while this rule applies, because overlay.ts now writes
+     each measured font property independently and a family that came back
+     unusable leaves this one variable absent. A real family name keeps the
+     declaration valid in both states.
+
+     The fallback in each declaration below is reached ONLY when that exact
+     property was not measured; overlay.ts no longer withholds the three it did
+     measure because a fourth was missing. Nothing here clamps, floors or
+     rounds: a fractional measured size is used as measured.
+
+     Honest limits, so nobody reads this rule as a guarantee it cannot make.
+     `font-size`, `font-weight` and `line-height` really can match exactly --
+     they are numbers, and OSL uses the numbers Discord reported.
+     `font-family` cannot, in the usual case: `gg sans` lives inside Discord's
+     renderer, this WebView2 has no way to resolve it by name, and the chain
+     lands on Inter Variable -- metrically close, not identical. There is also
+     no `--osl-native-edit-letter-spacing`, because the composer capture does
+     not carry a letter-spacing measurement at all (the carrier rows do); the
+     initial `normal` is what Discord's composer uses in the default theme, but
+     that is an assumption, not a measurement. */
+  font-family: var(--osl-native-edit-font-family, "gg sans"), var(--osl-discord-font-stack);
+  font-size: var(--osl-native-edit-font-size, 14px);
+  font-weight: var(--osl-native-edit-font-weight, 400);
+  line-height: var(--osl-native-edit-line-height, var(--osl-composer-line-height));
+}
+
+:root[data-native-composer-capture="true"] .draft-field textarea:placeholder-shown {
+  background: transparent;
+}
+
+:root[data-native-composer-capture="true"] .composer-toolbar {
+  display: none;
+}
+
+.draft-field textarea {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: var(--osl-native-edit-padding, 6px 8px);
+  border: 0;
+  outline: 0;
+  resize: none;
+  color: var(--osl-overlay-text);
+  background: var(--osl-native-edit-layer, transparent);
+  font: inherit;
+  font-size: 14px;
+  line-height: var(--osl-composer-line-height);
+}
+
+/* Exactly one placeholder on this surface, and it is Discord's.
+   This used to be gated to the captured-composer path, where the sampled image
+   supplies Discord's own localized prompt. It has to be unconditional now that
+   the composer's fill is measured-or-transparent: with no capture there is no
+   opaque slab hiding Discord's real message box any more, so Discord's live
+   placeholder shows through -- in Discord's exact face, colour and position --
+   and OSL painting its own copy a few pixels off produces a ghosted double
+   line, which is a worse seam than the slab was.
+   Nothing accessible is lost: the exact conversation prompt is set as the
+   textarea's `aria-label` in overlay.ts, independently of this, and the
+   attribute itself stays non-empty so `:placeholder-shown` still matches. */
+.draft-field textarea::placeholder { color: transparent; }
+
+.composer-toolbar {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 2px 4px 2px 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+#overlay-status,
+.draft-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--osl-overlay-muted);
   font-size: 11px;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: .5;
+}
+
+#overlay-status { margin-right: auto; }
+.draft-status { max-width: 9rem; }
+
+.composer-action,
+.send-action {
+  height: 100%;
+  min-height: 0;
+  max-height: 30px;
+  border-radius: 4px;
+  color: #fff;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer-action {
+  width: 27px;
+  padding: 0;
+  border: 1px solid #5c5e66;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.send-action {
+  min-width: 52px;
+  padding: 0 9px;
+  border: 0;
+  background: var(--osl-overlay-brand);
+}
+
+.composer-action:hover:not(:disabled) { background: #4e5058; }
+.send-action:hover:not(:disabled) { background: #4752c4; }
+.composer-action:focus-visible,
+.send-action:focus-visible { outline: 2px solid #a5f3fc; outline-offset: 1px; }
+.composer-action:disabled,
+.send-action:disabled { cursor: not-allowed; opacity: .48; }
+
+@media (max-width: 680px) {
+  .draft-status { display: none; }
+}
+
+:root[data-discord-qa-shell="true"] .overlay-shell {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+:root[data-discord-qa-shell="true"] #write-pane {
+  grid-row: 2;
+  position: relative;
+  width: 100%;
+  height: var(--osl-composer-min-height);
+}
+
+:root[data-discord-qa-shell="true"][data-native-composer-capture="true"] #write-pane {
+  height: auto;
+  min-height: 0;
+  aspect-ratio: var(--osl-native-composer-aspect-ratio, auto);
+}
+
+:root[data-discord-qa-shell="true"] .composer-box {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  margin: 0;
+  /* One fill for every build. This QA rule used to restate the theme constant
+     and, at equal specificity but later in the file, beat the captured-composer
+     rule -- which is why a second QA-only rule existed below purely to tie the
+     sampled colour back. Both now resolve the same measured token, so there is
+     nothing left to tie and no path on which a guessed colour can win. */
+  background: var(--osl-composer-fill);
+}
+
+:root[data-discord-qa-shell="true"] #overlay-status,
+:root[data-discord-qa-shell="true"] .draft-status,
+:root[data-discord-qa-shell="true"] .send-action {
+  display: none;
+}
+
+@media (max-height: 48px), (max-width: 520px) {
+  #overlay-status,
+  .draft-status {
+    display: none;
+  }
+
+  .composer-toolbar {
+    flex: 0 0 auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: .01ms !important; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+}
+
+:root[data-discord-reduced-motion="true"] *,
+:root[data-discord-reduced-motion="true"] *::before,
+:root[data-discord-reduced-motion="true"] *::after {
+  scroll-behavior: auto !important;
+  transition-duration: .01ms !important;
+  animation-duration: .01ms !important;
+}
+
+@media (forced-colors: active) {
+  .overlay-shell { border-color: Highlight; }
+  /* The composer carries no border of its own in normal rendering, so give it
+     a real one here rather than only a colour: high contrast still needs a
+     visible edge between OSL's composer and the native surface behind it. */
+  .composer-box { border: 1px solid CanvasText; }
+  /* Forced colours replace the band's fill, so give it an edge of its own --
+     otherwise the notice and the draft under it become one undivided block. */
+  .send-failure { border-bottom: 1px solid CanvasText; }
 }

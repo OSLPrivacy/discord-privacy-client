@@ -282,33 +282,91 @@ export function canonicalWrappedKeyGetBytes(args: {
   ]);
 }
 
+/**
+ * Canonical bytes for a control-inbox POST.
+ *
+ * Wire:
+ *   LP(domain) || LP(sender_id) || LP(recipient_id) || LP(scope_id)
+ *   || LP(timestamp_ms) || LP(kind) || sha256(bundle) [ || LP(collapse_key) ]
+ *
+ * `kind` occupies the slot that shipped as `LP("")` and was documented as
+ * "reserved for future fields without breaking sig shape". This is that future
+ * field: an omitted or empty `kind` reproduces the pre-lane bytes exactly, so
+ * every deployed client keeps verifying, while a `revocation` row's lane is a
+ * **signed** component.
+ *
+ * That signing is load-bearing, in both directions:
+ *
+ * - An attacker cannot strip `kind: "revocation"` in transit to demote the row
+ *   into the evictable ordinary lane, which would silently destroy a burn.
+ * - An attacker cannot add it to a stranger's ordinary message to jump the
+ *   non-evictable lane.
+ *
+ * `collapse_key` is an optional trailing length-prefixed component -- the same
+ * shape (and the same reasoning) as the `sender_id` filter on the GET. It is an
+ * opaque client-computed MAC over (scope commitment, burn epoch); this server
+ * never learns either. Appending after the fixed-length digest is unambiguous.
+ */
 export function canonicalControlInboxPostBytes(args: {
   sender_id: string;
   recipient_id: string;
   scope_id: string;
   timestamp_ms: number;
   bundle_sha256: Uint8Array;
+  kind?: string | null;
+  collapse_key?: string | null;
 }): Uint8Array {
-  return concatBytes([
+  const parts = [
     lpString(CONTROL_INBOX_POST_DOMAIN),
     lpString(args.sender_id),
     lpString(args.recipient_id),
     lpString(args.scope_id),
     lpString(String(args.timestamp_ms)),
-    lpString(""), // reserved for future fields without breaking sig shape
+    lpString(args.kind ?? ""),
     args.bundle_sha256,
-  ]);
+  ];
+  if (args.collapse_key !== undefined && args.collapse_key !== null) {
+    parts.push(lpString(args.collapse_key));
+  }
+  return concatBytes(parts);
 }
 
+/**
+ * Canonical bytes for the inbox drain.
+ *
+ * `sender_id` is the optional per-sender filter (see
+ * `handleControlInboxGet`). It is a **signed** component, appended only
+ * when the caller asked for a filtered drain — exactly the
+ * optional-component shape `buildRegMsg` uses, and for the same two
+ * reasons:
+ *
+ * - A caller that did not ask for a filter produces the byte-identical
+ *   pre-filter message, so every deployed client keeps working.
+ * - Adding, removing or altering `?sender=` in transit changes the
+ *   server's reconstruction, so the signature stops verifying. In
+ *   particular an attacker **cannot strip the filter** to silently
+ *   restore the head-of-line starvation the filter exists to fix: that
+ *   request is refused, not quietly served unfiltered.
+ *
+ * Unambiguity: the unfiltered form ends after the timestamp; the
+ * filtered form appends one more length-prefixed component. A zero
+ * length prefix is not producible, because an empty `?sender=` is
+ * rejected by `isProtocolId` before it ever reaches here.
+ */
 export function canonicalControlInboxGetBytes(args: {
   user_id: string;
   timestamp_ms: number;
+  sender_id?: string | null;
 }): Uint8Array {
-  return concatBytes([
+  const parts = [
     lpString(CONTROL_INBOX_GET_DOMAIN),
     lpString(args.user_id),
     lpString(String(args.timestamp_ms)),
-  ]);
+  ];
+  if (args.sender_id !== undefined && args.sender_id !== null) {
+    parts.push(lpString(args.sender_id));
+  }
+  return concatBytes(parts);
 }
 
 export function canonicalControlInboxDeleteBytes(args: {

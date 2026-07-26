@@ -28,6 +28,11 @@ describe("Scrub safety contract", () => {
     expect(source).toContain("Unavailable in this build");
     expect(categories).toContain("completeEditableReviewRequiredEveryBatch: true");
     expect(categories).toContain("finalConfirmationRequiredEveryBatch: true");
+    expect(categories).toContain("browserUiAutomationAllowed: false");
+    expect(categories).toContain("desktopUiAutomationAllowed: false");
+    expect(categories).toContain("privateProviderApisAllowed: false");
+    expect(categories).toContain("humanBehaviorMimicryAllowed: false");
+    expect(categories).toContain("documentedProviderDeleteApiRequired: true");
   });
 
   it("requires confirmation and never simulates platform deletion", () => {

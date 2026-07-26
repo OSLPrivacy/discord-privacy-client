@@ -49,6 +49,12 @@ fn peer_pubkeys_response() -> PubkeysResponse {
         registered_at: "2026-05-16T00:00:00Z".to_string(),
         last_rotated_at: None,
         ik_ratchet_initial_pub: Some(STANDARD.encode([0x44u8; 32])),
+        // Signed capability advertisement (keyserver migration 0026).
+        // A peer with no advertisement, which is the fail-closed
+        // default: `verify_peer_capabilities` reads this as
+        // `PeerCapabilities::Absent`.
+        rn_capabilities: None,
+        registration_sig: None,
     }
 }
 

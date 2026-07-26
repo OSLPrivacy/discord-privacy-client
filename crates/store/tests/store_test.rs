@@ -408,3 +408,84 @@ fn attachment_trim_keeps_newest() {
     assert!(store.get_attachment("msg9", "f.bin").unwrap().is_some());
     assert!(store.get_attachment("msg0", "f.bin").unwrap().is_none());
 }
+
+// ---- timed deletion: sweeper-named batch shred ----
+
+#[test]
+fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    store
+        .put(&sample("expired-1", "ch", "s", "alice", "gone", 1))
+        .unwrap();
+    store
+        .put(&sample("expired-2", "ch", "s", "alice", "also gone", 2))
+        .unwrap();
+    store
+        .put(&sample("still-live", "ch", "s", "alice", "kept", 3))
+        .unwrap();
+    store
+        .put_attachment("expired-1", "pic.png", "image/png", &[7u8; 64], None, None, None)
+        .unwrap();
+
+    let shredded = store
+        .shred_expired_messages(&["expired-1".to_string(), "expired-2".to_string()])
+        .unwrap();
+    assert_eq!(shredded, 2);
+    assert!(store.get("expired-1").unwrap().is_none());
+    assert!(store.get("expired-2").unwrap().is_none());
+    assert!(
+        store.get_attachment("expired-1", "pic.png").unwrap().is_none(),
+        "expiry must destroy the decrypted attachment cache too"
+    );
+    assert!(
+        store.get("still-live").unwrap().is_some(),
+        "a sweep must never touch a row it did not name"
+    );
+
+    let db_path = tmp.path().join("messages.sqlite");
+    let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row(
+            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages \
+               WHERE discord_message_id = 'expired-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap()
+    };
+    assert!(after.0.iter().all(|byte| *byte == 0));
+    assert!(after.1.iter().all(|byte| *byte == 0));
+    assert!(after.2.is_none());
+    assert_eq!(after.3, 1);
+    let wal = db_path.with_extension("sqlite-wal");
+    assert!(
+        !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
+        "a shred must truncate WAL page images"
+    );
+}
+
+#[test]
+fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    store
+        .put(&sample("known", "ch", "s", "alice", "once", 1))
+        .unwrap();
+
+    // A sweeper legitimately names rows this device never cached. That is not
+    // an error, unlike `mark_burned`.
+    assert_eq!(
+        store
+            .shred_expired_messages(&["known".to_string(), "never-cached".to_string()])
+            .unwrap(),
+        1
+    );
+    // A second sweep reports zero rather than re-stamping burned_at and making
+    // an old destruction look fresh.
+    assert_eq!(
+        store.shred_expired_messages(&["known".to_string()]).unwrap(),
+        0
+    );
+    assert_eq!(store.shred_expired_messages(&[]).unwrap(), 0);
+}

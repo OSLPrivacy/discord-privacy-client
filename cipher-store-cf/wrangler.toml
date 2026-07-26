@@ -49,6 +49,12 @@ migrations_dir = "migrations"
 binding = "RATE_LIMIT"
 id = "a65e8cc90cdc4cffa83b01fe12c6e47a"
 
+# Encrypted attachment bodies. Provision this private bucket before deploy.
+# Never enable public bucket access or object logs.
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "osl-cipher-attachments-prod"
+
 # Scheduled cron for the TTL sweep. Runs every 5 minutes -- deletes
 # rows where expires_at < unixepoch(). The cron handler logs ONLY
 # an aggregate "swept N rows" count, never individual IDs.

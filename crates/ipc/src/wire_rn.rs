@@ -1,0 +1,1286 @@
+//! OSL-RN (wire `0x10`) integration: version selection with downgrade
+//! protection, and sealed per-peer ratchet session persistence.
+//!
+//! This module is the *only* sanctioned entry point to
+//! [`osl_ratchet_next`] from application code. It exists because the
+//! raw crate deliberately cannot enforce two things that are policy,
+//! not protocol:
+//!
+//! 1. **Which wire version to use for a given peer** — and, crucially,
+//!    that the answer never moves *downward*.
+//! 2. **Where the ratchet's secret state lives** — sealed at rest,
+//!    written atomically, and degrading to a clean re-handshake rather
+//!    than to a silent plaintext or legacy send when it is lost.
+//!
+//! Nothing here is wired into a send path yet. See `MIGRATION.md` for
+//! the call-site changes `broker.rs` must make; this module is the API
+//! those changes call.
+//!
+//! # Downgrade protection: what is enforced here
+//!
+//! `osl_ratchet_next::negotiate` binds the negotiated version into the
+//! handshake `SK`, so two parties that disagree about what was
+//! negotiated fail closed. That is necessary but not sufficient: it
+//! cannot help if the local side never *chooses* OSL-RN, which is
+//! exactly what an attacker who strips the capability from a peer
+//! record achieves.
+//!
+//! So this module adds a **sticky, monotone version pin**
+//! ([`RnPeerPin`]):
+//!
+//! - The pin only ever moves upward ([`RnPeerPin::raise_to_rn`] is the
+//!   only mutator, and there is no lowering operation *at all* — not a
+//!   private one, not a test-only one).
+//! - Once a peer's pin says OSL-RN, [`select_wire_version`] can return
+//!   [`SelectedVersion::Rn`] or an error. It is structurally incapable
+//!   of returning [`SelectedVersion::LegacyV3`]: that arm is guarded by
+//!   the pin check before the capability check is ever consulted.
+//! - There is **no "try OSL-RN, fall back on error"** anywhere. An
+//!   authentication failure is not an input to version selection.
+//!
+//! ## Why the pin is stored separately from the session state
+//!
+//! This is load-bearing and easy to get wrong. If the pin lived inside
+//! the session blob, then losing or deleting the session — a supported,
+//! expected event that must degrade to a clean re-handshake — would
+//! also drop the pin, and the very next send would be permitted to use
+//! v=3. Deleting one file would be a complete downgrade attack.
+//!
+//! The pin therefore lives in its own file, and:
+//!
+//! - Losing the **session** costs a re-handshake and nothing else.
+//! - Losing the **pin** is fail-closed too: [`load_pin`] treats an
+//!   unreadable or corrupt pin file as [`RnPeerPin::UNKNOWN`] only when
+//!   the file is *absent*. A file that exists but does not parse is an
+//!   error, never a silent reset to "v=3 is fine".
+//!
+//! # What this module never does
+//!
+//! It does not log, hash into a diagnostic, persist in plaintext, or
+//! `Debug`-print plaintext, draft text, or key material. The session
+//! blob is sealed before it reaches the filesystem and the plaintext
+//! export is zeroized on every path, including error paths.
+
+use osl_ratchet_next::{
+    negotiate::Negotiation, LocalPrekeys, Opened, PeerBundle, SecureSession, Session,
+    SessionParams, MLKEM_EK, WIRE_VERSION_RN,
+};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
+
+/// Legacy wire version this module is guarding against falling back to.
+/// Mirrors `crate::wire_v2::WIRE_VERSION_V3` without depending on it, so
+/// the guard cannot be silently broken by an edit over there.
+pub const LEGACY_WIRE_VERSION_V3: u8 = 0x03;
+
+/// Negotiation context for the Discord manual-peer path. A fixed
+/// constant: it is an input to the handshake `SK`, so both sides must
+/// use the identical value, and it must never be derived from anything
+/// that varies per install or per build.
+pub const RN_CONTEXT_DISCORD_MANUAL: &[u8] = b"osl-hub/discord-manual-peer/v1";
+
+/// State-blob format version for the sealed session file.
+const SESSION_BLOB_VERSION: u32 = 1;
+/// State-blob format version for the pin file.
+const PIN_BLOB_VERSION: u32 = 1;
+
+/// Hard ceiling on one peer's sealed session file, enforced on **both**
+/// the write and the read.
+///
+/// `osl_ratchet_next` bounds a live session at roughly 300 KiB
+/// (`DESIGN.md` §8); sealing adds a nonce and tag and the base64 in the
+/// JSON envelope multiplies by 4/3, so a legitimate worst-case file is
+/// ~410 KiB. 1 MiB leaves headroom without letting an unbounded read
+/// happen. Checking on write means a bug that inflated the export is
+/// caught where it is diagnosable; checking on read means a file that
+/// grew by some other route cannot be turned into a 1-GiB allocation
+/// before any authentication happens.
+const MAX_SESSION_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Ceiling on the pin file. A pin is two small integers.
+const MAX_PIN_FILE_BYTES: u64 = 4 * 1024;
+
+/// Ceiling on how many peers we hold sealed ratchet state for.
+///
+/// At [`MAX_SESSION_FILE_BYTES`] each, this bounds the store at 512 MiB
+/// worst case and — far more importantly — bounds the `read_dir` scan
+/// and the number of live conversations one profile can be pushed into
+/// holding by a peer-creation flood.
+///
+/// **Reaching the cap refuses the new record; it never evicts an
+/// existing one.** Silently evicting would destroy a live conversation's
+/// ratchet, and because the pin deliberately survives session loss the
+/// victim conversation would then be unable to send at all until a
+/// re-handshake. Refusing is loud, recoverable, and cannot be used by a
+/// third party to knock out a conversation they are not part of. This
+/// mirrors `docs/design/offline-controls-and-opened-receipts.md:7-8`
+/// ("Neither structure may silently evict live records when full").
+/// [`RnSessionStore::delete_session`] is the only way to free a slot and
+/// it is always an explicit, local decision.
+const MAX_SESSION_RECORDS: usize = 512;
+
+/// Policy ceiling on the skipped-key cache an imported session may
+/// claim.
+///
+/// `import_state` restores the `SkipParams` that were *exported*, so the
+/// file decides the cache size. The file is sealed, so this is not an
+/// attacker-controlled value — but a rolled-back profile, a
+/// hand-modified build, or a future version with looser defaults could
+/// silently raise this process's memory ceiling. Refusing keeps the
+/// worst-case resident cost of a loaded session a property of *this*
+/// build rather than of whatever wrote the file.
+const MAX_SKIPPED_KEYS_POLICY: usize = 4096;
+
+/// Errors from this module.
+///
+/// **Deliberately has no variant meaning "fall back to v=3".** Every
+/// failure here is terminal for the OSL-RN path: the caller either sends
+/// OSL-RN or reports failure to the user. A caller that pattern-matches
+/// this enum looking for permission to downgrade will not find it.
+#[derive(Debug, thiserror::Error)]
+pub enum RnError {
+    /// The peer is pinned to OSL-RN but we were asked to consider, or
+    /// could not produce, anything else. Fail closed.
+    #[error("peer is pinned to OSL-RN; refusing to send a legacy v=3 message")]
+    PinnedToRn,
+
+    /// The peer does not advertise OSL-RN and policy requires it.
+    #[error("policy requires OSL-RN for this peer but the peer does not support it")]
+    RnRequiredButUnsupported,
+
+    /// The active sealer would write the session state in plaintext.
+    /// Refused: the export contains every secret the session holds.
+    #[error("refusing to persist ratchet state: the active sealer does not encrypt at rest")]
+    PlaintextSealerRefused,
+
+    /// A peer's ML-KEM encapsulation key was not the expected length.
+    #[error("peer ML-KEM-768 encapsulation key has wrong length")]
+    BadPeerKemKey,
+
+    /// The protocol layer rejected something.
+    #[error("OSL-RN protocol error: {0}")]
+    Protocol(String),
+
+    /// A sealed state blob was larger than the on-disk bound. Refused
+    /// rather than written, so the bound cannot be exceeded by a bug in
+    /// the layer above.
+    #[error("refusing to persist ratchet state: sealed blob is {got} bytes, over the {max}-byte bound")]
+    StateTooLarge { got: usize, max: u64 },
+
+    /// The store already holds the maximum number of peer records.
+    /// **No existing record is evicted to make room** — see
+    /// `MAX_SESSION_RECORDS`.
+    #[error("refusing a new peer record: the sealed session store already holds {held} peers (cap {max}); no live record is evicted to make room")]
+    StoreFull { held: usize, max: usize },
+
+    /// An imported session claimed a skipped-key cache larger than this
+    /// build's policy ceiling.
+    #[error("session state claims a skipped-key cache of {got} keys, over this build's {max}-key ceiling")]
+    SkippedCacheTooLarge { got: usize, max: usize },
+
+    /// Sealed-storage failure.
+    #[error("OSL-RN state storage error: {0}")]
+    Storage(String),
+}
+
+impl From<osl_ratchet_next::Error> for RnError {
+    fn from(e: osl_ratchet_next::Error) -> Self {
+        // `osl_ratchet_next::Error` is already scrubbed of key material
+        // and collapses every AEAD failure into one indistinguishable
+        // variant, so forwarding its `Display` leaks nothing.
+        RnError::Protocol(e.to_string())
+    }
+}
+
+// ---------------------------------------------------------------
+// Version selection
+// ---------------------------------------------------------------
+
+/// Which wire version a send should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectedVersion {
+    /// The existing PQ-hybrid wrap. No forward secrecy.
+    LegacyV3,
+    /// OSL-RN, wire `0x10`.
+    Rn,
+}
+
+/// Per-peer policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RnPolicy {
+    /// Use OSL-RN when the peer supports it. First contact with a peer
+    /// that does not advertise support falls back to v=3 — which is the
+    /// residual first-contact exposure documented in
+    /// `osl_ratchet_next::negotiate`.
+    #[default]
+    Opportunistic,
+    /// Never send anything but OSL-RN to this peer, even on first
+    /// contact. Closes the first-contact gap at the cost of being unable
+    /// to talk to legacy peers at all.
+    Required,
+}
+
+/// The sticky, monotone per-peer version pin.
+///
+/// There is intentionally no way to lower `min_wire_version`. The type
+/// exposes exactly one mutator and it only raises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RnPeerPin {
+    /// The lowest wire version we are willing to *send* to this peer.
+    min_wire_version: u8,
+}
+
+impl RnPeerPin {
+    /// No observation yet: legacy sends are still permitted.
+    pub const UNKNOWN: RnPeerPin = RnPeerPin {
+        min_wire_version: LEGACY_WIRE_VERSION_V3,
+    };
+
+    /// Raise the pin to OSL-RN. Idempotent, and the only mutator.
+    pub fn raise_to_rn(&mut self) {
+        if self.min_wire_version < WIRE_VERSION_RN {
+            self.min_wire_version = WIRE_VERSION_RN;
+        }
+    }
+
+    /// Is this peer pinned to OSL-RN?
+    pub fn is_pinned_to_rn(&self) -> bool {
+        self.min_wire_version >= WIRE_VERSION_RN
+    }
+
+    pub fn min_wire_version(&self) -> u8 {
+        self.min_wire_version
+    }
+
+    /// Reject a pin value we never write, so a hand-edited or truncated
+    /// file cannot install a nonsense floor.
+    fn validated(self) -> Result<Self, RnError> {
+        if self.min_wire_version == LEGACY_WIRE_VERSION_V3
+            || self.min_wire_version == WIRE_VERSION_RN
+        {
+            Ok(self)
+        } else {
+            Err(RnError::Storage(
+                "pin file carries an unrecognised minimum wire version".into(),
+            ))
+        }
+    }
+}
+
+/// Choose the wire version for a send.
+///
+/// The pin is consulted **first**. When the peer is pinned to OSL-RN
+/// this function cannot return [`SelectedVersion::LegacyV3`] for any
+/// combination of the remaining arguments — that is the downgrade
+/// guarantee, and it is enforced by control flow rather than by a
+/// caller remembering to check.
+pub fn select_wire_version(
+    pin: &RnPeerPin,
+    peer_supports_rn: bool,
+    policy: RnPolicy,
+) -> Result<SelectedVersion, RnError> {
+    if pin.is_pinned_to_rn() {
+        // Pinned. The only permitted outcomes are OSL-RN or an error.
+        return if peer_supports_rn {
+            Ok(SelectedVersion::Rn)
+        } else {
+            // A peer that previously spoke OSL-RN and now claims not to
+            // is either rolled back or being impersonated. Either way,
+            // refusing is correct.
+            Err(RnError::PinnedToRn)
+        };
+    }
+
+    match (policy, peer_supports_rn) {
+        (_, true) => Ok(SelectedVersion::Rn),
+        (RnPolicy::Required, false) => Err(RnError::RnRequiredButUnsupported),
+        (RnPolicy::Opportunistic, false) => Ok(SelectedVersion::LegacyV3),
+    }
+}
+
+// ---------------------------------------------------------------
+// Negotiation digest construction
+// ---------------------------------------------------------------
+
+/// Build the negotiation binding digest for a session we are
+/// *initiating*, from the peer record we hold.
+pub fn initiator_binding(
+    peer_identity_x25519: &[u8; 32],
+    peer_mlkem768_ek: &[u8],
+    own_identity_x25519: &[u8; 32],
+    context: &[u8],
+) -> Result<[u8; 32], RnError> {
+    if peer_mlkem768_ek.len() != MLKEM_EK {
+        return Err(RnError::BadPeerKemKey);
+    }
+    Negotiation::for_rn(
+        peer_identity_x25519,
+        peer_mlkem768_ek,
+        own_identity_x25519,
+        context,
+    )
+    .digest()
+    .map_err(RnError::from)
+}
+
+/// Build the negotiation binding digest for a session we are
+/// *accepting*, from our own published keys plus the initiator identity
+/// carried in the bootstrap preamble.
+///
+/// The initiator identity is **not authenticated** at this point; a
+/// wrong value simply produces a digest that does not match, i.e. a
+/// clean `AuthFailed`. It must not be treated as proof of authorship
+/// until the accept succeeds.
+pub fn responder_binding(
+    own_identity_x25519: &[u8; 32],
+    own_mlkem768_ek: &[u8],
+    initiator_identity_x25519: &[u8; 32],
+    context: &[u8],
+) -> Result<[u8; 32], RnError> {
+    if own_mlkem768_ek.len() != MLKEM_EK {
+        return Err(RnError::BadPeerKemKey);
+    }
+    Negotiation::for_rn(
+        own_identity_x25519,
+        own_mlkem768_ek,
+        initiator_identity_x25519,
+        context,
+    )
+    .digest()
+    .map_err(RnError::from)
+}
+
+// ---------------------------------------------------------------
+// Sealed per-peer state
+// ---------------------------------------------------------------
+
+/// Sealed, per-peer storage for ratchet session state and version pins.
+///
+/// One file per peer per kind. Per-peer granularity keeps a torn write
+/// from taking out more than one conversation and avoids rewriting every
+/// session on every message.
+#[derive(Debug, Clone)]
+pub struct RnSessionStore {
+    dir: PathBuf,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SealedBlob {
+    version: u32,
+    method: String,
+    sealed_b64: String,
+}
+
+impl RnSessionStore {
+    /// `dir` should be a subdirectory of the active account directory.
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        RnSessionStore { dir: dir.into() }
+    }
+
+    /// Storage key for a peer: a domain-separated hash of the peer's
+    /// public identity key, truncated to 16 bytes and hex-encoded.
+    ///
+    /// The input is public (it is a public key), so this leaks nothing;
+    /// hashing it just keeps raw key bytes out of filenames and gives a
+    /// fixed-length name.
+    fn peer_key(peer_identity_x25519: &[u8; 32]) -> String {
+        let mut h = Sha256::new();
+        h.update(b"OSL-RN/v1/session-file/");
+        h.update(peer_identity_x25519);
+        let out = h.finalize();
+        out.iter().take(16).map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn session_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir
+            .join(format!("{}.session", Self::peer_key(peer_identity_x25519)))
+    }
+
+    fn pin_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir
+            .join(format!("{}.pin", Self::peer_key(peer_identity_x25519)))
+    }
+
+    // ---- session state ----
+
+    /// Persist a session, sealed.
+    ///
+    /// Refuses outright if the active sealer writes plaintext: the
+    /// export contains the root key, every chain key, every header key,
+    /// cached message keys and the ML-KEM decapsulation key.
+    ///
+    /// **Call this before the message leaves the machine, not after.**
+    /// Persisting after a successful send means a crash in between
+    /// leaves the peer's ratchet ahead of ours, which is unrecoverable
+    /// without a re-handshake. Persisting first costs at most one burnt
+    /// counter if the send then fails, which the ratchet tolerates as an
+    /// ordinary skipped message.
+    pub fn save_session(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        session: &Session,
+        sealer: &dyn keystore::sealer::Sealer,
+    ) -> Result<(), RnError> {
+        if sealer.requires_insecure_banner() {
+            return Err(RnError::PlaintextSealerRefused);
+        }
+        let mut plain = SecureSession::export(session).map_err(RnError::from)?;
+        let sealed = sealer.seal(&plain);
+        plain.zeroize();
+        let sealed = sealed.map_err(|e| RnError::Storage(e.to_string()))?;
+
+        let blob = SealedBlob {
+            version: SESSION_BLOB_VERSION,
+            method: sealer.method_label().to_string(),
+            sealed_b64: b64(&sealed),
+        };
+        let json = serde_json::to_vec(&blob)
+            .map_err(|e| RnError::Storage(format!("serialize session blob: {e}")))?;
+        if json.len() as u64 > MAX_SESSION_FILE_BYTES {
+            return Err(RnError::StateTooLarge {
+                got: json.len(),
+                max: MAX_SESSION_FILE_BYTES,
+            });
+        }
+
+        // Record cap. Only a *new* peer can be refused; overwriting an
+        // existing record is always allowed, so a conversation already
+        // under way can never be starved by the cap.
+        let path = self.session_path(peer_identity_x25519);
+        if !path.exists() {
+            let held = self.session_record_count()?;
+            if held >= MAX_SESSION_RECORDS {
+                return Err(RnError::StoreFull {
+                    held,
+                    max: MAX_SESSION_RECORDS,
+                });
+            }
+        }
+        atomic_write(&path, &json)
+    }
+
+    /// How many peer session records the store currently holds.
+    ///
+    /// Counts `*.session` only, so the `*.tmp` file `atomic_write` uses
+    /// mid-write is never counted.
+    fn session_record_count(&self) -> Result<usize, RnError> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(RnError::Storage(format!("scan state dir: {e}"))),
+        };
+        let mut held = 0usize;
+        for entry in entries {
+            let entry = entry.map_err(|e| RnError::Storage(format!("scan state dir: {e}")))?;
+            if entry.path().extension().and_then(|x| x.to_str()) == Some("session") {
+                held = held.saturating_add(1);
+            }
+        }
+        Ok(held)
+    }
+
+    /// Load a session.
+    ///
+    /// `Ok(None)` means "no session on file" — the caller must
+    /// re-handshake. That is the **only** degradation path, and it is
+    /// deliberately not the same thing as an error: a missing session is
+    /// routine, a corrupt one is not.
+    pub fn load_session(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        sealer: &dyn keystore::sealer::Sealer,
+    ) -> Result<Option<Session>, RnError> {
+        let path = self.session_path(peer_identity_x25519);
+        let bytes = match read_bounded(&path, MAX_SESSION_FILE_BYTES, "session")? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let blob: SealedBlob = serde_json::from_slice(&bytes)
+            .map_err(|e| RnError::Storage(format!("parse session blob: {e}")))?;
+        if blob.version != SESSION_BLOB_VERSION {
+            return Err(RnError::Storage(format!(
+                "session blob version {} != {SESSION_BLOB_VERSION}",
+                blob.version
+            )));
+        }
+        // Constant-time compare of the method label: it is not secret,
+        // but comparing it in constant time costs nothing and keeps the
+        // "no data-dependent branches on stored blob fields" habit.
+        if blob
+            .method
+            .as_bytes()
+            .ct_eq(sealer.method_label().as_bytes())
+            .unwrap_u8()
+            == 0
+        {
+            return Err(RnError::Storage(
+                "session blob was sealed by a different sealer".into(),
+            ));
+        }
+        let sealed =
+            unb64(&blob.sealed_b64).map_err(|e| RnError::Storage(format!("blob base64: {e}")))?;
+        let mut plain = sealer
+            .unseal(&sealed)
+            .map_err(|e| RnError::Storage(e.to_string()))?;
+        let session = <Session as SecureSession>::import(&plain);
+        plain.zeroize();
+        let session = session.map_err(RnError::from)?;
+
+        // The blob dictates the skipped-key caps it was exported with.
+        // Refuse one that would raise this build's memory ceiling.
+        let claimed = session.skip_params().max_total_keys;
+        if claimed > MAX_SKIPPED_KEYS_POLICY {
+            return Err(RnError::SkippedCacheTooLarge {
+                got: claimed,
+                max: MAX_SKIPPED_KEYS_POLICY,
+            });
+        }
+        Ok(Some(session))
+    }
+
+    /// Delete a peer's session, forcing a clean re-handshake.
+    ///
+    /// Does **not** touch the pin: the peer stays pinned to OSL-RN, so
+    /// the re-handshake cannot be a v=3 send. This asymmetry is the
+    /// whole reason the two live in separate files.
+    pub fn delete_session(&self, peer_identity_x25519: &[u8; 32]) -> Result<(), RnError> {
+        match std::fs::remove_file(self.session_path(peer_identity_x25519)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(RnError::Storage(format!("delete session: {e}"))),
+        }
+    }
+
+    // ---- pins ----
+
+    /// Load a peer's pin. An absent file is [`RnPeerPin::UNKNOWN`]; a
+    /// present but unparseable one is an error, never a silent reset.
+    pub fn load_pin(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
+        let path = self.pin_path(peer_identity_x25519);
+        let bytes = match read_bounded(&path, MAX_PIN_FILE_BYTES, "pin")? {
+            Some(b) => b,
+            None => return Ok(RnPeerPin::UNKNOWN),
+        };
+        #[derive(serde::Deserialize)]
+        struct PinFile {
+            version: u32,
+            pin: RnPeerPin,
+        }
+        let file: PinFile = serde_json::from_slice(&bytes)
+            .map_err(|e| RnError::Storage(format!("parse pin: {e}")))?;
+        if file.version != PIN_BLOB_VERSION {
+            return Err(RnError::Storage(format!(
+                "pin version {} != {PIN_BLOB_VERSION}",
+                file.version
+            )));
+        }
+        file.pin.validated()
+    }
+
+    /// Raise a peer's pin to OSL-RN and persist it.
+    ///
+    /// Read-modify-write through [`RnPeerPin::raise_to_rn`], so a
+    /// concurrent writer can only ever raise it too. There is no
+    /// `write_pin` that takes an arbitrary value.
+    pub fn raise_pin_to_rn(&self, peer_identity_x25519: &[u8; 32]) -> Result<RnPeerPin, RnError> {
+        let mut pin = self.load_pin(peer_identity_x25519)?;
+        if pin.is_pinned_to_rn() {
+            return Ok(pin);
+        }
+        pin.raise_to_rn();
+        let json = serde_json::to_vec(&serde_json::json!({
+            "version": PIN_BLOB_VERSION,
+            "pin": pin,
+        }))
+        .map_err(|e| RnError::Storage(format!("serialize pin: {e}")))?;
+        atomic_write(&self.pin_path(peer_identity_x25519), &json)?;
+        Ok(pin)
+    }
+}
+
+// ---------------------------------------------------------------
+// Session lifecycle helpers
+// ---------------------------------------------------------------
+
+/// Start an OSL-RN session towards a peer and persist it.
+///
+/// Raises the peer's pin on success: from this point on, a v=3 send to
+/// this peer is refused by [`select_wire_version`].
+#[allow(clippy::too_many_arguments)]
+pub fn initiate_and_persist(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    own_identity_secret: &osl_ratchet_next::XSecret,
+    own_identity_public: &[u8; 32],
+    peer: &PeerBundle,
+    peer_mlkem768_ek: &[u8],
+    context: &[u8],
+    params: SessionParams,
+) -> Result<Session, RnError> {
+    let binding = initiator_binding(
+        peer.identity.as_bytes(),
+        peer_mlkem768_ek,
+        own_identity_public,
+        context,
+    )?;
+    let session = osl_ratchet_next::initiate_rn_bound(own_identity_secret, peer, &binding, params)
+        .map_err(RnError::from)?;
+    let peer_id = *peer.identity.as_bytes();
+    store.save_session(&peer_id, &session, sealer)?;
+    store.raise_pin_to_rn(&peer_id)?;
+    Ok(session)
+}
+
+/// Accept an inbound OSL-RN bootstrap message and persist the resulting
+/// session.
+///
+/// Raises the peer's pin on success — a peer whose bootstrap
+/// authenticated demonstrably speaks OSL-RN, which is stronger evidence
+/// than any advertisement.
+pub fn accept_and_persist(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    local: &LocalPrekeys,
+    own_identity_public: &[u8; 32],
+    own_mlkem768_ek: &[u8],
+    wire: &str,
+    context: &[u8],
+    params: SessionParams,
+) -> Result<(Session, Opened), RnError> {
+    let initiator = osl_ratchet_next::peek_bootstrap_initiator_identity(wire)
+        .map_err(RnError::from)?
+        .ok_or_else(|| RnError::Protocol("not a bootstrap message".into()))?;
+    let binding = responder_binding(
+        own_identity_public,
+        own_mlkem768_ek,
+        initiator.as_bytes(),
+        context,
+    )?;
+    let (session, opened) = osl_ratchet_next::accept_rn_bound(local, wire, &binding, params)
+        .map_err(RnError::from)?;
+    let peer_id = *initiator.as_bytes();
+    store.save_session(&peer_id, &session, sealer)?;
+    store.raise_pin_to_rn(&peer_id)?;
+    Ok((session, opened))
+}
+
+// ---------------------------------------------------------------
+// Filesystem helpers
+// ---------------------------------------------------------------
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn unb64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(s)
+}
+
+/// Read a state file with a hard byte ceiling.
+///
+/// `Ok(None)` means the file is absent — the one routine degradation
+/// (session: re-handshake; pin: `UNKNOWN`). Anything else, including a
+/// file over the ceiling, is an error: a state file that cannot be read
+/// correctly must never be indistinguishable from one that is not there,
+/// because for the pin those two answers differ by an entire downgrade.
+///
+/// The size is checked against `metadata()` *before* reading, and the
+/// read itself is `take`-limited so a file that grows between the stat
+/// and the read still cannot allocate past the ceiling.
+fn read_bounded(path: &Path, max: u64, what: &str) -> Result<Option<Vec<u8>>, RnError> {
+    use std::io::Read as _;
+
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(RnError::Storage(format!("open {what}: {e}"))),
+    };
+    let len = file
+        .metadata()
+        .map_err(|e| RnError::Storage(format!("stat {what}: {e}")))?
+        .len();
+    if len > max {
+        return Err(RnError::Storage(format!(
+            "{what} file is {len} bytes, over the {max}-byte bound"
+        )));
+    }
+    let mut buf = Vec::with_capacity(len as usize);
+    file.take(max.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(|e| RnError::Storage(format!("read {what}: {e}")))?;
+    if buf.len() as u64 > max {
+        return Err(RnError::Storage(format!(
+            "{what} file grew past the {max}-byte bound while being read"
+        )));
+    }
+    Ok(Some(buf))
+}
+
+/// Write `bytes` to `path` atomically: temp file in the same directory,
+/// fsync the file, rename over the target, fsync the directory.
+///
+/// A torn write must not be able to produce a *partially valid* session
+/// blob — an importer that read half a state export could resurrect
+/// consumed message keys, which is a nonce-reuse hazard
+/// (`THREAT-MODEL.md` §5). Rename-based replacement makes the file
+/// either entirely old or entirely new.
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RnError> {
+    use std::io::Write as _;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| RnError::Storage("state path has no parent directory".into()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| RnError::Storage(format!("create state dir: {e}")))?;
+
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| RnError::Storage(format!("create temp state file: {e}")))?;
+        f.write_all(bytes)
+            .map_err(|e| RnError::Storage(format!("write temp state file: {e}")))?;
+        f.sync_all()
+            .map_err(|e| RnError::Storage(format!("fsync temp state file: {e}")))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        // Leave no partial file behind on failure.
+        let _ = std::fs::remove_file(&tmp);
+        RnError::Storage(format!("rename state file: {e}"))
+    })?;
+    // Directory fsync so the rename itself is durable. Best-effort:
+    // some filesystems refuse to open a directory for sync, and failing
+    // the whole save over that would be worse than the weaker
+    // durability guarantee.
+    if let Ok(d) = std::fs::File::open(parent) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keystore::sealer::{MemorySealer, NoOpSealer};
+    use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+    use osl_ratchet_next::primitives::x25519_keypair;
+    use tempfile::TempDir;
+
+    const CTX: &[u8] = b"ipc/tests/wire_rn/v1";
+
+    // ---- version selection / downgrade ----
+
+    #[test]
+    fn an_unpinned_peer_without_rn_support_uses_v3() {
+        assert_eq!(
+            select_wire_version(&RnPeerPin::UNKNOWN, false, RnPolicy::Opportunistic)
+                .expect("select"),
+            SelectedVersion::LegacyV3
+        );
+    }
+
+    #[test]
+    fn an_unpinned_peer_with_rn_support_uses_rn() {
+        assert_eq!(
+            select_wire_version(&RnPeerPin::UNKNOWN, true, RnPolicy::Opportunistic)
+                .expect("select"),
+            SelectedVersion::Rn
+        );
+    }
+
+    /// The downgrade attempt: a pinned peer suddenly "does not support"
+    /// OSL-RN. Selection must refuse, not fall back.
+    #[test]
+    fn a_pinned_peer_can_never_be_downgraded_to_v3() {
+        let mut pin = RnPeerPin::UNKNOWN;
+        pin.raise_to_rn();
+        for supports in [true, false] {
+            for policy in [RnPolicy::Opportunistic, RnPolicy::Required] {
+                let got = select_wire_version(&pin, supports, policy);
+                assert_ne!(
+                    got.ok(),
+                    Some(SelectedVersion::LegacyV3),
+                    "a pinned peer must never select v=3"
+                );
+            }
+        }
+        assert!(matches!(
+            select_wire_version(&pin, false, RnPolicy::Opportunistic),
+            Err(RnError::PinnedToRn)
+        ));
+    }
+
+    #[test]
+    fn required_policy_refuses_a_peer_without_rn_support() {
+        assert!(matches!(
+            select_wire_version(&RnPeerPin::UNKNOWN, false, RnPolicy::Required),
+            Err(RnError::RnRequiredButUnsupported)
+        ));
+    }
+
+    #[test]
+    fn the_pin_is_monotone() {
+        let mut pin = RnPeerPin::UNKNOWN;
+        assert!(!pin.is_pinned_to_rn());
+        pin.raise_to_rn();
+        assert!(pin.is_pinned_to_rn());
+        // Raising again is idempotent and cannot lower.
+        pin.raise_to_rn();
+        assert_eq!(pin.min_wire_version(), WIRE_VERSION_RN);
+    }
+
+    // ---- persistence ----
+
+    fn fresh_store() -> (TempDir, RnSessionStore) {
+        let dir = TempDir::new().expect("tempdir");
+        let store = RnSessionStore::new(dir.path().join("rn"));
+        (dir, store)
+    }
+
+    #[test]
+    fn a_plaintext_sealer_is_refused() {
+        let (_d, store) = fresh_store();
+        let mut rng = seeded_rng(11);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+
+        assert!(matches!(
+            store.save_session(&peer, &session, &NoOpSealer),
+            Err(RnError::PlaintextSealerRefused)
+        ));
+        // And nothing was written.
+        assert!(store
+            .load_session(&peer, &MemorySealer::new())
+            .expect("load")
+            .is_none());
+    }
+
+    #[test]
+    fn a_session_survives_a_save_load_round_trip() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(12);
+        let (prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let mut alice =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+
+        let wire = alice.encrypt(0, b"before restart", &mut rng).expect("encrypt");
+        store.save_session(&peer, &alice, &sealer).expect("save");
+
+        let mut restored = store
+            .load_session(&peer, &sealer)
+            .expect("load")
+            .expect("session present");
+        let wire2 = restored.encrypt(0, b"after restart", &mut rng).expect("encrypt");
+
+        // Both messages open on the far side, in order.
+        let (mut bob, first) =
+            Session::accept(&prekeys, &wire, SessionParams::default(), &mut rng).expect("accept");
+        assert_eq!(first.plaintext, b"before restart");
+        assert_eq!(
+            bob.decrypt(&wire2, &mut rng).expect("decrypt").plaintext,
+            b"after restart"
+        );
+    }
+
+    #[test]
+    fn the_sealed_file_contains_no_recognisable_state() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(13);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        let raw = std::fs::read(store.session_path(&peer)).expect("read file");
+        // The plaintext export must not appear anywhere in the file.
+        let plain = SecureSession::export(&session).expect("export");
+        assert!(
+            !contains_subslice(&raw, &plain),
+            "sealed file must not contain the plaintext export"
+        );
+        // Nor may the peer's identity key appear in the clear. (It is
+        // public, but its presence would prove the blob is unsealed.)
+        assert!(!contains_subslice(&raw, &peer));
+    }
+
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        if needle.is_empty() || needle.len() > haystack.len() {
+            return false;
+        }
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Losing session state must degrade to "no session" — never to a
+    /// silent legacy send. The pin must survive.
+    #[test]
+    fn losing_session_state_keeps_the_pin_and_forces_a_rehandshake() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(14);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+
+        store.save_session(&peer, &session, &sealer).expect("save");
+        store.raise_pin_to_rn(&peer).expect("pin");
+
+        // Simulate total session loss (crash, corruption, manual wipe).
+        store.delete_session(&peer).expect("delete");
+
+        assert!(
+            store.load_session(&peer, &sealer).expect("load").is_none(),
+            "a lost session must read as absent, i.e. re-handshake"
+        );
+        let pin = store.load_pin(&peer).expect("load pin");
+        assert!(pin.is_pinned_to_rn(), "the pin must outlive the session");
+        assert!(
+            matches!(
+                select_wire_version(&pin, false, RnPolicy::Opportunistic),
+                Err(RnError::PinnedToRn)
+            ),
+            "state loss must not open a downgrade window"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_session_blob_is_an_error_not_a_silent_reset() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(15);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        std::fs::write(store.session_path(&peer), b"{\"not\": \"a blob\"}").expect("clobber");
+        assert!(store.load_session(&peer, &sealer).is_err());
+    }
+
+    #[test]
+    fn a_corrupt_pin_file_is_an_error_not_a_downgrade() {
+        let (_d, store) = fresh_store();
+        let peer = [9u8; 32];
+        store.raise_pin_to_rn(&peer).expect("pin");
+        std::fs::write(store.pin_path(&peer), b"garbage").expect("clobber");
+        assert!(
+            store.load_pin(&peer).is_err(),
+            "an unparseable pin must not read as UNKNOWN"
+        );
+    }
+
+    /// A torn or half-written file is the other half of the corruption
+    /// story and behaves differently from garbage JSON: it can still be
+    /// *syntactically* plausible for a prefix. Every truncation length
+    /// must be an error, and in particular must never read as "no
+    /// session" (which would be a silent, unlogged re-handshake) and
+    /// never as a successfully imported session.
+    #[test]
+    fn a_truncated_session_blob_is_an_error_at_every_length() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(21);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+        store.raise_pin_to_rn(&peer).expect("pin");
+
+        let path = store.session_path(&peer);
+        let whole = std::fs::read(&path).expect("read");
+        // Sample truncation lengths across the whole file rather than
+        // all of them: the file is ~KiB and the property is uniform.
+        let mut lengths: Vec<usize> = (0..whole.len()).step_by(37).collect();
+        lengths.push(whole.len().saturating_sub(1));
+        for cut in lengths {
+            std::fs::write(&path, &whole[..cut]).expect("truncate");
+            match store.load_session(&peer, &sealer) {
+                Err(_) => {}
+                Ok(None) => panic!("a truncated session must not read as absent"),
+                Ok(Some(_)) => panic!("a truncated session must not import"),
+            }
+            // The pin is untouched by any of this, so there is still no
+            // downgrade window while the session is unreadable.
+            assert!(store.load_pin(&peer).expect("pin").is_pinned_to_rn());
+        }
+
+        // Deleting the unreadable file is the sanctioned recovery, and
+        // it lands on "re-handshake", not on "v=3 is fine".
+        store.delete_session(&peer).expect("delete");
+        assert!(store.load_session(&peer, &sealer).expect("load").is_none());
+        assert!(matches!(
+            select_wire_version(
+                &store.load_pin(&peer).expect("pin"),
+                false,
+                RnPolicy::Opportunistic
+            ),
+            Err(RnError::PinnedToRn)
+        ));
+    }
+
+    /// The read path must refuse an over-size file before allocating for
+    /// it, and must not treat it as absent.
+    #[test]
+    fn an_oversized_session_file_is_refused_without_being_read() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let peer = [42u8; 32];
+        std::fs::create_dir_all(&store.dir).expect("mkdir");
+        let path = store.session_path(&peer);
+        std::fs::write(
+            &path,
+            vec![b'x'; MAX_SESSION_FILE_BYTES as usize + 1],
+        )
+        .expect("write");
+        assert!(matches!(
+            store.load_session(&peer, &sealer),
+            Err(RnError::Storage(_))
+        ));
+    }
+
+    #[test]
+    fn an_oversized_pin_file_is_refused_rather_than_read_as_unknown() {
+        let (_d, store) = fresh_store();
+        let peer = [43u8; 32];
+        std::fs::create_dir_all(&store.dir).expect("mkdir");
+        std::fs::write(
+            store.pin_path(&peer),
+            vec![b' '; MAX_PIN_FILE_BYTES as usize + 1],
+        )
+        .expect("write");
+        assert!(
+            store.load_pin(&peer).is_err(),
+            "an over-size pin file must not read as UNKNOWN"
+        );
+    }
+
+    /// The record cap must refuse the newcomer, never delete somebody
+    /// else's live session to make room.
+    #[test]
+    fn a_full_store_refuses_a_new_peer_and_evicts_nothing() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(22);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let incumbent =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let incumbent_peer = *bundle.identity.as_bytes();
+        store
+            .save_session(&incumbent_peer, &incumbent, &sealer)
+            .expect("save");
+
+        // Fill the remaining slots with placeholder records. Their
+        // contents do not matter; only the record count does.
+        for i in 0..(MAX_SESSION_RECORDS - 1) {
+            std::fs::write(store.dir.join(format!("filler{i:04}.session")), b"{}")
+                .expect("filler");
+        }
+
+        let (_p2, bundle2) = fresh_bundle(&mut rng);
+        let (ik2, _) = x25519_keypair(&mut rng);
+        let newcomer = Session::initiate(&ik2, &bundle2, SessionParams::default(), &mut rng)
+            .expect("initiate");
+        let newcomer_peer = *bundle2.identity.as_bytes();
+        assert!(matches!(
+            store.save_session(&newcomer_peer, &newcomer, &sealer),
+            Err(RnError::StoreFull { .. })
+        ));
+
+        // The incumbent is untouched and still loads.
+        assert!(store
+            .load_session(&incumbent_peer, &sealer)
+            .expect("load")
+            .is_some());
+        // Overwriting an existing record is still allowed at the cap:
+        // an established conversation is never starved by it.
+        store
+            .save_session(&incumbent_peer, &incumbent, &sealer)
+            .expect("overwrite at cap");
+    }
+
+    /// A state blob written under looser skipped-key caps must not
+    /// silently raise this build's memory ceiling.
+    #[test]
+    fn a_session_claiming_an_oversized_skipped_cache_is_refused_on_load() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(23);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let loose = SessionParams {
+            skip: osl_ratchet_next::SkipParams {
+                max_total_keys: MAX_SKIPPED_KEYS_POLICY + 1,
+                ..osl_ratchet_next::SkipParams::default()
+            },
+            ..SessionParams::default()
+        };
+        let session = Session::initiate(&ik, &bundle, loose, &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        assert!(matches!(
+            store.load_session(&peer, &sealer),
+            Err(RnError::SkippedCacheTooLarge { .. })
+        ));
+        // A session at the ceiling still loads.
+        let at_ceiling = SessionParams {
+            skip: osl_ratchet_next::SkipParams {
+                max_total_keys: MAX_SKIPPED_KEYS_POLICY,
+                ..osl_ratchet_next::SkipParams::default()
+            },
+            ..SessionParams::default()
+        };
+        let ok = Session::initiate(&ik, &bundle, at_ceiling, &mut rng).expect("initiate");
+        let peer2 = [77u8; 32];
+        store.save_session(&peer2, &ok, &sealer).expect("save");
+        assert!(store.load_session(&peer2, &sealer).expect("load").is_some());
+    }
+
+    #[test]
+    fn an_out_of_range_pin_value_is_rejected() {
+        let (_d, store) = fresh_store();
+        let peer = [3u8; 32];
+        std::fs::create_dir_all(store.dir.clone()).expect("mkdir");
+        std::fs::write(
+            store.pin_path(&peer),
+            br#"{"version":1,"pin":{"min_wire_version":4}}"#,
+        )
+        .expect("write");
+        assert!(store.load_pin(&peer).is_err());
+    }
+
+    #[test]
+    fn an_absent_pin_is_unknown() {
+        let (_d, store) = fresh_store();
+        assert_eq!(
+            store.load_pin(&[1u8; 32]).expect("load"),
+            RnPeerPin::UNKNOWN
+        );
+    }
+
+    // ---- bound end-to-end through this module ----
+
+    #[test]
+    fn initiate_and_accept_through_this_module_round_trips_and_pins_both_sides() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(16);
+        let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+
+        let mut alice = initiate_and_persist(
+            &store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+
+        assert!(store
+            .load_pin(bob_bundle.identity.as_bytes())
+            .expect("pin")
+            .is_pinned_to_rn());
+
+        let wire = alice.encrypt(0, b"hello", &mut rng).expect("encrypt");
+
+        // Bob accepts through his own store.
+        let (_d2, bob_store) = fresh_store();
+        let bob_ik_pub = bob_prekeys.identity.public();
+        let (_bob, opened) = accept_and_persist(
+            &bob_store,
+            &sealer,
+            &bob_prekeys,
+            bob_ik_pub.as_bytes(),
+            &bob_ek,
+            &wire,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("accept");
+        assert_eq!(opened.plaintext, b"hello");
+
+        // Bob has now pinned Alice, on the strength of a message that
+        // actually authenticated.
+        assert!(bob_store
+            .load_pin(alice_ik_pub.as_bytes())
+            .expect("pin")
+            .is_pinned_to_rn());
+    }
+
+    /// A peer that does not speak OSL-RN: the accept path must reject a
+    /// legacy v=3 blob with a version error, so a router can fall
+    /// through to the existing decoders rather than treating it as
+    /// corruption — and without mutating any OSL-RN state.
+    #[test]
+    fn a_v3_blob_is_reported_as_a_version_mismatch() {
+        use base64::Engine as _;
+        let v3 = format!(
+            "DPC0::{}",
+            base64::engine::general_purpose::STANDARD.encode([
+                LEGACY_WIRE_VERSION_V3,
+                0x00,
+                0x01,
+                0x02
+            ])
+        );
+        let err = osl_ratchet_next::peek_bootstrap_initiator_identity(&v3)
+            .expect_err("v3 must not parse as OSL-RN");
+        assert!(matches!(
+            err,
+            osl_ratchet_next::Error::WrongVersion {
+                got: LEGACY_WIRE_VERSION_V3,
+                expected: WIRE_VERSION_RN
+            }
+        ));
+    }
+
+    /// Two different peers must never collide in storage.
+    #[test]
+    fn peer_storage_keys_are_distinct() {
+        let a = RnSessionStore::peer_key(&[1u8; 32]);
+        let b = RnSessionStore::peer_key(&[2u8; 32]);
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 32);
+    }
+
+    /// The negotiation context is an input to `SK`; two different call
+    /// paths must not produce interchangeable sessions.
+    #[test]
+    fn different_contexts_produce_different_bindings() {
+        let ek = [7u8; MLKEM_EK];
+        let a = initiator_binding(&[1u8; 32], &ek, &[2u8; 32], b"path/a").expect("a");
+        let b = initiator_binding(&[1u8; 32], &ek, &[2u8; 32], b"path/b").expect("b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_wrong_length_kem_key_is_refused() {
+        assert!(matches!(
+            initiator_binding(&[1u8; 32], &[0u8; 16], &[2u8; 32], b"ctx"),
+            Err(RnError::BadPeerKemKey)
+        ));
+    }
+}

@@ -518,6 +518,63 @@ impl MessageStore {
         Ok(rows)
     }
 
+    /// Shred the cached plaintext of every named row whose timed-deletion
+    /// deadline has elapsed, and drop its cached attachments.
+    ///
+    /// ## Why the caller names the rows
+    ///
+    /// This store has no expiry column and deliberately does not gain one: a
+    /// schema bump would break the owner's database on any rollback during live
+    /// QA. Expiry lives in the receiver's sealed open-clock ledger, which is the
+    /// only place that knows both clocks and the first-open timestamp. So the
+    /// sweeper decides *which* rows died and this method destroys them.
+    ///
+    /// ## Semantics
+    ///
+    /// Same destruction as [`Self::mark_burned`] — zero the ciphertext and
+    /// nonce in place, null the wrapped key so `K` can never be re-derived, and
+    /// stamp `burned`/`burned_at` — applied in one statement per id, followed by
+    /// a single WAL truncation for the whole batch.
+    ///
+    /// Unlike `mark_burned`, an id that is absent or already burned is *not* an
+    /// error: a sweeper legitimately names rows this device never cached. It
+    /// returns the number of rows it actually shredded, so a caller can report
+    /// real work rather than an intention.
+    ///
+    /// `ids` is bounded by the caller. Passing an empty slice touches nothing
+    /// and does not checkpoint.
+    pub fn shred_expired_messages(&self, ids: &[String]) -> Result<usize, StoreError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut shredded = 0usize;
+        for id in ids {
+            // `burned = 0` in the predicate keeps this idempotent: a second
+            // sweep over the same id reports zero rather than re-stamping
+            // `burned_at` and making an old destruction look fresh.
+            shredded += conn.execute(
+                "UPDATE messages
+                    SET ciphertext = zeroblob(length(ciphertext)),
+                        nonce = zeroblob(length(nonce)),
+                        wrapped_key = NULL,
+                        burned = 1,
+                        burned_at = strftime('%s','now')
+                  WHERE discord_message_id = ?1 AND burned = 0",
+                params![id],
+            )?;
+            // Expiry destroys local plaintext caches, and a decrypted
+            // attachment is one. Leaving it behind would make the row
+            // unreadable while its picture stayed on disk.
+            conn.execute(
+                "DELETE FROM attachments WHERE discord_message_id = ?1",
+                params![id],
+            )?;
+        }
+        checkpoint_after_shred(&conn)?;
+        Ok(shredded)
+    }
+
     /// Materialize a (channel_id, sender_discord_id,
     /// sender_osl_user_id, ct, nonce, decrypted_at, burned)
     /// row tuple into a [`StoredMessage`] using the supplied

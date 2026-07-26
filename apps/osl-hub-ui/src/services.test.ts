@@ -82,7 +82,7 @@ describe("linked-service contract", () => {
   });
 
   it("accepts new and legacy allowlisted email providers", () => {
-    for (const provider of ["aol", "gmx", "maildotcom", "tuta", "zoho"]) {
+    for (const provider of ["aol", "gmx", "maildotcom", "icloud", "tuta", "zoho"]) {
       expect(parseLinkedAccount({ id: `email-${provider}`, label: "Personal", displayHandle: "Sign in", state: "notLinked", provider }).provider).toBe(provider);
     }
   });
@@ -94,7 +94,7 @@ describe("linked-service contract", () => {
     const launch = apps.filter((app) => app.visibility === "launch");
     expect(launch.map((app) => app.id)).toEqual([
       "discord", "instagram", "snapchat", "x", "telegram", "signal", "whatsapp", "messenger",
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
+      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
     ]);
     expect(launch.every((app) => !app.linked && app.accountCount === 0)).toBe(true);
     expect(launch.find((app) => app.id === "discord")?.setupEligible).toBe(true);
@@ -103,7 +103,7 @@ describe("linked-service contract", () => {
       "discord", "instagram", "snapchat", "x", "telegram", "signal", "whatsapp", "messenger",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom",
+      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
     ]);
 
     const fallbackLaunch = homeAppsFromServices([]).filter((app) => app.visibility === "launch");

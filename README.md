@@ -75,17 +75,65 @@ covers every channel you are in.
 
 ### Burn
 
-There are two kinds of burn and they are different.
+Burn is local cryptographic erasure. It destroys keys, not messages. There are
+two kinds and they are different.
 
-Scope burn destroys your keys for one conversation. The messages you sent in that
-conversation become unreadable to everyone, including you, and a burn notice goes
-to the other members so their copies go dark too. Use this when you no longer
-trust the people in one channel with your past messages. Everything else you have
-is untouched.
+Scope burn destroys your keys for one conversation. Your decryption capability
+for that conversation, its key mappings and its local cache are gone, so the
+messages become unreadable to you. A signed burn notice is also sent to the other
+members as a *request* that their clients drop the same keys; a member whose
+client honours it loses their copy too, and OSL cannot make that happen or prove
+that it did. Use this when you no longer trust the people in one channel with your
+past messages. Everything else you have is untouched.
 
-Account burn destroys everything. Every key, every conversation, every saved
-message on your machine. It generates a fresh identity so you can start over. Use
+Account burn destroys everything on your machine. Every key, every conversation,
+every saved message. It generates a fresh identity so you can start over. Use
 this as a panic button. It cannot be undone.
+
+What burn does not do: it does not delete anything from Discord. The carrier
+messages stay in the channel, Discord's own copies stay on Discord's servers, and
+nothing burn does touches provider retention, exports, backups, screenshots or
+anything anyone copied earlier. It cannot reach a recipient who already read the
+plaintext or a client that ignores the notice. See
+[`docs/design/burn-contract.md`](docs/design/burn-contract.md).
+
+### Deleting messages from Discord
+
+This is a separate action from burn, and a separate promise. Burn makes your own
+messages unreadable; deleting them from Discord means asking Discord to remove
+them.
+
+Guided deletion is a Pro feature of the newer hub shell under `apps/osl-hub*`. It
+works the way you would by hand, and for the same reason: there is no supported
+API for deleting your own messages with your own account token, and using the
+private one is self-botting and puts your account at risk. So OSL drives
+Discord's own interface through Windows accessibility — it focuses one of your
+message rows, opens that row's own menu, chooses Discord's own delete item and
+confirms in Discord's own dialog. It never moves your pointer and it only ever
+touches messages you wrote; another person's message has no delete item and is
+reported as unsupported.
+
+Every run is `Scan → Preview → Confirm → Execute → Verify → Receipt`. You see
+exactly which rows will be attempted before anything happens, and the plan is
+bound to that exact list, so changing the selection means confirming again. After
+each row OSL re-reads the transcript, and a row is only reported as
+`Deleted from Discord` when that re-read proves the row is gone. Anything else is
+reported as `Sent request - not verified`, `Held` or `Unsupported`, and says
+which. A request OSL could not verify is never displayed as a deletion.
+
+Three separate facts, never merged into one claim:
+
+- **Removed from Discord** — OSL used Discord's own delete control and proved by
+  re-reading the conversation that the row is no longer there.
+- **OSL content expired** — the encrypted content became undecryptable because
+  its keys are gone. That is burn, above.
+- **Removed locally** — OSL deleted its own cached copy on this device.
+
+Status: the scan, the preview, the confirmation and the verifying re-read are
+built and tested. The step that posts the keystrokes into Discord's own menu is
+not enabled yet, so today every row comes back `Held` and nothing is deleted —
+which is the point of a fail-closed design. It will not be turned on until it has
+been proven against a real conversation.
 
 ### Settings
 

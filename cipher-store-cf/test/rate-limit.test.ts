@@ -7,6 +7,7 @@ const secret = "s".repeat(48);
 function envWith(namespace: Partial<KVNamespace>): Env {
   return {
     DB: {} as D1Database,
+    ATTACHMENTS: {} as R2Bucket,
     RATE_LIMIT: namespace as KVNamespace,
     RATE_LIMIT_HASH_KEY: secret,
   };
@@ -23,11 +24,19 @@ describe("cipher-store rate limiter failure policy", () => {
       allowed: false,
       remaining: 0,
     });
+    await expect(rateLimit(env, "203.0.113.1", "attachment-upload")).resolves.toEqual({
+      allowed: false,
+      remaining: 0,
+    });
   });
 
   it("keeps ciphertext reads available when KV is unavailable", async () => {
     const env = envWith({ get: vi.fn().mockRejectedValue(new Error("down")) });
     await expect(rateLimit(env, "203.0.113.1", "fetch")).resolves.toEqual({
+      allowed: true,
+      remaining: 0,
+    });
+    await expect(rateLimit(env, "203.0.113.1", "attachment-fetch")).resolves.toEqual({
       allowed: true,
       remaining: 0,
     });

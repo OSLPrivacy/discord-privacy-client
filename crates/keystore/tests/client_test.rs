@@ -627,3 +627,175 @@ fn validate_license_propagates_non_2xx_as_http_status_error() {
         other => panic!("expected Error::HttpStatus, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------
+// Signed protocol-capability advertisement (keyserver 0026) — the
+// client half of layer L1 in
+// `crates/osl-ratchet-next/src/negotiate.rs`.
+// ---------------------------------------------------------------
+
+/// GATE: the extended REG_MSG byte format. Mirrored in
+/// `keyserver-cf/test/unit/signed-request.test.ts`. A one-byte
+/// disagreement makes every capability-advertising registration fail.
+#[test]
+fn reg_msg_with_capabilities_byte_format_is_pinned_and_mirrored() {
+    let msg = keystore::client::reg_msg_with_capabilities(
+        "900000000000000001",
+        "WdsAAA==",
+        "ZWQyNTUx",
+        "bWxrZW0=",
+        Some("cmF0Y2g="),
+        1,
+    );
+    let expected =
+        "OSL-REGISTER-v1\n900000000000000001\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=\n1";
+    assert_eq!(String::from_utf8(msg).unwrap(), expected);
+
+    // The legacy form is a strict prefix of the extended one, and the
+    // two are never equal: that is what makes a stripped bitmap a
+    // signature failure rather than a silent downgrade.
+    let legacy = keystore::client::reg_msg("u", "x", "e", "m", None);
+    let extended = keystore::client::reg_msg_with_capabilities("u", "x", "e", "m", None, 0);
+    assert_ne!(legacy, extended);
+    assert_eq!(String::from_utf8(extended).unwrap(), "OSL-REGISTER-v1\nu\nx\ne\nm\n\n0");
+}
+
+/// Build a `PubkeysResponse` for `caps`, signed by `id`.
+fn signed_pubkeys_response(
+    id: &keystore::Identity,
+    caps: Option<u32>,
+) -> keystore::client::PubkeysResponse {
+    let x = STANDARD.encode(id.x25519_public.as_bytes());
+    let e = STANDARD.encode(id.ed25519_public.as_bytes());
+    let m = STANDARD.encode(&id.mlkem_public_bytes[..]);
+    let msg = match caps {
+        Some(c) => keystore::client::reg_msg_with_capabilities(&id.user_id, &x, &e, &m, None, c),
+        None => keystore::client::reg_msg(&id.user_id, &x, &e, &m, None),
+    };
+    let sig = crypto::ed25519::sign(&id.ed25519_secret, &msg);
+    keystore::client::PubkeysResponse {
+        user_id: id.user_id.clone(),
+        ik_x25519_pub: x,
+        ik_ed25519_pub: e,
+        ik_mlkem768_pub: m,
+        registered_at: "2026-01-01T00:00:00.000Z".into(),
+        last_rotated_at: None,
+        ik_ratchet_initial_pub: None,
+        rn_capabilities: caps,
+        registration_sig: caps
+            .filter(|c| *c != 0)
+            .map(|_| STANDARD.encode(sig.as_bytes())),
+    }
+}
+
+#[test]
+fn a_verified_bitmap_is_accepted() {
+    use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
+    let id = generate_identity("peer".to_string());
+    let resp = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    let caps = keystore::client::verify_peer_capabilities(&resp);
+    assert_eq!(caps, PeerCapabilities::Verified(RN_CAP_WIRE_RN));
+    assert!(caps.supports_rn());
+}
+
+/// The three shapes that must all mean "no OSL-RN capability", and
+/// none of which may mean "assume capable".
+#[test]
+fn an_absent_or_zero_bitmap_fails_closed() {
+    use keystore::client::PeerCapabilities;
+    let id = generate_identity("peer".to_string());
+
+    // A key server that predates the advertisement: no field at all.
+    let legacy = signed_pubkeys_response(&id, None);
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&legacy),
+        PeerCapabilities::Absent
+    );
+    assert!(!keystore::client::verify_peer_capabilities(&legacy).supports_rn());
+
+    // A peer that has the field but advertises nothing.
+    let zero = signed_pubkeys_response(&id, Some(0));
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&zero),
+        PeerCapabilities::Absent
+    );
+}
+
+/// A bitmap served without the signature that covers it must never be
+/// believed — otherwise a dishonest key server could invent capability.
+#[test]
+fn a_bitmap_without_a_signature_is_unverified() {
+    use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
+    let id = generate_identity("peer".to_string());
+    let mut resp = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    resp.registration_sig = None;
+    let caps = keystore::client::verify_peer_capabilities(&resp);
+    assert_eq!(caps, PeerCapabilities::Unverified);
+    assert!(!caps.supports_rn(), "unverified must not read as capable");
+    assert_eq!(caps.bitmap(), 0);
+}
+
+/// Read-path tampering: every mutation of a served record makes the
+/// bitmap unverifiable rather than quietly lowering it.
+#[test]
+fn tampering_with_a_served_record_is_detected() {
+    use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
+    let id = generate_identity("peer".to_string());
+    let other = generate_identity("peer".to_string());
+
+    // Lowered bitmap, signature untouched.
+    let mut lowered = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN | 2));
+    lowered.rn_capabilities = Some(RN_CAP_WIRE_RN);
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&lowered),
+        PeerCapabilities::Unverified
+    );
+
+    // Raised bitmap: a server cannot inflate capability either.
+    let mut raised = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    raised.rn_capabilities = Some(RN_CAP_WIRE_RN | 8);
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&raised),
+        PeerCapabilities::Unverified
+    );
+
+    // Out-of-range bitmap.
+    let mut huge = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    huge.rn_capabilities = Some(keystore::client::RN_CAP_MAX + 1);
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&huge),
+        PeerCapabilities::Unverified
+    );
+
+    // Signature from a different identity.
+    let mut swapped = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    swapped.registration_sig = signed_pubkeys_response(&other, Some(RN_CAP_WIRE_RN))
+        .registration_sig;
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&swapped),
+        PeerCapabilities::Unverified
+    );
+
+    // A mutated key field also breaks it: the signature covers the
+    // whole record, not just the bitmap.
+    let mut rekeyed = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    rekeyed.ik_x25519_pub = STANDARD.encode([0x55u8; 32]);
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&rekeyed),
+        PeerCapabilities::Unverified
+    );
+
+    // Malformed base64 in either slot must not panic.
+    let mut junk = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    junk.registration_sig = Some("!!!not base64!!!".into());
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&junk),
+        PeerCapabilities::Unverified
+    );
+    let mut junk_key = signed_pubkeys_response(&id, Some(RN_CAP_WIRE_RN));
+    junk_key.ik_ed25519_pub = "!!!".into();
+    assert_eq!(
+        keystore::client::verify_peer_capabilities(&junk_key),
+        PeerCapabilities::Unverified
+    );
+}

@@ -30,6 +30,8 @@ import {
   badRequest,
   json,
   notFound,
+  recipientInboxFull,
+  revocationLaneFull,
   serverError,
   tooMany,
   unauthorized,
@@ -49,6 +51,30 @@ const MAX_DRAIN_ROWS = 64;
 // replay receipts remain until their normal seven-day expiry.
 const MAX_PENDING_ROWS_PER_RECIPIENT = 512;
 const MAX_PENDING_ROWS_PER_SENDER_RECIPIENT = 32;
+
+/// The two lanes. `""` is the ordinary, evictable lane every existing client
+/// posts to; `revocation` is the bilateral-burn lane.
+const KIND_ORDINARY = "";
+const KIND_REVOCATION = "revocation";
+const KNOWN_KINDS = new Set([KIND_ORDINARY, KIND_REVOCATION]);
+
+/// Revocation-lane caps. Mirrored by the triggers in migration 0027, which are
+/// the race-safe backstop for these pre-checks.
+///
+/// Small on purpose: a burn is one notice per conversation per epoch, and the
+/// lane collapses a repeat for the same (scope, epoch), so eight outstanding
+/// burns from one peer is already generous. Reaching either cap answers 507 --
+/// never an eviction, because a silently deleted burn is the one failure mode
+/// this whole lane exists to remove.
+const MAX_PENDING_REVOCATIONS_PER_RECIPIENT = 64;
+const MAX_PENDING_REVOCATIONS_PER_SENDER_RECIPIENT = 8;
+
+/// Opaque collapse key: 64 lowercase hex characters. Computed by the client as a
+/// MAC over (scope commitment, burn epoch) under a key derived from the two
+/// identity public keys, so this server learns neither the scope nor the epoch
+/// and cannot link one pair's lane to another's.
+const COLLAPSE_KEY_RE = /^[0-9a-f]{64}$/;
+
 const INBOX_ID_BYTES = 16;
 const INBOX_ID_HEX_LEN = INBOX_ID_BYTES * 2;
 const INBOX_ID_HEX_RE = /^[0-9a-f]{32}$/;
@@ -161,6 +187,38 @@ async function findRequestReceipt(
   return { id: idToHex(id), expires_at: row.expires_at };
 }
 
+/**
+ * Drop the oldest undelivered rows so a new one always fits.
+ *
+ * Returns the number evicted. A no-op while the count is under the cap, so the
+ * common path costs nothing. Bounded by the cap itself: `count - limit + 1` can
+ * only be large if the table is already at the cap.
+ */
+async function evictOldestPending(
+  env: Env,
+  whereClause: string,
+  binds: string[],
+  now: number,
+  count: number,
+  limit: number,
+): Promise<number> {
+  const excess = count - limit + 1;
+  if (excess <= 0) return 0;
+  const result = await env.DB
+    .prepare(
+      `DELETE FROM control_inbox
+        WHERE id IN (
+          SELECT id FROM control_inbox
+           WHERE ${whereClause} AND expires_at >= ?
+           ORDER BY created_at ASC
+           LIMIT ?
+        )`,
+    )
+    .bind(...binds, now, excess)
+    .run();
+  return result.meta?.changes ?? 0;
+}
+
 export async function handleControlInboxPost(
   request: Request,
   env: Env,
@@ -191,6 +249,39 @@ export async function handleControlInboxPost(
       `timestamp_ms required (positive number within ${CONTROL_INBOX_FRESHNESS_WINDOW_MS}ms of server clock)`,
     );
 
+  // Lane selection. Absent is the ordinary lane, which is what every deployed
+  // client sends and what keeps their canonical bytes byte-identical.
+  //
+  // FAIL CLOSED on anything unrecognised rather than defaulting to a lane: a
+  // typo that quietly landed a burn in the evictable lane would be the exact
+  // silent loss this lane exists to prevent, and one that quietly landed
+  // ordinary traffic in the non-evictable lane would let a peer exhaust it.
+  if (body.kind !== undefined && typeof body.kind !== "string") {
+    return badRequest("kind must be a string when present");
+  }
+  const kind: string = typeof body.kind === "string" ? body.kind : KIND_ORDINARY;
+  if (!KNOWN_KINDS.has(kind)) return badRequest("kind is not recognised");
+  const isRevocation = kind === KIND_REVOCATION;
+
+  // The collapse key is required for a revocation and forbidden otherwise. Both
+  // halves matter: without it the lane cannot collapse a retry, and allowing it
+  // on an ordinary row would let a caller move that row out of the evictable set.
+  if (body.collapse_key !== undefined && typeof body.collapse_key !== "string") {
+    return badRequest("collapse_key must be a string when present");
+  }
+  const collapseKey: string | null =
+    typeof body.collapse_key === "string" ? body.collapse_key : null;
+  if (isRevocation) {
+    if (collapseKey === null) {
+      return badRequest("collapse_key required for a revocation");
+    }
+    if (!COLLAPSE_KEY_RE.test(collapseKey)) {
+      return badRequest("collapse_key must be 64 lowercase hex characters");
+    }
+  } else if (collapseKey !== null) {
+    return badRequest("collapse_key is only valid for a revocation");
+  }
+
   const bundle = safeDecodeBase64(body.bundle_b64);
   if (!bundle) return badRequest("bundle_b64 must be valid base64");
   if (bundle.length === 0) return badRequest("bundle is empty");
@@ -207,6 +298,11 @@ export async function handleControlInboxPost(
     scope_id: body.scope_id,
     timestamp_ms: body.timestamp_ms,
     bundle_sha256: bundleHash,
+    // Both are signed components. An `undefined` here reproduces the pre-lane
+    // bytes exactly, so an old client's signature still verifies; a request that
+    // adds, removes or alters either in transit stops verifying (401).
+    kind: kind === KIND_ORDINARY ? undefined : kind,
+    collapse_key: collapseKey ?? undefined,
   });
   const pubBytes = safeDecodeBase64(sender.ik_ed25519_pub);
   const sigBytes = safeDecodeBase64(body.signature_b64);
@@ -235,60 +331,204 @@ export async function handleControlInboxPost(
   if (!recipient) return notFound();
 
   const now = Math.floor(Date.now() / 1000);
+
+  // ---- The revocation lane -------------------------------------------------
+  //
+  // Separate from everything below, because the ordinary lane's rule ("evict,
+  // never refuse") is exactly wrong for a burn. Refuse when full; never evict.
+  if (isRevocation) {
+    const laneForRecipient = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM control_inbox
+          WHERE recipient_id = ? AND kind = ? AND expires_at >= ?`,
+      )
+      .bind(body.recipient_id, KIND_REVOCATION, now)
+      .first<{ count: number }>();
+    const laneForPair = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM control_inbox
+          WHERE recipient_id = ? AND sender_id = ? AND kind = ?
+            AND expires_at >= ?`,
+      )
+      .bind(body.recipient_id, body.sender_id, KIND_REVOCATION, now)
+      .first<{ count: number }>();
+    // An existing row for the same (recipient, sender, scope, collapse_key)
+    // is going to be UPSERTed, not appended, so it does not need lane headroom.
+    const collapsible = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM control_inbox
+          WHERE recipient_id = ? AND sender_id = ? AND scope_id = ?
+            AND collapse_key = ?`,
+      )
+      .bind(body.recipient_id, body.sender_id, body.scope_id, collapseKey)
+      .first<{ count: number }>();
+    const willCollapse = (collapsible?.count ?? 0) > 0;
+    if (!willCollapse) {
+      if ((laneForPair?.count ?? 0) >= MAX_PENDING_REVOCATIONS_PER_SENDER_RECIPIENT) {
+        return revocationLaneFull(60, "sender_recipient");
+      }
+      if ((laneForRecipient?.count ?? 0) >= MAX_PENDING_REVOCATIONS_PER_RECIPIENT) {
+        return revocationLaneFull(60, "recipient");
+      }
+    }
+    return await insertControlInboxRow(env, {
+      recipientId: body.recipient_id,
+      senderId: body.sender_id,
+      scopeId: body.scope_id,
+      bundle,
+      kind: KIND_REVOCATION,
+      collapseKey,
+      senderSigningKey: sender.ik_ed25519_pub,
+      requestDigest,
+      now,
+    });
+  }
+
   const pending = await env.DB
     .prepare(
       `SELECT COUNT(*) AS count
          FROM control_inbox
-        WHERE recipient_id = ? AND expires_at >= ?`,
+        WHERE recipient_id = ? AND kind = ? AND expires_at >= ?`,
     )
-    .bind(body.recipient_id, now)
+    .bind(body.recipient_id, KIND_ORDINARY, now)
     .first<{ count: number }>();
-  if ((pending?.count ?? 0) >= MAX_PENDING_ROWS_PER_RECIPIENT) {
-    return tooMany(60);
-  }
+  // Evict, never refuse. These rows are drained by the recipient, not by a
+  // timer, so refusing punished the *sender* for something only the recipient
+  // can fix -- and if the recipient never runs OSL at all, nothing ever drains
+  // and the sender is blocked for the full TTL. A sender must never be
+  // permanently unable to send, so the oldest undelivered rows make way for the
+  // newest instead.
+  //
+  // This also keeps the live count below the migration triggers' thresholds, so
+  // the database-side RAISE(ABORT) guards stay satisfied and no schema change
+  // is needed to lift the block.
+  //
+  // Storage stays bounded exactly as before: the cap still holds, it is simply
+  // enforced by dropping the stalest rows rather than by rejecting new ones.
+  // Ordered by `created_at`, the true insertion order.
+  //
+  // `kind = ''` is now part of both the count and the eviction predicate. A
+  // revocation row must never be chosen as the victim: that is precisely the
+  // defect this lane fixes, where a sender's own next 32 messages silently
+  // deleted a burn queued to an offline peer. Excluding revocations from the
+  // count also means a queued burn cannot consume an ordinary conversation's
+  // headroom.
+  await evictOldestPending(
+    env,
+    `recipient_id = ? AND kind = ''`,
+    [body.recipient_id],
+    now,
+    pending?.count ?? 0,
+    MAX_PENDING_ROWS_PER_RECIPIENT,
+  );
   const pendingFromSender = await env.DB
     .prepare(
       `SELECT COUNT(*) AS count
          FROM control_inbox
-        WHERE recipient_id = ? AND sender_id = ? AND expires_at >= ?`,
+        WHERE recipient_id = ? AND sender_id = ? AND kind = ?
+          AND expires_at >= ?`,
     )
-    .bind(body.recipient_id, body.sender_id, now)
+    .bind(body.recipient_id, body.sender_id, KIND_ORDINARY, now)
     .first<{ count: number }>();
-  if ((pendingFromSender?.count ?? 0) >= MAX_PENDING_ROWS_PER_SENDER_RECIPIENT) {
-    return tooMany(60);
-  }
+  // Same rule for the per-pair cap, which is the one a normal conversation
+  // actually reaches (32 undelivered messages to one person).
+  await evictOldestPending(
+    env,
+    `recipient_id = ? AND sender_id = ? AND kind = ''`,
+    [body.recipient_id, body.sender_id],
+    now,
+    pendingFromSender?.count ?? 0,
+    MAX_PENDING_ROWS_PER_SENDER_RECIPIENT,
+  );
 
+  return await insertControlInboxRow(env, {
+    recipientId: body.recipient_id,
+    senderId: body.sender_id,
+    scopeId: body.scope_id,
+    bundle,
+    kind: KIND_ORDINARY,
+    collapseKey: null,
+    senderSigningKey: sender.ik_ed25519_pub,
+    requestDigest,
+    now,
+  });
+}
+
+/**
+ * The authenticated insert, shared by both lanes.
+ *
+ * Split out of `handleControlInboxPost` so the revocation lane reuses the exact
+ * same durability, identity-rebinding and idempotency-receipt logic rather than
+ * a parallel copy that could drift from it.
+ *
+ * A revocation row additionally UPSERTs on the partial unique index from
+ * migration 0027: a second burn for the same `(recipient, sender, scope,
+ * collapse_key)` replaces the queued bundle instead of appending. The collapse
+ * key is derived by the client from (scope commitment, burn epoch), so "same
+ * scope, same epoch" collapses and a genuinely new epoch does not. That is what
+ * keeps a retried burn from filling the lane, and it is safe because the newer
+ * bundle supersedes the older one by construction -- both assert the same epoch.
+ */
+async function insertControlInboxRow(
+  env: Env,
+  args: {
+    recipientId: string;
+    senderId: string;
+    scopeId: string;
+    bundle: Uint8Array;
+    kind: string;
+    collapseKey: string | null;
+    senderSigningKey: string;
+    requestDigest: Uint8Array;
+    now: number;
+  },
+): Promise<Response> {
+  const { now } = args;
   // Insert. Retry on the (vanishingly unlikely) primary-key
   // collision; 128-bit random id space means it's basically never.
   const expiresAt = now + CONTROL_INBOX_TTL_SECONDS;
   const receiptExpiresAt =
     now + Math.ceil((2 * CONTROL_INBOX_FRESHNESS_WINDOW_MS) / 1000);
+  const isRevocation = args.kind === KIND_REVOCATION;
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = genInboxId();
     try {
+      const rowSql =
+        `INSERT INTO control_inbox
+           (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at, kind, collapse_key)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, ?10
+          WHERE EXISTS (
+            SELECT 1 FROM users
+             WHERE user_id = ?3 AND ik_ed25519_pub = ?8
+          )
+            AND EXISTS (
+              SELECT 1 FROM users WHERE user_id = ?2
+            )` +
+        (isRevocation
+          ? `
+         ON CONFLICT (recipient_id, sender_id, scope_id, collapse_key)
+           WHERE collapse_key IS NOT NULL
+           DO UPDATE SET bundle = excluded.bundle,
+                         expires_at = excluded.expires_at,
+                         created_at = excluded.created_at`
+          : "");
       const results = await env.DB.batch([
         env.DB
-          .prepare(
-            `INSERT INTO control_inbox
-               (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-              WHERE EXISTS (
-                SELECT 1 FROM users
-                 WHERE user_id = ?3 AND ik_ed25519_pub = ?8
-              )
-                AND EXISTS (
-                  SELECT 1 FROM users WHERE user_id = ?2
-                )`,
-          )
+          .prepare(rowSql)
           .bind(
             id,
-            body.recipient_id,
-            body.sender_id,
-            body.scope_id,
-            bundle,
+            args.recipientId,
+            args.senderId,
+            args.scopeId,
+            args.bundle,
             expiresAt,
             now,
-            sender.ik_ed25519_pub,
+            args.senderSigningKey,
+            args.kind,
+            args.collapseKey,
           ),
         env.DB
           .prepare(
@@ -301,40 +541,73 @@ export async function handleControlInboxPost(
               )
                 AND EXISTS (
                   SELECT 1 FROM control_inbox
-                   WHERE id = ?3 AND sender_id = ?1 AND recipient_id = ?4
+                   WHERE sender_id = ?1 AND recipient_id = ?4
+                     AND (id = ?3 OR ?7 = 1)
                 )`,
           )
           .bind(
-            body.sender_id,
-            requestDigest,
+            args.senderId,
+            args.requestDigest,
             id,
-            body.recipient_id,
+            args.recipientId,
             receiptExpiresAt,
-            sender.ik_ed25519_pub,
+            args.senderSigningKey,
+            isRevocation ? 1 : 0,
           ),
       ]);
       if (
         (results[0]?.meta?.changes ?? 0) !== 1 ||
         (results[1]?.meta?.changes ?? 0) !== 1
       ) {
-        const currentSender = await getUserForVerify(env.DB, body.sender_id);
-        if (currentSender?.ik_ed25519_pub !== sender.ik_ed25519_pub) {
+        const currentSender = await getUserForVerify(env.DB, args.senderId);
+        if (currentSender?.ik_ed25519_pub !== args.senderSigningKey) {
           return unauthorized("sender identity changed during authorization");
         }
-        if (!(await getUserForVerify(env.DB, body.recipient_id))) return notFound();
+        if (!(await getUserForVerify(env.DB, args.recipientId))) return notFound();
         throw new Error("control inbox authenticated insert made no change");
       }
-      return json(
-        { id: idToHex(id), expires_at: expiresAt },
-        { status: 201 },
-      );
+      // On a collapse the caller's row id is not the surviving one, so report the
+      // id that is actually in the table. A client addresses rows by drain, not
+      // by this id, but returning a phantom id would make the response a lie.
+      let reportedId = idToHex(id);
+      if (isRevocation) {
+        const surviving = await env.DB
+          .prepare(
+            `SELECT id FROM control_inbox
+              WHERE recipient_id = ? AND sender_id = ? AND scope_id = ?
+                AND collapse_key = ?`,
+          )
+          .bind(args.recipientId, args.senderId, args.scopeId, args.collapseKey)
+          .first<{ id: unknown }>();
+        const survivingId = bytesToU8(surviving?.id);
+        if (survivingId && survivingId.length === INBOX_ID_BYTES) {
+          reportedId = idToHex(survivingId);
+        }
+      }
+      return json({ id: reportedId, expires_at: expiresAt }, { status: 201 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // The D1 triggers (migrations 0006 / 0016 / 0027) are the race-safe
+      // backstop for the SELECT-based checks in the caller. Same durable
+      // condition, so report the same code -- and carry the same scope
+      // distinction the pre-checks do rather than collapsing both into one label.
+      if (msg.includes("control inbox revocation lane quota exceeded")) {
+        return revocationLaneFull(60, "recipient");
+      }
+      if (msg.includes("control inbox revocation sender lane quota exceeded")) {
+        return revocationLaneFull(60, "sender_recipient");
+      }
+      if (msg.includes("control inbox recipient quota exceeded")) {
+        return recipientInboxFull(60, "recipient");
+      }
+      if (msg.includes("control inbox sender-recipient quota exceeded")) {
+        return recipientInboxFull(60, "sender_recipient");
+      }
       if (
-        msg.includes("control inbox recipient quota exceeded") ||
-        msg.includes("control inbox sender-recipient quota exceeded")
+        msg.includes("control inbox kind is not recognised") ||
+        msg.includes("control inbox collapse key does not match kind")
       ) {
-        return tooMany(60);
+        return badRequest("control inbox lane request is invalid");
       }
       if (msg.includes("UNIQUE") || msg.includes("PRIMARY")) {
         // Either a simultaneous retry won the digest CAS, or the
@@ -342,8 +615,8 @@ export async function handleControlInboxPost(
         // durable receipt; only the latter should allocate a new id.
         const raced = await findRequestReceipt(
           env.DB,
-          body.sender_id,
-          requestDigest,
+          args.senderId,
+          args.requestDigest,
         );
         if (raced) {
           return json({ ...raced, replayed: true }, { status: 200 });
@@ -356,6 +629,45 @@ export async function handleControlInboxPost(
   return badRequest("could not allocate a fresh id (retry)");
 }
 
+/**
+ * `GET /v1/control-inbox/:user_id[?sender=<id>]`
+ *
+ * # The bug the `sender` filter fixes
+ *
+ * This route returns at most `MAX_DRAIN_ROWS` (64) rows,
+ * `ORDER BY created_at ASC`, with no cursor. The Hub's drain
+ * authenticates each row against the conversation it currently has
+ * open and **deletes only the rows it authenticates** — rows belonging
+ * to other peers are skipped and left in place.
+ *
+ * Those two facts compose into permanent, invisible undeliverability:
+ * once 64 older rows addressed from peers whose conversations are not
+ * open exist, every row for the *active* conversation sits past the page
+ * boundary and is never returned. The drain then sees the same empty
+ * result as a genuinely empty inbox, so there is no error and no log.
+ *
+ * No attacker is needed. This route admits 32 pending rows per
+ * (sender, recipient) pair and 512 per recipient, so **two** friends
+ * with unopened conversations are enough. The stuck rows clear only on
+ * TTL expiry (7 days) or 512-ceiling eviction.
+ *
+ * # Why a filter rather than a cursor
+ *
+ * A cursor would let a client walk past the blockage, but it needs
+ * per-peer client state, it costs a round trip per page, and it only
+ * bounds the damage — a client that gives up walking after N pages is
+ * starved again. The filter removes the coupling entirely: delivery for
+ * one conversation stops depending on any other peer's backlog.
+ *
+ * It is also *complete* here, which a cursor is not. The per-pair
+ * admission cap is `MAX_PENDING_ROWS_PER_SENDER_RECIPIENT` = 32, well
+ * under the 64-row page, so a filtered drain for one sender can never
+ * be truncated by the page limit at all. There is nothing left to
+ * paginate.
+ *
+ * The unfiltered form is unchanged and still supported: a deployed
+ * worker serves older clients that do not know about the parameter.
+ */
 export async function handleControlInboxGet(
   request: Request,
   env: Env,
@@ -390,12 +702,30 @@ async function handleControlInboxGetInner(
   if (!sigB64) return badRequest("sig required (?sig=)");
   if (!isProtocolId(userId)) return badRequest("user_id must be a bounded identifier");
 
+  // Optional per-sender filter. See the "head-of-line starvation" note
+  // on `handleControlInboxGet`.
+  //
+  // FAIL CLOSED, twice over:
+  //   1. A present-but-malformed `?sender=` is a 400. It is never
+  //      dropped in favour of an unfiltered page, because that would
+  //      silently reinstate the starvation this parameter fixes while
+  //      the client believed it had asked for a filtered drain.
+  //   2. The value is a signed component of the canonical bytes, so
+  //      adding, altering or removing `?sender=` in transit makes the
+  //      signature stop verifying (401). An attacker cannot strip it.
+  const rawSender = url.searchParams.get("sender");
+  if (rawSender !== null && !isProtocolId(rawSender)) {
+    return badRequest("sender must be a bounded identifier when present");
+  }
+  const senderFilter: string | null = rawSender;
+
   const user = await getUserForVerify(env.DB, userId);
   if (!user) return notFound();
 
   const message = canonicalControlInboxGetBytes({
     user_id: userId,
     timestamp_ms: ts,
+    sender_id: senderFilter,
   });
   const pubBytes = safeDecodeBase64(user.ik_ed25519_pub);
   const sigBytes = safeDecodeBase64(sigB64);
@@ -409,20 +739,40 @@ async function handleControlInboxGetInner(
   // Drain in FIFO order. The recipient's poll loop calls DELETE
   // per-row after apply; we don't auto-delete on read so a crash
   // between GET response and apply doesn't lose the SKDM.
+  //
+  // `recipient_id = ?` is bound from the *authenticated* userId in both
+  // forms, so the filter narrows a page the caller was already entitled
+  // to see. It cannot be used to enumerate or probe anybody else's rows.
   const now = Math.floor(Date.now() / 1000);
-  const rows = await env.DB.prepare(
-    "SELECT id, sender_id, scope_id, bundle, created_at FROM control_inbox " +
-      "WHERE recipient_id = ? AND expires_at >= ? " +
-      "ORDER BY created_at ASC LIMIT ?",
-  )
-    .bind(userId, now, MAX_DRAIN_ROWS)
-    .all<{
-      id: unknown;
-      sender_id: string;
-      scope_id: string;
-      bundle: unknown;
-      created_at: number;
-    }>();
+  const rows = senderFilter === null
+    ? await env.DB.prepare(
+        "SELECT id, sender_id, scope_id, bundle, created_at, kind FROM control_inbox " +
+          "WHERE recipient_id = ? AND expires_at >= ? " +
+          "ORDER BY created_at ASC LIMIT ?",
+      )
+        .bind(userId, now, MAX_DRAIN_ROWS)
+        .all<{
+          id: unknown;
+          sender_id: string;
+          scope_id: string;
+          bundle: unknown;
+          created_at: number;
+          kind: string | null;
+        }>()
+    : await env.DB.prepare(
+        "SELECT id, sender_id, scope_id, bundle, created_at, kind FROM control_inbox " +
+          "WHERE recipient_id = ? AND sender_id = ? AND expires_at >= ? " +
+          "ORDER BY created_at ASC LIMIT ?",
+      )
+        .bind(userId, senderFilter, now, MAX_DRAIN_ROWS)
+        .all<{
+          id: unknown;
+          sender_id: string;
+          scope_id: string;
+          bundle: unknown;
+          created_at: number;
+          kind: string | null;
+        }>();
 
   const items = (rows.results || []).map((r) => {
     const idBytes = bytesToU8(r.id) ?? new Uint8Array(0);
@@ -441,9 +791,25 @@ async function handleControlInboxGetInner(
       scope_id: r.scope_id,
       bundle_b64: bundleB64,
       created_at: r.created_at,
+      // Additive. Lets a drain route a revocation without opening it, and lets a
+      // client tell a burn notice apart from ordinary traffic before spending a
+      // decrypt. Never authoritative: the lane label is the server's routing
+      // hint, and the type byte inside the authenticated envelope is what
+      // decides how a row is handled.
+      kind: r.kind ?? "",
     };
   });
 
+  // Echo the filter the signature authorised. A client that asked for a
+  // filtered drain can assert this came back, so "the worker ignored my
+  // filter" is detectable rather than silently served as an unfiltered
+  // page. (An *old* worker cannot reach here at all with a filtered
+  // request: it reconstructs the canonical bytes without the sender
+  // component, so verification fails with a 401. The echo covers the
+  // remaining case of a future worker that stops honouring it.)
+  if (senderFilter !== null) {
+    return json({ items, filtered_sender_id: senderFilter });
+  }
   return json({ items });
 }
 

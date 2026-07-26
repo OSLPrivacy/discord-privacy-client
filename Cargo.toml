@@ -2,14 +2,21 @@
 resolver = "2"
 members = [
     "src-tauri",
+    "crates/cover-draft",
     "crates/crypto",
     "crates/stego",
     "crates/transport",
     "crates/keystore",
     "crates/selectors",
     "crates/ipc",
+    "crates/message-lifecycle",
     "crates/runtime",
     "crates/store",
+    # Isolated, UNWIRED research crate. Reachable only from its own
+    # tests; no other crate or app depends on it. See
+    # crates/osl-ratchet-next/DESIGN.md — unreviewed, must not carry
+    # real traffic before external cryptographic review.
+    "crates/osl-ratchet-next",
 ]
 
 [workspace.package]

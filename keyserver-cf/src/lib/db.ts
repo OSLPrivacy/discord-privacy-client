@@ -24,6 +24,11 @@ export interface RegisterInput {
   ik_mlkem768_pub: string;
   ik_x25519_signature: string;
   ik_ratchet_initial_pub?: string | null;
+  /**
+   * Signed protocol-capability bitmap (migration 0026). Absent/`null`
+   * from a legacy client, which stores as 0 — "no OSL-RN capability".
+   */
+  rn_capabilities?: number | null;
 }
 
 export interface UpsertResult {
@@ -104,8 +109,8 @@ export async function insertUser(
       `INSERT INTO users
          (user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
           ik_x25519_signature, ik_ratchet_initial_pub,
-          registered_at, last_rotated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)`,
+          registered_at, last_rotated_at, rn_capabilities)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)`,
     )
     .bind(
       input.user_id,
@@ -115,6 +120,7 @@ export async function insertUser(
       input.ik_x25519_signature,
       input.ik_ratchet_initial_pub ?? null,
       now,
+      input.rn_capabilities ?? 0,
     )
     .run();
   return { registered_at: now };
@@ -141,7 +147,8 @@ export async function rotateUserKeys(
               ik_mlkem768_pub = ?4,
               ik_x25519_signature = ?5,
               ik_ratchet_initial_pub = ?6,
-              last_rotated_at = ?7
+              last_rotated_at = ?7,
+              rn_capabilities = ?9
         WHERE user_id = ?1
           AND ik_ed25519_pub = ?8`,
     ).bind(
@@ -153,6 +160,7 @@ export async function rotateUserKeys(
       input.ik_ratchet_initial_pub ?? null,
       now,
       expectedCurrentEd25519Pub,
+      input.rn_capabilities ?? 0,
     ),
   ]);
   if ((results[0]?.meta?.changes ?? 0) !== 1) return null;
@@ -322,6 +330,94 @@ export async function getUserPubkeys(
     )
     .bind(userId)
     .first<PubkeysRow>();
+}
+
+/**
+ * The full signed identity record: everything a REG_MSG reconstruction
+ * needs, plus the registration signature over it and the advertised
+ * capability bitmap.
+ *
+ * Used by two callers with the same requirement — that
+ * `(key fields, rn_capabilities, registration_sig)` is always a triple
+ * that verifies together:
+ *
+ * - `GET /v1/pubkeys/:user_id`, so a *reader* can verify the bitmap
+ *   itself instead of trusting this server to report it honestly.
+ * - `/v1/register` Case B, which may only raise the bitmap when the
+ *   submitted key fields byte-equal the stored ones — otherwise the
+ *   stored signature would no longer cover the stored record.
+ */
+export interface SignedIdentityRow {
+  user_id: string;
+  ik_x25519_pub: string;
+  ik_ed25519_pub: string;
+  ik_mlkem768_pub: string;
+  ik_ratchet_initial_pub: string | null;
+  ik_x25519_signature: string;
+  rn_capabilities: number;
+  registered_at: string;
+  last_rotated_at: string | null;
+}
+
+export async function getSignedIdentity(
+  db: D1Database,
+  userId: string,
+): Promise<SignedIdentityRow | null> {
+  return await db
+    .prepare(
+      `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
+              ik_ratchet_initial_pub, ik_x25519_signature, rn_capabilities,
+              registered_at, last_rotated_at
+         FROM users WHERE user_id = ?`,
+    )
+    .bind(userId)
+    .first<SignedIdentityRow>();
+}
+
+/**
+ * Raise a record's capability bitmap, storing the signature that covers
+ * the raised value.
+ *
+ * RAISE ONLY, and enforced in SQL (`rn_capabilities < ?`) so a
+ * concurrent writer cannot interleave a lower value. Deliberately not a
+ * `setRnCapabilities`: there is no lowering operation at all, mirroring
+ * `ipc::wire_rn::RnPeerPin`, which likewise exposes exactly one mutator
+ * that only raises.
+ *
+ * Why lowering is refused even with a valid signature: a peer that has
+ * ever advertised OSL-RN may already have been *pinned* by clients that
+ * fetched the record. If a rolled-back or downgraded install could
+ * re-register with a lower bitmap, that would be a fully authenticated
+ * downgrade of every one of those conversations — and an attacker who
+ * can force a victim's client to re-register an old build gets it for
+ * free. The cost is stated honestly in the endpoint: after a genuine
+ * rollback the record keeps advertising a capability the installed
+ * build no longer has, so peers keep sending OSL-RN and those messages
+ * are undeliverable until the build is rolled forward. That is an
+ * availability failure, which is recoverable; a downgrade is not.
+ *
+ * The CAS also pins the identity key, so a rotation racing this update
+ * cannot have someone else's signature written over its record.
+ */
+export async function raiseRnCapabilities(
+  db: D1Database,
+  userId: string,
+  expectedCurrentEd25519Pub: string,
+  nextCapabilities: number,
+  registrationSig: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE users
+          SET rn_capabilities = ?3,
+              ik_x25519_signature = ?4
+        WHERE user_id = ?1
+          AND ik_ed25519_pub = ?2
+          AND rn_capabilities < ?3`,
+    )
+    .bind(userId, expectedCurrentEd25519Pub, nextCapabilities, registrationSig)
+    .run();
+  return (result.meta?.changes ?? 0) === 1;
 }
 
 /** Variant that also returns ik_ed25519_pub for signature verification. */

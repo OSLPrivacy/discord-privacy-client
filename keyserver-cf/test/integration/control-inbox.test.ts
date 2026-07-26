@@ -1,7 +1,10 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../../src/env.js";
-import { handleControlInboxGet } from "../../src/endpoints/control-inbox.js";
+import {
+  handleControlInboxGet,
+  handleControlInboxPost,
+} from "../../src/endpoints/control-inbox.js";
 import { canonicalControlInboxPostBytes } from "../../src/lib/canonical.js";
 import {
   base64Encode,
@@ -157,7 +160,18 @@ describe("POST /v1/control-inbox hardening", () => {
     const res = await post(
       await signedPostBody(senderId, recipientId, sender.signingKey),
     );
-    expect(res.status).toBe(429);
+    // Contract change: a full inbox no longer refuses the sender. Refusing
+    // punished the sender for something only the recipient can fix, and if the
+    // recipient never drains at all the sender was blocked for the whole TTL.
+    // The cap still bounds storage -- it is now enforced by evicting the
+    // oldest undelivered row rather than by rejecting the newest.
+    expect(res.status).toBe(201);
+    const after = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox WHERE recipient_id = ?`,
+    )
+      .bind(recipientId)
+      .first<{ count: number }>();
+    expect(after?.count).toBe(512);
   });
 
   it("prevents one sender from consuming a recipient's full inbox", async () => {
@@ -180,7 +194,17 @@ describe("POST /v1/control-inbox hardening", () => {
     const blocked = await post(
       await signedPostBody(senderId, recipientId, sender.signingKey),
     );
-    expect(blocked.status).toBe(429);
+    // Same contract change on the per-pair cap, which is the one a normal
+    // conversation actually reaches (32 undelivered messages to one person).
+    // The sender is never blocked; the stalest row makes way.
+    expect(blocked.status).toBe(201);
+    const after = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox
+        WHERE recipient_id = ? AND sender_id = ?`,
+    )
+      .bind(recipientId, senderId)
+      .first<{ count: number }>();
+    expect(after?.count).toBe(32);
 
     const legitimateId = userId("legitimate");
     const legitimate = await registerTestUser(SELF, legitimateId);
@@ -188,6 +212,70 @@ describe("POST /v1/control-inbox hardening", () => {
       await signedPostBody(legitimateId, recipientId, legitimate.signingKey),
     );
     expect(admitted.status).toBe(201);
+  });
+});
+
+describe("POST /v1/control-inbox 429 disambiguation", () => {
+  // Integration traffic runs with effectively unlimited native limiters
+  // (see vitest.config.ts), so drive the throttled branch with a fake
+  // binding — the same deterministic-fake convention the rate-limit unit
+  // tests use.
+  function deniedRateLimitEnv(): Env {
+    return {
+      RATE_LIMIT_1200: {
+        limit: async () => ({ success: false }),
+      },
+      DB: {
+        prepare() {
+          throw new Error("must not reach the database when throttled");
+        },
+      },
+    } as unknown as Env;
+  }
+
+  it("still reports a genuine per-IP throttle as rate_limited", async () => {
+    const res = await handleControlInboxPost(
+      new Request("http://test/v1/control-inbox", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "cf-connecting-ip": "203.0.113.7",
+        },
+        body: JSON.stringify({ sender_id: "sender" }),
+      }),
+      deniedRateLimitEnv(),
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("60");
+    expect(await res.json()).toEqual({ error: "rate_limited" });
+  });
+
+  it("never labels a full recipient inbox as rate_limited", async () => {
+    const senderId = userId("sender");
+    const recipientId = userId("recipient");
+    const sender = await registerTestUser(SELF, senderId);
+    await registerTestUser(SELF, recipientId);
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `WITH RECURSIVE cnt(x) AS (
+         VALUES(1) UNION ALL SELECT x + 1 FROM cnt WHERE x < 32
+       )
+       INSERT INTO control_inbox
+         (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at)
+       SELECT randomblob(16), ?, ?, 'label-test', x'01', ?, ? FROM cnt`,
+    )
+      .bind(recipientId, senderId, now + 3600, now)
+      .run();
+
+    const res = await post(
+      await signedPostBody(senderId, recipientId, sender.signingKey),
+    );
+    // A full inbox is now absorbed by eviction rather than refused, so the
+    // mislabel this test guarded against can no longer be produced at all.
+    // The guarantee it encodes is unchanged and stronger: reaching the cap
+    // never tells the sender to slow down, because it never refuses them.
+    expect(res.status).toBe(201);
+    expect(await res.text()).not.toContain("rate_limited");
   });
 });
 

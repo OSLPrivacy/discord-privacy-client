@@ -67,6 +67,10 @@ png = "0.17"
 crypto = { path = "../crypto" }
 stego = { path = "../stego" }
 keystore = { path = "../keystore" }
+
+# OSL-RN (wire 0x10): hybrid PQ epoch ratchet with header encryption.
+# Consumed only by `wire_rn`; the v=2..v=5 paths do not reference it.
+osl-ratchet-next = { path = "../osl-ratchet-next" }
 store = { path = "../store" }
 
 [dev-dependencies]

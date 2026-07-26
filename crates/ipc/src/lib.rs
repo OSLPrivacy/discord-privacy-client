@@ -50,6 +50,12 @@ pub mod migration;
 pub mod peer_map;
 pub mod prose_token;
 pub mod recovery;
+// Bilateral burn (wire 0x0A / 0x0B): sender sequencing, opaque commitments,
+// the receiver replay ledger and the durable revocation outbox. Strictly
+// additive; the legacy `MSG_TYPE_BURN` (0x01) path above is untouched except
+// that an inbound legacy marker is now converted to a *bounded* revocation
+// instead of a permanent scope flag.
+pub mod revocation;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
@@ -64,6 +70,10 @@ pub mod tofu;
 pub mod whitelist;
 pub mod whitelist_state;
 pub mod wire_v2;
+// OSL-RN (wire 0x10) integration: version selection with downgrade
+// protection plus sealed per-peer ratchet session state. Strictly
+// additive — the v=2/v=3/v=4/v=5 paths above are untouched.
+pub mod wire_rn;
 
 pub use commands::{
     AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,

@@ -21,7 +21,13 @@
 /// consumer).
 
 import type { Env } from "../env.js";
-import { getUserForVerify, insertUser, rotateUserKeys } from "../lib/db.js";
+import {
+  getSignedIdentity,
+  getUserForVerify,
+  insertUser,
+  raiseRnCapabilities,
+  rotateUserKeys,
+} from "../lib/db.js";
 import { badRequest, conflict, forbidden, json } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { tooMany } from "../lib/http.js";
@@ -29,6 +35,8 @@ import {
   buildRegMsg,
   buildRotMsg,
   ed25519SelfTest,
+  parseRnCapabilities,
+  RN_CAP_MAX,
   verifySignedRequest,
 } from "../lib/signed-request.js";
 import { decodeBase64, isProtocolId, isPlainString } from "../lib/validation.js";
@@ -127,12 +135,29 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     if (e) return badRequest(e);
   }
 
+  // --- signed protocol-capability advertisement (migration 0026) ---
+  //
+  // A malformed value is REFUSED, never coerced to 0. Coercion would
+  // mean an attacker who corrupts one byte of this field downgrades the
+  // record instead of breaking the signature, which is precisely the
+  // attack the advertisement exists to stop.
+  const caps = parseRnCapabilities(body.rn_capabilities);
+  if (caps === null) {
+    return badRequest(
+      `rn_capabilities must be an integer in 0..${RN_CAP_MAX} when present`,
+    );
+  }
+
   const fields = {
     user_id: userId,
     ik_x25519_pub: body.ik_x25519_pub as string,
     ik_ed25519_pub: body.ik_ed25519_pub as string,
     ik_mlkem768_pub: body.ik_mlkem768_pub as string,
     ik_ratchet_initial_pub: ratchet as string | null,
+    // `undefined` when the client did not send the field, which makes
+    // `buildRegMsg` reconstruct the byte-identical legacy message every
+    // currently-deployed client signs.
+    rn_capabilities: caps.present ? caps.value : undefined,
   };
   // Persist the registration signature into the existing
   // ik_x25519_signature column (audit/debug — no new column /
@@ -144,6 +169,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     ik_mlkem768_pub: fields.ik_mlkem768_pub,
     ik_x25519_signature: body.registration_sig as string,
     ik_ratchet_initial_pub: fields.ik_ratchet_initial_pub,
+    rn_capabilities: caps.value,
   };
 
   // REG_MSG reconstructed from the PARSED fields (never raw bytes).
@@ -160,7 +186,10 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     );
     if (!ok) return badRequest("registration_sig invalid");
     const { registered_at } = await insertUser(env.DB, regInput);
-    return json({ user_id: userId, registered_at }, { status: 201 });
+    return json(
+      { user_id: userId, registered_at, rn_capabilities: caps.value },
+      { status: 201 },
+    );
   }
 
   // ---------- Case B: exists, same ik_ed25519_pub ----------
@@ -172,12 +201,87 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
       body.registration_sig as string,
     );
     if (!ok) return badRequest("registration_sig invalid");
+
     // Write-FREE no-op: ed25519 is the identity anchor. Any change
     // to the other keys MUST go through Case C (authenticated
     // rotation), never a silent Case-B update. Keeping this branch
     // write-free means the every-unlock re-register the client does
     // generates ZERO D1 writes and is fully replay-inert.
-    return json({ user_id: userId, status: "noop" }, { status: 200 });
+    //
+    // The ONE exception is a capability RAISE. Advertising OSL-RN for
+    // the first time does not rotate any key, so requiring Case C for
+    // it would mean an identity could never gain a capability without
+    // also replacing its keys. The raise keeps every property of this
+    // branch that matters:
+    //
+    // - Still replay-inert. The update is `rn_capabilities < ?`, so a
+    //   captured body applies at most once and every replay is a no-op.
+    // - Still zero writes in the steady state. Once the bitmap matches,
+    //   the every-unlock re-register writes nothing again.
+    // - Still no key change. The raise is refused unless every
+    //   submitted key field byte-equals the stored one, which keeps
+    //   `(keys, bitmap, signature)` a triple that verifies together —
+    //   the property a reader depends on.
+    // - Never lowers. See `raiseRnCapabilities`.
+    if (!caps.present) {
+      return json({ user_id: userId, status: "noop" }, { status: 200 });
+    }
+    const stored = await getSignedIdentity(env.DB, userId);
+    if (!stored) return json({ user_id: userId, status: "noop" }, { status: 200 });
+    if (caps.value <= stored.rn_capabilities) {
+      // Equal: nothing to do. Lower: deliberately ignored rather than
+      // applied, and reported so the caller can see that the record
+      // still advertises more than this build claims.
+      return json(
+        {
+          user_id: userId,
+          status: "noop",
+          rn_capabilities: stored.rn_capabilities,
+        },
+        { status: 200 },
+      );
+    }
+    const sameKeys =
+      stored.ik_x25519_pub === fields.ik_x25519_pub &&
+      stored.ik_mlkem768_pub === fields.ik_mlkem768_pub &&
+      (stored.ik_ratchet_initial_pub ?? null) ===
+        (fields.ik_ratchet_initial_pub ?? null);
+    if (!sameKeys) {
+      // A key change plus a capability change is a rotation. Refusing
+      // here rather than raising keeps the stored signature covering
+      // the stored record.
+      return forbidden(
+        "changing keys and rn_capabilities together requires an authenticated rotation",
+      );
+    }
+    const raised = await raiseRnCapabilities(
+      env.DB,
+      userId,
+      stored.ik_ed25519_pub,
+      caps.value,
+      body.registration_sig as string,
+    );
+    if (!raised) {
+      // Lost a race with a concurrent raise or a rotation. Either way
+      // the durable value is at least as high as ours.
+      const now = await getSignedIdentity(env.DB, userId);
+      return json(
+        {
+          user_id: userId,
+          status: "noop",
+          rn_capabilities: now?.rn_capabilities ?? stored.rn_capabilities,
+        },
+        { status: 200 },
+      );
+    }
+    return json(
+      {
+        user_id: userId,
+        status: "capabilities_raised",
+        rn_capabilities: caps.value,
+      },
+      { status: 200 },
+    );
   }
 
   // ---------- Case C: exists, DIFFERENT ik_ed25519_pub ----------
@@ -204,6 +308,9 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     new_ik_ed25519_pub: fields.ik_ed25519_pub,
     new_ik_mlkem768_pub: fields.ik_mlkem768_pub,
     new_ik_ratchet_initial_pub: fields.ik_ratchet_initial_pub,
+    // Same optional component as REG_MSG, so the outgoing key must
+    // authorise the new bitmap as well as the new keys.
+    rn_capabilities: fields.rn_capabilities,
   });
 
   // (b) old key authorises the change.
@@ -223,6 +330,26 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   );
   if (!newOk) return REJECT;
 
+  // A rotation re-states the whole record, including the bitmap, so it
+  // is the one place a fully authorised request could LOWER an
+  // advertised capability. Refuse instead.
+  //
+  // This is not hypothetical and does not need a key compromise: a
+  // rolled-back build sends no `rn_capabilities` at all, so its
+  // rotation would write 0 and silently strip a capability that peers
+  // have already pinned. Refusing costs that build the ability to
+  // rotate keys until it is rolled forward — loud, bounded, and
+  // recoverable. The alternative is a silent authenticated downgrade.
+  //
+  // Raising through a rotation is fine and is allowed.
+  const priorRecord = await getSignedIdentity(env.DB, userId);
+  if (priorRecord && caps.value < priorRecord.rn_capabilities) {
+    return conflict(
+      "rotation would lower rn_capabilities; re-register with at least " +
+        `${priorRecord.rn_capabilities} (capability advertisements never lower)`,
+    );
+  }
+
   const rotated = await rotateUserKeys(
     env.DB,
     regInput,
@@ -233,7 +360,12 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   }
   const { last_rotated_at } = rotated;
   return json(
-    { user_id: userId, status: "rotated", last_rotated_at },
+    {
+      user_id: userId,
+      status: "rotated",
+      last_rotated_at,
+      rn_capabilities: caps.value,
+    },
     { status: 200 },
   );
 }

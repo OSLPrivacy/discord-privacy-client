@@ -40,6 +40,62 @@ describe("REG_MSG / ROT_MSG byte format (MIRRORED with client.rs)", () => {
     ).toBe("OSL-REGISTER-v1\nu\nx\ne\nm\n");
   });
 
+  // Mirrored with
+  // crates/keystore/tests/client_test.rs
+  // `reg_msg_with_capabilities_byte_format_is_pinned_and_mirrored`.
+  it("REG_MSG with a capability bitmap matches the pinned client vector", () => {
+    const bytes = buildRegMsg({
+      user_id: "900000000000000001",
+      ik_x25519_pub: "WdsAAA==",
+      ik_ed25519_pub: "ZWQyNTUx",
+      ik_mlkem768_pub: "bWxrZW0=",
+      ik_ratchet_initial_pub: "cmF0Y2g=",
+      rn_capabilities: 1,
+    });
+    expect(dec.decode(bytes)).toBe(
+      "OSL-REGISTER-v1\n900000000000000001\nWdsAAA==\nZWQyNTUx\nbWxrZW0=\ncmF0Y2g=\n1",
+    );
+  });
+
+  it("an absent bitmap reproduces the legacy bytes exactly; a present 0 does not", () => {
+    const base = {
+      user_id: "u",
+      ik_x25519_pub: "x",
+      ik_ed25519_pub: "e",
+      ik_mlkem768_pub: "m",
+      ik_ratchet_initial_pub: null,
+    };
+    // undefined and null both mean "the client did not send the field",
+    // which must reproduce the message every deployed client signs.
+    expect(dec.decode(buildRegMsg(base))).toBe("OSL-REGISTER-v1\nu\nx\ne\nm\n");
+    expect(dec.decode(buildRegMsg({ ...base, rn_capabilities: null }))).toBe(
+      "OSL-REGISTER-v1\nu\nx\ne\nm\n",
+    );
+    // An explicit zero is a DIFFERENT message. That asymmetry is what
+    // makes stripping the field a signature failure rather than a
+    // silent downgrade to "no capability".
+    expect(dec.decode(buildRegMsg({ ...base, rn_capabilities: 0 }))).toBe(
+      "OSL-REGISTER-v1\nu\nx\ne\nm\n\n0",
+    );
+  });
+
+  it("ROT_MSG carries the bitmap when present and is unchanged when absent", () => {
+    const base = {
+      user_id: "alice",
+      prev_ik_ed25519_pub: "OLD=",
+      new_ik_x25519_pub: "NX=",
+      new_ik_ed25519_pub: "NE=",
+      new_ik_mlkem768_pub: "NM=",
+      new_ik_ratchet_initial_pub: null,
+    };
+    expect(dec.decode(buildRotMsg(base))).toBe(
+      "OSL-ROTATE-v1\nalice\nOLD=\nNX=\nNE=\nNM=\n",
+    );
+    expect(dec.decode(buildRotMsg({ ...base, rn_capabilities: 1 }))).toBe(
+      "OSL-ROTATE-v1\nalice\nOLD=\nNX=\nNE=\nNM=\n\n1",
+    );
+  });
+
   it("ROT_MSG matches the pinned client vector", () => {
     const bytes = buildRotMsg({
       user_id: "alice",

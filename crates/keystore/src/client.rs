@@ -22,7 +22,8 @@
 
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
-    sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_post,
+    sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
+    sign_control_inbox_post_lane,
 };
 use crate::identity::Identity;
 use crate::prekeys::{
@@ -128,6 +129,155 @@ pub fn reg_msg(
     .into_bytes()
 }
 
+// ---------------------------------------------------------------
+// Signed protocol-capability advertisement (keyserver migration 0026)
+// ---------------------------------------------------------------
+
+/// Bit 0 — the identity can send and receive OSL-RN, wire `0x10`.
+/// Mirrors `RN_CAP_WIRE_RN` in `keyserver-cf/src/lib/signed-request.ts`.
+pub const RN_CAP_WIRE_RN: u32 = 1;
+
+/// Upper bound on the bitmap, mirroring `RN_CAP_MAX`. Unknown bits
+/// inside the bound are ignored, not rejected: a peer newer than this
+/// build may advertise capabilities this build has no name for.
+pub const RN_CAP_MAX: u32 = 0xffff;
+
+/// REG_MSG bytes for a record that advertises a capability bitmap.
+///
+/// Byte-identical to `buildRegMsg` called *with* `rn_capabilities`: the
+/// legacy message with `"\n" || decimal(bitmap)` appended.
+/// [`reg_msg`] remains the no-bitmap form and is unchanged, so the two
+/// together reproduce both branches the server reconstructs.
+pub fn reg_msg_with_capabilities(
+    user_id: &str,
+    ik_x25519_pub_b64: &str,
+    ik_ed25519_pub_b64: &str,
+    ik_mlkem768_pub_b64: &str,
+    ik_ratchet_initial_pub_b64: Option<&str>,
+    rn_capabilities: u32,
+) -> Vec<u8> {
+    let mut bytes = reg_msg(
+        user_id,
+        ik_x25519_pub_b64,
+        ik_ed25519_pub_b64,
+        ik_mlkem768_pub_b64,
+        ik_ratchet_initial_pub_b64,
+    );
+    bytes.push(b'\n');
+    bytes.extend_from_slice(rn_capabilities.to_string().as_bytes());
+    bytes
+}
+
+/// What a peer's identity record says about its protocol capabilities,
+/// after this client has checked the signature itself.
+///
+/// There is deliberately **no variant meaning "unknown, assume
+/// capable"**. Every arm other than [`PeerCapabilities::Verified`]
+/// carries a bitmap of `0`, so a caller that ignores the distinction
+/// still fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerCapabilities {
+    /// The record advertises nothing (a legacy peer, or a server that
+    /// predates the advertisement). **No capability.**
+    Absent,
+    /// The record advertises a bitmap but the signature over it does not
+    /// verify, or was not served at all.
+    ///
+    /// This is the tampering signal: an attacker or a dishonest key
+    /// server altered the record. It resolves to **no capability** for
+    /// version-selection purposes — but a peer already pinned to OSL-RN
+    /// will then be refused a legacy send by
+    /// `ipc::wire_rn::select_wire_version`, so the downgrade attempt
+    /// surfaces as a refusal rather than as a silent v=3 send.
+    Unverified,
+    /// The bitmap is covered by a signature that verifies under the
+    /// record's own Ed25519 identity key.
+    Verified(u32),
+}
+
+impl PeerCapabilities {
+    /// The bitmap to act on. Anything unverified is `0`.
+    pub fn bitmap(self) -> u32 {
+        match self {
+            PeerCapabilities::Verified(bits) => bits,
+            _ => 0,
+        }
+    }
+
+    /// Does this peer verifiably speak OSL-RN?
+    pub fn supports_rn(self) -> bool {
+        self.bitmap() & RN_CAP_WIRE_RN != 0
+    }
+}
+
+/// Verify a peer's advertised capability bitmap against the signature
+/// served alongside it.
+///
+/// This is the client half of layer **L1** in
+/// `crates/osl-ratchet-next/src/negotiate.rs`. The bitmap is a component
+/// of REG_MSG, so verifying the registration signature over the fields
+/// as served proves the bitmap is the one the peer's identity key
+/// actually signed — the key server is not trusted to report it.
+///
+/// Fail-closed rules, in order:
+///
+/// 1. No bitmap, or a bitmap of `0` → [`PeerCapabilities::Absent`].
+///    Indistinguishable from a legacy peer, and treated as one.
+/// 2. A bitmap out of range, or no signature served with it →
+///    [`PeerCapabilities::Unverified`].
+/// 3. A signature that does not verify over the extended REG_MSG built
+///    from the served fields → [`PeerCapabilities::Unverified`]. This is
+///    the case a stripped or lowered bitmap lands in: the reconstruction
+///    stops matching, so tampering cannot be laundered into "not
+///    capable, send v=3 instead" without also being visible.
+///
+/// The peer's Ed25519 identity key is taken from the record. That is the
+/// residual trust boundary and it is **not** closed here: an attacker
+/// who can substitute the whole record, identity key included, signs
+/// whatever bitmap they like. Detecting that is the identity/TOFU
+/// layer's job (`ipc::tofu`), exactly as it is for every other field in
+/// the record.
+pub fn verify_peer_capabilities(resp: &PubkeysResponse) -> PeerCapabilities {
+    let Some(bits) = resp.rn_capabilities else {
+        return PeerCapabilities::Absent;
+    };
+    if bits == 0 {
+        return PeerCapabilities::Absent;
+    }
+    if bits > RN_CAP_MAX {
+        return PeerCapabilities::Unverified;
+    }
+    let Some(sig_b64) = resp.registration_sig.as_deref() else {
+        return PeerCapabilities::Unverified;
+    };
+    let msg = reg_msg_with_capabilities(
+        &resp.user_id,
+        &resp.ik_x25519_pub,
+        &resp.ik_ed25519_pub,
+        &resp.ik_mlkem768_pub,
+        resp.ik_ratchet_initial_pub.as_deref(),
+        bits,
+    );
+    let Ok(pub_bytes) = STANDARD.decode(&resp.ik_ed25519_pub) else {
+        return PeerCapabilities::Unverified;
+    };
+    let Ok(sig_bytes) = STANDARD.decode(sig_b64) else {
+        return PeerCapabilities::Unverified;
+    };
+    let Ok(pub_arr) = <[u8; 32]>::try_from(pub_bytes.as_slice()) else {
+        return PeerCapabilities::Unverified;
+    };
+    let Ok(sig_arr) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
+        return PeerCapabilities::Unverified;
+    };
+    let verifying = crypto::ed25519::PublicKey::from_bytes(pub_arr);
+    let signature = crypto::ed25519::Signature::from_bytes(sig_arr);
+    match crypto::ed25519::verify(&verifying, &msg, &signature) {
+        Ok(true) => PeerCapabilities::Verified(bits),
+        _ => PeerCapabilities::Unverified,
+    }
+}
+
 /// ROT_MSG bytes — byte-identical to the server's `buildRotMsg`:
 ///
 ///   "OSL-ROTATE-v1\n" || user_id "\n" || prev_ik_ed25519_pub_b64
@@ -164,6 +314,24 @@ pub struct PubkeysResponse {
     /// this field at all; `#[serde(default)]` lets them parse.
     #[serde(default)]
     pub ik_ratchet_initial_pub: Option<String>,
+    /// Signed protocol-capability bitmap (keyserver migration 0026).
+    ///
+    /// `None` from a key server that predates the advertisement.
+    /// `Some(0)` from a peer that has one but advertises nothing. Both
+    /// mean the same thing — **no capability** — and
+    /// [`verify_peer_capabilities`] collapses them into
+    /// [`PeerCapabilities::Absent`]. There is no encoding of "unknown,
+    /// assume capable".
+    #[serde(default)]
+    pub rn_capabilities: Option<u32>,
+    /// Ed25519 signature over the REG_MSG this record reconstructs to,
+    /// served only when `rn_capabilities` is non-zero.
+    ///
+    /// Never trust `rn_capabilities` without checking this. Pass the
+    /// whole response to [`verify_peer_capabilities`] rather than
+    /// reading either field directly.
+    #[serde(default)]
+    pub registration_sig: Option<String>,
 }
 
 /// One-time prekey returned by `/v1/prekey-bundle/:user_id`. `None`
@@ -797,11 +965,53 @@ impl KeyServerClient {
         scope_id: &str,
         bundle: &[u8],
     ) -> Result<ControlInboxPostResponse> {
+        self.post_control_inbox_lane(sender, recipient_id, scope_id, bundle, None, None)
+    }
+
+    /// Enqueue on a named delivery lane.
+    ///
+    /// `None, None` is byte-identical to [`Self::post_control_inbox`] — same
+    /// signed bytes, same request body — so this is a strict superset.
+    ///
+    /// `Some(CONTROL_INBOX_KIND_REVOCATION)` posts a bilateral-burn notice on the
+    /// **non-evictable** lane. That lane exists because the ordinary one evicts:
+    /// `evictOldestPending` silently deletes the oldest undelivered rows at the
+    /// 32-row per-pair cap, so a burn queued to an offline peer used to be
+    /// destroyed by the sender's own next 32 messages, with no notice to anyone.
+    /// On the revocation lane a full lane is a **507 refusal** the caller can see
+    /// and retry, and a retry for the same `(scope, epoch)` collapses onto the
+    /// queued row rather than appending.
+    ///
+    /// `collapse_key` is required for a revocation and must be 64 lowercase hex
+    /// characters -- `ipc::revocation::lane_collapse_key` on the client side. It is a MAC
+    /// over (scope commitment, burn epoch) under a pair-specific key, so the
+    /// server learns neither.
+    ///
+    /// A 507 is returned to the caller rather than retried in-band: the condition
+    /// is durable (it clears when the recipient drains), and the sender's durable
+    /// revocation outbox is the right place to retry from.
+    pub fn post_control_inbox_lane(
+        &self,
+        sender: &Identity,
+        recipient_id: &str,
+        scope_id: &str,
+        bundle: &[u8],
+        kind: Option<&str>,
+        collapse_key: Option<&str>,
+    ) -> Result<ControlInboxPostResponse> {
         let timestamp_ms: i64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let sig = sign_control_inbox_post(sender, recipient_id, scope_id, timestamp_ms, bundle);
+        let sig = sign_control_inbox_post_lane(
+            sender,
+            recipient_id,
+            scope_id,
+            timestamp_ms,
+            bundle,
+            kind,
+            collapse_key,
+        );
         let body = ControlInboxPostBody {
             sender_id: &sender.user_id,
             recipient_id,
@@ -809,13 +1019,48 @@ impl KeyServerClient {
             bundle_b64: STANDARD.encode(bundle),
             timestamp_ms,
             signature_b64: STANDARD.encode(sig.as_bytes()),
+            kind: kind.filter(|value| !value.is_empty()),
+            collapse_key,
         };
         let body_json = serde_json::to_vec(&body)?;
-        let resp = self.send_request(
-            "POST",
-            "/v1/control-inbox",
-            Some(("application/json", &body_json)),
-        )?;
+        // A 429 here is safe to retry, and retrying is the difference between a
+        // transient throttle and a message the operator believes they sent.
+        //
+        // The server rejects a rate-limited request *before* parsing the body
+        // (`checkRateLimit` is the first statement in `handleControlInboxPost`),
+        // so a 429 proves nothing was stored and a retry cannot double-post.
+        //
+        // Short and bounded on purpose. The limiter's window is 60s, but this
+        // runs on a keypress: stalling a send for a minute is worse than the
+        // failure it avoids. Cloudflare documents these counters as permissive
+        // and eventually consistent, so a brief pause clears an incidental
+        // burst; a genuine sustained limit still falls through to the caller,
+        // which reports it as a rate limit rather than a delivery failure.
+        const RATE_LIMIT_RETRY_BACKOFF_MS: [u64; 2] = [400, 1200];
+        let mut attempt = 0usize;
+        let resp = loop {
+            let resp = self.send_request(
+                "POST",
+                "/v1/control-inbox",
+                Some(("application/json", &body_json)),
+            )?;
+            // Only a genuine rate limit is worth waiting out. A full recipient
+            // inbox is a durable condition -- it clears when that recipient
+            // picks their messages up, not on a timer -- so retrying it just
+            // adds latency to a refusal that is already certain.
+            let inbox_full = resp.status == 429
+                && String::from_utf8_lossy(&resp.body).contains("recipient_inbox_full");
+            if resp.status != 429
+                || inbox_full
+                || attempt >= RATE_LIMIT_RETRY_BACKOFF_MS.len()
+            {
+                break resp;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(
+                RATE_LIMIT_RETRY_BACKOFF_MS[attempt],
+            ));
+            attempt += 1;
+        };
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
     }
@@ -844,6 +1089,78 @@ impl KeyServerClient {
         let resp = self.send_request("GET", &path, None)?;
         check_2xx(&resp)?;
         let parsed: ControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
+        Ok(parsed.items)
+    }
+
+    /// Drain only the rows one specific peer sent.
+    ///
+    /// # Why a caller should prefer this to [`Self::get_control_inbox`]
+    ///
+    /// The unfiltered drain returns one page of at most 64 rows in
+    /// `created_at` order, and a caller that processes only the
+    /// conversation it currently has open deletes only those rows — so
+    /// rows from peers whose conversations are closed accumulate at the
+    /// front of the page and never leave. Once 64 of them exist, rows
+    /// for the active conversation sit past the page boundary and are
+    /// **permanently unreachable**, and the drain cannot tell that from
+    /// an empty inbox. Two peers with unopened conversations are enough
+    /// (the server admits 32 pending rows per pair).
+    ///
+    /// Filtering by sender removes the coupling: what this peer can
+    /// deliver no longer depends on any other peer's backlog. Because
+    /// the server's per-pair admission cap (32) is below its page size
+    /// (64), a filtered drain is never truncated either, so there is no
+    /// pagination left to do.
+    ///
+    /// # Fail-closed behaviour
+    ///
+    /// The filter is a signed component of the request, so:
+    ///
+    /// - A worker that does not understand `?sender=` reconstructs the
+    ///   unfiltered canonical bytes, this signature does not verify, and
+    ///   the request is refused. It can never answer with an unfiltered
+    ///   page that the caller would mistake for a filtered one — which
+    ///   would silently reinstate the starvation.
+    /// - An attacker who strips or rewrites `?sender=` in flight is
+    ///   refused for the same reason.
+    ///
+    /// Belt and braces on top of that: the response must echo
+    /// `filtered_sender_id`, and a mismatch is an error rather than a
+    /// silently-accepted wider page.
+    pub fn get_control_inbox_from(
+        &self,
+        identity: &Identity,
+        sender_id: &str,
+    ) -> Result<Vec<ControlInboxItem>> {
+        let timestamp_ms = unix_timestamp_ms();
+        let sig = sign_control_inbox_get_filtered(identity, timestamp_ms, Some(sender_id));
+        let sig_q = urlencode_query_value(&STANDARD.encode(sig.as_bytes()));
+        let path = format!(
+            "/v1/control-inbox/{}?ts={}&sig={}&sender={}",
+            urlencode_segment(&identity.user_id),
+            timestamp_ms,
+            sig_q,
+            urlencode_query_value(sender_id),
+        );
+        let resp = self.send_request("GET", &path, None)?;
+        check_2xx(&resp)?;
+        let parsed: ControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
+        // The server must confirm which filter it applied. Absent or
+        // different means we are looking at a page we did not ask for.
+        match parsed.filtered_sender_id.as_deref() {
+            Some(echoed) if echoed == sender_id => {}
+            _ => {
+                // `Transport` rather than a new enum variant: adding a
+                // variant to the public `keystore::Error` could break an
+                // exhaustive match in a crate this change must not
+                // touch, and this genuinely is "the server's answer was
+                // not usable".
+                return Err(Error::Transport(
+                    "control-inbox drain did not confirm the sender filter it was asked for"
+                        .into(),
+                ))
+            }
+        }
         Ok(parsed.items)
     }
 
@@ -1019,6 +1336,16 @@ struct ControlInboxPostBody<'a> {
     bundle_b64: String,
     timestamp_ms: i64,
     signature_b64: String,
+    /// Delivery lane. Omitted entirely for ordinary traffic, so the serialized
+    /// body is byte-identical to the pre-lane one and a deployed worker sees no
+    /// change at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'a str>,
+    /// Opaque `(scope, epoch)` collapse key. Only ever present with
+    /// `kind = "revocation"`; the worker rejects it otherwise, because attaching
+    /// one to an ordinary row would move that row out of the evictable set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collapse_key: Option<&'a str>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -1034,11 +1361,27 @@ pub struct ControlInboxItem {
     pub scope_id: String,
     pub bundle_b64: String,
     pub created_at: i64,
+    /// Delivery lane the server filed this row under: `""` (ordinary) or
+    /// `"revocation"`. Defaulted so a worker that predates lanes still
+    /// deserializes.
+    ///
+    /// A routing hint only. It lets a drain recognise a burn notice without
+    /// spending a decrypt, but it is server-supplied and unauthenticated, so the
+    /// `MSG_TYPE_*` byte inside the authenticated envelope is what decides how a
+    /// row is actually handled.
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Deserialize)]
 struct ControlInboxGetResponse {
     items: Vec<ControlInboxItem>,
+    /// Echo of the `?sender=` filter the server applied. Absent on an
+    /// unfiltered drain, and absent from a worker that does not
+    /// implement the filter — which is why
+    /// `get_control_inbox_from` treats a missing echo as an error.
+    #[serde(default)]
+    filtered_sender_id: Option<String>,
 }
 
 #[derive(Serialize)]

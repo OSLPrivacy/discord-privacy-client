@@ -577,6 +577,9 @@ mod tests {
 
     #[test]
     fn gate_burn_recovery_is_fixed_root_idempotent_and_fail_closed() {
+        // Overrides the process-wide keystore base dir below, so it must serialise
+        // against every other test that touches those statics.
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
         let config = temp_root("gate-config");
         let local = temp_root("gate-local");
         std::fs::create_dir_all(config.join(HUB_CORE_DIR)).unwrap();

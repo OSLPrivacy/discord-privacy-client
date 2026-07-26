@@ -2211,6 +2211,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "keystore",
+ "osl-ratchet-next",
  "png 0.17.16",
  "reqwest 0.12.28",
  "serde",
@@ -2555,6 +2556,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "message-lifecycle"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2957,6 +2968,33 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "osl-cover-draft"
+version = "0.0.1"
+dependencies = [
+ "sha2",
+ "thiserror 1.0.69",
+ "zeroize",
+]
+
+[[package]]
+name = "osl-ratchet-next"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "hex",
+ "hkdf",
+ "ml-kem",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "sha2",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

@@ -67,7 +67,7 @@ fn round_trip_small_payload() {
 
 #[test]
 fn round_trip_at_each_bucket_max_capacity() {
-    for &bucket in ATTACHMENT_BUCKETS {
+    for &bucket in ATTACHMENT_BUCKETS.iter().filter(|bucket| **bucket <= 25 * 1024 * 1024) {
         let plaintext_len = bucket as usize - LENGTH_PREFIX_SIZE;
         let plaintext = vec![0xAB; plaintext_len];
         let key = random_aead_key();
@@ -85,6 +85,21 @@ fn round_trip_at_each_bucket_max_capacity() {
         let recovered = decrypt_attachment(key, &wire).expect("decrypt at bucket max");
         assert_eq!(recovered, plaintext);
     }
+}
+
+#[test]
+fn large_streaming_buckets_are_selected_without_large_allocations() {
+    let key = random_aead_key();
+    for (declared, expected_bucket) in [
+        (25 * 1024 * 1024, 50 * 1024 * 1024),
+        (50 * 1024 * 1024, 100 * 1024 * 1024),
+        (100 * 1024 * 1024, 250 * 1024 * 1024),
+        (512 * 1024 * 1024, 512 * 1024 * 1024 + 16 * 1024),
+    ] {
+        let (encryptor, _) = StreamEncryptor::new(key.clone(), declared, b"cid".to_vec(), 0).unwrap();
+        assert_eq!(encryptor.header().bucket_size, expected_bucket);
+    }
+    assert_eq!(max_attachment_plaintext_size(), 512 * 1024 * 1024);
 }
 
 #[test]
@@ -117,7 +132,7 @@ fn promotes_to_next_bucket_when_payload_pushes_past_boundary() {
 fn rejects_oversized_payload() {
     let key = random_aead_key();
     let too_big_len = max_attachment_plaintext_size() + 1;
-    // We can't actually allocate 25 MB for a quick test on every CI
+    // We do not allocate the declared 512 MiB; the streaming builder checks it.
     // runner, but we can exercise the size check with the streaming
     // builder's declared length.
     let result = StreamEncryptor::new(key, too_big_len, b"cid".to_vec(), 0);
@@ -149,6 +164,22 @@ fn streaming_encrypt_emits_no_more_than_one_chunk_in_memory() {
     wire.extend_from_slice(&enc.finalize().unwrap());
     let recovered = decrypt_attachment(key, &wire).unwrap();
     assert_eq!(recovered, plaintext);
+}
+
+#[test]
+fn streaming_finalize_emits_one_bounded_ciphertext_chunk_at_a_time() {
+    let key = random_aead_key();
+    let (enc, _) = StreamEncryptor::new(key, 0, b"cid".to_vec(), 0).unwrap();
+    let mut calls = 0usize;
+    let mut largest = 0usize;
+    enc.finalize_into(|chunk| {
+        calls += 1;
+        largest = largest.max(chunk.len());
+        Ok(())
+    })
+    .unwrap();
+    assert!(calls > 1, "padding must be emitted incrementally");
+    assert_eq!(largest, ATTACHMENT_CHUNK_SIZE + aead::TAG_SIZE);
 }
 
 #[test]

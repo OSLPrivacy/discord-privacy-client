@@ -357,7 +357,7 @@ fn empty_envelope_input_rejected() {
 fn unsupported_extension_rejected_at_seal_time() {
     let state = fresh_state_for_liam();
     let err =
-        cmd_osl_seal_attachment(&state, vec![0u8; 100], "passwords.txt".to_string()).unwrap_err();
+        cmd_osl_seal_attachment(&state, vec![0u8; 100], "payload.exe".to_string()).unwrap_err();
     assert!(
         err.contains("unsupported"),
         "expected unsupported-extension error, got: {err}"

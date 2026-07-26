@@ -130,6 +130,7 @@ impl ScrubIndexState {
         let _guard = self.lock()?;
         validate_owner(owner)?;
         let selections = validate_selections(request.selections)?;
+        validate_source_selections(request.source, &selections)?;
         let root = self.root()?;
         let key = self.key()?;
         ensure_safe_root(&root, true)?;
@@ -372,6 +373,20 @@ impl ScrubIndexState {
             use_key_override: true,
         }
     }
+}
+
+fn validate_source_selections(
+    source: ScrubIndexSource,
+    selections: &[ScrubAccountSelection],
+) -> Result<(), String> {
+    if source == ScrubIndexSource::ExplicitExport
+        && (selections.len() != 1
+            || selections[0].service_id != "local_import"
+            || selections[0].account_id != "manual-export")
+    {
+        return Err("Explicit Scrub exports require the fixed local import scope".into());
+    }
+    Ok(())
 }
 
 fn scrub_index_root(config_dir: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -716,7 +731,7 @@ mod tests {
                 OWNER,
                 ScrubIndexInitializeRequest {
                     selections: vec![selection()],
-                    source: ScrubIndexSource::ExplicitExport,
+                    source: ScrubIndexSource::OslVisibleData,
                 },
             )
             .unwrap();
@@ -811,7 +826,7 @@ mod tests {
             OWNER,
             ScrubIndexInitializeRequest {
                 selections: vec![selection()],
-                source: ScrubIndexSource::ExplicitExport,
+                source: ScrubIndexSource::OslVisibleData,
             },
         );
         assert!(result.unwrap_err().contains("Unlock"));
@@ -821,7 +836,10 @@ mod tests {
     #[test]
     fn index_root_accepts_the_resolved_single_identity_base_directory() {
         let base = root("single-identity");
-        assert_eq!(scrub_index_root(Some(base.clone())).unwrap(), base.join(INDEX_DIR));
+        assert_eq!(
+            scrub_index_root(Some(base.clone())).unwrap(),
+            base.join(INDEX_DIR)
+        );
         assert!(scrub_index_root(None).unwrap_err().contains("unavailable"));
     }
 
@@ -841,11 +859,40 @@ mod tests {
             OWNER,
             ScrubIndexInitializeRequest {
                 selections: vec![selection()],
-                source: ScrubIndexSource::ExplicitExport,
+                source: ScrubIndexSource::OslVisibleData,
             },
         );
         assert!(result.unwrap_err().contains("not a private directory"));
         assert_eq!(fs::read(target.join("keep")).unwrap(), b"safe");
         let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn explicit_exports_are_confined_to_the_fixed_local_scope() {
+        let root = root("explicit-scope");
+        let state = ScrubIndexState::for_test(root.clone());
+        let rejected = state.initialize(
+            OWNER,
+            ScrubIndexInitializeRequest {
+                selections: vec![selection()],
+                source: ScrubIndexSource::ExplicitExport,
+            },
+        );
+        assert!(rejected.unwrap_err().contains("fixed local import scope"));
+        assert!(!root.exists());
+
+        let accepted = state
+            .initialize(
+                OWNER,
+                ScrubIndexInitializeRequest {
+                    selections: vec![ScrubAccountSelection {
+                        service_id: "local_import".into(),
+                        account_id: "manual-export".into(),
+                    }],
+                    source: ScrubIndexSource::ExplicitExport,
+                },
+            )
+            .unwrap();
+        state.cancel(OWNER, &accepted.import_id).unwrap();
     }
 }

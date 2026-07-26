@@ -2089,6 +2089,50 @@ pub fn cmd_osl_persist_outbound(
     Ok(())
 }
 
+/// Persist plaintext already authenticated by a trusted first-party OSL Chat
+/// receive path. This is an internal Rust API, not a renderer command: the
+/// caller must derive the sender and channel from the verified peer context.
+pub fn cmd_osl_persist_inbound(
+    state: &AppState,
+    channel_id: String,
+    message_id: String,
+    sender_osl_user_id: String,
+    plaintext: String,
+) -> Result<(), String> {
+    if channel_id.is_empty()
+        || channel_id.len() > 160
+        || message_id.is_empty()
+        || message_id.len() > 96
+        || sender_osl_user_id.is_empty()
+        || sender_osl_user_id.len() > 160
+        || plaintext.is_empty()
+    {
+        return Err("OSL: invalid first-party chat history row".to_owned());
+    }
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    store
+        .put(&StoredMessage {
+            discord_message_id: message_id,
+            channel_id,
+            sender_discord_id: sender_osl_user_id.clone(),
+            sender_osl_user_id,
+            plaintext,
+            decrypted_at: now,
+            burned: false,
+        })
+        .map_err(|error| format!("OSL: first-party chat history: {error}"))
+}
+
 /// JS-facing DTO mirror of [`store::StoredMessage`]. The store
 /// crate intentionally does not depend on `serde` (it's a pure
 /// at-rest layer); this DTO crosses the IPC boundary and is the
@@ -5267,6 +5311,13 @@ pub fn cmd_osl_control_inbox_drain(
                 continue;
             }
         };
+        // Native-overlay relay notices are user content transported through
+        // this authenticated inbox, not core control messages. Leave them in
+        // place without attempting dispatch, deletion, or error reporting;
+        // the separately-capable trusted overlay drain owns them.
+        if crate::wire_v2::is_native_overlay_relay_bundle(&bundle) {
+            continue;
+        }
         let content = format!("DPC0::{}", STANDARD.encode(&bundle));
         // The inbox stores sender_id as the sender's OSL user_id, but
         // the decrypt/apply path (resolve_sender_pubkey, peer_map
@@ -6064,6 +6115,27 @@ fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Re
 ///   skipped).
 /// - Wipe `wrapped_key` on matching rows in `messages.sqlite`
 ///   (best-effort; failures logged, not propagated).
+/// Legacy `MSG_TYPE_BURN` (0x01) receive handler.
+///
+/// # Two halves, one right and one wrong
+///
+/// The authorisation model here is **correct and is the model bilateral burn
+/// adopts**: `wipe_wrapped_keys_in_scope(.., Some(sender_discord_id))` —
+/// "Their burn must not blank our own or other members' messages." Burn authority
+/// is authorship.
+///
+/// The persistence model is **not**. It records a permanent scope-level entry in
+/// `peer_map.burned_scopes`, which has no epoch and no sequence bound, so one
+/// stale or replayed marker kills that conversation forever — including content
+/// sent after it. That is a permanent denial of service.
+///
+/// [`crate::revocation`] is the replacement, and it does not reproduce it: burns
+/// carry a monotonic epoch and a `burn_upto_seq`, and even an inbound legacy
+/// `0x01` is converted to a bounded revocation at "everything of theirs I
+/// currently hold" (see [`crate::revocation::legacy_burn_notice`] and
+/// `security::apply_legacy_peer_burn`). New code must not call this path or copy
+/// its `burned_scopes` write; it remains only so already-shipped legacy clients
+/// keep behaving as they do today.
 fn apply_burn_recv(
     state: &AppState,
     sender_discord_id: &str,

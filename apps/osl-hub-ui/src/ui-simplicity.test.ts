@@ -12,12 +12,12 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("radically simple onboarding", () => {
-  it("keeps one recommended sending path and puts Single Enter under Advanced", () => {
-    const sending = functionSource("sendingSetupContent", "onboardingPasswordRoleContent");
+  it("keeps one recommended sending path and makes all three modes visible", () => {
+    const sending = functionSource("sendingSetupContent", "coverDraftSetupContent");
     expect(sending).toContain("Choose how to send");
     expect(sending).toContain("manualSendingAnimationMarkup(selectedMode)");
     expect(sending).toContain('"Copy", "Encrypts and copies. Never presses Send.", "Recommended"');
-    expect(sending).toContain('<details class="send-mode-advanced"');
+    expect(sending).not.toContain('<details class="send-mode-advanced"');
     expect(sending).toContain('"Single Enter"');
   });
 });
@@ -39,14 +39,13 @@ describe("plain-language friends", () => {
 });
 
 describe("one-step app guide", () => {
-  it("opens the real service with minimal copy and a short privacy disclosure", () => {
+  it("opens the real service with two minimal account choices and no extra disclosure", () => {
     const guide = functionSource("serviceGuideContent", "settingsContent");
     expect(guide).not.toContain("Step ${step + 1} of 3");
-    expect(guide).toContain("Connect ${name}");
-    expect(guide).toContain('nativeInstalled ? "Open app in OSL" : "Open in OSL"');
-    expect(guide).toContain("separate local app profile");
-    expect(guide).toContain("normal app and account stay untouched");
-    expect(guide).toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
+    expect(guide).toContain('directNativeAccountChoice');
+    expect(guide).toContain('directNativeAccountChoice || directBrowserAccountChoice ? "Open" : "Connect"');
+    expect(guide).not.toContain('<details class="guide-details"><summary>Sign-in privacy</summary>');
+    expect(guide).toContain('directNativeAccountChoice || directBrowserAccountChoice');
     expect(guide).not.toContain("Choose which account to use.");
     expect(guide).not.toMatch(/adapter|scope|auto-whitelist/i);
   });
