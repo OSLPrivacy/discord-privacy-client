@@ -89,8 +89,15 @@ public class VmqaNative {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(
+        IntPtr hWnd, int attribute, out int value, int valueSize);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint attach, uint attachTo, bool value);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
@@ -109,6 +116,13 @@ public class VmqaNative {
         public uint   Pid;
         public string ClassName;
         public bool   Visible;
+    }
+
+    public class Surface {
+        public IntPtr Hwnd;
+        public uint   Pid;
+        public string ClassName;
+        public RECT   Rect;
     }
 
     // Enumeration lives in C# on purpose: an exception thrown out of a PowerShell callback
@@ -134,6 +148,60 @@ public class VmqaNative {
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+
+    public static List<Surface> VisibleTopLevelWindowsForPid(uint wantedPid) {
+        List<Surface> found = new List<Surface>();
+        bool failed = false;
+        bool completed = EnumWindows(delegate(IntPtr h, IntPtr l) {
+            try {
+                uint pid;
+                if (GetWindowThreadProcessId(h, out pid) == 0) throw new InvalidOperationException("GetWindowThreadProcessId");
+                if (pid != wantedPid || !IsWindowVisible(h) || IsIconic(h)) return true;
+                int cloaked;
+                if (DwmGetWindowAttribute(h, 14, out cloaked, sizeof(int)) != 0) throw new InvalidOperationException("DwmGetWindowAttribute");
+                if (cloaked != 0) return true;
+                RECT rect;
+                if (!GetWindowRect(h, out rect)) throw new InvalidOperationException("GetWindowRect");
+                StringBuilder sb = new StringBuilder(512);
+                GetClassName(h, sb, sb.Capacity);
+                Surface s = new Surface();
+                s.Hwnd = h; s.Pid = pid; s.ClassName = sb.ToString(); s.Rect = rect;
+                found.Add(s);
+            } catch { failed = true; return false; }
+            return true;
+        }, IntPtr.Zero);
+        if (!completed || failed) throw new InvalidOperationException("VMQA_SURFACE_ENUMERATION_FAILED");
+        return found;
+    }
+
+    private static bool RectanglesIntersect(RECT a, RECT b) {
+        return a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
+    }
+
+    public static bool HasOccludingWindowAbove(IntPtr target) {
+        RECT targetRect;
+        if (!GetWindowRect(target, out targetRect)) throw new InvalidOperationException("VMQA_TARGET_RECT_FAILED");
+        bool targetSeen = false;
+        bool occluderSeen = false;
+        bool failed = false;
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            if (h == target) { targetSeen = true; return false; }
+            try {
+                if (!IsWindowVisible(h) || IsIconic(h)) return true;
+                int cloaked;
+                if (DwmGetWindowAttribute(h, 14, out cloaked, sizeof(int)) != 0) throw new InvalidOperationException("DwmGetWindowAttribute");
+                if (cloaked != 0) return true;
+                RECT rect;
+                if (!GetWindowRect(h, out rect)) throw new InvalidOperationException("GetWindowRect");
+                if (RectanglesIntersect(rect, targetRect)) { occluderSeen = true; return false; }
+            } catch { failed = true; return false; }
+            return true;
+        }, IntPtr.Zero);
+        if (failed) throw new InvalidOperationException("VMQA_OCCLUSION_ENUMERATION_FAILED");
+        if (occluderSeen) return true;
+        if (!targetSeen) throw new InvalidOperationException("VMQA_TARGET_NOT_IN_Z_ORDER");
+        return false;
     }
 }
 "@
@@ -277,6 +345,138 @@ function Get-VmqaWindowRect {
     }
 }
 
+function Get-VmqaVisibleSurface {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][VmqaSubject]$Subject,
+        [Parameter(Mandatory)][string]$RunNonce
+    )
+    [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
+    $markerClass = "$($Subject.Identifier)-sic"
+    $candidates = @(
+        [VmqaNative]::VisibleTopLevelWindowsForPid([uint32]$Subject.Pid) |
+            Where-Object {
+                $_.ClassName -cne $markerClass -and
+                ($_.Rect.Right - $_.Rect.Left) -ge 200 -and
+                ($_.Rect.Bottom - $_.Rect.Top) -ge 120
+            }
+    )
+    if ($candidates.Count -eq 0) {
+        throw "VMQA_NO_VISIBLE_SURFACE: pid $($Subject.Pid) has no non-marker visible top-level window at least 200x120"
+    }
+    if ($candidates.Count -gt 1) {
+        throw "VMQA_AMBIGUOUS_VISIBLE_SURFACE: pid $($Subject.Pid) has $($candidates.Count) visible top-level windows at least 200x120"
+    }
+    return $candidates[0]
+}
+
+function Set-VmqaSurfaceForeground {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Surface,
+        [int]$Attempts = 3
+    )
+    for ($i = 1; $i -le $Attempts; $i++) {
+        [void][VmqaNative]::SetForegroundWindow($Surface.Hwnd)
+        Start-Sleep -Milliseconds 250
+        if ([VmqaNative]::GetForegroundWindow() -eq $Surface.Hwnd) { return $true }
+
+        # The agent is in the interactive VM session but is not necessarily the foreground
+        # thread. Attach only for the duration of this transfer, then detach in reverse order.
+        # This changes no owner-desktop state: vmqa-win32 refuses to load off the closed Azure
+        # fleet, and the target HWND was resolved from the exact launched PID.
+        [uint32]$surfacePid = 0
+        $surfaceThread = [VmqaNative]::GetWindowThreadProcessId($Surface.Hwnd, [ref]$surfacePid)
+        $foregroundHwnd = [VmqaNative]::GetForegroundWindow()
+        [uint32]$foregroundPid = 0
+        $foregroundThread = if ($foregroundHwnd -ne [IntPtr]::Zero) {
+            [VmqaNative]::GetWindowThreadProcessId($foregroundHwnd, [ref]$foregroundPid)
+        } else { 0 }
+        $currentThread = [VmqaNative]::GetCurrentThreadId()
+        $attachedForeground = $false
+        $attachedSurface = $false
+        try {
+            if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
+                $attachedForeground = [VmqaNative]::AttachThreadInput($currentThread, $foregroundThread, $true)
+            }
+            if ($surfaceThread -ne 0 -and $surfaceThread -ne $currentThread) {
+                $attachedSurface = [VmqaNative]::AttachThreadInput($currentThread, $surfaceThread, $true)
+            }
+            [void][VmqaNative]::ShowWindowAsync($Surface.Hwnd, 9)
+            [void][VmqaNative]::BringWindowToTop($Surface.Hwnd)
+            [void][VmqaNative]::SetForegroundWindow($Surface.Hwnd)
+            Start-Sleep -Milliseconds 250
+            if ([VmqaNative]::GetForegroundWindow() -eq $Surface.Hwnd) { return $true }
+        } finally {
+            if ($attachedSurface) {
+                [void][VmqaNative]::AttachThreadInput($currentThread, $surfaceThread, $false)
+            }
+            if ($attachedForeground) {
+                [void][VmqaNative]::AttachThreadInput($currentThread, $foregroundThread, $false)
+            }
+        }
+    }
+    return $false
+}
+
+function Test-VmqaSurfaceStillBound {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][VmqaSubject]$Subject,
+        [Parameter(Mandatory)]$Surface,
+        [Parameter(Mandatory)][string]$RunNonce
+    )
+    try {
+        [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
+        [uint32]$surfacePid = 0
+        [void][VmqaNative]::GetWindowThreadProcessId($Surface.Hwnd, [ref]$surfacePid)
+        if ($surfacePid -ne [uint32]$Subject.Pid) { return $false }
+        if (-not [VmqaNative]::IsWindowVisible($Surface.Hwnd) -or [VmqaNative]::IsIconic($Surface.Hwnd)) {
+            return $false
+        }
+        [int]$cloaked = 0
+        if ([VmqaNative]::DwmGetWindowAttribute($Surface.Hwnd, 14, [ref]$cloaked, 4) -ne 0 -or $cloaked -ne 0) {
+            return $false
+        }
+        $now = New-Object VmqaNative+RECT
+        if (-not [VmqaNative]::GetWindowRect($Surface.Hwnd, [ref]$now)) { return $false }
+        return $now.Left -eq $Surface.Rect.Left -and $now.Top -eq $Surface.Rect.Top -and
+            $now.Right -eq $Surface.Rect.Right -and $now.Bottom -eq $Surface.Rect.Bottom
+    } catch {
+        return $false
+    }
+}
+
+function Test-VmqaSurfaceOwnsSampleGrid {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Surface)
+    $width = [int]($Surface.Rect.Right - $Surface.Rect.Left)
+    $height = [int]($Surface.Rect.Bottom - $Surface.Rect.Top)
+    foreach ($xFraction in @(0.1, 0.5, 0.9)) {
+        foreach ($yFraction in @(0.1, 0.5, 0.9)) {
+            $point = New-Object VmqaNative+POINT
+            $point.X = [int]($Surface.Rect.Left + ($width * $xFraction))
+            $point.Y = [int]($Surface.Rect.Top + ($height * $yFraction))
+            $under = [VmqaNative]::WindowFromPoint($point)
+            if ($under -eq [IntPtr]::Zero) { return $false }
+            if ([VmqaNative]::GetAncestor($under, [VmqaNative]::GA_ROOT) -ne $Surface.Hwnd) {
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+function Test-VmqaSurfaceUnoccluded {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Surface)
+    try {
+        return -not [VmqaNative]::HasOccludingWindowAbove($Surface.Hwnd)
+    } catch {
+        return $false
+    }
+}
+
 function Set-VmqaForeground {
     <# Returns whether the subject ACTUALLY owns the foreground, measured rather than requested.
 
@@ -312,11 +512,19 @@ function Invoke-VmqaClick {
         [Parameter(Mandatory)][string]$RunNonce
     )
     [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
-    $rect = Get-VmqaWindowRect -Subject $Subject
+    $surface = Get-VmqaVisibleSurface -Subject $Subject -RunNonce $RunNonce
+    if (-not (Test-VmqaSurfaceStillBound -Subject $Subject -Surface $surface -RunNonce $RunNonce)) {
+        throw 'VMQA_CLICK_NOT_DELIVERABLE: visible surface changed before placement'
+    }
+    $rect = [pscustomobject]@{
+        Left = $surface.Rect.Left; Top = $surface.Rect.Top
+        Width = $surface.Rect.Right - $surface.Rect.Left
+        Height = $surface.Rect.Bottom - $surface.Rect.Top
+    }
     if ($WinX -lt 0 -or $WinY -lt 0 -or $WinX -ge $rect.Width -or $WinY -ge $rect.Height) {
         throw "VMQA_CLICK_OUT_OF_BOUNDS: ($WinX,$WinY) outside $($rect.Width)x$($rect.Height)"
     }
-    $foreground = Set-VmqaForeground -Subject $Subject
+    $foreground = Set-VmqaSurfaceForeground -Surface $surface
     $sx = $rect.Left + $WinX
     $sy = $rect.Top + $WinY
 
@@ -333,7 +541,7 @@ function Invoke-VmqaClick {
     # the pixel about to be clicked belongs to the subject rather than to something covering it.
     $under = [VmqaNative]::WindowFromPoint($actual)
     $underRoot = if ($under -ne [IntPtr]::Zero) { [VmqaNative]::GetAncestor($under, [VmqaNative]::GA_ROOT) } else { [IntPtr]::Zero }
-    $ownsPixel = ($underRoot -eq $Subject.Hwnd)
+    $ownsPixel = ($underRoot -eq $surface.Hwnd)
 
     if (-not ($foreground -and $atTarget -and $ownsPixel)) {
         # Refuse rather than click blind. A click delivered to a covering window is an action against
@@ -362,17 +570,22 @@ function Invoke-VmqaType {
         [Parameter(Mandatory)][string]$RunNonce
     )
     [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
+    $surface = Get-VmqaVisibleSurface -Subject $Subject -RunNonce $RunNonce
+    if (-not (Test-VmqaSurfaceStillBound -Subject $Subject -Surface $surface -RunNonce $RunNonce)) {
+        throw 'VMQA_INPUT_NOT_DELIVERABLE: visible surface changed before typing'
+    }
     # REFUSE to type into a window we have not confirmed owns the foreground. SendKeys is global:
     # it goes wherever focus actually is. Typing blind is precisely how OSL's known defect sends
     # PLAINTEXT into Discord when focus never reached the composer, and a harness that does the
     # same thing cannot detect it. Never send first and check afterwards - by then it is delivered.
-    if (-not (Set-VmqaForeground -Subject $Subject)) {
+    if (-not (Set-VmqaSurfaceForeground -Surface $surface)) {
         throw "VMQA_INPUT_NOT_DELIVERABLE: subject does not own the foreground; refusing to send keystrokes that would land in another window"
     }
     [System.Windows.Forms.SendKeys]::SendWait($Text)
     Start-Sleep -Milliseconds $SettleMs
     # Focus can be stolen mid-send, so confirm the subject still owns it afterwards too.
-    if ([VmqaNative]::GetForegroundWindow() -ne $Subject.Hwnd) {
+    if ([VmqaNative]::GetForegroundWindow() -ne $surface.Hwnd -or
+        -not (Test-VmqaSurfaceStillBound -Subject $Subject -Surface $surface -RunNonce $RunNonce)) {
         throw "VMQA_INPUT_DELIVERY_UNCERTAIN: foreground changed during send; part of the input may have gone elsewhere"
     }
 }
@@ -386,54 +599,21 @@ function Invoke-VmqaKey {
         [Parameter(Mandatory)][string]$RunNonce
     )
     [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
+    $surface = Get-VmqaVisibleSurface -Subject $Subject -RunNonce $RunNonce
+    if (-not (Test-VmqaSurfaceStillBound -Subject $Subject -Surface $surface -RunNonce $RunNonce)) {
+        throw "VMQA_INPUT_NOT_DELIVERABLE: visible surface changed before key '$Key'"
+    }
     # Same rule as Invoke-VmqaType: a key chord is global input and must not be sent to a window
     # nobody has confirmed. A single unverified Enter is enough to commit something irreversible.
-    if (-not (Set-VmqaForeground -Subject $Subject)) {
+    if (-not (Set-VmqaSurfaceForeground -Surface $surface)) {
         throw "VMQA_INPUT_NOT_DELIVERABLE: subject does not own the foreground; refusing to send key '$Key'"
     }
     [System.Windows.Forms.SendKeys]::SendWait($Key)
     Start-Sleep -Milliseconds $SettleMs
-    if ([VmqaNative]::GetForegroundWindow() -ne $Subject.Hwnd) {
+    if ([VmqaNative]::GetForegroundWindow() -ne $surface.Hwnd -or
+        -not (Test-VmqaSurfaceStillBound -Subject $Subject -Surface $surface -RunNonce $RunNonce)) {
         throw "VMQA_INPUT_DELIVERY_UNCERTAIN: foreground changed during send of key '$Key'"
     }
-}
-
-function Get-VmqaScreenshot {
-    <# Full-desktop composited capture. CopyFromScreen works because the agent runs in a real
-       interactive session; PrintWindow returns black on Chromium surfaces, which is why the
-       window-only path is not the default.
-
-       DistinctColors is the evidence the capture is real. A black or failed frame collapses to a
-       handful of colours, so a screenshot step that cannot clear the floor is 'unmeasurable'
-       rather than a pass — an all-black PNG must never be filed as proof that something rendered. #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$OutPath,
-        [int]$SampleStride = 4
-    )
-    $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
-    try {
-        $g = [System.Drawing.Graphics]::FromImage($bmp)
-        try { $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size) }
-        finally { $g.Dispose() }
-
-        $dir = Split-Path -Parent $OutPath
-        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-        $bmp.Save($OutPath, [System.Drawing.Imaging.ImageFormat]::Png)
-
-        $colors = New-Object 'System.Collections.Generic.HashSet[int]'
-        for ($y = 0; $y -lt $b.Height; $y += $SampleStride) {
-            for ($x = 0; $x -lt $b.Width; $x += $SampleStride) {
-                [void]$colors.Add($bmp.GetPixel($x, $y).ToArgb())
-            }
-        }
-        return [pscustomobject]@{
-            Path = $OutPath; Width = $b.Width; Height = $b.Height
-            DistinctColors = $colors.Count
-            CapturedUtc = [datetime]::UtcNow
-        }
-    } finally { $bmp.Dispose() }
 }
 
 function Stop-VmqaSubject {

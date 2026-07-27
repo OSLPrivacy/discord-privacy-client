@@ -26,15 +26,20 @@ Passing the pair requires three assertions, not two:
 
 1. the positive half is `pass`;
 2. the negative half is `blocked`;
-3. **the positive half measured something non-empty** — `markerWindowsTotal >= 1` from `ping`, and
-   `distinctColors >= 16` from `shot`.
+3. **the positive half measured the launched process's real surface** — `markerWindowsTotal >= 1`
+   from `ping`, `distinctColors >= 16` from `shot`, and structured shot facts proving the surface
+   PID equals the launch PID, is at least 200×120, remained foreground with a stable rectangle,
+   owned the sample grid, and had no overlapping window above it before and after capture.
 
 The third is the one that is easy to leave out and the one that matters. Without it, a rig where
 nothing is running at all produces "found no marker window" on *both* halves, the negative control
 appears to work, and the whole self-test reports success while measuring nothing. "Correctly denied"
 and "the apparatus is broken" are indistinguishable unless you separately prove the apparatus works.
-An all-black screenshot clears a pixel-count check but not a distinct-colour floor, which is why the
-floor exists.
+An all-black screenshot clears a pixel-count check but not a distinct-colour floor. A colourful
+whole-desktop screenshot is not enough either: one live run passed on Firefox pixels while the only
+OSL HWND it had bound was the 6×6 single-instance marker. `shot` therefore captures only the unique
+visible non-marker top-level surface owned by the launched PID and emits the structured facts the
+host gate requires.
 
 A negative control that comes back `pass` is not a test failure, it is an **invalid harness**, and
 `vmqa-run.sh` exits `9` for it rather than `1`. A harness that confirms whatever it happens to find
@@ -47,7 +52,7 @@ is worse than no harness, because its greens get believed.
 | `ping` | — | agent liveness; reports session id and `markerWindowsTotal` |
 | `stage` | `exeSha256` | copies exe **and `WebView2Loader.dll`** to `C:\OSL-VMQA\<sha>\` |
 | `launch` | `exeSha256`, `timeoutSeconds` | waits for the marker window; does not reposition it |
-| `shot` | `name` | full-desktop capture + distinct-colour count |
+| `shot` | `name` | exact-PID visible-surface capture + pre/post binding and occlusion proof |
 | `click` | `winX`, `winY`, `settleMs` | window-relative; bounds-checked against the subject's rect |
 | `type` | `text`, `settleMs` | |
 | `key` | `key`, `settleMs` | |

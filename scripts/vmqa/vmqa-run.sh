@@ -246,10 +246,15 @@ cmd_run() {
 fetch_run_verdict() {
   local vm="$1" identifier="$2" steps="$3" timeout="$4" run_id="$5"
   local rc
-  set +e
-  cmd_run --vm "$vm" --identifier "$identifier" --steps "$steps" --timeout "$timeout" --run-id "$run_id" >/dev/null
-  rc=$?
-  set -e
+  # cmd_run restores errexit before returning the verdict's product status. Calling it as a bare
+  # command under `set +e` is therefore not sufficient: a blocked return (3) can terminate this
+  # function before it emits the saved verdict path, and selftest then grades an empty filename as
+  # a vacuous control. An if-condition is an errexit-safe status boundary in Bash.
+  if cmd_run --vm "$vm" --identifier "$identifier" --steps "$steps" --timeout "$timeout" --run-id "$run_id" >/dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
   local verdict="$REPO_ROOT/docs/reports/vmqa/$run_id/verdict.json"
   # The verdict must name the run we asked for. Blob names are reused across reruns of the same
   # id, and a verdict left by an earlier attempt would otherwise be graded as this run's result -
@@ -291,6 +296,14 @@ step_status() {
   local file="$1" verb="$2"
   [ -f "$file" ] || { printf 'missing\n'; return 0; }
   jq -r --arg verb "$verb" '[.steps[]? | select(.verb == $verb) | .status] | first // "missing"' "$file"
+}
+
+fact_from_step() {
+  local file="$1" verb="$2" key="$3"
+  [ -f "$file" ] || { printf 'false\n'; return 0; }
+  jq -r --arg verb "$verb" --arg key "$key" \
+    '[.steps[]? | select(.verb == $verb) | .facts[$key]] | first // false' "$file" 2>/dev/null \
+    || printf 'false\n'
 }
 
 overall_or_rc() {
@@ -342,6 +355,8 @@ grade_selftest() {
   # nothing.
   local pos_file="$1" neg_file="$2" pos_rc="$3" neg_rc="$4"
   local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
+  local launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
+  local sample_grid_pre sample_grid_post unoccluded_pre unoccluded_post rect_stable
   pos="$(overall_or_rc "$pos_file" "$pos_rc")"
   neg="$(overall_or_rc "$neg_file" "$neg_rc")"
   markers="$(metric_from_step "$pos_file" ping markerWindowsTotal)"
@@ -351,6 +366,17 @@ grade_selftest() {
   shot_neg="$(step_status "$neg_file" shot)"
   neg_steps="$(step_count "$neg_file")"
   neg_ping="$(step_status "$neg_file" ping)"
+  launch_pid="$(metric_from_step "$pos_file" launch launchedPid)"
+  surface_pid="$(metric_from_step "$pos_file" shot surfacePid)"
+  surface_width="$(metric_from_step "$pos_file" shot surfaceWidth)"
+  surface_height="$(metric_from_step "$pos_file" shot surfaceHeight)"
+  foreground_pre="$(fact_from_step "$pos_file" shot foregroundPre)"
+  foreground_post="$(fact_from_step "$pos_file" shot foregroundPost)"
+  sample_grid_pre="$(fact_from_step "$pos_file" shot sampleGridPre)"
+  sample_grid_post="$(fact_from_step "$pos_file" shot sampleGridPost)"
+  unoccluded_pre="$(fact_from_step "$pos_file" shot unoccludedPre)"
+  unoccluded_post="$(fact_from_step "$pos_file" shot unoccludedPost)"
+  rect_stable="$(fact_from_step "$pos_file" shot rectStable)"
   result="INVALID"
 
   if [ "$neg" = "pass" ]; then
@@ -377,6 +403,12 @@ grade_selftest() {
     echo "SELFTEST INVALID: a verdict file is missing (positive=${pos_file:-none} negative=${neg_file:-none}); the negative control was not measured" >&2
     result="INVALID"
   elif [ "$pos" = "pass" ] && [ "$neg" = "blocked" ] && [ "$markers" -ge 1 ] && [ "$colors" -ge 16 ] \
+       && [ "$launch_pid" -ge 1 ] && [ "$surface_pid" -eq "$launch_pid" ] \
+       && [ "$surface_width" -ge 200 ] && [ "$surface_height" -ge 120 ] \
+       && [ "$foreground_pre" = "true" ] && [ "$foreground_post" = "true" ] \
+       && [ "$sample_grid_pre" = "true" ] && [ "$sample_grid_post" = "true" ] \
+       && [ "$unoccluded_pre" = "true" ] && [ "$unoccluded_post" = "true" ] \
+       && [ "$rect_stable" = "true" ] \
        && [ "$launch_neg" != "pass" ] && [ "$shot_neg" != "pass" ]; then
     result="PASS"
   fi
@@ -387,6 +419,12 @@ grade_selftest() {
   printf 'negativePing: %s\n' "$neg_ping"
   printf 'markerWindowsTotal: %s\n' "$markers"
   printf 'distinctColors: %s\n' "$colors"
+  printf 'launchPid: %s\n' "$launch_pid"
+  printf 'surfacePid: %s\n' "$surface_pid"
+  printf 'surfaceSize: %sx%s\n' "$surface_width" "$surface_height"
+  printf 'surfaceBinding: foreground=%s/%s grid=%s/%s unoccluded=%s/%s rectStable=%s\n' \
+    "$foreground_pre" "$foreground_post" "$sample_grid_pre" "$sample_grid_post" \
+    "$unoccluded_pre" "$unoccluded_post" "$rect_stable"
   printf '%s\n' "$result"
 
   if [ "$result" = "PASS" ]; then return 0; fi

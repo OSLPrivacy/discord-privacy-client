@@ -174,6 +174,13 @@ Target is under three minutes per iteration once setup is snapshotted.
   impersonate the current run; grade it `unmeasurable`, never pass or fail.
 - **Identify instances by the single-instance marker window class `<identifier>-sic`**, never by
   title — every OSL build is titled `OSL Privacy` and that has already graded a stale instance.
+- **The marker HWND is identity, not pixels.** It is a 6×6 single-instance marker. A visual step
+  must resolve the unique visible non-marker top-level window owned by that exact PID, foreground
+  it, capture only its rectangle, and re-check PID, rectangle, foreground and occlusion before and
+  after capture. A whole-desktop colour count once passed on Firefox while OSL was not visible.
+- **Use DWM extended-frame bounds for the capture rectangle.** `GetWindowRect` includes the
+  invisible resize border; on the 1024×768 QA desktop it reported a maximized surface as
+  `0,0 1044x788` and the fail-closed capture correctly refused it as off-screen.
 
 ## Input injection: where it is banned and where it is required
 

@@ -472,7 +472,8 @@ function New-StepResult {
         [Parameter(Mandatory)][string]$Verb,
         [Parameter(Mandatory)][ValidateSet('pass','fail','unmeasurable','blocked')][string]$Status,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Detail,
-        [string[]]$Artifacts = @()
+        [string[]]$Artifacts = @(),
+        $Facts = ([ordered]@{})
     )
     return [ordered]@{
         id = $Id
@@ -480,6 +481,7 @@ function New-StepResult {
         status = $Status
         detail = $Detail
         artifacts = @($Artifacts)
+        facts = $Facts
     }
 }
 
@@ -550,6 +552,30 @@ function Get-CanonicalFilePath {
     return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath
 }
 
+function Stop-StagedBuildProcesses {
+    param([Parameter(Mandatory)][string]$ExePath)
+
+    if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+        return @()
+    }
+    $canonicalExePath = Get-CanonicalFilePath -Path $ExePath
+    $stopped = [Collections.Generic.List[int]]::new()
+    foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $processPath = $null
+        try { $processPath = $process.Path } catch { continue }
+        if (-not [string]::Equals($processPath, $canonicalExePath, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        # This is not a process-name guess: the candidate's live image path must be the exact
+        # content-addressed executable this stage is about. A failed launch can leave a
+        # marker-less process holding that file, so the later marker-only kill cannot find it.
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+        Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue
+        [void]$stopped.Add($process.Id)
+    }
+    return @($stopped)
+}
+
 function Copy-And-VerifyBuild {
     param(
         [Parameter(Mandatory)][string]$ExeSha256,
@@ -566,6 +592,7 @@ function Copy-And-VerifyBuild {
     $destDll = Join-Path $destDir 'WebView2Loader.dll'
 
     New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    $stoppedPids = @(Stop-StagedBuildProcesses -ExePath $destExe)
     if (-not (Get-BlobFile -Name $sourceExe -Path $destExe)) {
         return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' -Detail "missing source exe: $sourceExe"
     }
@@ -580,22 +607,38 @@ function Copy-And-VerifyBuild {
     if ($destExeHash -cne $sha) {
         return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' -Detail "staged exe sha mismatch expected=$sha actual=$destExeHash"
     }
-    return New-StepResult -Id $StepId -Verb 'stage' -Status 'pass' -Detail "staged=$destDir exeSha=$destExeHash webview2Sha=$destDllHash"
+    $stoppedDetail = if ($stoppedPids.Count -gt 0) { $stoppedPids -join ',' } else { 'none' }
+    return New-StepResult -Id $StepId -Verb 'stage' -Status 'pass' -Detail "staged=$destDir exeSha=$destExeHash webview2Sha=$destDllHash stoppedPriorPids=$stoppedDetail"
 }
 
-function Invoke-FullDesktopShot {
+function Invoke-SurfaceShot {
     param(
-        [Parameter(Mandatory)][string]$OutPath
+        [Parameter(Mandatory)][string]$OutPath,
+        [Parameter(Mandatory)]$Surface
     )
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
-    $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $bitmap = [System.Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+    $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $left = [int]$Surface.Rect.Left
+    $top = [int]$Surface.Rect.Top
+    $width = [int]($Surface.Rect.Right - $Surface.Rect.Left)
+    $height = [int]($Surface.Rect.Bottom - $Surface.Rect.Top)
+    if ($width -lt 200 -or $height -lt 120) {
+        throw "VMQA_VISIBLE_SURFACE_TOO_SMALL: ${width}x${height}"
+    }
+    if ($left -lt $virtual.Left -or $top -lt $virtual.Top -or
+        ($left + $width) -gt $virtual.Right -or ($top + $height) -gt $virtual.Bottom) {
+        throw "VMQA_VISIBLE_SURFACE_OFFSCREEN: rect=$left,$top ${width}x${height}"
+    }
+    $bitmap = [System.Drawing.Bitmap]::new($width, $height)
     try {
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         try {
-            $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $graphics.CopyFromScreen(
+                [System.Drawing.Point]::new($left, $top),
+                [System.Drawing.Point]::Empty,
+                [System.Drawing.Size]::new($width, $height))
         } finally {
             $graphics.Dispose()
         }
@@ -607,15 +650,15 @@ function Invoke-FullDesktopShot {
         $bitmap.Save($OutPath, [System.Drawing.Imaging.ImageFormat]::Png)
 
         $colors = [System.Collections.Generic.HashSet[int]]::new()
-        for ($y = 0; $y -lt $bounds.Height; $y += 4) {
-            for ($x = 0; $x -lt $bounds.Width; $x += 4) {
+        for ($y = 0; $y -lt $height; $y += 4) {
+            for ($x = 0; $x -lt $width; $x += 4) {
                 [void]$colors.Add($bitmap.GetPixel($x, $y).ToArgb())
             }
         }
         return [ordered]@{
             path = $OutPath
-            width = $bounds.Width
-            height = $bounds.Height
+            width = $width
+            height = $height
             distinctColors = $colors.Count
         }
     } finally {
@@ -690,7 +733,9 @@ function Invoke-Step {
             # something stronger than a window class: we started the process ourselves and matched
             # both its pid and its image path.
             $script:VmqaPinnedPid = $subject.Pid
-            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail "pid=$($subject.Pid); exe=$($subject.ExePath)"
+            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
+                -Detail "pid=$($subject.Pid); exe=$($subject.ExePath)" `
+                -Facts ([ordered]@{ launchedPid = $subject.Pid; exeSha256 = $subject.ExeSha256 })
         }
         'shot' {
             $name = [string](Get-PropertyValue -Object $stepArgs -Name 'name' -Required)
@@ -708,10 +753,37 @@ function Invoke-Step {
             if (-not $shotSubject['ok']) {
                 return New-StepResult -Id $stepId -Verb $verb -Status $shotSubject['status'] -Detail ("no subject to photograph: " + $shotSubject['detail'])
             }
-            $shotRect = Get-VmqaWindowRect -Subject $shotSubject['subject']
+            try {
+                $shotSurface = Get-VmqaVisibleSurface -Subject $shotSubject['subject'] -RunNonce $RunNonce
+            } catch {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail ([string]$_.Exception.Message)
+            }
+            # Foreground transfer may require the VM-only thread-input handoff in vmqa-win32.
+            if (-not (Set-VmqaSurfaceForeground -Surface $shotSurface)) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail "VMQA_VISIBLE_SURFACE_NOT_FOREGROUND: hwnd=$($shotSurface.Hwnd)"
+            }
+            if (-not (Test-VmqaSurfaceStillBound -Subject $shotSubject['subject'] -Surface $shotSurface -RunNonce $RunNonce)) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail "VMQA_VISIBLE_SURFACE_CHANGED_BEFORE_CAPTURE: hwnd=$($shotSurface.Hwnd)"
+            }
+            if (-not (Test-VmqaSurfaceOwnsSampleGrid -Surface $shotSurface)) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail "VMQA_VISIBLE_SURFACE_OCCLUDED_BEFORE_CAPTURE: hwnd=$($shotSurface.Hwnd)"
+            }
+            if (-not (Test-VmqaSurfaceUnoccluded -Surface $shotSurface)) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail "VMQA_VISIBLE_SURFACE_ZORDER_OCCLUDED_BEFORE_CAPTURE: hwnd=$($shotSurface.Hwnd)"
+            }
             $artifactDir = Join-Path (Join-Path $AgentRoot 'artifacts') $RunId
             $artifactPath = Join-Path $artifactDir ($safeName + '.png')
-            $shot = Invoke-FullDesktopShot -OutPath $artifactPath
+            $shot = Invoke-SurfaceShot -OutPath $artifactPath -Surface $shotSurface
+            $surfaceStillForeground = [VmqaNative]::GetForegroundWindow() -eq $shotSurface.Hwnd
+            $surfaceStillBound = Test-VmqaSurfaceStillBound -Subject $shotSubject['subject'] -Surface $shotSurface -RunNonce $RunNonce
+            $surfaceStillOwnsGrid = Test-VmqaSurfaceOwnsSampleGrid -Surface $shotSurface
+            $surfaceStillUnoccluded = Test-VmqaSurfaceUnoccluded -Surface $shotSurface
+            if (-not $surfaceStillForeground -or -not $surfaceStillBound -or
+                -not $surfaceStillOwnsGrid -or -not $surfaceStillUnoccluded) {
+                Remove-Item -LiteralPath $artifactPath -Force -ErrorAction SilentlyContinue
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail `
+                    "VMQA_VISIBLE_SURFACE_CHANGED_DURING_CAPTURE: foreground=$surfaceStillForeground bound=$surfaceStillBound ownsGrid=$surfaceStillOwnsGrid unoccluded=$surfaceStillUnoccluded"
+            }
             $fresh = Test-ArtifactFreshForRun -Path $artifactPath -RunStartUtc $RunStartUtc
             $artifactRel = 'artifacts/' + ($safeName + '.png')
             if (-not $fresh['fresh']) {
@@ -724,13 +796,26 @@ function Invoke-Step {
             Put-BlobBytes -Name "$RunBlobPrefix/$artifactRel" -Bytes $pngBytes
             # Report the subject alongside the pixels, so a reader can tell WHICH window this
             # frame is evidence about rather than inferring it from the filename.
-            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; pngSha256={4}; subjectPid={5}; subjectRect={6},{7} {8}x{9}' -f `
+            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; pngSha256={4}; subjectPid={5}; surfaceHwnd={6}; subjectRect={7},{8} {9}x{10}; foreground=true; sampleGridOwned=true; postCaptureBound=true' -f `
                 $artifactRel, $shot['width'], $shot['height'], $shot['distinctColors'], $pngSha256, `
-                $shotSubject['subject'].Pid, $shotRect.Left, $shotRect.Top, $shotRect.Width, $shotRect.Height
+                $shotSubject['subject'].Pid, $shotSurface.Hwnd, $shotSurface.Rect.Left, $shotSurface.Rect.Top, `
+                ($shotSurface.Rect.Right - $shotSurface.Rect.Left), ($shotSurface.Rect.Bottom - $shotSurface.Rect.Top)
             if ([int]$shot['distinctColors'] -lt 16) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail $detail -Artifacts @($artifactRel)
             }
-            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail $detail -Artifacts @($artifactRel)
+            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail $detail -Artifacts @($artifactRel) `
+                -Facts ([ordered]@{
+                    surfacePid = $shotSubject['subject'].Pid
+                    surfaceWidth = $shot['width']
+                    surfaceHeight = $shot['height']
+                    foregroundPre = $true
+                    foregroundPost = $surfaceStillForeground
+                    sampleGridPre = $true
+                    sampleGridPost = $surfaceStillOwnsGrid
+                    unoccludedPre = $true
+                    unoccludedPost = $surfaceStillUnoccluded
+                    rectStable = $surfaceStillBound
+                })
         }
         'click' {
             $resolved = Resolve-StepSubject -Identifier $identifier -RunNonce $RunNonce

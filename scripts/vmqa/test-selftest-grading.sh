@@ -44,9 +44,13 @@ mkjson() { printf '%s\n' "$2" > "$TMP/$1.json"; printf '%s' "$TMP/$1.json"; }
 
 # A fully healthy positive half: launched, apparatus proven non-empty, real pixels.
 GOOD_POS='{"runId":"p","requestSha256":"aa","overall":"pass","steps":[
-  {"id":"S1","verb":"launch","status":"pass"},
+  {"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},
   {"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},
-  {"id":"S3","verb":"shot","status":"pass","distinctColors":4016}]}'
+  {"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{
+    "surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,
+    "foregroundPre":true,"foregroundPost":true,
+    "sampleGridPre":true,"sampleGridPost":true,
+    "unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}'
 
 # A genuine negative control: it RAN, its apparatus passed, and launch was correctly refused.
 GOOD_NEG='{"runId":"n","requestSha256":"bb","overall":"blocked","steps":[
@@ -82,7 +86,36 @@ check_msg() {
   fi
 }
 
+check_fetch_preserves_blocked_verdict() {
+  local name="blocked run still returns its verdict path" got rc expected
+  expected="$TMP/fetch-root/docs/reports/vmqa/fetch-blocked/verdict.json"
+  mkdir -p -- "$(dirname -- "$expected")"
+  printf '%s\n' '{"runId":"fetch-blocked","overall":"blocked","steps":[]}' >"$expected"
+
+  got="$(
+    REPO_ROOT="$TMP/fetch-root"
+    # Reproduce cmd_run's real exit behaviour: it restores errexit before returning the
+    # verdict's non-zero product status. fetch_run_verdict must still reach the code that emits
+    # the saved verdict path, or selftest grades an empty filename as a vacuous control.
+    cmd_run() { set -e; return 3; }
+    set +e
+    fetch_run_verdict vm identifier steps 1 fetch-blocked
+  )"
+  rc=$?
+  set +e
+  if [ "$rc" -eq 3 ] && [ "$got" = "$expected" ]; then
+    printf '  ok    %-46s exit=%s\n' "$name" "$rc"; pass_count=$((pass_count+1))
+  else
+    printf '  FAIL  %-46s exit=%s path=%s\n' "$name" "$rc" "${got:-<empty>}"
+    fail_count=$((fail_count+1))
+  fi
+}
+
 echo "grade_selftest regression:"
+
+# A blocked VM run is a measured verdict, not an absent one. cmd_run restores errexit before
+# returning 3; fetch_run_verdict must capture that status without being terminated by it.
+check_fetch_preserves_blocked_verdict
 
 # The only green. If this stops passing, the gate rejects everything and is useless.
 check "healthy pair grades PASS" 0 \
@@ -132,8 +165,23 @@ check "positive markerWindowsTotal 0 -> not PASS" 1 \
 
 # An all-black frame clears a pixel count but not a colour floor.
 check "positive distinctColors below floor -> not PASS" 1 \
-  "$(mkjson pos_black '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass"},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":3}]}')" \
+  "$(mkjson pos_black '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":3,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
   "$(mkjson gn3 "$GOOD_NEG")"
+
+# Whole-desktop colour cannot substitute for a window bound to the process launch. This is the
+# exact shape that produced the Firefox false green: lots of colours, but no structured surface
+# facts from the staged process.
+check "missing surface binding facts -> not PASS" 1 \
+  "$(mkjson pos_unbound '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass"},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":1133}]}')" \
+  "$(mkjson gn_surface "$GOOD_NEG")"
+
+check "surface pid differs from launch -> not PASS" 1 \
+  "$(mkjson pos_swap '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":202,"surfaceWidth":960,"surfaceHeight":640,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
+  "$(mkjson gn_swap "$GOOD_NEG")"
+
+check "post-capture occlusion -> not PASS" 1 \
+  "$(mkjson pos_occluded '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":false,"rectStable":true}}]}')" \
+  "$(mkjson gn_occluded "$GOOD_NEG")"
 
 # A missing verdict file must never be read as a legitimate outcome via its exit code alone.
 check "absent negative verdict file -> INVALID" 9 \
@@ -148,4 +196,4 @@ check "positive fails, good control -> fail not INVALID" 1 \
 echo
 printf 'passed=%s failed=%s\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ] || exit 1
-[ "$pass_count" -ge 11 ] || { echo "refusing to report success on fewer than 11 assertions" >&2; exit 1; }
+[ "$pass_count" -ge 15 ] || { echo "refusing to report success on fewer than 15 assertions" >&2; exit 1; }
