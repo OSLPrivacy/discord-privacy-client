@@ -160,6 +160,109 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Encodings that preserve a plaintext exactly enough for an offline reader to
+/// recover it without the store key.  Searching only the literal sentinel is
+/// a false green: a no-op writer that base64s, hexes, UTF-16 encodes, or
+/// trivially run-length encodes a body still leaves the body at rest.
+///
+/// This is intentionally a detector rather than a second encryption scheme.
+/// The production assertion below scans the actual SQLite database, WAL, and
+/// SHM bytes with every representation.  The companion mutation control feeds
+/// it each representation and proves that the detector rejects a reversible
+/// identity/no-op persistence change.
+fn reversible_plaintext_representations(plaintext: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    fn b64(input: &[u8], alphabet: &[u8; 64], padded: bool) -> Vec<u8> {
+        let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
+        for chunk in input.chunks(3) {
+            let a = chunk[0];
+            let b = *chunk.get(1).unwrap_or(&0);
+            let c = *chunk.get(2).unwrap_or(&0);
+            out.push(alphabet[(a >> 2) as usize]);
+            out.push(alphabet[(((a & 0x03) << 4) | (b >> 4)) as usize]);
+            if chunk.len() > 1 {
+                out.push(alphabet[(((b & 0x0f) << 2) | (c >> 6)) as usize]);
+            } else if padded {
+                out.push(b'=');
+            }
+            if chunk.len() > 2 {
+                out.push(alphabet[(c & 0x3f) as usize]);
+            } else if padded {
+                out.push(b'=');
+            }
+        }
+        out
+    }
+
+    fn hex(input: &[u8], digits: &[u8; 16]) -> Vec<u8> {
+        input
+            .iter()
+            .flat_map(|byte| [digits[(byte >> 4) as usize], digits[(byte & 0x0f) as usize]])
+            .collect()
+    }
+
+    // A deliberately simple unencrypted compressor.  It is enough to prove
+    // the detector is not restricted to text encodings; an implementation
+    // that persisted this reversible byte stream would be rejected.
+    fn rle(input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < input.len() {
+            let byte = input[at];
+            let mut count = 1u8;
+            while at + usize::from(count) < input.len()
+                && input[at + usize::from(count)] == byte
+                && count < u8::MAX
+            {
+                count += 1;
+            }
+            out.extend_from_slice(&[count, byte]);
+            at += usize::from(count);
+        }
+        out
+    }
+
+    let mut utf16_le = Vec::with_capacity(plaintext.len() * 2);
+    let mut utf16_be = Vec::with_capacity(plaintext.len() * 2);
+    for unit in String::from_utf8_lossy(plaintext).encode_utf16() {
+        utf16_le.extend_from_slice(&unit.to_le_bytes());
+        utf16_be.extend_from_slice(&unit.to_be_bytes());
+    }
+
+    vec![
+        ("identity/no-op", plaintext.to_vec()),
+        ("hex lowercase", hex(plaintext, b"0123456789abcdef")),
+        ("hex uppercase", hex(plaintext, b"0123456789ABCDEF")),
+        ("base64", b64(plaintext, B64, true)),
+        ("base64url unpadded", b64(plaintext, B64_URL, false)),
+        ("UTF-16LE", utf16_le),
+        ("UTF-16BE", utf16_be),
+        ("unencrypted RLE", rle(plaintext)),
+    ]
+}
+
+fn persisted_plaintext_findings(
+    artifacts: &[(PathBuf, Vec<u8>)],
+    secrets: &[(&str, &[u8])],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (path, bytes) in artifacts {
+        for (secret_label, secret) in secrets {
+            for (encoding, representation) in reversible_plaintext_representations(secret) {
+                if contains(bytes, &representation) {
+                    findings.push(format!(
+                        "{secret_label} survived as {encoding} in {}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    findings
+}
+
 fn assert_artifacts_exclude(artifacts: &[(PathBuf, Vec<u8>)], needles: &[(&str, &[u8])]) {
     assert!(!artifacts.is_empty(), "store artifacts must exist");
     for (path, bytes) in artifacts {
@@ -323,6 +426,145 @@ fn no_plaintext_identifier_survives_in_the_raw_file_bytes() {
 
     drop(store);
     assert_artifacts_exclude(&raw_store_artifacts(&db_path), &needles);
+}
+
+/// The representation detector must be capable of failing.  This is a
+/// negative mutation control: it supplies the bytes an identity/no-op writer
+/// (and several equally reversible encoders) would have persisted, then
+/// proves every one is reported.  Without it, the production test below could
+/// pass because its detector was accidentally reduced to an empty scan.
+#[test]
+fn reversible_plaintext_detector_rejects_identity_and_equivalent_mutations() {
+    let message = b"A6-message-sentinel::zzzzzzzzzz::no-key-recovery";
+    let attachment = b"A6-attachment-sentinel::yyyyyyyy::no-key-recovery";
+    let mut mutant_bytes = Vec::new();
+    for (_, representation) in reversible_plaintext_representations(message) {
+        mutant_bytes.extend_from_slice(&representation);
+        mutant_bytes.push(0xff);
+    }
+    for (_, representation) in reversible_plaintext_representations(attachment) {
+        mutant_bytes.extend_from_slice(&representation);
+        mutant_bytes.push(0xff);
+    }
+    let artifacts = vec![(PathBuf::from("messages.sqlite-wal"), mutant_bytes)];
+    let findings = persisted_plaintext_findings(
+        &artifacts,
+        &[("message", message), ("attachment", attachment)],
+    );
+
+    let required = [
+        "identity/no-op",
+        "hex lowercase",
+        "hex uppercase",
+        "base64",
+        "base64url unpadded",
+        "UTF-16LE",
+        "UTF-16BE",
+        "unencrypted RLE",
+    ];
+    for encoding in required {
+        assert!(
+            findings.iter().any(|finding| finding.contains(encoding)),
+            "detector missed the {encoding} reversible persistence mutation: {findings:?}"
+        );
+    }
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.contains("message survived as identity/no-op")),
+        "identity/no-op mutation must fail the at-rest detector: {findings:?}"
+    );
+}
+
+/// A populated store must round-trip exactly across a real close/reopen while
+/// none of its persistence surfaces contain a recoverable representation of
+/// either body.  This combines the two properties that weak tests split apart:
+/// an empty DB can trivially contain no plaintext, and a no-op encoder can
+/// round-trip perfectly.  Both messages and attachment bytes are nonempty.
+#[test]
+fn nonempty_bodies_roundtrip_after_restart_without_reversible_at_rest_leaks() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let message = "A6-message-sentinel::zzzzzzzzzz::no-key-recovery";
+    let attachment = b"A6-attachment-sentinel::yyyyyyyy::no-key-recovery";
+    let msg = sample(
+        "a6-message-id",
+        "a6-channel-id",
+        "a6-sender-id",
+        "a6-sender-osl",
+        message,
+        1_700_123_456,
+    );
+    let filename = "a6-attachment.bin";
+    let mime = "application/a6-test";
+
+    let store = open_a(tmp.path());
+    store.put(&msg).unwrap();
+    store
+        .put_attachment(
+            &msg.discord_message_id,
+            filename,
+            mime,
+            attachment,
+            Some("dm"),
+            Some(&msg.channel_id),
+            Some(&msg.sender_discord_id),
+        )
+        .unwrap();
+    assert_eq!(
+        store.get(&msg.discord_message_id).unwrap(),
+        Some(msg.clone())
+    );
+    assert_eq!(
+        store
+            .get_attachment(&msg.discord_message_id, filename)
+            .unwrap(),
+        Some((mime.to_string(), attachment.to_vec()))
+    );
+    drop(store);
+
+    // The restart is material: a writer which only holds plaintext in memory
+    // or never commits its rows cannot satisfy these exact retrievals.
+    let reopened = open_a(tmp.path());
+    assert_eq!(
+        reopened.get(&msg.discord_message_id).unwrap(),
+        Some(msg.clone())
+    );
+    assert_eq!(
+        reopened
+            .get_attachment(&msg.discord_message_id, filename)
+            .unwrap(),
+        Some((mime.to_string(), attachment.to_vec()))
+    );
+
+    // Keep the second connection live so all three SQLite persistence
+    // surfaces are present and inspected, not silently removed on close.
+    let artifacts = raw_store_artifacts(&db_path);
+    let names = artifacts
+        .iter()
+        .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect::<HashSet<_>>();
+    for required in [
+        "messages.sqlite",
+        "messages.sqlite-wal",
+        "messages.sqlite-shm",
+    ] {
+        assert!(
+            names.contains(required),
+            "nonempty persistence proof did not inspect {required}"
+        );
+    }
+    let findings = persisted_plaintext_findings(
+        &artifacts,
+        &[
+            ("message body", message.as_bytes()),
+            ("attachment body", attachment),
+        ],
+    );
+    assert!(
+        findings.is_empty(),
+        "reversible plaintext-equivalent at-rest leak: {findings:?}"
+    );
 }
 
 /// `crates/store` has one local persistence authority: SQLite writing
