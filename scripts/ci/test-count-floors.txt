@@ -1,7 +1,24 @@
-# Minimum passing test counts measured from CI on origin/main.
-osl-hub-core=237
-osl-hub-ui=379
-webview=1
-keyserver-cf=3
-cipher-store-cf=18
-keyserver-legacy=72
+# Per-suite minimum test counts. A suite running FEWER tests than its floor
+# fails CI, because the count can only drop when something stopped being
+# compiled or collected. See scripts/ci/assert-test-counts.sh.
+#
+# PROVENANCE MATTERS. Every floor here must be a number somebody measured and
+# can point at. An unverified floor is worse than none: it looks like
+# enforcement and enforces nothing.
+#
+# STATUS 2026-07-27: only `osl-hub-core` is actually asserted anywhere
+# (rust-test.yml). The rest are declared and NOT wired, so they currently
+# enforce nothing. Do not read them as protection.
+#
+# measured  = observed directly and recorded here
+# UNVERIFIED = seeded from a CI log early in the session, not re-measured
+
+osl-hub-core=237        # measured, Windows CI, --features core (NOT core,discord-qa-shell)
+keyserver-cf=313        # measured 2026-07-27; `npm test` runs TWO vitest invocations,
+                        # 310 + 3. The previous floor of 3 was read from the tail of the
+                        # output and missed the first invocation entirely - off by ~100x,
+                        # so a drop from 313 to 4 would have passed.
+cipher-store-cf=18      # measured 2026-07-27, matches
+osl-hub-ui=379          # UNVERIFIED - not re-measured; also not wired
+webview=1               # UNVERIFIED - not re-measured; also not wired
+keyserver-legacy=72     # UNVERIFIED - not re-measured; also not wired
