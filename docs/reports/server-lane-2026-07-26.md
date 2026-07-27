@@ -1116,6 +1116,38 @@ This is worth stating plainly because it is the same shape as the two defects
 already confirmed tonight: correct-looking code resting on a platform behaviour
 nobody had read the contract for.
 
+## Keyserver privacy sweep: bounded, but this one is PRECAUTIONARY not proven
+
+`sweepExpiredPrivacyRows` (`keyserver-cf/src/lib/db.ts`) is now incremental —
+`LIMIT`-ed selects in batches of 100, chunked deletes respecting the measured
+100-bound-parameter D1 ceiling, and a per-invocation cap so one cron tick cannot
+run unbounded. Previously it issued
+`DELETE FROM wrapped_keys WHERE unixepoch(expires_at) <= ? RETURNING content_id`
+with no limit, plus five further unbounded deletes, and counted via `RETURNING`,
+which SQLite buffers in full before emitting inside a 128 MB isolate.
+
+**The honest status, and it differs from the other two sweeps fixed tonight.**
+The new test — "drains a multi-batch expired privacy backlog without deleting
+live rows", with a positive control asserting live rows survive — **passes
+against the unbounded code as well.** I checked by stashing the fix. It guards
+the batching behaviour; it does **not** reproduce the original risk, because
+miniflare does not enforce a 128 MB isolate or D1 transaction size at test
+scale.
+
+So this is a **defensive bound taken on the platform's documented limits**, not a
+demonstrated defect. That is a weaker claim than the attachment sweep, where the
+old code failed in front of me with `too many SQL variables`, and the two should
+not be reported as the same kind of thing. What would settle it is a real-D1 run
+at a row count near the documented ceiling, which is not reachable from this
+harness.
+
+Scope was deliberately narrow: `lib/db.ts` only. The other unbounded scheduled
+cleanups — `subscriptions.ts:160`, `endpoints/crypto-settlement.ts:452`,
+`lib/stripe-checkout-claims.ts:304`, `lib/payment-alert-outbox.ts:195`,
+`index.ts:192` and `:216` — were left alone and remain open. Bounding six paths
+through billing code at the end of a window is how you break something you cannot
+verify. `lib/payment-alert-outbox.ts:152` already shows the bounded pattern.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not

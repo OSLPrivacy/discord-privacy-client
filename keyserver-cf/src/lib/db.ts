@@ -15,6 +15,7 @@ export interface UserRow {
   registered_at: string;
   last_rotated_at: string | null;
   ik_ratchet_initial_pub: string | null;
+  identity_lookup_enabled: number;
 }
 
 export interface RegisterInput {
@@ -95,8 +96,8 @@ export async function upsertUser(
 /**
  * REGISTER-FIX (open signed register): explicit INSERT for a brand
  * new user_id (state-machine Case A). Separated from `upsertUser`'s
- * blind overwrite so register's first-write-wins / authenticated-
- * rotation logic is the *only* path that can mutate an existing row.
+ * blind overwrite so register's insert / authenticated-rotation
+ * state machine is the only path that can mutate an existing row.
  * `registered_at = now`, `last_rotated_at = NULL`.
  */
 export async function insertUser(
@@ -109,8 +110,9 @@ export async function insertUser(
       `INSERT INTO users
          (user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
           ik_x25519_signature, ik_ratchet_initial_pub,
-          registered_at, last_rotated_at, rn_capabilities)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)`,
+          registered_at, last_rotated_at, rn_capabilities,
+          identity_lookup_enabled)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, 1)`,
     )
     .bind(
       input.user_id,
@@ -148,7 +150,8 @@ export async function rotateUserKeys(
               ik_x25519_signature = ?5,
               ik_ratchet_initial_pub = ?6,
               last_rotated_at = ?7,
-              rn_capabilities = ?9
+              rn_capabilities = ?9,
+              identity_lookup_enabled = 1
         WHERE user_id = ?1
           AND ik_ed25519_pub = ?8`,
     ).bind(
@@ -262,49 +265,147 @@ export interface PrivacyRetentionSweepResult {
   unregisterReceipts: number;
 }
 
+const PRIVACY_SWEEP_SELECT_BATCH_SIZE = 100;
+// D1 accepts 100 bound parameters per query and rejects 101. Keep delete
+// chunks below that ceiling even for composite receipt primary keys.
+const PRIVACY_SWEEP_DELETE_BIND_BUDGET = 90;
+const PRIVACY_SWEEP_MAX_ROWS_PER_TABLE = 1000;
+
+type PrivacySweepKeyValue = string | ArrayBuffer | Uint8Array;
+type PrivacySweepKeyRow = Record<string, PrivacySweepKeyValue>;
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
+}
+
+function keyTuplePlaceholders(rowCount: number, columnCount: number): string {
+  const row = `(${placeholders(columnCount)})`;
+  return Array.from({ length: rowCount }, () => row).join(", ");
+}
+
+async function sweepExpiredRowsByPrimaryKey<T extends PrivacySweepKeyRow>(
+  db: D1Database,
+  table: string,
+  keyColumns: readonly (keyof T & string)[],
+  expiresWhere: string,
+  nowSeconds: number,
+): Promise<number> {
+  let deleted = 0;
+  const deleteChunkRows = Math.max(
+    1,
+    Math.floor(PRIVACY_SWEEP_DELETE_BIND_BUDGET / keyColumns.length),
+  );
+
+  while (deleted < PRIVACY_SWEEP_MAX_ROWS_PER_TABLE) {
+    const limit = Math.min(
+      PRIVACY_SWEEP_SELECT_BATCH_SIZE,
+      PRIVACY_SWEEP_MAX_ROWS_PER_TABLE - deleted,
+    );
+    const selected = await db.prepare(
+      `SELECT ${keyColumns.join(", ")}
+         FROM ${table}
+        WHERE ${expiresWhere}
+        ORDER BY expires_at
+        LIMIT ?`,
+    ).bind(nowSeconds, limit).all<T>();
+    const rows = selected.results ?? [];
+    if (rows.length === 0) break;
+
+    for (let offset = 0; offset < rows.length; offset += deleteChunkRows) {
+      const chunk = rows.slice(offset, offset + deleteChunkRows);
+      const binds = chunk.flatMap((row) => keyColumns.map((column) => row[column]));
+      const keyPredicate = keyColumns.length === 1
+        ? `${keyColumns[0]} IN (${placeholders(chunk.length)})`
+        : `(${keyColumns.join(", ")}) IN (${keyTuplePlaceholders(
+          chunk.length,
+          keyColumns.length,
+        )})`;
+      await db.prepare(
+        `DELETE FROM ${table}
+          WHERE ${keyPredicate}`,
+      ).bind(...binds).run();
+    }
+
+    deleted += rows.length;
+    if (rows.length < limit) break;
+  }
+
+  return deleted;
+}
+
 /**
  * Physically delete expired encrypted-key material and replay receipts.
  *
  * `wrapped_keys.expires_at` is ISO-8601 text supplied by signed clients, so
  * compare it through SQLite's timestamp parser instead of lexicographically.
- * The receipt tables use Unix seconds. D1 batches the deletes atomically.
+ * The receipt tables use Unix seconds.
  */
 export async function sweepExpiredPrivacyRows(
   db: D1Database,
   nowMs = Date.now(),
 ): Promise<PrivacyRetentionSweepResult> {
   const nowSeconds = Math.floor(nowMs / 1000);
-  const results = await db.batch([
-    db
-      .prepare(
-        "DELETE FROM wrapped_keys WHERE unixepoch(expires_at) <= ? RETURNING content_id",
-      )
-      .bind(nowSeconds),
-    db
-      .prepare("DELETE FROM consuming_get_receipts WHERE expires_at <= ?")
-      .bind(nowSeconds),
-    db
-      .prepare("DELETE FROM wrapped_key_post_receipts WHERE expires_at <= ?")
-      .bind(nowSeconds),
-    db
-      .prepare("DELETE FROM prekey_replenish_receipts WHERE expires_at <= ?")
-      .bind(nowSeconds),
-    db
-      .prepare("DELETE FROM wrapped_key_burn_receipts WHERE expires_at <= ?")
-      .bind(nowSeconds),
-    db
-      .prepare("DELETE FROM unregister_receipts WHERE expires_at <= ?")
-      .bind(nowSeconds),
-  ]);
   return {
-    // The storage-accounting DELETE trigger also changes its counter row, so
-    // `meta.changes` is not the logical wrapped-key row count. RETURNING is.
-    wrappedKeys: results[0]?.results?.length ?? 0,
-    consumingGetReceipts: results[1]?.meta?.changes ?? 0,
-    wrappedKeyPostReceipts: results[2]?.meta?.changes ?? 0,
-    prekeyReplenishReceipts: results[3]?.meta?.changes ?? 0,
-    wrappedKeyBurnReceipts: results[4]?.meta?.changes ?? 0,
-    unregisterReceipts: results[5]?.meta?.changes ?? 0,
+    wrappedKeys: await sweepExpiredRowsByPrimaryKey<{ content_id: string }>(
+      db,
+      "wrapped_keys",
+      ["content_id"],
+      "unixepoch(expires_at) <= ?",
+      nowSeconds,
+    ),
+    consumingGetReceipts: await sweepExpiredRowsByPrimaryKey<{
+      requester_id: string;
+      request_digest: ArrayBuffer | Uint8Array;
+    }>(
+      db,
+      "consuming_get_receipts",
+      ["requester_id", "request_digest"],
+      "expires_at <= ?",
+      nowSeconds,
+    ),
+    wrappedKeyPostReceipts: await sweepExpiredRowsByPrimaryKey<{
+      sender_id: string;
+      request_digest: ArrayBuffer | Uint8Array;
+    }>(
+      db,
+      "wrapped_key_post_receipts",
+      ["sender_id", "request_digest"],
+      "expires_at <= ?",
+      nowSeconds,
+    ),
+    prekeyReplenishReceipts: await sweepExpiredRowsByPrimaryKey<{
+      user_id: string;
+      signer_ed25519_pub: string;
+      request_digest: ArrayBuffer | Uint8Array;
+    }>(
+      db,
+      "prekey_replenish_receipts",
+      ["user_id", "signer_ed25519_pub", "request_digest"],
+      "expires_at <= ?",
+      nowSeconds,
+    ),
+    wrappedKeyBurnReceipts: await sweepExpiredRowsByPrimaryKey<{
+      user_id: string;
+      signer_ed25519_pub: string;
+      request_digest: ArrayBuffer | Uint8Array;
+    }>(
+      db,
+      "wrapped_key_burn_receipts",
+      ["user_id", "signer_ed25519_pub", "request_digest"],
+      "expires_at <= ?",
+      nowSeconds,
+    ),
+    unregisterReceipts: await sweepExpiredRowsByPrimaryKey<{
+      user_id: string;
+      signer_ed25519_pub: string;
+      request_digest: ArrayBuffer | Uint8Array;
+    }>(
+      db,
+      "unregister_receipts",
+      ["user_id", "signer_ed25519_pub", "request_digest"],
+      "expires_at <= ?",
+      nowSeconds,
+    ),
   };
 }
 
@@ -357,6 +458,7 @@ export interface SignedIdentityRow {
   rn_capabilities: number;
   registered_at: string;
   last_rotated_at: string | null;
+  identity_lookup_enabled: number;
 }
 
 export async function getSignedIdentity(
@@ -367,11 +469,48 @@ export async function getSignedIdentity(
     .prepare(
       `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
               ik_ratchet_initial_pub, ik_x25519_signature, rn_capabilities,
-              registered_at, last_rotated_at
+              registered_at, last_rotated_at, identity_lookup_enabled
+         FROM users
+        WHERE user_id = ?
+          AND identity_lookup_enabled = 1`,
+    )
+    .bind(userId)
+    .first<SignedIdentityRow>();
+}
+
+/** Registration-only lookup, including rows migration 0029 disabled. */
+export async function getSignedIdentityForRegistration(
+  db: D1Database,
+  userId: string,
+): Promise<SignedIdentityRow | null> {
+  return await db
+    .prepare(
+      `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
+              ik_ratchet_initial_pub, ik_x25519_signature, rn_capabilities,
+              registered_at, last_rotated_at, identity_lookup_enabled
          FROM users WHERE user_id = ?`,
     )
     .bind(userId)
     .first<SignedIdentityRow>();
+}
+
+/** Enable a migrated opaque identity only while its signing key is current. */
+export async function enableIdentityLookup(
+  db: D1Database,
+  userId: string,
+  expectedCurrentEd25519Pub: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE users
+          SET identity_lookup_enabled = 1
+        WHERE user_id = ?1
+          AND ik_ed25519_pub = ?2
+          AND identity_lookup_enabled = 0`,
+    )
+    .bind(userId, expectedCurrentEd25519Pub)
+    .run();
+  return (result.meta?.changes ?? 0) === 1;
 }
 
 /**
@@ -422,6 +561,22 @@ export async function raiseRnCapabilities(
 
 /** Variant that also returns ik_ed25519_pub for signature verification. */
 export async function getUserForVerify(
+  db: D1Database,
+  userId: string,
+): Promise<{ user_id: string; ik_ed25519_pub: string } | null> {
+  return await db
+    .prepare(
+      `SELECT user_id, ik_ed25519_pub
+         FROM users
+        WHERE user_id = ?
+          AND identity_lookup_enabled = 1`,
+    )
+    .bind(userId)
+    .first<{ user_id: string; ik_ed25519_pub: string }>();
+}
+
+/** Registration state-machine lookup, including disabled legacy rows. */
+export async function getUserForRegistration(
   db: D1Database,
   userId: string,
 ): Promise<{ user_id: string; ik_ed25519_pub: string } | null> {
