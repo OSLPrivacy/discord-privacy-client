@@ -19,6 +19,9 @@
 /// no imports of its own and Node 23+ strips types natively.
 
 import { canonicalControlInboxPostBytes } from "../src/lib/canonical.ts";
+import {
+  controlInboxDispositionHealthError,
+} from "./post-deploy-health-capability.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -46,6 +49,27 @@ const fail = (name, detail) => {
 const skip = (name, why) => console.log(`SKIP  ${name} — ${why}`);
 
 const b64 = (bytes) => Buffer.from(bytes).toString("base64");
+
+// ---------------------------------------------------------------------------
+// Probe 0 — exact 0031 Worker/schema capability. DECISIVE, read-only.
+//
+// A legacy Worker returns only {ok:true}; accepting that would make rollback
+// silent even though its drain ignores delivery_status. The exact capability
+// is therefore a release gate, not informational telemetry.
+// ---------------------------------------------------------------------------
+async function probeControlInboxDispositionCapability() {
+  const name = "control-inbox sender disposition schema is active";
+  const response = await fetch(`${HOST}/v1/healthz`, {
+    headers: { "cache-control": "no-cache" },
+  });
+  const body = await response.json().catch(() => null);
+  const healthError = controlInboxDispositionHealthError(response.status, body);
+  if (healthError) {
+    fail(name, healthError);
+    return;
+  }
+  pass(name);
+}
 
 // ---------------------------------------------------------------------------
 // Probe 1 — public lookup publishes no lifecycle timing. DECISIVE.
@@ -230,6 +254,7 @@ const run = async (name, probe) => {
   }
 };
 
+await run("control-inbox sender disposition schema is active", probeControlInboxDispositionCapability);
 await run("pubkeys publishes no lifecycle timing", probePubkeys);
 await run("Discord snowflakes are refused as identities", probeSnowflakeRefusal);
 await run("full control inbox refuses instead of evicting a stranger", probeControlInbox);

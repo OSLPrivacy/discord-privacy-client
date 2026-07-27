@@ -191,10 +191,19 @@ export default {
     try {
       const deleted = await sweepExpiredControlInboxRows(env.DB);
       const total = deleted.inboxRows + deleted.requestReceipts;
-      if (total > 0) {
+      const classified =
+        deleted.senderStates.reenabled +
+        deleted.senderStates.retryable +
+        deleted.senderStates.quarantined +
+        deleted.senderStates.retired;
+      if (total > 0 || classified > 0) {
         console.log(
           `[cron] control_inbox sweep deleted ${deleted.inboxRows} row(s) and ` +
-          `${deleted.requestReceipts} request receipt(s)`,
+          `${deleted.requestReceipts} request receipt(s); sender state ` +
+          `reenabled=${deleted.senderStates.reenabled} ` +
+          `retryable=${deleted.senderStates.retryable} ` +
+          `quarantined=${deleted.senderStates.quarantined} ` +
+          `retired=${deleted.senderStates.retired}`,
         );
       }
     } catch {
@@ -262,7 +271,7 @@ async function dispatch(
   }
 
   if (method === "GET") {
-    if (path === "/v1/healthz") return handleHealthz();
+    if (path === "/v1/healthz") return await handleHealthz(env);
     if (path === "/v1/download/windows") return await handleWindowsDownload(request, env);
     if (path === "/v1/selector-manifest") return handleSelectorManifest(env);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);

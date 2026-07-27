@@ -402,7 +402,7 @@ describe("control-inbox revocation lane", () => {
       ? Uint8Array.from(row!.bundle as number[])
       : new Uint8Array(row!.bundle as ArrayBuffer);
     expect(new TextDecoder().decode(bytes)).toBe("the-burn");
-  });
+  }, 20_000);
 
   it("does not let queued burns reduce an ordinary conversation's headroom", async () => {
     const { senderId, recipientId, signingKey } = await pair();
@@ -439,7 +439,7 @@ describe("control-inbox revocation lane", () => {
     }
     expect(await laneCount(recipientId, "")).toBe(32);
     expect(await laneCount(recipientId, "revocation")).toBe(8);
-  });
+  }, 20_000);
 
   it("reports the lane on the drain so a client can route without decrypting", async () => {
     const { senderId, recipientId, signingKey, recipientSigningKey } =

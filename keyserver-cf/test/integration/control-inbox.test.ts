@@ -307,7 +307,25 @@ describe("control-inbox error responses", () => {
     const marker = "secret database diagnostic";
     const fakeEnv = {
       DB: {
-        prepare() {
+        prepare(sql: string) {
+          if (sql.includes("worker_schema_capabilities")) {
+            return {
+              bind() {
+                return {
+                  async first() {
+                    return { version: 1 };
+                  },
+                };
+              },
+            };
+          }
+          if (sql.includes("LIMIT 0")) {
+            return {
+              async all() {
+                return { results: [] };
+              },
+            };
+          }
           throw new Error(marker);
         },
       },

@@ -78,8 +78,7 @@ you keep this branch on git; resource and namespace IDs are not secrets.
 
 ## §3 Apply migrations
 
-All three migrations (F1.1 baseline + F1.2 subscriptions + F1.3
-crypto) ship together:
+Apply only the migrations approved for the release, in numeric order:
 
 ```sh
 npm run db:migrate:prod
@@ -667,6 +666,78 @@ reports a 401 that is a probe/Worker mismatch, not a regression in the fix.
 **Rollback.** `npx wrangler rollback`. Nothing persistent changed, so the
 previous Worker resumes exactly its old behaviour — including, note, the
 cross-sender eviction defect.
+
+---
+
+## §11c Migration 0031 — control-inbox sender disposition (IMPLEMENTED, NOT DEPLOYED)
+
+Migration `0031_control_inbox_sender_retention.sql` and its exact Worker are a
+single forward-only release unit. The migration adds retry/quarantine/retired
+metadata, exact seven-day retention, physical quota backstops, D1 transition
+guards, and the schema capability marker
+`control_inbox_sender_disposition=1`. The Worker refuses every control-inbox
+route with 503 until both the marker and all six columns exist.
+
+The order below also accounts for pending migration 0030. Migration 0030
+reserves the `osl1_...` namespace only after a Worker that refuses that
+namespace is live; migration 0031 has the opposite compatibility constraint
+because its Worker names new columns.
+
+### Exact safe order
+
+1. Prove the currently live Worker refuses a snowflake and the reserved
+   `osl1_...` namespace. If the `osl1_...` refusal is not proved, deploy and
+   verify the reviewed 0030 refusal Worker first. That intermediate Worker must
+   not contain the 0031 column queries.
+2. Run the local gates against the exact 0031 source:
+
+   ```sh
+   cd keyserver-cf
+   npm run typecheck
+   npx vitest run --maxWorkers=1
+   npx vitest run --config vitest.node.config.ts
+   ```
+
+3. Apply migration 0030 and then migration 0031, in that order. Do not pause
+   between them and the Worker deploy:
+
+   ```sh
+   npx wrangler d1 migrations apply osl-keyserver-prod --remote
+   ```
+
+4. Immediately deploy the exact Worker tested in step 2:
+
+   ```sh
+   npx wrangler deploy
+   ```
+
+5. Require the read-only capability probe to pass before calling the release
+   healthy:
+
+   ```sh
+   node scripts/post-deploy-probe.mjs --host "$KS"
+   ```
+
+   A legacy `{ "ok": true }`, capability 0, capability 2, or HTTP 503 is a
+   release failure. Success requires HTTP 200, `ok:true`, and
+   `capabilities.control_inbox_sender_disposition` exactly `1`.
+
+**Failure modes are deliberate.** Worker-first makes POST/GET/DELETE and
+healthz return 503 because the new columns/marker do not exist. Migration-first
+keeps the intermediate 0030 Worker SQL-compatible: existing and newly inserted
+rows take live/empty defaults, while the D1 delete guard prevents its scheduled
+expiry statement from deleting rows whose sender is lookup-disabled. The
+interval must remain brief because that Worker does not understand or surface
+dispositions.
+
+**Rollback is forward-only after step 4.** Once the status-aware Worker can run
+reconciliation, never use `wrangler rollback` to a pre-0031 Worker: its old
+SELECT predicate ignores `delivery_status` and would expose retained bytes as
+live. The D1 guard prevents its DELETE from silently removing protected rows,
+but an additive migration cannot make an old SELECT understand a new column.
+On a bad deploy, restore the exact status-aware Worker or deploy a fixed
+successor that still reports capability version 1. Do not remove the columns,
+marker, or guards.
 
 ---
 

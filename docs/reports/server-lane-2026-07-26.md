@@ -2732,3 +2732,245 @@ No checklist edit and no B5 point are claimed. This earns
 `runtime-proven` local cleanup safety for the legacy reservation shape and
 R2-before-D1 failure ordering. Production remediation, and the specific
 production row's age, origin, identifier, and R2 state, remain `unknown`.
+
+---
+
+## Control-inbox disabled-sender retention (migration 0031)
+
+Timestamp: `2026-07-27T00:01:15-07:00`.
+
+This work was local-only. The failing-first run began at committed HEAD
+`f85b0810b09429d24db3d7951d85b30c02ff9d25`; final verification ran while
+unrelated lanes had advanced HEAD to
+`83e3c831dd72b8c2671f3e0bd1ed48952c0238b1`. No production Worker, D1
+migration, D1 row, R2 object, identity, or provider state was read or mutated.
+No cipher-store path changed.
+
+### Failing-first proof
+
+The pre-0031 hourly sweep selected expired rows using only `expires_at`.
+A real local Miniflare D1 fixture registered a sender and recipient, disabled
+the sender through the exact `identity_lookup_enabled` column, inserted a
+nonempty opaque bundle, and invoked the scheduled Worker. Before the fix:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+  ./node_modules/.bin/vitest run \
+  test/integration/control-inbox-sweep.test.ts \
+  -t "does not silently delete" --reporter=verbose
+[cron] control_inbox sweep deleted 1 row(s) and 0 request receipt(s)
+× expected null not to be null
+Test Files  1 failed (1)
+Tests  1 failed | 1 skipped (2)
+```
+
+This is `runtime-proven`: the fixture first asserted a row count of one and
+used a nonempty bundle, so the deletion failure could not pass or fail
+vacuously.
+
+### Forward schema and state machine
+
+Migration `0031_control_inbox_sender_retention.sql` adds:
+
+- `delivery_status` (`live`, `retryable`, `quarantined`, `retired`);
+- a closed reason vocabulary;
+- attempt, first-seen, next-retry, and bounded-retention metadata;
+- D1 state-shape, lookup-truth, and legal-transition guards;
+- physical-lane quota indexes and replacement quota triggers;
+- a schema capability marker; and
+- a migration-first DELETE guard.
+
+The columns/defaults are
+`keyserver-cf/migrations/0031_control_inbox_sender_retention.sql:18-47`.
+Physical quota backstops are at
+`keyserver-cf/migrations/0031_control_inbox_sender_retention.sql:78-154`;
+the exact capability marker is at
+`keyserver-cf/migrations/0031_control_inbox_sender_retention.sql:156-165`;
+and the old-Worker DELETE guard is at
+`keyserver-cf/migrations/0031_control_inbox_sender_retention.sql:167-197`.
+Lookup/transition authority and exact seven-day state guards occupy
+`keyserver-cf/migrations/0031_control_inbox_sender_retention.sql:199-424`.
+
+The scheduled reconciler examines at most 100 rows per tick
+(`keyserver-cf/src/lib/control-inbox-sweep.ts:96-135`):
+
+- an exact 17-20 digit Discord snowflake retires immediately with
+  `sender_discord_snowflake`, even if a legacy users row claims lookup is
+  enabled; retirement is terminal;
+- every other disabled/missing sender receives three attempts, one hour apart,
+  then quarantines;
+- malformed sender identifiers follow that same bounded retry path but retain
+  the distinct `sender_identifier_malformed` reason;
+- a re-enabled sender is restored to `live`, with its original opaque bundle
+  untouched and its delivery window extended to the recorded retention
+  deadline; and
+- the retention deadline is exactly first-seen plus 604800 seconds; and
+- compare-and-swap metadata updates recheck lookup state inside SQL
+  (`keyserver-cf/src/lib/control-inbox-sweep.ts:100-295`).
+
+Cleanup first reconciles, then deletes at most 100 rows. An expired live row is
+eligible only when its sender is currently lookup-enabled. A retryable row is
+never a cleanup candidate, including after scheduler downtime; only a recorded
+quarantined/retired row becomes eligible after its exact retention deadline
+(`keyserver-cf/src/lib/control-inbox-sweep.ts:298-349`). The Worker never
+selects or updates `bundle` during reconciliation.
+
+### Endpoint, quota, and privacy boundary
+
+All control-inbox routes require the exact schema capability and answer 503 on
+a pre-0031 schema
+(`keyserver-cf/src/endpoints/control-inbox.ts:250-261`,
+`:759-776`, `:956-966`). Health is 503/capability 0 before the migration and
+200/capability 1 only when both the marker and zero-row column projection pass
+(`keyserver-cf/src/endpoints/healthz.ts:1-20`;
+`keyserver-cf/src/lib/control-inbox-sweep.ts:39-75`).
+
+Both filtered and unfiltered drains select only live rows
+(`keyserver-cf/src/endpoints/control-inbox.ts:843-873`). A signed filtered
+drain adds only four aggregate counts:
+
+```json
+{"live":0,"retryable":1,"quarantined":0,"retired":0}
+```
+
+It does not expose disposition reasons, attempts, first-seen/retention
+timestamps, identifiers beyond the already signed sender echo, or hidden
+payload bytes (`keyserver-cf/src/endpoints/control-inbox.ts:908-951`).
+This additive response is `implemented-unwired`: the server schema is present,
+but the broker/client owner must consume these counts in its own lane.
+
+Retained non-live rows are excluded from sender recycling but count toward the
+hard physical ordinary and revocation caps in both Worker prechecks and D1
+race-backstop triggers
+(`keyserver-cf/src/endpoints/control-inbox.ts:365-461`;
+`keyserver-cf/migrations/0031_control_inbox_sender_retention.sql:78-154`).
+A real-D1 endpoint test holds 512 future-expiry quarantined rows across 16
+senders, posts a fresh authenticated bundle from a seventeenth sender, and
+proves an explicit `429 recipient_inbox_full` with exactly 512 quarantined rows
+and zero live rows afterward. A separate 32-row pair test proves
+`sender_recipient` refusal and byte-for-byte preservation of every held bundle
+(`keyserver-cf/test/integration/control-inbox-retention.test.ts:587-693`).
+
+### Runtime, old-Worker, and mutation evidence
+
+The focused real-Worker/D1 controls cover live, authenticated disabled,
+re-enabled, enabled-legacy snowflake, malformed, mixed, recipient/pair physical
+quota, retained-expiry, scheduler downtime, lookup truth, transition legality,
+exact upper retention, and malformed metadata paths
+(`keyserver-cf/test/integration/control-inbox-retention.test.ts:177-927`).
+The 101-row scheduled fixture proves exactly 100 classifications on the first
+tick and retains the unclassified tail
+(`keyserver-cf/test/integration/control-inbox-sweep.test.ts:194-257`).
+
+The exact forward-migration suite proves three non-vacuous boundaries:
+
+1. pre-existing rows plus old INSERT/UPDATE/SELECT SQL preserve exact bundle
+   bytes and take live/empty defaults;
+2. the new Worker refuses POST/GET/DELETE and health with 503 before 0031,
+   then reports capability 1 and reaches ordinary input validation after 0031;
+3. marker-only, wrong-version, and missing-column mixed states remain 503; and
+4. an old drain query returns a post-classification retryable payload, proving
+   rollback is unsafe, while the D1 DELETE guard prevents the old cleanup or
+   drain from erasing it.
+
+Those controls are
+`keyserver-cf/scripts/migration-0031.test.ts:125-375`.
+
+Independent disposable-copy mutations all failed the named control:
+
+```text
+snowflake retirement removed:       1 failed
+re-enabled selection removed:       1 failed
+malformed reason collapsed:         1 failed
+live lookup predicate inverted:     1 failed
+batch bound 100 -> 101:              1 failed
+drain live-status filter removed:    1 failed
+retained quota filters removed:      1 failed
+old-Worker default live -> retryable:1 failed
+migration DELETE guard disabled:     1 failed
+endpoint schema gate bypassed:       1 failed
+health capability gate bypassed:     1 failed
+```
+
+The final adversarial mutations also failed non-vacuously:
+
+```text
+exact retention weakened to a lower bound:
+  expected rejection, update resolved with changes=1
+physical recipient cap 512 -> 513:
+  expected 429, received 201
+retryable cleanup enabled + D1 retry guard removed:
+  expected 0 deletions after attempt 2, received 1
+snowflake Worker retirement disabled:
+  D1 state guard rejected generic retryable state
+marker accepted without six-column projection:
+  expected schemaReady false, received true
+```
+
+Changing only one of the redundant retry/snowflake guards can still be caught
+by the other D1/Worker guard. The paired retry mutation proves the lifecycle
+test itself fails if both independent protections regress.
+
+Full Worker, Node, and type gates:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm test
+Test Files  42 passed (42)
+Tests  406 passed (406)
+Test Files  4 passed (4)
+Tests  15 passed (15)
+
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
+> tsc --noEmit
+```
+
+| Claim | Tier | Exact bound |
+|---|---|---|
+| Disabled rows are retained and classified rather than silently TTL-deleted | `runtime-proven` | Real local Worker + Miniflare D1, nonempty bundle |
+| Snowflakes retire; opaque/malformed senders retry then quarantine | `runtime-proven` | Positive and negative real-D1 state transitions plus mutations |
+| Re-enabled sender payload becomes live without byte change | `runtime-proven` | Exact bundle comparison and authenticated filtered drain |
+| Reconciliation and deletion are bounded at 100 each | `runtime-proven` | 101-row tail plus batch-bound mutation |
+| Retention has an exact seven-day upper bound | `runtime-proven` | D1 rejects deadline +1; weakening mutation resolves and fails |
+| Scheduler downtime cannot skip retryable state | `runtime-proven` | Overdue attempt 1 advances to attempt 2 with zero deletion, then records quarantine before cleanup |
+| Retained rows cannot create a second physical quota | `runtime-proven` | Authenticated recipient/pair endpoint refusals preserve 512/32 nonempty rows |
+| Migration-first old-Worker writes remain compatible | `runtime-proven` | Pre-row, post-migration old INSERT/UPDATE/SELECT |
+| Migration-first old cleanup cannot erase disabled rows | `runtime-proven` | Exact old DELETE affects zero; guard mutation deletes and fails |
+| Old Worker is safe after classification | `test-proven-only` refusal | It is not: exact old SELECT exposes retained bytes; rollback is forbidden |
+| Marker-only or wrong-version schema is accepted | `test-proven-only` refusal | Zero-row six-column projection and exact version are both required |
+| Broker distinguishes aggregate disposition | `implemented-unwired` | Additive fixed counts exist; no broker path was edited here |
+| Production migration/Worker behavior | `unknown` | No deploy, migration, or live probe occurred |
+
+### Exact safe deployment order
+
+1. Before any pending D1 migration, verify the deployed Worker already contains
+   the exact 0030 reserved-namespace refusal from `8802225`. If it does not,
+   deploy and verify that pre-0031-compatible refusal Worker first.
+2. Apply pending migrations in numeric order: 0030 (if still pending), then
+   `0031_control_inbox_sender_retention.sql`. The 0031 DELETE guard protects the
+   brief old-Worker window, but that window must not be prolonged.
+3. Immediately deploy the exact Worker commit containing this section.
+   Worker-first is not supported: its capability and drain queries name
+   nonexistent 0031 schema and its routes deliberately answer 503.
+4. Require `GET /v1/healthz` from that exact Worker version to return HTTP 200
+   with `capabilities.control_inbox_sender_disposition = 1`. The read-only
+   `node scripts/post-deploy-probe.mjs --host "$KS"` gate rejects legacy
+   health, wrong versions, and 503
+   (`keyserver-cf/DEPLOY.md:672-740`).
+5. Treat the release as failed until that exact capability is observed.
+   Subsequent health review may use aggregate counts only; do not inspect row
+   contents.
+
+There is no down migration. Before the first reconciliation, old SQL remains
+write-compatible but lacks the required health capability. After any row is
+classified, rollback to a pre-0031 Worker is security-forbidden: its old SELECT
+ignores disposition and returns retained bytes. Recovery is forward-only with
+the 0031 schema kept in place.
+
+## Acceptance rows this earns
+
+No checklist edit and no B5 point are claimed. This earns `runtime-proven`
+local server retention, bounded-cleanup, old-Worker migration-window, physical
+quota, privacy, mixed-schema refusal, and forward-only downgrade evidence. The
+broker count consumer is `implemented-unwired`; migration 0031 and the Worker
+are not deployed, so this B5 server boundary remains non-live and production
+status remains `unknown`.

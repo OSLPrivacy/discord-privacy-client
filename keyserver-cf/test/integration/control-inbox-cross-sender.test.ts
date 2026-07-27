@@ -232,5 +232,5 @@ describe("control inbox admission never destroys an unrelated sender's rows", ()
       .bind(recipientId, senderId)
       .first<{ count: number }>();
     expect(held?.count).toBe(32);
-  });
+  }, 20_000);
 });

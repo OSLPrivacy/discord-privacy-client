@@ -25,6 +25,9 @@ import {
   CONTROL_INBOX_FRESHNESS_WINDOW_MS,
 } from "../lib/canonical.js";
 import { verifyEd25519 } from "../lib/crypto.js";
+import {
+  controlInboxDispositionSchemaReady,
+} from "../lib/control-inbox-sweep.js";
 import { getUserForVerify } from "../lib/db.js";
 import {
   badRequest,
@@ -33,6 +36,7 @@ import {
   recipientInboxFull,
   revocationLaneFull,
   serverError,
+  serviceUnavailable,
   tooMany,
   unauthorized,
 } from "../lib/http.js";
@@ -46,9 +50,11 @@ import {
 const CONTROL_INBOX_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_BUNDLE_BYTES = 16 * 1024;
 const MAX_DRAIN_ROWS = 64;
-// At the maximum 16 KiB payload this bounds one recipient's pending
-// opaque data to 8 MiB. Applied/deleted messages stop counting, while
-// replay receipts remain until their normal seven-day expiry.
+// At the maximum 16 KiB payload this bounds one recipient's physical ordinary
+// lane to 8 MiB. Retained retry/quarantine rows count toward the cap: excluding
+// them would create an unbounded second quota behind the live-delivery quota.
+// Applied/deleted messages stop counting, while replay receipts remain until
+// their normal seven-day expiry.
 const MAX_PENDING_ROWS_PER_RECIPIENT = 512;
 const MAX_PENDING_ROWS_PER_SENDER_RECIPIENT = 32;
 
@@ -74,7 +80,6 @@ const FRESH_SENDER_ROWS = 4;
 const KIND_ORDINARY = "";
 const KIND_REVOCATION = "revocation";
 const KNOWN_KINDS = new Set([KIND_ORDINARY, KIND_REVOCATION]);
-
 /// Revocation-lane caps. Mirrored by the triggers in migration 0027, which are
 /// the race-safe backstop for these pre-checks.
 ///
@@ -205,11 +210,10 @@ async function findRequestReceipt(
 }
 
 /**
- * Drop the oldest undelivered rows so a new one always fits.
+ * Drop the oldest live row owned by the posting sender so a new one fits.
  *
- * Returns the number evicted. A no-op while the count is under the cap, so the
- * common path costs nothing. Bounded by the cap itself: `count - limit + 1` can
- * only be large if the table is already at the cap.
+ * Retained retry/quarantine rows are never candidates. If they occupy the
+ * physical pair cap, the D1 trigger refuses the insert explicitly instead.
  *
  * INVARIANT (2026-07-26 audit fix): `whereClause` must always be scoped to the
  * posting sender. Eviction is now only ever a sender recycling its OWN stalest
@@ -221,7 +225,6 @@ async function evictOldestPending(
   env: Env,
   whereClause: string,
   binds: string[],
-  now: number,
   count: number,
   limit: number,
 ): Promise<number> {
@@ -232,12 +235,13 @@ async function evictOldestPending(
       `DELETE FROM control_inbox
         WHERE id IN (
           SELECT id FROM control_inbox
-           WHERE ${whereClause} AND expires_at >= ?
+           WHERE ${whereClause}
+             AND delivery_status = 'live'
            ORDER BY created_at ASC
            LIMIT ?
         )`,
     )
-    .bind(...binds, now, excess)
+    .bind(...binds, excess)
     .run();
   return result.meta?.changes ?? 0;
 }
@@ -251,6 +255,9 @@ export async function handleControlInboxPost(
   // drain loop's GET/DELETE traffic can't starve sends.
   const rl = await checkRateLimit(env, callerIp(request), 1200, "ci-post");
   if (!rl.ok) return tooMany(rl.retryAfter);
+  if (!(await controlInboxDispositionSchemaReady(env.DB))) {
+    return serviceUnavailable("control inbox schema unavailable");
+  }
 
   let body: Record<string, unknown>;
   try {
@@ -357,25 +364,25 @@ export async function handleControlInboxPost(
 
   // ---- The revocation lane -------------------------------------------------
   //
-  // Separate from everything below, because the ordinary lane's rule ("evict,
-  // never refuse") is exactly wrong for a burn. Refuse when full; never evict.
+  // Separate from everything below. Counts are physical, not just live: held
+  // disposition rows may not create a second unbounded revocation quota.
+  // Refuse when full; never evict.
   if (isRevocation) {
     const laneForRecipient = await env.DB
       .prepare(
         `SELECT COUNT(*) AS count
-           FROM control_inbox
-          WHERE recipient_id = ? AND kind = ? AND expires_at >= ?`,
+          FROM control_inbox
+          WHERE recipient_id = ? AND kind = ?`,
       )
-      .bind(body.recipient_id, KIND_REVOCATION, now)
+      .bind(body.recipient_id, KIND_REVOCATION)
       .first<{ count: number }>();
     const laneForPair = await env.DB
       .prepare(
         `SELECT COUNT(*) AS count
-           FROM control_inbox
-          WHERE recipient_id = ? AND sender_id = ? AND kind = ?
-            AND expires_at >= ?`,
+          FROM control_inbox
+          WHERE recipient_id = ? AND sender_id = ? AND kind = ?`,
       )
-      .bind(body.recipient_id, body.sender_id, KIND_REVOCATION, now)
+      .bind(body.recipient_id, body.sender_id, KIND_REVOCATION)
       .first<{ count: number }>();
     // An existing row for the same (recipient, sender, scope, collapse_key)
     // is going to be UPSERTed, not appended, so it does not need lane headroom.
@@ -429,7 +436,10 @@ export async function handleControlInboxPost(
   // to either side. Cross-sender data loss is strictly worse than a sender
   // learning it must retry, so the answer is explicit backpressure.
   //
-  // `kind = ''` scopes both to the ordinary lane. A revocation row must never
+  // `kind = ''` scopes both to the ordinary lane. Counts include retained and
+  // expired physical rows; the sweep reclaims those under the disposition
+  // policy, while POST must backpressure rather than bypass the storage bound.
+  // A revocation row must never
   // be a victim -- that is the defect the separate lane exists to fix -- and
   // excluding revocations from the count keeps a queued burn from consuming an
   // ordinary conversation's headroom.
@@ -437,18 +447,17 @@ export async function handleControlInboxPost(
     .prepare(
       `SELECT COUNT(*) AS count
          FROM control_inbox
-        WHERE recipient_id = ? AND sender_id = ? AND kind = ?
-          AND expires_at >= ?`,
+        WHERE recipient_id = ? AND sender_id = ? AND kind = ?`,
     )
-    .bind(body.recipient_id, body.sender_id, KIND_ORDINARY, now)
+    .bind(body.recipient_id, body.sender_id, KIND_ORDINARY)
     .first<{ count: number }>();
   const pending = await env.DB
     .prepare(
       `SELECT COUNT(*) AS count
          FROM control_inbox
-        WHERE recipient_id = ? AND kind = ? AND expires_at >= ?`,
+        WHERE recipient_id = ? AND kind = ?`,
     )
-    .bind(body.recipient_id, KIND_ORDINARY, now)
+    .bind(body.recipient_id, KIND_ORDINARY)
     .first<{ count: number }>();
 
   // DECIDE BEFORE MUTATING.
@@ -482,13 +491,13 @@ export async function handleControlInboxPost(
     env,
     `recipient_id = ? AND sender_id = ? AND kind = ''`,
     [body.recipient_id, body.sender_id],
-    now,
     heldBySender,
     MAX_PENDING_ROWS_PER_SENDER_RECIPIENT,
   );
   // The check above is a pre-check, not the enforcement. Two concurrent posts
-  // could both read a count under the cap and both insert. Migration 0027's
-  // trigger backstops the hard 512, but it knows nothing about the reserve, so
+  // could both read a count under the cap and both insert. Migration 0031's
+  // replacement trigger backstops the hard physical 512, but it knows nothing
+  // about the reserve, so
   // the cap is carried into the insert statement itself as well -- same lesson
   // as the cipher-store limiter: a check separated from its act is not a bound.
   return await insertControlInboxRow(env, {
@@ -562,8 +571,8 @@ async function insertControlInboxRow(
               SELECT 1 FROM users WHERE user_id = ?2
             )
             AND (?11 IS NULL OR (
-                  SELECT COUNT(*) FROM control_inbox
-                   WHERE recipient_id = ?2 AND kind = '' AND expires_at >= ?12
+                SELECT COUNT(*) FROM control_inbox
+                   WHERE recipient_id = ?2 AND kind = ''
                 ) < ?11)` +
         (isRevocation
           ? `
@@ -571,7 +580,13 @@ async function insertControlInboxRow(
            WHERE collapse_key IS NOT NULL
            DO UPDATE SET bundle = excluded.bundle,
                          expires_at = excluded.expires_at,
-                         created_at = excluded.created_at`
+                         created_at = excluded.created_at,
+                         delivery_status = 'live',
+                         delivery_reason = NULL,
+                         delivery_attempts = 0,
+                         sender_disabled_first_seen_at = NULL,
+                         delivery_next_retry_at = NULL,
+                         delivery_retain_until = NULL`
           : "");
       const results = await env.DB.batch([
         env.DB
@@ -588,7 +603,6 @@ async function insertControlInboxRow(
             args.kind,
             args.collapseKey,
             args.admissionCap ?? null,
-            now,
           ),
         env.DB
           .prepare(
@@ -632,9 +646,9 @@ async function insertControlInboxRow(
           const raced = await env.DB
             .prepare(
               `SELECT COUNT(*) AS count FROM control_inbox
-                WHERE recipient_id = ? AND kind = '' AND expires_at >= ?`,
+                WHERE recipient_id = ? AND kind = ''`,
             )
-            .bind(args.recipientId, now)
+            .bind(args.recipientId)
             .first<{ count: number }>();
           if ((raced?.count ?? 0) >= args.admissionCap) {
             return recipientInboxFull(60, "recipient");
@@ -749,6 +763,9 @@ export async function handleControlInboxGet(
   env: Env,
   userId: string,
 ): Promise<Response> {
+  if (!(await controlInboxDispositionSchemaReady(env.DB))) {
+    return serviceUnavailable("control inbox schema unavailable");
+  }
   try {
     return await handleControlInboxGetInner(request, env, userId);
   } catch {
@@ -823,7 +840,7 @@ async function handleControlInboxGetInner(
   const rows = senderFilter === null
     ? await env.DB.prepare(
         "SELECT id, sender_id, scope_id, bundle, created_at, kind FROM control_inbox " +
-          "WHERE recipient_id = ? AND expires_at >= ? " +
+          "WHERE recipient_id = ? AND delivery_status = 'live' AND expires_at >= ? " +
           "ORDER BY created_at ASC LIMIT ?",
       )
         .bind(userId, now, MAX_DRAIN_ROWS)
@@ -837,7 +854,8 @@ async function handleControlInboxGetInner(
         }>()
     : await env.DB.prepare(
         "SELECT id, sender_id, scope_id, bundle, created_at, kind FROM control_inbox " +
-          "WHERE recipient_id = ? AND sender_id = ? AND expires_at >= ? " +
+          "WHERE recipient_id = ? AND sender_id = ? " +
+          "AND delivery_status = 'live' AND expires_at >= ? " +
           "ORDER BY created_at ASC LIMIT ?",
       )
         .bind(userId, senderFilter, now, MAX_DRAIN_ROWS)
@@ -884,7 +902,48 @@ async function handleControlInboxGetInner(
   // component, so verification fails with a 401. The echo covers the
   // remaining case of a future worker that stops honouring it.)
   if (senderFilter !== null) {
-    return json({ items, filtered_sender_id: senderFilter });
+    const state = await env.DB.prepare(
+      `SELECT
+          SUM(CASE WHEN delivery_status = 'live' THEN 1 ELSE 0 END)
+            AS live_rows,
+          SUM(CASE WHEN delivery_status = 'retryable' THEN 1 ELSE 0 END)
+            AS retryable_rows,
+          SUM(CASE WHEN delivery_status = 'quarantined' THEN 1 ELSE 0 END)
+            AS quarantined_rows,
+          SUM(CASE WHEN delivery_status = 'retired' THEN 1 ELSE 0 END)
+            AS retired_rows
+         FROM control_inbox
+        WHERE recipient_id = ?
+          AND sender_id = ?
+          AND (
+            delivery_status <> 'live'
+            OR expires_at >= ?
+          )
+       `,
+    ).bind(userId, senderFilter, now).first<{
+      live_rows: number;
+      retryable_rows: number;
+      quarantined_rows: number;
+      retired_rows: number;
+    }>();
+    const deliveryCounts = {
+      live: state?.live_rows ?? 0,
+      retryable: state?.retryable_rows ?? 0,
+      quarantined: state?.quarantined_rows ?? 0,
+      retired: state?.retired_rows ?? 0,
+    };
+    if (
+      Object.values(deliveryCounts).some(
+        (count) => !Number.isSafeInteger(count) || count < 0,
+      )
+    ) {
+      throw new Error("control inbox delivery metadata is invalid");
+    }
+    return json({
+      items,
+      filtered_sender_id: senderFilter,
+      filtered_sender_delivery: deliveryCounts,
+    });
   }
   return json({ items });
 }
@@ -894,6 +953,9 @@ export async function handleControlInboxDelete(
   env: Env,
   inboxIdHex: string,
 ): Promise<Response> {
+  if (!(await controlInboxDispositionSchemaReady(env.DB))) {
+    return serviceUnavailable("control inbox schema unavailable");
+  }
   // Drain deletes up to MAX_DRAIN_ROWS items per cycle; own bucket.
   const rl = await checkRateLimit(env, callerIp(request), 3600, "ci-del");
   if (!rl.ok) return tooMany(rl.retryAfter);
