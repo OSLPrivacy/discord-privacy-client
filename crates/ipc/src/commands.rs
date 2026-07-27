@@ -2823,10 +2823,11 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         Err(e) => return Err(format!("OSL: v=3 capability check: {e}")),
     };
 
-    // Phase 9-A2: single-peer (DM-shaped) sends route through v=4
-    // when the peer is ratchet-eligible. `recipients[0]` is always
-    // self; non-self recipients are the actual peers. v=4 fires
-    // exactly when there's one non-self recipient.
+    // Phase 9-A2 prototype: the retained single-peer branch can route
+    // DM-shaped sends through v=4 when explicitly enabled and the peer is
+    // ratchet-eligible. Production keeps that branch disabled below.
+    // `recipients[0]` is always self; non-self recipients are the actual
+    // peers.
     //
     // GC Step 2: a group scope must NEVER take the v=4 single-peer
     // DM branch — even a gc:/server scope that currently resolves
@@ -2928,8 +2929,9 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         }
     }
 
-    // Phase 9-A3 / GC Step 2: groups + server channels route to v=5
-    // (sender-keys). DM-shape (handled above) routes to v=4.
+    // Phase 9-A3 prototype / GC Step 2: an explicitly enabled group/server
+    // scope can route to v=5 sender keys. Production defaults that state flag
+    // off, while the disabled DM prototype above would route to v=4.
     // Threshold lowered from >=2 to >=1: a gc:/server scope with at
     // least one OSL-resolvable peer is still a group and must use
     // sender-keys, not v=4 (the single-peer DM path is now gated

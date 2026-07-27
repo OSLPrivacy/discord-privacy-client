@@ -1,9 +1,94 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 function readRelative(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
+}
+
+function readProductionRustTree(relativeRoot: string): string {
+  const excludedDirectories = new Set(["fixtures", "testdata", "tests"]);
+  const sources: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!excludedDirectories.has(entry.name)) {
+          visit(join(directory, entry.name));
+        }
+      } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+        sources.push(
+          rustProductionPrefix(readFileSync(join(directory, entry.name), "utf8")),
+        );
+      }
+    }
+  };
+  visit(fileURLToPath(new URL(relativeRoot, import.meta.url)));
+  return sources.join("\n");
+}
+
+type MessagingProductionFacts = {
+  registeredPrepareCommand: boolean;
+  mainCallsBroker: boolean;
+  brokerCallsIpc: boolean;
+  statelessV3Fallback: boolean;
+  dmRatchetEnabled: boolean;
+  groupSenderKeysEnabled: boolean;
+  prekeyLifecycleCalled: boolean;
+};
+
+function rustProductionPrefix(source: string): string {
+  const testModule = source.search(/#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+tests\s*\{/u);
+  const production = testModule < 0 ? source : source.slice(0, testModule);
+  return production
+    .replace(/\/\*[\s\S]*?\*\//gu, "")
+    .replace(/\/\/[^\n]*/gu, "");
+}
+
+function classifyMessagingProductionPath(
+  main: string,
+  broker: string,
+  commands: string,
+  state: string,
+  extraProductionRust = "",
+): MessagingProductionFacts {
+  const mainProduction = rustProductionPrefix(main);
+  const brokerProduction = rustProductionPrefix(broker);
+  const commandsProduction = rustProductionPrefix(commands);
+  const stateProduction = rustProductionPrefix(state);
+  const dispatcherStart = commandsProduction.indexOf(
+    "pub fn cmd_osl_encrypt_message_v2_wire(",
+  );
+  const dispatcherEnd = commandsProduction.indexOf(
+    "\nfn scope_is_group_or_server(",
+    dispatcherStart,
+  );
+  const dispatcher =
+    dispatcherStart < 0 || dispatcherEnd < 0
+      ? ""
+      : commandsProduction.slice(dispatcherStart, dispatcherEnd);
+  const allProduction = [
+    mainProduction,
+    brokerProduction,
+    commandsProduction,
+    stateProduction,
+    rustProductionPrefix(extraProductionRust),
+  ].join("\n");
+  const handler = mainProduction.slice(mainProduction.indexOf("tauri::generate_handler!["));
+
+  return {
+    registeredPrepareCommand: handler.includes("prepare_encrypted_text,"),
+    mainCallsBroker: mainProduction.includes("broker::prepare_encrypted_text("),
+    brokerCallsIpc: brokerProduction.includes("ipc::commands::cmd_osl_encrypt_message_v2("),
+    statelessV3Fallback: dispatcher.includes("crate::wire_v2::encrypt_v3("),
+    dmRatchetEnabled: /let\s+v4_dm_enabled\s*=\s*true\s*;/u.test(dispatcher),
+    groupSenderKeysEnabled:
+      /sender_keys_enabled\s*\.\s*store\s*\(\s*true\b/u.test(allProduction),
+    prekeyLifecycleCalled:
+      /\.(?:fetch_prekey_bundle|replenish_prekeys|replenish_using_state)\s*\(/u.test(
+        allProduction,
+      ),
+  };
 }
 
 describe("bundled preview security boundary", () => {
@@ -331,5 +416,153 @@ describe("bundled preview security boundary", () => {
     expect(source).toContain(
       'window.addEventListener("wheel", () => scheduleTranscriptRehydrate(),',
     );
+  });
+
+  it("keeps ratchet, sender-key, and prekey claims bound to the shipping path", () => {
+    const main = readRelative("../../osl-hub/src/main.rs");
+    const broker = readRelative("../../osl-hub/src/broker.rs");
+    const commands = readRelative("../../../crates/ipc/src/commands.rs");
+    const state = readRelative("../../../crates/ipc/src/state.rs");
+    const wire = readRelative("../../../crates/ipc/src/wire_v2.rs");
+    const prekeyClient = readRelative("../../../crates/keystore/src/client.rs");
+    const ipcPublicDocs = readRelative("../../../crates/ipc/src/lib.rs");
+    const productionRust = [
+      readProductionRustTree("../../osl-hub/src/"),
+      readProductionRustTree("../../../crates/ipc/src/"),
+    ].join("\n");
+    const facts = classifyMessagingProductionPath(
+      main,
+      broker,
+      commands,
+      state,
+      productionRust,
+    );
+
+    // Positive production controls keep an empty/deleted command surface from
+    // making the negative reachability assertions pass vacuously.
+    expect(facts.registeredPrepareCommand).toBe(true);
+    expect(facts.mainCallsBroker).toBe(true);
+    expect(facts.brokerCallsIpc).toBe(true);
+    expect(facts.statelessV3Fallback).toBe(true);
+    expect(wire).toContain("recipient_ik plays both ik and spk");
+    expect(wire).toContain("None,\n            &recip.mlkem_pub,");
+    expect(prekeyClient).toContain("pub fn fetch_prekey_bundle(");
+    expect(prekeyClient).toContain("pub fn replenish_prekeys(");
+
+    // Implemented prototype code is not a shipping guarantee until each
+    // production gate/caller exists.
+    expect(facts.dmRatchetEnabled).toBe(false);
+    expect(facts.groupSenderKeysEnabled).toBe(false);
+    expect(facts.prekeyLifecycleCalled).toBe(false);
+
+    // The owned crate's public documentation must retain the reachable v3 and
+    // implemented-but-disabled distinction. Root README truth is separately
+    // owned and tracked by the crypto-lane report.
+    const assertOwnedPublicTruth = (source: string): void => {
+      expect(source).toContain("Current production messaging posture:");
+      expect(source).toContain("Stateless wire-v3 recipient wrapping");
+      expect(source).toContain(
+        "production disables the v4 DM branch and defaults the",
+      );
+      expect(source).toContain(
+        "implementation inventory, not current",
+      );
+      expect(source).toContain(
+        "keystore prekey client is likewise not called by this production",
+      );
+    };
+    assertOwnedPublicTruth(ipcPublicDocs);
+    expect(() =>
+      assertOwnedPublicTruth(
+        ipcPublicDocs.replace(
+          "production disables the v4 DM branch and defaults the",
+          "production enables the v4 DM branch and defaults the",
+        ),
+      ),
+    ).toThrow();
+
+    // One failure-capable mutation per reachability stage, plus positive
+    // mutations proving all three dormant-subsystem detectors can turn on.
+    expect(
+      classifyMessagingProductionPath(
+        main.replace("prepare_encrypted_text,", ""),
+        broker,
+        commands,
+        state,
+      ).registeredPrepareCommand,
+    ).toBe(false);
+    expect(
+      classifyMessagingProductionPath(
+        main.replace("broker::prepare_encrypted_text(", "broker::prepare_encrypted_text_removed("),
+        broker,
+        commands,
+        state,
+      ).mainCallsBroker,
+    ).toBe(false);
+    expect(
+      classifyMessagingProductionPath(
+        main,
+        broker.replace(
+          "ipc::commands::cmd_osl_encrypt_message_v2(",
+          "ipc::commands::cmd_osl_encrypt_message_v2_removed(",
+        ),
+        commands,
+        state,
+      ).brokerCallsIpc,
+    ).toBe(false);
+    expect(
+      classifyMessagingProductionPath(
+        main,
+        broker,
+        commands.replaceAll(
+          "crate::wire_v2::encrypt_v3(",
+          "crate::wire_v2::encrypt_v3_removed(",
+        ),
+        state,
+      ).statelessV3Fallback,
+    ).toBe(false);
+    expect(
+      classifyMessagingProductionPath(
+        main,
+        broker,
+        commands.replace("let v4_dm_enabled = false;", "let v4_dm_enabled = true;"),
+        state,
+      ).dmRatchetEnabled,
+    ).toBe(true);
+    expect(
+      classifyMessagingProductionPath(
+        main,
+        broker,
+        commands,
+        state,
+        "state.sender_keys_enabled.store(true, Ordering::Release);",
+      ).groupSenderKeysEnabled,
+    ).toBe(true);
+    expect(
+      classifyMessagingProductionPath(
+        main,
+        broker,
+        commands,
+        state,
+        "client.replenish_prekeys(&state).await?;",
+      ).prekeyLifecycleCalled,
+    ).toBe(true);
+
+    // Comments and cfg(test)-only fixtures are not production authority.
+    expect(
+      classifyMessagingProductionPath(
+        main,
+        broker,
+        commands,
+        state,
+        [
+          "// client.fetch_prekey_bundle(\"peer\").await?;",
+          "#[cfg(test)]",
+          "mod tests {",
+          "  fn fixture() { client.replenish_using_state(&state); }",
+          "}",
+        ].join("\n"),
+      ).prekeyLifecycleCalled,
+    ).toBe(false);
   });
 });

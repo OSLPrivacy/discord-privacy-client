@@ -1,18 +1,16 @@
 //! Typed command surface bridging the webview to the Rust crates.
 //!
-//! v1 alpha prototype scope:
-//! - Identity lifecycle: generate, load, save (plain-file via
-//!   [`keystore`]).
-//! - Key-server interactions: init, register, fetch_pubkeys.
-//! - AEAD primitive operations: seal / open (direct
-//!   [`crypto::aead`] wrapper for end-to-end smoke testing).
-//! - Stego Mode 0 encode / decode.
-//!
-//! Out of scope this layer (per `docs/design/build-order.md`):
-//! - Full PQXDH handshake + Double Ratchet session start.
-//! - Group sender-keys session distribution.
-//! - Wrapped-key burn / re-validation flow.
-//! - View-once UI plumbing (short-lived blob URLs).
+//! Current production messaging posture:
+//! - Identity lifecycle and key-server identity-bundle registration/fetch.
+//! - Stateless wire-v3 recipient wrapping: X25519 + ML-KEM-768 feed a
+//!   per-message hybrid key derivation, with the recipient identity key also
+//!   occupying the signed-prekey role and no one-time prekey.
+//! - The wire-v4 Double Ratchet and wire-v5 sender-key implementations remain
+//!   in this crate, but production disables the v4 DM branch and defaults the
+//!   v5 group branch off. They are implementation inventory, not current
+//!   forward-secrecy or group sender-key product guarantees.
+//! - The keystore prekey client is likewise not called by this production
+//!   command path.
 //!
 //! ## Design
 //!
