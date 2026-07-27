@@ -45,7 +45,7 @@ tree; re-verify anchors before relying on a row.
 
 | | |
 |---|---|
-| **Permitted wording** | "Discord receives cover text, not your message. It never receives the decryption key." |
+| **Permitted wording** | "Discord receives an encrypted block, not your message. It never receives the decryption key." — **CORRECTED 2026-07-27.** The old wording ("receives cover text") is **NOT ELIGIBLE**: `crates/ipc/src/commands.rs:2640-2660` (9-MODE1-RETIRE) disables Mode 1 template stego in V2 as unviable under the PQ-hybrid ~1190-byte wrap leg and silently coerces legacy configs to Mode 0, which emits a visible `DPC0::<base64>` capsule. Confidentiality holds; the *stealth* claim does not. |
 | **Status** | **`Beta`** badge, on the same corrected standard as A1. |
 | **Evidence** | `crates/ipc/src/wire_v2.rs:685-760`; body sealed under a fresh random AES-256-GCM key, wrapped per recipient |
 | **Required alongside** | "Discord still sees who you talk to, when, and how often. We cannot hide that." (metadata exclusion — mandatory on every confidentiality claim) |
@@ -149,7 +149,7 @@ accessible name per master §8.6.
 
 | Claim | Permitted wording | Status | Evidence | Required alongside |
 |---|---|---|---|---|
-| Encrypted send reaches Discord | "Encrypted messages send through Discord as ordinary-looking text." | `runtime-proven` → **`Beta`** | Dated QA screenshot evidence, master §9 "Discord protected send" | "Verified on QA builds, not yet on the release build." |
+| Encrypted send reaches Discord | "Encrypted messages send through Discord." **"as ordinary-looking text" removed 2026-07-27** — Mode 1 is disabled, so what is sent is a visible `DPC0::` capsule. | `runtime-proven` → **`Beta`** | Dated QA screenshot evidence, master §9 "Discord protected send" | "Verified on QA builds, not yet on the release build." |
 | Decrypted overlay ("the eye") | "OSL paints the decrypted text over the Discord rows it belongs to." | `runtime-proven` → **`Beta`** | `osl-rehydrate-geometry-diagnosis.md`: `placedRowCount` 0→3, `rel_l` −8→0, executable SHA-256 `6b6a36945b42…` | "Measured on a QA build. Placement is proven; the full visual result, peer-authored rows, scrolling, resizing and DPI changes are not." |
 | Delivery confirmation | "OSL tells you whether Discord accepted the message — sent, not sent, or uncertain." | `designed-only` | Master §7.3 tri-state contract | Do not claim until the tri-state proof exists on an exact build. `delivery_uncertain` must never be described as failure. |
 
