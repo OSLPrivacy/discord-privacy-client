@@ -2678,6 +2678,22 @@ fn retained_control_inbox_refusal(facts: ControlInboxDeliveryFacts) -> Option<&'
     }
 }
 
+fn retained_attachment_control_inbox_refusal(
+    facts: ControlInboxDeliveryFacts,
+) -> Option<&'static str> {
+    if facts.quarantined_untrusted_rows != 0 {
+        Some("OSL retained private attachment rows because the sender identity is untrusted")
+    } else if facts.retryable_rows != 0 {
+        Some(
+            "OSL retained private attachment rows while the sender identity is temporarily unavailable",
+        )
+    } else if facts.terminal_rows != 0 {
+        Some("OSL retained private attachment rows for a terminal sender identity")
+    } else {
+        None
+    }
+}
+
 fn drain_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -3009,16 +3025,8 @@ fn drain_peer_inbox_text(
                     .view_once_received_was_sent(&payload.message_id, now)
                     .unwrap_or(true);
                 if !receipt_already_sent
-                    && send_native_overlay_acknowledgment(
-                        core,
-                        &verified,
-                        &identity,
-                        &client,
-                        &manual,
-                        &context,
-                        &payload,
-                        &scope_id,
-                        NativeOverlayAcknowledgmentStatus::Received,
+                    && send_native_overlay_received_acknowledgment(
+                        core, &verified, &identity, &client, &manual, &context, &payload, &scope_id,
                     )
                     .is_ok()
                 {
@@ -3070,21 +3078,10 @@ fn drain_peer_inbox_text(
             continue;
         }
         if already_consumed {
-            if send_native_overlay_acknowledgment(
-                core,
-                &verified,
-                &identity,
-                &client,
-                &manual,
-                &context,
-                &payload,
-                &scope_id,
-                NativeOverlayAcknowledgmentStatus::Opened,
-            )
-            .is_ok()
-            {
-                let _ = client.delete_control_inbox(&identity, &item.id);
-            }
+            // Durable replay consumption, not a read receipt, authorizes
+            // retiring this relay row. Opened acknowledgments stay suppressed
+            // until a durable mutual-consent grant exists.
+            let _ = client.delete_control_inbox(&identity, &item.id);
             continue;
         }
         if security::consume_peer_message(
@@ -3098,24 +3095,11 @@ fn drain_peer_inbox_text(
         {
             continue;
         }
-        // The receiver acknowledges only after authenticated open and durable
-        // replay consumption. If posting the receipt fails, keep the relay row
-        // so a later drain can retry the receipt without redisplaying content.
-        if send_native_overlay_acknowledgment(
-            core,
-            &verified,
-            &identity,
-            &client,
-            &manual,
-            &context,
-            &payload,
-            &scope_id,
-            NativeOverlayAcknowledgmentStatus::Opened,
-        )
-        .is_ok()
-        {
-            let _ = client.delete_control_inbox(&identity, &item.id);
-        }
+        // The authenticated message is now durably replay-consumed. Retire its
+        // relay row without publishing an Opened acknowledgment: read-state
+        // disclosure is disabled until both peers have durable scope-bound
+        // consent.
+        let _ = client.delete_control_inbox(&identity, &item.id);
         messages.push(OpenedNativeOverlayText {
             // The correlation handle. Both halves are already authenticated
             // facts about this exact row: the payload's own message id, and the
@@ -3162,7 +3146,7 @@ fn drain_peer_inbox_text(
                     .view_once_received_was_sent(&logical_message_id, now)
                     .unwrap_or(true);
                 if !receipt_already_sent
-                    && send_native_overlay_acknowledgment(
+                    && send_native_overlay_received_acknowledgment(
                         core,
                         &verified,
                         &identity,
@@ -3171,7 +3155,6 @@ fn drain_peer_inbox_text(
                         &context,
                         &receipt_payload,
                         &scope_id,
-                        NativeOverlayAcknowledgmentStatus::Received,
                     )
                     .is_ok()
                 {
@@ -3232,27 +3215,12 @@ fn drain_peer_inbox_text(
         {
             continue;
         }
-        if send_native_overlay_acknowledgment(
-            core,
-            &verified,
-            &identity,
-            &client,
-            &manual,
-            &context,
-            &logical,
-            &scope_id,
-            NativeOverlayAcknowledgmentStatus::Opened,
-        )
-        .is_ok()
-        {
-            // The group's own rows and the rows that contested it are retired
-            // together, and only now that the message has actually been opened.
-            // Retiring a quarantined row any earlier is what would let a hostile
-            // row delete a legitimate one; retiring it never is what left the
-            // poison in the inbox to be re-fetched and re-failed forever.
-            for inbox_id in group.inbox_ids.iter().chain(&group.quarantined_inbox_ids) {
-                let _ = client.delete_control_inbox(&identity, inbox_id);
-            }
+        // The group's own rows and the rows that contested it are retired
+        // together, and only now that the logical message has been durably
+        // replay-consumed. No Opened acknowledgment is published without
+        // durable mutual consent.
+        for inbox_id in group.inbox_ids.iter().chain(&group.quarantined_inbox_ids) {
+            let _ = client.delete_control_inbox(&identity, inbox_id);
         }
         if !already_consumed {
             messages.push(OpenedNativeOverlayText {
@@ -3647,12 +3615,9 @@ fn native_overlay_attachment_plans(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
-    if !security::scope_security(manual.scope.clone())
+    let decrypt_display_enabled = security::scope_security(manual.scope.clone())
         .map_err(|_| ERROR.to_owned())?
-        .decrypt_display_enabled
-    {
-        return Ok(Vec::new());
-    }
+        .decrypt_display_enabled;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -3667,6 +3632,12 @@ fn native_overlay_attachment_plans(
     let page = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
         .map_err(|_| ERROR.to_owned())?;
     let control_inbox_delivery = control_inbox_delivery_facts(page.delivery);
+    if let Some(refusal) = retained_attachment_control_inbox_refusal(control_inbox_delivery) {
+        return Err(refusal.to_owned());
+    }
+    if !decrypt_display_enabled {
+        return Ok(Vec::new());
+    }
     let items = page.items;
     let now = ipc::main_password::now_unix_secs_pub();
     let limit = if wanted_id.is_some() {
@@ -3742,11 +3713,6 @@ fn native_overlay_attachment_plans(
             expires_at: notice.expires_at,
         })
     });
-    if plans.is_empty() {
-        if let Some(refusal) = retained_control_inbox_refusal(control_inbox_delivery) {
-            return Err(refusal.to_owned());
-        }
-    }
     Ok(plans)
 }
 
@@ -3908,7 +3874,30 @@ fn keyserver_transport(
     Ok((identity, client))
 }
 
-fn send_native_overlay_acknowledgment(
+fn build_native_overlay_received_acknowledgment(
+    manual: &ManualPeerContext,
+    context: &HubConversationContext,
+    original: &PeerProtectedPayload,
+    acknowledged_at: i64,
+) -> Result<NativeOverlayAcknowledgmentPayload, String> {
+    if original.expires_at <= acknowledged_at {
+        return Err("OSL could not acknowledge the protected message".to_owned());
+    }
+    Ok(NativeOverlayAcknowledgmentPayload {
+        version: NATIVE_OVERLAY_ACK_VERSION,
+        domain: NATIVE_OVERLAY_ACK_DOMAIN.to_owned(),
+        message_id: original.message_id.clone(),
+        status: NativeOverlayAcknowledgmentStatus::Received,
+        acknowledged_at,
+        expires_at: original.expires_at,
+        service_id: manual.service_id.clone(),
+        conversation_binding: context.conversation_id.clone(),
+        sender_osl_user_id: context.self_osl_id.clone(),
+        recipient_osl_user_id: manual.peer_osl_user_id.clone(),
+    })
+}
+
+fn send_native_overlay_received_acknowledgment(
     core: &HubCoreState,
     verified: &ManualPeerBinding,
     identity: &keystore::Identity,
@@ -3917,24 +3906,10 @@ fn send_native_overlay_acknowledgment(
     context: &HubConversationContext,
     original: &PeerProtectedPayload,
     scope_id: &str,
-    status: NativeOverlayAcknowledgmentStatus,
 ) -> Result<(), String> {
     let acknowledged_at = ipc::main_password::now_unix_secs_pub();
-    if original.expires_at <= acknowledged_at {
-        return Err("OSL could not acknowledge the protected message".to_owned());
-    }
-    let acknowledgment = NativeOverlayAcknowledgmentPayload {
-        version: NATIVE_OVERLAY_ACK_VERSION,
-        domain: NATIVE_OVERLAY_ACK_DOMAIN.to_owned(),
-        message_id: original.message_id.clone(),
-        status,
-        acknowledged_at,
-        expires_at: original.expires_at,
-        service_id: manual.service_id.clone(),
-        conversation_binding: context.conversation_id.clone(),
-        sender_osl_user_id: context.self_osl_id.clone(),
-        recipient_osl_user_id: manual.peer_osl_user_id.clone(),
-    };
+    let acknowledgment =
+        build_native_overlay_received_acknowledgment(manual, context, original, acknowledged_at)?;
     let encoded = serde_json::to_vec(&acknowledgment)
         .map_err(|_| "OSL could not acknowledge the protected message".to_owned())?;
     let wire = encrypt_direct_manual_v3_payload(
@@ -4029,7 +4004,10 @@ fn validate_native_overlay_acknowledgment(
     context: &HubConversationContext,
     now: i64,
 ) -> Result<(), ()> {
-    if acknowledgment.version != NATIVE_OVERLAY_ACK_VERSION
+    if !native_overlay_acknowledgment_is_admissible_without_mutual_consent(
+        acknowledgment.status,
+    )
+        || acknowledgment.version != NATIVE_OVERLAY_ACK_VERSION
         || acknowledgment.domain != NATIVE_OVERLAY_ACK_DOMAIN
         || acknowledgment.message_id.is_empty()
         || acknowledgment.message_id.len() > 96
@@ -4047,6 +4025,12 @@ fn validate_native_overlay_acknowledgment(
         return Err(());
     }
     Ok(())
+}
+
+fn native_overlay_acknowledgment_is_admissible_without_mutual_consent(
+    status: NativeOverlayAcknowledgmentStatus,
+) -> bool {
+    status == NativeOverlayAcknowledgmentStatus::Received
 }
 
 fn native_overlay_receipt_path() -> Result<std::path::PathBuf, String> {
@@ -4194,6 +4178,12 @@ fn apply_native_overlay_acknowledgment_record(
     acknowledgment: &NativeOverlayAcknowledgmentPayload,
     require_device_bound_qa_record: bool,
 ) -> Result<NativeOverlayAcknowledgment, String> {
+    // Validation is the production admission barrier, but the ledger owns its
+    // own independent check so a new caller cannot bypass the mutual-consent
+    // policy. Reject before looking up or mutating any record.
+    if !native_overlay_acknowledgment_is_admissible_without_mutual_consent(acknowledgment.status) {
+        return Err("OSL Opened receipts require durable mutual consent".to_owned());
+    }
     let record = ledger
         .records
         .get_mut(&acknowledgment.message_id)
@@ -4206,10 +4196,7 @@ fn apply_native_overlay_acknowledgment_record(
     {
         return Err("OSL receipt does not match a sent message".to_owned());
     }
-    let next = match acknowledgment.status {
-        NativeOverlayAcknowledgmentStatus::Received => NativeOverlayReceiptStatus::Received,
-        NativeOverlayAcknowledgmentStatus::Opened => NativeOverlayReceiptStatus::Opened,
-    };
+    let next = NativeOverlayReceiptStatus::Received;
     let rank = |status| match status {
         NativeOverlayReceiptStatus::Sent => 0,
         NativeOverlayReceiptStatus::Received => 1,
@@ -6616,6 +6603,29 @@ mod tests {
                     }
                     assert!(request.len() <= 16 * 1024, "request headers stay bounded");
                 }
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| index + 4)
+                    .expect("request header terminator");
+                let content_length = std::str::from_utf8(&request[..header_end])
+                    .expect("request headers are UTF-8")
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("valid content length"))
+                    })
+                    .unwrap_or(0);
+                assert!(
+                    content_length <= 64 * 1024,
+                    "test request body stays bounded"
+                );
+                while request.len() < header_end.saturating_add(content_length) {
+                    let read = stream.read(&mut chunk).expect("read control-inbox body");
+                    assert!(read > 0, "request ended before its body");
+                    request.extend_from_slice(&chunk[..read]);
+                }
                 request_tx
                     .send(String::from_utf8(request).expect("request headers are UTF-8"))
                     .expect("record control-inbox request");
@@ -6850,6 +6860,11 @@ mod tests {
             }
         );
         assert_eq!(retained_control_inbox_refusal(facts), None);
+        assert!(
+            retained_attachment_control_inbox_refusal(facts)
+                .expect("attachments fail closed even when the same page has live rows")
+                .contains("untrusted")
+        );
 
         for (disposition, expected) in [
             (
@@ -6886,6 +6901,9 @@ mod tests {
             assert!(retained_control_inbox_refusal(facts)
                 .expect("retained-only page is not an empty inbox")
                 .contains(expected));
+            assert!(retained_attachment_control_inbox_refusal(facts)
+                .expect("every retained attachment disposition is refused")
+                .contains(expected));
         }
 
         let empty =
@@ -6897,6 +6915,34 @@ mod tests {
             });
         assert_eq!(empty.retained_disabled_rows, 0);
         assert_eq!(retained_control_inbox_refusal(empty), None);
+        assert_eq!(retained_attachment_control_inbox_refusal(empty), None);
+    }
+
+    #[test]
+    fn attachment_disposition_is_checked_after_fetch_and_before_display_off_return() {
+        let source = include_str!("broker.rs");
+        let attachment_plans = source
+            .split_once("fn native_overlay_attachment_plans(")
+            .and_then(|(_, rest)| rest.split_once("\nfn collect_valid_bounded"))
+            .map(|(body, _)| body)
+            .expect("attachment plan function boundaries remain visible");
+        let fetch = attachment_plans
+            .find("let page = fetch_peer_control_inbox(")
+            .expect("attachments use the filtered production fetch");
+        let disposition = attachment_plans
+            .find("retained_attachment_control_inbox_refusal(control_inbox_delivery)")
+            .expect("attachments inspect the 0031 disposition");
+        let display_off = attachment_plans
+            .find("if !decrypt_display_enabled {")
+            .expect("attachments preserve display-off behavior");
+        let parse_live = attachment_plans
+            .find("let plans = collect_valid_bounded(")
+            .expect("attachments still parse bounded live rows");
+
+        assert!(
+            fetch < disposition && disposition < display_off && display_off < parse_live,
+            "fetch and fail-closed disposition admission must precede display-off and live-row parsing"
+        );
     }
 
     fn literal_renderer_invokes(source: &str) -> std::collections::BTreeSet<String> {
@@ -7224,7 +7270,190 @@ mod tests {
     }
 
     #[test]
-    fn native_overlay_ack_is_correlated_and_replay_idempotent() {
+    fn d7_received_ack_uses_the_production_post_boundary() {
+        let alice = keystore::generate_identity("osl-alice-d7".to_owned());
+        let bob = keystore::generate_identity("osl-bob-d7".to_owned());
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        let bob_binding = ManualPeerBinding {
+            person_id: "hub-person-bob".to_owned(),
+            peer_osl_user_id: bob.user_id.clone(),
+            peer_x25519_public: *bob.x25519_public.as_bytes(),
+            peer_mlkem768_public: bob.mlkem_public_bytes,
+        };
+        let context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-alice".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "d7-receipt-conversation".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![bob_binding.person_id.clone()],
+            self_osl_id: alice.user_id.clone(),
+        };
+        let manual = ManualPeerContext {
+            service_id: context.service_id.clone(),
+            account_id: context.account_id.clone(),
+            person_id: bob_binding.person_id.clone(),
+            peer_osl_user_id: bob.user_id.clone(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: "d7-receipt-scope".to_owned(),
+                server_id: None,
+                channel_id: Some(context.conversation_id.clone()),
+            },
+        };
+        let now = ipc::main_password::now_unix_secs_pub();
+        let payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "d7-received-message".to_owned(),
+            created_at: now.saturating_sub(1),
+            expires_at: now.saturating_add(3_600),
+            service_id: context.service_id.clone(),
+            conversation_binding: context.conversation_id.clone(),
+            sender_osl_user_id: bob.user_id.clone(),
+            recipient_osl_user_id: alice.user_id.clone(),
+            plaintext: "private".to_owned(),
+            view_once: true,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+        let (base_url, requests, server) =
+            spawn_control_inbox_test_server(vec![serde_json::json!({
+                "id": "d7-received-row",
+                "expires_at": payload.expires_at,
+            })]);
+        let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
+        send_native_overlay_received_acknowledgment(
+            &core,
+            &bob_binding,
+            &alice,
+            &client,
+            &manual,
+            &context,
+            &payload,
+            "d7-receipt-scope",
+        )
+        .expect("Received reaches the production control-inbox POST");
+
+        let request = requests.recv().expect("capture production POST");
+        assert!(
+            request.starts_with("POST /v1/control-inbox HTTP/1.1\r\n"),
+            "the production sender posts to the control inbox"
+        );
+        let (_, body) = request.split_once("\r\n\r\n").expect("request body");
+        let body: serde_json::Value = serde_json::from_str(body).expect("JSON request body");
+        let bundle = STANDARD
+            .decode(
+                body.get("bundle_b64")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("posted encrypted bundle"),
+            )
+            .expect("bundle is base64");
+        assert!(ipc::wire_v2::is_native_overlay_ack_bundle(&bundle));
+
+        *core.osl.identity.lock().unwrap() = Some(bob.clone());
+        let alice_binding = ManualPeerBinding {
+            person_id: "hub-person-alice".to_owned(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+        let wire = format!("DPC0::{}", STANDARD.encode(bundle));
+        let plaintext = decrypt_direct_manual_v3_payload(
+            &core,
+            &alice_binding,
+            ManualWireSender::Peer,
+            &wire,
+            ipc::wire_v2::MSG_TYPE_NATIVE_OVERLAY_ACK,
+        )
+        .expect("peer decrypts the production-posted acknowledgment");
+        let acknowledgment: NativeOverlayAcknowledgmentPayload =
+            serde_json::from_slice(&plaintext).expect("decode acknowledgment payload");
+        assert!(acknowledgment.status == NativeOverlayAcknowledgmentStatus::Received);
+        assert_eq!(acknowledgment.message_id, payload.message_id);
+        server.join().expect("control-inbox test server exits");
+    }
+
+    #[test]
+    fn d7_outbound_native_overlay_ack_is_received_only() {
+        let context = context("discord-personal", "dm-receipt");
+        let manual = ManualPeerContext {
+            service_id: "discord".to_owned(),
+            account_id: context.account_id.clone(),
+            person_id: "friend-receipt".to_owned(),
+            peer_osl_user_id: "osl-peer-receipt".to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: "scope-receipt".to_owned(),
+                server_id: None,
+                channel_id: Some(context.conversation_id.clone()),
+            },
+        };
+        let payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "msg-receipt".to_owned(),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: manual.service_id.clone(),
+            conversation_binding: context.conversation_id.clone(),
+            sender_osl_user_id: manual.peer_osl_user_id.clone(),
+            recipient_osl_user_id: context.self_osl_id.clone(),
+            plaintext: "private".to_owned(),
+            view_once: true,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+        let acknowledgment = build_native_overlay_received_acknowledgment(
+            &manual,
+            &context,
+            &payload,
+            1_700_000_010,
+        )
+        .unwrap();
+        assert!(acknowledgment.status == NativeOverlayAcknowledgmentStatus::Received);
+        assert_eq!(acknowledgment.message_id, payload.message_id);
+        assert_eq!(acknowledgment.sender_osl_user_id, context.self_osl_id);
+        assert_eq!(
+            acknowledgment.recipient_osl_user_id,
+            manual.peer_osl_user_id
+        );
+        assert!(build_native_overlay_received_acknowledgment(
+            &manual,
+            &context,
+            &payload,
+            payload.expires_at,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn d7_production_has_no_opened_acknowledgment_emission_branch() {
+        let source = include_str!("broker.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(production, _)| production)
+            .expect("broker test module boundary remains visible");
+        assert!(
+            !production.contains("NativeOverlayAcknowledgmentStatus::Opened"),
+            "no production branch may construct or send an Opened acknowledgment"
+        );
+        assert_eq!(
+            production
+                .matches("send_native_overlay_received_acknowledgment(")
+                .count(),
+            3,
+            "only the helper definition and the single-row/chunked Received branches may post"
+        );
+    }
+
+    #[test]
+    fn d7_received_ack_is_correlated_and_replay_idempotent_while_opened_is_refused() {
         let context = context("discord-personal", "dm-receipt");
         let manual = ManualPeerContext {
             service_id: "discord".to_owned(),
@@ -7257,7 +7486,7 @@ mod tests {
             version: NATIVE_OVERLAY_ACK_VERSION,
             domain: NATIVE_OVERLAY_ACK_DOMAIN.to_owned(),
             message_id: "msg-receipt".to_owned(),
-            status: NativeOverlayAcknowledgmentStatus::Opened,
+            status: NativeOverlayAcknowledgmentStatus::Received,
             acknowledged_at: 1_700_000_010,
             expires_at: 1_700_003_600,
             service_id: manual.service_id.clone(),
@@ -7265,6 +7494,39 @@ mod tests {
             sender_osl_user_id: manual.peer_osl_user_id.clone(),
             recipient_osl_user_id: context.self_osl_id.clone(),
         };
+        let opened = NativeOverlayAcknowledgmentPayload {
+            version: acknowledgment.version,
+            domain: acknowledgment.domain.clone(),
+            message_id: acknowledgment.message_id.clone(),
+            status: NativeOverlayAcknowledgmentStatus::Opened,
+            acknowledged_at: acknowledgment.acknowledged_at,
+            expires_at: acknowledgment.expires_at,
+            service_id: acknowledgment.service_id.clone(),
+            conversation_binding: acknowledgment.conversation_binding.clone(),
+            sender_osl_user_id: acknowledgment.sender_osl_user_id.clone(),
+            recipient_osl_user_id: acknowledgment.recipient_osl_user_id.clone(),
+        };
+        assert!(
+            validate_native_overlay_acknowledgment(
+                &opened,
+                &manual,
+                &context,
+                opened.acknowledged_at,
+            )
+            .is_err(),
+            "Opened is refused before ledger/UI admission"
+        );
+        assert!(apply_native_overlay_acknowledgment_record(
+            &mut ledger,
+            &context,
+            &manual,
+            &opened,
+            false,
+        )
+        .is_err());
+        let unchanged = ledger.records.get("msg-receipt").unwrap();
+        assert!(unchanged.status == NativeOverlayReceiptStatus::Sent);
+        assert_eq!(unchanged.acknowledged_at, 0);
         assert!(apply_native_overlay_acknowledgment_record(
             &mut ledger,
             &context,
@@ -7281,6 +7543,11 @@ mod tests {
             false,
         )
         .unwrap();
+        assert!(first.status == NativeOverlayAcknowledgmentStatus::Received);
+        assert!(
+            ledger.records.get("msg-receipt").unwrap().status
+                == NativeOverlayReceiptStatus::Received
+        );
         let mut replay = acknowledgment;
         replay.acknowledged_at = 1_700_000_020;
         let second = apply_native_overlay_acknowledgment_record(
@@ -8612,7 +8879,7 @@ mod tests {
             version: NATIVE_OVERLAY_ACK_VERSION,
             domain: NATIVE_OVERLAY_ACK_DOMAIN.to_owned(),
             message_id: notice.message_id.clone(),
-            status: NativeOverlayAcknowledgmentStatus::Opened,
+            status: NativeOverlayAcknowledgmentStatus::Received,
             acknowledged_at: 1_700_000_002,
             expires_at: notice.expires_at,
             service_id: notice.service_id.clone(),
@@ -8703,6 +8970,28 @@ mod tests {
             serde_json::from_slice(&opened_ack).unwrap();
         validate_native_overlay_acknowledgment(&opened_ack, &manual, &context, 1_700_000_003)
             .unwrap();
+        let refused_opened_ack = NativeOverlayAcknowledgmentPayload {
+            version: opened_ack.version,
+            domain: opened_ack.domain.clone(),
+            message_id: opened_ack.message_id.clone(),
+            status: NativeOverlayAcknowledgmentStatus::Opened,
+            acknowledged_at: opened_ack.acknowledged_at,
+            expires_at: opened_ack.expires_at,
+            service_id: opened_ack.service_id.clone(),
+            conversation_binding: opened_ack.conversation_binding.clone(),
+            sender_osl_user_id: opened_ack.sender_osl_user_id.clone(),
+            recipient_osl_user_id: opened_ack.recipient_osl_user_id.clone(),
+        };
+        assert!(
+            validate_native_overlay_acknowledgment(
+                &refused_opened_ack,
+                &manual,
+                &context,
+                1_700_000_003,
+            )
+            .is_err(),
+            "an authenticated Opened frame remains inadmissible without mutual consent"
+        );
         let encoded_ack = serde_json::to_value(&opened_ack).unwrap();
         assert!(encoded_ack.get("plaintext").is_none());
         let mut wrong_message = opened_ack;
