@@ -1023,3 +1023,54 @@ fn a_populated_store_with_its_canary_deleted_refuses_to_open() {
          re-seal a fresh one"
     );
 }
+
+/// The message body itself must not be readable in the file.
+///
+/// Every other sweep in this file hunts for *identifiers*. Nothing asserted the
+/// thing the store exists to protect — the message text — is actually encrypted
+/// at rest. Without this, an implementation that stored the body verbatim, or
+/// stored it alongside its ciphertext, would pass the entire suite: the
+/// round-trip test returns what it was given either way.
+///
+/// The attachment bytes are checked for the same reason.
+#[test]
+fn message_bodies_and_attachment_bytes_are_not_readable_in_the_file() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+
+    let body = "SENTINEL-BODY-the-quick-brown-fox-said-something-private";
+    let attachment = b"SENTINEL-ATTACHMENT-BYTES-not-a-real-png";
+
+    store
+        .put(&sample("mb1", "chan", "s1", "alice", body, 1_700_000_000))
+        .unwrap();
+    store
+        .put_attachment("mb1", "f.png", "image/png", attachment, None, None, None)
+        .unwrap();
+
+    // Positive path: the store must genuinely be holding this, or "not found in
+    // the file" would be true of a database that stored nothing at all.
+    assert_eq!(
+        store.get("mb1").unwrap().unwrap().plaintext,
+        body,
+        "positive path: the body must round-trip before we claim it is hidden"
+    );
+    assert_eq!(
+        store.get_attachment("mb1", "f.png").unwrap().unwrap().1,
+        attachment,
+        "positive path: the attachment must round-trip first"
+    );
+    drop(store);
+
+    let blob = raw_file_bytes(&db_path);
+    assert!(
+        !contains(&blob, body.as_bytes()),
+        "the message body is stored in the clear — it is readable in the \
+         database file without the store key"
+    );
+    assert!(
+        !contains(&blob, attachment),
+        "the decrypted attachment bytes are stored in the clear"
+    );
+}
