@@ -228,6 +228,27 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Refuse leftover bytes.
+    ///
+    /// Without this, a decoder that consumes its own fields and stops is a
+    /// type-confusion oracle: attachment metadata begins with the same four
+    /// length-prefixed strings and an `i64` as message metadata, so an
+    /// attachment blob transplanted into a message row decoded cleanly — its
+    /// cache key read as a message id, its MIME as an OSL identity — and the
+    /// AEAD verified, because the AEAD only ever saw opaque bytes. Requiring
+    /// exhaustion makes the two encodings unambiguous without changing either
+    /// of them.
+    fn end(&self) -> Result<(), StoreError> {
+        if self.at != self.buf.len() {
+            return Err(StoreError::Corrupted(format!(
+                "sealed metadata has {} trailing bytes — it is not the record \
+                 type this row claims",
+                self.buf.len() - self.at
+            )));
+        }
+        Ok(())
+    }
+
     fn i64(&mut self) -> Result<i64, StoreError> {
         let raw = self.take(8)?;
         let mut n = [0u8; 8];
@@ -257,13 +278,15 @@ pub(crate) fn encode_message_meta(m: &MessageMeta) -> Vec<u8> {
 
 pub(crate) fn decode_message_meta(buf: &[u8]) -> Result<MessageMeta, StoreError> {
     let mut r = Reader::new(buf);
-    Ok(MessageMeta {
+    let out = MessageMeta {
         discord_message_id: r.str()?,
         channel_id: r.str()?,
         sender_discord_id: r.str()?,
         sender_osl_user_id: r.str()?,
         decrypted_at: r.i64()?,
-    })
+    };
+    r.end()?;
+    Ok(out)
 }
 
 /// Plaintext metadata of one `attachments` row, held only in memory.
@@ -295,7 +318,7 @@ pub(crate) fn encode_attachment_meta(m: &AttachmentMeta) -> Vec<u8> {
 
 pub(crate) fn decode_attachment_meta(buf: &[u8]) -> Result<AttachmentMeta, StoreError> {
     let mut r = Reader::new(buf);
-    Ok(AttachmentMeta {
+    let out = AttachmentMeta {
         cache_key: r.str()?,
         discord_message_id: r.str()?,
         random_filename: r.str()?,
@@ -305,5 +328,7 @@ pub(crate) fn decode_attachment_meta(buf: &[u8]) -> Result<AttachmentMeta, Store
         scope_type: r.opt_str()?,
         scope_id: r.opt_str()?,
         sender_discord_id: r.opt_str()?,
-    })
+    };
+    r.end()?;
+    Ok(out)
 }

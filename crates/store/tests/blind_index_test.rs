@@ -1074,3 +1074,79 @@ fn message_bodies_and_attachment_bytes_are_not_readable_in_the_file() {
         "the decrypted attachment bytes are stored in the clear"
     );
 }
+
+/// An attachment's sealed metadata must not be transplantable into a message
+/// row.
+///
+/// The two encodings begin identically — four length-prefixed strings then an
+/// `i64` — and the AEAD only ever sees opaque bytes. Copying an attachment's
+/// `ck_bi` into a message row's `mid_bi`, along with its metadata and body
+/// blobs, therefore produced a row whose AEAD verified and whose fields were
+/// reinterpreted: cache key read as a message id, MIME read as an OSL
+/// identity. A UTF-8 attachment could surface as an authenticated message in an
+/// attacker-chosen conversation.
+#[test]
+fn attachment_metadata_cannot_be_transplanted_into_a_message_row() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+
+    store
+        .put(&sample(
+            "real",
+            "target",
+            "s1",
+            "alice",
+            "genuine message",
+            1,
+        ))
+        .unwrap();
+    store
+        .put_attachment(
+            "real",
+            "note.txt",
+            "text/plain",
+            b"attacker text",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        store.list_by_channel("target", 10).unwrap().len(),
+        1,
+        "positive path: the channel holds exactly its one real message"
+    );
+    drop(store);
+
+    // Forge a message row entirely out of the attachment's authenticated parts,
+    // aimed at the real channel.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let n = conn
+            .execute(
+                "INSERT INTO messages \
+                    (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned) \
+                 SELECT a.ck_bi, m.chan_bi, m.sender_bi, a.meta_nonce, a.meta_ct, \
+                        a.ciphertext, a.nonce, 9999, 0 \
+                   FROM attachments a, messages m",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            n, 1,
+            "positive path: the forged row must have been inserted"
+        );
+    }
+
+    let store = open_a(tmp.path());
+    match store.list_by_channel("target", 10) {
+        Err(_) => {}
+        Ok(rows) => assert_eq!(
+            rows.len(),
+            1,
+            "an attachment was served as an authenticated message in the \
+             attacker's chosen channel"
+        ),
+    }
+}

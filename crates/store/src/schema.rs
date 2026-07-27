@@ -137,8 +137,23 @@ pub(crate) fn migrate(
         }
         None if !table_exists(conn, "messages")? => {
             // First-ever open with this DB file: straight to v4.
-            conn.execute_batch(SCHEMA_V4)?;
-            write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+            //
+            // Creating the tables and stamping the version must commit
+            // together. A crash between them leaves a `messages` table with no
+            // recorded version, and the next open reads that as a LEGACY
+            // database and tries to migrate it by selecting plaintext columns
+            // v4 does not have — so a crash during first-run initialisation
+            // would leave a store that cannot be opened again at all.
+            conn.execute_batch("BEGIN IMMEDIATE;")?;
+            let created = (|| -> Result<(), StoreError> {
+                conn.execute_batch(SCHEMA_V4)?;
+                write_meta_u32(conn, "schema_version", SCHEMA_VERSION)
+            })();
+            if let Err(e) = created {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+            conn.execute_batch("COMMIT;")?;
             return Ok(());
         }
         Some(v) if v == SCHEMA_VERSION => {

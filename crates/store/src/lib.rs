@@ -352,7 +352,7 @@ impl MessageStore {
             "SELECT mid_bi, meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi \
              FROM messages \
              WHERE chan_bi = ?1 AND burned = 0 \
-             ORDER BY seq DESC \
+             ORDER BY seq DESC, mid_bi DESC \
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![chan_bi, i64::from(limit)], |r| {
@@ -655,7 +655,7 @@ impl MessageStore {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let rows = conn.execute(
             "DELETE FROM attachments WHERE ck_bi NOT IN \
-                (SELECT ck_bi FROM attachments ORDER BY seq DESC LIMIT ?1)",
+                (SELECT ck_bi FROM attachments ORDER BY seq DESC, ck_bi DESC LIMIT ?1)",
             params![keep],
         )?;
         Ok(rows)
