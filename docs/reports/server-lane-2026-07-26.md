@@ -1935,3 +1935,449 @@ No checklist edit and no acceptance point are claimed. This earns a
 Workers. Exact Git commits, authenticated keyserver success paths, current
 inbox-cap enforcement, current pubkeys field minimisation, and current
 cipher-store quota accounting remain `unknown`.
+
+---
+
+## Production D1 aggregate health — 2026-07-26 22:28 PDT
+
+Canonical snapshot windows:
+
+- keyserver: `2026-07-26T22:28:02-07:00` through
+  `2026-07-26T22:28:05-07:00`
+  (`2026-07-27T05:28:02Z` through `2026-07-27T05:28:05Z`);
+- cipher-store: `2026-07-26T22:28:27-07:00` through
+  `2026-07-26T22:28:29-07:00`
+  (`2026-07-27T05:28:27Z` through `2026-07-27T05:28:29Z`);
+- repository HEAD immediately before the canonical snapshots:
+  `79f12eb79cf9e6baa374b33de7a5caf7f8991a19`.
+
+Only aggregate `SELECT` statements and Wrangler's remote migration listing
+were used. No identifier, key, payload, ciphertext, capability, IP, row body,
+or R2 object was selected. Every canonical D1 result reported:
+
+```json
+{"changes":0,"changed_db":false,"rows_written":0}
+```
+
+Every evidence command used `WRANGLER_WRITE_LOGS=false`, so Wrangler did not
+write the query/result to its disk log. An earlier schema-only trial used the
+wrong suppression variable and created one ordinary sanitized Wrangler log;
+it contained only the aggregate schema query and no row data. No later
+evidence command retained a Wrangler log.
+
+### Exact keyserver command
+
+The SQL below is whitespace-formatted for readability; its selected columns
+and predicates are exact.
+
+```sh
+cd keyserver-cf
+PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+WRANGLER_WRITE_LOGS=false \
+npx wrangler d1 execute osl-keyserver-prod --remote --json --command "
+SELECT COUNT(*) AS applied_migration_count,
+       COALESCE(MAX(id), 0) AS latest_migration_id,
+       SUM(CASE WHEN name LIKE '0026_%' THEN 1 ELSE 0 END)
+         AS migration_0026_record_count,
+       SUM(CASE WHEN name LIKE '0027_%' THEN 1 ELSE 0 END)
+         AS migration_0027_record_count,
+       SUM(CASE WHEN name LIKE '0028_%' THEN 1 ELSE 0 END)
+         AS migration_0028_record_count,
+       SUM(CASE WHEN name LIKE '0029_%' THEN 1 ELSE 0 END)
+         AS migration_0029_record_count,
+       SUM(CASE WHEN name LIKE '0030_%' THEN 1 ELSE 0 END)
+         AS migration_0030_record_count
+  FROM d1_migrations;
+
+SELECT (SELECT COUNT(*) FROM pragma_table_info('users'))
+         AS users_column_count,
+       (SELECT COUNT(*) FROM pragma_table_info('users')
+         WHERE name = 'identity_lookup_enabled'
+           AND type = 'INTEGER' AND \"notnull\" = 1 AND dflt_value = '0')
+         AS migration_0029_column_shape_count,
+       (SELECT COUNT(*) FROM pragma_table_info('control_inbox')
+         WHERE name = 'kind') AS migration_0027_kind_column_count,
+       (SELECT COUNT(*) FROM pragma_table_info('control_inbox')
+         WHERE name = 'collapse_key') AS migration_0027_collapse_column_count,
+       (SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND lower(name) LIKE '%dead%letter%')
+         AS server_dead_letter_table_count;
+
+SELECT COUNT(*) AS registered_identity_rows,
+       COALESCE(SUM(CASE WHEN identity_lookup_enabled = 0
+                         THEN 1 ELSE 0 END), 0)
+         AS quarantined_identity_rows,
+       COALESCE(SUM(CASE WHEN identity_lookup_enabled = 1
+                         THEN 1 ELSE 0 END), 0)
+         AS lookup_enabled_identity_rows,
+       COALESCE(SUM(CASE WHEN identity_lookup_enabled NOT IN (0, 1)
+                         THEN 1 ELSE 0 END), 0)
+         AS invalid_lookup_status_rows,
+       COALESCE(SUM(CASE WHEN length(user_id) BETWEEN 17 AND 20
+                          AND user_id NOT GLOB '*[^0-9]*'
+                         THEN 1 ELSE 0 END), 0) AS snowflake_shape_rows,
+       COALESCE(SUM(CASE WHEN length(user_id) BETWEEN 17 AND 20
+                          AND user_id NOT GLOB '*[^0-9]*'
+                          AND identity_lookup_enabled = 0
+                         THEN 1 ELSE 0 END), 0)
+         AS quarantined_snowflake_shape_rows,
+       COALESCE(SUM(CASE WHEN length(user_id) BETWEEN 17 AND 20
+                          AND user_id NOT GLOB '*[^0-9]*'
+                          AND identity_lookup_enabled = 1
+                         THEN 1 ELSE 0 END), 0)
+         AS enabled_snowflake_shape_rows
+  FROM users;
+
+SELECT (SELECT COUNT(*) FROM prekey_bundles) AS prekey_bundle_rows,
+       (SELECT COUNT(*) FROM opk_pool) AS one_time_prekey_rows,
+       (SELECT COUNT(*) FROM wrapped_keys) AS wrapped_key_rows,
+       (SELECT COUNT(*) FROM wrapped_keys
+         WHERE unixepoch(expires_at) >= unixepoch()) AS wrapped_key_live_rows,
+       (SELECT COUNT(*) FROM wrapped_keys
+         WHERE unixepoch(expires_at) < unixepoch()) AS wrapped_key_expired_rows;
+
+SELECT COUNT(*) AS control_inbox_rows,
+       COALESCE(SUM(CASE WHEN expires_at >= unixepoch()
+                         THEN 1 ELSE 0 END), 0) AS control_inbox_live_rows,
+       COALESCE(SUM(CASE WHEN expires_at < unixepoch()
+                         THEN 1 ELSE 0 END), 0) AS control_inbox_expired_rows,
+       COALESCE(SUM(CASE WHEN expires_at >= unixepoch() AND kind = ''
+                         THEN 1 ELSE 0 END), 0) AS ordinary_live_rows,
+       COALESCE(SUM(CASE WHEN expires_at >= unixepoch()
+                          AND kind = 'revocation'
+                         THEN 1 ELSE 0 END), 0) AS revocation_live_rows,
+       COALESCE(SUM(CASE WHEN kind NOT IN ('', 'revocation')
+                         THEN 1 ELSE 0 END), 0) AS unknown_kind_rows,
+       COALESCE(SUM(CASE WHEN expires_at >= unixepoch()
+                          AND length(sender_id) BETWEEN 17 AND 20
+                          AND sender_id NOT GLOB '*[^0-9]*'
+                         THEN 1 ELSE 0 END), 0) AS live_snowflake_sender_rows,
+       COALESCE(SUM(CASE WHEN expires_at >= unixepoch()
+                          AND NOT EXISTS (
+                            SELECT 1 FROM users u
+                             WHERE u.user_id = control_inbox.sender_id
+                               AND u.identity_lookup_enabled = 1
+                          )
+                         THEN 1 ELSE 0 END), 0)
+         AS live_sender_not_lookup_enabled_rows
+  FROM control_inbox;
+
+SELECT COUNT(*) AS control_inbox_receipt_rows,
+       COALESCE(SUM(CASE WHEN expires_at >= unixepoch()
+                         THEN 1 ELSE 0 END), 0)
+         AS control_inbox_receipt_live_rows,
+       COALESCE(SUM(CASE WHEN expires_at < unixepoch()
+                         THEN 1 ELSE 0 END), 0)
+         AS control_inbox_receipt_expired_rows,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM control_inbox i
+                             WHERE i.id = control_inbox_requests.inbox_id
+                          )
+                         THEN 1 ELSE 0 END), 0)
+         AS receipts_without_current_inbox_row
+  FROM control_inbox_requests;
+
+SELECT (SELECT COUNT(*) FROM consuming_get_receipts)
+         AS consuming_get_receipt_rows,
+       (SELECT COUNT(*) FROM consuming_get_receipts
+         WHERE expires_at >= unixepoch()) AS consuming_get_receipt_live_rows,
+       (SELECT COUNT(*) FROM consuming_get_receipts
+         WHERE expires_at < unixepoch()) AS consuming_get_receipt_expired_rows,
+       (SELECT COUNT(*) FROM wrapped_key_post_receipts)
+         AS wrapped_key_post_receipt_rows,
+       (SELECT COUNT(*) FROM wrapped_key_post_receipts
+         WHERE expires_at >= unixepoch())
+         AS wrapped_key_post_receipt_live_rows,
+       (SELECT COUNT(*) FROM wrapped_key_post_receipts
+         WHERE expires_at < unixepoch())
+         AS wrapped_key_post_receipt_expired_rows;
+" | jq '[.[] | {
+  results,
+  audit_meta: {
+    changes: .meta.changes,
+    changed_db: .meta.changed_db,
+    rows_written: .meta.rows_written
+  }
+}]'
+```
+
+Exact retained result values:
+
+```json
+[
+  {
+    "applied_migration_count": 30,
+    "latest_migration_id": 30,
+    "migration_0026_record_count": 1,
+    "migration_0027_record_count": 1,
+    "migration_0028_record_count": 1,
+    "migration_0029_record_count": 1,
+    "migration_0030_record_count": 0
+  },
+  {
+    "users_column_count": 10,
+    "migration_0029_column_shape_count": 1,
+    "migration_0027_kind_column_count": 1,
+    "migration_0027_collapse_column_count": 1,
+    "server_dead_letter_table_count": 0
+  },
+  {
+    "registered_identity_rows": 172,
+    "quarantined_identity_rows": 111,
+    "lookup_enabled_identity_rows": 61,
+    "invalid_lookup_status_rows": 0,
+    "snowflake_shape_rows": 2,
+    "quarantined_snowflake_shape_rows": 2,
+    "enabled_snowflake_shape_rows": 0
+  },
+  {
+    "prekey_bundle_rows": 0,
+    "one_time_prekey_rows": 0,
+    "wrapped_key_rows": 0,
+    "wrapped_key_live_rows": 0,
+    "wrapped_key_expired_rows": 0
+  },
+  {
+    "control_inbox_rows": 23,
+    "control_inbox_live_rows": 23,
+    "control_inbox_expired_rows": 0,
+    "ordinary_live_rows": 23,
+    "revocation_live_rows": 0,
+    "unknown_kind_rows": 0,
+    "live_snowflake_sender_rows": 0,
+    "live_sender_not_lookup_enabled_rows": 23
+  },
+  {
+    "control_inbox_receipt_rows": 0,
+    "control_inbox_receipt_live_rows": 0,
+    "control_inbox_receipt_expired_rows": 0,
+    "receipts_without_current_inbox_row": 0
+  },
+  {
+    "consuming_get_receipt_rows": 0,
+    "consuming_get_receipt_live_rows": 0,
+    "consuming_get_receipt_expired_rows": 0,
+    "wrapped_key_post_receipt_rows": 0,
+    "wrapped_key_post_receipt_live_rows": 0,
+    "wrapped_key_post_receipt_expired_rows": 0
+  }
+]
+```
+
+All seven result objects carried the exact audit metadata shown at the start of
+this section.
+
+### Keyserver findings
+
+| Claim | Tier | Bound |
+|---|---|---|
+| Migration 0029 is recorded and its `identity_lookup_enabled INTEGER NOT NULL DEFAULT 0` column shape is present | `verified-live` | One migration-name record and one exact column-shape match; local DDL is `keyserver-cf/migrations/0029_authoritative_osl_identity.sql:12-14` |
+| Production has 172 registered identity rows: 111 quarantined, 61 lookup-enabled, zero invalid statuses | `verified-live` | Aggregate `users` result; no identity was selected |
+| Two rows have Discord-snowflake shape; both are quarantined and zero are lookup-enabled | `verified-live` | Aggregate shape/status predicates only |
+| Migration 0027's `kind` and `collapse_key` columns are present; every live inbox row is ordinary | `verified-live` | Schema count 1+1; 23 ordinary live, zero revocation, zero unknown-kind |
+| Production has 23 control-inbox rows, all live; zero expired | `verified-live` | Aggregate expiry predicates only |
+| All 23 live inbox rows currently name a sender with no lookup-enabled `users` row | `verified-live` | Correlated existence count only. This is not an actual dead-letter count |
+| Production has zero control-inbox request receipts, zero consuming-GET receipts, and zero wrapped-key POST receipts | `verified-live` | Aggregate receipt counts; all live/expired splits are zero |
+| Production has zero prekey bundles, zero OPKs, and zero wrapped keys | `verified-live` | Aggregate B5 storage counts only |
+| Production D1 has no server dead-letter table | `verified-live` | Schema-name aggregate is zero |
+| Actual client dead-letter count | `unknown` | Dead-letter state is client-local (`crates/ipc/src/control_inbox_dead_letter.rs:1-7`), not in production D1. This audit did not read the local ledger because it contains row identifiers |
+
+The internal D1 migration id `30` is **not** evidence that local migration
+`0030` ran. The name aggregate says 0030 has zero records, and the read-only
+Wrangler listing confirms it is pending:
+
+```text
+$ WRANGLER_WRITE_LOGS=false \
+  npx wrangler d1 migrations list osl-keyserver-prod --remote
+Migrations to be applied:
+0030_reserve_derived_identity_namespace.sql
+```
+
+### Exact cipher-store command
+
+```sh
+cd cipher-store-cf
+PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+WRANGLER_WRITE_LOGS=false \
+npx wrangler d1 execute osl-cipher-store-prod --remote --json --command "
+SELECT COUNT(*) AS applied_migration_count,
+       COALESCE(MAX(id), 0) AS latest_migration_id,
+       SUM(CASE WHEN name LIKE '0006_%' THEN 1 ELSE 0 END)
+         AS migration_0006_record_count,
+       SUM(CASE WHEN name LIKE '0007_%' THEN 1 ELSE 0 END)
+         AS migration_0007_record_count
+  FROM d1_migrations;
+
+SELECT (SELECT COUNT(*) FROM pragma_table_info('attachment_objects'))
+         AS attachment_object_column_count,
+       (SELECT COUNT(*) FROM pragma_table_info('attachment_objects')
+         WHERE name = 'state') AS state_column_count,
+       (SELECT COUNT(*) FROM pragma_table_info('attachment_objects')
+         WHERE name = 'upload_id') AS upload_id_column_count,
+       (SELECT COUNT(*) FROM pragma_table_info('attachment_objects')
+         WHERE name = 'content_expires_at') AS content_expiry_column_count,
+       (SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name = 'attachment_parts')
+         AS attachment_parts_table_count;
+
+SELECT COUNT(*) AS attachment_object_rows,
+       COALESCE(SUM(CASE WHEN state = 'uploading'
+                         THEN 1 ELSE 0 END), 0) AS uploading_rows,
+       COALESCE(SUM(CASE WHEN state = 'completing'
+                         THEN 1 ELSE 0 END), 0) AS completing_rows,
+       COALESCE(SUM(CASE WHEN state = 'ready'
+                         THEN 1 ELSE 0 END), 0) AS ready_rows,
+       COALESCE(SUM(CASE WHEN state NOT IN
+                              ('uploading', 'completing', 'ready')
+                         THEN 1 ELSE 0 END), 0) AS invalid_state_rows,
+       COALESCE(SUM(CASE WHEN state IN ('uploading', 'completing')
+                         THEN 1 ELSE 0 END), 0) AS incomplete_rows,
+       COALESCE(SUM(CASE WHEN state IN ('uploading', 'completing')
+                          AND expires_at >= unixepoch()
+                         THEN 1 ELSE 0 END), 0) AS incomplete_live_rows,
+       COALESCE(SUM(CASE WHEN state IN ('uploading', 'completing')
+                          AND expires_at < unixepoch()
+                         THEN 1 ELSE 0 END), 0) AS incomplete_expired_rows,
+       COALESCE(SUM(CASE WHEN state = 'ready'
+                          AND expires_at >= unixepoch()
+                         THEN 1 ELSE 0 END), 0) AS ready_live_rows,
+       COALESCE(SUM(CASE WHEN state = 'ready'
+                          AND expires_at < unixepoch()
+                         THEN 1 ELSE 0 END), 0) AS ready_expired_rows,
+       COALESCE(SUM(CASE WHEN state IN ('uploading', 'completing')
+                          AND NOT EXISTS (
+                            SELECT 1 FROM attachment_parts p
+                             WHERE p.attachment_id = attachment_objects.id
+                          )
+                         THEN 1 ELSE 0 END), 0)
+         AS incomplete_without_part_rows,
+       COALESCE(SUM(CASE WHEN state IN ('uploading', 'completing')
+                          AND EXISTS (
+                            SELECT 1 FROM attachment_parts p
+                             WHERE p.attachment_id = attachment_objects.id
+                          )
+                         THEN 1 ELSE 0 END), 0)
+         AS incomplete_with_part_rows,
+       COALESCE(SUM(CASE WHEN content_expires_at IS NULL
+                         THEN 1 ELSE 0 END), 0) AS null_content_expiry_rows,
+       COALESCE(SUM(CASE
+         WHEN (state = 'ready' AND upload_id IS NOT NULL)
+           OR (state IN ('uploading', 'completing') AND upload_id IS NULL)
+         THEN 1 ELSE 0 END), 0) AS invalid_state_upload_shape_rows
+  FROM attachment_objects;
+
+SELECT COUNT(*) AS attachment_part_rows,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM attachment_objects o
+                             WHERE o.id = attachment_parts.attachment_id
+                          )
+                         THEN 1 ELSE 0 END), 0)
+         AS orphan_attachment_part_rows
+  FROM attachment_parts;
+" | jq '[.[] | {
+  results,
+  audit_meta: {
+    changes: .meta.changes,
+    changed_db: .meta.changed_db,
+    rows_written: .meta.rows_written
+  }
+}]'
+```
+
+Exact retained result values:
+
+```json
+[
+  {
+    "applied_migration_count": 6,
+    "latest_migration_id": 6,
+    "migration_0006_record_count": 1,
+    "migration_0007_record_count": 0
+  },
+  {
+    "attachment_object_column_count": 9,
+    "state_column_count": 1,
+    "upload_id_column_count": 1,
+    "content_expiry_column_count": 1,
+    "attachment_parts_table_count": 1
+  },
+  {
+    "attachment_object_rows": 1,
+    "uploading_rows": 1,
+    "completing_rows": 0,
+    "ready_rows": 0,
+    "invalid_state_rows": 0,
+    "incomplete_rows": 1,
+    "incomplete_live_rows": 1,
+    "incomplete_expired_rows": 0,
+    "ready_live_rows": 0,
+    "ready_expired_rows": 0,
+    "incomplete_without_part_rows": 1,
+    "incomplete_with_part_rows": 0,
+    "null_content_expiry_rows": 1,
+    "invalid_state_upload_shape_rows": 0
+  },
+  {
+    "attachment_part_rows": 0,
+    "orphan_attachment_part_rows": 0
+  }
+]
+```
+
+All four result objects carried the exact audit metadata shown at the start of
+this section.
+
+### Cipher-store findings
+
+| Claim | Tier | Bound |
+|---|---|---|
+| Migration 0006 is recorded; the attachment schema has `state`, `upload_id`, `content_expires_at`, and `attachment_parts` | `verified-live` | Migration/schema aggregate counts are each one; local DDL is `cipher-store-cf/migrations/0004_attachment_capability_digests_and_quota.sql:8-36` and `0006_session_budget_and_atomic_rate_counters.sql:34-42` |
+| Production D1 has one attachment object: uploading, live, incomplete, with zero part rows | `verified-live` | Fixed-state and expiry counts only |
+| The one incomplete object has no part receipt and has null `content_expires_at` | `verified-live` | Aggregate predicates only |
+| Production D1 has zero orphan attachment-part rows and zero invalid state/upload-id shape rows | `verified-live` | Aggregate referential/status checks only |
+| Why the live incomplete row has null `content_expires_at`, who created it, and whether it is transient | `unknown` | No row, identifier, timestamp, capability, or write history was read. Current local source supplies this value on both session and direct inserts (`cipher-store-cf/src/endpoints/attachment.ts:203-206`, `:269-284`, `:510-520`), but the exact deployed source commit is already `unknown` |
+| D1-object-to-R2-object consistency, including orphaned R2 multipart uploads or missing ready objects | `unknown` | Proving it requires R2 object/multipart reads, explicitly forbidden |
+
+The read-only migration listing reports local migration 0007 pending:
+
+```text
+$ WRANGLER_WRITE_LOGS=false \
+  npx wrangler d1 migrations list osl-cipher-store-prod --remote
+Migrations to be applied:
+0007_link_grant_consumption.sql
+```
+
+That is schema/version metadata only. It does not promote the dark link-grant
+lane or turn preparatory work into a production repair.
+
+### Coordinator-state reconciliation
+
+| Coordinator statement | Tier | Current aggregate truth |
+|---|---|---|
+| Migration 0029 is applied | `verified-live` | One migration record and the exact column shape are present |
+| “All 111 identities quarantined until re-registration” | `verified-live` for the current count; original-row continuity `unknown` | Exactly 111 rows remain quarantined, but production now has 172 total rows and 61 lookup-enabled rows. Aggregate-only evidence cannot prove whether the current 111 are exactly the migration-time cohort |
+| Snowflakes are refused/quarantined | `verified-live` for stored status | Two stored rows have snowflake shape; both are quarantined and zero are lookup-enabled. The earlier harmless HTTP probe separately verified the refusal branch |
+| Keyserver migrations 0027 and 0028 are applied | `verified-live` | Each has one migration record; 0027's two schema columns are present |
+| Cipher-store attachment fixes are deployed | `verified-live` only for previously recorded R2 part success and the 0006 schema; current row origin remains `unknown` | This audit confirms 0006 schema support and zero D1 orphan part rows. It cannot re-prove R2 behavior, and the single live incomplete row's null promised-expiry value is an unresolved aggregate anomaly |
+
+### B5 boundary
+
+No acceptance boundary moves.
+
+The 61 lookup-enabled identity rows are `verified-live` registration state, not
+a successful two-identity protocol qualification. Production currently has
+zero prekey bundles, zero OPKs, zero wrapped keys, and zero relevant receipts.
+Its 23 live control-inbox rows are all ordinary, all have a sender that is not
+lookup-enabled, and no authenticated drain was performed. Consequently this
+snapshot cannot earn a registration/prekey/wrapped-key/control-inbox
+end-to-end point or repair the implemented-unwired client boundaries recorded
+above.
+
+## Acceptance rows this earns
+
+No checklist edit and no point are claimed. B5 remains 1/4. This audit earns
+`verified-live` aggregate health evidence for migration 0029, identity status,
+the production control-inbox backlog, receipt emptiness, and the D1-visible
+attachment state. Actual client dead-letter count, authenticated delivery,
+prekey/wrapped-key success, the incomplete attachment's origin, and all R2
+orphan/missing-object questions remain `unknown`.
