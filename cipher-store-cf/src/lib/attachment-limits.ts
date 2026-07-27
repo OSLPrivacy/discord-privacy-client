@@ -1,7 +1,4 @@
 export const MAX_DIRECT_ATTACHMENT_BYTES = 26 * 1024 * 1024;
-// Retained for older importers; current Worker enforcement uses sealed-size
-// limits and never reads plaintext attachment size.
-export const MAX_PLAINTEXT_ATTACHMENT_BYTES = 512 * 1024 * 1024;
 // Leaves a bounded allowance for chunk framing and AEAD tags without asking
 // the store to infer plaintext size from opaque ciphertext.
 export const MAX_SEALED_ATTACHMENT_BYTES = 513 * 1024 * 1024;

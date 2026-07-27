@@ -1096,21 +1096,26 @@ cost control, not a bound, and only the D1-backed mutation buckets are a real
 ceiling. To confirm against real KV: two same-bucket reads from one address
 inside one second, and observe both admitted plus the limiter-unavailable line.
 
-**2. `meta.changes` exact 0/1 semantics are relied on and not documented.**
-`UNKNOWN — needs a real-D1 matrix, do not assume.` Cloudflare documents
-`meta.changes` only as a rough indication of rows changed and does not specify
-branch values for `INSERT ... SELECT ... WHERE` or
-`ON CONFLICT DO UPDATE ... WHERE`. Three places treat it as exactly 0 or 1, and
-all three are load-bearing security decisions I wrote or touched tonight:
-`cipher-store-cf/src/endpoints/attachment.ts:200-231` and `:336-360` (quota
-admission), `cipher-store-cf/src/lib/rate-limit.ts:167-175` (the atomic
-limiter's admit/deny), and
-`keyserver-cf/src/endpoints/control-inbox.ts:553-621` (inbox admission). The
-observed behaviour is correct under the workers-pool suite, so this is not a
-known defect — it is an undocumented dependency, which is a different and
-quieter risk. The check is a four-case matrix against real D1: insert applied,
-select predicate skipped, conflict-update applied, conflict-update skipped;
-compare `meta.changes`, `rows_written` and `RETURNING` in each.
+**2. `meta.changes` exact 0/1 semantics — RESOLVED, measured not assumed.**
+Was recorded here as `UNKNOWN`. Cloudflare documents `meta.changes` only as a
+rough indication and specifies no branch values for the two statement shapes
+three admission decisions depend on. Now measured against real D1 under
+vitest-pool-workers and pinned by `test/d1-meta-changes-contract.test.ts`:
+
+| case | `meta.changes` | `RETURNING` via `.first()` |
+|---|---|---|
+| `INSERT … SELECT … WHERE` predicate true | 1 | row |
+| `INSERT … SELECT … WHERE` predicate false | 0 | null |
+| `INSERT … ON CONFLICT DO UPDATE … WHERE` true | 1 | row |
+| `INSERT … ON CONFLICT DO UPDATE … WHERE` false | 0 | null |
+
+Every value matches what the three production sites assume — quota admission
+(`attachment.ts:200-231`), part reservation (`:336-360`) and the atomic limiter's
+admit/deny (`rate-limit.ts:167-175`). **No defect.** The assumption was correct;
+it was simply unverified, which is a different thing from wrong and was worth the
+twenty minutes to separate. The test asserts real table state alongside each
+count, so it cannot pass if the semantics were inverted, and it pins the
+behaviour against a future D1 change rather than leaving it implicit.
 
 This is worth stating plainly because it is the same shape as the two defects
 already confirmed tonight: correct-looking code resting on a platform behaviour
