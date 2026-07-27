@@ -2008,6 +2008,12 @@ The following exact objects were reconciled without scoring:
   tree `efd83a8ac4d5767203ead19abab5cb3f7355952c`: **REJECT +0**. Declared
   media digest/size, account identity, self-authorship, replay generation, and
   a raw nonempty positive remain unbound; no score follows its byte-swap fix.
+- WhatsApp head `53993061a7f02948b45310a9c7cbed1e9e012b6d`, tree
+  `788367236ea011c25bdbffc44f31d842f24e28a1`, is independently **REJECT +0**.
+  Its focused parser fixtures passed 5/5 and ingestion fixtures 4/4, but source
+  timezone semantics, system/multiline handling, account binding, stable replay-
+  resistant locators, raw media binding, and complete 8 KiB mutation coverage
+  remain unproved.
 - VM receipt `ff117dd12422444b0e41aa45e20dd2c3397226d3`, tree
   `45142200f7deed12ea1424c4e1a17793bc851a17`: **REJECT +0** for runtime
   authority. Its archived 9/9 suite proves only receipt-supplied simulation;
