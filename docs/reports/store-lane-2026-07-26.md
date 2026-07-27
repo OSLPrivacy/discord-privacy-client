@@ -45,7 +45,7 @@ over-reaching, not a defect test, and it is expected to pass in both directions.
 |---|--------|--------|------------------------|
 | 1 | Burned rows resurrected by `put` | **Fixed** | 3 tests failed pre-fix |
 | 2 | `mark_burned` returns success without shredding | **Fixed** | failed pre-fix; re-confirmed by reintroducing the defect |
-| 3 | Per-message `wrapped_key` model absent | **Designed, not executed** | n/a — owner decision |
+| 3 | Per-message `wrapped_key` model absent | **Designed, not executed** — writeup at `docs/design/osl-cryptographic-burn-design-2026-07-26.md` | n/a — owner decision |
 | 4 | Legacy/unscoped attachments survive scope burns | **Fixed** | 5 tests failed pre-fix |
 | 5 | Metadata outside AEAD authentication | **Fixed** (mechanism later *superseded* by v4 — see Round 2) | 2 tests failed pre-fix |
 | 6 | Plaintext identifiers at rest | **FIXED in Round 2 (schema v4).** Round-1 text below is superseded | see Round 2 |
@@ -553,8 +553,12 @@ shipping Windows target. Schema is v4.
    the hub, and a crate that compiles alone is not evidence.
 2. **Decided — retired:** the two `scripts/*.ps1` diagnostics. They only worked because of the
    defect v4 closes. Their owner may want a deprecation header on the files themselves.
-3. **Awaiting decision (defect 3):** per-message `wrapped_key`. Needs keyserver lifecycle work
-   first; the store is the last part, not the first.
+3. **Awaiting decision (defect 3):** per-message `wrapped_key`. The full deferred design is now
+   written up at `docs/design/osl-cryptographic-burn-design-2026-07-26.md` — read §2.4 (what
+   "proven deleted" can mean against a keyserver that can already substitute recipient keys:
+   attested, not proven) and §5 (mixed-version peers are worse than the current honest absence)
+   before resuming. Needs keyserver lifecycle work first; the store is the last part, not the
+   first. No revisit trigger is attached — resuming is an owner call.
 4. **For the document owners:** 26 burn statements still overstate what the code does; the
    at-rest invariant can now be *strengthened* to match v4, but only with the
    "labels not shape" qualification.
