@@ -2423,3 +2423,43 @@ evidence was claimed.
 
 - BurnAlert/sender-key design qualification +0.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — residual sender-key design language qualification
+
+A bounded follow-up found three residual present-tense phrases after the first
+qualification: `sender-keys.md` said “v1 ships sender keys,” called burn-alert
+system messages “confirmed,” and said “v1 alpha ships”; `key-server-api.md`
+said “v1 ships the simpler model.” Commit
+`6c76d9a15e83c81bee0f06faa7ea584d01e2f2ae`, tree
+`bec8ae16684d70ba7dfa617f162766466b6bd087`, qualifies these as design targets
+and review gates. Blobs: `docs/design/sender-keys.md`
+`ff77a61fdd3555cab908fa102bfbab733e7f18cd`; `docs/design/key-server-api.md`
+`e7b9ad5d9b53add385c0ce9a2570d0cb90aa63a0`.
+
+`git diff --check` passed. No runtime, release, browser, build, or deployment
+evidence was claimed.
+
+## Acceptance rows this earns
+
+- Residual sender-key design language qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — BurnAlert implemented-unwired audit
+
+Immutable audit `1c4bb4d14e150a965d068286be84c3e787938ae2` (parent
+`2e5b53c08ee162a9db3878a31883c238f4fafdd4`, tree
+`5c5287c3020ce1676602193042fa454b3619ae51`) independently verified
+`BurnAlertPayload` plus sign/verify definitions and re-export, zero production
+caller/import across Hub, IPC, and the keystore client, and the distinct broker
+`EnforcementUnavailable` positive. Synthetic symbol positives and
+comment/`cfg(test)` negatives were also checked. Exact focused Vitest passed
+1/1 with 6 skipped. Verdict is source/test-only `+0`; no runtime or
+two-identity claim is made.
+
+The three design-doc corrections are in direct parent `2e5b53c`; no additional
+file change is needed from this audit.
+
+## Acceptance rows this earns
+
+- BurnAlert implemented-unwired audit +0, source/test only.
+- Checklist remains untouched; authority remains **100 / 303**.
