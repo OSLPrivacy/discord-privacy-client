@@ -83,6 +83,7 @@ struct ControlInboxGetRecord {
 enum ControlInboxGetReply {
     Honest,
     MissingEcho,
+    MissingDisposition,
     MismatchedEcho(String),
     CrossSender(String),
     UnfilteredWithoutEcho,
@@ -438,22 +439,50 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                     })
                 })
                 .collect::<Vec<_>>();
+            let delivery = json!({
+                "live": items.len(),
+                "retryable": 0,
+                "quarantined": 0,
+                "retired": 0,
+            });
             match reply {
                 ControlInboxGetReply::Honest => match sender {
-                    Some(sender) => {
-                        json_response(200, json!({ "items": items, "filtered_sender_id": sender }))
-                    }
+                    Some(sender) => json_response(
+                        200,
+                        json!({
+                            "items": items,
+                            "filtered_sender_id": sender,
+                            "filtered_sender_delivery": delivery,
+                        }),
+                    ),
                     None => json_response(200, json!({ "items": items })),
                 },
-                ControlInboxGetReply::MissingEcho | ControlInboxGetReply::UnfilteredWithoutEcho => {
-                    json_response(200, json!({ "items": items }))
-                }
-                ControlInboxGetReply::MismatchedEcho(echoed) => {
-                    json_response(200, json!({ "items": items, "filtered_sender_id": echoed }))
-                }
-                ControlInboxGetReply::CrossSender(_) => {
+                ControlInboxGetReply::MissingEcho => json_response(
+                    200,
+                    json!({ "items": items, "filtered_sender_delivery": delivery }),
+                ),
+                ControlInboxGetReply::MissingDisposition => {
                     json_response(200, json!({ "items": items, "filtered_sender_id": sender }))
                 }
+                ControlInboxGetReply::UnfilteredWithoutEcho => {
+                    json_response(200, json!({ "items": items }))
+                }
+                ControlInboxGetReply::MismatchedEcho(echoed) => json_response(
+                    200,
+                    json!({
+                        "items": items,
+                        "filtered_sender_id": echoed,
+                        "filtered_sender_delivery": delivery,
+                    }),
+                ),
+                ControlInboxGetReply::CrossSender(_) => json_response(
+                    200,
+                    json!({
+                        "items": items,
+                        "filtered_sender_id": sender,
+                        "filtered_sender_delivery": delivery,
+                    }),
+                ),
             }
         }
         ("DELETE", path) if path.starts_with("/v1/control-inbox/") => {
@@ -927,18 +956,16 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
         relay.remove_inbox(id);
     }
 
-    // 6. Alice picks up the "opened" receipt for her own sent message.
+    // 6. Alice does not receive an Opened disclosure for an ordinary message.
+    //    D7 suppresses it until durable mutual consent exists; draining the
+    //    sender is still useful here because it proves no stale receipt row was
+    //    emitted before the replay/deletion checks below.
     alice.activate();
     let receipt = drain_native_discord_overlay_text(&alice.core, &alice.security, &alice.broker)
-        .expect("drain the sender's receipt");
-    assert_eq!(
-        receipt.acknowledgments.len(),
-        1,
-        "the sender receives exactly one opened receipt"
-    );
-    assert_eq!(
-        receipt.acknowledgments[0].message_id, prepared.prepared.message_id,
-        "the receipt is correlated to the logical message id"
+        .expect("drain the sender after the recipient opens");
+    assert!(
+        receipt.acknowledgments.is_empty(),
+        "ordinary Opened disclosure stays suppressed without mutual consent"
     );
     assert!(
         receipt.messages.is_empty(),
@@ -1594,6 +1621,11 @@ fn assert_text_and_attachment_refuse_reply(reply: ControlInboxGetReply) {
 #[test]
 fn native_discord_text_and_attachment_drains_refuse_missing_sender_echo() {
     assert_text_and_attachment_refuse_reply(ControlInboxGetReply::MissingEcho);
+}
+
+#[test]
+fn native_discord_text_and_attachment_drains_refuse_missing_sender_disposition() {
+    assert_text_and_attachment_refuse_reply(ControlInboxGetReply::MissingDisposition);
 }
 
 #[test]

@@ -983,10 +983,10 @@ fn rate_limit(state: &mut RelayState, bucket: &'static str, budget: u32) -> bool
 // ---------------------------------------------------------------------------
 
 fn serve_request(stream: &mut TcpStream, shared: &Arc<Mutex<RelayState>>) {
-    let Some((method, path, headers, body)) = read_request(stream) else {
+    let Some((method, target, headers, body)) = read_request(stream) else {
         return;
     };
-    let path = path.split('?').next().unwrap_or(&path).to_owned();
+    let path = target.split('?').next().unwrap_or(&target).to_owned();
     let now = now_secs();
     let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
     let state = &mut *state;
@@ -1034,7 +1034,7 @@ fn serve_request(stream: &mut TcpStream, shared: &Arc<Mutex<RelayState>>) {
             _ => not_found(),
         }
     } else {
-        serve_legacy_request(state, &method, &path, &headers, body, now)
+        serve_legacy_request(state, &method, &path, &target, &headers, body, now)
     };
     let _ = stream.write_all(&response);
 }
@@ -1078,6 +1078,7 @@ fn serve_legacy_request(
     state: &mut RelayState,
     method: &str,
     path: &str,
+    target: &str,
     headers: &BTreeMap<String, String>,
     body: Vec<u8>,
     now: i64,
@@ -1138,10 +1139,20 @@ fn serve_legacy_request(
         }
         ("GET", path) if path.starts_with("/v1/control-inbox/") => {
             let recipient = path.trim_start_matches("/v1/control-inbox/");
+            let target = url::Url::parse(&format!("http://relay.invalid{target}"))
+                .expect("parse control-inbox request target");
+            let sender = target
+                .query_pairs()
+                .find_map(|(key, value)| (key == "sender").then(|| value.into_owned()));
             let items = state
                 .inbox
                 .iter()
                 .filter(|row| row.recipient_id == recipient)
+                .filter(|row| {
+                    sender
+                        .as_deref()
+                        .is_none_or(|requested| row.sender_id == requested)
+                })
                 // `ORDER BY created_at ASC LIMIT MAX_DRAIN_ROWS`, no cursor.
                 .take(MAX_DRAIN_ROWS)
                 .map(|row| {
@@ -1154,7 +1165,22 @@ fn serve_legacy_request(
                     })
                 })
                 .collect::<Vec<_>>();
-            json_response(200, json!({ "items": items }))
+            match sender {
+                Some(sender) => json_response(
+                    200,
+                    json!({
+                        "filtered_sender_id": sender,
+                        "filtered_sender_delivery": {
+                            "live": items.len(),
+                            "retryable": 0,
+                            "quarantined": 0,
+                            "retired": 0,
+                        },
+                        "items": items,
+                    }),
+                ),
+                None => json_response(200, json!({ "items": items })),
+            }
         }
         ("DELETE", path) if path.starts_with("/v1/control-inbox/") => {
             let id = path.trim_start_matches("/v1/control-inbox/");
