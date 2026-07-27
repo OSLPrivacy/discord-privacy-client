@@ -1571,3 +1571,142 @@ No checklist row is claimed. These changes turn four previously vacuous or
 same-author assertions into mutation-sensitive cross-boundary gates. They do not
 make RN advertisement or view-once link creation reachable, and nothing is
 claimed as `verified-live` or `runtime-proven`.
+
+---
+
+## B5 point-qualification audit — committed HEAD `0b8f47c`
+
+This audit made no production mutation, did not deploy, and did not inspect or
+change link-grant work. All repository references below are from committed HEAD
+`0b8f47c618c5b6d85c41cbcba4959046a6f8a554`, not the shared dirty worktree.
+
+### Production reachability map
+
+| Surface | Registered/calling edge | Client-to-Worker edge | Classification |
+|---|---|---|---|
+| Registration | The legacy Tauri `register` command delegates to `cmd_register` and is registered in `generate_handler!` (`src-tauri/src/main.rs:99-107`, `:3098-3104`). More importantly, production bootstrap/unlock calls the shared automatic path in both shells (`src-tauri/src/bootstrap.rs:1282-1297`, `apps/osl-hub/src/core_bridge.rs:301-310`, `apps/osl-hub/src/password_lifecycle.rs:382-385`). | `ensure_keyserver_registered` calls `KeyServerClient::register` (`crates/ipc/src/commands.rs:7846-8133`, especially `:8059`); that client sends `POST /v1/register` (`crates/keystore/src/client.rs:716-727`); the Worker dispatches it to `handleRegister` (`keyserver-cf/src/index.ts:297-300`). | **live-called**, with the call chain `test-proven-only`. An actual successful registration was not probed because that mutates identity state, so runtime success during this audit is `unknown`. |
+| Prekeys | No registered Tauri command, IPC command, broker call, bootstrap hook, or non-test caller reaches either prekey operation. Repository search finds production definitions only. | Signed fetch and replenish clients exist (`crates/keystore/src/client.rs:771-796`, `:847-931`), and the Worker dispatches GET and replenish POST (`keyserver-cf/src/index.ts:274-277`, `:301-303`). | Client methods and server handlers are **implemented-unwired**; the production orchestration boundary is **absent**. |
+| Wrapped keys | No registered Tauri command, IPC command, broker call, send path, receive path, or burn path calls `post_wrapped_key`, `fetch_wrapped_key`, or `KeyServerClient::burn`. Their non-test caller count is zero. The shipping burn command only wipes the local store (`crates/ipc/src/commands.rs:6508-6583`). | Authenticated fetch and post clients exist (`crates/keystore/src/client.rs:798-845`), as does the delete client, and the Worker dispatches GET/POST/DELETE (`keyserver-cf/src/index.ts:270-273`, `:300`, `:363`). | Client methods and server handlers are **implemented-unwired**; the production orchestration boundary is **absent**. |
+| Control inbox | Legacy Tauri post/drain commands are registered (`src-tauri/src/main.rs:1360-1407`, `:3171-3172`) and invoked by injected production code (`src-tauri/src/injection/boot.js:1901`, `:17478`). The Hub broker also posts directly (`apps/osl-hub/src/broker.rs:2460`) and its text and attachment receive paths drain directly (`:2665-2668`, `:3614-3617`). | The called client uses unfiltered POST/GET/DELETE (`crates/keystore/src/client.rs:1016-1126`, `:1129-1154`, `:1227-1245`), and all three Worker routes are dispatched (`keyserver-cf/src/index.ts:278-279`, `:299`, `:366-367`). | Ordinary control inbox is **live-called**. The signed per-sender client is **implemented-unwired**: `get_control_inbox_from` exists (`crates/keystore/src/client.rs:1156-1225`) but has no caller, while both production Hub drains still call the unfiltered method. |
+
+The words “live-called” above describe a production call edge, not a runtime
+success claim. No desktop identity was opened or used during this audit.
+
+### Read-only production probes
+
+Only GETs that cannot insert, update, delete, consume an OPK, consume a wrapped
+key, or authenticate as an identity were sent:
+
+```text
+GET https://keyserver.oslprivacy.com/v1/healthz
+200 {"ok":true}
+
+GET /v1/prekey-bundle/osl_b5_probe_missing
+401 {"error":"fresh signed requester authorization required"}
+
+GET /v1/wrapped-keys/osl_b5_probe_missing
+401 {"error":"fresh signed recipient authorization required"}
+
+GET /v1/control-inbox/osl_b5_probe_missing?ts=<current>&sig=AAAA&sender=
+400 {"error":"sender must be a bounded identifier when present"}
+```
+
+These are `verified-live` only for health, route dispatch, and the deployed
+empty-`sender` validation branch. They do not prove a successful authenticated
+prekey fetch, wrapped-key fetch, or control-inbox drain. Those results remain
+`unknown`. Registration was deliberately not probed.
+
+### Clean-HEAD gates
+
+A detached worktree at `0b8f47c` produced:
+
+```text
+keyserver-cf control-inbox-sender-filter
+Test Files  1 passed (1)
+Tests       7 passed (7)
+
+keyserver-cf npm run typecheck
+exit 0
+
+osl-cargo test -p ipc --test register_after_unlock -- --nocapture
+test result: ok. 5 passed; 0 failed
+
+osl-cargo test -p keystore --test client_test \
+  prekey_fetch_carries_registered_identity_signature -- --exact --nocapture
+test result: ok. 1 passed; 0 failed; 25 filtered out
+
+osl-cargo test -p keystore --test client_test \
+  wrapped_key_fetch_binds_recipient_and_content_id -- --exact --nocapture
+test result: ok. 1 passed; 0 failed; 25 filtered out
+```
+
+The client tests establish correct request construction only; because their
+methods have no production caller, they remain `test-proven-only` and
+`implemented-unwired`.
+
+The current production-wiring negative control is non-vacuous:
+
+```text
+git show HEAD:apps/osl-hub/src/broker.rs |
+  grep -cF '.get_control_inbox_from('
+0
+
+git show HEAD:apps/osl-hub/src/broker.rs |
+  grep -cF '.get_control_inbox('
+3
+
+B5_FILTER_WIRING=FAIL (no production broker caller)
+```
+
+Two unfiltered calls are production text/attachment drains; the third is an
+ignored read-only live test (`apps/osl-hub/src/broker.rs:9274`).
+
+### Smallest honest next B5 boundary
+
+The smallest boundary that can support the next B5 point is:
+
+> Both conversation-bound Hub receive paths call
+> `KeyServerClient::get_control_inbox_from(&identity,
+> &manual.peer_osl_user_id)` rather than `get_control_inbox`.
+
+The exact owner is **Tab 5 / Discord broker receive lane**, which owns
+`apps/osl-hub/src/broker.rs` and
+`apps/osl-hub/tests/native_discord_receive_e2e.rs`. The keyserver lane has no
+code fix to make: the Worker filter is dispatched, its real-D1 starvation suite
+passes, and its validation branch is `verified-live`. The keystore method also
+already exists. Changing either owned Worker directory would not connect the
+production caller.
+
+The failing-first behavioral test is already present as a defect
+characterization:
+`foreign_sender_rows_head_of_line_block_the_drain_at_the_page_boundary`
+(`apps/osl-hub/tests/native_discord_receive_e2e.rs:1146-1254`). It creates 64
+older rows from two other legitimate senders, then one valid active-peer row,
+and currently asserts that the active row is invisible. The owner must invert
+it to require immediate delivery without deleting a blocker:
+
+```text
+cd apps/osl-hub
+osl-cargo test --features core --test native_discord_receive_e2e \
+  foreign_sender_rows_head_of_line_block_the_drain_at_the_page_boundary \
+  -- --exact --nocapture
+```
+
+The repaired test must observe one opened active-peer message while all 64
+foreign rows remain pending, and a request recorder must observe
+`sender=<active peer OSL id>`. Removing the filtered call or reverting either
+drain to the unfiltered method must fail. A companion assertion should exercise
+the attachment drain, because it has the same unfiltered call at
+`apps/osl-hub/src/broker.rs:3616`.
+
+No external mutation is required for that `test-proven-only` boundary. A later
+two-identity production qualification still requires real identities and state
+and is therefore `blocked` on its owner-approved rig; this audit did not perform
+it.
+
+## Acceptance rows this earns
+
+No checklist edit and no point are claimed. B5 remains 1/4. This audit narrows
+the next honest point to one already-deployed server capability and one missing
+broker call boundary; it does not round route existence or local tests up to an
+end-to-end production contract.
