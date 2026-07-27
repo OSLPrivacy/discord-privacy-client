@@ -551,28 +551,40 @@ deliverable, and fixing them silently would destroy the evidence of what they mi
 | `an_oversized_session_file_is_refused_without_being_read` | pre-read size check removed | Refusal happens. **Not** that it happens without reading — the "without being read" half of the name is unproven. |
 | `a_v3_blob_is_reported_as_a_version_mismatch` | the "v3" constant changed to `0x04` | Nothing about v3 specifically. The fixture is built from the same constant it asserts against, so it can only confirm the code agrees with itself. |
 
-### Which gate the at-rest guarantee actually stands on — state this precisely
+### WHICH GATE IS LOAD-BEARING — read this before trusting the at-rest guarantee
 
-The guarantee "OSL-RN session state is never written to disk in recoverable form" *appears* to be
-defended twice. It is not. Naming the two gates and what each really covers:
+The guarantee is "OSL-RN session state is never written to disk in recoverable form." It appears
+to be defended twice. Do not read the two gates as belt-and-braces; they are not equivalent, they
+are not independent, and only one of them is load-bearing against the threat that matters.
 
-| Gate | What it checks | Proven? | What it would catch |
-| --- | --- | --- | --- |
-| **`a_plaintext_sealer_is_refused`** (`wire_rn.rs:456`, `if sealer.requires_insecure_banner()`) | The sealer **self-declares** it does not encrypt, and the write is refused | **YES** — mutated to `if false && ...`, test failed | A sealer honest enough to admit it is insecure |
-| `the_sealed_file_contains_no_recognisable_state` | The bytes on disk contain no recognisable state | **NO** — passes against `base64(export)` | Raw plaintext only. Not encoding, not weak transformation |
+| | Gate 1 · `a_plaintext_sealer_is_refused` | Gate 2 · `the_sealed_file_contains_no_recognisable_state` |
+| --- | --- | --- |
+| Mechanism | `wire_rn.rs:456` — refuses when `sealer.requires_insecure_banner()` | Inspects the bytes actually written |
+| Nature | **A self-report.** Trusts the sealer's own declaration | **A blacklist** of known-bad representations |
+| Proven able to fail? | Yes | Yes, since §10 (before that: no) |
+| **Load-bearing?** | **YES — this is the gate the guarantee rests on** | No. It backstops one specific mistake |
 
-So the entire guarantee rests on **one** gate, and that gate depends on the sealer *truthfully
-declaring itself insecure*. A sealer that encodes rather than encrypts while reporting
-`requires_insecure_banner() == false` passes gate 1 by lying and gate 2 by being unrecognisable
-to a substring check. Nothing in this suite would notice.
+**Gate 1 is load-bearing.** It is the only check that stops a non-encrypting sealer from being
+used at all. Anything that weakens `requires_insecure_banner()`, or the branch at `:456`, removes
+the guarantee — regardless of gate 2.
 
-This is exactly the failure mode that reads as belt-and-braces right up until someone removes the
-belt: a future edit that touches `requires_insecure_banner` has, in appearance, a second test
-guarding it, and in reality has none. Fixing gate 2 to detect encoded forms is therefore not
-cosmetic tidying — it is the difference between one gate and two.
+**Gate 2 is a backstop with a bounded blast radius, not a second line of defence.** It now catches
+an export written raw, base64, base64url-nopad, or lowercase hex. It does **not** catch: a weak or
+broken cipher, a constant or all-zero key, compression, an unlisted encoding, or any transform
+whose output does not literally contain one of those four forms. It cannot, because it is a
+substring search — it can prove a *specific* representation absent, never prove the bytes
+confidential.
 
-**Status: being fixed** — see §10. It is not being left as a recorded finding, because unlike the
-routed items this one is inside this lane's own file and inside its own guarantee.
+So the honest statement is: **a future edit that touches gate 1 is not protected by gate 2.** Gate
+2 would notice only if that edit happened to produce one of four listed encodings. Before §10 it
+would not have noticed even that, which is why it was worth fixing — but fixing it did not turn
+one gate into two, it turned a decorative check into a narrow one.
+
+**What would make this genuinely two-gated** (recorded, not built — it needs a decision this lane
+should not make alone): a positive assertion that the written bytes are what the *real* sealer
+produced, i.e. that they decrypt back to the export under the sealer's key and do not under any
+other. That tests the property directly instead of enumerating ways to get it wrong. It is left
+as a recommendation because it touches the sealer boundary, which is the keystore lane's.
 
 The third is structurally identical to the fixture-coupling false green found by the store lane
 and to the R2 test double: a check built through the thing it is checking.
@@ -618,16 +630,17 @@ Each fix was demonstrated by breaking the source, observing the failure, and res
 | `an_oversized_session_file_is_refused_without_being_read` | asserts the exact pre-read error message, which names the byte count and can only come from the pre-read path | assertion on the `session file is N bytes, over the bound` message |
 | `a_v3_blob_is_reported_as_a_version_mismatch` | fixture uses a literal `0x03`; the constant is asserted separately | `left: 4, right: 3` |
 
-**The at-rest guarantee now genuinely stands on two independent gates**, which is what it appeared
-to have all along:
+**What this did and did not achieve — corrected from an earlier draft of this report.** An earlier
+version of §10 claimed the at-rest guarantee "now genuinely stands on two independent gates." That
+overstates it and is withdrawn. What actually changed:
 
-1. `a_plaintext_sealer_is_refused` — a sealer that self-declares insecure is refused. Proven.
-2. `the_sealed_file_contains_no_recognisable_state` — the bytes on disk contain neither the raw
-   export nor a common encoding of it. **Now proven**, where before it could not tell encrypted
-   from encoded.
+- The specific case that previously passed **both** gates — a sealer that encodes rather than
+  encrypts while falsely reporting `requires_insecure_banner() == false` — now fails gate 2.
+- Gate 2 went from *decorative* (raw-plaintext substring only) to *narrow* (four known
+  representations). It did not become a second line of defence.
 
-A sealer that encodes rather than encrypts while falsely reporting `requires_insecure_banner()
-== false` now fails gate 2. Before this change it passed both.
+Gate 1 remains the load-bearing check. See the gate table in §8 for exactly what each one can and
+cannot catch, and for the change that would make this genuinely two-gated.
 
 **An honest partial result on fix 2, reported rather than papered over.** The specified approach
 was to assert a distinct error variant. That is not possible: the pre-read and post-read paths
