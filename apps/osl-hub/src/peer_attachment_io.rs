@@ -33,8 +33,26 @@ const FETCH_TOKEN_HEX_LEN: usize = ipc::cipher_store_client::FETCH_TOKEN_BYTES *
 const OBJECT_ID_HEX_LEN: usize = 32;
 const PLAINTEXT_REMOVAL_ATTEMPTS: u32 = 5;
 
+/// Fixed refusal used by every attachment surface that cannot render bytes
+/// inside an OSL-owned, capture-protected process surface.
+///
+/// This is a policy result, not an I/O failure. External shell viewers require
+/// a filesystem path, and creating that path would violate the standing
+/// no-plaintext-at-rest invariant even if a later cleanup normally succeeds.
+pub const EXTERNAL_VIEWER_REFUSAL: &str =
+    "OSL refused to open this attachment because its viewer would require a plaintext file";
+
 pub fn supported_protected_image_mime(mime: &str) -> bool {
     matches!(mime, "image/png" | "image/jpeg")
+}
+
+/// Require an in-process protected viewer before attachment opening can reach
+/// its fetch token, durable staging, decryption, replay, reveal, or burn steps.
+pub fn require_protected_attachment_viewer(mime_type: &str) -> Result<(), String> {
+    if !mime_type.starts_with("image/") {
+        return Err(EXTERNAL_VIEWER_REFUSAL.to_owned());
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1149,6 +1167,52 @@ mod tests {
     fn fetch_token_hex(seed: usize) -> String {
         assert_eq!(FETCH_TOKEN_HEX_LEN, 32);
         format!("{:032x}", seed.wrapping_add(0x5a5a))
+    }
+
+    #[test]
+    fn non_image_open_policy_refuses_without_creating_plaintext() {
+        let root = root("non-image-refusal");
+        std::fs::create_dir_all(&root).unwrap();
+        let durable_plaintext = root.join("would-be-plaintext.txt");
+        let download_reached = std::cell::Cell::new(false);
+        let decrypt_reached = std::cell::Cell::new(false);
+
+        let refusal = require_protected_attachment_viewer("application/pdf").and_then(|_| {
+            download_reached.set(true);
+            let (_download_path, _download) = create_download_file(&root)?;
+            decrypt_reached.set(true);
+            std::fs::write(&durable_plaintext, b"plaintext")
+                .map_err(|_| "test durable plaintext write failed".to_owned())?;
+            Ok(())
+        });
+
+        assert!(
+            !download_reached.get(),
+            "non-image refusal must happen before download"
+        );
+        assert!(
+            !decrypt_reached.get(),
+            "non-image refusal must happen before decrypt"
+        );
+        assert!(
+            !root.join(STAGING_DIRECTORY).exists(),
+            "non-image refusal must not create download staging"
+        );
+        assert!(
+            !durable_plaintext.exists(),
+            "non-image refusal must not create durable plaintext"
+        );
+        assert_eq!(refusal, Err(EXTERNAL_VIEWER_REFUSAL.to_owned()));
+
+        let image_open_reached = std::cell::Cell::new(false);
+        let positive = require_protected_attachment_viewer("image/png").map(|_| {
+            image_open_reached.set(true);
+            "protected viewer reached"
+        });
+        assert_eq!(positive.unwrap(), "protected viewer reached");
+        assert!(image_open_reached.get());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

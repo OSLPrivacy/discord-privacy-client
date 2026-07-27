@@ -617,6 +617,10 @@ fn open_pending_inner(
     } else {
         broker::take_osl_chat_attachment(core, security, broker_state, attachment_id)?
     };
+    // Keep every network, durable-I/O, decrypt, replay, reveal, and burn step
+    // behind the production viewer-policy seam. A non-image refusal therefore
+    // occurs before the fetch token is parsed or a staging file is created.
+    peer_attachment_io::require_protected_attachment_viewer(&plan.mime_type)?;
     let is_image = plan.mime_type.starts_with("image/");
     // Inbound filenames come from the sender's wire payload, not from this
     // device's picker, so a peer running an older build can still deliver a
