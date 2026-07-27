@@ -209,6 +209,28 @@ Update this file in the same task as any change to security truth or feature sta
 any page currently using the old wording — a row that no longer earns its badge is a
 live incorrect claim on the site, not a documentation backlog item.
 
+### Latent claim surface in the app — NOT live, but one wire-up away (recorded 2026-07-27)
+
+`apps/osl-hub/src/core_bridge.rs` builds a feature list whose labels include **"Group and server
+ encryption"**, **"Encrypted images and attachments"** and **"Ciphertext-only relay"**. Group
+protection is switched off and attachments could not execute in production until 2026-07-27, so as
+user-facing capability lines those would be false.
+
+**They are not currently false, because nothing shows them.** Traced before judging severity:
+`list_core_features` is defined and registered in `generate_handler!`, but **no UI code invokes it**;
+`parseCoreFeatures` is referenced only by `core.test.ts`; and the one path that would populate the
+list, `loadCoreIntegrationFromNative`, invokes only `get_core_readiness` and hardcodes
+`features: []`. This is the caller-before-callee check: a capability that looks live is dead, and a
+capability that looks dead can be live.
+
+**Why it still matters.** The moment anyone wires that command to a view, the app ships capability
+lines for cryptography that is not running — with no gate to stop it, because the app-copy gate reads
+*string literals*, and these are already string literals that simply never render. Two conditions
+before it is ever wired: the labels must carry §8.2 status vocabulary, and `bridge_state` must stop
+being the honesty channel — its values (`source-linked`, `guarded`, `refactor-required`,
+`shell-adapter-required`) are engineering states that tell a user nothing about whether the feature
+protects them. Owner: whoever owns `core_bridge.rs`; not this lane, which does not edit app Rust.
+
 ### In-app copy gate — CLOSED 2026-07-26 (was the gap recorded earlier the same day)
 
 Section D says it governs "Website, in-app copy, README, store listing, social posts, screenshots,
