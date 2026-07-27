@@ -427,7 +427,7 @@ Inbound protected capsules render through an OSL-owned decrypted-message layer a
 Protected transport offers two honest options:
 
 - **Inline capsule:** the full ciphertext travels in the platform message and OSL stores no message payload for delivery.
-- **Sealed relay token:** an optional padded, short-TTL encrypted object is fetched through an opaque token and deleted on successful fetch or expiry. OSL cannot read it, but the relay necessarily observes limited transient metadata such as access time, network address and object size; setup and the payload preview disclose this.
+- **Sealed relay token:** an optional padded, short-TTL encrypted object is fetched through an opaque token and deleted on successful fetch or expiry (designed, not implemented). OSL cannot read it, but the relay necessarily observes limited transient metadata such as access time, network address and object size; setup and the payload preview disclose this.
 
 Carrier text may contain only a note written by the user, explicitly selected by the user or individually approved through the future Pro Cover Draft Relay described below. OSL never sends generated text autonomously, manufactures engagement, or runs unattended decoy activity.
 
@@ -446,14 +446,14 @@ The complete flow is:
 7. OSL immediately aligns an OSL-owned overlay containing the canonical plaintext with the native message. The overlay keeps the OSL lock, verified sender and real platform context visible; revealing the platform carrier remains one action away.
 8. With the recipient's permission, the local model may use that user-authorized decrypted message to prepare the next cover draft and protected reply. The recipient must still review or edit and deliberately send every outward message. There is no automatic response loop.
 
-Each relay token is an unguessable, high-entropy, single-use capability. It is authenticated, expires after a short TTL, is bound to sender identity, recipient device set, connector, account epoch and conversation context, and carries replay protection. A token copied to another conversation, sender, account or service fails authentication. Fetch is idempotent only for the authorized recipient transaction; successful delivery consumes the capability, and expiry or revocation makes it permanently unusable.
+Each relay token is an unguessable, high-entropy, single-use capability (designed, not implemented). It is authenticated, expires after a short TTL, is bound to sender identity, recipient device set, connector, account epoch and conversation context, and carries replay protection. A token copied to another conversation, sender, account or service fails authentication. Fetch is idempotent only for the authorized recipient transaction; successful delivery consumes the capability, and expiry or revocation makes it permanently unusable.
 
 The UI discloses that the platform sees the user-approved cover text, explicit OSL token, sender, recipient, timing and ordinary platform metadata. A blind relay can additionally observe transient network address, access time, padded size class and delivery result. OSL publishes the exact retention interval for those fields, minimizes or aggregates them where possible and never calls the cover text anonymous or metadata-free.
 
 Offline and failure behavior is fail-closed:
 
 - If the relay is unavailable, the recipient sees the native carrier plus `Protected message unavailable - try again`; no guessed or partial plaintext is rendered.
-- If the token expired or was already consumed, OSL shows `Protected message expired` and never reuses it.
+- If the token expired or was already consumed, OSL shows `Protected message expired` and never reuses it (designed, not implemented).
 - If authentication, sender/context binding, decryption or overlay placement fails, OSL leaves the native message visible, shows the specific safe error locally and does not generate a response draft.
 - A sender who is offline may keep the encrypted local draft, but OSL cannot claim the message is deliverable until relay upload or inline placement is verified.
 - Draft generation defaults to an on-device model. A user-selected external model is a separate explicit setting with a precise data-disclosure screen; OSL's own servers do not receive plaintext for generation.
@@ -487,6 +487,16 @@ The companion inherits the app policy. It is not a second settings app. A small 
 
 ## Deletion, retention and view-once
 
+> **Status: designed, NOT implemented (2026-07-26).** The per-message wrapped-key model described
+> below is not what the shipping code does. `MessageStore::put` never populates `wrapped_key`
+> (`crates/store/src/lib.rs:194-206`), so there is no per-message key to destroy and no key to
+> withhold. Burn today is **state deletion**: local shredding, server-side deletion, and a
+> cooperative request to the peer. Because messages are sealed to the recipient's long-term keys,
+> the carrier retained by the connected service stays readable to any holder of that key material.
+> Building this model is deliberately deferred. Read everything below as intended design, not as
+> current behaviour, and never quote it as a capability. See
+> `docs/design/osl-public-claim-allowlist.md` §D.
+
 Every destructive workflow uses the same sequence:
 
 `Scan → Preview → Confirm → Execute → Verify → Receipt`
@@ -496,7 +506,7 @@ Activity states are **Scheduled**, **Running**, **Verified**, **Failed**, **Unsu
 OSL exposes three distinct guarantees:
 
 1. **Platform removal:** OSL asked the platform to remove the account's copy and verified the platform no longer returns it where possible.
-2. **OSL content expiry:** encrypted OSL content becomes undecryptable after key expiry, subject to recipient capture and already-open copies.
+2. **OSL content expiry:** encrypted OSL content becomes undecryptable after key expiry (designed, not implemented), subject to recipient capture and already-open copies.
 3. **Local removal:** OSL deleted the local cached copy from this device.
 
 View-once protects ordinary reuse and local persistence. It cannot prevent a screenshot, camera, rooted device or compromised recipient. That limitation appears once during setup and remains available in details, without nagging on every send.
@@ -735,7 +745,7 @@ The enforceable server promise is:
 
 > OSL servers never retain plaintext messages, media, social-account credentials, encryption keys, warning contents or scanned-history findings. Current relays do retain bounded ciphertext-routing metadata and replay receipts for published TTLs; that metadata is not described as anonymous, unlinkable or risk-free.
 
-- OSL-native relays carry end-to-end encrypted envelopes and delete queued ciphertext after delivery or a short published expiry.
+- OSL-native relays carry end-to-end encrypted envelopes and delete queued ciphertext after delivery or a short published expiry (designed, not implemented).
 - Compatibility recipes, app updates and health rules are generic and contain no customer content.
 - Cleanup findings and detailed receipts remain on the user's device or customer-controlled agent.
 - Until opaque rotating inbox capabilities replace stable sender/recipient routing, the public data inventory must disclose the linkable identifiers, timestamps, access logs and deletion schedule used by each relay.

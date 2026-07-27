@@ -36,27 +36,37 @@ Channels mix app-using and non-app members. v1 behaviour:
 
 ## Burn rendering behaviour
 
+> **Status: designed, NOT implemented (2026-07-26).** The per-message wrapped-key model described
+> below is not what the shipping code does. `MessageStore::put` never populates `wrapped_key`
+> (`crates/store/src/lib.rs:194-206`), so there is no per-message key to destroy and no key to
+> withhold. Burn today is **state deletion**: local shredding, server-side deletion, and a
+> cooperative request to the peer. Because messages are sealed to the recipient's long-term keys,
+> the carrier retained by the connected service stays readable to any holder of that key material.
+> Building this model is deliberately deferred. Read everything below as intended design, not as
+> current behaviour, and never quote it as a capability. See
+> `docs/design/osl-public-claim-allowlist.md` §D.
+
 When a recipient's client receives a `404 Not Found` from the key
 server attempting to fetch a wrapped key, rendering depends on
 `content_type`:
 
 | `content_type` | Rendering on 404                                                |
 | ---            | ---                                                              |
-| `text`         | Render the original stego'd cover text directly from Discord. **No** "[message unavailable]" or "[deleted]" marker. The message simply appears as whatever Discord stored. Observers cannot distinguish burned messages from messages that were always cover text. |
+| `text`         | Render the original stego'd cover text directly from Discord (designed, not implemented). **No** "[message unavailable]" or "[deleted]" marker. The message simply appears as whatever Discord stored. Observers cannot distinguish burned messages from messages that were always cover text. |
 | `attachment`   | Subtle `[attachment no longer available]` placeholder. Binary attachments cannot render as readable cover. |
 | `system`       | `[notification no longer available]` placeholder. **NOT** cover text — system messages (e.g. burn alerts) have a known semantic role; rendering them as cover gibberish would be conspicuous. |
 
-This applies equally to DM and group conversations. Authoritative
+This applies equally to DM and group conversations (designed, not implemented). Authoritative
 spec lives in `key-server-api.md`.
 
 ### Cache and re-validation
 
 - Recipients' clients **zero their local wrapped-key cache** on the
   next user interaction (input, focus change, scroll, click) **and**
-  on a 5-minute timer regardless of interaction.
+  on a 5-minute timer regardless of interaction (designed, not implemented).
 - For currently-visible conversations, periodic key re-validation
   runs **every 5 minutes**. Visible messages whose keys have been
-  burned re-render as cover text.
+  burned re-render as cover text (designed, not implemented).
 - Currently-rendered messages may persist on screen until the user
   scrolls or the 5-minute re-validation cycle fires.
 
@@ -70,14 +80,14 @@ Documented in [`THREAT_MODEL.md`](../THREAT_MODEL.md):
 - Indefinite for content already screenshotted, copied, or captured
   outside the app.
 - Zero for recipients who were offline at the time of burn and haven't
-  yet fetched the wrapped keys.
+  yet fetched the wrapped keys (designed, not implemented).
 
 ## Burn-and-alert vs burn-silently
 
 Per-burn-action choice. **Default: silent.**
 
 - **Silent burn**: server deletes wrapped keys; recipients see cover
-  text after re-validation; no active notification.
+  text after re-validation; no active notification (designed, not implemented).
 - **Alerted burn** (opt-in, per action): sender sends a signed system
   message announcing the burn.
 
@@ -117,7 +127,7 @@ Burn messages with @username
 
 What gets burned:
 ☑ All messages I sent to this person
-  (forever unreadable to anyone fetching keys after now)
+  (forever unreadable to anyone fetching keys after now) (designed, not implemented)
 
 How:
 ● Burn silently  [default]
@@ -149,7 +159,7 @@ state is wiped as part of the broader Phase 2 local burn:
 
 This is bundled into the Phase 2 local burn list documented in
 `unlock-and-duress.md`. After duress, the device cannot decrypt any
-past group messages, and the user re-registers fresh keys after
+past group messages (designed, not implemented), and the user re-registers fresh keys after
 reinstall — group recipients then see a key-rotation event and must
 re-verify the user's identity fingerprint before trusting new
 sender-key distributions.
