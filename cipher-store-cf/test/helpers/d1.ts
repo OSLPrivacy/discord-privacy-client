@@ -95,8 +95,26 @@ export function migratedD1(): TestD1 {
   };
 }
 
+/// workerd rejects a streamed R2 body that has no known length, and the output
+/// of `pipeThrough` has none. A double that quietly accepts one is how an
+/// attachment upload path shipped broken for its entire life while every test
+/// stayed green — so this double refuses exactly what production refuses, with
+/// the same message. If a test fails here, that is the point.
+function knownLengthBody(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  throw new TypeError(
+    "Provided readable stream must have a known length "
+    + "(request/response body or readable half of FixedLengthStream)",
+  );
+}
+
 /// Minimal in-memory R2 with multipart support, sufficient for the attachment
 /// endpoints. Tracks aborted uploads so a test can prove reclamation happened.
+///
+/// Deliberately strict where production is strict: bodies must carry a known
+/// length, and `onlyIf: { etagDoesNotMatch: "*" }` behaves as a real
+/// precondition rather than being ignored.
 export function memoryR2() {
   const objects = new Map<string, Uint8Array>();
   const uploads = new Map<string, { key: string; aborted: boolean; parts: Map<number, Uint8Array> }>();
@@ -105,8 +123,8 @@ export function memoryR2() {
   const resume = (key: string, uploadId: string) => ({
     uploadId,
     key,
-    async uploadPart(partNumber: number, body: ReadableStream<Uint8Array>) {
-      const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+    async uploadPart(partNumber: number, body: unknown) {
+      const bytes = knownLengthBody(body);
       uploads.get(uploadId)?.parts.set(partNumber, bytes);
       return { partNumber, etag: `etag-${uploadId}-${partNumber}` };
     },
@@ -138,10 +156,15 @@ export function memoryR2() {
       return resume(key, uploadId);
     },
     resumeMultipartUpload: (key: string, uploadId: string) => resume(key, uploadId),
-    async put(key: string, value: ReadableStream<Uint8Array> | Uint8Array) {
-      const bytes = value instanceof Uint8Array
-        ? value
-        : new Uint8Array(await new Response(value).arrayBuffer());
+    async put(
+      key: string,
+      value: unknown,
+      options?: { onlyIf?: { etagDoesNotMatch?: string } },
+    ) {
+      const bytes = knownLengthBody(value);
+      // A real conditional put returns null when the precondition fails; the
+      // caller treats that as an id collision rather than a success.
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
       objects.set(key, bytes);
       return { key, size: bytes.byteLength } as R2Object;
     },
