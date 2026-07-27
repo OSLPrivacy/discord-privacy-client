@@ -17,6 +17,11 @@ const MIGRATION_PLAN_DOMAIN: &[u8] = b"osl-store-anchor/migration-plan/v1";
 const MIGRATION_FROM_V7: u32 = 7;
 const MIGRATION_TO_V8: u32 = 8;
 
+#[cfg(test)]
+static TEST_CRASH_AFTER_VACUUM: Mutex<bool> = Mutex::new(false);
+#[cfg(test)]
+static TEST_MIGRATION_SERIAL: Mutex<()> = Mutex::new(());
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MigrationPhase {
     Prepared,
@@ -213,6 +218,12 @@ impl AnchorBinding {
         // before this physical rewrite. A crash repeats VACUUM and cannot
         // clear the journal without a final external advance.
         conn.execute_batch("VACUUM;")?;
+        #[cfg(test)]
+        if std::mem::take(&mut *TEST_CRASH_AFTER_VACUUM.lock().expect("test fault mutex")) {
+            return Err(StoreError::Anchor(
+                "test crash after physical vacuum before final local clear".to_string(),
+            ));
+        }
         let tx = conn.unchecked_transaction()?;
         schema::clear_vacuum_pending_tx(&tx)?;
         delete_journal(&tx)?;
@@ -611,6 +622,7 @@ mod tests {
 
     #[test]
     fn anchored_v7_journal_crash_boundaries_resume_without_rollback() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
         // Calls are Prepared CAS, Step CAS, then final CAS. Before/after each
         // models every durable local/provider boundary in the v7→v8 protocol.
         for fault in [
@@ -631,7 +643,31 @@ mod tests {
     }
 
     #[test]
+    fn anchored_v7_crash_after_vacuum_repeats_the_bound_phase_before_final_clear() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
+        let provider = Arc::new(Provider::new());
+        let tmp = anchored_v7(provider.clone());
+        *TEST_CRASH_AFTER_VACUUM.lock().unwrap() = true;
+        let error = match MessageStore::open_anchored(tmp.path(), SECRET, provider.clone()) {
+            Ok(_) => panic!("post-vacuum crash was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, StoreError::Anchor(message) if message.contains("after physical vacuum"))
+        );
+        let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(8));
+        assert!(read_journal(&conn).unwrap().is_some());
+        assert!(schema::read_meta_blob(&conn, "vacuum_pending")
+            .unwrap()
+            .is_some());
+        drop(conn);
+        assert_v8(tmp.path(), provider, "post-vacuum restart");
+    }
+
+    #[test]
     fn anchored_v7_stale_replay_and_wrong_plan_refuse_before_mutation() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
         let provider = Arc::new(Provider::new());
         let tmp = anchored_v7(provider.clone());
         let backup = TempDir::new().unwrap();
@@ -663,6 +699,7 @@ mod tests {
 
     #[test]
     fn anchored_v7_wrong_plan_or_store_journal_refuses_before_schema_step() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
         for mutate_store_id in [false, true] {
             let provider = Arc::new(Provider::new());
             let tmp = anchored_v7(provider.clone());
@@ -714,6 +751,7 @@ mod tests {
 
     #[test]
     fn concurrent_recovery_writer_loses_stale_final_cas_without_extra_generation() {
+        let _serial = TEST_MIGRATION_SERIAL.lock().unwrap();
         let provider = Arc::new(Provider::new());
         let tmp = anchored_v7(provider.clone());
         // Prepared CAS succeeds; the Step local transaction commits but its
