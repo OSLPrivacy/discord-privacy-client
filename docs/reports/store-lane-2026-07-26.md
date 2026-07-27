@@ -434,8 +434,22 @@ Three closed (commit `bc239b1`):
 
 Two left unfixed and recorded rather than dropped:
 
-- Body and canary AADs are not namespace-disjoint (Low). Unreachable with real Discord ids, which
-  cannot contain `/`; the store API does not validate its arguments.
+- **Body AADs are not namespace-disjoint (Low) — queued, with its mechanism.** An attachment's
+  body AAD is the cache key `"{discord_message_id}/{random_filename}"`, and the store validates
+  neither argument. Two different pairs can therefore produce one cache key — id `a/b` with
+  filename `c`, and id `a` with filename `b/c`, both give `a/b/c` — which is one blind index and
+  so one row. One message's cached attachment could be served for another's.
+
+  Both values arrive unvalidated from the IPC boundary as plain `String`
+  (`crates/ipc/src/commands.rs:2216` and `:2253`), so nothing upstream of this crate enforces the
+  snowflake shape that makes the collision unreachable in practice.
+
+  **The fix must be input validation, not an AAD change.** Changing a body AAD would orphan every
+  sealed body already on disk, because the migration copies those bytes verbatim — that is exactly
+  the mistake that would have made every migrated attachment undecryptable earlier tonight. So:
+  reject `/` in `discord_message_id` and `random_filename` at the write and read paths, which
+  costs no format change. Not started; queued behind the in-flight test work rather than applied
+  while another job is iterating against this crate.
 - Migration `INSERT OR REPLACE` would collapse two legacy rows sharing a blind index (Low).
   Requires an identifier collision.
 
