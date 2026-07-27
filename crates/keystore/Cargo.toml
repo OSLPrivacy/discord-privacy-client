@@ -49,6 +49,12 @@ serde_json = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
+# Used by the Windows TPM eviction path to record WHY nothing was evicted
+# without ever claiming a key was destroyed. Those call sites live inside
+# `#[cfg(windows)] mod tpm`, so a Linux `cargo test -p keystore` compiles them
+# out and stays green while every Windows hub build breaks -- which is exactly
+# how this dependency went missing.
+tracing = { workspace = true }
 
 # OS credential-store fallback when TPM is unavailable. Native keyring
 # backends are opt-in features; this Windows build uses Credential Manager.

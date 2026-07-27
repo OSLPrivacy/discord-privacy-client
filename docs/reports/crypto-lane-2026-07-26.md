@@ -148,6 +148,72 @@ Numbers below are all from runs performed in this session. The 674/739 figures q
 except the frontend one, which I did re-run before touching anything (it was already 2 failed /
 740 passed, not the 3 failed the report claimed).
 
+## CORRECTION — every Rust count in this report was measured under the wrong feature gate
+
+`apps/osl-hub/src/qa_selftest_request.rs` is gated behind
+`#[cfg(all(feature = "core", feature = "discord-qa-shell"))]` (`lib.rs:69`), but the lane-standard
+command everyone has been running is `--features core`. **That module — the code deciding whether a
+trigger file becomes a harmless status read or the irreversible SEND verb — was compiled out of
+every hub test run quoted today.** 680 tests listed, zero from that module. The correct gate runs
+731.
+
+I only caught it because two tests I added did not change the total. **That is the symptom to look
+for: a count that does not move when you add tests.**
+
+| Command | Reported here originally | Correct gate |
+|---|---|---|
+| hub lib | 679 passed / 0 failed / 1 ignored (`--features core`) | **729 passed / 1 failed / 1 ignored** (`--features core,discord-qa-shell`) |
+
+The 1 failure is pre-existing and **not this lane's work**:
+`native_discord_adapter::tests::the_header_proof_walk_runs_in_both_cfgs_and_only_enforcement_differs`
+(`native_discord_adapter.rs:21382`). That file is dirty from another lane mid-edit, so it was left
+untouched.
+
+`cargo test -p keystore` (176 passed / 0 failed / 1 ignored) and `cargo test -p ipc` are unaffected —
+separate crates with no such gate — and both were run directly in this session rather than inherited.
+
+**This is the fourth false green of the day and they are one family** (an R2 double that accepted
+any stream, D1 fakes that could only re-assert their author's beliefs, a release workflow never once
+executed, and this gate). Each reported success without ever having done the thing. Standing rule
+taken from it: prefer a real runtime to a double; when a double is unavoidable, ask what it would
+fail to catch; and assert non-empty on the positive path so the negative path cannot pass vacuously.
+
+## Audit CRITICAL #4 — plaintext at rest: closed, on both halves
+
+**Question routed to this lane:** if attachment part upload was returning HTTP 500 in production,
+did any decryptable attachment ever exist — making CRITICAL #4 structurally nil rather than merely
+unobserved?
+
+**Answer: confirmed nil, historically — but the client-side evidence alone would have produced a
+false refutation, so the working matters.**
+
+The client has *two* upload paths (`cipher_store_client.rs:438`): attachments **≤ 26 MiB**
+(`LEGACY_DIRECT_ATTACHMENT_BYTES`) take a single-shot POST with a known `content-length`, and only
+those **> 26 MiB** take multipart. Reading the client alone, the small-attachment path looks exempt
+from the multipart defect, and the honest conclusion would have been "the exposure was real for
+almost every real attachment".
+
+That is wrong, and the server's pre-fix code is what settles it. In `08552e5` **both** paths fed
+`boundedAttachmentStream` — a `pipeThrough` `TransformStream` with no known length — the multipart
+`uploadPart` at `attachment.ts:273-275` **and the direct `put` at `:366-368`**. R2 requires a known
+length for both. So no attachment ciphertext of any size ever reached R2; nothing could be fetched;
+nothing could be decrypted to a durable plaintext file.
+
+**Bounds, stated precisely:** `08552e5` is a WIP snapshot, so the age is unbounded below and git
+cannot see an earlier variant; this covers the cipher-store transport only; and it says nothing
+about images, which the audit treats separately.
+
+**The receiver half was already closed too** — verified in the current tree rather than assumed:
+`decrypt_file` and `StagedPlaintext` are gone (only `decrypt_file_to_memory` remains,
+`peer_attachment_io.rs:517`); non-image opens return `EXTERNAL_VIEWER_REFUSAL` at
+`native_attachment_transport.rs:1109` and `:1243` *before* any token parsing, download, decrypt,
+replay consumption or burn; and the picker is gated by `supported_protected_image_mime` so only
+PNG and JPEG are offered.
+
+So restoring the transport (cipher-store `0a17547d`, part upload now 201) does **not** arm a dormant
+defect. I raised that risk and it turned out the exposure work had already shut the other door this
+morning. **Recorded as closed on both halves, not as a risk this lane is carrying.**
+
 ## Verification commands and exact results
 
 | Command | Result | Baseline | Verdict |

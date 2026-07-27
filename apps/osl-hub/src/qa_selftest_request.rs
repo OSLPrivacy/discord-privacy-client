@@ -46,6 +46,14 @@ const MAX_MESSAGE_ID_BYTES: usize = 128;
 pub enum Verb {
     /// Read-only sweep. Drives nothing, changes nothing.
     Status,
+    /// Read-only browser profile inventory. Listing grants nothing.
+    ListBrowserProfiles,
+    /// Grant one named browser profile to OSL import tooling.
+    GrantBrowserProfile,
+    /// Revoke one named browser profile grant.
+    RevokeBrowserProfile,
+    /// Run an import from the browser profiles already granted.
+    RunBrowserImport,
     /// Adopt one native app window through the renderer's production command.
     Host,
     /// The original verb: one fixed probe plaintext through the atomic send.
@@ -64,6 +72,10 @@ impl Verb {
     pub fn label(self) -> &'static str {
         match self {
             Self::Status => "status",
+            Self::ListBrowserProfiles => "list-browser-profiles",
+            Self::GrantBrowserProfile => "grant-browser-profile",
+            Self::RevokeBrowserProfile => "revoke-browser-profile",
+            Self::RunBrowserImport => "run-browser-import",
             Self::Host => "host",
             Self::Send => "send",
             Self::Drain => "drain",
@@ -75,6 +87,10 @@ impl Verb {
     fn from_label(label: &str) -> Option<Self> {
         match label {
             "status" => Some(Self::Status),
+            "list-browser-profiles" => Some(Self::ListBrowserProfiles),
+            "grant-browser-profile" => Some(Self::GrantBrowserProfile),
+            "revoke-browser-profile" => Some(Self::RevokeBrowserProfile),
+            "run-browser-import" => Some(Self::RunBrowserImport),
             "host" => Some(Self::Host),
             "send" => Some(Self::Send),
             "drain" => Some(Self::Drain),
@@ -85,11 +101,21 @@ impl Verb {
     }
 
     /// Whether this verb mutates any OSL state at all. `status` is the only
-    /// one that does not, and the watcher uses this to decide whether an
-    /// unready app is worth waiting for.
+    /// historical read-only verb; profile listing is read-only for the same
+    /// readiness-wait purpose because listing grants nothing.
     pub fn is_read_only(self) -> bool {
-        matches!(self, Self::Status)
+        matches!(self, Self::Status | Self::ListBrowserProfiles)
     }
+}
+
+/// The resolved inputs for one browser profile grant or revoke request.
+///
+/// These are identifiers, not paths. The parser rejects traversal fragments,
+/// separators and NULs before this value can exist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserProfileRequest {
+    pub browser_id: String,
+    pub profile: String,
 }
 
 /// The resolved inputs for one `host` request.
@@ -214,6 +240,8 @@ pub struct SelftestRequest {
     pub message_id: Option<String>,
     /// Present only for `host`; resolved to borrow-safe defaults by the parser.
     pub host: Option<HostRequest>,
+    /// Present only for browser profile grants/revocations.
+    pub browser_profile: Option<BrowserProfileRequest>,
     /// Which shape the request body was written in, for the verdict.
     pub format: &'static str,
 }
@@ -229,6 +257,7 @@ impl SelftestRequest {
             pending_index: 0,
             message_id: None,
             host: None,
+            browser_profile: None,
             format: FORMAT_LEGACY,
         }
     }
@@ -259,6 +288,14 @@ pub const REFUSAL_SESSION_MODE_NOT_A_STRING: &str = "request-session-mode-not-a-
 pub const REFUSAL_SESSION_MODE_UNKNOWN: &str = "request-session-mode-unknown";
 pub const REFUSAL_SESSION_MODE_UNEXPECTED: &str = "request-session-mode-unexpected";
 pub const REFUSAL_TAKEOVER_NOT_PERMITTED: &str = "request-takeover-not-permitted";
+pub const REFUSAL_BROWSER_ID_MISSING: &str = "request-browser-id-missing";
+pub const REFUSAL_BROWSER_ID_NOT_A_STRING: &str = "request-browser-id-not-a-string";
+pub const REFUSAL_BROWSER_ID_REJECTED: &str = "request-browser-id-rejected";
+pub const REFUSAL_BROWSER_ID_UNEXPECTED: &str = "request-browser-id-unexpected";
+pub const REFUSAL_BROWSER_PROFILE_MISSING: &str = "request-browser-profile-missing";
+pub const REFUSAL_BROWSER_PROFILE_NOT_A_STRING: &str = "request-browser-profile-not-a-string";
+pub const REFUSAL_BROWSER_PROFILE_REJECTED: &str = "request-browser-profile-rejected";
+pub const REFUSAL_BROWSER_PROFILE_UNEXPECTED: &str = "request-browser-profile-unexpected";
 
 /// The answer to one trigger body.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -416,6 +453,22 @@ pub fn parse_request(body: &str) -> ParsedRequest {
         None
     };
 
+    let browser_profile = if matches!(verb, Verb::GrantBrowserProfile | Verb::RevokeBrowserProfile)
+    {
+        match parse_browser_profile_request(object) {
+            Ok(request) => Some(request),
+            Err(refusal) => return refusal,
+        }
+    } else {
+        if object.contains_key("browserId") {
+            return ParsedRequest::Refused(REFUSAL_BROWSER_ID_UNEXPECTED);
+        }
+        if object.contains_key("profile") {
+            return ParsedRequest::Refused(REFUSAL_BROWSER_PROFILE_UNEXPECTED);
+        }
+        None
+    };
+
     ParsedRequest::Accepted(SelftestRequest {
         verb,
         instance,
@@ -423,8 +476,64 @@ pub fn parse_request(body: &str) -> ParsedRequest {
         pending_index,
         message_id,
         host,
+        browser_profile,
         format: FORMAT_JSON,
     })
+}
+
+fn parse_browser_profile_request(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<BrowserProfileRequest, ParsedRequest> {
+    let Some(browser_id_value) = object.get("browserId") else {
+        return Err(ParsedRequest::Refused(REFUSAL_BROWSER_ID_MISSING));
+    };
+    let Some(browser_id) = browser_id_value.as_str() else {
+        return Err(ParsedRequest::Refused(REFUSAL_BROWSER_ID_NOT_A_STRING));
+    };
+    if !valid_browser_id(browser_id) {
+        return Err(ParsedRequest::Refused(REFUSAL_BROWSER_ID_REJECTED));
+    }
+
+    let Some(profile_value) = object.get("profile") else {
+        return Err(ParsedRequest::Refused(REFUSAL_BROWSER_PROFILE_MISSING));
+    };
+    let Some(profile) = profile_value.as_str() else {
+        return Err(ParsedRequest::Refused(REFUSAL_BROWSER_PROFILE_NOT_A_STRING));
+    };
+    if !valid_browser_profile(profile) {
+        return Err(ParsedRequest::Refused(REFUSAL_BROWSER_PROFILE_REJECTED));
+    }
+
+    Ok(BrowserProfileRequest {
+        browser_id: browser_id.to_owned(),
+        profile: profile.to_owned(),
+    })
+}
+
+fn contains_forbidden_browser_identifier_fragment(value: &str) -> bool {
+    value.contains("..")
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains(':')
+        || value.contains('\0')
+}
+
+fn valid_browser_id(browser_id: &str) -> bool {
+    !contains_forbidden_browser_identifier_fragment(browser_id)
+        && !browser_id.is_empty()
+        && browser_id.len() <= 32
+        && browser_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn valid_browser_profile(profile: &str) -> bool {
+    !contains_forbidden_browser_identifier_fragment(profile)
+        && !profile.is_empty()
+        && profile.len() <= 64
+        && profile
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'.' | b'_' | b'-'))
 }
 
 fn takeoverish_key(key: &str) -> bool {
@@ -481,7 +590,12 @@ pub const READINESS_CRITERIA: [&str; 7] = [
 /// `status` claims none of them. It reports the world; it does not require one.
 pub fn readiness_criterion_is_graded(verb: Verb, id: &str) -> bool {
     match verb {
-        Verb::Status | Verb::Host => false,
+        Verb::Status
+        | Verb::ListBrowserProfiles
+        | Verb::GrantBrowserProfile
+        | Verb::RevokeBrowserProfile
+        | Verb::RunBrowserImport
+        | Verb::Host => false,
         Verb::Send => true,
         Verb::Drain | Verb::Rehydrate | Verb::RevealViewOnce => matches!(
             id,
@@ -500,6 +614,10 @@ pub fn readiness_criterion_is_graded(verb: Verb, id: &str) -> bool {
 pub fn not_ready_refusal(verb: Verb) -> &'static str {
     match verb {
         Verb::Status => "status-readiness-precondition-missing",
+        Verb::ListBrowserProfiles => "list-browser-profiles-readiness-precondition-missing",
+        Verb::GrantBrowserProfile => "grant-browser-profile-readiness-precondition-missing",
+        Verb::RevokeBrowserProfile => "revoke-browser-profile-readiness-precondition-missing",
+        Verb::RunBrowserImport => "run-browser-import-readiness-precondition-missing",
         Verb::Host => "host-readiness-precondition-missing",
         Verb::Send => "send-readiness-precondition-missing",
         Verb::Drain => "drain-readiness-precondition-missing",
@@ -594,6 +712,55 @@ pub fn acknowledgment_count_of(
         .iter()
         .filter(|acknowledgment| acknowledgment.status == status)
         .count()
+}
+
+fn sorted_deduplicated_strings<I, S>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut values: Vec<String> = values.into_iter().map(Into::into).collect();
+    values.sort();
+    values.dedup();
+    values
+}
+
+/// What one browser profile inventory observed.
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProfileListReport {
+    pub profiles: Vec<String>,
+}
+
+impl BrowserProfileListReport {
+    pub fn from_profiles<I, S>(profiles: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            profiles: sorted_deduplicated_strings(profiles),
+        }
+    }
+}
+
+/// What one browser import run observed about its consent-scoped sources.
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserImportReport {
+    pub source_profiles: Vec<String>,
+}
+
+impl BrowserImportReport {
+    pub fn from_source_profiles<I, S>(source_profiles: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            source_profiles: sorted_deduplicated_strings(source_profiles),
+        }
+    }
 }
 
 /// What one drive of the inbound drain observed.
@@ -843,9 +1010,25 @@ mod tests {
     }
 
     #[test]
-    fn only_status_is_read_only() {
-        assert!(Verb::Status.is_read_only());
+    fn new_browser_verbs_round_trip_through_their_own_fixed_labels() {
         for verb in [
+            Verb::ListBrowserProfiles,
+            Verb::GrantBrowserProfile,
+            Verb::RevokeBrowserProfile,
+            Verb::RunBrowserImport,
+        ] {
+            assert_eq!(Verb::from_label(verb.label()), Some(verb));
+        }
+    }
+
+    #[test]
+    fn status_and_profile_listing_are_read_only() {
+        assert!(Verb::Status.is_read_only());
+        assert!(Verb::ListBrowserProfiles.is_read_only());
+        for verb in [
+            Verb::GrantBrowserProfile,
+            Verb::RevokeBrowserProfile,
+            Verb::RunBrowserImport,
             Verb::Host,
             Verb::Send,
             Verb::Drain,
@@ -853,6 +1036,146 @@ mod tests {
             Verb::RevealViewOnce,
         ] {
             assert!(!verb.is_read_only(), "{}", verb.label());
+        }
+    }
+
+    fn browser_profile_json(verb: Verb, browser_id: &str, profile: &str) -> String {
+        serde_json::json!({
+            "verb": verb.label(),
+            "browserId": browser_id,
+            "profile": profile,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn browser_profile_grant_and_revoke_accept_normal_identifiers() {
+        for (verb, browser_id, profile) in [
+            (Verb::GrantBrowserProfile, "firefox", "Default Profile_1"),
+            (Verb::RevokeBrowserProfile, "chrome-beta", "Work.Profile-2"),
+        ] {
+            let request = accepted(&browser_profile_json(verb, browser_id, profile));
+            assert_eq!(request.verb, verb);
+            assert_eq!(
+                request.browser_profile,
+                Some(BrowserProfileRequest {
+                    browser_id: browser_id.to_owned(),
+                    profile: profile.to_owned(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn browser_profile_grant_and_revoke_refuse_missing_or_mistyped_fields() {
+        for verb in [Verb::GrantBrowserProfile, Verb::RevokeBrowserProfile] {
+            let missing_browser = serde_json::json!({
+                "verb": verb.label(),
+                "profile": "Default",
+            })
+            .to_string();
+            assert_eq!(
+                refusal(&missing_browser),
+                REFUSAL_BROWSER_ID_MISSING,
+                "{}",
+                verb.label()
+            );
+
+            let missing_profile = serde_json::json!({
+                "verb": verb.label(),
+                "browserId": "firefox",
+            })
+            .to_string();
+            assert_eq!(
+                refusal(&missing_profile),
+                REFUSAL_BROWSER_PROFILE_MISSING,
+                "{}",
+                verb.label()
+            );
+
+            let browser_not_string = serde_json::json!({
+                "verb": verb.label(),
+                "browserId": 7,
+                "profile": "Default",
+            })
+            .to_string();
+            assert_eq!(
+                refusal(&browser_not_string),
+                REFUSAL_BROWSER_ID_NOT_A_STRING,
+                "{}",
+                verb.label()
+            );
+
+            let profile_not_string = serde_json::json!({
+                "verb": verb.label(),
+                "browserId": "firefox",
+                "profile": false,
+            })
+            .to_string();
+            assert_eq!(
+                refusal(&profile_not_string),
+                REFUSAL_BROWSER_PROFILE_NOT_A_STRING,
+                "{}",
+                verb.label()
+            );
+        }
+    }
+
+    #[test]
+    fn browser_profile_grant_and_revoke_refuse_rejected_identifier_values() {
+        for verb in [Verb::GrantBrowserProfile, Verb::RevokeBrowserProfile] {
+            for profile in [
+                "Profile..Two",
+                "Profile/Two",
+                "Profile\\Two",
+                "Profile:Two",
+                "",
+            ] {
+                assert_eq!(
+                    refusal(&browser_profile_json(verb, "firefox", profile)),
+                    REFUSAL_BROWSER_PROFILE_REJECTED,
+                    "{} profile {profile:?}",
+                    verb.label()
+                );
+            }
+
+            let long_profile = "a".repeat(65);
+            assert_eq!(
+                refusal(&browser_profile_json(verb, "firefox", &long_profile)),
+                REFUSAL_BROWSER_PROFILE_REJECTED,
+                "{} over-long profile",
+                verb.label()
+            );
+
+            for browser_id in ["", "firefox/qa", "firefox\\qa", "firefox:qa", "firefox..qa"] {
+                assert_eq!(
+                    refusal(&browser_profile_json(verb, browser_id, "Default")),
+                    REFUSAL_BROWSER_ID_REJECTED,
+                    "{} browser id {browser_id:?}",
+                    verb.label()
+                );
+            }
+
+            let long_browser_id = "a".repeat(33);
+            assert_eq!(
+                refusal(&browser_profile_json(verb, &long_browser_id, "Default")),
+                REFUSAL_BROWSER_ID_REJECTED,
+                "{} over-long browser id",
+                verb.label()
+            );
+        }
+    }
+
+    #[test]
+    fn new_browser_verbs_refuse_malformed_bodies_without_legacy_send_fallback() {
+        for verb in [
+            Verb::ListBrowserProfiles,
+            Verb::GrantBrowserProfile,
+            Verb::RevokeBrowserProfile,
+            Verb::RunBrowserImport,
+        ] {
+            let malformed = format!("{{\"verb\":\"{}\"", verb.label());
+            assert_eq!(refusal(&malformed), REFUSAL_MALFORMED_JSON);
         }
     }
 
@@ -937,11 +1260,7 @@ mod tests {
             "quitDiscord",
         ] {
             let body = format!("{{\"verb\":\"host\",\"{key}\":true}}");
-            assert_eq!(
-                refusal(&body),
-                REFUSAL_TAKEOVER_NOT_PERMITTED,
-                "key {key}"
-            );
+            assert_eq!(refusal(&body), REFUSAL_TAKEOVER_NOT_PERMITTED, "key {key}");
         }
     }
 
@@ -965,7 +1284,11 @@ mod tests {
     #[test]
     fn a_bom_prefixed_request_runs_its_verb_and_never_degrades_into_a_send() {
         let bom = "\u{feff}{\"verb\":\"status\"}";
-        assert_eq!(accepted(bom).verb, Verb::Status, "BOM must not reach the legacy send");
+        assert_eq!(
+            accepted(bom).verb,
+            Verb::Status,
+            "BOM must not reach the legacy send"
+        );
         assert_ne!(accepted(bom).format, FORMAT_LEGACY);
 
         // And a BOM in front of a MALFORMED object refuses, rather than falling
@@ -1135,6 +1458,10 @@ mod tests {
         // criterion that silently never applies.
         for verb in [
             Verb::Status,
+            Verb::ListBrowserProfiles,
+            Verb::GrantBrowserProfile,
+            Verb::RevokeBrowserProfile,
+            Verb::RunBrowserImport,
             Verb::Host,
             Verb::Send,
             Verb::Drain,
@@ -1154,6 +1481,10 @@ mod tests {
     #[test]
     fn every_non_ready_outcome_has_a_fixed_named_refusal() {
         for verb in [
+            Verb::ListBrowserProfiles,
+            Verb::GrantBrowserProfile,
+            Verb::RevokeBrowserProfile,
+            Verb::RunBrowserImport,
             Verb::Host,
             Verb::Send,
             Verb::Drain,
@@ -1252,8 +1583,14 @@ mod tests {
         assert_eq!(opened_first.acknowledgment_count, 2);
         assert_eq!(received_first.acknowledgment_received_count, 1);
         assert_eq!(received_first.acknowledgment_opened_count, 1);
-        assert_eq!(received_first.acknowledgment_kind_order, ["received", "opened"]);
-        assert_eq!(opened_first.acknowledgment_kind_order, ["opened", "received"]);
+        assert_eq!(
+            received_first.acknowledgment_kind_order,
+            ["received", "opened"]
+        );
+        assert_eq!(
+            opened_first.acknowledgment_kind_order,
+            ["opened", "received"]
+        );
         assert_ne!(
             received_first.acknowledgment_kind_order,
             opened_first.acknowledgment_kind_order
@@ -1309,6 +1646,26 @@ mod tests {
         assert_eq!(encoded["overlayContextValid"], true);
         assert_eq!(encoded["protectionEngaged"], false);
         assert_eq!(encoded.as_object().expect("object").len(), 6);
+    }
+
+    #[test]
+    fn a_browser_import_report_serializes_sorted_distinct_source_profiles() {
+        let report = BrowserImportReport::from_source_profiles([
+            "Work Profile",
+            "Default",
+            "Work Profile",
+            "QA_Profile",
+        ]);
+        assert_eq!(
+            report.source_profiles,
+            ["Default", "QA_Profile", "Work Profile"]
+        );
+        let encoded = serde_json::to_value(report).expect("encode");
+        assert_eq!(
+            encoded["sourceProfiles"],
+            serde_json::json!(["Default", "QA_Profile", "Work Profile"])
+        );
+        assert_eq!(encoded.as_object().expect("object").len(), 1);
     }
 
     #[test]

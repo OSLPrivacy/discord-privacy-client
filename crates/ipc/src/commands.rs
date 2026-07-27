@@ -5221,8 +5221,9 @@ pub fn cmd_osl_control_inbox_post(
 /// don't read the outer scope (the bundle carries its own
 /// `scope_storage_key`).
 ///
-/// Returns the count of items successfully applied + deleted.
 /// Drain result. `applied` is the count of successfully-applied items;
+/// `terminal` is the count of dead-lettered terminal rows
+/// (permanently undeliverable + quarantined);
 /// `errors` carries the per-item dispatch failures (decrypt/apply) so
 /// the JS layer can surface WHY an SKDM didn't install instead of just
 /// seeing applied=0.
@@ -5230,7 +5231,53 @@ pub fn cmd_osl_control_inbox_post(
 pub struct ControlInboxDrainReport {
     pub applied: u32,
     pub fetched: u32,
+    pub terminal: u32,
     pub errors: Vec<String>,
+}
+
+fn control_inbox_dead_letter_path(config_dir: Option<&Path>) -> Result<PathBuf, String> {
+    let dir = match config_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => keystore::osl_config_dir()
+            .map_err(|e| format!("OSL: control_inbox_dead_letter dir resolve: {e}"))?,
+    };
+    Ok(dir.join("control_inbox_dead_letter.json"))
+}
+
+fn dead_letter_control_inbox_terminal_before<F>(
+    path: &Path,
+    ledger: &mut crate::control_inbox_dead_letter::ControlInboxDeadLetterFile,
+    row_id: &str,
+    reason: &'static str,
+    after_recorded: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    ledger.mark_terminal(row_id, reason);
+    crate::control_inbox_dead_letter::write_control_inbox_dead_letter(path, ledger)?;
+    after_recorded()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlInboxDispatchGate {
+    Dispatch,
+    SkipTerminal,
+    SkipBackoff,
+}
+
+fn control_inbox_dispatch_gate(
+    ledger: &crate::control_inbox_dead_letter::ControlInboxDeadLetterFile,
+    row_id: &str,
+    now_unix_secs: i64,
+) -> ControlInboxDispatchGate {
+    if ledger.is_terminal(row_id) {
+        return ControlInboxDispatchGate::SkipTerminal;
+    }
+    if ledger.should_skip_for_backoff(row_id, now_unix_secs) {
+        return ControlInboxDispatchGate::SkipBackoff;
+    }
+    ControlInboxDispatchGate::Dispatch
 }
 
 pub fn cmd_osl_control_inbox_drain(
@@ -5260,10 +5307,63 @@ pub fn cmd_osl_control_inbox_drain(
         .get_control_inbox(&identity)
         .map_err(|e| format!("OSL: control_inbox_drain GET: {e}"))?;
     let item_count = items.len();
+    let dead_letter_path = control_inbox_dead_letter_path(config_dir.as_deref())?;
+    let mut dead_letter =
+        crate::control_inbox_dead_letter::load_control_inbox_dead_letter(&dead_letter_path);
+    let now = now_unix_secs();
 
     let mut applied: u32 = 0;
     let mut errors: Vec<String> = Vec::new();
     for item in items {
+        if is_discord_snowflake_shaped(&item.sender_id) {
+            let retire = dead_letter_control_inbox_terminal_before(
+                &dead_letter_path,
+                &mut dead_letter,
+                &item.id,
+                crate::control_inbox_dead_letter::REASON_DISCORD_SNOWFLAKE_SENDER,
+                || {
+                    client
+                        .delete_control_inbox(&identity, &item.id)
+                        .map_err(|e| format!("OSL: control_inbox DELETE: {e}"))
+                },
+            );
+            match retire {
+                Ok(()) => tracing::warn!(
+                    inbox_id = %item.id,
+                    sender = %crate::log_id::log_id(&item.sender_id),
+                    "[OSL] control_inbox item permanently undeliverable; \
+                     dead-lettered and retired"
+                ),
+                Err(e) => {
+                    tracing::warn!(
+                        inbox_id = %item.id,
+                        sender = %crate::log_id::log_id(&item.sender_id),
+                        error = %e,
+                        "[OSL] control_inbox item permanently undeliverable; \
+                         dead-letter recorded before retirement failed"
+                    );
+                    errors.push(format!("control_inbox row retire failed: {e}"));
+                }
+            }
+            continue;
+        }
+        match control_inbox_dispatch_gate(&dead_letter, &item.id, now) {
+            ControlInboxDispatchGate::Dispatch => {}
+            ControlInboxDispatchGate::SkipTerminal => {
+                tracing::debug!(
+                    inbox_id = %item.id,
+                    "[OSL] control_inbox item skipped: terminal dead-letter entry"
+                );
+                continue;
+            }
+            ControlInboxDispatchGate::SkipBackoff => {
+                tracing::debug!(
+                    inbox_id = %item.id,
+                    "[OSL] control_inbox item skipped: retry backoff active"
+                );
+                continue;
+            }
+        }
         let bundle = match STANDARD.decode(&item.bundle_b64) {
             Ok(b) => b,
             Err(e) => {
@@ -5419,13 +5519,46 @@ pub fn cmd_osl_control_inbox_drain(
                 applied = applied.saturating_add(1);
             }
             Err(e) => {
-                tracing::warn!(
-                    inbox_id = %item.id,
-                    sender = %crate::log_id::log_id(&item.sender_id),
-                    scope = %crate::log_id::log_id(&item.scope_id),
-                    error = %e,
-                    "[OSL] control_inbox item dispatch failed (leaving row in place)"
-                );
+                let outcome = dead_letter.record_dispatch_failure(&item.id, now);
+                if let Err(write_err) =
+                    crate::control_inbox_dead_letter::write_control_inbox_dead_letter(
+                        &dead_letter_path,
+                        &dead_letter,
+                    )
+                {
+                    tracing::warn!(
+                        inbox_id = %item.id,
+                        error = %write_err,
+                        "[OSL] control_inbox dead-letter ledger write failed"
+                    );
+                    errors.push(format!(
+                        "control_inbox dead-letter write failed: {write_err}"
+                    ));
+                }
+                match outcome {
+                    crate::control_inbox_dead_letter::DispatchFailureOutcome::RetryScheduled {
+                        attempts,
+                        next_attempt_at,
+                    } => tracing::warn!(
+                        inbox_id = %item.id,
+                        sender = %crate::log_id::log_id(&item.sender_id),
+                        scope = %crate::log_id::log_id(&item.scope_id),
+                        attempts = attempts,
+                        next_attempt_at = next_attempt_at,
+                        error = %e,
+                        "[OSL] control_inbox item dispatch failed; retry scheduled"
+                    ),
+                    crate::control_inbox_dead_letter::DispatchFailureOutcome::Terminal {
+                        attempts,
+                    } => tracing::warn!(
+                        inbox_id = %item.id,
+                        sender = %crate::log_id::log_id(&item.sender_id),
+                        scope = %crate::log_id::log_id(&item.scope_id),
+                        attempts = attempts,
+                        error = %e,
+                        "[OSL] control_inbox item dispatch failed; dead-lettered terminal"
+                    ),
+                }
                 errors.push(format!(
                     "from={} scope={}: {e}",
                     item.sender_id, item.scope_id
@@ -5433,16 +5566,92 @@ pub fn cmd_osl_control_inbox_drain(
             }
         }
     }
+    let terminal = dead_letter.terminal_count();
     tracing::info!(
         fetched = item_count,
         applied = applied,
+        terminal = terminal,
         "[OSL] control_inbox drain done"
     );
     Ok(ControlInboxDrainReport {
         applied,
         fetched: item_count as u32,
+        terminal,
         errors,
     })
+}
+
+#[cfg(test)]
+mod control_inbox_dead_letter_policy_tests {
+    use super::{
+        control_inbox_dispatch_gate, dead_letter_control_inbox_terminal_before,
+        is_discord_snowflake_shaped, ControlInboxDispatchGate,
+    };
+    use crate::control_inbox_dead_letter::{
+        load_control_inbox_dead_letter, ControlInboxDeadLetterFile, MAX_CONTROL_INBOX_ATTEMPTS,
+        REASON_DISCORD_SNOWFLAKE_SENDER, REASON_MAX_ATTEMPTS,
+    };
+    use std::cell::Cell;
+
+    #[test]
+    fn snowflake_sender_dead_letters_before_retirement_and_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control_inbox_dead_letter.json");
+        let mut ledger = ControlInboxDeadLetterFile::default();
+        let row_id = "row-a";
+        let sender_id = "123456789012345678";
+        let retired = Cell::new(false);
+
+        assert!(is_discord_snowflake_shaped(sender_id));
+        dead_letter_control_inbox_terminal_before(
+            &path,
+            &mut ledger,
+            row_id,
+            REASON_DISCORD_SNOWFLAKE_SENDER,
+            || {
+                let on_disk = load_control_inbox_dead_letter(&path);
+                let entry = on_disk.entries.get(row_id).expect("dead-letter entry");
+                assert_eq!(
+                    entry.terminal_reason.as_deref(),
+                    Some(REASON_DISCORD_SNOWFLAKE_SENDER)
+                );
+                retired.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(retired.get());
+        assert_eq!(
+            control_inbox_dispatch_gate(&ledger, row_id, 2_000),
+            ControlInboxDispatchGate::SkipTerminal
+        );
+    }
+
+    #[test]
+    fn quarantined_control_inbox_row_is_retained_and_skipped_by_next_drain() {
+        let mut ledger = ControlInboxDeadLetterFile::default();
+        let row_id = "row-a";
+        let sender_id = "osl-user-id";
+        let mut delete_called = false;
+
+        assert!(!is_discord_snowflake_shaped(sender_id));
+        for _ in 0..MAX_CONTROL_INBOX_ATTEMPTS {
+            ledger.record_dispatch_failure(row_id, 1_000);
+        }
+        let entry = ledger.entries.get(row_id).expect("dead-letter entry");
+        assert_eq!(entry.terminal_reason.as_deref(), Some(REASON_MAX_ATTEMPTS));
+
+        match control_inbox_dispatch_gate(&ledger, row_id, 2_000) {
+            ControlInboxDispatchGate::Dispatch => {
+                delete_called = true;
+            }
+            ControlInboxDispatchGate::SkipTerminal => {}
+            ControlInboxDispatchGate::SkipBackoff => panic!("terminal row must not be in backoff"),
+        }
+
+        assert!(!delete_called, "quarantined rows must be retained");
+    }
 }
 
 /// Phase 9-A3: v=5 receive dispatch. Parses the wire, applies the

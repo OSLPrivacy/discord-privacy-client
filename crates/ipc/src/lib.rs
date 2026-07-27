@@ -40,6 +40,7 @@ pub mod attachment_wire;
 pub mod burned_scopes_file;
 pub mod cipher_store_client;
 pub mod commands;
+pub mod control_inbox_dead_letter;
 pub mod control_messages;
 pub mod decoy_mp4;
 pub mod fresh_start;
