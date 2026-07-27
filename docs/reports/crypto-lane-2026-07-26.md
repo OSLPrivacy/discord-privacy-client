@@ -993,6 +993,67 @@ corrected from `test-proven-only` to `blocked`. The passing commands recorded th
 later dirty-tree dependencies and are not evidence for the exact committed bytes. They remain
 blocked until an explicit minimal prerequisite commit and an exact-archive mutation run pass.
 
+## Round 8 — exact-archive repair and adversarial behavioural proof
+
+Store's correction in Round 7 was confirmed. Exporting exact `e83a487` and running
+
+`osl-cargo test --features core --lib broker::tests::inbound_revocation --
+--test-threads=1`
+
+failed before test execution with 20 IPC compiler errors. They reduced to five missing owned
+source dependencies. Commit `1d8bfa8bf55a5e83a47d4b69753d89844d65fa69` contains only that
+closure:
+
+- sender-bound v3 decryption and its mismatch error (`crates/ipc/src/wire_v2.rs:363,790-834`);
+- the complete TOFU `KeyBundle`, comparison, and safety-number API
+  (`crates/ipc/src/tofu.rs:24-94`);
+- the persisted peer bundle (`crates/ipc/src/peer_map.rs:147-158`);
+- the non-rendered pending alert bundle (`crates/ipc/src/state.rs:173`);
+- the complete-bundle registration-signature verifier
+  (`crates/keystore/src/client.rs:222`).
+
+The other dirty IPC/keystore files were excluded. In particular, only the missing
+`verify_peer_bundle` hunk from `keystore/client.rs` was committed; its separate dirty capability
+and network-fetch changes remain uncommitted.
+
+### Exact committed baseline
+
+`git archive 1d8bfa8` was extracted to a disposable directory. With one reusable target
+directory, these commands ran against only those archived bytes:
+
+- `osl-cargo test --features core --lib broker::tests::inbound_revocation --
+  --test-threads=1`: 2 passed, 0 failed, 662 filtered out.
+- `osl-cargo test --features core --lib
+  security::tests::remove_friend_preserves_burned_manual_scopes_on_disk -- --exact
+  --test-threads=1`: 1 passed, 0 failed, 663 filtered out.
+- `osl-cargo test --features core --lib
+  security::tests::remove_friend_rolls_back_peer_map_on_people_write_failure -- --exact
+  --test-threads=1`: 1 passed, 0 failed, 663 filtered out.
+
+### Five independent one-sided mutations
+
+Each mutation started from a separate copy of that exact archive and ran only its owning
+focused test:
+
+1. `Applied` changed to non-retiring: failed because `deferred_rows` was 1 instead of 0.
+2. `Deferred` changed to retiring: failed with
+   `control-inbox row deleted before revocation apply completed`.
+3. `delete_row` moved before `apply_row`: failed with the same ordering assertion before the
+   apply closure could set its durable flag.
+4. `withdraw_person_grants` changed to clear `burned_manual_scopes`: failed because the
+   file reloaded after `remove_friend` no longer contained the terminal burned scope.
+5. The `persist_friend_removal` People-write rollback was removed: failed with
+   `failed People write must restore the peer map on disk`.
+
+Verdict: the Round 6 control-inbox ordering/retirement proof and both file-backed
+`remove_friend` behaviours are restored to `test-proven-only`, now on exact committed bytes and
+with independent one-sided mutation failures. The dependency closure itself is
+`test-proven-only` only to the extent required to compile and run those focused tests; this
+report makes no broader claim about the still-dirty IPC/keystore work.
+
+No live process, provider, Discord conversation, runtime rig, or second identity was used. This
+does not earn a runtime, verified-live, or two-identity claim.
+
 ## Acceptance rows this earns
 
 None.
