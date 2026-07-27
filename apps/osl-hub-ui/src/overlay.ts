@@ -814,6 +814,11 @@ let rehydrateBusy = false;
 // At most one replacement may be armed for an edge the backend's floor refused.
 // Cleared by any real edge and by a completed read, so this can never chain.
 let rehydrateReplacementArmed = false;
+// A read abandoned by the renderer may ask for one replacement. If that
+// replacement also never settles, its watchdog must stop: otherwise every
+// timeout adds another abandoned backend invoke forever. A settled read earns
+// one future replacement again; external UI edges never need this latch.
+let rehydrateWatchdogReplacementUsed = false;
 // An edge that arrived while a read was already in flight.
 //
 // THE defect that stopped the eye ever painting: growing the overlay window over
@@ -833,6 +838,7 @@ function cancelTranscriptRehydrate(): void {
   if (rehydrateTimer !== undefined) window.clearTimeout(rehydrateTimer);
   rehydrateTimer = undefined;
   rehydrateReplacementArmed = false;
+  rehydrateWatchdogReplacementUsed = false;
   rehydratePending = false;
 }
 
@@ -873,21 +879,34 @@ async function runTranscriptRehydrate(): Promise<void> {
   // therefore enough to turn the whole feature off with no error anywhere.
   //
   // This is a per-request timeout, not a poll: it is armed by a read that
-  // started, is cleared by that read finishing, and never re-arms itself. The
-  // budget is longer than every bound the backend leg has (a 1,200 ms
-  // accessibility read inside a 2,000 ms detached leg, then a 2,000 ms decode
-  // budget), so it can only fire when the answer is genuinely never coming.
+  // started, is cleared by that read finishing, and permits at most one
+  // replacement before some read settles. The budget is longer than every bound
+  // the backend leg has (a 1,200 ms accessibility read inside a 2,000 ms
+  // detached leg, then a 2,000 ms decode budget), so it can only fire when the
+  // answer is genuinely never coming.
   let abandoned = false;
   const watchdog = window.setTimeout(() => {
     abandoned = true;
     rehydrateBusy = false;
+    const externalRetryPending = rehydratePending;
+    rehydratePending = false;
     recordInvalidBackendResponse(
       "rehydrate_native_discord_overlay_history",
       "the transcript read never settled",
     );
-    // The edge that caused this read is still unserved, so ask again rather than
-    // leaving the eye dark. Bounded by the same coalescer as every other edge.
-    scheduleTranscriptRehydrate();
+    // One automatic replacement is useful when a single invoke was lost, but
+    // the abandoned invoke may still be outstanding. Never let its replacement
+    // replace itself: that was an unbounded chain adding another outstanding
+    // backend call every timeout interval. A genuine edge that arrived while
+    // the read was stuck may still replace it; consuming the pending bit here
+    // means that path also needs another external edge before it can repeat.
+    if (
+      decryptDisplayEnabled
+      && (externalRetryPending || !rehydrateWatchdogReplacementUsed)
+    ) {
+      if (!externalRetryPending) rehydrateWatchdogReplacementUsed = true;
+      scheduleTranscriptRehydrate();
+    }
   }, REHYDRATE_IN_FLIGHT_BUDGET_MS);
   try {
     const result = await rehydrateNativeDiscordOverlayHistory(rehydrateScope);
@@ -896,6 +915,9 @@ async function runTranscriptRehydrate(): Promise<void> {
     // would put decrypted text over whatever Discord has since scrolled into
     // place, which is worse than painting nothing.
     if (abandoned) return;
+    // Any settled read breaks the abandoned-invoke chain. A later independent
+    // stall may have one bounded replacement of its own.
+    rehydrateWatchdogReplacementUsed = false;
     // A refused, failed or malformed read leaves the previous paint exactly as
     // it was. It is the only honest option: OSL has no newer fact to paint.
     if (!result) return;

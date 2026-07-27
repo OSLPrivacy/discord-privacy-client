@@ -1417,6 +1417,15 @@ fn native_app_takeover_requires_consent(app: tauri::AppHandle, app_id: NativeApp
         .takeover_requires_consent(app_id)
 }
 
+/// Read-only composer-marker probe used by the trusted header. Returning the
+/// native state directly makes an unavailable marker close the QA send gate;
+/// the renderer's fail-safe display default applies only until this call settles.
+#[tauri::command]
+fn discord_marker_available(app: tauri::AppHandle) -> bool {
+    app.state::<NativeDiscordComposerState>()
+        .marker_available()
+}
+
 #[tauri::command]
 fn resize_native_app_window(app: tauri::AppHandle) -> Result<NativeWindowHostResult, String> {
     let parent = main_window_hwnd(&app)?;
@@ -7258,6 +7267,7 @@ fn main() {
         detach_default_browser_companion,
         host_native_app_window,
         native_app_takeover_requires_consent,
+        discord_marker_available,
         resize_native_app_window,
         focus_native_app_window,
         detach_native_app_window,

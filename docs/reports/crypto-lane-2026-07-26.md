@@ -845,3 +845,107 @@ that asserts something inert. That is exactly the shape of both defects confirme
   frontend-test owner and was not touched; `docs/qa/two-identity-p2p-verification.md` §6 items 1, 4
   and 6 are stale and belong to the truth lane.
 - **Master/checklist rows to update on completion:** none from this run.
+
+## Round 6 — residual proofs and two owned follow-up defects
+
+Starting revision inspected: `5822a8f993ef36b306f0e06532d59eb5167efacb`. HEAD later
+advanced through unrelated server/truth commits with no overlap in these source paths. No live
+Discord session and no second identity were used. Everything in this section is
+`test-proven-only` unless explicitly marked `blocked`.
+
+### Residual 1 — file-backed friend-removal proof was already present
+
+The requested gap no longer existed at current HEAD, so it was not rewritten.
+Exact evidence:
+
+- `security.rs:3737-3770` has `FileBackedSecurityHarness`, serialised by
+  `GLOBAL_KEYSTORE_TEST_LOCK`, with active-account directory and file-key restoration in `Drop`.
+- `security.rs:4367-4421` behaviourally proves terminal burned scopes survive a real
+  file-backed `remove_friend`.
+- `security.rs:4424-4448` forces the People atomic write to fail and proves the peer map is
+  restored on disk.
+- `osl-cargo test --features core,discord-qa-shell --lib
+  security::tests::remove_friend_preserves_burned_manual_scopes_on_disk -- --exact
+  --test-threads=1`: 1 passed, 0 failed.
+- The same command for
+  `security::tests::remove_friend_rolls_back_peer_map_on_people_write_failure`: 1 passed,
+  0 failed.
+
+Verdict: `test-proven-only`; already committed by `c42da82`, not claimed again here.
+
+### Residual 2 — real/fake control-inbox seam
+
+The earlier closure test was behavioural, but the requested fake control-inbox client did
+not exist. It now does:
+
+- Production routes the `0x0A`/`0x0B` retirement effects through
+  `KeyserverRevocationControlInboxClient` (`broker.rs:4847-4891`), which uses the real
+  authenticated post/delete methods.
+- `FakeControlInboxClient` (`broker.rs:6268`) observes the same seam. The positive case
+  classifies literal v3 `MSG_TYPE_REVOCATION` (`0x0A`), marks the durable apply complete,
+  then observes `apply_notice`, `post_ack`, `delete_row` in that order. Its delete method
+  asserts the durable apply flag, so moving deletion ahead of apply fails the test.
+- Deferred rows produce no fake-client effect and remain counted; terminally
+  unappliable rows delete without pretending a durable burn happened.
+- `osl-cargo test --features core --lib broker::tests::inbound_revocation --
+  --test-threads=1`: 2 passed, 0 failed.
+- The same filter under `--features core,discord-qa-shell`: 2 passed, 0 failed.
+
+Verdict: `test-proven-only`. This is not a two-identity burn and does not earn D6/B6.
+
+### Follow-up 1 — marker availability command was implemented-unwired
+
+Re-verification confirmed the renderer invoked `discord_marker_available`, its ACL already
+named the command, and `generate_handler!` did not register it. The strengthened wiring
+gate was run before the fix and failed exactly on missing
+`discord_marker_available,`.
+
+The read-only Tauri command now returns
+`NativeDiscordComposerState::marker_available()` (`main.rs:1424-1427`) and is registered
+at `main.rs:7270`. The wiring loop now checks permission declaration, exact command
+binding, capability grant, handler registration, and the annotated function itself
+(`security.test.ts:216-226`); the last assertion is the negative control that prevents
+the same-named status DTO field from satisfying the gate.
+
+Verdict: `test-proven-only`. `npx vitest run src/security.test.ts`: 4 passed, 0 failed.
+The production Windows desktop check compiled the command and handler successfully.
+
+### Follow-up 2 — transcript watchdog retry accumulation
+
+Re-verification confirmed a never-settling invoke caused its watchdog to clear
+`rehydrateBusy` and self-schedule another invoke every timeout. The new gate was run
+before the fix and failed because the unbounded watchdog contained
+`scheduleTranscriptRehydrate();`.
+
+The watchdog now spends `rehydrateWatchdogReplacementUsed` before scheduling one
+automatic replacement (`overlay.ts:821,905-909`). If that replacement also never
+settles, it cannot schedule another by itself. A genuine edge received while a read is
+stuck is captured separately by `externalRetryPending` (`overlay.ts:891,905`), consumed
+before scheduling, and therefore also cannot chain without another external edge. A
+settled read resets the allowance (`overlay.ts:920`); cancellation clears the latch.
+
+Verdict: `test-proven-only`. `security.test.ts:244-279` proves the latch precedes the
+only watchdog schedule, the scheduler cannot reset it, and an external wheel edge still
+reaches the scheduler. `npx tsc --noEmit` exited 0. The focused overlay/security run was
+53 passed / 1 failed; the one failure is the pre-existing
+`applies QA transcript visibility directly from the trusted header event` geometry
+contract and is unrelated to this change.
+
+### Gate boundaries
+
+- `osl-cargo check --features desktop --bin osl-privacy-hub --target
+  x86_64-pc-windows-gnu`: exit 0, warnings only.
+- The equivalent `desktop,discord-qa-shell` Windows check is `blocked`: four
+  pre-existing `E0004` matches in `main.rs` do not cover the newly added
+  `ListBrowserProfiles`, `GrantBrowserProfile`, `RevokeBrowserProfile`, and
+  `RunBrowserImport` variants from another in-flight owner.
+- Both Linux desktop checks are `blocked` before hub code by `rfd` requiring a
+  `gtk3` or `xdg-portal` backend.
+- `git diff --check` over the changed lane paths: exit 0.
+
+No runtime, verified-live, or two-identity claim is made. No acceptance row is earned by
+these source and test proofs.
+
+## Acceptance rows this earns
+
+None.

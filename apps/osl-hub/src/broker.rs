@@ -2716,6 +2716,15 @@ fn drain_peer_inbox_text(
         // more than the burn. Attachment rows still belong to the attachment
         // drain, and unknown framing is left untouched rather than guessed about.
         if let Some(control) = InboundRevocationControl::classify(&bundle) {
+            let mut control_inbox = KeyserverRevocationControlInboxClient {
+                core,
+                client: &client,
+                identity: &identity,
+                verified: &verified,
+                peer_osl_user_id: &manual.peer_osl_user_id,
+                scope_id: &scope_id,
+                inbox_id: &item.id,
+            };
             drain_inbound_revocation_row(
                 control,
                 &mut deferred_rows,
@@ -2729,23 +2738,7 @@ fn drain_peer_inbox_text(
                         &bundle,
                     )
                 },
-                |ack_b64| {
-                    let _ = post_revocation_frame(
-                        core,
-                        &client,
-                        &identity,
-                        &verified,
-                        &manual.peer_osl_user_id,
-                        &scope_id,
-                        InboundRevocationControl::Ack,
-                        &ack_b64,
-                        None,
-                        None,
-                    );
-                },
-                || {
-                    let _ = client.delete_control_inbox(&identity, &item.id);
-                },
+                &mut control_inbox,
             );
             continue;
         }
@@ -4848,16 +4841,55 @@ impl RevocationRowOutcome {
     }
 }
 
-fn drain_inbound_revocation_row<ApplyRow, PostAck, DeleteRow>(
+/// The two control-inbox effects allowed after classifying one inbound
+/// revocation row. Keeping them behind this narrow seam lets the ordering test
+/// use a fake inbox while production still calls the real authenticated client.
+trait RevocationControlInboxClient {
+    fn post_ack(&mut self, ack_b64: &str);
+    fn delete_row(&mut self);
+}
+
+struct KeyserverRevocationControlInboxClient<'a> {
+    core: &'a HubCoreState,
+    client: &'a keystore::KeyServerClient,
+    identity: &'a keystore::Identity,
+    verified: &'a ManualPeerBinding,
+    peer_osl_user_id: &'a str,
+    scope_id: &'a str,
+    inbox_id: &'a str,
+}
+
+impl RevocationControlInboxClient for KeyserverRevocationControlInboxClient<'_> {
+    fn post_ack(&mut self, ack_b64: &str) {
+        let _ = post_revocation_frame(
+            self.core,
+            self.client,
+            self.identity,
+            self.verified,
+            self.peer_osl_user_id,
+            self.scope_id,
+            InboundRevocationControl::Ack,
+            ack_b64,
+            None,
+            None,
+        );
+    }
+
+    fn delete_row(&mut self) {
+        let _ = self
+            .client
+            .delete_control_inbox(self.identity, self.inbox_id);
+    }
+}
+
+fn drain_inbound_revocation_row<ApplyRow, ControlInbox>(
     control: InboundRevocationControl,
     deferred_rows: &mut u32,
     apply_row: ApplyRow,
-    mut post_ack: PostAck,
-    mut delete_row: DeleteRow,
+    control_inbox: &mut ControlInbox,
 ) where
     ApplyRow: FnOnce(InboundRevocationControl) -> (RevocationRowOutcome, Option<String>),
-    PostAck: FnMut(String),
-    DeleteRow: FnMut(),
+    ControlInbox: RevocationControlInboxClient,
 {
     let (outcome, ack_b64) = apply_row(control);
     if outcome.retires_row() {
@@ -4867,9 +4899,9 @@ fn drain_inbound_revocation_row<ApplyRow, PostAck, DeleteRow>(
         // is produced again. Deleting first and posting after would be the same
         // order the audit found on the apply path itself.
         if let Some(ack_b64) = ack_b64 {
-            post_ack(ack_b64);
+            control_inbox.post_ack(&ack_b64);
         }
-        delete_row();
+        control_inbox.delete_row();
     } else {
         *deferred_rows = deferred_rows.saturating_add(1);
     }
@@ -6233,6 +6265,33 @@ mod tests {
         use std::cell::{Cell, RefCell};
         use std::rc::Rc;
 
+        struct FakeControlInboxClient {
+            events: Rc<RefCell<Vec<&'static str>>>,
+            durable_apply_done: Rc<Cell<bool>>,
+            delete_requires_durable_apply: bool,
+        }
+
+        impl RevocationControlInboxClient for FakeControlInboxClient {
+            fn post_ack(&mut self, ack_b64: &str) {
+                assert_eq!(ack_b64, "ack-body");
+                assert!(
+                    self.durable_apply_done.get(),
+                    "ack posted before revocation apply completed"
+                );
+                self.events.borrow_mut().push("post_ack");
+            }
+
+            fn delete_row(&mut self) {
+                if self.delete_requires_durable_apply {
+                    assert!(
+                        self.durable_apply_done.get(),
+                        "control-inbox row deleted before revocation apply completed"
+                    );
+                }
+                self.events.borrow_mut().push("delete_row");
+            }
+        }
+
         let events = Rc::new(RefCell::new(Vec::<&'static str>::new()));
         let durable_apply_done = Rc::new(Cell::new(false));
         let mut deferred_rows = 0;
@@ -6240,12 +6299,16 @@ mod tests {
         {
             let events = Rc::clone(&events);
             let durable_apply_done = Rc::clone(&durable_apply_done);
-            let post_events = Rc::clone(&events);
-            let post_durable_apply_done = Rc::clone(&durable_apply_done);
-            let delete_events = Rc::clone(&events);
-            let delete_durable_apply_done = Rc::clone(&durable_apply_done);
+            let mut control_inbox = FakeControlInboxClient {
+                events: Rc::clone(&events),
+                durable_apply_done: Rc::clone(&durable_apply_done),
+                delete_requires_durable_apply: true,
+            };
+            let control =
+                InboundRevocationControl::classify(&[0x03, ipc::wire_v2::MSG_TYPE_REVOCATION])
+                    .expect("0x0A is an inbound revocation notice");
             drain_inbound_revocation_row(
-                InboundRevocationControl::Notice,
+                control,
                 &mut deferred_rows,
                 move |control| {
                     assert_eq!(control, InboundRevocationControl::Notice);
@@ -6253,32 +6316,23 @@ mod tests {
                     durable_apply_done.set(true);
                     (RevocationRowOutcome::Applied, Some("ack-body".to_owned()))
                 },
-                move |ack_b64| {
-                    assert_eq!(ack_b64, "ack-body");
-                    assert!(
-                        post_durable_apply_done.get(),
-                        "ack posted before revocation apply completed"
-                    );
-                    post_events.borrow_mut().push("post_ack");
-                },
-                move || {
-                    assert!(
-                        delete_durable_apply_done.get(),
-                        "control-inbox row deleted before revocation apply completed"
-                    );
-                    delete_events.borrow_mut().push("delete_applied");
-                },
+                &mut control_inbox,
             );
         }
 
         assert_eq!(deferred_rows, 0);
         assert_eq!(
             events.borrow().as_slice(),
-            ["apply_notice", "post_ack", "delete_applied"]
+            ["apply_notice", "post_ack", "delete_row"]
         );
 
         events.borrow_mut().clear();
         durable_apply_done.set(false);
+        let mut control_inbox = FakeControlInboxClient {
+            events: Rc::clone(&events),
+            durable_apply_done: Rc::clone(&durable_apply_done),
+            delete_requires_durable_apply: true,
+        };
         drain_inbound_revocation_row(
             InboundRevocationControl::Notice,
             &mut deferred_rows,
@@ -6290,14 +6344,18 @@ mod tests {
                     (RevocationRowOutcome::Deferred, None)
                 }
             },
-            |_| panic!("deferred revocation row must not post an ack"),
-            || panic!("deferred revocation row must not be deleted"),
+            &mut control_inbox,
         );
 
         assert_eq!(deferred_rows, 1);
         assert_eq!(events.borrow().as_slice(), ["defer_notice"]);
 
         events.borrow_mut().clear();
+        let mut control_inbox = FakeControlInboxClient {
+            events: Rc::clone(&events),
+            durable_apply_done: Rc::clone(&durable_apply_done),
+            delete_requires_durable_apply: false,
+        };
         drain_inbound_revocation_row(
             InboundRevocationControl::Ack,
             &mut deferred_rows,
@@ -6309,24 +6367,13 @@ mod tests {
                     (RevocationRowOutcome::Unappliable, None)
                 }
             },
-            |_| panic!("unappliable revocation row must not post an ack"),
-            {
-                let events = Rc::clone(&events);
-                let durable_apply_done = Rc::clone(&durable_apply_done);
-                move || {
-                    assert!(
-                        !durable_apply_done.get(),
-                        "unappliable row should retire without a durable apply"
-                    );
-                    events.borrow_mut().push("delete_unappliable");
-                }
-            },
+            &mut control_inbox,
         );
 
         assert_eq!(deferred_rows, 1);
         assert_eq!(
             events.borrow().as_slice(),
-            ["reject_unappliable", "delete_unappliable"]
+            ["reject_unappliable", "delete_row"]
         );
     }
 
@@ -6390,7 +6437,7 @@ mod tests {
             .find("outcome.retires_row()")
             .expect("retirement is decided by the outcome");
         let delete = retirement
-            .find("delete_row()")
+            .find("control_inbox.delete_row()")
             .expect("the row is still retired when it may be");
         assert!(
             apply_call < retires && retires < delete,

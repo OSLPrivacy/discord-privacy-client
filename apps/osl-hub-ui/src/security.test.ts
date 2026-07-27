@@ -104,6 +104,10 @@ describe("bundled preview security boundary", () => {
       "allow-install-hub-update",
       "allow-open-hub-releases-page",
       "allow-list-native-apps",
+      // Read-only consent/marker probes. Both return booleans from local native
+      // state and perform no takeover or cross-app write.
+      "allow-native-app-takeover-requires-consent",
+      "allow-discord-marker-available",
       "allow-install-native-app",
       "allow-get-mullvad-status",
       "allow-install-mullvad",
@@ -167,6 +171,11 @@ describe("bundled preview security boundary", () => {
       "allow-export-hub-friend-code",
       "allow-add-hub-friend",
       "allow-verify-hub-friend-safety-number",
+      // Friend removal is hub-local only: the Rust `remove_hub_friend` command
+      // withdraws local approvals/policy and queues revocation notices. It adds
+      // no remote or cross-app reach, so it stays inside the local, main-window
+      // boundary this test protects.
+      "allow-remove-hub-friend",
       "allow-list-hub-people",
       "allow-set-hub-friend-nickname",
       "allow-set-active-hub-friend-permission",
@@ -204,12 +213,16 @@ describe("bundled preview security boundary", () => {
       ["allow-focus-default-browser-companion", "focus_default_browser_companion"],
       ["allow-detach-default-browser-companion", "detach_default_browser_companion"],
       ["allow-copy-hub-friend-invite", "copy_hub_friend_invite"],
+      ["allow-discord-marker-available", "discord_marker_available"],
     ] as const) {
       expect(handler).toContain(`${command},`);
       expect(permissions).toContain(`identifier = "${permission}"`);
       expect(permissions).toContain(`commands.allow = ["${command}"]`);
       expect(capability.permissions).toContain(permission);
     }
+    // Negative control: the status DTO field with the same name is not a Tauri
+    // command. The exact annotated function must exist as well as handler wiring.
+    expect(hubMain).toContain("#[tauri::command]\nfn discord_marker_available(");
     for (const command of [
       "set_service_host_layout",
       "reset_service_account",
@@ -226,5 +239,41 @@ describe("bundled preview security boundary", () => {
     ]) {
       expect(handler).not.toContain(`${command},`);
     }
+  });
+
+  it("does not turn a stuck transcript read into an automatic retry storm", () => {
+    const source = readRelative("./overlay.ts");
+    const run = source.slice(
+      source.indexOf("async function runTranscriptRehydrate"),
+      source.indexOf("function transcriptTimestamp"),
+    );
+    const watchdog = run.slice(
+      run.indexOf("const watchdog = window.setTimeout"),
+      run.indexOf("const result = await"),
+    );
+    const schedule = source.slice(
+      source.indexOf("function scheduleTranscriptRehydrate"),
+      source.indexOf("async function runTranscriptRehydrate"),
+    );
+
+    // Timing out releases the one-read guard and may replace the read once.
+    // The latch is spent before scheduling, so a second never-settling invoke
+    // cannot replace itself and create the old 6.8-second accumulation loop.
+    expect(watchdog).toContain("rehydrateBusy = false;");
+    expect(watchdog).toContain("const externalRetryPending = rehydratePending;");
+    expect(watchdog).toContain(
+      "&& (externalRetryPending || !rehydrateWatchdogReplacementUsed)",
+    );
+    expect(watchdog.indexOf("rehydrateWatchdogReplacementUsed = true;")).toBeLessThan(
+      watchdog.indexOf("scheduleTranscriptRehydrate();"),
+    );
+    expect(watchdog.match(/scheduleTranscriptRehydrate\(\);/gu)).toHaveLength(1);
+    expect(schedule).not.toContain("rehydrateWatchdogReplacementUsed = false;");
+
+    // A later real UI edge can still retry through the ordinary coalescer.
+    expect(schedule).toContain("void runTranscriptRehydrate();");
+    expect(source).toContain(
+      'window.addEventListener("wheel", () => scheduleTranscriptRehydrate(),',
+    );
   });
 });
