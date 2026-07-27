@@ -12,7 +12,10 @@
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply osl-keyserver-prod --local",
     "db:migrate:prod": "wrangler d1 migrations apply osl-keyserver-prod --remote",
-    "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs"
+    "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs",
+    "readiness:build": "node scripts/build-readiness-artifacts.mjs",
+    "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
+    "readiness:select": "node scripts/validate-readiness-selection.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",

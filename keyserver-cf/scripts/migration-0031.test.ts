@@ -10,6 +10,7 @@ import {
 import { handleHealthz } from "../src/endpoints/healthz.js";
 import type { Env } from "../src/env.js";
 import {
+  CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY,
   controlInboxDispositionSchemaReady,
   reconcileControlInboxSenderStates,
 } from "../src/lib/control-inbox-sweep.js";
@@ -214,7 +215,7 @@ describe("migration 0031 control-inbox sender retention", () => {
     const db = await pre0031Db();
     await expect(
       reconcileControlInboxSenderStates(db, 1_900_000_000),
-    ).rejects.toThrow(/no such column|delivery_status/i);
+    ).rejects.toThrow("control inbox schema unavailable");
 
     const env = workerEnv(db);
     const refused = await Promise.all([
@@ -372,5 +373,53 @@ describe("migration 0031 control-inbox sender retention", () => {
         ).bind(id(3)).first<{ bundle: unknown }>())?.bundle,
       ),
     ).toEqual(bytes);
+  });
+
+  it("commits a nonempty rollback marker before the first status write", async () => {
+    const db = await pre0031Db();
+    await seedUser(db, "marker-disabled-sender", 0);
+    await oldWorkerInsert(
+      db,
+      id(5),
+      "recipient",
+      "marker-disabled-sender",
+      payload(50),
+      2_000_000_000,
+    );
+    await applyMigration(db, "0031_control_inbox_sender_retention.sql");
+    await db.prepare(
+      `CREATE TRIGGER reject_reconciliation_marker
+       BEFORE INSERT ON worker_schema_capabilities
+       WHEN NEW.capability = '${CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY}'
+       BEGIN
+         SELECT RAISE(ABORT, 'rollback marker refused');
+       END`,
+    ).run();
+
+    await expect(
+      reconcileControlInboxSenderStates(db, 1_900_000_000),
+    ).rejects.toThrow("rollback marker refused");
+    expect(
+      await db.prepare(
+        "SELECT delivery_status FROM control_inbox WHERE id = ?",
+      ).bind(id(5)).first<string>("delivery_status"),
+    ).toBe("live");
+
+    await db.prepare("DROP TRIGGER reject_reconciliation_marker").run();
+    expect(
+      (await reconcileControlInboxSenderStates(db, 1_900_000_000)).retryable,
+    ).toBe(1);
+    expect(
+      await db.prepare(
+        `SELECT version FROM worker_schema_capabilities
+          WHERE capability = ?`,
+      ).bind(CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY)
+        .first<number>("version"),
+    ).toBe(1);
+    expect(
+      await db.prepare(
+        "SELECT delivery_status FROM control_inbox WHERE id = ?",
+      ).bind(id(5)).first<string>("delivery_status"),
+    ).toBe("retryable");
   });
 });

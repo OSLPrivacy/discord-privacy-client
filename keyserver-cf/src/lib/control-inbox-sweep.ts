@@ -38,6 +38,8 @@ export interface ControlInboxSweepResult {
 
 export const CONTROL_INBOX_DISPOSITION_CAPABILITY =
   "control_inbox_sender_disposition";
+export const CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY =
+  "control_inbox_sender_reconciliation_started";
 const dispositionReadyDatabases = new WeakSet<object>();
 
 /**
@@ -97,6 +99,30 @@ export async function reconcileControlInboxSenderStates(
   db: D1Database,
   now = Math.floor(Date.now() / 1000),
 ): Promise<ControlInboxReconcileResult> {
+  if (!(await controlInboxDispositionSchemaReady(db))) {
+    throw new Error("control inbox schema unavailable");
+  }
+
+  // This durable, monotonic marker is the rollback boundary. It is committed
+  // before the candidate SELECT and before any delivery-status write. Artifact
+  // selection must refuse the pre-0031 bridge once this marker exists, even
+  // when the first reconciliation finds no candidates.
+  await db.prepare(
+    `INSERT INTO worker_schema_capabilities (capability, version)
+     VALUES (?, 1)
+     ON CONFLICT(capability) DO UPDATE SET version =
+       MAX(worker_schema_capabilities.version, excluded.version)`,
+  ).bind(CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY).run();
+  const reconciliationMarker = await db.prepare(
+    `SELECT version
+       FROM worker_schema_capabilities
+      WHERE capability = ?`,
+  ).bind(CONTROL_INBOX_RECONCILIATION_STARTED_CAPABILITY)
+    .first<{ version: number }>();
+  if (reconciliationMarker?.version !== 1) {
+    throw new Error("control inbox reconciliation marker invalid");
+  }
+
   const selected = await db.prepare(
     `SELECT ci.id,
             ci.sender_id,
