@@ -236,6 +236,34 @@ no path logs message identifiers or conversation names; the audit records the sa
 defect 6's migration is decided, that text should be corrected to match the store, exactly as
 `THREAT_MODEL.md`'s burn section already was.
 
+### To the document owners — 26 burn claims the code does not support
+
+A repository-wide documentation sweep (Codex cx2, read-only; full output at
+`scratchpad/store-doc-sweep.md`) found **26 statements classified STALE-OVERSTATES** — docs
+promising more than the store delivers. None are in a file this lane owns. I verified a sample
+directly rather than relaying the classification:
+
+- `README.md:78` — *"Burn is local cryptographic erasure. It destroys keys, not messages."*
+  There are no per-message keys. `wrapped_key` is NULL on every row ever written, so there is no
+  key to destroy. What burn destroys is the local cached ciphertext. **This is the public-facing
+  README and it is the highest-priority correction in this list.**
+- `README.md:81` — *"Scope burn destroys your keys for one conversation."* Same defect.
+- `docs/design/burn-contract.md:3` — *"Burn is local cryptographic erasure…"*
+- `docs/phase-7-design.md:80` — *"All your sent messages everywhere → permanent ciphertext."*
+  Recipient long-term identity keys still decrypt that ciphertext, forever.
+- `docs/design/osl-hub-feature-parity.md:73` — *"Burn is cryptographic/local revocation."*
+
+Remaining hits: `docs/design/offline-controls-and-opened-receipts.md:12`,
+`docs/phase-7-design.md:84,87,88,90,94,95,112,123,214`,
+`docs/design/group-messaging.md:54,58,118`, `docs/design/key-server-api.md:248,309`,
+`docs/design/osl-gui-final-plan.md:499`, `docs/design/osl-master-decision-2026-07-26.md:585`.
+
+`docs/THREAT_MODEL.md` is explicit that the words "cryptographic burn" and "permanently
+undecryptable" are unearned until the per-message `wrapped_key` model exists. These 26 lines
+predate that correction and now contradict it. The burn behaviour this lane shipped today makes
+the *local* destruction genuinely real, which narrows the gap — but it does not close it, and
+nothing here justifies the word "cryptographic".
+
 ## Verification
 
 Run in this tree, at the end of the work, wrapping only `cargo` commands I typed — no script that
