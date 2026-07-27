@@ -485,10 +485,20 @@ for the checklist owner to accept or reject.
 
 | Row | Claim | Status | Evidence |
 | --- | --- | --- | --- |
-| B4 capability negotiation | Peer ratchet support is discoverable, authenticated, and pinned; bitmap covered by the identity signature | **Partial — do not award full credit** | Signature coverage verified (§1). Pin monotone and structurally enforced. **But no client advertises (§2), so the mechanism is inert end-to-end.** |
-| B4 monotone downgrade pin | A pinned peer cannot be sent a legacy v=3 message | see §5 evidence | Enforced by control flow, not caller discipline; `wire_rn.rs:286-295`. Seam closed by job A. |
-| B3 persistence and recovery | Sealed state with replay/reorder/skipped-key/crash tests | see §5 evidence | Claim rests on job B's mutation audit, not on the tests passing. |
-| B2 wire-in | Prepared behind a gate, not enabled | see §5 evidence | Nothing enabled. Costing in job C's document. |
+| B4 capability negotiation | Peer ratchet support is discoverable, authenticated, and pinned | **Partial — do not award full credit** | Signature coverage over the bitmap verified directly (§1); pin monotone and structurally enforced. **But no Rust client advertises (§2), so flipping the wire-in alone still sends v=3 to every peer.** Server side genuinely works. |
+| B4 monotone downgrade pin | A pinned peer cannot be sent a legacy v=3 message | **Earned, with one defect attached** | `wire_rn.rs:286-295` enforces it by control flow, not caller discipline. The `bool` seam is closed — the unsafe state is now unrepresentable, not merely discouraged. Four negative controls observed failing first. **Defect: the pin is raised before peer confirmation (§5b), which can self-inflict a permanent send refusal.** |
+| B3 persistence and recovery | Sealed state with replay / reorder / skipped-key / crash tests | **Earned** | Rests on the mutation audit, not on tests being green: every claimed gate was broken deliberately and observed failing. One test was found NOT to protect its named property; that hole is now filled by a test proven to fail (`late old-chain message must use drained key: AuthFailed`). |
+| B2 wire-in | Prepared behind a gate, not enabled | **Earned as "prepared", nothing more** | `RN_WIRE_IN_ENABLED = false`; in a non-test build `wire_in_enabled()` returns the const with no runtime path. Zero callers of `send_rn`/`receive_rn`. Full call-site costing in the companion document. |
 
-**Explicitly earns nothing:** no two-identity proof was run, no VM rig was used, and no
-encryption row that depends on that proof is claimed here.
+**Explicitly earns nothing:** no two-identity proof was run, no VM rig was used, no real traffic
+was carried, and no encryption row depending on that proof is claimed here.
+
+**Counts against, not for:** §5b records that this lane's own two headline findings were returned
+**overstated** by adversarial review and had to be corrected before hand-off. Both were nearly
+submitted as gating claims in their overstated form. The corrected versions are narrower and are
+what the table above rests on.
+
+**Verification standard used throughout:** no delegate's pasted output was accepted as a test
+run. Every `test result:` line cited here was produced by this lane re-running the command
+itself — which mattered, because job A's pasted "verification tail" showed only filtered-out
+integration binaries and would have read as proof.
