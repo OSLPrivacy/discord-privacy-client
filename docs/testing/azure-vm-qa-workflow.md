@@ -28,15 +28,16 @@ fleet is how a VM gets left running.)
 | `OSL-TELEGRAM-QA` | `OSL-Telegram-QA-1`, `-2` | `D2s_v3` | Telegram viability | — |
 | `OSL-SIGNAL-QA-SCUS` | `OSL-Signal-Client-1`, `-2` | `B2als_v2` | Signal adapter | — |
 
-All ten carry a **system-assigned managed identity** and read secrets from
-`osl-test-secrets-a7d5d9` over IMDS. That is the only credential path: no key, password or SAS
-token is ever passed to a VM from the host, and none may appear in a prompt, report or event.
+All ten carry a **system-assigned managed identity**. They read test-account secrets from
+`osl-test-secrets-a7d5d9` over IMDS, and the QA rendezvous uses Azure Blob with Entra ID auth.
+Test-account credentials are retrieved just in time on the VM and may not appear in a prompt,
+report or event.
 
 ### Lane ownership, so two lanes do not build the same rig twice
 
 | Thing | Owner |
 |---|---|
-| `scripts/vmqa/**`, the Azure Files share, the in-VM agent | vmqa |
+| `scripts/vmqa/**`, the Azure Blob rendezvous container, the in-VM agent | vmqa |
 | Setup + WARM snapshot of `OSL-Azure-Client-1`/`-2` | vmqa |
 | Setup + WARM snapshot of `OSL-Independent-Client-1`/`-2`, scrub's host driver | scrub |
 | The COLD release-gate lineage | release |
@@ -105,11 +106,29 @@ crash-consistent at best.
 proven; deleting it automatically is unrecoverable. Retake a lineage after any setup change — a
 snapshot that silently drifts from what it claims to contain is worse than none.
 
-**3. Drive it by file rendezvous, never by RDP.** OSL already has this pattern
-(`osl-qa-selftest.request` → `osl-qa-selftest.json`). Put that directory on an Azure Files share
-mounted on both sides. The host writes a request; the agent already running inside the VM's
-interactive session executes it and writes a verdict; the host reads it back. No RDP session to hold
-open and nothing to click by hand — the agent does the clicking, on the VM, where that is allowed.
+**3. Drive it by blob rendezvous, never by RDP.** OSL already has this pattern
+(`osl-qa-selftest.request` → `osl-qa-selftest.json`), but the VM transport is Azure Blob now:
+container `vmqa` in `osltestartifactsa7d5`. The storage accounts have shared-key access disabled,
+so key-based calls are rejected and an SMB mount cannot authenticate. Blob keeps the same
+rendezvous shape while using Entra ID: the host uses `az storage ... --auth-mode login`, and the VM
+agent uses its system-assigned managed identity to get an IMDS token for
+`https://storage.azure.com/` and call the blob REST API directly. No drive letter, storage account
+key or Key Vault secret is part of the transport.
+
+The two crypto VMs' managed identities have `Storage Blob Data Contributor` scoped to the `vmqa`
+container, not the storage account. Layout:
+
+| Path | Meaning |
+|---|---|
+| `agent/<vmName>/heartbeat.json` | agent liveness |
+| `builds/<sha256>/osl-privacy-hub.exe` | staged hub binary |
+| `builds/<sha256>/WebView2Loader.dll` | loader staged beside the exe |
+| `runs/<vm>/<runId>/request.json` + `request.json.ready` | host request |
+| `runs/<vm>/<runId>/verdict.json` + `verdict.json.ready` | VM verdict |
+| `runs/<vm>/<runId>/artifacts/<name>.png` | screenshots |
+
+Each `.ready` sentinel contains the sha256 of its payload. Write the payload first and the sentinel
+second, never the reverse, or a reader can grade a half-written object.
 
 **4. Ship the binary only when its hash changed.** `cargo` hardlinks its output, so mtime is a lie —
 identify builds by `sha256` (`osl-build-and-test-gotchas`). Copying a 40 MB exe you already sent is
@@ -131,12 +150,14 @@ Target is under three minutes per iteration once setup is snapshotted.
    **two** embeds (`webview/dist` as well), so a Cargo build before the frontend build ships a stale
    UI that looks like a code bug. Then cross-compile:
    `cargo build --features desktop --bin osl-privacy-hub --target x86_64-pc-windows-gnu`.
-2. **Host** — stamp `sha256` of the exe and the dist, plus branch, HEAD and dirty fingerprint. Copy
-   to the share only if the hash moved.
-3. **Host** — write `run.request` naming the run id and the verbs
-   (`status` / `send` / `drain` / `rehydrate` / `reveal-view-once`).
+2. **Host** — stamp `sha256` of the exe and the dist, plus branch, HEAD and dirty fingerprint.
+   Upload `osl-privacy-hub.exe` and `WebView2Loader.dll` under `builds/<sha256>/` only if the hash
+   moved.
+3. **Host** — write `runs/<vm>/<runId>/request.json` naming the run id and the verbs
+   (`status` / `send` / `drain` / `rehydrate` / `reveal-view-once`), then write
+   `request.json.ready` containing its sha256.
 4. **VM agent** — stages the exe **next to `WebView2Loader.dll`**, launches, drives the verbs, writes
-   `run.verdict.json` plus screenshots to the share.
+   `verdict.json`, `verdict.json.ready` and screenshots under the run's blob prefix.
 5. **Host** — polls for the verdict, grades every artifact against run start, pulls the evidence into
    `docs/reports/`.
 
@@ -174,7 +195,8 @@ What stays forbidden on the VM, because it is about consequence rather than focu
 
 - No real personal account. Disposable test identities and test conversations only.
 - No real user data — no live mailbox, no production profile, no unseeded browser tree.
-- Nothing that reaches back to the host: no writes outside the share, no host process control.
+- Nothing that reaches back to the host: no writes outside the rendezvous container, no host process
+  control.
 - Never a destructive action against a target you did not seed yourself.
 
 **Identify the target by the single-instance marker window class `<identifier>-sic`, never by title
@@ -189,5 +211,5 @@ family as a default-deny assertion that passes because it read nothing.
 Input-injection rules are in the section above and depend on where you are running.
 Instance A's identity file `sha256` must be unchanged across a run or the run is a fail. Discord's
 process set is compared as a sorted pid list. No plaintext, cover text, key material or conversation
-name in any artifact. Credentials come from Key Vault just in time on the VM
+name in any artifact. Test-account credentials come from Key Vault just in time on the VM
 (`docs/testing/test-account-secrets.md`) and never enter a prompt, report, event or log.

@@ -69,9 +69,13 @@ hand-stage an exe on its own.
 
 ### 4. Discord, signed in to a disposable account
 
-Use `osl-test-discord-01` (client 1) and `osl-test-discord-02` (client 2) from the vault —
-retrieved **on the VM**. Never a real personal account. Sign in, dismiss first-run dialogs, and
-leave it on the QA conversation so a run does not start with a modal in the way.
+The Discord test accounts already exist in `osl-test-secrets-a7d5d9` as
+`osl-test-discord-01`, `osl-test-discord-02` and `osl-test-discord-03`. Read
+`osl-test-account-manifest` first; it is the authority for which account belongs where. Then
+retrieve the chosen credential **just in time on the VM**. Never a real personal account, and never
+put a credential value into a prompt, a report, an event, a commit message or Telegram. Sign in,
+dismiss first-run dialogs, and leave it on the QA conversation so a run does not start with a modal
+in the way.
 
 ### 5. Install the agent
 
@@ -110,7 +114,8 @@ Expected name: `OSL-Azure-Client-1-WARM-agent-<yyyymmddHHmm>`, tagged `lineage=w
 
 ### 8. Repeat for `OSL-Azure-Client-2`
 
-Different Discord account (`osl-test-discord-02`). Everything else identical.
+Use the account that `osl-test-account-manifest` assigns to client 2; do not infer it from secret
+numbering. Everything else identical.
 
 ### 9. `WARM-identity` — **requires crypto lane go-ahead**
 
