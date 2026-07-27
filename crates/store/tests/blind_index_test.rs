@@ -374,6 +374,180 @@ fn add_v3_attachment(dir: &Path, msg_id: &str, filename: &str, mime: &str, bytes
     .unwrap();
 }
 
+/// Build a **v1** database: the original schema, before the v2 columns and
+/// before the `attachments` table existed at all.
+///
+/// An installed profile can be sitting at any older version, not just the one
+/// immediately before current. A migration tested only against v3 is a
+/// migration whose other inputs are assumptions.
+fn build_v1_fixture(dir: &Path, rows: &[StoredMessage]) {
+    let (canary_nonce, canary_ct) =
+        v3_seal(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+
+    let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
+    conn.execute_batch(
+        r#"
+CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+CREATE TABLE messages (
+    discord_message_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    sender_discord_id TEXT NOT NULL,
+    sender_osl_user_id TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    decrypted_at INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_messages_channel ON messages(channel_id, decrypted_at DESC);
+"#,
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('canary_nonce', ?1)",
+        rusqlite::params![canary_nonce],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('canary_ct', ?1)",
+        rusqlite::params![canary_ct],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('schema_version', ?1)",
+        rusqlite::params![1u32.to_le_bytes().to_vec()],
+    )
+    .unwrap();
+    for row in rows {
+        let (nonce, ct) = v3_seal(row.discord_message_id.as_bytes(), row.plaintext.as_bytes());
+        conn.execute(
+            "INSERT INTO messages (discord_message_id, channel_id, sender_discord_id, \
+                sender_osl_user_id, ciphertext, nonce, decrypted_at, burned) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            rusqlite::params![
+                row.discord_message_id,
+                row.channel_id,
+                row.sender_discord_id,
+                row.sender_osl_user_id,
+                ct,
+                nonce,
+                row.decrypted_at,
+            ],
+        )
+        .unwrap();
+    }
+}
+
+/// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
+/// to v4 without losing anything.
+#[test]
+fn v1_database_migrates_all_the_way_to_v4() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let rows = vec![
+        sample("v1-a", "chan", "sender-1", "alice", "ancient history", 10),
+        sample("v1-b", "chan", "sender-2", "bob", "also ancient", 20),
+    ];
+    build_v1_fixture(tmp.path(), &rows);
+
+    let store = open_a(tmp.path());
+
+    assert_eq!(
+        store.get("v1-a").unwrap().unwrap().plaintext,
+        "ancient history",
+        "a v1 row did not survive the migration"
+    );
+    let listed = store.list_by_channel("chan", 10).unwrap();
+    assert_eq!(listed.len(), 2, "v1 channel membership was lost");
+    assert_eq!(
+        listed[0].discord_message_id, "v1-b",
+        "v1 migration did not preserve newest-first ordering"
+    );
+
+    // And it must land on v4, not stall at an intermediate version.
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let version: Vec<u8> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 4);
+
+    // The store must be usable afterwards, not merely readable.
+    store
+        .put(&sample(
+            "v1-c",
+            "chan",
+            "sender-1",
+            "alice",
+            "new message",
+            30,
+        ))
+        .unwrap();
+    assert!(store.get("v1-c").unwrap().is_some());
+}
+
+/// Migration purges cached attachments whose message row is already gone —
+/// residue the pre-fix `delete_messages_in_channel` left behind, which no burn
+/// predicate could ever reach again.
+///
+/// The negative control is the point: an attachment whose message still exists
+/// must survive. A purge that simply emptied the table would pass the first
+/// assertion alone.
+#[test]
+fn migration_purges_orphaned_attachments_but_keeps_linked_ones() {
+    let tmp = TempDir::new().unwrap();
+    let rows = vec![sample(
+        "kept-msg",
+        "chan-a",
+        "sender-1",
+        "alice",
+        "still here",
+        100,
+    )];
+    build_v3_fixture(tmp.path(), &rows);
+    add_v3_attachment(tmp.path(), "kept-msg", "kept.png", "image/png", b"KEEP-ME");
+    // An orphan: no `messages` row named `gone-msg` exists.
+    add_v3_attachment(
+        tmp.path(),
+        "gone-msg",
+        "orphan.png",
+        "image/png",
+        b"ORPHANED",
+    );
+
+    // Positive path: both are really in the v3 file before the migration runs.
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            n, 2,
+            "positive path: the fixture must hold both attachments"
+        );
+    }
+
+    let store = open_a(tmp.path());
+
+    assert!(
+        store
+            .get_attachment("kept-msg", "kept.png")
+            .unwrap()
+            .is_some(),
+        "migration purged an attachment whose message still exists"
+    );
+    assert!(
+        store
+            .get_attachment("gone-msg", "orphan.png")
+            .unwrap()
+            .is_none(),
+        "migration kept a cached picture whose message was already deleted — \
+         residue no burn can reach"
+    );
+}
+
 /// A cached attachment written by a v3 build must still be decryptable after
 /// the migration.
 ///

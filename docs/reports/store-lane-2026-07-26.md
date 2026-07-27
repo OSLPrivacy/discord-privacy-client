@@ -47,8 +47,8 @@ over-reaching, not a defect test, and it is expected to pass in both directions.
 | 2 | `mark_burned` returns success without shredding | **Fixed** | failed pre-fix; re-confirmed by reintroducing the defect |
 | 3 | Per-message `wrapped_key` model absent | **Designed, not executed** | n/a — owner decision |
 | 4 | Legacy/unscoped attachments survive scope burns | **Fixed** | 5 tests failed pre-fix |
-| 5 | Metadata outside AEAD authentication | **Fixed** | 2 tests failed pre-fix |
-| 6 | Plaintext identifiers at rest | **Docs reconciled; code fix designed, not executed** | n/a — owner decision |
+| 5 | Metadata outside AEAD authentication | **Fixed** (mechanism later *superseded* by v4 — see Round 2) | 2 tests failed pre-fix |
+| 6 | Plaintext identifiers at rest | **FIXED in Round 2 (schema v4).** Round-1 text below is superseded | see Round 2 |
 
 ### Defect 1 — burn is now terminal
 
@@ -93,12 +93,18 @@ participants' cached attachments, and a channel delete must not touch another ch
 that simply deleted everything in the channel would pass the positive tests and silently destroy
 other people's data; these fail it.
 
-**Residue, unfixed and stated:** an attachment whose message row was already deleted by an older
-build has no remaining link to any scope. Nothing can attribute it to a burn. It is not created
-any more, but pre-existing orphans will persist. Deleting all orphans globally would evict
-unrelated channels' caches, so I did not.
+**Residue** — *resolved in Round 2.* An attachment whose message row was already deleted by an
+older build has no remaining link to any scope, so nothing can attribute it to a burn. It is not
+created any more. Round 1 left pre-existing orphans in place; Round 2 purges them during the
+v3→v4 migration, where the cost is a bounded, reversible cache miss rather than an ongoing sweep
+that would evict live entries.
 
 ### Defect 5 — metadata is authenticated
+
+> **SUPERSEDED by Round 2.** The property still holds — row metadata is authenticated
+> and an offline edit is rejected — but the mechanism below no longer exists. Schema v4
+> deleted `meta_tag` and the strict latch, because sealing the metadata under AEAD both
+> hides and authenticates it. Kept for the reasoning, not as a description of the code.
 
 Each row carries `meta_tag`: a 40-byte `nonce || tag` produced by sealing an **empty** plaintext
 with the canonical length-prefixed encoding of `discord_message_id`, `channel_id`,
@@ -238,8 +244,11 @@ longer exist. Worth seeing what that means rather than treating it as breakage:
 *without the key*. It works **because** of defect 6. Blinding necessarily breaks it,
 and that is the fix doing its job.
 
-Neither is product code and `scripts/` is not this lane's. Recommendation: let them
-break and retire them. Not started, not blocking.
+**Status: RETIRED, not broken.** A tool that depends on the vulnerability should die
+with it, and recording them as "broken by v4" would invite someone to repair them —
+which would mean re-exposing the identifiers to make the diagnostic work again.
+Neither is product code and `scripts/` is not this lane's, so the file headers still
+need their owner's hand; the retirement decision is recorded here.
 
 ## What v4 does
 
@@ -287,6 +296,37 @@ seal. `no_plaintext_identifier_survives_in_the_raw_file_bytes` does the same aga
 the raw file and WAL. `migrating_a_v3_database_removes_its_plaintext_identifiers`
 proves the migration scrubs what it converted, and asserts the fixture *did* contain
 the identifier first so it cannot pass vacuously.
+
+### Two coverage gaps closed after the first v4 commit
+
+**Older-than-v3 profiles.** The migration was only ever tested from v3. An installed
+profile can sit at any older version, and a migration tested against one input is a
+migration whose other inputs are assumptions. `v1_database_migrates_all_the_way_to_v4`
+builds a true v1 file — no v2 columns, no `attachments` table at all — and asserts it
+lands on v4, keeps its rows and ordering, and is *writable* afterwards rather than
+merely readable. It passed first time, so it is coverage rather than a fix, and is
+labelled as such.
+
+**Orphaned attachments purged at migration.** The pre-fix
+`delete_messages_in_channel` removed message rows and left the cached pictures, after
+which nothing linked them to a channel and no burn predicate could reach them: a
+burned conversation's images could outlive it indefinitely. The migration now deletes
+attachments whose message row is gone.
+
+Deliberately **at migration only**, not as an ongoing sweep. Checking the caller
+settled it: `cmd_osl_attachment_cache_put` (`crates/ipc/src/commands.rs:2249`) writes
+an attachment without requiring its message row to exist, and the UI fetches by the
+message id it reads from Discord's DOM rather than from this store — so an orphan is
+legitimately reachable in normal operation and a recurring sweep would evict live
+cache. At migration the cost is bounded and reversible: a purged row is re-fetched
+from the CDN and re-decrypted on next view. That reversibility is why this was decided
+here rather than escalated.
+
+Proven by `migration_purges_orphaned_attachments_but_keeps_linked_ones`, which was
+observed failing with the purge removed (`migration kept a cached picture whose
+message was already deleted`). Its negative control — an attachment whose message
+still exists must survive — is the load-bearing half: a purge that emptied the table
+would pass the first assertion alone.
 
 **Defined downgrade:** `SCHEMA_VERSION` goes to 4, and `migrate` refuses any on-disk
 version it does not recognise. An older binary therefore **refuses to open** an
@@ -412,8 +452,8 @@ takes the same lock internally.
 
 ```
 flock /tmp/osl-cargo.lock -c "cargo test -p store"
-  → 10 passed (blind_index_test), 13 passed (burn_defects_test),
-    17 passed (store_test), 0 failed, 0 ignored.  40 total.
+  → 12 passed (blind_index_test), 13 passed (burn_defects_test),
+    17 passed (store_test), 0 failed, 0 ignored.  42 total.
 
 flock /tmp/osl-cargo.lock -c "cargo clippy -p store --all-targets"   → clean, no warnings
 cargo fmt -p store -- --check                                        → clean
@@ -421,7 +461,7 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
   → Finished. store cross-compiles for the shipping target.
 ```
 
-**On the test count:** 40 is measured, not inherited. `crates/store/Cargo.toml` declares no
+**On the test count:** 42 is measured, not inherited. `crates/store/Cargo.toml` declares no
 `[features]`, so there is no feature gate that could silently exclude a module from `-p store` —
 the failure mode that hid `qa_selftest_request` from the workspace runs does not exist here. All
 17 pre-existing tests still pass; none were modified.
@@ -461,6 +501,8 @@ its evidence:
 | A v3 database migrates with every message and attachment still readable | 2 migration tests over a fixture built against v3's own format | Earned |
 | The migration scrubs the identifiers it converted | raw-file assertion, with a positive path proving they were there | Earned |
 | Older binaries refuse an upgraded database cleanly | version-pin assertion | Earned |
+| A v1 profile migrates all the way to v4 and stays writable | true v1 fixture, no v2 columns, no attachments table | Earned (coverage, not a fix) |
+| Orphaned attachments are purged at migration | failing-first, with a negative control on linked rows | Earned |
 | **Hub builds with these changes** | **not established — blocked by keystore** | **Not earned** |
 | **Burn is cryptographic / revokes recipient access** | **false; unchanged by this work** | **Not earned** |
 | **`messages.sqlite` hides the social graph** | **labels yes, shape no — see "What is still visible"** | **Partially earned; do not state unqualified** |
@@ -478,13 +520,11 @@ shipping Windows target. Schema is v4.
 1. **Blocked, not mine:** re-run the hub gate once the crypto lane adds `tracing` to
    `crates/keystore/Cargo.toml`. Command is in Verification above. Until then no lane can prove a
    hub build.
-2. **Needs an owner call, small:** the two `scripts/*.ps1` diagnostics that v4 breaks. Recommend
-   retiring them; they only worked because of the defect just fixed.
+2. **Decided — retired:** the two `scripts/*.ps1` diagnostics. They only worked because of the
+   defect v4 closes. Their owner may want a deprecation header on the files themselves.
 3. **Awaiting decision (defect 3):** per-message `wrapped_key`. Needs keyserver lifecycle work
    first; the store is the last part, not the first.
-4. **Unblocked and small:** the pre-existing orphan attachments described under defect 4. Needs a
-   decision on whether a one-time scan may delete attachments with no surviving message row.
-5. **For the document owners:** 26 burn statements still overstate what the code does; the
+4. **For the document owners:** 26 burn statements still overstate what the code does; the
    at-rest invariant can now be *strengthened* to match v4, but only with the
    "labels not shape" qualification.
 

@@ -411,6 +411,27 @@ CREATE TABLE attachments_v4 (
                 )?;
             }
         }
+        // Purge attachments whose message row is gone.
+        //
+        // Pre-fix builds created these: `delete_messages_in_channel` removed
+        // message rows and left the cached pictures behind, after which nothing
+        // linked them to a channel and no burn predicate could ever reach them.
+        // A burned conversation's images could therefore outlive it
+        // indefinitely.
+        //
+        // Doing this at migration only, and not as an ongoing sweep, is
+        // deliberate. `cmd_osl_attachment_cache_put` writes an attachment
+        // without requiring its message row to exist, and the UI fetches by the
+        // message id it reads from Discord's DOM rather than from this store —
+        // so an orphan is legitimately reachable during normal operation and a
+        // recurring sweep would evict live cache entries. Here the cost is
+        // bounded and reversible: a purged row is re-fetched from the CDN and
+        // re-decrypted on next view.
+        conn.execute(
+            "DELETE FROM attachments_v4 \
+              WHERE mid_bi NOT IN (SELECT mid_bi FROM messages_v4)",
+            [],
+        )?;
         Ok(())
     })();
 
