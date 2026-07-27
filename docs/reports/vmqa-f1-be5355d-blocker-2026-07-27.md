@@ -153,3 +153,71 @@ command was run for `ff117dd`.
 | Authorized WARM-agent restore, interactive run and exact live receipt | live/runtime | blocked |
 
 This earns **zero checklist rows and F1 +0**. It is retained-receipt validation, not a VM run.
+
+## Bounded live-readiness operator successor
+
+The VM-owned operator successor is:
+
+- commit: `fae029b16e12c7468412497ac06016aed1a97d70`
+- parent: `abeec4163d7ea22f3a3f6e4b4d90ff67971a5e30`
+- tree: `d32bbf1e250f7c0f920e1d2a55a89c1c0830ef4c`
+- exact scope: `scripts/vmqa/vmqa-fast-cycle-operator.py` and
+  `scripts/vmqa/test-vmqa-fast-cycle-operator.py`
+- exact two-file archive SHA-256:
+  `429fec908f45b929d3f2b179ca8235331ccad3de7ada9cd0c3d114b89317b2ea`
+
+The operator is one read-only post-run admission command. It has no VM selector, fixture option,
+Azure lifecycle verb, build, push, or product-run action. Its only arguments are absolute,
+non-symlink paths to an existing production bundle and retained receipt:
+
+```bash
+scripts/vmqa/vmqa-fast-cycle-operator.py \
+  --receipt /absolute/path/to/live-fast-cycle-receipt.json \
+  --bundle /absolute/path/to/producer-build-bundle
+```
+
+It first requires the source-pinned `live` fast-cycle receipt, so simulation refuses before any
+bundle or Azure access. It then runs the existing production bundle and build-identity validators,
+rehashes the exact executable and identity bytes against the receipt, verifies the fixed Azure
+subscription plus `OSL-Azure-Client-1` resource and VM ID with read-only queries, fetches only the
+fixed live heartbeat blob, and requires those fresh session-1 heartbeat bytes to equal the retained
+post-reset observation. The source-pinned receipt validator supplies the exact five-step pair,
+old-PID/executable absence, distinct retry nonce/verdict hashes, and warm snapshot/disk lineage
+checks.
+
+Focused evidence:
+
+- `python3 scripts/vmqa/test-vmqa-fast-cycle-operator.py -v`: 7/7 passed.
+- `python3 scripts/vmqa/test-vmqa-fast-cycle.py -v`: 9/9 passed.
+- Python compilation and `git diff --check` passed.
+- Mutations cover a coherent wrong subscription lineage, wrong VM resource identity, changed
+  executable bytes, changed post-reset heartbeat bytes, stale heartbeat, and normal-command
+  simulation refusal.
+
+Read-only Azure checks observed subscription
+`a7d5d97b-3bf4-460a-8a7c-6bd11b5810b1` enabled under tenant
+`79981b01-1944-4da0-aa9a-fb9f63bddb5e`, and the exact
+`OSL-TWO-CLIENT-LAB/OSL-Azure-Client-1` resource reported provisioning state `Succeeded` with VM ID
+`a36c21c3-c563-4320-a8eb-70bc588c7caf`. No start, restore, deallocate, snapshot, build, push,
+product run, or other Azure mutation was issued.
+
+### Remaining live mechanism
+
+This command cannot pass today: normal receipt validation still stops at
+`PINNED_LIVE_RECEIPT_SHA256 = None` before touching Azure. The recorded WARM-bootstrap snapshot is
+also not a WARM-agent snapshot. A human must install/sign into disposable Discord, create and
+authorize the honest WARM-agent snapshot, run the bounded two-attempt cycle, retain all raw
+receipts, and obtain independent audit of the exact live receipt before a source successor pins its
+hash.
+
+## Acceptance rows this earns
+
+| Acceptance condition | Evidence tier | Result |
+|---|---|---|
+| Exact account, subscription, resource group, VM name/ID and session are fixed | source/mutation-tested plus read-only observation | accepted |
+| Production bundle identity and executable bytes equal the source-pinned stage claim | source/mutation-tested | accepted |
+| Current interactive heartbeat equals the retained fresh post-reset bytes | source/mutation-tested | accepted |
+| Normal operator command refuses simulation | subprocess mutation-tested | accepted |
+| Authorized WARM-agent cycle and independently pinned live receipt | live/runtime | blocked |
+
+This earns **zero checklist rows and F1 +0**. Simulation is explicitly separate from live proof.
