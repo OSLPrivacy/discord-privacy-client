@@ -977,6 +977,53 @@ That makes three defects of this family found in my own tooling tonight, plus on
 of my own. The tools written to detect checks that cannot fail are not exempt from being checks that
 cannot fail.
 
+## Two guards I built are never invoked on the real path — mechanism recorded
+
+This is the same "a gate that only runs on an event that never happens" defect that made
+`reproducible-build.yml` invisible for two and a half months, and it is in my own work. Verified,
+not assumed:
+
+```
+grep -rn "preflight.sh" .github/workflows/ scripts/
+  -> rust-test.yml:264  bash scripts/release/preflight.sh --self-test        (only)
+grep -rn "verify-snapshot-lineage.sh" .github/workflows/ scripts/
+  -> rust-test.yml:251  bash scripts/release/verify-snapshot-lineage.sh --self-test   (only)
+```
+
+**Both run only as `--self-test`.** Neither has ever been executed against real input. Their proofs
+demonstrate the logic is sound; they do **not** demonstrate that anything calls it. A guard that is
+only ever self-tested protects nothing.
+
+### Why `preflight.sh` cannot simply be wired into the tag workflow
+
+Not an oversight — a structural conflict, and worth stating so nobody "fixes" it by forcing it in:
+
+```
+.github/workflows/rust-test.yml
+on:
+  push:
+    branches: [main]
+  pull_request:
+```
+
+Rust Test and TypeScript Test **do not trigger on tags**. Preflight's load-bearing check is that CI
+is green *for the exact HEAD sha*, and it treats an absent result as a failure rather than a pass —
+deliberately, since absent is not green. Wire it into the tag path and it would therefore fail on
+**every** tag, because no run for that sha can exist. So `preflight.sh` is correctly a **pre-tag
+operator step**, run before cutting the tag, not an in-workflow gate. Nothing currently enforces
+that it is run, and I have not invented an enforcement I cannot verify.
+
+### Why `verify-snapshot-lineage.sh` is not wired into promotion
+
+It calls `az snapshot show`, so wiring it into `osl-hub-promote.yml` requires an Azure credential
+available to GitHub Actions. That is a security decision belonging to the owner, not to this lane,
+and it is listed among the open blockers. Until then the two-clean-VM attestation can still name
+snapshot IDs that the Python verifier accepts and that nothing resolves against Azure — the exact
+fabrication window that guard was written to close, still open.
+
+**Status of both: `designed-only`.** The logic is proven; the wiring is not. I would rather record
+that plainly than let two green self-tests in a CI log read as enforcement.
+
 ## Acceptance rows this earns
 
 Proposed for the single writer of the build checklist to adjudicate; deliberately conservative.
