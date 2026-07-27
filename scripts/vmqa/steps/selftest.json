@@ -1,6 +1,9 @@
 [
   { "id": "S1", "verb": "launch", "args": { "timeoutSeconds": 45 } },
   { "id": "S2", "verb": "ping",   "args": {} },
-  { "id": "S3", "verb": "shot",   "args": { "name": "selftest" } },
+  { "id": "S3", "verb": "shot",   "args": {
+    "name": "selftest",
+    "expectedSurfaceClass": "Tauri Window"
+  } },
   { "id": "S4", "verb": "kill",   "args": {} }
 ]

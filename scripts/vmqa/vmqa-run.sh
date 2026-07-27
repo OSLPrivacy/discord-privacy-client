@@ -10,12 +10,14 @@ DEFAULT_VM="OSL-Azure-Client-1"
 DEFAULT_IDENTIFIER="org.oslprivacy.hubqa"
 NEGATIVE_IDENTIFIER="org.oslprivacy.doesnotexist"
 DEFAULT_TIMEOUT=300
+EXPECTED_SELFTEST_SURFACE_CLASS="Tauri Window"
 TARGET="x86_64-pc-windows-gnu"
 BIN_NAME="osl-privacy-hub"
 HUB_DIR="$REPO_ROOT/apps/osl-hub"
 UI_DIR="$REPO_ROOT/apps/osl-hub-ui"
 DIST_DIR="$UI_DIR/dist"
 SELFTEST_STEPS="$SCRIPT_DIR/steps/selftest.json"
+PNG_FACTS="$SCRIPT_DIR/png-facts.py"
 usage() { cat >&2 <<'USAGE'
 vmqa-run.sh - host-side VM QA driver
   build
@@ -30,6 +32,8 @@ USAGE
 die_usage() { echo "$*" >&2; usage; exit 64; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 69; }; }
 sha_file() { sha256sum "$1" | awk '{print $1}'; }
+host_agent_sha() { sha_file "$SCRIPT_DIR/vmqa-agent.ps1"; }
+host_win32_sha() { sha_file "$SCRIPT_DIR/vmqa-win32.ps1"; }
 dist_sha() {
   local dir="${1:-$DIST_DIR}"
   [ -d "$dir" ] || { echo "dist directory not found: $dir" >&2; return 66; }
@@ -79,9 +83,8 @@ EOF
 
 cmd_build() {
   need_cmd npm
-  need_cmd cargo
-  need_cmd flock
-  local log exe fallback lock
+  need_cmd osl-cargo
+  local log exe fallback
   log="$(mktemp)"
 
   # ORDER IS LOAD-BEARING: build the UI first because Tauri embeds the dist at compile time.
@@ -89,11 +92,7 @@ cmd_build() {
   # cargo build before this step ships stale UI and looks like a Rust bug.
   (cd "$UI_DIR" && npm run build)
 
-  lock="$HUB_DIR/target/.vmqa-cargo-build.lock"
-  mkdir -p -- "$(dirname -- "$lock")"
-  # `flock` is NOT reentrant. Wrapping a script which also locks internally can hang silently with
-  # no obvious child process in ps, so only the cargo invocation is inside this lock.
-  flock "$lock" cargo build \
+  osl-cargo build \
     --manifest-path "$HUB_DIR/Cargo.toml" \
     --features desktop \
     --bin "$BIN_NAME" \
@@ -301,9 +300,7 @@ metric_from_step() {
   local file="$1" verb="$2" key="$3"
   [ -f "$file" ] || { printf '0\n'; return 0; }
   jq -r --arg verb "$verb" --arg key "$key" '
-    def from_detail:
-      (.detail // "" | capture("(^|; )" + $key + "=(?<v>[0-9]+)")? | .v // empty);
-    [.steps[]? | select(.verb == $verb) | (.[$key] // .facts[$key] // from_detail)] | first // 0
+    [.steps[]? | select(.verb == $verb) | (.[$key] // .facts[$key])] | first // 0
   ' "$file"
 }
 
@@ -328,6 +325,14 @@ fact_from_step() {
   jq -r --arg verb "$verb" --arg key "$key" \
     '[.steps[]? | select(.verb == $verb) | .facts[$key]] | first // false' "$file" 2>/dev/null \
     || printf 'false\n'
+}
+
+rect_field_from_step() {
+  local file="$1" verb="$2" rect="$3" field="$4"
+  [ -f "$file" ] || { printf '0\n'; return 0; }
+  jq -r --arg verb "$verb" --arg rect "$rect" --arg field "$field" \
+    '[.steps[]? | select(.verb == $verb) | .facts[$rect][$field]] | first // 0' \
+    "$file" 2>/dev/null || printf '0\n'
 }
 
 overall_or_rc() {
@@ -379,32 +384,69 @@ grade_selftest() {
   # nothing.
   local pos_file="$1" neg_file="$2" pos_rc="$3" neg_rc="$4"
   local expected_agent_sha="${5:-}" expected_win32_sha="${6:-}" expected_exe_sha="${7:-}"
+  local expected_surface_class="${8:-}"
   local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
-  local launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
-  local raw_surface_width raw_surface_height bounds_source
+  local launch_pid neg_launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
+  local raw_surface_width raw_surface_height bounds_source surface_class post_surface_class
+  local raw_left raw_top raw_right raw_bottom raw_width raw_height
+  local dwm_left dwm_top dwm_right dwm_bottom dwm_width dwm_height
+  local post_raw_left post_raw_top post_raw_right post_raw_bottom post_raw_width post_raw_height
+  local post_dwm_left post_dwm_top post_dwm_right post_dwm_bottom post_dwm_width post_dwm_height
   local bounds_within_virtual covers_virtual_desktop surface_dpi
   local sample_grid_pre sample_grid_post unoccluded_pre unoccluded_post rect_stable
-  local surface_hwnd cleanup_pid cleanup_outcome cleanup_status
+  local surface_hwnd cleanup_pid cleanup_outcome cleanup_status cleanup_exe
+  local cleanup_pid_absent cleanup_exe_absent cleanup_exe_count
+  local neg_cleanup_pid neg_cleanup_outcome neg_cleanup_status neg_cleanup_exe
+  local neg_cleanup_pid_absent neg_cleanup_exe_absent neg_cleanup_exe_count
   local pos_agent_sha neg_agent_sha pos_win32_sha neg_win32_sha
   local pos_request_exe neg_request_exe pos_request_file_exe neg_request_file_exe launch_exe
   local neg_shape neg_stage neg_kill artifact_rel artifact_count artifact_claimed_sha
   local artifact_file artifact_actual_sha artifact_size artifact_signature artifact_ok=false
+  local png_json png_width png_height png_colors png_bit_depth png_color_type png_stride
+  local structured_surface_ok
   pos="$(overall_or_rc "$pos_file" "$pos_rc")"
   neg="$(overall_or_rc "$neg_file" "$neg_rc")"
   markers="$(metric_from_step "$pos_file" ping markerWindowsTotal)"
   neg_markers="$(metric_from_step "$neg_file" ping markerWindowsTotal)"
-  colors="$(metric_from_step "$pos_file" shot distinctColors)"
   launch_neg="$(step_status "$neg_file" launch)"
   shot_neg="$(step_status "$neg_file" shot)"
   neg_steps="$(step_count "$neg_file")"
   neg_ping="$(step_status "$neg_file" ping)"
   launch_pid="$(metric_from_step "$pos_file" launch launchedPid)"
+  neg_launch_pid="$(metric_from_step "$neg_file" launch launchedPid)"
   surface_pid="$(metric_from_step "$pos_file" shot surfacePid)"
   surface_hwnd="$(metric_from_step "$pos_file" shot surfaceHwnd)"
+  surface_class="$(fact_from_step "$pos_file" shot surfaceClass)"
+  post_surface_class="$(fact_from_step "$pos_file" shot postSurfaceClass)"
   surface_width="$(metric_from_step "$pos_file" shot surfaceWidth)"
   surface_height="$(metric_from_step "$pos_file" shot surfaceHeight)"
+  colors="$(metric_from_step "$pos_file" shot captureDistinctColors)"
   raw_surface_width="$(metric_from_step "$pos_file" shot rawSurfaceWidth)"
   raw_surface_height="$(metric_from_step "$pos_file" shot rawSurfaceHeight)"
+  raw_left="$(rect_field_from_step "$pos_file" shot rawRect left)"
+  raw_top="$(rect_field_from_step "$pos_file" shot rawRect top)"
+  raw_right="$(rect_field_from_step "$pos_file" shot rawRect right)"
+  raw_bottom="$(rect_field_from_step "$pos_file" shot rawRect bottom)"
+  raw_width="$(rect_field_from_step "$pos_file" shot rawRect width)"
+  raw_height="$(rect_field_from_step "$pos_file" shot rawRect height)"
+  dwm_left="$(rect_field_from_step "$pos_file" shot dwmRect left)"
+  dwm_top="$(rect_field_from_step "$pos_file" shot dwmRect top)"
+  dwm_right="$(rect_field_from_step "$pos_file" shot dwmRect right)"
+  dwm_bottom="$(rect_field_from_step "$pos_file" shot dwmRect bottom)"
+  dwm_width="$(rect_field_from_step "$pos_file" shot dwmRect width)"
+  dwm_height="$(rect_field_from_step "$pos_file" shot dwmRect height)"
+  post_raw_left="$(rect_field_from_step "$pos_file" shot postRawRect left)"
+  post_raw_top="$(rect_field_from_step "$pos_file" shot postRawRect top)"
+  post_raw_right="$(rect_field_from_step "$pos_file" shot postRawRect right)"
+  post_raw_bottom="$(rect_field_from_step "$pos_file" shot postRawRect bottom)"
+  post_raw_width="$(rect_field_from_step "$pos_file" shot postRawRect width)"
+  post_raw_height="$(rect_field_from_step "$pos_file" shot postRawRect height)"
+  post_dwm_left="$(rect_field_from_step "$pos_file" shot postDwmRect left)"
+  post_dwm_top="$(rect_field_from_step "$pos_file" shot postDwmRect top)"
+  post_dwm_right="$(rect_field_from_step "$pos_file" shot postDwmRect right)"
+  post_dwm_bottom="$(rect_field_from_step "$pos_file" shot postDwmRect bottom)"
+  post_dwm_width="$(rect_field_from_step "$pos_file" shot postDwmRect width)"
+  post_dwm_height="$(rect_field_from_step "$pos_file" shot postDwmRect height)"
   bounds_source="$(fact_from_step "$pos_file" shot boundsSource)"
   bounds_within_virtual="$(fact_from_step "$pos_file" shot boundsWithinVirtualDesktop)"
   covers_virtual_desktop="$(fact_from_step "$pos_file" shot coversVirtualDesktop)"
@@ -419,6 +461,17 @@ grade_selftest() {
   cleanup_pid="$(metric_from_step "$pos_file" kill cleanupPid)"
   cleanup_outcome="$(fact_from_step "$pos_file" kill cleanupOutcome)"
   cleanup_status="$(step_status "$pos_file" kill)"
+  cleanup_exe="$(fact_from_step "$pos_file" kill cleanupExeSha256)"
+  cleanup_pid_absent="$(fact_from_step "$pos_file" kill cleanupPidAbsent)"
+  cleanup_exe_absent="$(fact_from_step "$pos_file" kill cleanupExecutableAbsent)"
+  cleanup_exe_count="$(metric_from_step "$pos_file" kill cleanupMatchingExeCount)"
+  neg_cleanup_pid="$(metric_from_step "$neg_file" kill cleanupPid)"
+  neg_cleanup_outcome="$(fact_from_step "$neg_file" kill cleanupOutcome)"
+  neg_cleanup_status="$(step_status "$neg_file" kill)"
+  neg_cleanup_exe="$(fact_from_step "$neg_file" kill cleanupExeSha256)"
+  neg_cleanup_pid_absent="$(fact_from_step "$neg_file" kill cleanupPidAbsent)"
+  neg_cleanup_exe_absent="$(fact_from_step "$neg_file" kill cleanupExecutableAbsent)"
+  neg_cleanup_exe_count="$(metric_from_step "$neg_file" kill cleanupMatchingExeCount)"
   launch_exe="$(fact_from_step "$pos_file" launch exeSha256)"
   pos_agent_sha="$(jq -r '.agentSha // empty' "$pos_file" 2>/dev/null || true)"
   neg_agent_sha="$(jq -r '.agentSha // empty' "$neg_file" 2>/dev/null || true)"
@@ -431,17 +484,55 @@ grade_selftest() {
   neg_shape="$(jq -r '[.steps[]? | (.id + ":" + .verb)] | join(",")' "$neg_file" 2>/dev/null || true)"
   neg_stage="$(step_status "$neg_file" stage)"
   neg_kill="$(step_status "$neg_file" kill)"
+  structured_surface_ok="$(jq -r '
+    def rect_ok:
+      type == "object"
+      and (keys == ["bottom","height","left","right","top","width"])
+      and ([.left,.top,.right,.bottom,.width,.height] | all(type == "number" and floor == .))
+      and .right > .left and .bottom > .top
+      and .width == (.right - .left)
+      and .height == (.bottom - .top);
+    [.steps[]? | select(.verb == "shot") | .facts] | first as $f
+    | ($f != null)
+      and ($f.surfaceClass | type == "string" and length > 0 and length <= 511)
+      and $f.surfaceClass == $expectedClass
+      and $f.postSurfaceClass == $expectedClass
+      and ($f.rawRect | rect_ok) and ($f.dwmRect | rect_ok)
+      and ($f.postRawRect | rect_ok) and ($f.postDwmRect | rect_ok)
+      and $f.postRawRect == $f.rawRect and $f.postDwmRect == $f.dwmRect
+      and $f.rawRect.left <= $f.dwmRect.left
+      and $f.rawRect.top <= $f.dwmRect.top
+      and $f.rawRect.right >= $f.dwmRect.right
+      and $f.rawRect.bottom >= $f.dwmRect.bottom
+      and $f.surfaceWidth == $f.dwmRect.width
+      and $f.surfaceHeight == $f.dwmRect.height
+      and $f.rawSurfaceWidth == $f.rawRect.width
+      and $f.rawSurfaceHeight == $f.rawRect.height
+  ' --arg expectedClass "$expected_surface_class" "$pos_file" 2>/dev/null || printf 'false\n')"
   artifact_count="$(jq -r '[.steps[]? | select(.verb == "shot") | .artifacts[]?] | length' "$pos_file" 2>/dev/null || printf '0\n')"
   artifact_rel="$(jq -r '[.steps[]? | select(.verb == "shot") | .artifacts[]?] | first // empty' "$pos_file" 2>/dev/null || true)"
   artifact_claimed_sha="$(fact_from_step "$pos_file" shot pngSha256)"
   if [ "$artifact_count" -eq 1 ] && [ "$artifact_rel" = "artifacts/selftest.png" ]; then
     artifact_file="$(dirname -- "$pos_file")/$artifact_rel"
-    if [ -f "$artifact_file" ]; then
+    if [ -f "$artifact_file" ] && [ -f "$PNG_FACTS" ] && command -v python3 >/dev/null 2>&1; then
       artifact_actual_sha="$(sha_file "$artifact_file")"
       artifact_size="$(wc -c <"$artifact_file" | tr -d ' ')"
       artifact_signature="$(od -An -tx1 -N8 "$artifact_file" 2>/dev/null | tr -d ' \n')"
+      png_json="$(python3 "$PNG_FACTS" "$artifact_file" 2>/dev/null || true)"
+      png_width="$(printf '%s' "$png_json" | jq -r '.width // 0' 2>/dev/null || printf '0\n')"
+      png_height="$(printf '%s' "$png_json" | jq -r '.height // 0' 2>/dev/null || printf '0\n')"
+      png_colors="$(printf '%s' "$png_json" | jq -r '.distinctColors // 0' 2>/dev/null || printf '0\n')"
+      png_bit_depth="$(printf '%s' "$png_json" | jq -r '.bitDepth // 0' 2>/dev/null || printf '0\n')"
+      png_color_type="$(printf '%s' "$png_json" | jq -r '.colorType // 0' 2>/dev/null || printf '0\n')"
+      png_stride="$(printf '%s' "$png_json" | jq -r '.sampleStride // 0' 2>/dev/null || printf '0\n')"
       if [ "$artifact_size" -gt 8 ] && [ "$artifact_signature" = "89504e470d0a1a0a" ] \
-         && [ "$artifact_actual_sha" = "$artifact_claimed_sha" ]; then
+         && [ "$artifact_actual_sha" = "$artifact_claimed_sha" ] \
+         && [ "$png_width" -eq "$surface_width" ] \
+         && [ "$png_height" -eq "$surface_height" ] \
+         && [ "$png_colors" -eq "$colors" ] \
+         && [ "$png_bit_depth" -eq 8 ] \
+         && { [ "$png_color_type" -eq 2 ] || [ "$png_color_type" -eq 6 ]; } \
+         && [ "$png_stride" -eq 4 ]; then
         artifact_ok=true
       fi
     fi
@@ -462,11 +553,14 @@ grade_selftest() {
   elif [ "$neg_steps" -ne 5 ] \
        || [ "$neg_shape" != "S0:stage,S1:launch,S2:ping,S3:shot,S4:kill" ]; then
     echo "NEGATIVE CONTROL VACUOUS: expected exact five-step stage/launch/ping/shot/kill control, got '$neg_shape'" >&2
-  elif [ "$neg_ping" != "pass" ]; then
-    # ping is the negative half's own apparatus check. If it did not pass, the negative run cannot
-    # be distinguished from an agent that was broken on that pass, so its blocked result is not
-    # evidence that the identifier was correctly rejected.
-    echo "NEGATIVE CONTROL VACUOUS: negative half's ping is '$neg_ping', so its apparatus is unproven" >&2
+  elif [ "$neg" != "blocked" ] || [ "$neg_stage" != "pass" ] \
+       || [ "$launch_neg" != "blocked" ] || [ "$neg_ping" != "pass" ] \
+       || [ "$shot_neg" != "blocked" ] || [ "$neg_kill" != "pass" ] \
+       || [ "$neg_markers" -ne 1 ]; then
+    # Every status and the exact marker census are part of the control. Merely
+    # checking "not pass" accepts transport failures, early exits, or a cleanup
+    # step that never removed the deliberately started negative process.
+    echo "NEGATIVE CONTROL INVALID: expected overall=blocked statuses=pass,blocked,pass,blocked,pass markers=1; got overall=$neg statuses=$neg_stage,$launch_neg,$neg_ping,$shot_neg,$neg_kill markers=$neg_markers" >&2
   elif [ ! -f "$pos_file" ] || [ ! -f "$neg_file" ]; then
     # Both halves must have produced an actual verdict file. Without this, a negative run that
     # never returned anything is read by overall_or_rc as "blocked" from its exit code alone, and
@@ -477,9 +571,13 @@ grade_selftest() {
   elif [ "$pos" = "pass" ] && [ "$neg" = "blocked" ] && [ "$markers" -ge 1 ] && [ "$colors" -ge 16 ] \
        && [ "$launch_pid" -ge 1 ] && [ "$surface_pid" -eq "$launch_pid" ] \
        && [ "$surface_hwnd" -ge 1 ] \
+       && [ -n "$expected_surface_class" ] \
+       && [ "$surface_class" = "$expected_surface_class" ] \
+       && [ "$post_surface_class" = "$expected_surface_class" ] \
        && [ "$surface_width" -ge 200 ] && [ "$surface_height" -ge 120 ] \
        && [ "$raw_surface_width" -ge "$surface_width" ] \
        && [ "$raw_surface_height" -ge "$surface_height" ] \
+       && [ "$structured_surface_ok" = "true" ] \
        && [ "$bounds_source" = "dwm-extended-frame" ] \
        && [ "$bounds_within_virtual" = "true" ] \
        && [ "$covers_virtual_desktop" = "false" ] \
@@ -490,6 +588,15 @@ grade_selftest() {
        && [ "$rect_stable" = "true" ] \
        && [ "$cleanup_status" = "pass" ] && [ "$cleanup_pid" -eq "$launch_pid" ] \
        && { [ "$cleanup_outcome" = "stopped" ] || [ "$cleanup_outcome" = "already-exited" ]; } \
+       && [ "$cleanup_exe" = "$expected_exe_sha" ] \
+       && [ "$cleanup_pid_absent" = "true" ] && [ "$cleanup_exe_absent" = "true" ] \
+       && [ "$cleanup_exe_count" -eq 0 ] \
+       && [ "$neg_launch_pid" -ge 1 ] \
+       && [ "$neg_cleanup_status" = "pass" ] && [ "$neg_cleanup_pid" -eq "$neg_launch_pid" ] \
+       && { [ "$neg_cleanup_outcome" = "stopped" ] || [ "$neg_cleanup_outcome" = "already-exited" ]; } \
+       && [ "$neg_cleanup_exe" = "$expected_exe_sha" ] \
+       && [ "$neg_cleanup_pid_absent" = "true" ] && [ "$neg_cleanup_exe_absent" = "true" ] \
+       && [ "$neg_cleanup_exe_count" -eq 0 ] \
        && [ "$expected_agent_sha" != "" ] && [ "$pos_agent_sha" = "$expected_agent_sha" ] \
        && [ "$neg_agent_sha" = "$expected_agent_sha" ] \
        && [ "$expected_win32_sha" != "" ] && [ "$pos_win32_sha" = "$expected_win32_sha" ] \
@@ -498,8 +605,9 @@ grade_selftest() {
        && [ "$pos_request_exe" = "$expected_exe_sha" ] && [ "$neg_request_exe" = "$expected_exe_sha" ] \
        && [ "$pos_request_file_exe" = "$expected_exe_sha" ] && [ "$neg_request_file_exe" = "$expected_exe_sha" ] \
        && [ "$artifact_ok" = "true" ] \
-       && [ "$neg_stage" = "pass" ] && [ "$launch_neg" != "pass" ] \
-       && [ "$shot_neg" != "pass" ] && [ "$neg_kill" != "pass" ]; then
+       && [ "$neg_stage" = "pass" ] && [ "$launch_neg" = "blocked" ] \
+       && [ "$neg_ping" = "pass" ] && [ "$shot_neg" = "blocked" ] \
+       && [ "$neg_kill" = "pass" ] && [ "$neg_markers" -eq 1 ]; then
     result="PASS"
   fi
 
@@ -512,9 +620,19 @@ grade_selftest() {
   printf 'launchPid: %s\n' "$launch_pid"
   printf 'surfacePid: %s\n' "$surface_pid"
   printf 'surfaceHwnd: %s\n' "$surface_hwnd"
+  printf 'surfaceClass: %s post=%s expected=%s structured=%s\n' \
+    "$surface_class" "$post_surface_class" "$expected_surface_class" "$structured_surface_ok"
   printf 'surfaceSize: %sx%s raw=%sx%s boundsSource=%s withinVirtual=%s coversVirtual=%s dpi=%s\n' \
     "$surface_width" "$surface_height" "$raw_surface_width" "$raw_surface_height" \
     "$bounds_source" "$bounds_within_virtual" "$covers_virtual_desktop" "$surface_dpi"
+  printf 'rawRect: %s,%s,%s,%s %sx%s post=%s,%s,%s,%s %sx%s\n' \
+    "$raw_left" "$raw_top" "$raw_right" "$raw_bottom" "$raw_width" "$raw_height" \
+    "$post_raw_left" "$post_raw_top" "$post_raw_right" "$post_raw_bottom" \
+    "$post_raw_width" "$post_raw_height"
+  printf 'dwmRect: %s,%s,%s,%s %sx%s post=%s,%s,%s,%s %sx%s\n' \
+    "$dwm_left" "$dwm_top" "$dwm_right" "$dwm_bottom" "$dwm_width" "$dwm_height" \
+    "$post_dwm_left" "$post_dwm_top" "$post_dwm_right" "$post_dwm_bottom" \
+    "$post_dwm_width" "$post_dwm_height"
   printf 'surfaceBinding: foreground=%s/%s grid=%s/%s unoccluded=%s/%s rectStable=%s\n' \
     "$foreground_pre" "$foreground_post" "$sample_grid_pre" "$sample_grid_post" \
     "$unoccluded_pre" "$unoccluded_post" "$rect_stable"
@@ -522,9 +640,16 @@ grade_selftest() {
     "$pos_agent_sha" "$neg_agent_sha" "$pos_win32_sha" "$neg_win32_sha"
   printf 'requestExeSha256: verdict=%s/%s request=%s/%s expected=%s\n' \
     "$pos_request_exe" "$neg_request_exe" "$pos_request_file_exe" "$neg_request_file_exe" "$expected_exe_sha"
-  printf 'artifact: path=%s count=%s bytes=%s claimedSha=%s actualSha=%s valid=%s\n' \
-    "$artifact_rel" "$artifact_count" "${artifact_size:-0}" "$artifact_claimed_sha" "${artifact_actual_sha:-missing}" "$artifact_ok"
-  printf 'cleanup: status=%s pid=%s outcome=%s\n' "$cleanup_status" "$cleanup_pid" "$cleanup_outcome"
+  printf 'artifact: path=%s count=%s bytes=%s claimedSha=%s actualSha=%s ihdr=%sx%s colors=%s bitDepth=%s colorType=%s stride=%s valid=%s\n' \
+    "$artifact_rel" "$artifact_count" "${artifact_size:-0}" "$artifact_claimed_sha" \
+    "${artifact_actual_sha:-missing}" "${png_width:-0}" "${png_height:-0}" \
+    "${png_colors:-0}" "${png_bit_depth:-0}" "${png_color_type:-0}" "${png_stride:-0}" "$artifact_ok"
+  printf 'cleanupPositive: status=%s pid=%s outcome=%s exe=%s pidAbsent=%s exeAbsent=%s count=%s\n' \
+    "$cleanup_status" "$cleanup_pid" "$cleanup_outcome" "$cleanup_exe" \
+    "$cleanup_pid_absent" "$cleanup_exe_absent" "$cleanup_exe_count"
+  printf 'cleanupNegative: status=%s pid=%s outcome=%s exe=%s pidAbsent=%s exeAbsent=%s count=%s\n' \
+    "$neg_cleanup_status" "$neg_cleanup_pid" "$neg_cleanup_outcome" "$neg_cleanup_exe" \
+    "$neg_cleanup_pid_absent" "$neg_cleanup_exe_absent" "$neg_cleanup_exe_count"
   printf '%s\n' "$result"
 
   if [ "$result" = "PASS" ]; then return 0; fi
@@ -533,7 +658,10 @@ grade_selftest() {
      || [ "${neg_steps:-0}" -lt 1 ] \
      || [ "${neg_steps:-0}" -ne 5 ] \
      || [ "$neg_shape" != "S0:stage,S1:launch,S2:ping,S3:shot,S4:kill" ] \
-     || [ "$neg_ping" != "pass" ]; then return 9; fi
+     || [ "$neg" != "blocked" ] || [ "$neg_stage" != "pass" ] \
+     || [ "$launch_neg" != "blocked" ] || [ "$neg_ping" != "pass" ] \
+     || [ "$shot_neg" != "blocked" ] || [ "$neg_kill" != "pass" ] \
+     || [ "$neg_markers" -ne 1 ]; then return 9; fi
   return 1
 }
 
@@ -541,7 +669,7 @@ cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
   local exe_sha="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping heartbeat_file
-  local expected_agent_sha expected_win32_sha
+  local expected_agent_sha expected_win32_sha live_agent_sha live_win32_sha
   while [ $# -gt 0 ]; do
     case "$1" in
       --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
@@ -565,18 +693,32 @@ cmd_selftest() {
       '[{id:"S0",verb:"stage",args:{exeSha256:$sha}}] + [.[] | if .verb=="launch" then (.args.exeSha256=$sha) else . end]' \
       "$SELFTEST_STEPS" >"$steps_file"
   fi
-  # Snapshot the live session-1 agent identity before issuing either request. Verdicts from a
-  # different agent/module pair are stale or mixed evidence even if their run IDs are fresh.
+  need_cmd python3
+  # Expected identity comes from the host files under review, never from the
+  # agent's own heartbeat. The heartbeat is only a live comparison target.
+  expected_agent_sha="$(host_agent_sha)"
+  expected_win32_sha="$(host_win32_sha)"
+  [[ "$expected_agent_sha" =~ ^[0-9a-f]{64}$ ]] \
+    || { echo "host vmqa-agent.ps1 hash is unavailable" >&2; return 9; }
+  [[ "$expected_win32_sha" =~ ^[0-9a-f]{64}$ ]] \
+    || { echo "host vmqa-win32.ps1 hash is unavailable" >&2; return 9; }
+
+  # Snapshot the live session-1 agent identity before issuing either request.
+  # Verdicts from a different agent/module pair are stale or mixed evidence.
   cmd_agent_alive --vm "$vm"
   heartbeat_file="$(mktemp)"
   "$SHARE" get "agent/$vm/heartbeat.json" "$heartbeat_file" >/dev/null
-  expected_agent_sha="$(jq -r '.agentSha256 // empty' "$heartbeat_file")"
-  expected_win32_sha="$(jq -r '.win32Sha256 // empty' "$heartbeat_file")"
+  live_agent_sha="$(jq -r '.agentSha256 // empty' "$heartbeat_file")"
+  live_win32_sha="$(jq -r '.win32Sha256 // empty' "$heartbeat_file")"
   rm -f -- "$heartbeat_file"
-  [[ "$expected_agent_sha" =~ ^[0-9a-f]{64}$ ]] \
+  [[ "$live_agent_sha" =~ ^[0-9a-f]{64}$ ]] \
     || { echo "heartbeat has no trustworthy agentSha256" >&2; return 9; }
-  [[ "$expected_win32_sha" =~ ^[0-9a-f]{64}$ ]] \
+  [[ "$live_win32_sha" =~ ^[0-9a-f]{64}$ ]] \
     || { echo "heartbeat has no trustworthy win32Sha256" >&2; return 9; }
+  [ "$live_agent_sha" = "$expected_agent_sha" ] \
+    || { echo "live agent hash differs from host expected: live=$live_agent_sha expected=$expected_agent_sha" >&2; return 9; }
+  [ "$live_win32_sha" = "$expected_win32_sha" ] \
+    || { echo "live win32 hash differs from host expected: live=$live_win32_sha expected=$expected_win32_sha" >&2; return 9; }
   pos_id="$(date -u +%Y%m%dT%H%M%SZ)-pos-$RANDOM"
   neg_id="$(date -u +%Y%m%dT%H%M%SZ)-neg-$RANDOM"
   set +e
@@ -584,7 +726,8 @@ cmd_selftest() {
   neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$timeout" "$neg_id")"; neg_rc=$?
   set -e
   grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc" \
-    "$expected_agent_sha" "$expected_win32_sha" "$exe_sha"
+    "$expected_agent_sha" "$expected_win32_sha" "$exe_sha" \
+    "$EXPECTED_SELFTEST_SURFACE_CLASS"
 }
 
 

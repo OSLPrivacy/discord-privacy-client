@@ -566,6 +566,58 @@ function Assert-VmqaTrustedSurfaceBounds {
     return $true
 }
 
+function Get-VmqaTrustedSurfaceSnapshot {
+    <# Re-read every identity and geometry field serialized with a frame.
+
+       Width/height alone cannot prove a window did not move, change class, or
+       substitute GetWindowRect coordinates. This returns one structured live
+       snapshot; the agent serializes both pre- and post-capture snapshots. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][IntPtr]$Hwnd)
+
+    # `$PID` is a read-only automatic variable and PowerShell variable names
+    # are case-insensitive, so never use `$pid` as a local/ref target.
+    [uint32]$processId = 0
+    if ([VmqaNative]::GetWindowThreadProcessId($Hwnd, [ref]$processId) -eq 0 -or
+        $processId -eq 0) {
+        throw "VMQA_SURFACE_PID_UNAVAILABLE: hwnd=$Hwnd"
+    }
+    $classBuffer = [Text.StringBuilder]::new(512)
+    if ([VmqaNative]::GetClassName($Hwnd, $classBuffer, $classBuffer.Capacity) -le 0) {
+        throw "VMQA_SURFACE_CLASS_UNAVAILABLE: hwnd=$Hwnd"
+    }
+    $raw = New-Object VmqaNative+RECT
+    if (-not [VmqaNative]::GetWindowRect($Hwnd, [ref]$raw)) {
+        throw "VMQA_GETWINDOWRECT_FAILED: hwnd=$Hwnd"
+    }
+    $virtual = Get-VmqaVirtualScreenRect
+    $dwm = [VmqaNative]::TrustedExtendedFrameBounds($Hwnd, $virtual)
+    $dpi = [VmqaNative]::GetDpiForWindow($Hwnd)
+    return [VmqaNative]::BuildTrustedSurface(
+        $Hwnd, $processId, $classBuffer.ToString(), $raw, $dwm, $virtual, $dpi)
+}
+
+function Test-VmqaSurfaceSnapshotMatches {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Expected,
+        [Parameter(Mandatory)]$Actual
+    )
+    return $Expected.Hwnd -eq $Actual.Hwnd -and
+        [uint32]$Expected.Pid -eq [uint32]$Actual.Pid -and
+        [string]$Expected.ClassName -ceq [string]$Actual.ClassName -and
+        [string]$Expected.BoundsSource -ceq [string]$Actual.BoundsSource -and
+        [uint32]$Expected.Dpi -eq [uint32]$Actual.Dpi -and
+        $Expected.RawRect.Left -eq $Actual.RawRect.Left -and
+        $Expected.RawRect.Top -eq $Actual.RawRect.Top -and
+        $Expected.RawRect.Right -eq $Actual.RawRect.Right -and
+        $Expected.RawRect.Bottom -eq $Actual.RawRect.Bottom -and
+        $Expected.Rect.Left -eq $Actual.Rect.Left -and
+        $Expected.Rect.Top -eq $Actual.Rect.Top -and
+        $Expected.Rect.Right -eq $Actual.Rect.Right -and
+        $Expected.Rect.Bottom -eq $Actual.Rect.Bottom
+}
+
 function Get-VmqaVisibleSurface {
     [CmdletBinding()]
     param(
@@ -673,10 +725,8 @@ function Test-VmqaSurfaceStillBound {
             return $false
         }
         [void](Assert-VmqaTrustedSurfaceBounds -Surface $Surface)
-        $now = [VmqaNative]::TrustedExtendedFrameBounds(
-            $Surface.Hwnd, (Get-VmqaVirtualScreenRect))
-        return $now.Left -eq $Surface.Rect.Left -and $now.Top -eq $Surface.Rect.Top -and
-            $now.Right -eq $Surface.Rect.Right -and $now.Bottom -eq $Surface.Rect.Bottom
+        $now = Get-VmqaTrustedSurfaceSnapshot -Hwnd $Surface.Hwnd
+        return Test-VmqaSurfaceSnapshotMatches -Expected $Surface -Actual $now
     } catch {
         return $false
     }

@@ -19,6 +19,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 69; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 69; }
 
 # Source vmqa-run.sh for its functions without running main.
 VMQA_RUN_SOURCED_FOR_TEST=1
@@ -43,10 +44,36 @@ pass_count=0; fail_count=0
 AGENT_SHA='1111111111111111111111111111111111111111111111111111111111111111'
 WIN32_SHA='2222222222222222222222222222222222222222222222222222222222222222'
 EXE_SHA='3333333333333333333333333333333333333333333333333333333333333333'
+SURFACE_CLASS='Tauri Window'
 FIXTURE_PNG="$TMP/fixture.png"
-printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
-  | base64 -d >"$FIXTURE_PNG"
+
+make_fixture_png() {
+  local path="$1" width="$2" height="$3" mode="${4:-gradient}"
+  python3 - "$path" "$width" "$height" "$mode" <<'PY'
+import binascii, struct, sys, zlib
+path, width, height, mode = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+def chunk(kind, body):
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", binascii.crc32(kind + body) & 0xffffffff)
+rows = bytearray()
+for y in range(height):
+    rows.append(0)
+    for x in range(width):
+        if mode == "flat":
+            rows.extend((17, 17, 17, 255))
+        else:
+            rows.extend((x & 255, y & 255, (x * 3 + y * 5) & 255, 255))
+png = b"\x89PNG\r\n\x1a\n"
+png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+png += chunk(b"IEND", b"")
+open(path, "wb").write(png)
+PY
+}
+
+make_fixture_png "$FIXTURE_PNG" 200 120 gradient
 PNG_SHA="$(sha256sum "$FIXTURE_PNG" | awk '{print $1}')"
+PNG_JSON="$(python3 "$SCRIPT_DIR/png-facts.py" "$FIXTURE_PNG")"
+PNG_COLORS="$(printf '%s' "$PNG_JSON" | jq -r '.distinctColors')"
 
 mkjson() {
   local dir="$TMP/$1"
@@ -63,7 +90,13 @@ mkjson() {
             .facts = ((.facts // {}) | .pngSha256 //= $png | .artifactPath //= "artifacts/selftest.png")
             | .artifacts //= ["artifacts/selftest.png"]
           elif .verb == "kill" and .status == "pass" then
-            .facts = ((.facts // {}) | .cleanupPid //= 101 | .cleanupOutcome //= "stopped")
+            .facts = ((.facts // {})
+              | .cleanupPid //= 101
+              | .cleanupOutcome //= "stopped"
+              | .cleanupExeSha256 //= $exe
+              | if has("cleanupPidAbsent") then . else .cleanupPidAbsent = true end
+              | if has("cleanupExecutableAbsent") then . else .cleanupExecutableAbsent = true end
+              | .cleanupMatchingExeCount //= 0)
           else . end
         )
     ' >"$dir/verdict.json"
@@ -78,31 +111,41 @@ mutate_json() {
   mkjson "$name" "$mutated"
 }
 
-# A fully healthy positive half: launched, apparatus proven non-empty, real pixels.
-GOOD_POS='{"runId":"p","requestSha256":"aa","overall":"pass","steps":[
-  {"id":"S0","verb":"stage","status":"pass"},
-  {"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},
-  {"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},
-  {"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{
-    "surfacePid":101,"surfaceHwnd":909,"surfaceWidth":960,"surfaceHeight":640,
-    "rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame",
-    "boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,
-    "foregroundPre":true,"foregroundPost":true,
-    "sampleGridPre":true,"sampleGridPost":true,
-    "unoccludedPre":true,"unoccludedPost":true,"rectStable":true}},
-  {"id":"S4","verb":"kill","status":"pass","facts":{"cleanupPid":101,"cleanupOutcome":"stopped"}}]}'
+# A fully healthy positive half: launched, apparatus proven non-empty, real pixels, and exact
+# class/raw/DWM snapshots stable across capture.
+GOOD_POS="$(jq -nc --argjson colors "$PNG_COLORS" '{
+  runId:"p",requestSha256:"aa",overall:"pass",steps:[
+    {id:"S0",verb:"stage",status:"pass"},
+    {id:"S1",verb:"launch",status:"pass",facts:{launchedPid:101,launchProcessStarted:true}},
+    {id:"S2",verb:"ping",status:"pass",markerWindowsTotal:1},
+    {id:"S3",verb:"shot",status:"pass",facts:{
+      surfacePid:101,surfaceHwnd:909,surfaceClass:"Tauri Window",postSurfaceClass:"Tauri Window",
+      rawRect:{left:20,top:20,right:228,bottom:148,width:208,height:128},
+      dwmRect:{left:24,top:24,right:224,bottom:144,width:200,height:120},
+      postRawRect:{left:20,top:20,right:228,bottom:148,width:208,height:128},
+      postDwmRect:{left:24,top:24,right:224,bottom:144,width:200,height:120},
+      surfaceWidth:200,surfaceHeight:120,captureDistinctColors:$colors,
+      rawSurfaceWidth:208,rawSurfaceHeight:128,boundsSource:"dwm-extended-frame",
+      boundsWithinVirtualDesktop:true,coversVirtualDesktop:false,surfaceDpi:96,
+      foregroundPre:true,foregroundPost:true,sampleGridPre:true,sampleGridPost:true,
+      unoccludedPre:true,unoccludedPost:true,rectStable:true}},
+    {id:"S4",verb:"kill",status:"pass",facts:{cleanupPid:101,cleanupOutcome:"stopped"}}
+  ]}')"
 
-# A genuine negative control: it RAN, its apparatus passed, and launch was correctly refused.
+# A genuine negative control: all five steps ran, the wrong identifier was refused, one real
+# marker proved the apparatus was alive, and the exact process started by the failed launch was
+# still removed by PID and executable path.
 GOOD_NEG='{"runId":"n","requestSha256":"bb","overall":"blocked","steps":[
   {"id":"S0","verb":"stage","status":"pass"},
-  {"id":"S1","verb":"launch","status":"blocked"},
-  {"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},
+  {"id":"S1","verb":"launch","status":"blocked","facts":{"launchedPid":202,"launchProcessStarted":true}},
+  {"id":"S2","verb":"ping","status":"pass","facts":{"markerWindowsTotal":1}},
   {"id":"S3","verb":"shot","status":"blocked"},
-  {"id":"S4","verb":"kill","status":"blocked"}]}'
+  {"id":"S4","verb":"kill","status":"pass","facts":{"cleanupPid":202,"cleanupOutcome":"stopped"}}]}'
 
 check() {
   local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got
-  grade_selftest "$posf" "$negf" "$posrc" "$negrc" "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" >/dev/null 2>&1
+  grade_selftest "$posf" "$negf" "$posrc" "$negrc" \
+    "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" >/dev/null 2>&1
   got=$?
   if [ "$got" -eq "$want" ]; then
     printf '  ok    %-46s exit=%s\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -118,7 +161,8 @@ check() {
 # lane keeps finding elsewhere. So for overlapping guards we assert the diagnostic too.
 check_msg() {
   local name="$1" want="$2" pattern="$3" posf="$4" negf="$5" out got
-  out="$(grade_selftest "$posf" "$negf" 0 3 "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" 2>&1)"
+  out="$(grade_selftest "$posf" "$negf" 0 3 \
+    "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qi -- "$pattern"; then
     printf '  ok    %-46s exit=%s +msg\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -153,11 +197,39 @@ check_fetch_preserves_blocked_verdict() {
   fi
 }
 
+check_host_computed_script_hashes() {
+  local got_agent got_win32 actual_agent actual_win32
+  got_agent="$(host_agent_sha)"
+  got_win32="$(host_win32_sha)"
+  actual_agent="$(sha256sum "$SCRIPT_DIR/vmqa-agent.ps1" | awk '{print $1}')"
+  actual_win32="$(sha256sum "$SCRIPT_DIR/vmqa-win32.ps1" | awk '{print $1}')"
+  if [ "$got_agent" = "$actual_agent" ] && [ "$got_win32" = "$actual_win32" ]; then
+    printf '  ok    %-46s\n' "host computes both expected script hashes"
+    pass_count=$((pass_count+1))
+  else
+    printf '  FAIL  %-46s\n' "host computes both expected script hashes"
+    fail_count=$((fail_count+1))
+  fi
+}
+
+replace_retained_png() {
+  local name="$1" png="$2" verdict sha tmp
+  verdict="$(mkjson "$name" "$GOOD_POS")"
+  cp -- "$png" "$(dirname -- "$verdict")/artifacts/selftest.png"
+  sha="$(sha256sum "$png" | awk '{print $1}')"
+  tmp="$verdict.tmp"
+  jq --arg sha "$sha" \
+    '(.steps[] | select(.verb=="shot").facts.pngSha256)=$sha' "$verdict" >"$tmp"
+  mv -- "$tmp" "$verdict"
+  printf '%s' "$verdict"
+}
+
 echo "grade_selftest regression:"
 
 # A blocked VM run is a measured verdict, not an absent one. cmd_run restores errexit before
 # returning 3; fetch_run_verdict must capture that status without being terminated by it.
 check_fetch_preserves_blocked_verdict
+check_host_computed_script_hashes
 
 # The only green. If this stops passing, the gate rejects everything and is useless.
 check "healthy pair grades PASS" 0 \
@@ -273,6 +345,101 @@ mv -- "$(dirname -- "$bad_request_pos")/request.json.tmp" "$(dirname -- "$bad_re
 check "request exeSha256 mismatch -> not PASS" 1 \
   "$bad_request_pos" "$(mkjson neg_for_bad_request "$GOOD_NEG")"
 
+# Every serialized class/rectangle field is a graded field. These mutations change
+# one value at a time while leaving the verdict green and all other facts intact.
+check "surface class mutation -> not PASS" 1 \
+  "$(mutate_json pos_surface_class "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.surfaceClass)="Other Window"')" \
+  "$(mkjson neg_surface_class "$GOOD_NEG")"
+check "post surface class mutation -> not PASS" 1 \
+  "$(mutate_json pos_post_surface_class "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.postSurfaceClass)="Other Window"')" \
+  "$(mkjson neg_post_surface_class "$GOOD_NEG")"
+check "both surface classes substituted -> not PASS" 1 \
+  "$(mutate_json pos_both_surface_classes "$GOOD_POS" '
+    (.steps[] | select(.verb=="shot").facts)
+      |= (.surfaceClass="Other Window" | .postSurfaceClass="Other Window")
+  ')" \
+  "$(mkjson neg_both_surface_classes "$GOOD_NEG")"
+
+for rect in rawRect dwmRect postRawRect postDwmRect; do
+  for field in left top right bottom width height; do
+    check "$rect.$field mutation -> not PASS" 1 \
+      "$(mutate_json "pos_${rect}_${field}" "$GOOD_POS" \
+        "(.steps[] | select(.verb==\"shot\").facts.${rect}.${field}) += 1")" \
+      "$(mkjson "neg_${rect}_${field}" "$GOOD_NEG")"
+  done
+done
+
+check "captured color-count mutation -> not PASS" 1 \
+  "$(mutate_json pos_capture_colors "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.captureDistinctColors) += 1')" \
+  "$(mkjson neg_capture_colors "$GOOD_NEG")"
+
+# Re-hash the altered PNG in the verdict so these controls reach independent
+# IHDR/pixel decoding rather than failing early at the ordinary SHA gate.
+WIDE_PNG="$TMP/wide.png"
+FLAT_PNG="$TMP/flat.png"
+make_fixture_png "$WIDE_PNG" 204 120 gradient
+make_fixture_png "$FLAT_PNG" 200 120 flat
+check "retained PNG IHDR width mutation -> not PASS" 1 \
+  "$(replace_retained_png pos_wide_png "$WIDE_PNG")" \
+  "$(mkjson neg_wide_png "$GOOD_NEG")"
+check "retained PNG decoded colors mutation -> not PASS" 1 \
+  "$(replace_retained_png pos_flat_png "$FLAT_PNG")" \
+  "$(mkjson neg_flat_png "$GOOD_NEG")"
+
+CRC_PNG="$TMP/bad-crc.png"
+cp -- "$FIXTURE_PNG" "$CRC_PNG"
+python3 - "$CRC_PNG" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+b = bytearray(p.read_bytes())
+b[-8] ^= 1
+p.write_bytes(b)
+PY
+check "retained PNG CRC mutation -> not PASS" 1 \
+  "$(replace_retained_png pos_crc_png "$CRC_PNG")" \
+  "$(mkjson neg_crc_png "$GOOD_NEG")"
+
+# Both cleanup receipts bind PID, executable, outcome, and independent absence
+# checks. The negative uses a different PID because it starts a separate process.
+for field_filter in \
+  '.cleanupPid=999' \
+  '.cleanupOutcome="unknown"' \
+  '.cleanupExeSha256="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"' \
+  '.cleanupPidAbsent=false' \
+  '.cleanupExecutableAbsent=false' \
+  '.cleanupMatchingExeCount=1'
+do
+  label="$(printf '%s' "$field_filter" | tr -cd '[:alnum:]' | cut -c1-28)"
+  check "positive cleanup $label -> not PASS" 1 \
+    "$(mutate_json "pos_cleanup_$label" "$GOOD_POS" \
+      "(.steps[] | select(.verb==\"kill\").facts) |= ($field_filter)")" \
+    "$(mkjson "neg_cleanup_pos_$label" "$GOOD_NEG")"
+  check "negative cleanup $label -> not PASS" 1 \
+    "$(mkjson "pos_cleanup_neg_$label" "$GOOD_POS")" \
+    "$(mutate_json "neg_cleanup_$label" "$GOOD_NEG" \
+      "(.steps[] | select(.verb==\"kill\").facts) |= ($field_filter)")"
+done
+
+# The negative is an exact five-step state machine, not a bag of non-passes.
+for mutation in \
+  '(.steps[] | select(.verb=="stage").status)="fail"' \
+  '(.steps[] | select(.verb=="launch").status)="unmeasurable"' \
+  '(.steps[] | select(.verb=="ping").status)="fail"' \
+  '(.steps[] | select(.verb=="shot").status)="unmeasurable"' \
+  '(.steps[] | select(.verb=="kill").status)="blocked"'
+do
+  label="$(printf '%s' "$mutation" | sha256sum | cut -c1-10)"
+  check "negative exact-status mutation $label -> INVALID" 9 \
+    "$(mkjson "pos_neg_status_$label" "$GOOD_POS")" \
+    "$(mutate_json "neg_status_$label" "$GOOD_NEG" "$mutation")"
+done
+check "negative marker count 0 -> INVALID" 9 \
+  "$(mkjson pos_neg_markers0 "$GOOD_POS")" \
+  "$(mutate_json neg_markers0 "$GOOD_NEG" '(.steps[] | select(.verb=="ping").markerWindowsTotal)=0')"
+check "negative marker count 2 -> INVALID" 9 \
+  "$(mkjson pos_neg_markers2 "$GOOD_POS")" \
+  "$(mutate_json neg_markers2 "$GOOD_NEG" '(.steps[] | select(.verb=="ping").markerWindowsTotal)=2')"
+
 # A missing verdict file must never be read as a legitimate outcome via its exit code alone.
 check "absent negative verdict file -> INVALID" 9 \
   "$(mkjson gp7 "$GOOD_POS")" "$TMP/does-not-exist.json"
@@ -286,4 +453,4 @@ check "positive fails, good control -> fail not INVALID" 1 \
 echo
 printf 'passed=%s failed=%s\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ] || exit 1
-[ "$pass_count" -ge 26 ] || { echo "refusing to report success on fewer than 26 assertions" >&2; exit 1; }
+[ "$pass_count" -ge 77 ] || { echo "refusing to report success on fewer than 77 assertions" >&2; exit 1; }

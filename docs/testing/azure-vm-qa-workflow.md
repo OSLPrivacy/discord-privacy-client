@@ -183,18 +183,27 @@ Target is under three minutes per iteration once setup is snapshotted.
   `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` and the result must be nonempty, at least
   200×120, inside both `GetWindowRect` and the virtual screen, not the whole virtual desktop, and
   stable before/after capture. `GetWindowRect` is retained only as an outer sanity bound.
+- **Pin the visible-window class, do not merely require it to stay nonempty.** The baseline
+  `shot` request names exact class `Tauri Window`. The agent refuses a different class before
+  capture, serializes the trusted pre/post class snapshots, and the host requires both to equal the
+  host-pinned value. Changing both receipt fields to the same wrong class must still fail.
 - **Normalize an oversized launched window before measuring it.** The Scrub demo asks for
   1044×788 on the 1024×768 VM. The agent may use `SetWindowPos(..., SWP_NOACTIVATE)` on the unique
   ≥200×120 non-marker HWND owned by the exact launched PID to fit it inside the primary working
   area. It then discards that preparatory geometry and re-queries DWM. Small auxiliary HWNDs are
   ineligible; multiple qualifying HWNDs, any DWM failure, off-screen results and whole-desktop
   results remain refusals.
-- **A screenshot verdict is not enough.** The host snapshots the live heartbeat's
-  `agentSha256` and `win32Sha256`, requires both verdicts to match them, downloads the one exact
-  `artifacts/selftest.png`, checks its PNG bytes and SHA-256 against the shot fact, and requires
-  exact surface HWND/PID plus `stopped`/`already-exited` cleanup for the launched PID. The negative
-  must contain exactly `S0:stage,S1:launch,S2:ping,S3:shot,S4:kill`; a shorter blocked verdict is a
-  vacuous control, not evidence.
+- **A screenshot verdict is not enough.** The host computes `vmqa-agent.ps1` and
+  `vmqa-win32.ps1` SHA-256 from the local files under review, refuses a live heartbeat with either
+  different hash, and requires both verdicts to carry both exact hashes. It independently decodes
+  the retained `artifacts/selftest.png`: CRCs, IHDR dimensions, 8-bit RGB/RGBA encoding and the
+  every-fourth-pixel distinct-colour count must agree with the exact DWM rectangle and shot facts,
+  in addition to the PNG SHA-256. The positive and negative cleanup receipts must each bind the
+  launched PID and executable SHA, prove that PID absent, prove zero processes at the exact
+  executable path, and report `stopped` or `already-exited`. The negative must contain exactly
+  `S0:stage,S1:launch,S2:ping,S3:shot,S4:kill` with statuses
+  `pass,blocked,pass,blocked,pass` and a structured marker count of exactly one; anything shorter,
+  prose-only, or incompletely cleaned is an invalid control.
 
 ## Input injection: where it is banned and where it is required
 

@@ -8,10 +8,14 @@ This test drives the production bounds validator used by the capture preconditio
   3. Labelling whole-desktop geometry as the surface is refused before capture.
 #>
 
+param(
+    [string]$Win32ModulePath = (Join-Path $PSScriptRoot 'vmqa-win32.ps1')
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'vmqa-win32.ps1')
+. $Win32ModulePath
 
 function New-TestRect {
     param(
@@ -57,7 +61,37 @@ try {
     $passed++
 }
 
-if ($passed -ne 3) {
-    throw "DWM_BOUNDS_SELFTEST_INCOMPLETE: passed=$passed expected=3"
+$sameSurface = [VmqaNative]::BuildTrustedSurface(
+    [IntPtr]::Zero, 1, 'unit-surface', $rawWithInvisibleBorder, $trustedDwm, $virtual, 96)
+if (-not (Test-VmqaSurfaceSnapshotMatches -Expected $trustedSurface -Actual $sameSurface)) {
+    throw 'NEGATIVE_CONTROL_FAILED: identical structured surface snapshots did not match'
 }
-Write-Output 'DWM_BOUNDS_SELFTEST_OK passed=3 negativeControls=2'
+$passed++
+
+$classMutation = [VmqaNative]::BuildTrustedSurface(
+    [IntPtr]::Zero, 1, 'mutated-class', $rawWithInvisibleBorder, $trustedDwm, $virtual, 96)
+if (Test-VmqaSurfaceSnapshotMatches -Expected $trustedSurface -Actual $classMutation) {
+    throw 'NEGATIVE_CONTROL_FAILED: exact window-class mutation passed'
+}
+$passed++
+
+$rawMutation = New-TestRect -Left -1 -Top 0 -Right 1044 -Bottom 788
+$rawSurfaceMutation = [VmqaNative]::BuildTrustedSurface(
+    [IntPtr]::Zero, 1, 'unit-surface', $rawMutation, $trustedDwm, $virtual, 96)
+if (Test-VmqaSurfaceSnapshotMatches -Expected $trustedSurface -Actual $rawSurfaceMutation) {
+    throw 'NEGATIVE_CONTROL_FAILED: structured raw-rectangle mutation passed'
+}
+$passed++
+
+$dwmMutation = New-TestRect -Left 1 -Top 0 -Right 1024 -Bottom 728
+$dwmSurfaceMutation = [VmqaNative]::BuildTrustedSurface(
+    [IntPtr]::Zero, 1, 'unit-surface', $rawWithInvisibleBorder, $dwmMutation, $virtual, 96)
+if (Test-VmqaSurfaceSnapshotMatches -Expected $trustedSurface -Actual $dwmSurfaceMutation) {
+    throw 'NEGATIVE_CONTROL_FAILED: structured DWM-rectangle mutation passed'
+}
+$passed++
+
+if ($passed -ne 7) {
+    throw "DWM_BOUNDS_SELFTEST_INCOMPLETE: passed=$passed expected=7"
+}
+Write-Output 'DWM_BOUNDS_SELFTEST_OK passed=7 negativeControls=5'

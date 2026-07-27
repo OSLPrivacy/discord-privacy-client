@@ -496,6 +496,12 @@ function New-StepResult {
 # The pid `launch` established for this run. Once set, every later verb must resolve to THAT
 # process, not merely to something wearing the same window class.
 $script:VmqaPinnedPid = 0
+# A negative launch deliberately fails marker-class resolution after Start-Process. Keep that
+# started PID/path separately from trusted-subject provenance so `kill` can remove the exact
+# process without ever authorising it as a capture or input target.
+$script:VmqaStartedPid = 0
+$script:VmqaStartedExePath = ''
+$script:VmqaStartedExeSha256 = ''
 
 function Resolve-StepSubject {
     param(
@@ -582,6 +588,71 @@ function Stop-StagedBuildProcesses {
         [void]$stopped.Add($process.Id)
     }
     return @($stopped)
+}
+
+function Get-ExactExecutableProcessPids {
+    param([Parameter(Mandatory)][string]$CanonicalExePath)
+
+    $pids = [Collections.Generic.List[int]]::new()
+    foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $processPath = $null
+        try { $processPath = $process.Path } catch { continue }
+        if ([string]::Equals(
+                $processPath, $CanonicalExePath, [StringComparison]::OrdinalIgnoreCase)) {
+            [void]$pids.Add([int]$process.Id)
+        }
+    }
+    return @($pids)
+}
+
+function Wait-VmqaProcessIdAbsent {
+    param(
+        [Parameter(Mandatory)][int]$ProcessId,
+        [int]$TimeoutMilliseconds = 10000
+    )
+    $deadline = [datetime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if ($null -eq (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([datetime]::UtcNow -lt $deadline)
+    return $null -eq (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+function Get-CleanupFacts {
+    param(
+        # `$PID` is a read-only automatic variable and PowerShell names are
+        # case-insensitive. Naming this parameter `Pid` makes binding throw
+        # before cleanup can report anything.
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][string]$CanonicalExePath,
+        [Parameter(Mandatory)][string]$ExeSha256,
+        [Parameter(Mandatory)][ValidateSet('stopped','already-exited')][string]$Outcome
+    )
+
+    $pidAbsent = $null -eq (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+    $matchingExePids = @(Get-ExactExecutableProcessPids -CanonicalExePath $CanonicalExePath)
+    return [ordered]@{
+        cleanupPid = $ProcessId
+        cleanupOutcome = $Outcome
+        cleanupExeSha256 = $ExeSha256
+        cleanupPidAbsent = $pidAbsent
+        cleanupExecutableAbsent = ($matchingExePids.Count -eq 0)
+        cleanupMatchingExeCount = $matchingExePids.Count
+    }
+}
+
+function ConvertTo-RectFact {
+    param([Parameter(Mandatory)]$Rect)
+    return [ordered]@{
+        left = [int]$Rect.Left
+        top = [int]$Rect.Top
+        right = [int]$Rect.Right
+        bottom = [int]$Rect.Bottom
+        width = [int]($Rect.Right - $Rect.Left)
+        height = [int]($Rect.Bottom - $Rect.Top)
+    }
 }
 
 function Copy-And-VerifyBuild {
@@ -703,7 +774,8 @@ function Invoke-Step {
             }
             $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
             $detail = 'vmName={0}; sessionId={1}; isInteractiveSession={2}; markerWindowsTotal={3}' -f $VmName, $sessionId, ($sessionId -ne 0), $markerWindowsTotal
-            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail $detail
+            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail $detail `
+                -Facts ([ordered]@{ markerWindowsTotal = $markerWindowsTotal })
         }
         'stage' {
             $exeSha = [string](Get-PropertyValue -Object $stepArgs -Name 'exeSha256' -Required)
@@ -716,12 +788,23 @@ function Invoke-Step {
             # launch, kill and relaunch; without this the relaunch resolves a new pid, fails the
             # pin check and is blocked for a reason that is not a defect.
             $script:VmqaPinnedPid = 0
+            $script:VmqaStartedPid = 0
+            $script:VmqaStartedExePath = ''
+            $script:VmqaStartedExeSha256 = ''
             $exePath = Join-Path (Join-Path 'C:\OSL-VMQA' $exeSha) 'osl-privacy-hub.exe'
             if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'fail' -Detail "staged exe missing: $exePath"
             }
             $canonicalExePath = Get-CanonicalFilePath -Path $exePath
             $process = Start-Process -FilePath $exePath -PassThru
+            $script:VmqaStartedPid = [int]$process.Id
+            $script:VmqaStartedExePath = $canonicalExePath
+            $script:VmqaStartedExeSha256 = $exeSha
+            $startedFacts = [ordered]@{
+                launchedPid = [int]$process.Id
+                exeSha256 = $exeSha
+                launchProcessStarted = $true
+            }
             # The marker is resolved once for this step. The blind wait gives Tauri time to publish
             # its single-instance marker without creating a second target-selection path.
             if ($timeoutSeconds -gt 0) {
@@ -729,14 +812,19 @@ function Invoke-Step {
             }
             $resolved = Resolve-StepSubject -Identifier $identifier -RunNonce $RunNonce
             if (-not $resolved['ok']) {
-                return New-StepResult -Id $stepId -Verb $verb -Status $resolved['status'] -Detail $resolved['detail']
+                return New-StepResult -Id $stepId -Verb $verb -Status $resolved['status'] `
+                    -Detail $resolved['detail'] -Facts $startedFacts
             }
             $subject = $resolved['subject']
             if ($subject.Pid -ne $process.Id) {
-                return New-StepResult -Id $stepId -Verb $verb -Status 'fail' -Detail "marker pid $($subject.Pid) did not match started pid $($process.Id)"
+                return New-StepResult -Id $stepId -Verb $verb -Status 'fail' `
+                    -Detail "marker pid $($subject.Pid) did not match started pid $($process.Id)" `
+                    -Facts $startedFacts
             }
             if (-not [string]::Equals($subject.ExePath, $canonicalExePath, [StringComparison]::OrdinalIgnoreCase)) {
-                return New-StepResult -Id $stepId -Verb $verb -Status 'fail' -Detail "marker image path '$($subject.ExePath)' did not match staged exe '$canonicalExePath'"
+                return New-StepResult -Id $stepId -Verb $verb -Status 'fail' `
+                    -Detail "marker image path '$($subject.ExePath)' did not match staged exe '$canonicalExePath'" `
+                    -Facts $startedFacts
             }
             # Pin from here on. This is the only place a subject's identity is established by
             # something stronger than a window class: we started the process ourselves and matched
@@ -744,7 +832,11 @@ function Invoke-Step {
             $script:VmqaPinnedPid = $subject.Pid
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
                 -Detail "pid=$($subject.Pid); exe=$($subject.ExePath)" `
-                -Facts ([ordered]@{ launchedPid = $subject.Pid; exeSha256 = $subject.ExeSha256 })
+                -Facts ([ordered]@{
+                    launchedPid = $subject.Pid
+                    exeSha256 = $subject.ExeSha256
+                    launchProcessStarted = $true
+                })
         }
         'shot' {
             if ($script:VmqaPinnedPid -le 0) {
@@ -752,9 +844,15 @@ function Invoke-Step {
                     -Detail 'VMQA_NO_LAUNCH_PROVENANCE: shot requires a successful exact-path launch in this run'
             }
             $name = [string](Get-PropertyValue -Object $stepArgs -Name 'name' -Required)
+            $expectedSurfaceClass =
+                [string](Get-PropertyValue -Object $stepArgs -Name 'expectedSurfaceClass' -Required)
             $safeName = [IO.Path]::GetFileName($name)
             if ([string]::IsNullOrWhiteSpace($safeName)) {
                 throw 'VMQA_BAD_SHOT_NAME'
+            }
+            if ([string]::IsNullOrWhiteSpace($expectedSurfaceClass) -or
+                $expectedSurfaceClass.Length -gt 511) {
+                throw 'VMQA_BAD_EXPECTED_SURFACE_CLASS'
             }
             # Resolve the subject BEFORE capturing, even though the capture is full-desktop.
             # Without this, `shot` passed on a global distinct-colour count that the wallpaper and
@@ -771,9 +869,31 @@ function Invoke-Step {
             } catch {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail ([string]$_.Exception.Message)
             }
+            if ($shotSurface.ClassName -cne $expectedSurfaceClass) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' `
+                    -Detail ("VMQA_VISIBLE_SURFACE_CLASS_MISMATCH: expected='{0}' actual='{1}' hwnd={2}" -f `
+                        $expectedSurfaceClass, $shotSurface.ClassName, $shotSurface.Hwnd)
+            }
             # Foreground transfer may require the VM-only thread-input handoff in vmqa-win32.
             if (-not (Set-VmqaSurfaceForeground -Surface $shotSurface)) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail "VMQA_VISIBLE_SURFACE_NOT_FOREGROUND: hwnd=$($shotSurface.Hwnd)"
+            }
+            # Foreground restoration can legitimately move the outer invisible
+            # resize border. The evidence must describe the rectangle actually
+            # captured, so discard the pre-foreground geometry and establish a
+            # fresh trusted snapshot before any capture precondition is graded.
+            try {
+                $foregroundSurface = Get-VmqaTrustedSurfaceSnapshot -Hwnd $shotSurface.Hwnd
+                if ($foregroundSurface.Pid -ne $shotSubject['subject'].Pid -or
+                    $foregroundSurface.ClassName -cne $shotSurface.ClassName -or
+                    $foregroundSurface.ClassName -cne $expectedSurfaceClass) {
+                    throw 'VMQA_VISIBLE_SURFACE_IDENTITY_CHANGED_AFTER_FOREGROUND'
+                }
+                $foregroundSurface.NormalizedForCapture = $shotSurface.NormalizedForCapture
+                $shotSurface = $foregroundSurface
+            } catch {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' `
+                    -Detail ([string]$_.Exception.Message)
             }
             if (-not (Test-VmqaSurfaceStillBound -Subject $shotSubject['subject'] -Surface $shotSurface -RunNonce $RunNonce)) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail "VMQA_VISIBLE_SURFACE_CHANGED_BEFORE_CAPTURE: hwnd=$($shotSurface.Hwnd)"
@@ -788,7 +908,16 @@ function Invoke-Step {
             $artifactPath = Join-Path $artifactDir ($safeName + '.png')
             $shot = Invoke-SurfaceShot -OutPath $artifactPath -Surface $shotSurface
             $surfaceStillForeground = [VmqaNative]::GetForegroundWindow() -eq $shotSurface.Hwnd
-            $surfaceStillBound = Test-VmqaSurfaceStillBound -Subject $shotSubject['subject'] -Surface $shotSurface -RunNonce $RunNonce
+            $postShotSurface = $null
+            try {
+                $postShotSurface = Get-VmqaTrustedSurfaceSnapshot -Hwnd $shotSurface.Hwnd
+                $surfaceStillBound =
+                    (Test-VmqaSurfaceStillBound -Subject $shotSubject['subject'] `
+                        -Surface $shotSurface -RunNonce $RunNonce) -and
+                    (Test-VmqaSurfaceSnapshotMatches -Expected $shotSurface -Actual $postShotSurface)
+            } catch {
+                $surfaceStillBound = $false
+            }
             $surfaceStillOwnsGrid = Test-VmqaSurfaceOwnsSampleGrid -Surface $shotSurface
             $surfaceStillUnoccluded = Test-VmqaSurfaceUnoccluded -Surface $shotSurface
             if (-not $surfaceStillForeground -or -not $surfaceStillBound -or
@@ -824,8 +953,15 @@ function Invoke-Step {
                 -Facts ([ordered]@{
                     surfacePid = $shotSubject['subject'].Pid
                     surfaceHwnd = $shotSurface.Hwnd.ToInt64()
+                    surfaceClass = $shotSurface.ClassName
+                    postSurfaceClass = $postShotSurface.ClassName
+                    rawRect = ConvertTo-RectFact -Rect $shotSurface.RawRect
+                    dwmRect = ConvertTo-RectFact -Rect $shotSurface.Rect
+                    postRawRect = ConvertTo-RectFact -Rect $postShotSurface.RawRect
+                    postDwmRect = ConvertTo-RectFact -Rect $postShotSurface.Rect
                     surfaceWidth = $shot['width']
                     surfaceHeight = $shot['height']
+                    captureDistinctColors = $shot['distinctColors']
                     rawSurfaceWidth = $shotSurface.RawRect.Right - $shotSurface.RawRect.Left
                     rawSurfaceHeight = $shotSurface.RawRect.Bottom - $shotSurface.RawRect.Top
                     boundsSource = $shotSurface.BoundsSource
@@ -898,27 +1034,51 @@ function Invoke-Step {
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail "ms=$ms"
         }
         'kill' {
-            if ($script:VmqaPinnedPid -le 0) {
+            if ($script:VmqaStartedPid -le 0 -or
+                [string]::IsNullOrWhiteSpace($script:VmqaStartedExePath) -or
+                [string]::IsNullOrWhiteSpace($script:VmqaStartedExeSha256)) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' `
-                    -Detail 'VMQA_NO_LAUNCH_PROVENANCE: kill requires a successful exact-path launch in this run'
+                    -Detail 'VMQA_NO_STARTED_PROCESS: kill requires Start-Process provenance from this run'
             }
-            $pinnedPid = $script:VmqaPinnedPid
-            $live = Get-Process -Id $pinnedPid -ErrorAction SilentlyContinue
-            if ($null -eq $live) {
-                return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
-                    -Detail "already exited pid=$pinnedPid" `
-                    -Facts ([ordered]@{ cleanupPid = $pinnedPid; cleanupOutcome = 'already-exited' })
+            $startedPid = [int]$script:VmqaStartedPid
+            $startedExePath = $script:VmqaStartedExePath
+            $startedExeSha = $script:VmqaStartedExeSha256
+            $live = Get-Process -Id $startedPid -ErrorAction SilentlyContinue
+            $outcome = 'already-exited'
+            if ($null -ne $live) {
+                $livePath = $null
+                try { $livePath = $live.Path } catch {
+                    return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' `
+                        -Detail "VMQA_CLEANUP_PROCESS_PATH_UNAVAILABLE: pid=$startedPid"
+                }
+                if (-not [string]::Equals(
+                        $livePath, $startedExePath, [StringComparison]::OrdinalIgnoreCase)) {
+                    return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' `
+                        -Detail "VMQA_CLEANUP_PID_RECYCLED: pid=$startedPid expected='$startedExePath' actual='$livePath'"
+                }
+                # Cleanup is authorised by the exact PID/path returned by this run's own
+                # Start-Process, not by the deliberately wrong negative identifier. This permits
+                # removing a failed-negative process without ever treating it as a trusted subject.
+                Stop-Process -Id $startedPid -Force -ErrorAction Stop
+                Wait-Process -Id $startedPid -Timeout 10 -ErrorAction SilentlyContinue
+                $outcome = 'stopped'
             }
-            $resolved = Resolve-StepSubject -Identifier $identifier -RunNonce $RunNonce
-            if (-not $resolved['ok']) {
-                return New-StepResult -Id $stepId -Verb $verb -Status $resolved['status'] -Detail $resolved['detail']
+            [void](Wait-VmqaProcessIdAbsent -ProcessId $startedPid)
+            $cleanupFacts = Get-CleanupFacts -ProcessId $startedPid `
+                -CanonicalExePath $startedExePath -ExeSha256 $startedExeSha -Outcome $outcome
+            if (-not $cleanupFacts['cleanupPidAbsent'] -or
+                -not $cleanupFacts['cleanupExecutableAbsent'] -or
+                [int]$cleanupFacts['cleanupMatchingExeCount'] -ne 0) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'fail' `
+                    -Detail ("VMQA_CLEANUP_NOT_PROVEN: pid={0} pidAbsent={1} exeAbsent={2} matchingExeCount={3}" -f `
+                        $startedPid, $cleanupFacts['cleanupPidAbsent'], `
+                        $cleanupFacts['cleanupExecutableAbsent'], `
+                        $cleanupFacts['cleanupMatchingExeCount']) `
+                    -Facts $cleanupFacts
             }
-            $subject = $resolved['subject']
-            Assert-VmqaSubject -Subject $subject -RunNonce $RunNonce | Out-Null
-            Stop-Process -Id $subject.Pid -Force
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
-                -Detail "stopped pid=$($subject.Pid)" `
-                -Facts ([ordered]@{ cleanupPid = $subject.Pid; cleanupOutcome = 'stopped' })
+                -Detail "cleanup proven pid=$startedPid outcome=$outcome exactExecutableAbsent=true" `
+                -Facts $cleanupFacts
         }
         default {
             return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' -Detail "unknown verb: $verb"
@@ -1064,6 +1224,9 @@ function Process-RunDirectory {
     # Clear the pin per run. A pid carried over from a previous run would block this one for a
     # reason that has nothing to do with it.
     $script:VmqaPinnedPid = 0
+    $script:VmqaStartedPid = 0
+    $script:VmqaStartedExePath = ''
+    $script:VmqaStartedExeSha256 = ''
     $runNonce = Get-RunNonce
     $stepResults = @()
     foreach ($step in $steps) {
