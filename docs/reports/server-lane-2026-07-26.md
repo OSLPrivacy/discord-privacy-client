@@ -1194,6 +1194,30 @@ verify. `lib/payment-alert-outbox.ts:152` already shows the bounded pattern.
 
 ---
 
+## Single-use wrapped-key reads: the other half of the property is now tested
+
+`wrapped-keys.test.ts` "concurrent valid reads return a single-use row at most
+once" counted response **statuses only**. An implementation returning one `200`
+with an empty or wrong body plus three `404`s passed it — proving "at most once"
+while proving nothing about the read having delivered the share. Single-use
+wrapped-key reads are the mechanism preventing a key share being fetched twice,
+so half the property was untested.
+
+Now additionally asserted, without touching any existing assertion:
+`content_id`, `recipient_id` and `wrapped_share_blob` of the winning response
+must equal the seeded values *read from the fixture rather than hardcoded*, so
+the assertion cannot drift; the losers must be refused for the **right** reason
+rather than merely being non-200, so a 500 cannot masquerade as single-use
+enforcement; and the row's post-state is queried directly in D1 rather than
+inferred from the responses.
+
+Concretely now caught, and previously green: one `200` whose
+`wrapped_share_blob` is empty or wrong, a loser returning an unrelated `404`, and
+a path that reports the correct statuses but leaves the row in `wrapped_keys`.
+Title unchanged, `expect(` 61 → 67, additive only.
+
+This was the last entry on the vacuous-assertion inventory rated worth fixing.
+
 ## Acceptance rows this earns
 
 Truth judges and applies these; I have not touched the checklist. An event was

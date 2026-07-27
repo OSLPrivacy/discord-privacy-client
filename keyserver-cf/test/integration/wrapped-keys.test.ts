@@ -575,6 +575,28 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     const responses = await Promise.all(urls.map((url) => SELF.fetch(url)));
     expect(responses.filter((r) => r.status === 200)).toHaveLength(1);
     expect(responses.filter((r) => r.status === 404)).toHaveLength(3);
+    const successful = responses.find((r) => r.status === 200);
+    expect(successful).toBeDefined();
+    if (!successful) throw new Error("expected one successful read");
+    const successfulBody = (await successful.json()) as Record<string, unknown>;
+    expect(successfulBody.content_id).toBe(body.content_id);
+    expect(successfulBody.recipient_id).toBe(body.recipient_id);
+    expect(successfulBody.wrapped_share_blob).toBe(body.wrapped_share_blob);
+    const refusedBodies = await Promise.all(
+      responses
+        .filter((r) => r.status === 404)
+        .map((r) => r.json() as Promise<Record<string, unknown>>),
+    );
+    expect(refusedBodies).toEqual([
+      { error: "unknown or burned content_id" },
+      { error: "unknown or burned content_id" },
+      { error: "unknown or burned content_id" },
+    ]);
+    const remaining = await testDb
+      .prepare("SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?")
+      .bind(body.content_id)
+      .first<{ count: number }>();
+    expect(remaining?.count).toBe(0);
   });
 
   it("identity-key CAS blocks single-use consumption by a replaced key", async () => {
