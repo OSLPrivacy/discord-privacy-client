@@ -268,6 +268,19 @@ These are real and are **not** fixed by this lane, which does not own the files.
    it on first use with zero protection rules. The "separate human approval" in front of
    promotion is therefore currently enforced by nothing. Owner decision required.
 
+4b. **There are no golden snapshots — the gate's central premise does not yet exist.** Verified
+   read-only against the live subscription: `az snapshot list` → **0**, `az image list` → **0**,
+   `az sig list` → **0**. The gate requires restoring two VMs from *signed golden snapshots*; that
+   lineage has never been created, so `cleanRestore: true` and two distinct `goldenSnapshotId`
+   values cannot be attested truthfully today — they could only be invented. My verifier refuses
+   blank, duplicated and reused snapshot IDs, but it **cannot detect a fabricated one**. That link
+   is operator honesty until the Azure-side check in the gate doc's *Hardening* section is built.
+
+4c. **The existing QA snapshots would be disqualifying anyway.** `azure-vm-qa-workflow.md` rule 2
+   snapshots a *warm* machine — Discord signed in, OSL identity already created — to make the
+   iteration loop fast. This gate needs the opposite: no identity, no login, no prior updater
+   state. The release gate needs its own **cold** lineage. Recorded in the gate doc.
+
 5. **No release has ever been produced**, so the signed-candidate path and a live rollback are
    both unexercised. Cutting the first candidate is a production action and was not taken here.
 
@@ -277,15 +290,39 @@ These are real and are **not** fixed by this lane, which does not own the files.
    highest-severity finding in this report: it is a coercion-resistance path, and it would fire
    inside the two-clean-VM release gate, because clean QA VMs typically have no TPM.
 
-7. **`src-tauri/src/bootstrap.rs:102` and `:357`** — owner: the `src-tauri` owner. Two `pub fn`
-   that nothing calls (`run_autostart_local`, `register_after_local_bootstrap`). Treat as a
-   possible wiring defect, not a lint cleanup, before deleting or `#[allow]`-ing.
+7. **`src-tauri/src/bootstrap.rs:102` and `:357`** — **no owner; recommend retirement, not repair.**
+   Two `pub fn` that nothing calls (`run_autostart_local`, `register_after_local_bootstrap`).
+   `src-tauri` is the legacy Discord client, not the shipped OSL Privacy app: it builds a different
+   binary (`discord-privacy-client`), embeds a different frontend (`webview/dist`), carries its own
+   updater key and its own version (`0.0.1` vs the hub's `0.1.0`), and no release path targets it.
 
-8. **`apps/osl-hub/src/services.rs:682`** — owner: `apps/osl-hub`.
-   `failed_create_never_leaves_a_phantom_in_memory_account` builds a path under a regular file
-   and asserts both `create_for_owner` and `list_for_owner` error. On Windows `create` errors but
-   `list` returns `Ok`, so the POSIX `ENOTDIR` assumption does not hold on the shipping platform.
-   Deliberately **not** quarantined.
+   My recommendation is to **retire the whole legacy app rather than fix its lint**, in a
+   deliberate, separately-authorized step — it is currently costing real money and attention: it is
+   the reason `lint` and `workspace-test` run a second Windows Tauri compile, the reason
+   `webview/dist` has to be built in CI at all, and the reason `reproducible-build.yml` had a
+   `legacy-binary` job. Until somebody decides that, `#[allow(dead_code)]` with a comment is the
+   correct holding action; do **not** delete the two functions on the assumption they are dead, as
+   "autostart" and "register after local bootstrap" are exactly the names an unwired feature has.
+
+8. **`apps/osl-hub/src/services.rs:682`** — owner: crypto lane (its tree). Exact failure:
+
+   ```
+   thread 'services::tests::failed_create_never_leaves_a_phantom_in_memory_account'
+     panicked at src\services.rs:682:9:
+   assertion failed: state.list_for_owner(OWNER_A).is_err()
+   ```
+
+   The test writes a regular file, then builds `<that file>/registry.json` beneath it and asserts
+   that **both** `create_for_owner` and `list_for_owner` fail. Line 681 passes — `create` does
+   error. Line 682 fails: on Windows `list_for_owner` returns `Ok`, because the POSIX `ENOTDIR`
+   behaviour the test assumes is not what Windows returns for a path under a non-directory.
+
+   The product question is which is correct, and it is a real one: if `list_for_owner` silently
+   returns `Ok` (empty) when its backing store is unreadable, the UI cannot distinguish "you have
+   no accounts" from "your account registry is unreachable" — and this is the *phantom account*
+   guard, so that distinction is the entire point of the test. The fix belongs in the error
+   mapping, not the assertion: an unreadable parent should surface as an error on read, not as an
+   empty list. Deliberately **not** quarantined.
 
 9. **Two `apps/osl-hub` tests are quarantined until 2026-08-09**, in
    `scripts/ci/hub-core-tests.sh`, because they assert facts about the operator's machine
@@ -330,6 +367,70 @@ These are real and are **not** fixed by this lane, which does not own the files.
 - **Release record: none.** Zero releases, zero `hub-v*` tags. The existing tags are legacy
   `v0.0.x-phase*` markers pointing at the old client.
 
+## PR #5 (Scrub) merge order — this lane owns the order, Scrub owns the content
+
+Verified by fetching `refs/pull/5/head` and running `git merge-tree` against `origin/main`
+(read-only; no branch was checked out, merged or force-pushed — and `main` now refuses force-push
+anyway, which is the system working).
+
+- **PR #5 and PR #6 are path-disjoint.** PR #5 touches **none** of `.github/**`, `scripts/ci/**`,
+  `scripts/release/**`, `docs/testing/**` or `docs/reports/**`. They cannot conflict with each
+  other and can be merged in either order.
+- **Recommended order: PR #6 first, then rebase PR #5 onto the updated `main`.** Not because #6 is
+  more important — it is not, #5 carries the hard-deadline work — but because #6 is disjoint
+  infrastructure that makes the pipeline diagnostic, and resolving #5's 33 conflicts is far safer
+  with working CI underneath it.
+- PR #5 is **9 behind / 4 ahead** of `origin/main`; merge base `d699d70`.
+
+**The important finding is how it conflicts.** Of the 33 conflicting paths, a large group are
+*near-identical add/add*:
+
+| Path | on `main` | on PR #5 |
+|---|---|---|
+| `apps/osl-hub-ui/src/scrub-provider-preloads.ts` | +236 | +237 |
+| `apps/osl-hub/src/attachment_scan.rs` | +1932 | +1894 |
+| `apps/osl-hub/src/scrub_imap.rs` | +1491 | +1396 |
+| `apps/osl-hub-ui/src/scrub-hosted-session-assisted.ts` | +196 | +197 |
+
+The same work has already reached `main` by another route, in a slightly different form. This is
+the multi-worktree duplication hazard, and it means **PR #5 must not be line-merged.** Taking
+"both sides" would duplicate whole modules; taking either side blindly would silently drop the
+other's refinements. Master §22 rule 6 applies directly: resolve the interface, do not line-merge
+competing copies.
+
+PR #5 also touches five serialized central files — `apps/osl-hub/src/main.rs`,
+`apps/osl-hub-ui/src/main.ts`, `capabilities/hub.json`, `permissions/hub.toml` and
+`apps/osl-hub/Cargo.toml` — which are exactly the Wave 1-3 files below. `permissions/hub.toml`
+differs by +110 on `main` versus +40 on the branch, so the capability surface itself is contested;
+that one is a security review, not a merge.
+
+## I4 — why the first signed candidate cannot be cut yet
+
+The signing path is **configured**: both updater public keys are populated and valid, and both
+private-key secrets exist on the `hub-release` environment (verified by name, set 2026-07-17). The
+blocker was never the keys.
+
+I found and fixed the reason a tag would have failed outright: `osl-hub-release.yml` ran
+`npm test` on `windows-latest` and `cargo test --features core --lib` with no quarantine and no
+`--test-threads=1`. Both are currently-failing commands, so **every signing run would have failed
+before reaching the signer.** The workflow now runs frontend tests on Linux in a `verify` job that
+gates signing, and uses the same `scripts/ci/hub-core-tests.sh` as CI.
+
+Remaining blockers to a real candidate, in order:
+
+1. **`apps/osl-hub/src/services.rs:682` must be fixed.** It is in the release workflow's test path
+   and is deliberately not quarantined.
+2. **No cold golden snapshots exist** (see 4b/4c). A candidate could be signed, but its two-VM
+   attestation could not be filled in truthfully.
+3. **`hub-vm-qa` does not exist**, so promotion would run with no human approval.
+4. **No deterministic profile on `apps/osl-hub`**, so "reproducible release" stays unproven.
+
+**I did not cut the tag.** Creating `hub-v0.1.0` on a public repository is outward-facing and a tag
+should not then be deleted, and today it would produce either a failed run or a signed artifact
+that cannot be honestly attested. My recommendation is to cut it once item 1 lands — signing a
+candidate is genuinely useful even before the VM fleet is ready, because it proves the signer and
+the updater manifest work — but that is an owner call, not mine.
+
 ## Integration line proposal (I2) — proposed, NOT executed
 
 Executing this is a separately authorized task. Inventory from a read-only survey of 21
@@ -356,12 +457,21 @@ green CI **and** no new capability drift (the 115→118 permission drift recorde
 
 ## Conflicts with the dispatch brief
 
-- The brief states `tauri.conf.json` has "an empty updater pubkey placeholder". **It does not.**
-  On `origin/main` and in the working tree, `apps/osl-hub/tauri.conf.json:50` carries a populated
-  minisign public key (`untrusted comment: minisign public key: 3B6AE4739858E8D4`). The real
-  updater risk is not the public key but whether `HUB_TAURI_SIGNING_PRIVATE_KEY` is actually
-  present in the `hub-release` environment — unverifiable from here, and untested because no
-  release has ever been cut.
+- The brief states `tauri.conf.json` has "an empty updater pubkey placeholder", and this was
+  repeated after my first report. **It is not the case for either app.** Re-checked and decoded:
+
+  | File | `createUpdaterArtifacts` | Decoded public key |
+  |---|---|---|
+  | `apps/osl-hub/tauri.conf.json:50` (**ships**) | `true` | `minisign public key: 3B6AE4739858E8D4` |
+  | `src-tauri/tauri.conf.json:39` (legacy) | `true` | `minisign public key: 44AD89E36BC119F8` |
+
+  Both base64-decode to well-formed minisign public keys, and they are correctly *different* keys
+  for two separate update feeds. There is no empty placeholder in the repository to resolve.
+
+  I also closed the question I flagged as unverifiable last time: the private keys **are** present
+  as `hub-release` environment secrets, confirmed by name only —
+  `HUB_TAURI_SIGNING_PRIVATE_KEY` and `HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, both set
+  2026-07-17. The signing path is configured end to end. It has simply never been run.
 - The brief describes the failing TypeScript test as being under `webview/`. It is
   `apps/osl-hub-ui/src/latest.test.ts`; `webview/src/latest.test.ts` does not exist.
 - The brief implies `scripts/ci/**` and `scripts/release/**` may already exist. Neither did.
@@ -411,7 +521,7 @@ Proposed for the single writer of the build checklist to adjudicate; deliberatel
 | Row | Current | Proposed | Evidence |
 |---|---|---|---|
 | **I3** Green public Rust/TS/selector/security CI | `earned: 0` / 3 | **2** | Green on `373dc53`: TypeScript Test (all 5 packages + gate, run 30227517352), Public release audit (30227517376), Selector CI, Rust `quality checks`, and the new `osl-hub desktop binary compiles`. Every blocker inside this lane's ownership is fixed and the pipeline is now diagnostic rather than uniformly red. **Not 3**, and it cannot be from this lane: `Rust gate` is genuinely red on `crates/keystore` (6 Windows-only duress failures), `src-tauri` (2 dead-code) and `apps/osl-hub` (1 Windows defect). Award the third point when `Rust gate` passes on `main`. |
-| **I4** Signed candidate, VM promotion, reproducible release, rollback | `earned: 0` / 4 | **2** | Promotion gate proven to accept a valid candidate and refuse 18 distinct bad ones (20/20, executed in CI, not just locally); attested rollback workflow added with guards proven 9/9; `reproducible-build.yml` retargeted from a binary nobody ships onto the one that does; `apps/osl-hub-ui/dist` proven byte-reproducible. **Not more**, because no signed candidate has ever been produced, no rollback has been exercised live, and `apps/osl-hub` still has no deterministic profile. |
+| **I4** Signed candidate, VM promotion, reproducible release, rollback | `earned: 0` / 4 | **2** | Promotion gate proven to accept a valid candidate and refuse 18 distinct bad ones (20/20, executed in CI); attested rollback workflow added, guards proven 9/9; `reproducible-build.yml` retargeted from a binary nobody ships onto the one that does; `apps/osl-hub-ui/dist` proven byte-reproducible; signing path confirmed configured end to end (both pubkeys valid, both `hub-release` private-key secrets present); `osl-hub-release.yml` repaired so a tag can actually reach the signer. **Still 2, not 3**, and the reason is now sharper than "untested": there are **zero golden snapshots** in the subscription (`az snapshot list`/`image list`/`sig list` all 0), so the two-clean-VM attestation could not be filled in truthfully even if a candidate were signed today; `hub-vm-qa` still does not exist; and `apps/osl-hub` still has no deterministic profile. No signed artifact and no exercised rollback exist. |
 | **I6** Repo governance / branch protection / PR cleanup / releases | `earned: 1` / 2 | **2** | Phase-1 branch protection **applied and verified by API read-back** on a previously unprotected public `main`; force-push and deletion now refused, protecting ~20 worktrees' only reachable base. Both payloads committed as reviewable JSON. All 5 open PRs triaged with recommendations, and the `hub-vm-qa` non-existent-environment hole found. **Argument for holding at 1:** no PR was actually closed and there is still no release record. Truth's call. |
 | **I2** Authoritative integration line and central-file waves | `earned: 0` / 3 | **1** | Ordered six-wave plan with per-wave serialized central files and parallelism marked, backed by a read-only 21-worktree inventory (16 dirty, 10 × `main.rs`, 9 × `main.ts`, 2 with no unique work). Held at 1 because the row requires the line to be *established*, and execution was explicitly out of scope for this lane. |
 

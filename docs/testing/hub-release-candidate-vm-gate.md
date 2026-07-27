@@ -16,18 +16,84 @@ The signing identity and the publishing identity are deliberately different
 environments. Whoever can produce a signed binary must not also be able to
 decide, alone, that it is fit to ship.
 
-> **Blocking prerequisite (open as of 2026-07-26):** the `hub-vm-qa`
-> environment **does not exist** on the repository. A workflow that names a
-> missing environment does not fail — GitHub creates it on first use with no
-> protection rules — so promotion and rollback would run with *no* human
-> approval at all. Create it with required reviewers before the first
-> promotion, or this entire gate is advisory. See `.github/BRANCH_PROTECTION.md`.
+> **Two different things, both required.** The GitHub `hub-vm-qa` environment is the *approval*
+> mechanism — it is what forces a human to click before the feed moves. The Azure fleet below is
+> the *execution* mechanism — it is where the two clean VMs actually come from. Neither replaces
+> the other, and both are currently incomplete.
+
+> **Blocking prerequisite A (open as of 2026-07-26):** the `hub-vm-qa` environment **does not
+> exist** on the repository. A workflow that names a missing environment does not fail — GitHub
+> creates it on first use with *no* protection rules — so the "separate human approval" in front of
+> promotion is currently enforced by nothing. Create it with required reviewers before the first
+> promotion. See `.github/BRANCH_PROTECTION.md`.
+
+> **Blocking prerequisite B (open as of 2026-07-26):** **there are no golden snapshots.** Verified
+> read-only against the live subscription: `az snapshot list` → 0, `az image list` → 0,
+> `az sig list` → 0. This gate's central premise is restoring two VMs from signed golden
+> snapshots, and that lineage has never been created. Until it exists, `cleanRestore: true` and two
+> distinct `goldenSnapshotId` values cannot be attested truthfully — they could only be invented.
+> The verifier rejects blank, duplicated and reused snapshot IDs, but it **cannot detect a
+> fabricated one**; that link in the chain is operator honesty. See *Hardening* below.
+
+## The VM fleet
+
+Testing runs on the Azure fleet documented in `docs/testing/azure-vm-qa-workflow.md`, not on the
+owner's desktop. A virtual monitor is visual separation only — Windows scopes the input queue to a
+desktop object, so a process on a second monitor can still steal the owner's foreground window.
+
+Verified live 2026-07-26: **10** Windows VMs across 5 resource groups, all `VM deallocated`
+(the workflow doc says 8; `OSL-SIGNAL-QA-SCUS` with `OSL-Signal-Client-1/-2` is not listed there).
+Subscription is **Azure for Students** — a fixed credit pool, not a billing account.
+
+For this gate use two VMs **in different resource groups**, so "two distinct VMs" is structurally
+true rather than a naming convention:
+
+| Role | VM | Resource group |
+|---|---|---|
+| `OSL-QA-A` | `OSL-Azure-Client-1` | `OSL-TWO-CLIENT-LAB` |
+| `OSL-QA-B` | `OSL-Independent-Client-1` | `OSL-TWO-CLIENT-LAB-INDEPENDENT` |
+
+```bash
+az vm start      -g OSL-TWO-CLIENT-LAB -n OSL-Azure-Client-1
+# ... run the gate ...
+az vm deallocate -g OSL-TWO-CLIENT-LAB -n OSL-Azure-Client-1
+az vm list -d --query "[?powerState=='VM running'].name" -o tsv   # leak check, must be empty
+```
+
+**Deallocate when finished.** A `D2s_v3` left running is the only way this costs real money.
+
+### Clean snapshots are NOT the QA snapshots
+
+`azure-vm-qa-workflow.md` rule 2 snapshots a **warm** machine — Discord installed and signed in,
+WebView2 present, an OSL identity already created — because that makes the iteration loop fast.
+**That image is disqualifying for this gate**, which requires no OSL identity, no service profile,
+no login and no prior updater state.
+
+The release gate therefore needs its own **cold** snapshot lineage, taken *before* any OSL identity
+or Discord login exists: Windows + WebView2 runtime only. Name them distinguishably, e.g.
+`osl-release-clean-A-<date>`, and record the full Azure resource ID as `goldenSnapshotId`.
+Two clean restores from the *same* snapshot are not two VMs; the verifier refuses that.
 
 ## Running the gate
 
-Before attaching the attestation, restore two distinct Windows VMs from signed
-golden snapshots with no OSL identity, service profile, login, or prior updater
-state. Install the exact draft `.exe` on both VMs and record its SHA-256.
+Before attaching the attestation, restore both VMs from the **cold** lineage above, with no OSL
+identity, service profile, login, or prior updater state. Install the exact draft `.exe` on both
+VMs and record its SHA-256.
+
+Operational rules carried from `azure-vm-qa-workflow.md`, each of which has already cost time:
+
+- **Stage `WebView2Loader.dll` beside the exe.** Without it the process hangs before `main` with no
+  trace file at all and looks exactly like a corrupt build.
+- **Never build on the VM.** These are 2-vCPU boxes. Build on the host and ship the artifact.
+- **Identify the build by `sha256`, never mtime** — cargo hardlinks its output, so mtime lies.
+- **Drive by file rendezvous over an Azure Files share, not RDP.** `az vm run-command` executes as
+  SYSTEM in session 0 where nothing renders, so it cannot verify anything the user would see; it is
+  fine for liveness checks and log collection only.
+- **Reject any artifact older than run start.** A stale receipt will happily impersonate the current
+  run; grade it `unmeasurable`, never pass or fail.
+- **Credentials come from Key Vault just in time on the VM** — vault `osl-test-secrets-a7d5d9`
+  (resource group `osl-two-client-lab`), per `docs/testing/test-account-secrets.md`. They never
+  enter a prompt, report, event, screenshot, log or the attestation.
 
 Both VMs must cover onboarding, identity creation/recovery, two disposable
 service-account logins, persistence across restart, signed updating, one-sided
@@ -133,3 +199,37 @@ does not inherit the root `[profile.release-deterministic]`. Until that profile
 is added to `apps/osl-hub/Cargo.toml`, the binary users install has no
 deterministic build profile, and `reproducible-build.yml` reports that as a
 hard failure rather than passing quietly.
+
+## Updater signing — resolved, not a placeholder
+
+Dispatch briefs have repeatedly stated that `tauri.conf.json` carries an empty updater pubkey
+placeholder alongside `createUpdaterArtifacts: true`. Checked on `origin/main` @ `38d0867` and
+again in the working tree, this is **not the case for either app**. Both keys are populated and
+both base64-decode to well-formed minisign public keys:
+
+| File | `createUpdaterArtifacts` | Public key |
+|---|---|---|
+| `apps/osl-hub/tauri.conf.json:50` (**ships**) | `true` | `minisign public key: 3B6AE4739858E8D4` |
+| `src-tauri/tauri.conf.json:39` (legacy) | `true` | `minisign public key: 44AD89E36BC119F8` |
+
+They are different keys, which is correct — the two apps have separate update feeds.
+
+The corresponding private keys are present as **environment** secrets on `hub-release`, verified
+by name (values never read): `HUB_TAURI_SIGNING_PRIVATE_KEY` and
+`HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, both set 2026-07-17.
+
+So the signing path is configured end to end. What has **never** been done is running it: there are
+zero releases and zero `hub-v*` tags, so no signed artifact has ever been produced and no client has
+ever verified one. "Configured" is not "proven"; treat the updater as `designed-only` until a real
+candidate is built and a signed update is installed on a clean VM.
+
+## Hardening still owed
+
+1. **Verify `goldenSnapshotId` against Azure at promotion time.** Today the verifier checks the two
+   IDs are non-empty and distinct, which catches reuse and blanks but not invention. Calling
+   `az snapshot show --ids <id>` during promotion — and asserting the snapshot pre-dates the run —
+   would close that. It needs an Azure credential available to CI, which is an owner decision.
+2. **Bind the attestation to the run, not just the file.** A candidate hash proves *which* binary
+   was tested, not *that* it was tested. Recording the VM agent's run id and verdict artifact hashes
+   would make the claim checkable after the fact.
+3. **Create the cold snapshot lineage** (blocking prerequisite B) before the first promotion.

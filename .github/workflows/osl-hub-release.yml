@@ -10,10 +10,29 @@ permissions:
   contents: write
 
 jobs:
+  # Frontend tests run here, on Linux, and gate signing. They are pure
+  # Node/JSDOM with no Windows-specific code path, and one of them is
+  # timer-resolution sensitive in a way the Windows runner cannot satisfy.
+  # Signing must not begin until they pass.
+  verify:
+    name: verify frontend before signing
+    if: startsWith(github.ref, 'refs/tags/hub-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - name: OSL Privacy UI gate
+        run: bash scripts/ci/node-suite.sh apps/osl-hub-ui typecheck,test,build
+
   windows-release:
     # A manually dispatched run is useful for retrying a tagged release, but
     # selecting a branch must never reach signing or mutate hub-latest.
     if: startsWith(github.ref, 'refs/tags/hub-v')
+    needs: verify
     runs-on: windows-latest
     environment: hub-release
     steps:
@@ -43,18 +62,29 @@ jobs:
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
-      - name: Build and test trusted OSL Privacy frontend
+      # Build only — the frontend TESTS run on Linux in the `verify` job above.
+      # Running them here on windows-latest is what would make every signing
+      # run fail: apps/osl-hub-ui/src/latest.test.ts asserts a coalescing bound
+      # on 2 ms/8 ms setTimeout pacing that Windows' ~15.6 ms timer quantum
+      # cannot honour. The dist is still built here, because Tauri embeds it at
+      # COMPILE time and a stale dist ships a stale UI.
+      - name: Build the trusted OSL Privacy frontend for embedding
         working-directory: apps/osl-hub-ui
         run: |
           npm ci
-          npm test -- --run
           npm run build
 
+      # Same script CI uses, so the release path and the PR path enforce
+      # exactly the same thing: --features core (services.rs and the scrub
+      # modules are core-gated), --test-threads=1 (they race on a
+      # process-global storage key), and the documented, expiring quarantine
+      # for tests that assert facts about the operator's machine.
       - name: Test OSL Privacy core
-        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib
+        shell: bash
+        run: bash scripts/ci/hub-core-tests.sh
 
       - name: Test OSL Privacy Windows identity lifecycle
-        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle
+        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle -- --test-threads=1
 
       - name: Audit OSL Privacy updater supply-chain policy
         run: |
