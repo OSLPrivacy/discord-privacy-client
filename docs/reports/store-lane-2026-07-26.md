@@ -458,8 +458,8 @@ takes the same lock internally.
 
 ```
 flock /tmp/osl-cargo.lock -c "cargo test -p store"
-  → 12 passed (blind_index_test), 13 passed (burn_defects_test),
-    17 passed (store_test), 0 failed, 0 ignored.  42 total.
+  → 14 passed (blind_index_test), 13 passed (burn_defects_test),
+    17 passed (store_test), 0 failed, 0 ignored.  44 total.
 
 flock /tmp/osl-cargo.lock -c "cargo clippy -p store --all-targets"   → clean, no warnings
 cargo fmt -p store -- --check                                        → clean
@@ -467,9 +467,21 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
   → Finished. store cross-compiles for the shipping target.
 ```
 
-**On the test count:** 42 is measured, not inherited. `crates/store/Cargo.toml` declares no
-`[features]`, so there is no feature gate that could silently exclude a module from `-p store` —
-the failure mode that hid `qa_selftest_request` from the workspace runs does not exist here. All
+**On the test count and the gate that produced it.** 44 is measured, not inherited, and the gate
+is the bare one: `osl-cargo test -p store`, no features.
+
+Naming the gate matters now, because the fleet learned tonight that a gate can move a number in
+either direction. `--features core` silently excluded `qa_selftest_request`; the replacement
+`--features core,discord-qa-shell` includes it but *relaxes* an enforcement, because
+`header_proof_is_enforced()` is defined as `!cfg!(feature = "discord-qa-shell")`. So a count is
+meaningless without the gate beside it, and a test passing under the QA feature has not proven
+header proof is enforced.
+
+**Neither hazard exists in this crate, verified rather than assumed:** `crates/store/Cargo.toml`
+declares no `[features]`, and a grep for `cfg(feature` / `cfg!(feature` across `crates/store/`
+returns nothing. There is no configuration under which this crate compiles a different set of
+modules or enforces a different set of checks, so all 44 tests run under every possible gate. No
+claim in this report depends on `header_proof_is_enforced`. All
 17 pre-existing tests still pass; none were modified.
 
 **The mandatory hub check now PASSES.** It was blocked for most of this lane's work by a
