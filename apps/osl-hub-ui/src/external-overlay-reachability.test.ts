@@ -472,6 +472,7 @@ type BindingEvent = {
   scope: CallableRange | undefined;
   kind: "import" | "declaration" | "assignment" | "parameter";
   authority?: InvokeAuthority;
+  callable?: CallableRange;
   rhs?: string;
 };
 
@@ -551,12 +552,16 @@ function bindingEvents(
         range.start,
       ),
       kind: "declaration",
+      callable: range,
     });
   }
   for (const declaration of source.matchAll(
     /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=;\n]+)?(?:=\s*([^;\n]+))?\s*;/gu,
   )) {
     if (declaration.index === undefined) continue;
+    if (ranges.some((range) =>
+      range.start === declaration.index && range.localName === declaration[1]
+    )) continue;
     events.push({
       name: declaration[1],
       position: declaration.index,
@@ -591,6 +596,28 @@ function bindingEvents(
     });
   }
   return events;
+}
+
+function bindingAt(
+  name: string,
+  position: number,
+  ranges: readonly CallableRange[],
+  events: readonly BindingEvent[],
+): BindingEvent | undefined {
+  for (const scope of enclosingScopes(ranges, position)) {
+    const bindings = events.filter((event) =>
+      event.name === name && sameScope(event.scope, scope)
+    );
+    if (bindings.length === 0) continue;
+    const prior = bindings
+      .filter((event) => event.position <= position)
+      .sort((left, right) => right.position - left.position)[0];
+    if (prior) return prior;
+    // A later declaration still shadows the outer binding throughout this
+    // lexical scope; callers cannot borrow authority through its TDZ.
+    return bindings.find(({ kind }) => kind !== "assignment");
+  }
+  return undefined;
 }
 
 function authorityAt(
@@ -667,24 +694,93 @@ function containingCallable(
     .sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
 }
 
-function registeredCallbackPositions(source: string, name: string): number[] {
+function globalBindingIsUnshadowed(
+  name: string,
+  position: number,
+  ranges: readonly CallableRange[],
+  events: readonly BindingEvent[],
+): boolean {
+  return bindingAt(name, position, ranges, events) === undefined;
+}
+
+function callbackResolvesToCallable(
+  name: string,
+  target: CallableRange,
+  position: number,
+  ranges: readonly CallableRange[],
+  events: readonly BindingEvent[],
+): boolean {
+  return bindingAt(name, position, ranges, events)?.callable === target;
+}
+
+function importedBindingIsUnshadowed(
+  name: string,
+  position: number,
+  ranges: readonly CallableRange[],
+  events: readonly BindingEvent[],
+): boolean {
+  return bindingAt(name, position, ranges, events) === undefined;
+}
+
+function registeredCallbackPositions(
+  source: string,
+  name: string,
+  ranges: readonly CallableRange[],
+  events: readonly BindingEvent[],
+): number[] {
   const callback = escapeRegExp(name);
-  const registrations = [
-    new RegExp(
-      `\\baddEventListener\\s*\\(\\s*[^,;\\n]+,\\s*${callback}\\b`,
-      "gu",
-    ),
-    new RegExp(
-      `\\b(?:setTimeout|setInterval|requestAnimationFrame|queueMicrotask)\\s*\\(\\s*${callback}\\b`,
-      "gu",
-    ),
-    new RegExp(`\\.(?:then|catch|finally)\\s*\\(\\s*${callback}\\b`, "gu"),
-  ];
-  return registrations.flatMap((registration) =>
-    [...source.matchAll(registration)].flatMap(({ index }) =>
-      index === undefined ? [] : [index]
-    )
+  const positions: number[] = [];
+  const trustedReceiver = new RegExp(
+    `(?<![.\\w$])(document|window|globalThis)\\s*\\.\\s*addEventListener\\s*\\(\\s*[^,;\\n]+,\\s*${callback}\\b`,
+    "gu",
   );
+  for (const match of source.matchAll(trustedReceiver)) {
+    if (
+      match.index !== undefined
+      && globalBindingIsUnshadowed(match[1], match.index, ranges, events)
+    ) positions.push(match.index);
+  }
+  const bareListener = new RegExp(
+    `(?<![.\\w$])addEventListener\\s*\\(\\s*[^,;\\n]+,\\s*${callback}\\b`,
+    "gu",
+  );
+  for (const match of source.matchAll(bareListener)) {
+    if (
+      match.index !== undefined
+      && globalBindingIsUnshadowed("addEventListener", match.index, ranges, events)
+    ) positions.push(match.index);
+  }
+  const trustedTimer = new RegExp(
+    `(?<![.\\w$])(window|globalThis)\\s*\\.\\s*(setTimeout|setInterval|requestAnimationFrame|queueMicrotask)\\s*\\(\\s*${callback}\\b`,
+    "gu",
+  );
+  for (const match of source.matchAll(trustedTimer)) {
+    if (
+      match.index !== undefined
+      && globalBindingIsUnshadowed(match[1], match.index, ranges, events)
+    ) positions.push(match.index);
+  }
+  const bareTimer = new RegExp(
+    `(?<![.\\w$])(setTimeout|setInterval|requestAnimationFrame|queueMicrotask)\\s*\\(\\s*${callback}\\b`,
+    "gu",
+  );
+  for (const match of source.matchAll(bareTimer)) {
+    if (
+      match.index !== undefined
+      && globalBindingIsUnshadowed(match[1], match.index, ranges, events)
+    ) positions.push(match.index);
+  }
+  const promise = new RegExp(
+    `(?<![.\\w$])Promise\\s*\\.\\s*(?:resolve|reject|all|allSettled|race|any)\\s*\\([^;\\n]*?\\)\\s*\\.\\s*(?:then|catch|finally)\\s*\\(\\s*${callback}\\b`,
+    "gu",
+  );
+  for (const match of source.matchAll(promise)) {
+    if (
+      match.index !== undefined
+      && globalBindingIsUnshadowed("Promise", match.index, ranges, events)
+    ) positions.push(match.index);
+  }
+  return [...new Set(positions)];
 }
 
 function reachableCallables(
@@ -693,12 +789,16 @@ function reachableCallables(
 ): Set<CallableRange> {
   const roots = new Set<CallableRange>();
   const edges = new Map<CallableRange, Set<CallableRange>>();
+  const events = bindingEvents(source, ranges);
   for (const target of ranges) {
     const call = new RegExp(`\\b${escapeRegExp(target.localName)}\\s*\\(`, "gu");
     for (const match of source.matchAll(call)) {
       const position = match.index;
       if (position === undefined) continue;
       if (position >= target.start && position < target.bodyStart) continue;
+      if (!callbackResolvesToCallable(target.localName, target, position, ranges, events)) {
+        continue;
+      }
       const caller = containingCallable(ranges, position);
       if (!caller) roots.add(target);
       else if (caller !== target) {
@@ -707,7 +807,17 @@ function reachableCallables(
         edges.set(caller, callees);
       }
     }
-    for (const position of registeredCallbackPositions(source, target.localName)) {
+    for (
+      const position of registeredCallbackPositions(
+        source,
+        target.localName,
+        ranges,
+        events,
+      )
+    ) {
+      if (!callbackResolvesToCallable(target.localName, target, position, ranges, events)) {
+        continue;
+      }
       const caller = containingCallable(ranges, position);
       if (!caller) roots.add(target);
       else if (caller !== target) {
@@ -743,14 +853,19 @@ function positionIsReachable(
 function hasReachableNamedCall(source: string, name: string): boolean {
   const ranges = callableRanges(source);
   const reachable = reachableCallables(source, ranges);
+  const events = bindingEvents(source, ranges);
   const call = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "gu");
   const callPositions = [...source.matchAll(call)].flatMap(({ index }) =>
     index === undefined ? [] : [index]
   );
-  return [...callPositions, ...registeredCallbackPositions(source, name)].some((index) => {
+  return [
+    ...callPositions,
+    ...registeredCallbackPositions(source, name, ranges, events),
+  ].some((index) => {
     if (index === undefined) return false;
     if (ranges.some((range) => index >= range.start && index < range.bodyStart)) return false;
-    return positionIsReachable(ranges, reachable, index);
+    return importedBindingIsUnshadowed(name, index, ranges, events)
+      && positionIsReachable(ranges, reachable, index);
   });
 }
 
@@ -1471,7 +1586,7 @@ describe("generic external overlay production reachability", () => {
 
   it("treats recognized production callback registrations as call-graph edges", () => {
     const registrations = [
-      'button.addEventListener("click", open);',
+      'document.addEventListener("click", open);',
       "setTimeout(open, 0);",
       "setInterval(open, 1000);",
       "requestAnimationFrame(open);",
@@ -1517,7 +1632,7 @@ describe("generic external overlay production reachability", () => {
       "}",
     ].join("\n");
     for (const registration of [
-      'button.addEventListener("click", launchOverlay);',
+      'document.addEventListener("click", launchOverlay);',
       "setTimeout(launchOverlay, 0);",
       "queueMicrotask(launchOverlay);",
       "Promise.resolve().then(launchOverlay);",
@@ -1546,6 +1661,70 @@ describe("generic external overlay production reachability", () => {
         expect(rejected.uiCall).toBe(false);
         expect(rejected.productionReachable).toBe(false);
       }
+    }
+  });
+
+  it("rejects fake event APIs and callback-binding shadows", () => {
+    const directCallback = [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "function open() {",
+      '  invoke("open_external_overlay");',
+      "}",
+    ].join("\n");
+    const fakeRegistrations = [
+      [
+        "function addEventListener(_type: string, _callback: () => void) {}",
+        'addEventListener("click", open);',
+      ].join("\n"),
+      [
+        "const fakeEvents = { addEventListener(_type: string, _callback: () => void) {} };",
+        'fakeEvents.addEventListener("click", open);',
+      ].join("\n"),
+      [
+        "const document = { addEventListener(_type: string, _callback: () => void) {} };",
+        'document.addEventListener("click", open);',
+      ].join("\n"),
+      [
+        "function register(open: () => void) {",
+        '  document.addEventListener("click", open);',
+        "}",
+        "register(() => {});",
+      ].join("\n"),
+    ];
+    for (const fakeRegistration of fakeRegistrations) {
+      const rejected = completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source: `${directCallback}\n${fakeRegistration}`,
+      }]);
+      expect(rejected.uiDirectCall, `fake direct edge admitted:\n${fakeRegistration}`)
+        .toBe(false);
+      expect(rejected.productionReachable).toBe(false);
+    }
+
+    const adapter = [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "export function openExternalOverlay() {",
+      '  return invoke("open_external_overlay");',
+      "}",
+    ].join("\n");
+    const wrapperImport =
+      'import { openExternalOverlay as launchOverlay } from "./external-overlay-adapter";';
+    for (
+      const fakeRegistration of fakeRegistrations.map((source) =>
+        source.replaceAll("open", "launchOverlay")
+      )
+    ) {
+      const rejected = completeSyntheticPath([
+        { path: "/synthetic/external-overlay-adapter.ts", source: adapter },
+        {
+          path: "/synthetic/main.ts",
+          source: `${wrapperImport}\n${fakeRegistration}`,
+        },
+      ]);
+      expect(rejected.uiAdapterImported).toBe(true);
+      expect(rejected.uiCall, `fake wrapper edge admitted:\n${fakeRegistration}`)
+        .toBe(false);
+      expect(rejected.productionReachable).toBe(false);
     }
   });
 

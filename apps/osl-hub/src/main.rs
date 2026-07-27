@@ -3029,11 +3029,11 @@ fn qa_named_rehydrate_refusal<T>(
 struct RehydratedNativeDiscordRowDto {
     flagtext: String,
     plaintext: Option<String>,
-    /// Authenticated envelope direction after binding it to this trusted row.
-    /// The signature authenticates the scoped envelope, not the visible Discord
-    /// author; trusted accessibility row ownership supplies that attribution.
+    /// Wire direction from the authenticated scoped envelope.
+    /// This does not identify or authenticate the visible Discord row's poster
+    /// or native message.
     /// `Some` exactly when `plaintext` is `Some`; the renderer refuses to paint
-    /// a row that has text without an attributed direction.
+    /// a row that has text without an envelope direction.
     orientation: Option<broker::RehydratedRowOrientation>,
     row: Option<NativeDiscordRowRectDto>,
 }
