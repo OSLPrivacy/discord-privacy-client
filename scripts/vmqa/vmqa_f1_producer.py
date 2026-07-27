@@ -29,6 +29,12 @@ FIXED_PROGRAM = Path("/opt/osl-vmqa/bin/vmqa_f1_producer.py")
 FIXED_BUILD_EVIDENCE_PROGRAM = Path(
     "/opt/osl-vmqa/bin/vmqa_build_evidence.py"
 )
+FIXED_PROVISIONING_PROGRAM = Path(
+    "/opt/osl-vmqa/bin/vmqa_f1_provisioning_preflight.py"
+)
+PINNED_PROVISIONING_PROGRAM_SHA256 = (
+    "78a71701b9ea169ea621303863a5f57129e0da01d457f40004e9447c7e259b91"
+)
 FIXED_OPT_ROOT = Path("/opt")
 FIXED_INSTALL_ROOT = Path("/opt/osl-vmqa")
 FIXED_INSTALL_BIN = FIXED_INSTALL_ROOT / "bin"
@@ -244,6 +250,34 @@ def require_installed_programs(layout: ProducerLayout) -> None:
     require_fixed_program(
         FIXED_BUILD_EVIDENCE_PROGRAM, "VMQA build-evidence program"
     )
+
+
+def run_fixed_provisioning_preflight() -> dict[str, Any]:
+    require_fixed_program(
+        FIXED_PROVISIONING_PROGRAM, "F1 provisioning preflight"
+    )
+    raw, _ = read_regular_once(
+        FIXED_PROVISIONING_PROGRAM,
+        owner_uid=0,
+        mode=0o555,
+        label="F1 provisioning preflight",
+    )
+    if sha256_bytes(raw) != PINNED_PROVISIONING_PROGRAM_SHA256:
+        raise ProducerError(
+            "F1 provisioning preflight differs from immutable producer pin"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "_vmqa_fixed_f1_provisioning", FIXED_PROVISIONING_PROGRAM
+    )
+    if spec is None or spec.loader is None:
+        raise ProducerError("cannot load fixed F1 provisioning preflight")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        return module.production_preflight()
+    finally:
+        sys.modules.pop(spec.name, None)
 
 
 def require_layout(
@@ -1252,15 +1286,19 @@ def build_parser() -> StrictParser:
     for name in ("preflight", "stage"):
         command = commands.add_parser(name, allow_abbrev=False)
         command.add_argument("--bundle", required=True)
+    commands.add_parser("provisioning-preflight", allow_abbrev=False)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         args = build_parser().parse_args(argv)
-        producer = resolve_producer_identity()
-        layout = ProducerLayout()
-        if args.command == "bootstrap-key":
+        if args.command != "provisioning-preflight":
+            producer = resolve_producer_identity()
+            layout = ProducerLayout()
+        if args.command == "provisioning-preflight":
+            result = run_fixed_provisioning_preflight()
+        elif args.command == "bootstrap-key":
             result = bootstrap_key(
                 layout=layout,
                 producer=producer,

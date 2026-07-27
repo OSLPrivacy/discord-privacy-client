@@ -639,6 +639,26 @@ class F1ProducerTests(unittest.TestCase):
         self.assertEqual(rc, 9)
         self.assertFalse(caller_key.exists())
 
+    def test_provisioning_entrypoint_refuses_unpinned_module_bytes(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            producer_module,
+            "require_fixed_program",
+        ), mock.patch.object(
+            producer_module,
+            "read_regular_once",
+            return_value=(b"caller module\n", mock.Mock()),
+        ), mock.patch.object(
+            producer_module,
+            "PINNED_PROVISIONING_PROGRAM_SHA256",
+            producer_module.sha256_bytes(b"reviewed module\n"),
+        ):
+            with self.assertRaisesRegex(
+                producer_module.ProducerError, "immutable producer pin"
+            ):
+                producer_module.run_fixed_provisioning_preflight()
+
     def test_caller_cannot_supply_exe_hash_source_or_destination(self) -> None:
         forbidden = {
             "--exe": str(self.root / "caller.exe"),

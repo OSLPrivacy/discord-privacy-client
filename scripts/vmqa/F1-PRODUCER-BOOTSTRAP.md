@@ -27,6 +27,8 @@ reviewed committed scripts as root-owned, mode `0555` files:
 ```text
 /opt/osl-vmqa/bin/vmqa_f1_producer.py
 /opt/osl-vmqa/bin/vmqa_build_evidence.py
+/opt/osl-vmqa/bin/vmqa_f1_provisioning_preflight.py
+/opt/osl-vmqa/bin/vmqa-f1-windows-provisioning-preflight.ps1
 ```
 
 The administrator must create `/var/lib/osl-qa` as root-owned mode `0755`,
@@ -34,13 +36,35 @@ then create `private` and `f1-staging` beneath it as
 `osl-vmqa-producer`-owned mode `0700`. The workflow deliberately does not
 repair a wrong owner, mode, account, shell, or symlink.
 
+The administrator preflight is read-only, takes no arguments, and must run as
+uid 0 from that fixed installation:
+
+```bash
+/opt/osl-vmqa/bin/vmqa_f1_producer.py provisioning-preflight
+```
+
+The fixed producer hashes the provisioning module against its immutable source
+pin before importing it; direct execution of the module refuses. It then
+refuses unless the dedicated account is non-root and non-login; the fixed
+installation and program bytes match their immutable hashes; every production
+tool pin resolves beneath `/opt/osl-vmqa/toolchain` through root-owned `0755`
+directories to a root-owned regular `0555` file with the pinned hash; the
+authority, private, staging, seal, lock, and monotonic-state objects have their
+exact owners and modes; and exactly one current protected staging receipt binds
+the current production seal to the pinned commit/tree, identity, executable,
+loader, and terminal descriptor snapshot. It performs no repair and reports
+`writesPerformed: 0` only after every check succeeds. There are intentionally
+no path, expected-hash, identity, tool-pin, seal, bundle, or fixture options.
+
 The existing production build-tool pins still name the reviewed Liam-owned
 toolchain. That toolchain is not traversable by the non-login producer account
 and must not be opened up. Before a real build, an administrator must install
 equivalent root-owned, non-producer-writable tools under a protected fixed
 toolchain directory; the code pins must then be updated to their independently
 measured hashes and accepted as a separate exact commit. Until then,
-production build creation must remain fail-closed.
+production build creation and the administrator preflight must remain
+fail-closed. Copying the current symlink wrappers without their exact protected
+runtime tree is not sufficient.
 
 The producer then creates a new key without printing it:
 
@@ -95,15 +119,47 @@ contains no key bytes.
 
 ## Remaining live step
 
-Once the fixed installation, producer account/directories, real witness key,
-and real sealed release bundle exist, the human VM owner must provision the
-same key into `C:\ProgramData\OSL-QA\private\f1-native-witness.key` with a
-protected SYSTEM-only ACL. The exact host runner must itself execute as
-`osl-vmqa-producer`, because its key check requires the key owner to equal the
-runner UID; install that exact runner and its dependencies as root-owned,
-non-producer-writable bytes rather than making the repository traversable.
-Only then may the owner start the Azure VM, verify the dedicated standard
-evidence session and guest agent, run the SYSTEM witness, execute the rights
-negative control, retain all raw artifacts, and grade the strict verifier. A
-green bootstrap or staging receipt is not runtime evidence and earns no F1
-point.
+The fixed Windows preflight also takes no arguments. It must be copied from the
+hash-pinned host installation and run locally on the guest as SID `S-1-5-18`
+(`NT AUTHORITY\SYSTEM`):
+
+```powershell
+C:\ProgramData\OSL-QA\bin\vmqa-f1-windows-provisioning-preflight.ps1
+```
+
+It reads only `C:\ProgramData\OSL-QA\f1-staging`, requires exactly one
+executable-hash directory, rejects reparse points and layout extras, and checks
+the staging root and every descendant for owner SYSTEM plus a protected,
+non-inherited DACL containing exactly one allow ACE: SYSTEM FullControl. It
+then rehashes the pinned-source build identity, executable, loader, producer
+seal, and receipt twice before returning a non-secret `writesPerformed: 0`
+record. It never reads the witness key. A host-side transcript or caller JSON
+cannot substitute for this local SYSTEM execution.
+
+The remaining human actions are therefore:
+
+1. Create the dedicated non-root, non-login producer account and exact
+   host directories without granting it a general shell or arbitrary-command
+   sudo rule.
+2. Install the four reviewed programs at the fixed root-owned `0555` paths.
+3. Install a complete usable root-owned toolchain beneath
+   `/opt/osl-vmqa/toolchain`, independently measure every resolved tool, and
+   land a separate reviewed pin update replacing the current Liam-owned paths.
+4. As the producer, create or import the real witness key without putting it in
+   arguments, environment, repository, share, artifacts, or logs.
+5. Produce and seal the exact `1f745c85` / `1b9bbbc` release bundle, stage it
+   through the accepted producer transaction, and obtain a green host
+   administrator preflight.
+6. While the VM remains off, arrange the fixed guest files and SYSTEM-only ACL
+   through the authorized provisioning channel, including provisioning the
+   same witness key at
+   `C:\ProgramData\OSL-QA\private\f1-native-witness.key` without exposing it to
+   the staging tree or logs. After the VM is started under separate
+   authorization, run the fixed Windows preflight locally as SYSTEM and retain
+   its raw output.
+7. Only then verify the standard evidence session and guest agent, execute the
+   SYSTEM witness and intended rights negative control, retain all raw
+   artifacts, and grade the strict verifier.
+
+Neither preflight is runtime evidence. Until those live steps occur, F1 stays
+unchanged.
