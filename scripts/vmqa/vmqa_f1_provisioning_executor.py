@@ -106,8 +106,8 @@ class TransitionBackend(Protocol):
         transition_id: str,
         idempotency_key: str,
         authorization_sha256: str,
-    ) -> None:
-        """Apply exactly one transition, idempotently."""
+    ) -> dict[str, Any]:
+        """Apply one transition and return its nonempty execution receipt."""
 
 
 def canonical_json(value: object) -> bytes:
@@ -480,6 +480,8 @@ def validate_checkpoint(
                 "planPayloadSha256",
                 "planBindingSha256",
                 "transitionBindingSha256",
+                "executionReceipt",
+                "executionReceiptSha256",
                 "authorizationSha256",
                 "authorizationSequence",
                 "runNonce",
@@ -489,6 +491,17 @@ def validate_checkpoint(
                 "previousReceiptSha256",
             },
             f"receipt {index + 1}",
+        )
+        expected_execution = expected_execution_receipt(
+            manifest, authorization_sha, transition
+        )
+        require_exact_value(
+            receipt["executionReceipt"],
+            expected_execution,
+            f"receipt {index + 1} execution",
+        )
+        expected_execution_sha = sha256_bytes(
+            canonical_json(expected_execution)
         )
         if (
             not isinstance(receipt["schemaVersion"], int)
@@ -509,6 +522,8 @@ def validate_checkpoint(
             or receipt["planBindingSha256"] != bindings["bindingSha256"]
             or receipt["transitionBindingSha256"]
             != bindings["transitionBindingSha256"][transition["id"]]
+            or receipt["executionReceiptSha256"]
+            != expected_execution_sha
             or receipt["authorizationSha256"] != authorization_sha
             or receipt["authorizationSequence"]
             != authorization["authorizationSequence"]
@@ -520,6 +535,7 @@ def validate_checkpoint(
             raise ExecutorError("receipt chain or exact binding differs")
         for key in (
             "idempotencyKey",
+            "executionReceiptSha256",
             "preObservationSha256",
             "postObservationSha256",
         ):
@@ -559,12 +575,40 @@ def idempotency_key(
     )
 
 
+def expected_execution_receipt(
+    manifest: dict[str, Any],
+    authorization_sha256: str,
+    transition: dict[str, Any],
+) -> dict[str, Any]:
+    bindings = plan_bindings(manifest)
+    ordinal = transition["ordinal"]
+    return {
+        "kind": "vmqa-f1-transition-executed",
+        "transitionId": transition["id"],
+        "operationCount": 1,
+        "completedBefore": ordinal - 1,
+        "completedAfter": ordinal,
+        "idempotencyKey": idempotency_key(
+            manifest, authorization_sha256, transition
+        ),
+        "authorizationSha256": authorization_sha256,
+        "planBindingSha256": bindings["bindingSha256"],
+        "effectBindingSha256": bindings["transitionBindingSha256"][
+            transition["id"]
+        ],
+        "sourceCommit": bindings["sourceCommit"],
+        "sourceTree": bindings["sourceTree"],
+        "executableSha256": bindings["releaseExecutableSha256"],
+    }
+
+
 def validate_observation(
     value: Any,
     manifest: dict[str, Any],
     *,
     expected_completed: list[str],
     expected_authorization_head: str,
+    authorization_sha256: str,
 ) -> dict[str, Any]:
     observation = exact_object(
         value,
@@ -572,6 +616,7 @@ def validate_observation(
             "target",
             "runtimeSha256",
             "completedBindingSha256",
+            "executionReceipts",
             "authorizationHeadSha256",
         },
         "backend observation",
@@ -599,6 +644,23 @@ def validate_observation(
     if list(completed) != expected_completed:
         raise ExecutorError(
             "observed completed transitions are not the exact ordered prefix"
+        )
+    receipts = observation["executionReceipts"]
+    if not isinstance(receipts, dict) or list(receipts) != expected_completed:
+        raise ExecutorError(
+            "observed execution receipts are empty or not the exact prefix"
+        )
+    transitions = {
+        item["id"]: item
+        for item in manifest["payload"]["operatorTransitions"]
+    }
+    for transition_id, receipt in receipts.items():
+        require_exact_value(
+            receipt,
+            expected_execution_receipt(
+                manifest, authorization_sha256, transitions[transition_id]
+            ),
+            f"{transition_id} execution receipt",
         )
     require_sha(
         observation["authorizationHeadSha256"],
@@ -658,11 +720,15 @@ def execute_simulation(
                 if already_applied or completed_before
                 else normalized_auth["previousAuthorizationSha256"]
             ),
+            authorization_sha256=auth_sha,
         )
         pre_sha = sha256_bytes(canonical_json(pre))
         key = idempotency_key(manifest, auth_sha, transition)
+        returned_receipt: dict[str, Any] | None = None
         if not already_applied:
-            backend.apply(transition_id, key, auth_sha)
+            returned_receipt = backend.apply(
+                transition_id, key, auth_sha
+            )
             if crash_after_apply == transition_id:
                 raise SimulatedCrash(
                     f"simulated crash after {transition_id} apply"
@@ -672,6 +738,17 @@ def execute_simulation(
             manifest,
             expected_completed=completed_before + [transition_id],
             expected_authorization_head=auth_sha,
+            authorization_sha256=auth_sha,
+        )
+        observed_receipt = post["executionReceipts"][transition_id]
+        if not already_applied:
+            require_exact_value(
+                returned_receipt,
+                observed_receipt,
+                f"{transition_id} returned execution receipt",
+            )
+        observed_receipt_sha = sha256_bytes(
+            canonical_json(observed_receipt)
         )
         receipt = {
             "schemaVersion": SCHEMA_VERSION,
@@ -687,6 +764,8 @@ def execute_simulation(
             "transitionBindingSha256": plan_bindings(manifest)[
                 "transitionBindingSha256"
             ][transition_id],
+            "executionReceipt": observed_receipt,
+            "executionReceiptSha256": observed_receipt_sha,
             "authorizationSha256": auth_sha,
             "authorizationSequence": normalized_auth[
                 "authorizationSequence"

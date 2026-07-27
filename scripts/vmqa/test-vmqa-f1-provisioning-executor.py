@@ -36,18 +36,30 @@ class SimulationBackend:
         authorization_head: str = executor.EMPTY_SHA256,
     ) -> None:
         bindings = executor.plan_bindings(manifest)
+        self.manifest = manifest
+        self.transitions = {
+            item["id"]: item
+            for item in manifest["payload"]["operatorTransitions"]
+        }
         self.target = executor.fixed_target()
         self.runtime_sha = bindings["runtimeSha256"]
         self.binding_hashes = bindings["transitionBindingSha256"]
-        self.completed: dict[str, str] = {}
+        self.effects: dict[str, str] = {}
+        self.receipt_records: dict[str, dict] = {}
+        self.completed_overrides: dict[str, str] = {}
         self.authorization_head = authorization_head
         self.apply_calls: list[tuple[str, str, str]] = []
+        self.receipt_override: dict | None = None
+        self.void_but_fabricated_receipt = False
 
     def observe(self) -> dict:
+        completed = copy.deepcopy(self.effects)
+        completed.update(self.completed_overrides)
         return {
             "target": copy.deepcopy(self.target),
             "runtimeSha256": self.runtime_sha,
-            "completedBindingSha256": copy.deepcopy(self.completed),
+            "completedBindingSha256": completed,
+            "executionReceipts": copy.deepcopy(self.receipt_records),
             "authorizationHeadSha256": self.authorization_head,
         }
 
@@ -56,14 +68,29 @@ class SimulationBackend:
         transition_id: str,
         idempotency_key: str,
         authorization_sha256: str,
-    ) -> None:
-        if transition_id in self.completed:
+    ) -> dict:
+        if transition_id in self.effects:
             raise AssertionError("executor repeated a completed mutation")
-        self.completed[transition_id] = self.binding_hashes[transition_id]
+        receipt = executor.expected_execution_receipt(
+            self.manifest,
+            authorization_sha256,
+            self.transitions[transition_id],
+        )
+        if self.void_but_fabricated_receipt:
+            self.receipt_records[transition_id] = receipt
+            self.authorization_head = authorization_sha256
+            return receipt
+        self.effects[transition_id] = self.binding_hashes[transition_id]
+        self.receipt_records[transition_id] = (
+            receipt
+            if self.receipt_override is None
+            else self.receipt_override
+        )
         self.authorization_head = authorization_sha256
         self.apply_calls.append(
             (transition_id, idempotency_key, authorization_sha256)
         )
+        return self.receipt_records[transition_id]
 
 
 class ExecutorTests(unittest.TestCase):
@@ -120,6 +147,16 @@ class ExecutorTests(unittest.TestCase):
         )
         self.assertEqual(len(backend.apply_calls), 7)
         for receipt in state["receipts"]:
+            self.assertEqual(receipt["executionReceipt"]["operationCount"], 1)
+            self.assertRegex(
+                receipt["executionReceiptSha256"], r"^[0-9a-f]{64}$"
+            )
+            self.assertEqual(
+                receipt["executionReceiptSha256"],
+                executor.sha256_bytes(
+                    executor.canonical_json(receipt["executionReceipt"])
+                ),
+            )
             self.assertEqual(
                 receipt["authorizationSha256"], self.auth_sha
             )
@@ -145,7 +182,7 @@ class ExecutorTests(unittest.TestCase):
             )
         self.assertEqual(len(persisted), 3)
         self.assertEqual(len(backend.apply_calls), 4)
-        self.assertIn("producer-witness-key", backend.completed)
+        self.assertIn("producer-witness-key", backend.effects)
         state = self.execute(backend, checkpoint=persisted[-1])
         self.assertEqual(len(state["receipts"]), 7)
         self.assertEqual(
@@ -192,6 +229,28 @@ class ExecutorTests(unittest.TestCase):
                     self.execute(backend)
                 self.assertEqual(backend.apply_calls, [])
 
+    def test_stale_build_empty_receipt_and_skipped_apply_refuse(self) -> None:
+        stale = SimulationBackend(self.manifest)
+        stale.receipt_override = executor.expected_execution_receipt(
+            self.manifest,
+            self.auth_sha,
+            self.manifest["payload"]["operatorTransitions"][0],
+        )
+        stale.receipt_override["sourceCommit"] = "f" * 40
+        stale.receipt_override["executableSha256"] = "0" * 64
+        empty = SimulationBackend(self.manifest)
+        empty.receipt_override = {}
+        skipped = SimulationBackend(self.manifest)
+        skipped.void_but_fabricated_receipt = True
+        for label, backend, reason in (
+            ("stale-build", stale, "execution receipt"),
+            ("empty-receipt", empty, "execution receipt"),
+            ("void-fabricated-receipt", skipped, "ordered prefix"),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(executor.ExecutorError, reason):
+                    self.execute(backend)
+
     def test_wrong_runtime_refuses_before_any_transition(self) -> None:
         backend = SimulationBackend(self.manifest)
         backend.runtime_sha = "0" * 64
@@ -203,13 +262,13 @@ class ExecutorTests(unittest.TestCase):
         backend = SimulationBackend(
             self.manifest, authorization_head=self.auth_sha
         )
-        backend.completed["host-producer-account"] = "0" * 64
+        backend.completed_overrides["host-producer-account"] = "0" * 64
         with self.assertRaisesRegex(executor.ExecutorError, "hash/ACL"):
             self.execute(backend)
         backend = SimulationBackend(
             self.manifest, authorization_head=self.auth_sha
         )
-        backend.completed["guest-system-provisioning"] = (
+        backend.completed_overrides["guest-system-provisioning"] = (
             backend.binding_hashes["guest-system-provisioning"]
         )
         with self.assertRaisesRegex(executor.ExecutorError, "ordered prefix"):
