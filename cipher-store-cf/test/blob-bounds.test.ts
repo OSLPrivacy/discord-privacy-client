@@ -1,18 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
 import {
   handleUpload,
   MAX_BLOB_BYTES,
   readBoundedBody,
 } from "../src/endpoints/blob.js";
+import { migratedD1 } from "./helpers/d1.js";
 
 function writableEnv(): Env {
-  // `changes` matters now: the insert carries the aggregate storage predicates,
-  // so a fake that reports no affected row reads as "at capacity".
-  const run = vi.fn().mockResolvedValue({ success: true, meta: { changes: 1 } });
-  const bind = vi.fn(() => ({ run }));
-  const prepare = vi.fn(() => ({ bind }));
-  return { DB: { prepare } } as unknown as Env;
+  return { DB: migratedD1().d1 } as unknown as Env;
 }
 
 describe("cipher upload body bounds", () => {

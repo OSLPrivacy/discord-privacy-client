@@ -6,6 +6,37 @@ import {
   MAX_LIVE_ATTACHMENT_ROWS,
 } from "../src/lib/attachment-limits.js";
 import { sweepExpiredAttachments } from "../src/lib/sweep.js";
+import { memoryR2, migratedD1 } from "./helpers/d1.js";
+
+const DIGEST = "a".repeat(64);
+
+function insertAttachment(
+  db: ReturnType<typeof migratedD1>,
+  row: {
+    id: string;
+    object_key: string;
+    upload_id: string | null;
+    expires_at?: number;
+    state?: "uploading" | "completing" | "ready";
+  },
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.exec(
+    `INSERT INTO attachment_objects
+       (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
+        fetch_token_sha256_hex, state, upload_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    row.id,
+    row.object_key,
+    1,
+    row.expires_at ?? now - 1,
+    row.expires_at ?? now - 1,
+    now - 60,
+    DIGEST,
+    row.state ?? "ready",
+    row.upload_id,
+  );
+}
 
 describe("attachment quota and expiry sweep", () => {
   it("uses Wrangler-splittable DDL for digest-only metadata", async () => {
@@ -25,90 +56,73 @@ describe("attachment quota and expiry sweep", () => {
   });
 
   it("drains a full-cap expired backlog in bounded bulk batches", async () => {
-    const rows = Array.from({ length: MAX_LIVE_ATTACHMENT_ROWS }, (_, index) => ({
-      id: index.toString(16).padStart(32, "0"),
-      object_key: `attachments/${index}`,
-      upload_id: null,
-    }));
-    const deletedKeys: string[] = [];
-    const prepare = vi.fn((sql: string) => ({
-      bind: (...values: unknown[]) => ({
-        all: async () => ({ results: rows.slice(0, ATTACHMENT_SWEEP_BATCH_SIZE) }),
-        run: async () => {
-          if (sql.includes("DELETE FROM attachment_objects")) {
-            const ids = new Set(values.slice(1).map(String));
-            for (let index = rows.length - 1; index >= 0; index--) {
-              if (ids.has(rows[index]!.id)) rows.splice(index, 1);
-            }
-          }
-          return { success: true };
-        },
-      }),
-    }));
-    const remove = vi.fn(async (keys: string | string[]) => {
-      deletedKeys.push(...(Array.isArray(keys) ? keys : [keys]));
-    });
+    const db = migratedD1();
+    const r2 = memoryR2();
+    for (let index = 0; index < MAX_LIVE_ATTACHMENT_ROWS; index++) {
+      const objectKey = `attachments/${index}`;
+      insertAttachment(db, {
+        id: index.toString(16).padStart(32, "0"),
+        object_key: objectKey,
+        upload_id: null,
+      });
+      r2.objects.set(objectKey, new Uint8Array([index % 256]));
+    }
+    const remove = vi.spyOn(r2.bucket, "delete");
     const env = {
-      DB: { prepare },
-      ATTACHMENTS: { delete: remove, head: vi.fn() },
+      DB: db.d1,
+      ATTACHMENTS: r2.bucket,
     } as unknown as Env;
 
     await expect(sweepExpiredAttachments(env)).resolves.toBe(MAX_LIVE_ATTACHMENT_ROWS);
-    expect(rows).toHaveLength(0);
-    expect(deletedKeys).toHaveLength(MAX_LIVE_ATTACHMENT_ROWS);
+    expect(db.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
+    expect(r2.objects.size).toBe(0);
     expect(remove).toHaveBeenCalledTimes(Math.ceil(MAX_LIVE_ATTACHMENT_ROWS / ATTACHMENT_SWEEP_BATCH_SIZE));
   });
 
   it("keeps retryable metadata if an R2 batch deletion fails", async () => {
-    const rows = [{ id: "0".repeat(32), object_key: "attachments/0", upload_id: null }];
-    const run = vi.fn();
+    const db = migratedD1();
+    const r2 = memoryR2();
+    insertAttachment(db, {
+      id: "0".repeat(32),
+      object_key: "attachments/0",
+      upload_id: null,
+    });
+    r2.objects.set("attachments/0", new Uint8Array([1]));
+    const remove = vi
+      .spyOn(r2.bucket, "delete")
+      .mockRejectedValueOnce(new Error("r2 unavailable"));
     const env = {
-      DB: {
-        prepare: vi.fn(() => ({
-          bind: () => ({ all: async () => ({ results: rows }), run }),
-        })),
-      },
-      ATTACHMENTS: {
-        delete: vi.fn(async () => { throw new Error("r2 unavailable"); }),
-        head: vi.fn(),
-      },
+      DB: db.d1,
+      ATTACHMENTS: r2.bucket,
     } as unknown as Env;
 
     await expect(sweepExpiredAttachments(env)).rejects.toThrow("r2 unavailable");
-    expect(run).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledOnce();
+    expect(db.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(1);
+    expect(r2.objects.has("attachments/0")).toBe(true);
   });
 
   it("aborts an expired incomplete multipart upload before deleting its metadata", async () => {
-    const rows = [{
+    const db = migratedD1();
+    const r2 = memoryR2();
+    const objectKey = "attachments/incomplete";
+    const upload = await r2.bucket.createMultipartUpload(objectKey);
+    insertAttachment(db, {
       id: "1".repeat(32),
-      object_key: "attachments/incomplete",
-      upload_id: "opaque-upload-id",
-    }];
-    const abort = vi.fn(async () => undefined);
-    const metadataDelete = vi.fn(async () => {
-      rows.splice(0, rows.length);
-      return { success: true };
+      object_key: objectKey,
+      upload_id: upload.uploadId,
+      state: "uploading",
     });
+    const resume = vi.spyOn(r2.bucket, "resumeMultipartUpload");
     const env = {
-      DB: {
-        prepare: vi.fn((sql: string) => ({
-          bind: () => ({
-            all: async () => ({ results: [...rows] }),
-            run: sql.includes("DELETE FROM attachment_objects")
-              ? metadataDelete
-              : vi.fn(),
-          }),
-        })),
-      },
-      ATTACHMENTS: {
-        head: vi.fn(async () => null),
-        resumeMultipartUpload: vi.fn(() => ({ abort })),
-        delete: vi.fn(async () => undefined),
-      },
+      DB: db.d1,
+      ATTACHMENTS: r2.bucket,
     } as unknown as Env;
 
+    expect(r2.liveUploads()).toBe(1);
     await expect(sweepExpiredAttachments(env)).resolves.toBe(1);
-    expect(abort).toHaveBeenCalledOnce();
-    expect(metadataDelete).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledWith(objectKey, upload.uploadId);
+    expect(r2.liveUploads()).toBe(0);
+    expect(db.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
   });
 });
