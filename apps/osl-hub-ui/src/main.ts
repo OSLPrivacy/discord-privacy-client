@@ -13,7 +13,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
-import { lastBackendFailure } from "./backend-failure";
+import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import {
   escapeHtml,
   beginProtectedBrowserImport,
@@ -106,6 +106,7 @@ import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups,
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -114,6 +115,7 @@ import { pollNativeDiscordHeadlessQa, runNativeDiscordHeadlessQa } from "./disco
 type Route = "onboarding" | "home" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-servers";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_DISCORD_OVERLAY_CLOSED_EVENT = "osl://native-discord-overlay-closed";
+const MAIN_WINDOW_CAPTURE_REFUSED_EVENT = "hub-main-capture-protection-refused";
 // OSL's protected composer is on screen and cannot receive the operator's
 // keystrokes -- either Windows refused to give it keyboard focus, or it lost the
 // z-order hit test to Discord. Either way the composer looks alive, and every
@@ -143,7 +145,8 @@ type BurnResult = {
   showUninstall: boolean;
 };
 type OwnedConfirmation =
-  | { kind: "verifyFriend"; personId: string; verificationCode: string }
+  | { kind: "verifyFriend"; personId: string }
+  | { kind: "removeFriend"; personId: string }
   | { kind: "clearActivation" };
 
 function requireRoot(): HTMLDivElement {
@@ -312,10 +315,12 @@ let discordQaTranscriptVisibilityOutcome: DiscordQaTranscriptVisibilityOutcome =
 let discordMarkerAvailable = true;
 let whitelistRosterOpen = false;
 let onboardingComplete = false;
-let screenshotProtectionEnabled = true;
+let screenshotProtectionEnabled = false;
 let windowCaptureEnabled = true;
 let hubIdentities: HubIdentitySlot[] = [];
 let newIdentityRecoveryPhrase: string | null = null;
+const recoveryCaptureGate = new RecoveryCaptureGate();
+const RECOVERY_PROTECTION_REFUSAL = "OSL cannot show recovery secrets because Windows capture resistance is not proven for this window";
 let hubPeople: HubPerson[] = [];
 let activeOslChatPersonId: string | null = null;
 let activeOslChatContext: ManualPeerContext | null = null;
@@ -623,7 +628,7 @@ function loadUiPreferences(): void {
       if (parsed.length) appNotifications = parsed;
     }
   } catch { /* malformed local notification metadata is ignored */ }
-  screenshotProtectionEnabled = true;
+  screenshotProtectionEnabled = false;
   mullvadAutoStart = localStorage.getItem(mullvadAutoStartStorageKey) === "true";
   enabledScrubSignals = parseScrubSignalGroups(localStorage.getItem(scrubSignalsStorageKey));
 }
@@ -1636,8 +1641,25 @@ function importIdentityForm(): string {
   return `<h1 id="route-heading" tabindex="-1">Restore your account</h1><form class="setup-surface password-form" id="identity-import-form" novalidate><label for="identity-recovery-phrase">Recovery phrase</label><textarea id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea><small>Stays on this device.</small><label for="import-password">New password</label><div class="password-input-row"><input id="import-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="import-password" aria-controls="import-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small>6 minimum. 12+ suggested.</small><label for="import-password-confirm">Confirm password</label><div class="password-input-row"><input id="import-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="import-password-confirm" aria-controls="import-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="import-error" role="alert"></p><button class="button primary" id="identity-import-submit" type="submit" disabled>Restore</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
 }
 
+async function proveRecoveryCaptureProtection(): Promise<boolean> {
+  recoveryCaptureGate.invalidate();
+  const checkpoint = recoveryCaptureGate.checkpoint();
+  screenshotProtectionEnabled = false;
+  const applied = await setScreenshotProtection(true).catch(() => false);
+  const focused = applied && await getCurrentWindow().isFocused().catch(() => false);
+  const currentWindow = focused && document.visibilityState !== "hidden";
+  const proven = currentWindow && recoveryCaptureGate.accept(checkpoint);
+  screenshotProtectionEnabled = proven;
+  return proven;
+}
+
+function recoveryProtectionRefusalContent(): string {
+  return `<h1 id="route-heading" tabindex="-1">Recovery secrets hidden</h1><section class="setup-surface recovery-surface" role="alert"><p>${RECOVERY_PROTECTION_REFUSAL}.</p><button class="button primary" id="retry-recovery-protection" type="button">Retry protection</button></section>`;
+}
+
 function recoveryContent(): string {
   if (!recoveryBundle) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
+  if (!recoveryCaptureGate.canRender()) return recoveryProtectionRefusalContent();
   const accountRecovery = recoveryBundle.identityPhrase ? `<code>${escapeHtml(recoveryBundle.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
   return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article><details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
 }
@@ -1732,10 +1754,14 @@ function bindOnboarding(): void {
   bindPasswordVisibility();
   bindPasswordForm();
   bindImportForm();
+  document.querySelector<HTMLButtonElement>("#retry-recovery-protection")?.addEventListener("click", async () => {
+    await proveRecoveryCaptureProtection();
+    render();
+  });
   const recoverySaved = document.querySelector<HTMLInputElement>("#recovery-saved");
   const recoveryContinue = document.querySelector<HTMLButtonElement>("#recovery-continue");
   document.querySelector<HTMLButtonElement>("#copy-recovery-kit")?.addEventListener("click", async () => {
-    if (!recoveryBundle) return;
+    if (!recoveryBundle || !recoveryCaptureGate.canRender()) return;
     const kit = [
       recoveryBundle.identityPhrase ? `Account recovery\n${recoveryBundle.identityPhrase}` : "Account recovery\nUse the account recovery phrase you imported.",
       `Password recovery\n${recoveryBundle.passwordPhrase}`,
@@ -2079,6 +2105,7 @@ function bindPasswordForm(): void {
         };
         recoverySavedAcknowledged = false;
         onboardingRoute = "recovery";
+        await proveRecoveryCaptureProtection();
       } else {
         const gate = await unlockHubPasswordGate(secret);
         secret = "";
@@ -2234,6 +2261,7 @@ function bindImportForm(): void {
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
       onboardingRoute = "recovery";
+      await proveRecoveryCaptureProtection();
       render();
     } catch (failure) {
       phraseSecret = "";
@@ -2641,13 +2669,14 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
   return hubPeople.slice(offset, end).map((person) => {
     const nickname = person.alias ?? "Unnamed friend";
     const identity = compactFriendId(person.oslUserId);
-    const action = person.safetyNumberVerified
+    const trustAction = friendTrustAction(person.safetyNumberVerified, person.pendingKeyChange);
+    const action = trustAction === "verified"
       ? mode === "service"
         ? activeContextToken
           ? `<button class="button compact" data-allow-person="${escapeHtml(person.personId)}">Approve for this chat</button>`
           : `<span class="status-tag">Open a supported chat first</span>`
         : `<span class="status-tag">Verified</span>`
-      : `<button class="button compact" data-verify-person="${escapeHtml(person.personId)}" data-safety-number="${escapeHtml(person.safetyNumber)}">Review request</button>`;
+      : `<button class="button compact" data-verify-person="${escapeHtml(person.personId)}">${person.pendingKeyChange ? "Re-verify key" : "Review request"}</button>`;
     if (mode === "home") {
       const lastMessage = oslChatMessages.get(person.personId)?.at(-1);
       const chatState = person.pendingKeyChange ? "Security change needs review" : person.safetyNumberVerified ? (lastMessage?.body ?? "Open encrypted chat") : "Request pending";
@@ -2662,7 +2691,8 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
       ? `<small>${hiddenScopeCount > 0 ? `${hiddenScopeCount} more approved ${hiddenScopeCount === 1 ? "chat" : "chats"}` : "More approved chats"} stored locally.</small>`
       : "";
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
-    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details></div></details>`;
+    const removeControl = mode === "manage" ? friendRemovalButtonMarkup(person.personId, escapeHtml) : "";
+    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
     return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong>${person.pendingKeyChange ? `<small>Security change needs review</small>` : `<small>${person.safetyNumberVerified ? "Verified" : "Request pending"}</small>`}</div>${action}</header>${management}</article>`;
   }).join("");
 }
@@ -2836,11 +2866,15 @@ function ownedConfirmationMarkup(): string {
   if (!ownedConfirmation) return "";
   const request = ownedConfirmation;
   const verifying = request.kind === "verifyFriend";
-  const title = verifying ? "Accept friend request?" : "Clear Pro activation?";
+  const removing = request.kind === "removeFriend";
+  const person = verifying || removing ? hubPeople.find((candidate) => candidate.personId === request.personId) ?? null : null;
+  const title = verifying ? "Verify this friend's key?" : removing ? "Remove friend?" : "Clear Pro activation?";
   const detail = request.kind === "verifyFriend"
-    ? `<p>Compare this verification code with your friend another way first.</p><code class="verification-code">${escapeHtml(request.verificationCode)}</code><p>Accepting stores the request on this device. It does not turn on decryption in any chat.</p>`
+    ? `<p>This device's verification code for ${escapeHtml(person?.alias ?? "this friend")}. Read it aloud to your friend:</p><code class="verification-code" aria-label="Your local verification code">${escapeHtml(person?.safetyNumber ?? "Unavailable")}</code><label class="owned-confirmation-entry" for="friend-verification-input"><span>Enter the code your friend read back to you over a channel that is not this app</span><input id="friend-verification-input" autocomplete="off" spellcheck="false" inputmode="numeric" autocapitalize="none" maxlength="96" placeholder="Spaces and grouping do not matter"/></label><p>Accept only after you compare the codes outside OSL. Accepting lets OSL encrypt to the key it holds for this friend. It does not turn on decryption in any chat or approve any conversation.</p>`
+    : request.kind === "removeFriend"
+      ? `<p>Removing ${escapeHtml(person?.alias ?? "this friend")} deletes this friend's keys from this device and withdraws every conversation approval they hold.</p><p>This cannot be undone.</p>`
     : `<p>Pro features will be unavailable on this device until you activate again.</p>`;
-  return `<dialog class="owned-confirmation-dialog" id="owned-confirmation-dialog" aria-labelledby="owned-confirmation-title"><section class="owned-confirmation-card"><header><h2 id="owned-confirmation-title">${title}</h2><button class="icon-button" data-close-owned-confirmation aria-label="Cancel">×</button></header>${detail}<p class="form-status" role="status">${escapeHtml(ownedConfirmationError)}</p><footer><button class="button" data-close-owned-confirmation>Cancel</button><button class="button ${verifying ? "primary" : "danger"}" id="owned-confirmation-submit" ${ownedConfirmationBusy ? "disabled" : ""}>${ownedConfirmationBusy ? "Working…" : verifying ? "Accept locally" : "Clear activation"}</button></footer></section></dialog>`;
+  return `<dialog class="owned-confirmation-dialog" id="owned-confirmation-dialog" aria-labelledby="owned-confirmation-title"><section class="owned-confirmation-card"><header><h2 id="owned-confirmation-title">${title}</h2><button class="icon-button" data-close-owned-confirmation aria-label="Cancel">×</button></header>${detail}<p class="form-status" role="status">${escapeHtml(ownedConfirmationError)}</p><footer><button class="button" data-close-owned-confirmation>Cancel</button><button class="button ${verifying ? "primary" : "danger"}" id="owned-confirmation-submit" type="button" ${ownedConfirmationBusy || verifying ? "disabled" : ""}>${ownedConfirmationBusy ? "Working…" : verifying ? "Accept key" : removing ? "Remove friend" : "Clear activation"}</button></footer></section></dialog>`;
 }
 
 function serviceContent(): string {
@@ -3248,7 +3282,11 @@ function identitySettingsContent(): string {
   const identities = hubIdentities.length
     ? hubIdentities.map((identity) => `<article class="identity-row"><div><strong>${escapeHtml(identity.label)}</strong><small>${escapeHtml(identity.oslUserId)} · ${escapeHtml(identity.safetyNumber)}</small></div>${identity.active ? `<span class="status-tag">Active</span>` : `<button class="button compact" data-switch-identity="${escapeHtml(identity.slotId)}">Switch</button>`}</article>`).join("")
     : `<div class="empty-state"><strong>Identity list unavailable</strong><p>Unlock OSL to manage encrypted identity slots.</p></div>`;
-  const recovery = newIdentityRecoveryPhrase ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>` : "";
+  const recovery = newIdentityRecoveryPhrase
+    ? recoveryCaptureGate.canRender()
+      ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>`
+      : `<div class="warning recovery-secret" role="alert"><strong>Recovery phrase hidden</strong><p>${RECOVERY_PROTECTION_REFUSAL}.</p><button class="button compact" id="retry-recovery-protection" type="button">Retry protection</button></div>`
+    : "";
   return `<h2>Account</h2><p>One active identity on this device.</p><div class="identity-list">${identities}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
 }
 
@@ -3319,7 +3357,11 @@ function bindOwnedConfirmation(): void {
   const dialog = document.querySelector<HTMLDialogElement>("#owned-confirmation-dialog");
   dialog?.addEventListener("cancel", (event) => { event.preventDefault(); closeOwnedConfirmation(); });
   dialog?.addEventListener("close", () => { if (ownedConfirmation) closeOwnedConfirmation(); });
-  document.querySelector<HTMLButtonElement>("#owned-confirmation-submit")?.addEventListener("click", () => void executeOwnedConfirmation());
+  const input = document.querySelector<HTMLInputElement>("#friend-verification-input");
+  const submit = document.querySelector<HTMLButtonElement>("#owned-confirmation-submit");
+  const validate = (): void => { if (input && submit) submit.disabled = ownedConfirmationBusy || input.value.length === 0; };
+  input?.addEventListener("input", validate);
+  submit?.addEventListener("click", () => void executeOwnedConfirmation());
 }
 
 function resetLocalProtectedSheet(closeRemote = true): void {
@@ -3704,6 +3746,13 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
     : "Transcript visibility saved; no protected display surface is open");
   render();
 }
+
+void listen<void>(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, () => {
+  recoveryCaptureGate.invalidate();
+  screenshotProtectionEnabled = false;
+  newIdentityRecoveryPhrase = null;
+  renderNow();
+});
 
 void listen<void>(NATIVE_DISCORD_OVERLAY_CLOSED_EVENT, () => {
   // The native side only sends this when the protected display surface is
@@ -4405,6 +4454,10 @@ function bindWorkspace(): void {
     (event.currentTarget as HTMLInputElement).focus({ preventScroll: true });
   });
   document.querySelector<HTMLButtonElement>("#clear-activation-code")?.addEventListener("click", requestClearProActivation);
+  document.querySelector<HTMLButtonElement>("#retry-recovery-protection")?.addEventListener("click", async () => {
+    await proveRecoveryCaptureProtection();
+    render();
+  });
   document.querySelector<HTMLFormElement>("#identity-slot-form")?.addEventListener("submit", (event) => void createAdditionalIdentity(event));
   document.querySelector<HTMLFormElement>("#identity-recover-form")?.addEventListener("submit", (event) => void recoverAdditionalIdentity(event));
   document.querySelectorAll<HTMLButtonElement>("[data-switch-identity]").forEach((button) => button.addEventListener("click", () => void switchIdentity(button.dataset.switchIdentity ?? "")));
@@ -4550,7 +4603,11 @@ function bindWorkspace(): void {
     if (dialog && !dialog.open) dialog.showModal();
   });
   document.querySelector("#people-dialog-close")?.addEventListener("click", () => document.querySelector<HTMLDialogElement>("#people-dialog")?.close());
-  document.querySelectorAll<HTMLButtonElement>("[data-verify-person]").forEach((button) => button.addEventListener("click", () => requestFriendVerification(button.dataset.verifyPerson ?? "", button.dataset.safetyNumber ?? "")));
+  document.querySelectorAll<HTMLButtonElement>("[data-verify-person]").forEach((button) => button.addEventListener("click", () => requestFriendVerification(button.dataset.verifyPerson ?? "")));
+  bindFriendRemovalControls(
+    { querySelectorAll: (selector) => document.querySelectorAll<HTMLButtonElement>(selector) },
+    requestFriendRemoval,
+  );
   document.querySelectorAll<HTMLButtonElement>("[data-allow-person]").forEach((button) => button.addEventListener("click", () => void allowPersonHere(button.dataset.allowPerson ?? "")));
   document.querySelectorAll<HTMLElement>("[data-open-friends]").forEach((button) => button.addEventListener("click", () => {
     friendsDialogOpen = true;
@@ -5422,10 +5479,19 @@ async function copyFriendInvite(): Promise<void> {
   showToast(await copyHubFriendInvite(friendCode) ? "Invite copied" : "Could not copy the invite");
 }
 
-function requestFriendVerification(personId: string, verificationCode: string): void {
-  if (!personId || !verificationCode) return;
+function requestFriendVerification(personId: string): void {
+  if (!hubPeople.some((person) => person.personId === personId && person.safetyNumber.length > 0)) return;
   friendsDialogOpen = false;
-  ownedConfirmation = { kind: "verifyFriend", personId, verificationCode };
+  ownedConfirmation = { kind: "verifyFriend", personId };
+  ownedConfirmationBusy = false;
+  ownedConfirmationError = "";
+  render();
+}
+
+function requestFriendRemoval(personId: string): void {
+  if (!hubPeople.some((person) => person.personId === personId)) return;
+  friendsDialogOpen = false;
+  ownedConfirmation = { kind: "removeFriend", personId };
   ownedConfirmationBusy = false;
   ownedConfirmationError = "";
   render();
@@ -5541,30 +5607,51 @@ function requestClearProActivation(): void {
 async function executeOwnedConfirmation(): Promise<void> {
   if (!ownedConfirmation || ownedConfirmationBusy) return;
   const request = ownedConfirmation;
+  const verificationInput = document.querySelector<HTMLInputElement>("#friend-verification-input");
+  const typedVerificationCode = request.kind === "verifyFriend" ? verificationInput?.value ?? "" : "";
+  if (request.kind === "verifyFriend" && typedVerificationCode.length === 0) return;
   ownedConfirmationBusy = true;
   ownedConfirmationError = "";
   const submit = document.querySelector<HTMLButtonElement>("#owned-confirmation-submit");
   if (submit) { submit.disabled = true; submit.textContent = "Working…"; }
+  const refuse = (message: string): void => {
+    ownedConfirmationBusy = false;
+    ownedConfirmationError = message;
+    const status = document.querySelector<HTMLElement>("#owned-confirmation-dialog .form-status");
+    if (status) status.textContent = message;
+    if (submit) {
+      submit.disabled = request.kind === "verifyFriend" && (verificationInput?.value.length ?? 0) === 0;
+      submit.textContent = request.kind === "verifyFriend" ? "Accept key" : request.kind === "removeFriend" ? "Remove friend" : "Clear activation";
+    }
+  };
   try {
     if (request.kind === "verifyFriend") {
-      if (!(await verifyHubPerson(request.personId, request.verificationCode))) {
-        ownedConfirmationBusy = false;
-        ownedConfirmationError = "Verification failed closed. Nothing changed.";
-        render();
-        return;
-      }
+      const reviewingKeyChange = hubPeople.find((person) => person.personId === request.personId)?.pendingKeyChange === true;
+      if (!(await verifyHubPerson(request.personId, typedVerificationCode))) { refuse("Verification refused: the code was not accepted. Nothing changed."); return; }
       hubPeople = await listHubPeople() ?? hubPeople;
       closeOwnedConfirmation();
-      showToast("Friend request accepted locally · no conversations approved");
+      showToast(reviewingKeyChange ? "Friend key re-verified locally · no conversations approved" : "Friend request accepted locally · no conversations approved");
+      return;
+    }
+    if (request.kind === "removeFriend") {
+      if (!(await removeHubFriend(request.personId, { isTauriRuntime, invoke, recordBackendFailure }))) { refuse("Friend removal refused. Nothing changed."); return; }
+      hubPeople = await listHubPeople() ?? hubPeople.filter((person) => person.personId !== request.personId);
+      if (shouldClearRemovedFriendChat(activeOslChatPersonId, request.personId)) {
+        resetOslChatUiState(false);
+        if (route === "osl-chat") route = "home";
+      }
+      if (oslChatSettingsPersonId === request.personId) oslChatSettingsPersonId = null;
+      oslChatMessages.delete(request.personId);
+      oslChatUnread.delete(request.personId);
+      closeOwnedConfirmation();
+      showToast("Friend removed · keys and conversation approvals withdrawn");
       return;
     }
     licenseState = await clearHubActivationCode();
     closeOwnedConfirmation();
     showToast("Activation cleared from this device");
   } catch (failure) {
-    ownedConfirmationBusy = false;
-    ownedConfirmationError = localActionError(failure, request.kind === "clearActivation" ? "The saved activation could not be cleared." : "Verification failed closed. Nothing changed.");
-    render();
+    refuse(localActionError(failure, request.kind === "clearActivation" ? "The saved activation could not be cleared." : request.kind === "removeFriend" ? "Friend removal refused. Nothing changed." : "Verification refused. Nothing changed."));
   }
 }
 
@@ -5573,8 +5660,17 @@ async function createAdditionalIdentity(event: SubmitEvent): Promise<void> {
   const input = document.querySelector<HTMLInputElement>("#identity-slot-label");
   const label = input?.value.trim() ?? "";
   if (!label) return;
+  if (!(await proveRecoveryCaptureProtection())) {
+    showToast(RECOVERY_PROTECTION_REFUSAL);
+    render();
+    return;
+  }
   const created = await createHubIdentitySlot(label);
   if (!created) { showToast("Identity creation failed closed"); return; }
+  if (!recoveryCaptureGate.canRender()) {
+    showToast(RECOVERY_PROTECTION_REFUSAL);
+    return;
+  }
   newIdentityRecoveryPhrase = created.identityRecoveryPhrase;
   core = await loadCoreIntegration();
   await refreshIdentitySlots();
@@ -6603,13 +6699,28 @@ window.addEventListener("resize", scheduleNativeHostRealignment);
 const desktopWindow = getCurrentWindow();
 void desktopWindow.onMoved(scheduleNativeHostRealignment).catch(() => undefined);
 void desktopWindow.onResized(scheduleNativeHostRealignment).catch(() => undefined);
-void desktopWindow.onFocusChanged(({ payload }) => {
-  if (payload) scheduleNativeHostRealignment();
-}).catch(() => undefined);
+void bindMainWindowFocusChanges(
+  (handler) => desktopWindow.onFocusChanged(handler),
+  {
+    scheduleNativeHostRealignment,
+    hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
+    proveRecoveryCaptureProtection,
+    invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
+    setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
+    render,
+  },
+).catch(() => undefined);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "hidden" || !newIdentityRecoveryPhrase) return;
-  newIdentityRecoveryPhrase = null;
-  if (route === "settings" && settingsSection === "account") render();
+  if (document.visibilityState === "hidden") {
+    recoveryCaptureGate.invalidate();
+    screenshotProtectionEnabled = false;
+    newIdentityRecoveryPhrase = null;
+    if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
+    return;
+  }
+  if (recoveryBundle || newIdentityRecoveryPhrase) {
+    void proveRecoveryCaptureProtection().then(() => render());
+  }
 });
 window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
 window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
