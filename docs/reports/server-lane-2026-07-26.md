@@ -1078,6 +1078,44 @@ because **nothing emits that namespace yet** — reserving it breaks no client a
 closes the squatting window before it can open. Everything else in the corrected
 contract needs the client change and a separately reviewed protocol.
 
+## Two more platform-contract findings, recorded with mechanism
+
+Full review: `docs/reports/server-platform-limit-review-2026-07-26.md`. These are
+the two I had not written down before the window closed. Neither is fixed.
+
+**1. Read-bucket rate limits are not a ceiling during a burst.** `LOW`, and
+fail-open by design — the defect is the claim, not the behaviour.
+`src/lib/rate-limit.ts:181-194` writes one KV key per admitted read. KV permits
+**one write per second to the same key** and rejects the rest with 429
+(<https://developers.cloudflare.com/kv/api/write-key-value-pairs/#limits-to-kv-writes-to-the-same-key>).
+One address issuing two same-bucket reads inside a second therefore makes `put()`
+throw; the catch fails read buckets open on purpose, and those requests are
+admitted **without being counted**. The file's own header advertised "fetches:
+3600 / hour" as a budget. Corrected in place: read buckets are a steady-state
+cost control, not a bound, and only the D1-backed mutation buckets are a real
+ceiling. To confirm against real KV: two same-bucket reads from one address
+inside one second, and observe both admitted plus the limiter-unavailable line.
+
+**2. `meta.changes` exact 0/1 semantics are relied on and not documented.**
+`UNKNOWN — needs a real-D1 matrix, do not assume.` Cloudflare documents
+`meta.changes` only as a rough indication of rows changed and does not specify
+branch values for `INSERT ... SELECT ... WHERE` or
+`ON CONFLICT DO UPDATE ... WHERE`. Three places treat it as exactly 0 or 1, and
+all three are load-bearing security decisions I wrote or touched tonight:
+`cipher-store-cf/src/endpoints/attachment.ts:200-231` and `:336-360` (quota
+admission), `cipher-store-cf/src/lib/rate-limit.ts:167-175` (the atomic
+limiter's admit/deny), and
+`keyserver-cf/src/endpoints/control-inbox.ts:553-621` (inbox admission). The
+observed behaviour is correct under the workers-pool suite, so this is not a
+known defect — it is an undocumented dependency, which is a different and
+quieter risk. The check is a four-case matrix against real D1: insert applied,
+select predicate skipped, conflict-update applied, conflict-update skipped;
+compare `meta.changes`, `rows_written` and `RETURNING` in each.
+
+This is worth stating plainly because it is the same shape as the two defects
+already confirmed tonight: correct-looking code resting on a platform behaviour
+nobody had read the contract for.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not

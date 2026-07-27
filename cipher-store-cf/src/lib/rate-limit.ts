@@ -19,6 +19,15 @@
 /// dumped to enumerate likely addresses, and rows/entries are removed once
 /// their window closes.
 ///
+/// READ BUCKETS ARE APPROXIMATE, NOT A CEILING. KV permits only one write per
+/// second to the same key and rejects the rest. A single address issuing more
+/// than one read per second in the same bucket therefore makes `put()` throw,
+/// the catch below fails read buckets open by design, and those requests are
+/// admitted without being counted. So the read numbers below are a cost control
+/// that works at steady state, not a bound that holds during a burst. Only the
+/// mutation buckets, which count in D1, are a real ceiling. Do not cite a read
+/// budget as an enforced limit.
+///
 /// Budgets (per IP, per rolling window):
 ///   uploads:  600 / hour
 ///   fetches:  3600 / hour
