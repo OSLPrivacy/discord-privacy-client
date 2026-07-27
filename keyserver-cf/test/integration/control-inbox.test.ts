@@ -160,17 +160,31 @@ describe("POST /v1/control-inbox hardening", () => {
     const res = await post(
       await signedPostBody(senderId, recipientId, sender.signingKey),
     );
-    // Contract change: a full inbox no longer refuses the sender. Refusing
-    // punished the sender for something only the recipient can fix, and if the
-    // recipient never drains at all the sender was blocked for the whole TTL.
-    // The cap still bounds storage -- it is now enforced by evicting the
-    // oldest undelivered row rather than by rejecting the newest.
-    expect(res.status).toBe(201);
+    // Contract change (2026-07-26 audit). This previously asserted 201: a full
+    // recipient inbox was made to fit by evicting its oldest undelivered row,
+    // whoever had sent it. Because registration is open, that turned the cap
+    // into a cross-account deletion primitive -- an attacker could destroy an
+    // offline victim's pending SKDM/control state, and the dependent protected
+    // messages with it, silently.
+    //
+    // The storage bound is unchanged. It is now enforced by refusing the newest
+    // row instead of destroying somebody else's oldest, and the refusal is an
+    // explicit, documented code the client already handles
+    // (`recipient_inbox_full` in crates/keystore/src/client.rs) rather than
+    // silence. A sender is still never permanently blocked: it keeps its own
+    // per-pair allowance, and reserved headroom keeps a first contact
+    // deliverable -- see control-inbox-cross-sender.test.ts.
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({
+      error: "recipient_inbox_full",
+      scope: "recipient",
+    });
     const after = await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM control_inbox WHERE recipient_id = ?`,
     )
       .bind(recipientId)
       .first<{ count: number }>();
+    // Nothing was deleted to make room, and nothing was added.
     expect(after?.count).toBe(512);
   });
 

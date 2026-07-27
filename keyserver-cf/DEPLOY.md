@@ -604,11 +604,192 @@ unset KS
 
 ---
 
+## §11b Audit fixes 2026-07-26 — control-inbox admission + pubkeys minimisation (STAGED, NOT DEPLOYED)
+
+Two medium findings from `docs/security/osl-audit-2026-07-26-codex.md`. Report:
+`docs/reports/server-lane-2026-07-26.md`.
+
+**No migration.** Both are Worker-only. The schema, including migration 0029, is
+untouched, so this is a single ordinary deploy and an ordinary rollback.
+
+```sh
+cd keyserver-cf
+npm run typecheck
+npx vitest run --maxWorkers=1                              # expect 39 files / 381 tests
+npx vitest run --config vitest.node.config.ts              # expect 1 file / 3 tests
+npx wrangler deploy                                        # note the printed version id
+```
+
+Two behaviour changes to be aware of before flipping this:
+
+1. **`POST /v1/control-inbox` can now answer `429 recipient_inbox_full`** on the
+   ordinary lane where it previously always answered 201. It only does so when
+   the recipient already holds 512 undelivered rows (or 384, for a sender that
+   is itself holding four or more). The client already handles this code
+   (`recipient_inbox_full` in `crates/keystore/src/client.rs`), so this is a
+   path that exists rather than a new one. What it replaces is silent deletion
+   of an unrelated sender's rows.
+2. **`GET /v1/pubkeys/:user_id` no longer returns `last_rotated_at`,** and
+   `registered_at` is now UTC-date granularity. `last_rotated_at` is
+   `Option<String>` in every client, so absence deserialises cleanly.
+   `registered_at` is deliberately still present — see the report for why
+   removing it needs a Rust change first.
+
+### Post-deploy probe — prove it is live, not just deployed
+
+```sh
+# Free and read-only. Proves the pubkeys fix and that 0029's snowflake refusal
+# still holds (the inbox probe's setup SQL depends on 0029's column).
+node scripts/post-deploy-probe.mjs --host "$KS" --user <a-known-opaque-osl-id>
+```
+
+The control-inbox probe is opt-in because it is the only one that **writes
+production rows** — the endpoint requires a registered sender and recipient, so
+there is no way to exercise it otherwise. It does not call `/v1/register`;
+it prints two clearly namespaced `wrangler d1 execute` statements, one to set up
+and one to reverse, so every row it creates is auditable and removable:
+
+```sh
+node scripts/post-deploy-probe.mjs --host "$KS" --inbox-probe --yes
+# apply the printed setup SQL, then:
+OSL_PROBE_SETUP_DONE=1 node scripts/post-deploy-probe.mjs --host "$KS" --inbox-probe --yes
+# then apply the printed cleanup SQL, whatever the result
+```
+
+A `201` from that probe is the alarm condition: it means the old evicting Worker
+is live and a row belonging to another sender was just destroyed. `429
+recipient_inbox_full` is the pass.
+
+The probe signs its request by importing the Worker's own
+`src/lib/canonical.ts`, so it cannot drift from what the Worker verifies. If it
+reports a 401 that is a probe/Worker mismatch, not a regression in the fix.
+
+**Rollback.** `npx wrangler rollback`. Nothing persistent changed, so the
+previous Worker resumes exactly its old behaviour — including, note, the
+cross-sender eviction defect.
+
+---
+
 ## §12 Next: F1.4 cutover
 
 Once §0–§11 all pass against the `.workers.dev` URL, proceed to
 [`CUTOVER.md`](./CUTOVER.md) to wire `keyserver.oslprivacy.com`
 and flip Railway to redirect mode.
+
+---
+
+## §12 View-once link grants (`POST /v1/link-grant`) — NOT DEPLOYED
+
+Migration `0028_link_grant_issuance.sql` and the `/v1/link-grant`
+endpoint are **committed and undeployed**. The live Worker serves the
+owner's real identity, and the approval given for the 0026/0027 deploy
+does not carry forward. Nothing below runs without a fresh explicit
+decision.
+
+Current live behaviour, and the correct one until then: the route does
+not exist on the deployed Worker, so no grant can be issued, so
+`cipher-store-cf`'s `POST /v1/link` answers 503 and no view-once link
+can be created anywhere. The lane is fail-closed end to end.
+
+### What the grant is
+
+An **anonymous, single-use, ≤10-minute** Ed25519 token:
+
+```
+Authorization: OSL-Link-Grant <base64url(payload)>.<base64url(sig)>
+payload = {"aud":"osl-link-create","exp":<unix>,"jti":"<32 hex>"}
+sig     = Ed25519( "OSL-LINK-GRANT-v1" || 0x00 || payload )
+```
+
+Three claims, no identity. The keyserver knows who asked (the request
+is signed by a registered identity) and never sees the link; the
+cipher-store sees the link and never knows who asked. Do not add a user
+id "for abuse handling" — abuse handling happens here, by refusing to
+issue. `cipher-store-cf/test/link-grant.test.ts` and
+`test/unit/link-grant-issuer.test.ts` both pin the claim set so this
+cannot drift silently.
+
+### Step 1 — generate the issuer keypair
+
+```bash
+cd keyserver-cf
+npm run gen:link-grant-key
+```
+
+Prints two values and writes nothing to disk. Do not redirect the
+output to a file or a log.
+
+- `LINK_GRANT_SECRET_B64` — PKCS#8 Ed25519 private key. This is the
+  link-creation capability for the entire lane. Keyserver Worker secret
+  only.
+- `LINK_GRANT_PUBKEY_B64` — raw 32-byte public key. Goes on **both**
+  Workers.
+
+### Step 2 — install, in this order
+
+Public half on the verifier first. Installing the secret before the
+verifier's public key would issue grants that the store refuses.
+
+```bash
+cd cipher-store-cf && npx wrangler secret put LINK_GRANT_PUBKEY_B64
+cd keyserver-cf   && npx wrangler secret put LINK_GRANT_PUBKEY_B64
+cd keyserver-cf   && npx wrangler secret put LINK_GRANT_SECRET_B64
+```
+
+The keyserver keeps its own copy of the public half solely so a
+mismatched pair fails loudly at issuance (503) instead of silently
+401-ing every link creation at the store.
+
+### Step 3 — migration BEFORE worker
+
+The new endpoint writes `link_grant_receipts` and `link_grant_quota`.
+Deploying the worker first would 5xx every issuance until the migration
+lands.
+
+```bash
+cd keyserver-cf
+npx wrangler d1 migrations apply osl-keyserver-prod --remote   # 0028
+npx wrangler deploy
+```
+
+Verify (expects `503` before Step 2's secrets exist, `400` after):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST https://keyserver.oslprivacy.com/v1/link-grant \
+  -H 'content-type: application/json' -d '{}'
+```
+
+### Rate limiting
+
+| Bound | Value | Mechanism |
+| --- | --- | --- |
+| per caller IP | 10/min | native rate-limit binding |
+| per identity | 5/min | native rate-limit binding |
+| per identity | 50/day | D1 trigger `link_grant_daily_quota` (race-safe) |
+| per signed request | 1 grant, ever | `link_grant_receipts` primary key |
+
+The per-minute counters are Cloudflare's permissive, eventually
+consistent ones — abuse control, not authorization. The durable bound is
+the daily trigger. It caps one identity; the anti-Sybil bound is the
+per-IP limit here plus the per-IP limit on `/v1/register`, since
+registration is open by design.
+
+### Rotation
+
+There is no dual-key window — the verifier holds exactly one public key.
+Install the new public half on `cipher-store-cf` first, then the new
+secret here, and accept a few seconds of `grant_signature` refusals in
+between. If the private half leaks, rotate immediately: a leaked issuer
+is not a disclosure (grants carry nothing) but it is an unbounded
+link-creation capability.
+
+### Still not enough to create a link
+
+Even after all of the above, `create_view_once_link` refuses until the
+operator's neutral aged domain exists and `link_url` is configured. See
+`crates/ipc/src/cipher_store_client.rs` `DEFAULT_LINK_HOST` and the
+commented-out route in `cipher-store-cf/wrangler.toml`.
 
 ---
 
@@ -664,5 +845,6 @@ The deployed worker exposes:
 | POST | `/v1/crypto/quote` | public (rate-limited) |
 | POST | `/v1/crypto/status` | anonymous claim token (rate-limited) |
 | POST | `/v1/internal/crypto/settle` | timestamped watcher Ed25519 signature |
+| POST | `/v1/link-grant` | registered-identity Ed25519 signature (**not deployed**, see §12) |
 
 Plus `scheduled()` handler driven by `[triggers] crons`.

@@ -15,8 +15,13 @@
 ///   * No variable app-level request logging. Fixed failure event names carry
 ///     no identifiers, URLs, sizes, row counts, or timing details.
 ///   * Short blob TTLs (1h / 24h / 72h / 7d) enforced server-side.
-///   * IP-based rate limit lives in KV with short TTL — never
-///     persisted to D1.
+///   * Rate-limit state is keyed by an opaque HMAC of (bucket, client address)
+///     under a server-only secret, and is discarded when its window closes.
+///     Read buckets keep it in KV; mutation buckets keep it in the D1
+///     `rate_counters` table, because KV's read/modify/write could not enforce
+///     a ceiling (2026-07-26 audit). This line previously said "never persisted
+///     to D1" — see wrangler.toml for why that changed and why the
+///     minimisation property is unchanged.
 
 import type { Env } from "./env.js";
 import {
@@ -42,7 +47,7 @@ import {
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleLanding, handleRobots } from "./lib/landing.js";
 import { clientIp, error, notFound, serverError } from "./lib/http.js";
-import { rateLimit } from "./lib/rate-limit.js";
+import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
 import {
   sweepExpired,
   sweepExpiredAttachments,
@@ -83,6 +88,11 @@ export default {
       await sweepExpiredLinks(env);
     } catch {
       console.error("[link-sweep] failed");
+    }
+    try {
+      await sweepRateCounters(env);
+    } catch {
+      console.error("[rate-counter-sweep] failed");
     }
   },
 };
@@ -159,8 +169,11 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     return handleAttachmentUpload(request, env);
   }
 
+  // Session creation has its own small budget: it reserves storage before any
+  // ciphertext exists, so it must not share the allowance that parts and
+  // completion draw on (audit HIGH-1).
   if (path === "/v1/attachment/session" && request.method === "POST") {
-    const rl = await rateLimit(env, clientIp(request), "attachment-upload");
+    const rl = await rateLimit(env, clientIp(request), "attachment-session");
     if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
     return handleAttachmentSessionCreate(request, env);
   }

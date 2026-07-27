@@ -52,6 +52,23 @@ const MAX_DRAIN_ROWS = 64;
 const MAX_PENDING_ROWS_PER_RECIPIENT = 512;
 const MAX_PENDING_ROWS_PER_SENDER_RECIPIENT = 32;
 
+/// Slots inside `MAX_PENDING_ROWS_PER_RECIPIENT` that a sender who already
+/// holds a meaningful backlog may not consume.
+///
+/// Registration is open, so 16 identities holding 32 rows each used to be
+/// enough to reach the recipient-wide cap. The old answer was to delete the
+/// oldest undelivered rows for that recipient no matter who sent them, which
+/// let an attacker silently destroy an unrelated sender's pending control state
+/// (2026-07-26 audit). Refusing instead is correct but, on its own, converts
+/// that attack into "nobody can reach this recipient at all". The reserve keeps
+/// a first contact deliverable through a congested lane: 128 slots at up to
+/// four rows apiece is 32 distinct senders who can still get a message in after
+/// the ordinary allowance is gone.
+const RESERVED_FRESH_SENDER_ROWS = 128;
+
+/// How much a sender may already hold and still draw on that reserve.
+const FRESH_SENDER_ROWS = 4;
+
 /// The two lanes. `""` is the ordinary, evictable lane every existing client
 /// posts to; `revocation` is the bilateral-burn lane.
 const KIND_ORDINARY = "";
@@ -193,6 +210,12 @@ async function findRequestReceipt(
  * Returns the number evicted. A no-op while the count is under the cap, so the
  * common path costs nothing. Bounded by the cap itself: `count - limit + 1` can
  * only be large if the table is already at the cap.
+ *
+ * INVARIANT (2026-07-26 audit fix): `whereClause` must always be scoped to the
+ * posting sender. Eviction is now only ever a sender recycling its OWN stalest
+ * row. A recipient-wide predicate here is what let any registered sender delete
+ * an unrelated sender's undelivered control state; the recipient-wide cap is
+ * enforced by refusal in `handleControlInboxPost`, never by deletion.
  */
 async function evictOldestPending(
   env: Env,
@@ -387,44 +410,30 @@ export async function handleControlInboxPost(
     });
   }
 
-  const pending = await env.DB
-    .prepare(
-      `SELECT COUNT(*) AS count
-         FROM control_inbox
-        WHERE recipient_id = ? AND kind = ? AND expires_at >= ?`,
-    )
-    .bind(body.recipient_id, KIND_ORDINARY, now)
-    .first<{ count: number }>();
-  // Evict, never refuse. These rows are drained by the recipient, not by a
-  // timer, so refusing punished the *sender* for something only the recipient
-  // can fix -- and if the recipient never runs OSL at all, nothing ever drains
-  // and the sender is blocked for the full TTL. A sender must never be
-  // permanently unable to send, so the oldest undelivered rows make way for the
-  // newest instead.
+  // ---- Ordinary lane admission ---------------------------------------------
   //
-  // This also keeps the live count below the migration triggers' thresholds, so
-  // the database-side RAISE(ABORT) guards stay satisfied and no schema change
-  // is needed to lift the block.
+  // Two caps, two different answers, and the difference is the audit fix.
   //
-  // Storage stays bounded exactly as before: the cap still holds, it is simply
-  // enforced by dropping the stalest rows rather than by rejecting new ones.
-  // Ordered by `created_at`, the true insertion order.
+  // PER PAIR — evict. A sender's 33rd undelivered message to one person
+  // displaces that same sender's own stalest one. Refusing here would punish
+  // the sender for something only the recipient can fix: these rows are drained
+  // by the recipient, not by a timer, so a recipient who never runs OSL would
+  // block the sender for the full seven-day TTL. Recycling your own slot is
+  // safe because the loss falls on the party who chose to keep sending.
   //
-  // `kind = ''` is now part of both the count and the eviction predicate. A
-  // revocation row must never be chosen as the victim: that is precisely the
-  // defect this lane fixes, where a sender's own next 32 messages silently
-  // deleted a burn queued to an offline peer. Excluding revocations from the
-  // count also means a queued burn cannot consume an ordinary conversation's
-  // headroom.
-  await evictOldestPending(
-    env,
-    `recipient_id = ? AND kind = ''`,
-    [body.recipient_id],
-    now,
-    pending?.count ?? 0,
-    MAX_PENDING_ROWS_PER_RECIPIENT,
-  );
-  const pendingFromSender = await env.DB
+  // RECIPIENT-WIDE — refuse. This cap used to be enforced the same way, by
+  // deleting the recipient's oldest undelivered rows regardless of sender.
+  // Since registration is open, that let an attacker with a few identities
+  // silently destroy an unrelated sender's pending SKDM/control state: the
+  // victim's dependent protected messages then became unopenable, with no error
+  // to either side. Cross-sender data loss is strictly worse than a sender
+  // learning it must retry, so the answer is explicit backpressure.
+  //
+  // `kind = ''` scopes both to the ordinary lane. A revocation row must never
+  // be a victim -- that is the defect the separate lane exists to fix -- and
+  // excluding revocations from the count keeps a queued burn from consuming an
+  // ordinary conversation's headroom.
+  const pendingFromSenderBefore = await env.DB
     .prepare(
       `SELECT COUNT(*) AS count
          FROM control_inbox
@@ -433,18 +442,40 @@ export async function handleControlInboxPost(
     )
     .bind(body.recipient_id, body.sender_id, KIND_ORDINARY, now)
     .first<{ count: number }>();
-  // Same rule for the per-pair cap, which is the one a normal conversation
-  // actually reaches (32 undelivered messages to one person).
-  await evictOldestPending(
+  const recycled = await evictOldestPending(
     env,
     `recipient_id = ? AND sender_id = ? AND kind = ''`,
     [body.recipient_id, body.sender_id],
     now,
-    pendingFromSender?.count ?? 0,
+    pendingFromSenderBefore?.count ?? 0,
     MAX_PENDING_ROWS_PER_SENDER_RECIPIENT,
   );
+  const heldBySender = Math.max(0, (pendingFromSenderBefore?.count ?? 0) - recycled);
 
+  const pending = await env.DB
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM control_inbox
+        WHERE recipient_id = ? AND kind = ? AND expires_at >= ?`,
+    )
+    .bind(body.recipient_id, KIND_ORDINARY, now)
+    .first<{ count: number }>();
+  // A sender still holding a real backlog may only use the ordinary allowance;
+  // the reserve is there so congestion caused by others cannot make a first
+  // contact undeliverable.
+  const admissionCap = heldBySender < FRESH_SENDER_ROWS
+    ? MAX_PENDING_ROWS_PER_RECIPIENT
+    : MAX_PENDING_ROWS_PER_RECIPIENT - RESERVED_FRESH_SENDER_ROWS;
+  if ((pending?.count ?? 0) >= admissionCap) {
+    return recipientInboxFull(60, "recipient");
+  }
+  // The check above is a pre-check, not the enforcement. Two concurrent posts
+  // could both read a count under the cap and both insert. Migration 0027's
+  // trigger backstops the hard 512, but it knows nothing about the reserve, so
+  // the cap is carried into the insert statement itself as well -- same lesson
+  // as the cipher-store limiter: a check separated from its act is not a bound.
   return await insertControlInboxRow(env, {
+    admissionCap,
     recipientId: body.recipient_id,
     senderId: body.sender_id,
     scopeId: body.scope_id,
@@ -484,6 +515,12 @@ async function insertControlInboxRow(
     senderSigningKey: string;
     requestDigest: Uint8Array;
     now: number;
+    /**
+     * Recipient-wide ordinary-lane ceiling, enforced inside the insert so the
+     * caller's pre-check cannot be raced past. `null` for the revocation lane,
+     * which has its own triggers and must never be refused by this rule.
+     */
+    admissionCap?: number | null;
   },
 ): Promise<Response> {
   const { now } = args;
@@ -506,7 +543,11 @@ async function insertControlInboxRow(
           )
             AND EXISTS (
               SELECT 1 FROM users WHERE user_id = ?2
-            )` +
+            )
+            AND (?11 IS NULL OR (
+                  SELECT COUNT(*) FROM control_inbox
+                   WHERE recipient_id = ?2 AND kind = '' AND expires_at >= ?12
+                ) < ?11)` +
         (isRevocation
           ? `
          ON CONFLICT (recipient_id, sender_id, scope_id, collapse_key)
@@ -529,6 +570,8 @@ async function insertControlInboxRow(
             args.senderSigningKey,
             args.kind,
             args.collapseKey,
+            args.admissionCap ?? null,
+            now,
           ),
         env.DB
           .prepare(
@@ -564,6 +607,22 @@ async function insertControlInboxRow(
           return unauthorized("sender identity changed during authorization");
         }
         if (!(await getUserForVerify(env.DB, args.recipientId))) return notFound();
+        // The admission predicate is the remaining reason the statement can
+        // legitimately affect nothing: a concurrent post filled the lane between
+        // the caller's pre-check and this insert. Same durable condition, so the
+        // same answer rather than an opaque 500.
+        if (args.admissionCap != null) {
+          const raced = await env.DB
+            .prepare(
+              `SELECT COUNT(*) AS count FROM control_inbox
+                WHERE recipient_id = ? AND kind = '' AND expires_at >= ?`,
+            )
+            .bind(args.recipientId, now)
+            .first<{ count: number }>();
+          if ((raced?.count ?? 0) >= args.admissionCap) {
+            return recipientInboxFull(60, "recipient");
+          }
+        }
         throw new Error("control inbox authenticated insert made no change");
       }
       // On a collapse the caller's row id is not the surviving one, so report the

@@ -7,7 +7,9 @@ import {
 } from "../src/endpoints/blob.js";
 
 function writableEnv(): Env {
-  const run = vi.fn().mockResolvedValue({ success: true });
+  // `changes` matters now: the insert carries the aggregate storage predicates,
+  // so a fake that reports no affected row reads as "at capacity".
+  const run = vi.fn().mockResolvedValue({ success: true, meta: { changes: 1 } });
   const bind = vi.fn(() => ({ run }));
   const prepare = vi.fn(() => ({ bind }));
   return { DB: { prepare } } as unknown as Env;

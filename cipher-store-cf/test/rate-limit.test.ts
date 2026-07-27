@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import { rateLimit } from "../src/lib/rate-limit.js";
+import { migratedD1 } from "./helpers/d1.js";
 
 const secret = "s".repeat(48);
 
@@ -45,9 +46,27 @@ describe("cipher-store rate limiter failure policy", () => {
   it("never writes a raw or plain-hashed IP into the KV key", async () => {
     const put = vi.fn().mockResolvedValue(undefined);
     const env = envWith({ get: vi.fn().mockResolvedValue(null), put });
-    await rateLimit(env, "203.0.113.77", "upload");
+    // `fetch` is a read bucket, so it is the one that still uses KV.
+    await rateLimit(env, "203.0.113.77", "fetch");
     const storedKey = String(put.mock.calls[0]?.[0]);
     expect(storedKey).not.toContain("203.0.113.77");
-    expect(storedKey).toMatch(/^rl:upload:\d+:[0-9a-f]{32}$/);
+    expect(storedKey).toMatch(/^rl:fetch:\d+:[0-9a-f]{32}$/);
+  });
+
+  it("never writes a raw or plain-hashed IP into the atomic counter key", async () => {
+    const db = migratedD1();
+    const env = {
+      DB: db.d1,
+      ATTACHMENTS: {} as R2Bucket,
+      RATE_LIMIT: {} as KVNamespace,
+      RATE_LIMIT_HASH_KEY: secret,
+    } as Env;
+    await rateLimit(env, "203.0.113.77", "upload");
+    const stored = db.raw.prepare("SELECT bucket_key FROM rate_counters").all() as Array<{
+      bucket_key: string;
+    }>;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.bucket_key).not.toContain("203.0.113.77");
+    expect(stored[0]!.bucket_key).toMatch(/^rl:upload:\d+:[0-9a-f]{32}$/);
   });
 });

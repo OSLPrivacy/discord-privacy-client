@@ -7,9 +7,12 @@
 
 import type { Env } from "../env.js";
 import {
+  INCOMPLETE_SESSION_TTL_SECONDS,
   MAX_ATTACHMENT_PART_BYTES,
   MAX_ATTACHMENT_PARTS,
   MAX_DIRECT_ATTACHMENT_BYTES,
+  MAX_INCOMPLETE_SESSION_BYTES,
+  MAX_INCOMPLETE_SESSION_ROWS,
   MAX_LIVE_ATTACHMENT_BYTES,
   MAX_LIVE_ATTACHMENT_ROWS,
   MAX_SEALED_ATTACHMENT_BYTES,
@@ -82,28 +85,71 @@ function unsignedLength(raw: string | null, max: number): number | Response | nu
   return length;
 }
 
-export function boundedAttachmentStream(
+/// Read a request body into memory under a hard ceiling.
+///
+/// # Why this buffers instead of streaming into R2
+///
+/// It used to stream: the body was piped through a counting `TransformStream`
+/// and handed straight to `put`/`uploadPart`. That never worked on a real
+/// Workers runtime. workerd requires a streamed R2 body to have a *known*
+/// length, and the output of `pipeThrough` does not carry one, so every
+/// attachment upload failed with `TypeError: Provided readable stream must have
+/// a known length`. The R2 test double accepted any stream, so the suite stayed
+/// green while production rejected every request. Found 2026-07-26 by running
+/// the post-deploy probe against a local workerd.
+///
+/// `FixedLengthStream` would restore true streaming, but it is a workerd global
+/// that does not exist under this package's Node-based test runner. Using it
+/// would mean the tested path and the shipped path differ — which is precisely
+/// the gap that hid this bug for as long as it existed. Buffering keeps one
+/// path for both.
+///
+/// The ceiling is the caller's existing bound: 8 MiB for one multipart part,
+/// 26 MiB for a direct upload. A 512 MiB attachment is still never held in
+/// memory — it arrives as up to 65 separately bounded parts.
+export async function readBoundedAttachmentBody(
   source: ReadableStream<Uint8Array>,
   maxBytes: number,
-): { body: ReadableStream<Uint8Array>; bytesRead: () => number } {
+): Promise<{ status: "ok"; bytes: Uint8Array } | { status: "too_large" }> {
+  const reader = source.getReader();
+  const chunks: Uint8Array[] = [];
   let total = 0;
-  const body = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      total += chunk.byteLength;
-      if (total > maxBytes) throw new Error("attachment_too_large");
-      controller.enqueue(chunk);
-    },
-  }));
-  return { body, bytesRead: () => total };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel("attachment too large");
+      return { status: "too_large" };
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { status: "ok", bytes };
 }
 
 interface AttachmentRow {
   object_key: string;
   size_bytes: number;
+  /** Reclaim deadline. Short while incomplete, the content expiry once ready. */
   expires_at: number;
+  /** The expiry promised in the session receipt; applied on completion. */
+  content_expires_at: number | null;
   fetch_token_sha256_hex: string;
   state: "uploading" | "completing" | "ready";
   upload_id: string | null;
+}
+
+/// The expiry a caller was promised. Rows written before migration 0006 are
+/// backfilled, so the fallback only covers a row read mid-migration.
+function promisedExpiry(row: AttachmentRow): number {
+  return row.content_expires_at ?? row.expires_at;
 }
 
 async function authorizedRow(
@@ -113,7 +159,8 @@ async function authorizedRow(
 ): Promise<AttachmentRow | Response> {
   if (!ID_RE.test(id)) return error(400, "bad_id", "id must be 32 lowercase hex chars");
   const row = await env.DB.prepare(
-    `SELECT object_key, size_bytes, expires_at, fetch_token_sha256_hex, state, upload_id
+    `SELECT object_key, size_bytes, expires_at, content_expires_at,
+            fetch_token_sha256_hex, state, upload_id
        FROM attachment_objects WHERE id = ? LIMIT 1`,
   ).bind(id).first<AttachmentRow>();
   if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return notFound();
@@ -133,6 +180,7 @@ async function insertObject(
     objectKey: string;
     size: number;
     expiresAt: number;
+    contentExpiresAt: number;
     createdAt: number;
     digest: string;
     state: AttachmentRow["state"];
@@ -143,17 +191,31 @@ async function insertObject(
   // the COUNT/SUM predicates and INSERT cannot race with another allocation.
   // Deletion releases capacity automatically because live usage is derived
   // from the authoritative object rows rather than a separate counter.
+  //
+  // The final predicate is the HIGH-1 fix. A row that does not yet hold stored
+  // ciphertext is admitted against its own small reservation pool as well as
+  // the global backstop, so bodyless sessions can never consume the capacity
+  // that completed attachments need. `state` is bound twice so the reservation
+  // predicate is skipped entirely for a directly-uploaded `ready` object.
   const inserted = await env.DB.prepare(
     `INSERT INTO attachment_objects
-     (id, object_key, size_bytes, expires_at, created_at, fetch_token_sha256_hex, state, upload_id)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?
+     (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
+      fetch_token_sha256_hex, state, upload_id)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM attachment_objects) < ?
-        AND COALESCE((SELECT SUM(size_bytes) FROM attachment_objects), 0) <= ? - ?`,
+        AND COALESCE((SELECT SUM(size_bytes) FROM attachment_objects), 0) <= ? - ?
+        AND (? = 'ready' OR (
+              (SELECT COUNT(*) FROM attachment_objects WHERE state <> 'ready') < ?
+          AND COALESCE(
+                (SELECT SUM(size_bytes) FROM attachment_objects WHERE state <> 'ready'), 0
+              ) <= ? - ?
+        ))`,
   ).bind(
     values.id,
     values.objectKey,
     values.size,
     values.expiresAt,
+    values.contentExpiresAt,
     values.createdAt,
     values.digest,
     values.state,
@@ -161,10 +223,27 @@ async function insertObject(
     MAX_LIVE_ATTACHMENT_ROWS,
     MAX_LIVE_ATTACHMENT_BYTES,
     values.size,
+    values.state,
+    MAX_INCOMPLETE_SESSION_ROWS,
+    MAX_INCOMPLETE_SESSION_BYTES,
+    values.size,
   ).run();
   return (inserted.meta.changes ?? 0) === 1
     ? null
     : error(503, "storage_capacity", "attachment storage is temporarily at capacity");
+}
+
+/// Non-authoritative headroom probe. The conditional INSERT above is what
+/// actually enforces the pool; this only avoids creating — and immediately
+/// aborting — an R2 multipart upload for every request of a flood.
+async function reservationPoolExhausted(env: Env, size: number): Promise<boolean> {
+  const usage = await env.DB.prepare(
+    `SELECT COUNT(*) AS rows_used, COALESCE(SUM(size_bytes), 0) AS bytes_used
+       FROM attachment_objects WHERE state <> 'ready'`,
+  ).first<{ rows_used: number; bytes_used: number }>();
+  if (!usage) return false;
+  return usage.rows_used >= MAX_INCOMPLETE_SESSION_ROWS
+    || usage.bytes_used + size > MAX_INCOMPLETE_SESSION_BYTES;
 }
 
 export async function handleAttachmentSessionCreate(request: Request, env: Env): Promise<Response> {
@@ -177,16 +256,25 @@ export async function handleAttachmentSessionCreate(request: Request, env: Env):
     return declared ?? error(400, "size_required", "X-OSL-Size-Bytes header required");
   }
 
+  if (await reservationPoolExhausted(env, declared)) {
+    return error(503, "storage_capacity", "attachment storage is temporarily at capacity");
+  }
+
   const id = randomHex(16);
   const objectKey = `attachments/${id}`;
   const multipart = await env.ATTACHMENTS.createMultipartUpload(objectKey);
   const now = Math.floor(Date.now() / 1000);
+  // The caller's TTL is a promise about stored content, so it is recorded but
+  // not applied: until the upload completes the row is reclaimable within
+  // INCOMPLETE_SESSION_TTL_SECONDS, sliding forward on each accepted part.
+  const contentExpiresAt = now + ttl;
   try {
     const rejected = await insertObject(env, {
       id,
       objectKey,
       size: declared,
-      expiresAt: now + ttl,
+      expiresAt: now + INCOMPLETE_SESSION_TTL_SECONDS,
+      contentExpiresAt,
       createdAt: now,
       digest: await capabilityDigestHex(capability),
       state: "uploading",
@@ -200,9 +288,13 @@ export async function handleAttachmentSessionCreate(request: Request, env: Env):
     await multipart.abort().catch(() => undefined);
     throw databaseError;
   }
+  // `expires_at` reports the promised content expiry. The shipping Rust client
+  // compares this value against the completion receipt and refuses the upload
+  // if they differ, and its response struct is `deny_unknown_fields`, so the
+  // internal reclaim deadline cannot be surfaced as an extra field.
   return json({
     id,
-    expires_at: now + ttl,
+    expires_at: contentExpiresAt,
     size_bytes: declared,
     max_part_bytes: MAX_ATTACHMENT_PART_BYTES,
     max_parts: MAX_ATTACHMENT_PARTS,
@@ -270,26 +362,43 @@ export async function handleAttachmentPartUpload(
   }
 
   const upload = env.ATTACHMENTS.resumeMultipartUpload(row.object_key, row.upload_id);
-  const counted = boundedAttachmentStream(request.body, MAX_ATTACHMENT_PART_BYTES);
+  // Read and validate before touching R2: the length is now known up front, so
+  // an invalid part never becomes a partial object that has to be aborted.
+  const counted = await readBoundedAttachmentBody(request.body, MAX_ATTACHMENT_PART_BYTES);
+  if (counted.status === "too_large") {
+    await upload.abort().catch(() => undefined);
+    await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
+    return error(413, "too_large", `attachment part exceeds ${MAX_ATTACHMENT_PART_BYTES} bytes`);
+  }
+  const size = counted.bytes.byteLength;
+  if (size === 0 || size !== declared) {
+    await upload.abort().catch(() => undefined);
+    await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
+    return error(400, size === 0 ? "empty_body" : "content_length_mismatch", "invalid attachment part length");
+  }
   try {
-    const part = await upload.uploadPart(partNumber, counted.body);
-    const size = counted.bytesRead();
-    if (size === 0 || size !== declared) {
-      await upload.abort().catch(() => undefined);
-      await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
-      return error(400, size === 0 ? "empty_body" : "content_length_mismatch", "invalid attachment part length");
-    }
+    const part = await upload.uploadPart(partNumber, counted.bytes);
     await env.DB.prepare(
       `UPDATE attachment_parts SET etag = ?
        WHERE attachment_id = ? AND part_number = ? AND size_bytes = ?`,
     ).bind(part.etag, id, partNumber, size).run();
+    // Accepted progress slides the reclaim deadline forward, so a slow but
+    // genuine multi-part upload is never cut off by the short hold that keeps
+    // abandoned reservations from parking capacity. Never past the promised
+    // content expiry, which stays the outer bound.
+    const slideTo = Math.min(
+      Math.floor(Date.now() / 1000) + INCOMPLETE_SESSION_TTL_SECONDS,
+      promisedExpiry(row),
+    );
+    await env.DB.prepare(
+      `UPDATE attachment_objects SET expires_at = ?
+        WHERE id = ? AND state = 'uploading' AND expires_at < ?`,
+    ).bind(slideTo, id, slideTo).run();
     return json({ part_number: part.partNumber, size_bytes: size }, 201);
   } catch (uploadError) {
-    if (uploadError instanceof Error && uploadError.message === "attachment_too_large") {
-      await upload.abort().catch(() => undefined);
-      await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
-      return error(413, "too_large", `attachment part exceeds ${MAX_ATTACHMENT_PART_BYTES} bytes`);
-    }
+    // Oversize is now rejected before R2 is touched, so anything reaching here
+    // is a genuine storage failure. Leave the reservation in place: it holds
+    // only the short reclaim deadline and the client may retry the part.
     throw uploadError;
   }
 }
@@ -301,7 +410,7 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
   if (row instanceof Response) return row;
   if (row.state !== "uploading" || !row.upload_id) {
     return row.state === "ready"
-      ? json({ id, expires_at: row.expires_at, size_bytes: row.size_bytes }, 200)
+      ? json({ id, expires_at: promisedExpiry(row), size_bytes: row.size_bytes }, 200)
       : error(409, "upload_not_open", "attachment upload is not open");
   }
   const result = await env.DB.prepare(
@@ -337,14 +446,19 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
     await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
     return error(500, "completed_size_mismatch", "completed attachment size did not match");
   }
+  // Completion is the point at which the caller's content TTL starts. Until
+  // now the row carried only the short reclaim deadline.
+  const contentExpiresAt = promisedExpiry(row);
   try {
     await env.DB.batch([
       env.DB.prepare(
-        "UPDATE attachment_objects SET state = 'ready', upload_id = NULL WHERE id = ? AND state = 'completing'",
-      ).bind(id),
+        `UPDATE attachment_objects
+            SET state = 'ready', upload_id = NULL, expires_at = ?
+          WHERE id = ? AND state = 'completing'`,
+      ).bind(contentExpiresAt, id),
       env.DB.prepare("DELETE FROM attachment_parts WHERE attachment_id = ?").bind(id),
     ]);
-    return json({ id, expires_at: row.expires_at, size_bytes: row.size_bytes }, 201);
+    return json({ id, expires_at: contentExpiresAt, size_bytes: row.size_bytes }, 201);
   } catch (metadataError) {
     // Leave the row in `completing`. Fetch stays closed; authenticated delete
     // and the expiry sweep use HEAD to remove the completed object safely.
@@ -361,25 +475,38 @@ export async function handleAttachmentUpload(request: Request, env: Env): Promis
   if (capability === null) return error(400, "bad_fetch_token", "invalid fetch token");
   if (!request.body) return error(400, "empty_body", "attachment body required");
 
+  // Read and validate before allocating storage. The body count is
+  // authoritative for a chunked or dishonestly declared length, and rejecting
+  // here means an invalid upload never creates an R2 object at all.
+  const counted = await readBoundedAttachmentBody(request.body, MAX_DIRECT_ATTACHMENT_BYTES);
+  if (counted.status === "too_large") {
+    return error(413, "too_large", `attachment exceeds ${MAX_DIRECT_ATTACHMENT_BYTES} bytes`);
+  }
+  const size = counted.bytes.byteLength;
+  if (size === 0 || (typeof declared === "number" && declared !== size)) {
+    return error(400, size === 0 ? "empty_body" : "content_length_mismatch", "invalid attachment length");
+  }
+
   const id = randomHex(16);
   const objectKey = `attachments/${id}`;
-  const counted = boundedAttachmentStream(request.body, MAX_DIRECT_ATTACHMENT_BYTES);
   try {
-    const stored = await env.ATTACHMENTS.put(objectKey, counted.body, {
+    const stored = await env.ATTACHMENTS.put(objectKey, counted.bytes, {
       onlyIf: { etagDoesNotMatch: "*" },
     });
-    const size = counted.bytesRead();
     if (!stored) return error(503, "id_collision", "could not allocate attachment storage");
-    if (size === 0 || stored.size !== size || (typeof declared === "number" && declared !== size)) {
+    if (stored.size !== size) {
       await env.ATTACHMENTS.delete(objectKey);
-      return error(400, size === 0 ? "empty_body" : "content_length_mismatch", "invalid attachment length");
+      return error(400, "content_length_mismatch", "invalid attachment length");
     }
     const now = Math.floor(Date.now() / 1000);
+    // A direct upload already holds its ciphertext, so its content TTL starts
+    // immediately and it is admitted against the global budget only.
     const rejected = await insertObject(env, {
       id,
       objectKey,
       size,
       expiresAt: now + ttl,
+      contentExpiresAt: now + ttl,
       createdAt: now,
       digest: await capabilityDigestHex(capability),
       state: "ready",
@@ -391,10 +518,9 @@ export async function handleAttachmentUpload(request: Request, env: Env): Promis
     }
     return json({ id, expires_at: now + ttl, size_bytes: size }, 201);
   } catch (uploadError) {
+    // Oversize is rejected before this point, so anything here is a real
+    // storage failure. Remove any partial object rather than orphaning it.
     await env.ATTACHMENTS.delete(objectKey).catch(() => undefined);
-    if (uploadError instanceof Error && uploadError.message === "attachment_too_large") {
-      return error(413, "too_large", `attachment exceeds ${MAX_DIRECT_ATTACHMENT_BYTES} bytes`);
-    }
     throw uploadError;
   }
 }

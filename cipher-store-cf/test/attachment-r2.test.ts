@@ -15,6 +15,7 @@ interface Row {
   object_key: string;
   size_bytes: number;
   expires_at: number;
+  content_expires_at: number | null;
   fetch_token_sha256_hex: string;
   state: "uploading" | "completing" | "ready";
   upload_id: string | null;
@@ -49,11 +50,14 @@ function testEnv(options: { insertChanges?: number } = {}) {
       run: async () => {
         if (sql.startsWith("INSERT INTO attachment_objects")) {
           if (options.insertChanges !== 0) {
-            const [id, objectKey, size, expiresAt, _createdAt, tokenDigest, state, uploadId] = values;
+            const [
+              id, objectKey, size, expiresAt, contentExpiresAt, _createdAt, tokenDigest, state, uploadId,
+            ] = values;
             rows.set(String(id), {
               object_key: String(objectKey),
               size_bytes: Number(size),
               expires_at: Number(expiresAt),
+              content_expires_at: contentExpiresAt === null ? null : Number(contentExpiresAt),
               fetch_token_sha256_hex: String(tokenDigest),
               state: state as Row["state"],
               upload_id: uploadId === null ? null : String(uploadId),
@@ -118,6 +122,26 @@ describe("R2 attachment transport", () => {
     );
     expect(fetched.status).toBe(200);
     expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("hands R2 a known-length body, never a transformed stream", async () => {
+    // Regression guard for a defect that shipped green: the upload path used to
+    // pipe the request body through a counting TransformStream and hand the
+    // result to R2. workerd requires a streamed put/uploadPart body to have a
+    // known length and rejects a piped stream with "Provided readable stream
+    // must have a known length", so every attachment upload 500'd on the real
+    // runtime — while this suite passed, because the R2 double below accepts
+    // anything. Asserting the *shape* handed to R2 is what a test double can
+    // still meaningfully check; the end-to-end proof is
+    // scripts/post-deploy-probe.mjs against a real workerd.
+    const state = testEnv();
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const uploaded = await handleAttachmentUpload(uploadRequest(bytes, bytes.byteLength), state.env);
+    expect(uploaded.status).toBe(201);
+
+    const body = state.put.mock.calls[0]?.[1];
+    expect(body).toBeInstanceOf(Uint8Array);
+    expect(body).not.toBeInstanceOf(ReadableStream);
   });
 
   it("rejects oversized chunked bodies authoritatively and removes partial R2 state", async () => {
@@ -198,6 +222,11 @@ describe("R2 attachment transport", () => {
     const prepare = vi.fn((rawSql: string) => {
       const sql = rawSql.replace(/\s+/g, " ").trim();
       return {
+        // Unbound aggregate probe used by the reservation-pool headroom check.
+        // This fake holds a single session, so it is never near the pool cap;
+        // the pool itself is proved against a real database in
+        // test/attachment-session-budget.test.ts.
+        first: async <T>() => ({ rows_used: 0, bytes_used: 0 }) as T,
         bind: (...values: unknown[]) => {
           const statement = {
             first: async <T>() => (rows.get(String(values[0])) ?? null) as T | null,
@@ -211,12 +240,15 @@ describe("R2 attachment transport", () => {
             run: async () => {
               let changes = 0;
               if (sql.startsWith("INSERT INTO attachment_objects")) {
-                const [id, objectKey, size, expiresAt, _createdAt, digest, state, uploadId] = values;
+                const [
+                  id, objectKey, size, expiresAt, contentExpiresAt, _createdAt, digest, state, uploadId,
+                ] = values;
                 currentId = String(id);
                 rows.set(currentId, {
                   object_key: String(objectKey),
                   size_bytes: Number(size),
                   expires_at: Number(expiresAt),
+                  content_expires_at: contentExpiresAt === null ? null : Number(contentExpiresAt),
                   fetch_token_sha256_hex: String(digest),
                   state: state as Row["state"],
                   upload_id: String(uploadId),
@@ -228,10 +260,20 @@ describe("R2 attachment transport", () => {
                 const row = rows.get(String(values[0]));
                 if (row?.state === "uploading") { row.state = "completing"; changes = 1; }
               } else if (sql.includes("SET state = 'ready'")) {
-                const row = rows.get(String(values[0]));
+                // Completion now also stamps the content expiry, so the bound
+                // id has moved to the second position.
+                const row = rows.get(String(values[1]));
                 if (row?.state === "completing") {
                   row.state = "ready";
                   row.upload_id = null;
+                  row.expires_at = Number(values[0]);
+                  changes = 1;
+                }
+              } else if (sql.includes("SET expires_at = ?")) {
+                // The reclaim deadline sliding forward on accepted progress.
+                const row = rows.get(String(values[1]));
+                if (row?.state === "uploading" && row.expires_at < Number(values[2])) {
+                  row.expires_at = Number(values[0]);
                   changes = 1;
                 }
               } else if (sql.startsWith("DELETE FROM attachment_parts")) {

@@ -137,6 +137,120 @@ settings → Observability page still shows disabled. Do not override the checke
 in configuration from the dashboard; retained URL/status logs are outside the
 cipher store's intended data-minimisation boundary.
 
+## §7b Migration 0006 — session budget + atomic rate counters (STAGED, NOT DEPLOYED)
+
+Fixes the two 2026-07-26 audit findings against this Worker: bodyless multipart
+reservations exhausting the global attachment quota, and the non-atomic KV rate
+limiter. Report: `docs/reports/server-lane-2026-07-26.md`.
+
+**A migration and its Worker are one operation.** The old Worker never names
+`content_expires_at` or `rate_counters`, so it is unaffected by their existence;
+the new Worker reads both on every request, so a Worker deployed against the old
+schema returns 500 for everything. Migration first, always, and do not leave the
+gap open.
+
+### TWO migrations are pending here, not one
+
+`0005_view_once_links.sql` was never applied to production. `wrangler d1 migrations
+apply` applies **every** pending migration in one invocation, so this step applies
+0005 and 0006 together — the same way 0028 rode along with 0029 on the keyserver on
+2026-07-26. Confirm the list before running it and expect both names.
+
+Applying 0005 is safe, and it repairs a latent fault rather than creating one:
+
+- It is pure DDL. It creates `view_once_links` and its indexes and touches no
+  existing table, so it cannot affect blobs or attachments.
+- The Worker already reads that table. `sweepExpiredLinks` runs unconditionally
+  from `scheduled()` (`src/lib/sweep.ts:49-65`), so on a database without the table
+  the five-minute cron throws every tick. It is swallowed by its own `try/catch` in
+  `src/index.ts`, and the blob and attachment sweeps run in *separate* try blocks
+  before it, so the failure is contained — expiry reclamation has not been
+  affected. Applying 0005 stops that error.
+- `POST /v1/link` cannot reach the missing table: `handleLinkCreate` calls
+  `verifyLinkGrant` first, which returns 503 whenever `LINK_GRANT_PUBKEY_B64` is
+  unset (`src/lib/link-grant.ts:73-90`). The link lane therefore still cannot be
+  exercised end to end after this, and nothing here enables it.
+- `POST /v/<id>/fetch` and `/burn` do query the table and currently answer 500 for
+  every id. After 0005 they answer the intended collapsed 404/200. That is a small
+  improvement to the no-oracle property, not a regression.
+
+Note the ordering consequence: the link-sweep stops erroring at **migration** time,
+before the Worker deploy. That is expected.
+
+The test suite already covers the combined state — `test/helpers/d1.ts` applies
+every file in `migrations/` in order, so 86/86 passing is a result against
+0001–0006 together, not against 0006 alone.
+
+```sh
+cd cipher-store-cf
+
+# 0. Prove the tree is the one that was tested.
+npm run typecheck && npx vitest run --maxWorkers=1     # expect 10 files / 86 tests
+
+# 1. List pending migrations. EXPECT TWO:
+#      0005_view_once_links.sql
+#      0006_session_budget_and_atomic_rate_counters.sql
+#    If 0005 is absent, stop and reconcile — this doc's premise no longer holds.
+npx wrangler d1 migrations list osl-cipher-store-prod --remote
+
+# 1b. Read-only: does the live Worker already contain the view-once link lane?
+#     503 => yes (grant unset, refused before touching D1). 404 => predates Wave A3.
+#     Either answer is fine; this just records which one you started from.
+curl -so /dev/null -w '%{http_code}\n' -X POST https://ciphers.oslprivacy.com/v1/link
+
+# 2. Snapshot before mutating. Note the bookmark Time Travel reports.
+npx wrangler d1 time-travel info osl-cipher-store-prod
+
+# 3. Migrations — applies 0005 AND 0006.
+npx wrangler d1 migrations apply osl-cipher-store-prod --remote
+
+# 4. Worker, immediately after. Note the printed version id.
+npx wrangler deploy
+
+# 5. Prove the fixes are LIVE, not merely deployed.
+node scripts/post-deploy-probe.mjs --host https://ciphers.oslprivacy.com
+```
+
+Smoke test after step 4 (uses the §6 host):
+
+```sh
+# Multipart session receipt must still promise the requested content TTL...
+TOKEN=$(openssl rand -hex 16)
+curl -sX POST https://ciphers.oslprivacy.com/v1/attachment/session \
+  -H "X-OSL-TTL-Seconds: 604800" -H "X-OSL-Fetch-Token: $TOKEN" \
+  -H "X-OSL-Size-Bytes: 1024" -H "content-length: 0"
+# expect: 201, expires_at ~ now + 604800, max_part_bytes 8388608, max_parts 65
+
+# ...while the row itself holds only the short reclaim deadline.
+npx wrangler d1 execute osl-cipher-store-prod --remote --command \
+  "SELECT state, expires_at - created_at AS held, content_expires_at - created_at AS promised
+     FROM attachment_objects ORDER BY created_at DESC LIMIT 1"
+# expect: state=uploading, held<=900, promised=604800
+
+# An ordinary blob upload still works (this is the atomic-limiter path).
+curl -sX POST https://ciphers.oslprivacy.com/v1/blob \
+  -H "X-OSL-TTL-Seconds: 3600" -H "X-OSL-Fetch-Token: $(openssl rand -hex 16)" \
+  --data-binary $'\x01\x02\x03\x04' -i | head -1
+# expect: HTTP/2 201
+```
+
+**Rollback.** Both changes are additive, so the fast path is Worker-only:
+
+```sh
+npx wrangler rollback --message "revert audit fixes: <reason>"
+```
+
+The previous Worker ignores the new column and the new table, so it runs
+correctly against the 0006 schema with no schema rollback needed. Leave the
+migration applied — reverting it is neither required nor safe, because
+`attachment_objects.content_expires_at` holds the only record of the expiry that
+in-flight sessions were promised. If the schema must be undone anyway, restore
+from the Time Travel bookmark taken in step 2 and accept that in-flight
+multipart sessions are lost.
+
+There is no rollback hazard of the kind a Durable Object would introduce: no new
+binding, no DO class, no `[[migrations]]` tag in `wrangler.toml`.
+
 ## §8 Operational notes
 
 - `wrangler tail` shows live request logs but writes nothing to

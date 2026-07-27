@@ -12,6 +12,7 @@ import {
 } from "../src/endpoints/link.js";
 import { sweepExpiredLinks } from "../src/lib/sweep.js";
 import { rateLimit } from "../src/lib/rate-limit.js";
+import { migratedD1 } from "./helpers/d1.js";
 import { sha256Hex } from "../src/lib/digest.js";
 import {
   GRANT_AUDIENCE,
@@ -652,9 +653,13 @@ describe("sender-facing status", () => {
 });
 
 describe("link rate-limit buckets", () => {
+  /// `link-create` is a mutation bucket, so it is counted atomically in D1;
+  /// `link-fetch` stays on KV and fails open. Both stores are provided here.
   function limiterEnv() {
     const kv = new Map<string, string>();
+    const db = migratedD1();
     return {
+      DB: db.d1,
       RATE_LIMIT: {
         get: async (k: string) => kv.get(k) ?? null,
         put: async (k: string, v: string) => void kv.set(k, v),
@@ -700,9 +705,11 @@ describe("link rate-limit buckets", () => {
     expect((await rateLimit(env, "203.0.113.11", "link-fetch")).allowed).toBe(true);
   });
 
-  it("never puts a raw IP in a link bucket key", async () => {
+  it("never puts a raw IP in a link bucket key, in either store", async () => {
     const keys: string[] = [];
+    const db = migratedD1();
     const env = {
+      DB: db.d1,
       RATE_LIMIT: {
         get: async () => null,
         put: async (k: string) => void keys.push(k),
@@ -711,8 +718,17 @@ describe("link rate-limit buckets", () => {
     } as unknown as Env;
     await rateLimit(env, "203.0.113.12", "link-fetch");
     await rateLimit(env, "203.0.113.12", "link-create");
+
+    // link-fetch is the KV path.
     for (const key of keys) expect(key).not.toContain("203.0.113.12");
     expect(keys[0]).toMatch(/^rl:link-fetch:\d+:[0-9a-f]{32}$/);
-    expect(keys[1]).toMatch(/^rl:link-create:\d+:[0-9a-f]{32}$/);
+
+    // link-create is the atomic D1 path and must be equally opaque.
+    const counters = db.raw
+      .prepare("SELECT bucket_key FROM rate_counters")
+      .all() as Array<{ bucket_key: string }>;
+    expect(counters).toHaveLength(1);
+    expect(counters[0]!.bucket_key).not.toContain("203.0.113.12");
+    expect(counters[0]!.bucket_key).toMatch(/^rl:link-create:\d+:[0-9a-f]{32}$/);
   });
 });

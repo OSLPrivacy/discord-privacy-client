@@ -45,6 +45,36 @@ migrations_dir = "migrations"
 # limiting is the only anti-abuse defence. Create with:
 #   wrangler kv namespace create RATE_LIMIT
 # then paste the id below.
+#
+# SCOPE CORRECTION (2026-07-26 audit). This namespace now serves READ buckets
+# only. The comment at the top of this file used to say rate-limit state lives
+# in KV and is "never persisted to D1"; that is no longer true, and leaving it
+# standing is exactly how the next auditor gets misled — see the same class of
+# defect corrected in migrations/0002_fetch_token.sql.
+#
+# What actually happens now:
+#
+#   * Mutation buckets (upload, delete, attachment-upload, attachment-session,
+#     attachment-delete, link-create) increment through one conditional D1
+#     statement against the `rate_counters` table (migration 0006). KV's
+#     read/modify/write was not atomic, so the ceiling this file claimed did not
+#     hold even inside one POP.
+#   * Read buckets (fetch, attachment-fetch, link-fetch) stay here. They bound
+#     cost, not integrity, they are the highest-volume routes, and they must
+#     fail OPEN so a limiter outage cannot make stored ciphertext unfetchable.
+#
+# The data-minimisation property is unchanged or better, in both stores:
+#
+#   * The stored key is the same opaque value either way — a truncated HMAC of
+#     (bucket, client address) under RATE_LIMIT_HASH_KEY. Neither store can be
+#     dumped to enumerate likely addresses.
+#   * D1 retention is SHORTER than KV's. KV entries live 2x the window; D1
+#     counters are deleted by the five-minute cron as soon as their window
+#     closes (`sweepRateCounters`).
+#
+# If that trade is ever revisited, the alternative is a Durable Object: same
+# atomicity, same opacity, but a DO class needs a [[migrations]] tag that
+# `wrangler rollback` cannot undo. That is why it was not chosen here.
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
 id = "a65e8cc90cdc4cffa83b01fe12c6e47a"
