@@ -6,14 +6,16 @@ import { fileURLToPath } from "node:url";
 export function productionActionRefusal(action) {
   if (action === "deploy") {
     return (
-      "production deploy refused: trusted selection does not yet authorize " +
-      "or execute the exact admitted bundle"
+      "production deploy refused: scheme-1 Worker activation requires a " +
+      "fresh exact Rust-client preflight receipt, and trusted selection " +
+      "still does not authorize or execute the admitted bundle"
     );
   }
   if (action === "migrate") {
     return (
-      "production migration refused: no trusted receipt maps the active " +
-      "bridge Worker version to its exact commit and ordered migration"
+      "production migration refused: migrations 0033/0034 require a fresh " +
+      "exact Rust-client preflight receipt, and no trusted release executor " +
+      "is enabled"
     );
   }
   throw new Error("production action must be exactly deploy or migrate");

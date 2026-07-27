@@ -104,6 +104,53 @@ vectors, and persists peer scheme/generation/batch pins across restart. Server
 tests, a clean release, or operator intent cannot substitute for that exact
 client admission.
 
+Before step 1, run the server-owned client admission preflight separately for
+the migration and Worker-activation actions:
+
+```sh
+npm run scheme1:client-preflight -- \
+  --action migrate-0033-0034 \
+  --expected-server-commit <40-hex-current-HEAD> \
+  --expected-server-tree <40-hex-current-repository-tree> \
+  --expected-client-commit <40-hex-shipping-Rust-client-commit> \
+  --expected-client-tree <40-hex-shipping-Rust-client-tree> \
+  --challenge <fresh-lowercase-uuid> \
+  --evidence /absolute/path/signed-rust-client-evidence.json
+
+npm run scheme1:client-preflight -- \
+  --action activate-scheme1-worker \
+  --expected-server-commit <40-hex-current-HEAD> \
+  --expected-server-tree <40-hex-current-repository-tree> \
+  --expected-client-commit <40-hex-shipping-Rust-client-commit> \
+  --expected-client-tree <40-hex-shipping-Rust-client-tree> \
+  --challenge <different-fresh-lowercase-uuid> \
+  --evidence /absolute/path/signed-rust-client-evidence.json
+```
+
+The signed evidence must bind exact Rust commit/tree, frozen server commit
+`6cb2b5a275b3676869d2a69fc10a8b6544dbc9e1`, contract digest
+`8041c9c14f841935c6b42e74829e39747e6b8915bf4c929c80ff1d3e189dffaa`,
+fixture digest
+`8cebfb7bd94a3614178d6cce1af8ed8d36d776978ac57fdc5f407b6e0ce97a6f`,
+the nonempty cross-language cases, distinct process-restart witnesses for the
+durable scheme/generation/batch pins, and all downgrade refusals. The envelope
+is canonical Ed25519, challenge-bound, short-lived, producer-epoch/sequence
+bound, and accepted only from the committed trusted-producer registry.
+The cross-language receipt includes a separate shipping
+register/fetch/replenish reachability witness; exercising only a new parser or
+test helper is not client admission.
+The preflight also reads every contract-critical migration, route, database,
+identity/proof helper, and fixture from both the candidate commit and
+`6cb2b5a…`; any byte drift is a refusal. New admission tooling may be a
+successor, but the scheme-1 server contract itself may not silently move.
+
+Both receipts explicitly set every execution authorization to `false`. They
+are necessary input for a future independently reviewed release selector, not
+permission to call Wrangler. The registry is intentionally empty and the
+production migration/deploy package commands remain unconditional refusals.
+Therefore 0033/0034 and scheme-1 Worker activation are still blocked even
+after a local preflight receipt can be produced in an injected test registry.
+
 1. Freeze and record the full Worker commit, repository tree, and
    `keyserver-cf` tree. The checkout must still have that commit at `HEAD`.
 2. Confirm `wrangler.toml` names Worker `oslprivacy-keyserver` and binds
