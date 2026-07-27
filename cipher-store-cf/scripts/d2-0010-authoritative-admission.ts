@@ -53,6 +53,9 @@ export interface D2AdmissionChallenge {
   sequence: number;
   issued_at_ms: number;
   expires_at_ms: number;
+  expected_evidence_sha256: string;
+  expected_transcript_root_sha256: string;
+  expected_authority_snapshot_sha256: string;
 }
 
 export interface D2ActiveDeployment {
@@ -102,7 +105,9 @@ export interface D2AdmissionAuthority {
     challenge_id: string;
     sequence: number;
     evidence_sha256: string;
+    transcript_root_sha256: string;
     authority_snapshot_sha256: string;
+    consumed_at_ms: number;
     expires_at_ms: number;
   }): Promise<boolean>;
 }
@@ -155,9 +160,53 @@ export interface D2PostOperationReadbackAnchor {
   probe_id: string;
   kind: D2ProbeKind;
   transcript_bytes_sha256: string;
+  d1_readback_base64url: string;
   d1_readback_sha256: string;
+  r2_readback_base64url: string;
   r2_readback_sha256: string;
+  quota_readback_base64url: string;
   quota_readback_sha256: string;
+}
+
+export interface D2RawD1ResourceReadback {
+  format: "osl.cipher-store.d2-raw-d1-resource-readback.v2";
+  probe_id: string;
+  kind: D2ProbeKind;
+  database_id: typeof D2_DATABASE_ID;
+  attachment_id: string;
+  object_key: string;
+  observation: "absent" | "ready" | "retained" | "unchanged";
+  row_state: "ready" | "completing" | null;
+  row_version: number | null;
+  expected_size_bytes: number | null;
+  row_sha256: string | null;
+}
+
+export interface D2RawR2ResourceReadback {
+  format: "osl.cipher-store.d2-raw-r2-resource-readback.v2";
+  probe_id: string;
+  kind: D2ProbeKind;
+  bucket_name: typeof D2_R2_BUCKET;
+  object_key: string;
+  observation: "absent" | "exact" | "unknown" | "unchanged";
+  object_version: string | null;
+  etag: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+}
+
+export interface D2RawQuotaResourceReadback {
+  format: "osl.cipher-store.d2-raw-quota-resource-readback.v2";
+  probe_id: string;
+  kind: D2ProbeKind;
+  account_sha256: string;
+  observation: "released" | "retained" | "unchanged";
+  counter_version: number;
+  reservation_rows: number;
+  reservation_bytes: number;
+  content_rows: number;
+  content_bytes: number;
+  counters_sha256: string;
 }
 
 export interface D2AuthoritativeAdmissionEvidence {
@@ -177,6 +226,8 @@ export interface D2AuthoritativeAdmissionReceipt {
   challenge_id: string;
   sequence: number;
   evidence_sha256: string;
+  transcript_root_sha256: string;
+  authority_snapshot_sha256: string;
   worker_version_id: string;
   witness_kinds: D2ProbeKind[];
 }
@@ -192,7 +243,17 @@ function fail(message: string): never {
 }
 
 function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail("canonical input contains a non-finite number");
+    return JSON.stringify(value);
+  }
+  if (typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object") {
+    fail("canonical input contains a non-JSON value");
+  }
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object).sort().map((key) => (
@@ -280,6 +341,7 @@ async function verifyStatement<T>(
   producerId: string;
   producer: D2AdmissionProducer;
 }> {
+  const currentTime = positiveInt(nowMs, `${label} current time`);
   const envelope = strictObject(value, [
     "format",
     "producer_id",
@@ -300,6 +362,15 @@ async function verifyStatement<T>(
     fail(`${label} envelope is stale or malformed`);
   }
   const producer = registry[envelope.producer_id];
+  const validFrom = producer
+    ? positiveInt(producer.valid_from_ms, `${label} producer valid-from`)
+    : 0;
+  const validThrough = producer
+    ? positiveInt(producer.valid_through_ms, `${label} producer valid-through`)
+    : 0;
+  const revokedAt = !producer || producer.revoked_at_ms === null
+    ? null
+    : positiveInt(producer.revoked_at_ms, `${label} producer revocation`);
   if (
     !producer
     || producer.role !== role
@@ -307,12 +378,9 @@ async function verifyStatement<T>(
     || !SHA256_RE.test(producer.account_sha256)
     || positiveInt(producer.key_epoch, `${label} producer key epoch`)
       !== envelope.key_epoch
-    || positiveInt(producer.valid_from_ms, `${label} producer valid-from`) > nowMs
-    || positiveInt(producer.valid_through_ms, `${label} producer valid-through`)
-      < nowMs
-    || nowMs < producer.valid_from_ms
-    || nowMs > producer.valid_through_ms
-    || (producer.revoked_at_ms !== null && nowMs >= producer.revoked_at_ms)
+    || validFrom > currentTime
+    || validThrough < currentTime
+    || (revokedAt !== null && currentTime >= revokedAt)
   ) {
     fail(`${label} producer epoch is unknown, stale, or revoked`);
   }
@@ -378,12 +446,17 @@ async function validateProbeTranscriptIdentity(
 function validateChallenge(
   challenge: D2AdmissionChallenge,
   evidence: D2AuthoritativeAdmissionEvidence,
+  evidenceSha256: string,
   nowMs: number,
 ): void {
   if (
     !CHALLENGE_RE.test(challenge.challenge_id)
     || evidence.challenge_id !== challenge.challenge_id
     || evidence.sequence !== challenge.sequence
+    || !SHA256_RE.test(challenge.expected_evidence_sha256)
+    || !SHA256_RE.test(challenge.expected_transcript_root_sha256)
+    || !SHA256_RE.test(challenge.expected_authority_snapshot_sha256)
+    || challenge.expected_evidence_sha256 !== evidenceSha256
     || positiveInt(challenge.sequence, "challenge sequence") !== evidence.sequence
     || positiveInt(challenge.issued_at_ms, "challenge issue time") > nowMs
     || positiveInt(challenge.expires_at_ms, "challenge expiry") < nowMs
@@ -449,6 +522,133 @@ function readbackStates(kind: D2ProbeKind) {
   return { d1_state: "absent", r2_state: "absent", quota_state: "released" };
 }
 
+interface D2ChallengeRow {
+  challenge_id: string;
+  sequence: number;
+  issued_at_ms: number;
+  expires_at_ms: number;
+  expected_evidence_sha256: string;
+  expected_transcript_root_sha256: string;
+  expected_authority_snapshot_sha256: string;
+}
+
+export async function loadD2AdmissionChallengeFromD1(
+  db: D1Database,
+  challengeId: string,
+): Promise<D2AdmissionChallenge | null> {
+  if (!CHALLENGE_RE.test(challengeId)) {
+    fail("D1 challenge ID is malformed");
+  }
+  const row = await db.prepare(
+    `SELECT challenge_id, sequence, issued_at_ms, expires_at_ms,
+            expected_evidence_sha256, expected_transcript_root_sha256,
+            expected_authority_snapshot_sha256
+       FROM d2_admission_challenges
+      WHERE challenge_id = ?`,
+  ).bind(challengeId).first<D2ChallengeRow>();
+  if (!row) return null;
+  return {
+    challenge_id: row.challenge_id,
+    sequence: positiveInt(row.sequence, "D1 challenge sequence"),
+    issued_at_ms: positiveInt(row.issued_at_ms, "D1 challenge issue time"),
+    expires_at_ms: positiveInt(row.expires_at_ms, "D1 challenge expiry"),
+    expected_evidence_sha256: sha256Digest(
+      row.expected_evidence_sha256,
+      "D1 expected evidence",
+    ),
+    expected_transcript_root_sha256: sha256Digest(
+      row.expected_transcript_root_sha256,
+      "D1 expected transcript root",
+    ),
+    expected_authority_snapshot_sha256: sha256Digest(
+      row.expected_authority_snapshot_sha256,
+      "D1 expected authority snapshot",
+    ),
+  };
+}
+
+export interface D2ChallengeConsumption {
+  challenge_id: string;
+  sequence: number;
+  evidence_sha256: string;
+  transcript_root_sha256: string;
+  authority_snapshot_sha256: string;
+  consumed_at_ms: number;
+  expires_at_ms: number;
+}
+
+export const D2_CONSUME_CHALLENGE_SQL =
+  `UPDATE d2_admission_challenges
+      SET consumed_at_ms = ?,
+          consumed_evidence_sha256 = ?,
+          consumed_transcript_root_sha256 = ?,
+          consumed_authority_snapshot_sha256 = ?
+    WHERE challenge_id = ?
+      AND sequence = ?
+      AND expires_at_ms = ?
+      AND expected_evidence_sha256 = ?
+      AND expected_transcript_root_sha256 = ?
+      AND expected_authority_snapshot_sha256 = ?
+      AND EXISTS (
+        SELECT 1
+          FROM d2_admission_authority_state
+         WHERE singleton_id = 1
+           AND authority_snapshot_sha256 = ?
+      )
+      AND consumed_at_ms IS NULL
+      AND expires_at_ms >= ?`;
+
+export async function consumeD2AdmissionChallengeInD1(
+  db: D1Database,
+  input: D2ChallengeConsumption,
+): Promise<boolean> {
+  if (
+    !CHALLENGE_RE.test(input.challenge_id)
+    || positiveInt(input.sequence, "D1 consume sequence") !== input.sequence
+    || positiveInt(input.consumed_at_ms, "D1 consume time")
+      !== input.consumed_at_ms
+    || positiveInt(input.expires_at_ms, "D1 consume expiry")
+      !== input.expires_at_ms
+    || input.consumed_at_ms > input.expires_at_ms
+  ) {
+    fail("D1 challenge consumption input is stale or malformed");
+  }
+  const evidenceSha256 = sha256Digest(
+    input.evidence_sha256,
+    "D1 consumed evidence",
+  );
+  const transcriptRootSha256 = sha256Digest(
+    input.transcript_root_sha256,
+    "D1 consumed transcript root",
+  );
+  const authoritySnapshotSha256 = sha256Digest(
+    input.authority_snapshot_sha256,
+    "D1 consumed authority snapshot",
+  );
+  const result = await db.prepare(D2_CONSUME_CHALLENGE_SQL).bind(
+    input.consumed_at_ms,
+    evidenceSha256,
+    transcriptRootSha256,
+    authoritySnapshotSha256,
+    input.challenge_id,
+    input.sequence,
+    input.expires_at_ms,
+    evidenceSha256,
+    transcriptRootSha256,
+    authoritySnapshotSha256,
+    authoritySnapshotSha256,
+    input.consumed_at_ms,
+  ).run();
+  return result.success === true && Number(result.meta.changes ?? 0) === 1;
+}
+
+function sha256Digest(value: unknown, label: string): string {
+  if (typeof value !== "string" || !SHA256_RE.test(value)) {
+    fail(`${label} must be a lowercase SHA-256 digest`);
+  }
+  return value;
+}
+
 async function validateStateReadback(
   encoded: unknown,
   digest: unknown,
@@ -456,27 +656,180 @@ async function validateStateReadback(
   kind: D2ProbeKind,
   component: "d1" | "r2" | "quota",
   expectedState: string,
+  accountSha256: string,
   label: string,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   const value = await parseRawJson<Record<string, unknown>>(
     encoded,
     digest,
     label,
   );
-  strictObject(
-    value,
-    ["format", "probe_id", "kind", "component", "state"],
-    label,
+  const objectKey = `attachments/${probeId}`;
+  if (component === "d1") {
+    strictObject(value, [
+      "format",
+      "probe_id",
+      "kind",
+      "database_id",
+      "attachment_id",
+      "object_key",
+      "observation",
+      "row_state",
+      "row_version",
+      "expected_size_bytes",
+      "row_sha256",
+    ], label);
+    if (
+      value.format !== "osl.cipher-store.d2-raw-d1-resource-readback.v2"
+      || value.probe_id !== probeId
+      || value.kind !== kind
+      || value.database_id !== D2_DATABASE_ID
+      || value.attachment_id !== probeId
+      || value.object_key !== objectKey
+      || value.observation !== expectedState
+    ) {
+      fail(`${label} does not identify the expected D1 resource`);
+    }
+    if (expectedState === "absent") {
+      if (
+        value.row_state !== null
+        || value.row_version !== null
+        || value.expected_size_bytes !== null
+        || value.row_sha256 !== null
+      ) {
+        fail(`${label} claims absent D1 state with retained row metadata`);
+      }
+      return value;
+    }
+    if (expectedState === "unchanged") {
+      const allNull = [
+        value.row_state,
+        value.row_version,
+        value.expected_size_bytes,
+        value.row_sha256,
+      ].every((item) => item === null);
+      if (!allNull) fail(`${label} unchanged D1 sentinel is inconsistent`);
+      return value;
+    }
+    if (
+      value.row_state !== (expectedState === "ready" ? "ready" : "completing")
+      || positiveInt(value.row_version, `${label} row version`) < 1
+      || positiveInt(value.expected_size_bytes, `${label} expected size`) < 1
+      || typeof value.row_sha256 !== "string"
+      || !SHA256_RE.test(value.row_sha256)
+    ) {
+      fail(`${label} lacks exact D1 row/version/size/digest state`);
+    }
+    return value;
+  }
+  if (component === "r2") {
+    strictObject(value, [
+      "format",
+      "probe_id",
+      "kind",
+      "bucket_name",
+      "object_key",
+      "observation",
+      "object_version",
+      "etag",
+      "size_bytes",
+      "sha256",
+    ], label);
+    if (
+      value.format !== "osl.cipher-store.d2-raw-r2-resource-readback.v2"
+      || value.probe_id !== probeId
+      || value.kind !== kind
+      || value.bucket_name !== D2_R2_BUCKET
+      || value.object_key !== objectKey
+      || value.observation !== expectedState
+    ) {
+      fail(`${label} does not identify the expected R2 resource`);
+    }
+    if (expectedState === "exact") {
+      if (
+        typeof value.object_version !== "string"
+        || value.object_version.length === 0
+        || typeof value.etag !== "string"
+        || value.etag.length === 0
+        || positiveInt(value.size_bytes, `${label} object size`) < 1
+        || typeof value.sha256 !== "string"
+        || !SHA256_RE.test(value.sha256)
+      ) {
+        fail(`${label} lacks exact R2 version/etag/length/digest state`);
+      }
+      return value;
+    }
+    if (
+      value.object_version !== null
+      || value.etag !== null
+      || value.size_bytes !== null
+      || value.sha256 !== null
+    ) {
+      fail(`${label} non-exact R2 observation contains asserted object metadata`);
+    }
+    return value;
+  }
+  strictObject(value, [
+    "format",
+    "probe_id",
+    "kind",
+    "account_sha256",
+    "observation",
+    "counter_version",
+    "reservation_rows",
+    "reservation_bytes",
+    "content_rows",
+    "content_bytes",
+    "counters_sha256",
+  ], label);
+  const counterVersion = positiveInt(
+    value.counter_version,
+    `${label} counter version`,
+  );
+  const counters = {
+    counter_version: counterVersion,
+    reservation_rows: nonNegativeInt(
+      value.reservation_rows,
+      `${label} reservation rows`,
+    ),
+    reservation_bytes: nonNegativeInt(
+      value.reservation_bytes,
+      `${label} reservation bytes`,
+    ),
+    content_rows: nonNegativeInt(value.content_rows, `${label} content rows`),
+    content_bytes: nonNegativeInt(value.content_bytes, `${label} content bytes`),
+  };
+  const countersSha256 = await sha256Hex(
+    new TextEncoder().encode(canonicalJson(counters)),
   );
   if (
-    value.format !== "osl.cipher-store.d2-raw-state-readback.v1"
+    value.format !== "osl.cipher-store.d2-raw-quota-resource-readback.v2"
     || value.probe_id !== probeId
     || value.kind !== kind
-    || value.component !== component
-    || value.state !== expectedState
+    || value.account_sha256 !== accountSha256
+    || value.observation !== expectedState
+    || value.counters_sha256 !== countersSha256
   ) {
-    fail(`${label} does not prove the expected post-operation state`);
+    fail(`${label} lacks exact quota identity/version/counter digest state`);
   }
+  const total = counters.reservation_rows
+    + counters.reservation_bytes
+    + counters.content_rows
+    + counters.content_bytes;
+  if (
+    (expectedState === "released" && total !== 0)
+    || (expectedState === "retained" && total === 0)
+  ) {
+    fail(`${label} quota counters contradict their observation`);
+  }
+  return value;
+}
+
+function nonNegativeInt(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    fail(`${label} must be a non-negative safe integer`);
+  }
+  return value as number;
 }
 
 async function validateAdmission(
@@ -502,10 +855,13 @@ async function validateAdmission(
   ) {
     fail("admission evidence format is invalid");
   }
-  const nowMs = authority.nowMs();
+  const evidenceSha256 = await sha256Hex(
+    new TextEncoder().encode(canonicalJson(evidence)),
+  );
+  const nowMs = positiveInt(authority.nowMs(), "authority current time");
   const challenge = await authority.loadChallenge(evidence.challenge_id);
   if (!challenge) fail("challenge is not present in durable authority");
-  validateChallenge(challenge, evidence, nowMs);
+  validateChallenge(challenge, evidence, evidenceSha256, nowMs);
   const active = await authority.loadActiveDeployment();
   if (!active) fail("active deployment has no independent authority anchor");
   validateActiveDeployment(active);
@@ -585,9 +941,21 @@ async function validateAdmission(
     || event.worker_version_id !== active.worker_version_id
     || event.cron !== "*/5 * * * *"
     || event.marker !== "[attachment-sweep-cycle] complete"
-    || event.scheduled_at_ms < challenge.issued_at_ms
-    || event.observed_at_ms < event.scheduled_at_ms
-    || event.observed_at_ms > challenge.expires_at_ms
+  ) {
+    fail("raw provider event does not prove the active natural cron");
+  }
+  const eventScheduledAt = positiveInt(
+    event.scheduled_at_ms,
+    "provider event scheduled time",
+  );
+  const eventObservedAt = positiveInt(
+    event.observed_at_ms,
+    "provider event observation",
+  );
+  if (
+    eventScheduledAt < challenge.issued_at_ms
+    || eventObservedAt < eventScheduledAt
+    || eventObservedAt > challenge.expires_at_ms
   ) {
     fail("raw provider event does not prove the active natural cron");
   }
@@ -664,8 +1032,10 @@ async function validateAdmission(
       || probe.environment !== "production"
       || !PROBE_ID_RE.test(probe.probe_id)
       || !D2_PROBE_KINDS.includes(probe.kind)
-      || probe.observed_at_ms < event.observed_at_ms
-      || probe.observed_at_ms > challenge.expires_at_ms
+      || positiveInt(probe.observed_at_ms, `probe ${index} observation`)
+        < eventObservedAt
+      || positiveInt(probe.observed_at_ms, `probe ${index} observation`)
+        > challenge.expires_at_ms
       || probes.has(probe.kind)
     ) {
       fail(`probe transcript ${index} is stale, duplicated, or mismatched`);
@@ -692,6 +1062,20 @@ async function validateAdmission(
       probe,
       digest: String(payload.transcript_bytes_sha256),
     });
+  }
+  const transcriptRootSha256 = await sha256Hex(
+    new TextEncoder().encode(canonicalJson(
+      [...probes.entries()]
+        .map(([kind, value]) => ({
+          kind,
+          probe_id: value.probe.probe_id,
+          transcript_bytes_sha256: value.digest,
+        }))
+        .sort((left, right) => left.kind.localeCompare(right.kind)),
+    )),
+  );
+  if (transcriptRootSha256 !== challenge.expected_transcript_root_sha256) {
+    fail("probe transcript root does not match the durable challenge");
   }
 
   const readbackKinds = new Set<D2ProbeKind>();
@@ -730,28 +1114,32 @@ async function validateAdmission(
       || !probe
       || readback.probe_id !== probe.probe.probe_id
       || readback.transcript_bytes_sha256 !== probe.digest
-      || readback.observed_at_ms < probe.probe.observed_at_ms
-      || readback.observed_at_ms > challenge.expires_at_ms
+      || positiveInt(readback.observed_at_ms, `readback ${index} observation`)
+        < probe.probe.observed_at_ms
+      || positiveInt(readback.observed_at_ms, `readback ${index} observation`)
+        > challenge.expires_at_ms
       || readbackKinds.has(readback.kind)
     ) {
       fail(`readback ${index} is stale, fabricated, or not independent`);
     }
-    await validateStateReadback(
+    const d1Readback = await validateStateReadback(
       readback.d1_readback_base64url,
       readback.d1_readback_sha256,
       readback.probe_id,
       readback.kind,
       "d1",
       expected.d1_state,
+      active.account_sha256,
       `readback ${index} D1 bytes`,
     );
-    await validateStateReadback(
+    const r2Readback = await validateStateReadback(
       readback.r2_readback_base64url,
       readback.r2_readback_sha256,
       readback.probe_id,
       readback.kind,
       "r2",
       expected.r2_state,
+      active.account_sha256,
       `readback ${index} R2 bytes`,
     );
     await validateStateReadback(
@@ -761,16 +1149,34 @@ async function validateAdmission(
       readback.kind,
       "quota",
       expected.quota_state,
+      active.account_sha256,
       `readback ${index} quota bytes`,
     );
+    if (
+      d1Readback.expected_size_bytes !== null
+      && r2Readback.size_bytes !== null
+      && d1Readback.expected_size_bytes !== r2Readback.size_bytes
+    ) {
+      fail(`readback ${index} D1 and R2 lengths disagree`);
+    }
+    if (
+      d1Readback.row_sha256 !== null
+      && r2Readback.sha256 !== null
+      && d1Readback.row_sha256 !== r2Readback.sha256
+    ) {
+      fail(`readback ${index} D1 and R2 digests disagree`);
+    }
     const anchor = await authority.loadPostOperationReadback(readback.probe_id);
     if (
       !anchor
       || anchor.probe_id !== readback.probe_id
       || anchor.kind !== readback.kind
       || anchor.transcript_bytes_sha256 !== readback.transcript_bytes_sha256
+      || anchor.d1_readback_base64url !== readback.d1_readback_base64url
       || anchor.d1_readback_sha256 !== readback.d1_readback_sha256
+      || anchor.r2_readback_base64url !== readback.r2_readback_base64url
       || anchor.r2_readback_sha256 !== readback.r2_readback_sha256
+      || anchor.quota_readback_base64url !== readback.quota_readback_base64url
       || anchor.quota_readback_sha256 !== readback.quota_readback_sha256
     ) {
       fail(`readback ${index} is absent from the independent readback authority`);
@@ -789,9 +1195,6 @@ async function validateAdmission(
     );
   }
 
-  const evidenceSha256 = await sha256Hex(
-    new TextEncoder().encode(canonicalJson(evidence)),
-  );
   const authoritySnapshotSha256 = await sha256Hex(
     new TextEncoder().encode(canonicalJson({
       active,
@@ -801,14 +1204,26 @@ async function validateAdmission(
       ),
     })),
   );
-  if (authority.nowMs() > challenge.expires_at_ms) {
+  if (
+    authoritySnapshotSha256
+    !== challenge.expected_authority_snapshot_sha256
+  ) {
+    fail("authority snapshot does not match the durable challenge");
+  }
+  const consumeNowMs = positiveInt(
+    authority.nowMs(),
+    "authority consume time",
+  );
+  if (consumeNowMs > challenge.expires_at_ms) {
     fail("challenge expired while evidence was being verified");
   }
   if (!await authority.consumeChallenge({
     challenge_id: challenge.challenge_id,
     sequence: challenge.sequence,
     evidence_sha256: evidenceSha256,
+    transcript_root_sha256: transcriptRootSha256,
     authority_snapshot_sha256: authoritySnapshotSha256,
+    consumed_at_ms: consumeNowMs,
     expires_at_ms: challenge.expires_at_ms,
   })) {
     fail("challenge or receipt sequence was already consumed");
@@ -820,6 +1235,8 @@ async function validateAdmission(
     challenge_id: challenge.challenge_id,
     sequence: challenge.sequence,
     evidence_sha256: evidenceSha256,
+    transcript_root_sha256: transcriptRootSha256,
+    authority_snapshot_sha256: authoritySnapshotSha256,
     worker_version_id: active.worker_version_id,
     witness_kinds: [...probes.keys()].sort(),
   };

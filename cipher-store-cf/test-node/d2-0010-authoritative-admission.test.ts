@@ -1,7 +1,8 @@
 import { webcrypto } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   D2_ADMISSION_FORMAT,
+  D2_ADMISSION_MAX_LIFETIME_MS,
   D2_ADMISSION_PRODUCERS,
   D2_ADMISSION_STATEMENT_FORMAT,
   type D2ActiveDeployment,
@@ -18,6 +19,8 @@ import {
   type D2ProviderEventIdentity,
   type D2RawDeploymentAnchor,
   type D2RawEventAnchor,
+  consumeD2AdmissionChallengeInD1,
+  loadD2AdmissionChallengeFromD1,
   verifyD2AuthoritativeAdmissionForTestsOnly,
   verifyD2AuthoritativeProductionAdmission,
 } from "../scripts/d2-0010-authoritative-admission.js";
@@ -32,6 +35,11 @@ import {
   type D2ProbeKind,
   type D2ProductionProbe,
 } from "../scripts/d2-0010-release-contract.js";
+import {
+  createD2DurableAuthorityFixture,
+  insertD2DurableChallenge,
+  type D2DurableAuthorityFixture,
+} from "./helpers/d2-0010-durable-d1-authority.js";
 
 const NOW = 10_000_000;
 const ACCOUNT = "a".repeat(64);
@@ -78,6 +86,9 @@ const challenge: D2AdmissionChallenge = {
   sequence: 7,
   issued_at_ms: NOW - 60_000,
   expires_at_ms: NOW + 60_000,
+  expected_evidence_sha256: "0".repeat(64),
+  expected_transcript_root_sha256: "0".repeat(64),
+  expected_authority_snapshot_sha256: "0".repeat(64),
 };
 
 const active: D2ActiveDeployment = {
@@ -95,19 +106,35 @@ const active: D2ActiveDeployment = {
   r2_bucket_name: D2_R2_BUCKET,
 };
 
-class MemoryAuthority implements D2AdmissionAuthority {
-  consumed = false;
+const authorityFixtures: D2DurableAuthorityFixture[] = [];
+
+afterEach(() => {
+  for (const fixture of authorityFixtures.splice(0)) fixture.cleanup();
+});
+
+class DurableTestAuthority implements D2AdmissionAuthority {
   current = NOW;
-  durableChallenge: D2AdmissionChallenge | null = structuredClone(challenge);
   deployment: D2ActiveDeployment | null = structuredClone(active);
+  readbackAnchors = new Map<string, D2PostOperationReadbackAnchor>();
+
+  constructor(
+    readonly fixture: D2DurableAuthorityFixture,
+  ) {}
+
+  get consumed() {
+    const row = this.fixture.connection.raw.prepare(
+      `SELECT consumed_at_ms
+         FROM d2_admission_challenges
+        WHERE challenge_id = ?`,
+    ).get(CHALLENGE_ID) as { consumed_at_ms: number | null } | undefined;
+    return row?.consumed_at_ms !== null && row?.consumed_at_ms !== undefined;
+  }
 
   nowMs() {
     return this.current;
   }
   async loadChallenge(id: string) {
-    return this.durableChallenge?.challenge_id === id
-      ? structuredClone(this.durableChallenge)
-      : null;
+    return loadD2AdmissionChallengeFromD1(this.fixture.connection.d1, id);
   }
   async loadActiveDeployment() {
     return this.deployment ? structuredClone(this.deployment) : null;
@@ -124,6 +151,8 @@ class MemoryAuthority implements D2AdmissionAuthority {
     } satisfies D2ProviderEventIdentity;
   }
   async loadPostOperationReadback(probeId: string) {
+    const anchored = this.readbackAnchors.get(probeId);
+    if (anchored) return structuredClone(anchored);
     const index = Number.parseInt(probeId[0]!, 16) - 1;
     const kind = D2_PROBE_KINDS[index];
     if (!kind || probeId !== (index + 1).toString(16).repeat(32)) return null;
@@ -134,8 +163,11 @@ class MemoryAuthority implements D2AdmissionAuthority {
       probe_id: probeId,
       kind,
       transcript_bytes_sha256: transcript.sha256,
+      d1_readback_base64url: readbacks.d1.base64url,
       d1_readback_sha256: readbacks.d1.sha256,
+      r2_readback_base64url: readbacks.r2.base64url,
       r2_readback_sha256: readbacks.r2.sha256,
+      quota_readback_base64url: readbacks.quota.base64url,
       quota_readback_sha256: readbacks.quota.sha256,
     } satisfies D2PostOperationReadbackAnchor;
   }
@@ -143,35 +175,15 @@ class MemoryAuthority implements D2AdmissionAuthority {
     challenge_id: string;
     sequence: number;
     evidence_sha256: string;
+    transcript_root_sha256: string;
     authority_snapshot_sha256: string;
+    consumed_at_ms: number;
     expires_at_ms: number;
   }) {
-    await Promise.resolve();
-    const eventIdentity = await this.loadProviderEventIdentity("e".repeat(32));
-    const readbacks = await Promise.all(
-      D2_PROBE_KINDS.map((_, index) => (
-        this.loadPostOperationReadback((index + 1).toString(16).repeat(32))
-      )),
+    return consumeD2AdmissionChallengeInD1(
+      this.fixture.connection.d1,
+      input,
     );
-    const expectedSnapshot = this.deployment && eventIdentity
-      && readbacks.every((value) => value !== null)
-      ? await digest(bytes({
-        active: this.deployment,
-        event: eventIdentity,
-        readbacks,
-      }))
-      : null;
-    if (
-      this.consumed
-      || input.challenge_id !== this.durableChallenge?.challenge_id
-      || input.sequence !== this.durableChallenge.sequence
-      || input.expires_at_ms !== this.durableChallenge.expires_at_ms
-      || this.current > input.expires_at_ms
-      || !/^[0-9a-f]{64}$/.test(input.evidence_sha256)
-      || input.authority_snapshot_sha256 !== expectedSnapshot
-    ) return false;
-    this.consumed = true;
-    return true;
   }
 }
 
@@ -328,20 +340,55 @@ async function productionProbe(
 
 async function rawStateReadbacks(probeId: string, kind: D2ProbeKind) {
   const expected = states(kind);
-  const make = async (
-    component: "d1" | "r2" | "quota",
-    state: string,
-  ) => raw({
-    format: "osl.cipher-store.d2-raw-state-readback.v1",
+  const d1Present = expected.d1_state === "ready"
+    || expected.d1_state === "retained";
+  const d1 = await raw({
+    format: "osl.cipher-store.d2-raw-d1-resource-readback.v2",
     probe_id: probeId,
     kind,
-    component,
-    state,
+    database_id: D2_DATABASE_ID,
+    attachment_id: probeId,
+    object_key: `attachments/${probeId}`,
+    observation: expected.d1_state,
+    row_state: d1Present
+      ? (expected.d1_state === "ready" ? "ready" : "completing")
+      : null,
+    row_version: d1Present ? 3 : null,
+    expected_size_bytes: d1Present ? 2 : null,
+    row_sha256: d1Present ? "4".repeat(64) : null,
+  });
+  const r2 = await raw({
+    format: "osl.cipher-store.d2-raw-r2-resource-readback.v2",
+    probe_id: probeId,
+    kind,
+    bucket_name: D2_R2_BUCKET,
+    object_key: `attachments/${probeId}`,
+    observation: expected.r2_state,
+    object_version: expected.r2_state === "exact" ? "r2-version-3" : null,
+    etag: expected.r2_state === "exact" ? "r2-etag-3" : null,
+    size_bytes: expected.r2_state === "exact" ? 2 : null,
+    sha256: expected.r2_state === "exact" ? "4".repeat(64) : null,
+  });
+  const counters = {
+    counter_version: 9,
+    reservation_rows: expected.quota_state === "retained" ? 1 : 0,
+    reservation_bytes: expected.quota_state === "retained" ? 2 : 0,
+    content_rows: 0,
+    content_bytes: 0,
+  };
+  const quota = await raw({
+    format: "osl.cipher-store.d2-raw-quota-resource-readback.v2",
+    probe_id: probeId,
+    kind,
+    account_sha256: ACCOUNT,
+    observation: expected.quota_state,
+    ...counters,
+    counters_sha256: await digest(bytes(counters)),
   });
   return {
-    d1: await make("d1", expected.d1_state),
-    r2: await make("r2", expected.r2_state),
-    quota: await make("quota", expected.quota_state),
+    d1,
+    r2,
+    quota,
   };
 }
 
@@ -400,6 +447,78 @@ async function evidence(): Promise<D2AuthoritativeAdmissionEvidence> {
   };
 }
 
+async function authorityFor(
+  value: D2AuthoritativeAdmissionEvidence,
+  options: {
+    current?: number;
+    challenge?: Partial<D2AdmissionChallenge>;
+    deployment?: D2ActiveDeployment;
+    mutateReadbackAnchors?: (
+      anchors: D2PostOperationReadbackAnchor[],
+    ) => void;
+  } = {},
+): Promise<DurableTestAuthority> {
+  const deployment = structuredClone(options.deployment ?? active);
+  const event = providerEvent();
+  const eventRaw = await raw(event);
+  const eventIdentity: D2ProviderEventIdentity = {
+    event_id: event.event_id,
+    event_sha256: eventRaw.sha256,
+    worker_version_id: event.worker_version_id,
+    observed_at_ms: event.observed_at_ms,
+  };
+  const readbacks: D2PostOperationReadbackAnchor[] = [];
+  const transcripts = [];
+  for (const [index, kind] of D2_PROBE_KINDS.entries()) {
+    const probe = await productionProbe(kind, index);
+    const transcript = await raw(probe);
+    const stateReadbacks = await rawStateReadbacks(probe.probe_id, kind);
+    transcripts.push({
+      kind,
+      probe_id: probe.probe_id,
+      transcript_bytes_sha256:
+        value.probes[index]!.payload.transcript_bytes_sha256,
+    });
+    readbacks.push({
+      probe_id: probe.probe_id,
+      kind,
+      transcript_bytes_sha256: transcript.sha256,
+      d1_readback_base64url: stateReadbacks.d1.base64url,
+      d1_readback_sha256: stateReadbacks.d1.sha256,
+      r2_readback_base64url: stateReadbacks.r2.base64url,
+      r2_readback_sha256: stateReadbacks.r2.sha256,
+      quota_readback_base64url: stateReadbacks.quota.base64url,
+      quota_readback_sha256: stateReadbacks.quota.sha256,
+    });
+  }
+  options.mutateReadbackAnchors?.(readbacks);
+  const expected: D2AdmissionChallenge = {
+    ...challenge,
+    ...options.challenge,
+    expected_evidence_sha256: await digest(bytes(value)),
+    expected_transcript_root_sha256: await digest(bytes(
+      transcripts.sort((left, right) => left.kind.localeCompare(right.kind)),
+    )),
+    expected_authority_snapshot_sha256: await digest(bytes({
+      active: deployment,
+      event: eventIdentity,
+      readbacks: readbacks.sort(
+        (left, right) => left.probe_id.localeCompare(right.probe_id),
+      ),
+    })),
+  };
+  const fixture = createD2DurableAuthorityFixture();
+  authorityFixtures.push(fixture);
+  insertD2DurableChallenge(fixture.connection.raw, expected);
+  const authority = new DurableTestAuthority(fixture);
+  authority.current = options.current ?? NOW;
+  authority.deployment = deployment;
+  authority.readbackAnchors = new Map(
+    readbacks.map((anchor) => [anchor.probe_id, structuredClone(anchor)]),
+  );
+  return authority;
+}
+
 describe("D2 authoritative single-use production admission", () => {
   it("keeps production fail-closed without provisioned authority", async () => {
     expect(D2_ADMISSION_PRODUCERS).toEqual({});
@@ -409,7 +528,7 @@ describe("D2 authoritative single-use production admission", () => {
 
   it("accepts a complete test-only packet once and rejects replay", async () => {
     const value = await evidence();
-    const authority = new MemoryAuthority();
+    const authority = await authorityFor(value);
     await expect(
       verifyD2AuthoritativeAdmissionForTestsOnly(value, registry, authority),
     ).resolves.toMatchObject({
@@ -425,11 +544,13 @@ describe("D2 authoritative single-use production admission", () => {
   });
 
   it("refuses expired challenges and revoked or stale producer epochs", async () => {
-    const expired = new MemoryAuthority();
-    expired.current = challenge.expires_at_ms + 1;
+    const expiredEvidence = await evidence();
+    const expired = await authorityFor(expiredEvidence, {
+      current: challenge.expires_at_ms + 1,
+    });
     await expect(
       verifyD2AuthoritativeAdmissionForTestsOnly(
-        await evidence(),
+        expiredEvidence,
         registry,
         expired,
       ),
@@ -437,13 +558,41 @@ describe("D2 authoritative single-use production admission", () => {
 
     const revoked = structuredClone(registry) as Record<string, D2AdmissionProducer>;
     revoked["producer-0"]!.revoked_at_ms = NOW;
+    const revokedEvidence = await evidence();
     await expect(
       verifyD2AuthoritativeAdmissionForTestsOnly(
-        await evidence(),
+        revokedEvidence,
         revoked,
-        new MemoryAuthority(),
+        await authorityFor(revokedEvidence),
       ),
     ).rejects.toThrow(/revoked/);
+  });
+
+  it("rejects NaN current time before every freshness or revocation comparison", async () => {
+    const value = await evidence();
+    const authority = await authorityFor(value);
+    authority.current = Number.NaN;
+    const revoked = structuredClone(registry) as Record<string, D2AdmissionProducer>;
+    for (const producer of Object.values(revoked)) {
+      producer.revoked_at_ms = NOW - 1;
+    }
+    await expect(
+      verifyD2AuthoritativeAdmissionForTestsOnly(value, revoked, authority),
+    ).rejects.toThrow(/current time/);
+  });
+
+  it("makes validateChallenge load-bearing with an overlong current challenge", async () => {
+    const value = await evidence();
+    const authority = await authorityFor(value, {
+      challenge: {
+        issued_at_ms: NOW - D2_ADMISSION_MAX_LIFETIME_MS - 1,
+        expires_at_ms: NOW + 10_000,
+      },
+    });
+    await expect(
+      verifyD2AuthoritativeAdmissionForTestsOnly(value, registry, authority),
+    ).rejects.toThrow(/challenge/);
+    expect(authority.consumed).toBe(false);
   });
 
   it("refuses a co-mutated signed Worker version against active authority", async () => {
@@ -462,7 +611,7 @@ describe("D2 authoritative single-use production admission", () => {
       verifyD2AuthoritativeAdmissionForTestsOnly(
         value,
         registry,
-        new MemoryAuthority(),
+        await authorityFor(value),
       ),
     ).rejects.toThrow(/disagree/);
   });
@@ -489,7 +638,7 @@ describe("D2 authoritative single-use production admission", () => {
       verifyD2AuthoritativeAdmissionForTestsOnly(
         manual,
         registry,
-        new MemoryAuthority(),
+        await authorityFor(manual),
       ),
     ).rejects.toThrow(/natural cron/);
 
@@ -503,15 +652,16 @@ describe("D2 authoritative single-use production admission", () => {
       verifyD2AuthoritativeAdmissionForTestsOnly(
         drift,
         registry,
-        new MemoryAuthority(),
+        await authorityFor(drift),
       ),
     ).rejects.toThrow(/digest/);
 
-    const unanchored = new MemoryAuthority();
+    const unanchoredEvidence = await evidence();
+    const unanchored = await authorityFor(unanchoredEvidence);
     unanchored.loadProviderEventIdentity = async () => null;
     await expect(
       verifyD2AuthoritativeAdmissionForTestsOnly(
-        await evidence(),
+        unanchoredEvidence,
         registry,
         unanchored,
       ),
@@ -529,7 +679,7 @@ describe("D2 authoritative single-use production admission", () => {
       verifyD2AuthoritativeAdmissionForTestsOnly(
         fabricated,
         registry,
-        new MemoryAuthority(),
+        await authorityFor(fabricated),
       ),
     ).rejects.toThrow(/digest/);
 
@@ -547,7 +697,7 @@ describe("D2 authoritative single-use production admission", () => {
       verifyD2AuthoritativeAdmissionForTestsOnly(
         semanticDrift,
         registry,
-        new MemoryAuthority(),
+        await authorityFor(semanticDrift),
       ),
     ).rejects.toThrow(/semantic transcript digest/);
 
@@ -557,24 +707,89 @@ describe("D2 authoritative single-use production admission", () => {
       verifyD2AuthoritativeAdmissionForTestsOnly(
         missing,
         registry,
-        new MemoryAuthority(),
+        await authorityFor(missing),
       ),
     ).rejects.toThrow(/every probe/);
 
-    const unanchored = new MemoryAuthority();
+    const unanchoredEvidence = await evidence();
+    const unanchored = await authorityFor(unanchoredEvidence);
     unanchored.loadPostOperationReadback = async () => null;
     await expect(
       verifyD2AuthoritativeAdmissionForTestsOnly(
-        await evidence(),
+        unanchoredEvidence,
         registry,
         unanchored,
       ),
     ).rejects.toThrow(/independent readback authority/);
   });
 
+  it("makes exact D1 resource validation load-bearing even when authority anchors the bytes", async () => {
+    const value = await evidence();
+    const probeId = (1).toString(16).repeat(32);
+    const malformed = await raw({
+      format: "osl.cipher-store.d2-raw-d1-resource-readback.v2",
+      probe_id: probeId,
+      kind: "legacy-no-object",
+      database_id: D2_DATABASE_ID,
+      attachment_id: probeId,
+      object_key: `attachments/${probeId}`,
+      observation: "absent",
+      row_state: "ready",
+      row_version: 3,
+      expected_size_bytes: 2,
+      row_sha256: "4".repeat(64),
+    });
+    value.readbacks[0]!.payload.d1_readback_base64url = malformed.base64url;
+    value.readbacks[0]!.payload.d1_readback_sha256 = malformed.sha256;
+    value.readbacks[0] = await sign(
+      "independent-readback",
+      value.readbacks[0]!.payload,
+    );
+    const authority = await authorityFor(value, {
+      mutateReadbackAnchors(anchors) {
+        anchors[0]!.d1_readback_base64url = malformed.base64url;
+        anchors[0]!.d1_readback_sha256 = malformed.sha256;
+      },
+    });
+    await expect(
+      verifyD2AuthoritativeAdmissionForTestsOnly(value, registry, authority),
+    ).rejects.toThrow(/absent D1 state/);
+    expect(authority.consumed).toBe(false);
+  });
+
+  it("refuses independently anchored D1 and R2 digests for different bytes", async () => {
+    const value = await evidence();
+    const exactIndex = D2_PROBE_KINDS.indexOf("exact-size");
+    const readback = value.readbacks[exactIndex]!;
+    const decoded = JSON.parse(
+      Buffer.from(
+        readback.payload.r2_readback_base64url,
+        "base64url",
+      ).toString(),
+    ) as Record<string, unknown>;
+    decoded.sha256 = "5".repeat(64);
+    const mismatched = await raw(decoded);
+    readback.payload.r2_readback_base64url = mismatched.base64url;
+    readback.payload.r2_readback_sha256 = mismatched.sha256;
+    value.readbacks[exactIndex] = await sign(
+      "independent-readback",
+      readback.payload,
+    );
+    const authority = await authorityFor(value, {
+      mutateReadbackAnchors(anchors) {
+        anchors[exactIndex]!.r2_readback_base64url = mismatched.base64url;
+        anchors[exactIndex]!.r2_readback_sha256 = mismatched.sha256;
+      },
+    });
+    await expect(
+      verifyD2AuthoritativeAdmissionForTestsOnly(value, registry, authority),
+    ).rejects.toThrow(/D1 and R2 digests disagree/);
+    expect(authority.consumed).toBe(false);
+  });
+
   it("allows only one winner under concurrent replay", async () => {
     const value = await evidence();
-    const authority = new MemoryAuthority();
+    const authority = await authorityFor(value);
     const results = await Promise.allSettled([
       verifyD2AuthoritativeAdmissionForTestsOnly(value, registry, authority),
       verifyD2AuthoritativeAdmissionForTestsOnly(value, registry, authority),
@@ -584,16 +799,22 @@ describe("D2 authoritative single-use production admission", () => {
   });
 
   it("fences an active-authority change before receipt consumption", async () => {
-    const authority = new MemoryAuthority();
+    const value = await evidence();
+    const authority = await authorityFor(value);
     const consume = authority.consumeChallenge.bind(authority);
     authority.consumeChallenge = async (input) => {
       authority.deployment!.worker_version_id =
         "44444444-4444-4444-8444-444444444444";
+      authority.fixture.connection.raw.prepare(
+        `UPDATE d2_admission_authority_state
+            SET authority_snapshot_sha256 = ?
+          WHERE singleton_id = 1`,
+      ).run("9".repeat(64));
       return consume(input);
     };
     await expect(
       verifyD2AuthoritativeAdmissionForTestsOnly(
-        await evidence(),
+        value,
         registry,
         authority,
       ),
