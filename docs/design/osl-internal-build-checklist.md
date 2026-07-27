@@ -166,6 +166,74 @@ away, per master §16.3.
   exists, so status remains `test-proven-only` and H1 earns +0.
 - Arithmetic is unchanged: **97 + 0 + 0 = 97 / 303**.
 
+**2026-07-27 exact A8, website, and current-lane reconciliation (+0).**
+
+- A8 stays **3/4; +0** under the unsplit rule. Exact
+  `ae8a59b47187059f07170d218ac0144f75e65d1f` is a five-path store-only commit whose exact archive
+  passes 52/52 tests. It closes the store-local v2/unstamped migration, raw SQLite/WAL/SHM/sidecar,
+  burned-parent attachment, selector-to-decrypted-metadata, and exact `adff4e45` older-reader gaps.
+  Classification is `test-proven-only`, not product-wide at-rest proof. The held clause is false:
+  `crates/ipc/src/peer_map.rs:405-412` and `membership.rs:241-248` write plaintext JSON when the
+  main-password storage key is absent, and `main_password.rs:823-827` documents that fallback.
+  Independent review also bypassed the proposed known-file sink inventory with
+  `File::create_new` plus `std::io::copy`; the product-wide inventory was therefore removed rather
+  than blessed. Remediation is a separate crypto/native persistence task, not more store fixtures.
+- H1 stays **3/4; +0**. Independent review rejected `f39b805` because “An activation code grants
+  30 days of Pro” bypassed its exact phrases, then rejected `5a84d77` because “One month of Pro
+  comes with each activation code” bypassed its verb-dependent rule while honest planned and
+  once-implemented copy false-failed. Exact successor
+  `4aea9fe153dbc58e0b75c6a4422912f828d3343d` instead prohibits any same-sentence code/licence plus
+  30-day/one-month duration unless the clause explicitly says it is planned, unimplemented, or
+  conditional on implementation. Its adversarial positives and honest negatives make 35/35
+  crawler fixtures pass; 16/16 public pages, 18 pricing markers with zero drift, and 10/10
+  fail-closed checkout tests also pass. Exact keyserver `90da747` adds a source-owned,
+  non-operator-configurable refusal at paid issuance boundaries, but it implements no redemption
+  clock and is not deployment-proven. The website is seven commits ahead of its local
+  `origin/main`, unpushed and undeployed; live Pages identity remains `unknown`. The successor is
+  `test-proven-only` pending independent acceptance.
+- C4 stays **1/4; +0**. `48162bd` publishes a real Rust return through a renderer seam, while
+  `266e6f3` hardens the v3 verifier/ledger. Exact `80ed9a2` adds a declarative test boundary, but
+  independent review rejects it as production-wired: nothing in the app, Rust crates, workflows,
+  build, or release path calls it, and captured integration defects prevent using it as evidence.
+  Its ceiling is `implemented-unwired`; no production native receipt binds build flavour, target
+  process/HWND/executable, carrier/readback, and one-time challenge consumption. The evidence run
+  remains `blocked`.
+- D7 stays **1/4; +0**. Exact `c06eed3` wires the immediate fail-closed safety response into
+  production source: suppress outbound `Opened` and reject inbound `Opened` while preserving
+  `Received`. This is `test-proven-only`, not `verified-live`; the durable mutual-consent contract
+  remains `implemented-unwired`, and the complete receipt outcome matrix still depends on B6/D3-D6.
+- Scrub/VM stay **F1 4/6, F2 3/5; +0**. Exact `be5355d` has coherent production source but its
+  acceptance harness is rejected: it cannot prove Tauri IPC, durable reread, or commit-bound
+  executable identity, and its receipt accepts unknown versions/fields. VM harness `fedd9e2`
+  improves retained evidence binding, but no exact-build picker → grant IPC →
+  nonempty scoped import → revoke IPC → persisted restart re-read has run. The retained VM pair is
+  narrow `runtime-proven` harness diagnostics, not an F1/F2 positive; the product walkthrough
+  remains `blocked`. Exact later VM commit `2da489a` is rejected for execution because its live
+  agent cannot emit the accepted V2 verdict and its build/Azure provenance remains forgeable.
+- Release stays **I3 1/3; +0**. Exact `caa4ba9` is `test-proven-only` structural policy: its local
+  administrator JSON is forgeable and no integrated candidate, push, exact-SHA hosted Rust/UI/audit
+  result, tag, promotion, or rollback exists. Exact `474c629` adds local QA-registration and
+  window-targeting guards; independent review accepts the scanner's narrow refusal proof, but
+  there is still no hosted run or integrated candidate and separate assembler/release-use defects
+  remain. It is also `test-proven-only`; the current release worktree's later bytes are dirty and
+  `unknown`.
+- Server evidence adds no point. Keyserver `16fcf49` is local `runtime-proven` for its control-inbox
+  retention state machine but undeployed; `90da747` is `test-proven-only`. Exact
+  `03b5a0215df69390345b2eb4af7be9c68ea075eb` is also `test-proven-only`: independent clean-archive
+  review reproduced the deterministic parent failure and accepted the production register/pubkeys
+  boundary plus D1 result as a genuine nonempty RN capability-advertisement proof, not a timing fix
+  or fake endpoint. It does not make any live client advertise nonzero RN capability, so B4 stays
+  0/4.
+  A read-only Wrangler check at 2026-07-27 10:13-10:18Z found keyserver deployment
+  `8fa82d0b…`, version 169 at 100%, and cipher-store deployment `785314a9…`, version 15 at 100%.
+  Neither carries a Git SHA. Remote D1 reports keyserver migrations 0030 and 0031 pending and
+  cipher-store 0007 pending, so 0031 retention is definitively not live and `16fcf49`, `90da747`,
+  `9de23ba`, and `fc91401` are not deployment-proven. Live checkout refusal, RN advertisement,
+  cron, and a natural D2 cleanup cycle remain `unknown`. Cipher-store `05282a4`, `9de23ba`, and
+  `fc91401` improve fail-closed D2 proof tooling, but the promotion helper has no production caller
+  and is `implemented-unwired`.
+- Arithmetic is unchanged: **97 + 0 = 97 / 303**.
+
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
 
@@ -278,8 +346,14 @@ timestamped deltas, not keep this number manually forever.
   paths have no dedicated fixtures; the v1 test does not scan post-migration raw bytes; the
   downgrade test asserts the version stamp rather than executing an older reader; attachment blind
   selectors are not cross-checked against sealed metadata; and persistence outside `crates/store`
-  remains unaudited. Deterministic blind indexes also preserve equality/frequency, counts, sizes,
-  order and burn timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
+  remains unaudited. Exact later `ae8a59b` closes those named **store-local** gaps with 52/52
+  exact-archive tests and mutation controls, but earns +0 under the unsplit boundary. The product
+  still deliberately persists plaintext JSON without a main-password storage key in
+  `peer_map.rs:405-412` and `membership.rs:241-248`, as documented at
+  `main_password.rs:823-827`. A lexical sink inventory was independently bypassed with
+  `File::create_new` plus `std::io::copy`, so it was not accepted as product completeness.
+  Deterministic blind indexes also preserve equality/frequency, counts, sizes, order and burn
+  timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
   `needs: none` `weight: 4` `earned: 3`
 
 ## B · Encryption and two-identity communication — 30 points (8 earned)
@@ -306,13 +380,19 @@ timestamped deltas, not keep this number manually forever.
   crash-reload non-reuse. Status is `test-proven-only` on an `implemented-unwired` ratchet: no
   real traffic, two-identity, or runtime point is implied. `needs: B2` `weight: 5` `earned: 2`
 - ⬜ **B4 · Capability negotiation and monotone downgrade pin** — no silent fallback after a peer
-  proves stronger support. `needs: B2` `weight: 4` `earned: 0`
+  proves stronger support. Exact `03b5a0215df69390345b2eb4af7be9c68ea075eb` is accepted only as
+  local Worker/D1 `test-proven-only` evidence: its clean archive binds the production
+  register/pubkeys boundary to a nonempty RN capability advertisement and fails the relevant
+  omission/stale/wrong-identity/empty-response mutations. No live client advertises nonzero RN
+  capability, so the production negotiation/downgrade boundary remains unproved.
+  `needs: B2` `weight: 4` `earned: 0`
 - 🟨 **B5 · Keyserver/prekey/control-inbox production contract** — server deployment is
-  `verified-live`: migration `0027` is deployed and active Worker version 169 is exact UUID
-  `3f92f0f5-c6ac-4426-9a83-1555f5c6394b` at 100%; Cloudflare provides no Git annotation, so its
-  exact source commit is `unknown`. The stale `NOT DEPLOYED` migration header does not override
-  that live evidence. The broader row is not
-  complete: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the
+  `verified-live`: migration `0027` is deployed and the 2026-07-27 read-only Wrangler check found
+  active deployment `8fa82d0b…`, version 169 at 100%. Cloudflare provides no Git annotation, so its
+  exact source commit is `unknown`. Remote D1 reports migrations 0030 and 0031 pending; therefore
+  0031 retention, checkout refusal and RN advertisement are not live-proven. The stale
+  `NOT DEPLOYED` migration header does not override the narrower live evidence. The broader row is
+  not complete: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the
   hand-checked evidence does not establish the prekey client path. No point added merely for
   resolving the old deployment uncertainty. **2026-07-27 no-point adjudication:** commit `284f0a5`
   bounds scheduled control-inbox and request-receipt cleanup to 100 rows per table per tick and is
@@ -350,7 +430,13 @@ timestamped deltas, not keep this number manually forever.
   an independent audit accepts a marker-free fake executable with caller-authored shipping facts,
   identical fresh-bundle replay, fake PNG content, and an unreachable Send call preserved as a
   source substring. The collector also synthesizes native authority instead of retaining the
-  production command response. C4 remains `blocked`. `needs: C3` `weight: 4` `earned: 1`
+  production command response. Exact `48162bd` adds a renderer publication seam for the Rust return,
+  and exact `266e6f3` makes the standalone v3 verifier/ledger mutation-sensitive, but neither adds
+  the authoritative native emitter/caller. Exact `80ed9a2` remains an unwired test boundary, not
+  transport/native authority; its captured current integration also had stale conformance
+  fixtures/tests and a filename-to-challenge binding defect. There is still no production caller.
+  The earlier accepted commits remain `test-proven-only`; the evidence run remains `blocked`.
+  `needs: C3` `weight: 4` `earned: 1`
 - 🟨 **C5 · Eye decrypt and place every authenticated row** — `runtime-proven`: `placedRowCount`
   `0 → 3`, `unplaceableRowCount` `3 → 0`, `rel_l −8 → 0` on QA executable SHA-256
   `6b6a36945b42…` (`osl-rehydrate-geometry-diagnosis.md`). This supersedes the `BLOCKED` row in
@@ -391,29 +477,34 @@ timestamped deltas, not keep this number manually forever.
   2026-07-26 as unproven.** Pending cover handoff, media measurement, cleanup, and
   no-plaintext-at-rest all remain. Exact `e8fbd3f` locally proves stale legacy upload reclamation,
   R2-before-D1 ordering and retryable abort failure, but it is not deployed and production cleanup
-  remains `unknown`. `needs: A6,D1` `weight: 5` `earned: 1`
+  remains `unknown`. Exact `05282a4`, `9de23ba`, and `fc91401` strengthen a fail-closed promotion
+  proof and its starvation/bypass controls, but the helper is `implemented-unwired`; it does not
+  bind the active Worker UUID to source or prove a natural production scheduled cycle. The
+  2026-07-27 read-only Wrangler check found active cipher-store deployment `785314a9…`, version 15
+  at 100%, but no Git SHA and migration 0007 still pending; the newer helper/cleanup commits are
+  not deployment-proven.
+  `needs: A6,D1` `weight: 5` `earned: 1`
 - 🧪 **D3 · View-once text** — mechanisms exist; two-identity second-open refusal unproved.
   `needs: B6` `weight: 4` `earned: 1`
 - 🧪 **D4 · View-once image/protected viewer** — viewer/link foundations exist; first-paint
   protection and end-to-end path unproved. `needs: D2,B6` `weight: 4` `earned: 1`
 - 🧪 **D5 · Timed deletion** — scheduler/ledger pieces exist; production wiring and all lifecycle
   outcomes unproved. `needs: B6,D2` `weight: 4` `earned: 1`
-- 🛑 **D6 · Bilateral Burn** — control-lane work exists but is **inert with an open defect**, so
-  the earned point is withdrawn. The text/receipt drain recognises an inbound revocation frame and
-  DELETEs it from the control inbox without applying it
-  (`apps/osl-hub/src/broker.rs:2635-2640`); `apply_peer_revocation` and friends still have zero
-  callers outside `apps/osl-hub/src/security.rs`. Because the row is destroyed rather than skipped,
-  wiring the apply path later will not recover burns issued in the meantime. Corrected description
-  in [`../qa/two-identity-p2p-verification.md`](../qa/two-identity-p2p-verification.md) §6 item 4;
-  Tab 5 owns the fix. Authenticated offline/retry/peer receipt proof and security audit still
-  required. `needs: A7,B6` `weight: 4` `earned: 0`
-- 🛑 **D7 · Receipts** — **1/4 retained; `open-security-finding`.** The authenticated,
+- 🛑 **D6 · Bilateral Burn** — the earlier destructive control-inbox drop is superseded in local
+  source: crypto `e4c9318` consumes explicit disposition, while keyserver `16fcf49` locally proves
+  retry/quarantine/retention behavior. The keyserver half is local `runtime-proven`, but remote D1
+  reports its required migration 0031 pending, so that retention contract is definitively not live.
+  The combined product is not deployed or proved with two authenticated identities, and peer burn
+  semantics remain gated by A7/B6. No point is restored.
+  `needs: A7,B6` `weight: 4` `earned: 0`
+- 🛑 **D7 · Receipts** — **1/4 retained.** The authenticated,
   correlation-bound native-overlay receipt/ledger foundation is real, so the existing foundation
-  point stands. Production `Opened` emission and admission do not consult locked mutual consent;
-  the separate signed consent contract is `implemented-unwired`. Until durable scope-bound mutual
-  consent is wired at both boundaries, fail closed by suppressing outbound `Opened` and rejecting
-  inbound `Opened` before ledger/UI admission, while preserving `Received`. Sent/received/opened/
-  deleted/expired outcomes must still become separate, mutual where required, and evidence-bound.
+  point stands. Exact `c06eed3` implements the immediate fail-closed response in production source:
+  outbound `Opened` is suppressed and inbound `Opened` is rejected while `Received` is preserved.
+  That safety fix is `test-proven-only`, not `verified-live`. The durable scope/identity-bound,
+  signed, expiring and revocable mutual-consent contract remains `implemented-unwired`.
+  Sent/received/opened/deleted/expired outcomes must still become separate, mutual where required,
+  and evidence-bound.
   `needs: B6,D3-D6` `weight: 4` `earned: 1`
 
 ## E · Every offered app — 40 points (4 earned)
@@ -442,13 +533,18 @@ timestamped deltas, not keep this number manually forever.
   native grant/revoke persistence is `test-proven-only`. The renderer tests parse choices and
   inspect `main.ts` strings; they do not execute the picker, Tauri grant/revoke handlers, or a
   persisted UI revoke/re-read. No exact-build live Windows UI/IPC walkthrough exists, and exact VM
-  capture remains `blocked`. Re-award only after picker → grant IPC → nonempty import → revoke IPC
-  → persisted re-read succeeds on the exact build. Browsers beyond the proved Chromium path,
-  Firefox tier, and exact release proof also remain. `needs: none` `weight: 6` `earned: 4`
+  capture remains `blocked`. Exact `be5355d` has coherent source but its acceptance harness cannot
+  prove Tauri IPC, durable reread or commit-bound executable identity and accepts unknown receipt
+  versions/fields; it is not a runtime positive. Re-award only after picker
+  → grant IPC → nonempty import → revoke IPC → persisted restart re-read succeeds on the exact
+  build. Browsers beyond the proved Chromium path, Firefox tier, and exact release proof also
+  remain. `needs: none` `weight: 6` `earned: 4`
 - 🟨 **F2 · Detected sites/accounts and ownership** — broader findings and native-app account work
   landed in dirty integration. Exact `c5b516f` makes the strict identity-binding verifier
   code-ready with 24 mutation-sensitive tests, but no authorised real-VM five-frame walkthrough has
-  passed. Runtime evidence remains `blocked`; exact walkthrough still needed.
+  passed. Exact `fedd9e2` retains stronger VM facts, but independent grading classifies the pair as
+  narrow `runtime-proven` harness diagnostics rather than an F2 positive. Product runtime remains
+  `blocked`; the exact walkthrough is still needed.
   `needs: F1` `weight: 5` `earned: 3`
 - 🟨 **F3 · Free Scrub account/category/scan/review flow** — substantial contracts/UI; exact
   end-to-end proof remains. `needs: F2` `weight: 5` `earned: 3`
@@ -487,15 +583,28 @@ timestamped deltas, not keep this number manually forever.
 
 - 🟨 **H1 · One canonical branch/deployment and one pricing model** — **pricing decided 2026-07-26**
   (master 7.14: prepaid one-month $5 code, period starts at redemption, nothing stored, separate
-  one-time compute credits). Canonical production line is GitHub `main`; production serves exactly
-  `main` (verified by the `?v=` asset stamp). Single manifest `data/pricing.json` now **drives every surface**: 19 markers across all 15 pages, `pricing-sync --check` reports 0 drift, and `check-claims` reports 0 conflicting price/renewal/entitlement claims on every page. The allowlist A6 limitation ("Nothing renews, and OSL never stores your payment details") now ships on `index.html`, which previously showed two `$5 / month` checkout buttons with no renewal disclosure at all, and is pinned in `required_phrases` so it cannot regress. Build-identity stamp and claim crawler are done on branch `web-pricing-truth-2026-07-26`. **The remaining point is held for actual promotion to production plus the keyserver redemption change** — nothing is deployed. The "your month starts when you enter the code" claim stays
+  one-time compute credits). Canonical production line is GitHub `main`; a prior observation used
+  the `?v=` asset stamp, but the current live Pages SHA remains `unknown`. Single manifest
+  `data/pricing.json` now **drives every surface**: 18 markers across all 16 pages,
+  `pricing-sync --check` reports 0 drift, and `check-claims` reports 0 conflicting
+  price/renewal/entitlement claims on every page. The allowlist A6 limitation ("Nothing renews, and
+  OSL never stores your payment details") now ships on `index.html`, which previously showed two
+  `$5 / month` checkout buttons with no renewal disclosure at all, and is pinned in
+  `required_phrases` so it cannot regress. Build-identity stamp and claim crawler are done on branch
+  `web-pricing-truth-2026-07-26`. **The remaining point is held for actual promotion to production
+  plus the keyserver redemption change** — nothing is deployed. The "your month starts when you enter the code" claim stays
   unpublished until the keyserver redemption change lands.
-  **Exact local candidate `4e2256333c53e6b6e17462657260f5d6499ec9ee` does not cross that last
-  point:** it closes the prior local artifact-contract gaps, passes the required local gates, and
-  deliberately disables checkout because paid-code redemption/one-month enforcement is absent.
-  It is a clean `test-proven-only` commit, four commits ahead of the local `origin/main` ref,
-  unpushed and undeployed. Pages dashboard/build evidence and a public SHA-bound `/build.json`
-  remain `unknown`; keyserver redemption is absent.**
+  **Independent reviews rejected local `f39b805` and `5a84d77`: the first missed a 30-day
+  paraphrase, and the second missed “comes with each activation code” while false-failing honest
+  planned/conditional copy. Exact successor `4aea9fe153dbc58e0b75c6a4422912f828d3343d`
+  makes same-sentence code/licence plus 30-day/one-month duration fail unless explicitly planned,
+  unimplemented, or conditional on implementation. It passes 16/16 public pages, 35/35 crawler
+  known-bad/honest fixtures, 18 pricing markers with zero drift, and 10/10 checkout tests. It is a
+  clean `test-proven-only` commit pending independent acceptance, seven commits ahead of the local
+  `origin/main` ref, unpushed and undeployed. Keyserver `90da747` fails closed at paid issuance
+  boundaries in local source but intentionally implements no redemption clock and is not
+  deployment-proven. Pages dashboard/build evidence and a public SHA-bound `/build.json` remain
+  `unknown`; redemption is absent.**
   `needs: keyserver redemption period (DEC-2026-07-26-PRO-CODES)` `weight: 4` `earned: 3`
 - 🟨 **H2 · Responsive visual fixes from Zhao/Jester screenshots** — preview branches contain newer
   work; exact screenshot mapping and canonical integration remain. `needs: screenshot refs`
@@ -558,8 +667,18 @@ timestamped deltas, not keep this number manually forever.
   until Rust is green. **2026-07-27 no-point adjudication:** `b9aa48e` locally wires and
   refusal-tests the keyserver test-count floor, but the clean release worktree is one commit ahead
   of origin and the edited workflow has no GitHub-hosted run. That is `test-proven-only`, not green
-  public CI. The three Rust defects are not owned by that lane, which is why this is a cut and not a
-  criticism. `needs: integration` `weight: 3` `earned: 1`
+  public CI. Exact later `caa4ba9` is also only `test-proven-only` structural policy: its local
+  administrator evidence is forgeable, no integrated candidate exists, and no exact-SHA hosted
+  result, push or promotion occurred. Exact `474c629` adds mutation-sensitive local
+  QA-registration/window-targeting checks and is `test-proven-only`; it has no hosted run or
+  integrated candidate, and release use remains blocked by separately audited assembler defects.
+  Current later release edits are dirty and `unknown`. The
+  uncommitted phase-two verifier packet rejects its complete fixture mutations, but it was deleted
+  after the read-only exercise and is design evidence only. The tracked preflight still inspects
+  only the first Rust/TypeScript workflow-name match, ignores duplicate names and named jobs, binds
+  local HEAD instead of the release tag, and treats a missing `hub-vm-qa` environment as a warning.
+  The three Rust defects are not owned by that lane, which is why this is a cut and not a criticism.
+  `needs: integration` `weight: 3` `earned: 1`
 - 🟨 **I4 · Signed candidate, VM promotion, reproducible release, rollback** — **+2 2026-07-26,
   approved as claimed. The strongest evidence in this batch.** The promotion gate was proven by
   **refusal**, not by a happy path: `scripts/release/prove-promotion-gate.sh` contains **20
@@ -596,8 +715,12 @@ timestamped deltas, not keep this number manually forever.
 - ✅ **J1 · Master control spec, derived views, design-feel guide, and tab prompts** — created and
   internally reconciled; ongoing tasks must keep them current. `weight: 4` `earned: 4`
 - 🟨 **J2 · Off-screen virtual-display launch, self-test, acceptance harness, recorder** — working
-  temporary/current tools; durable repo packaging and full capsule matrix remain. `weight: 5`
-  `earned: 3`
+  temporary/current tools; exact `fedd9e2` strengthens retained executable/script/HWND/DWM/PNG and
+  cleanup binding, but independent grading makes it narrow `runtime-proven` diagnostics, not a
+  product acceptance positive. Exact later `2da489a` is rejected for VM execution: its live agent
+  cannot emit the accepted V2 verdict, and source/executable/build plus Azure provenance remain
+  forgeable despite green synthetic tests. Durable repo packaging and the full capsule matrix remain.
+  `weight: 5` `earned: 3`
 - 🟨 **J3 · Multi-Codex account/usage routing** — codex/codex2/codex3/switch/usage exist; ongoing
   update resilience required. `weight: 3` `earned: 3`
 - ⬜ **J4 · Safe multi-Claude account routing** — design/official mechanism/concurrency test needed.
@@ -614,8 +737,10 @@ timestamped deltas, not keep this number manually forever.
   [`osl-public-claim-allowlist.md`](osl-public-claim-allowlist.md). A feature can no longer become
   `Available` through a copy edit. **The crawler now exists** (`scripts/check-claims.mjs` in the website repo): it asserts that no page
   contains a forbidden phrase and that every badge matches the manifest, and it carries a known-bad
-  fixture suite (`--self-test`, 14/14 fixtures caught, including the honest-negation cases that must
-  *not* be flagged) so it cannot decay into an all-green source-shape test. It caught real live false
+  fixture suite (`--self-test`; exact website `4aea9fe` passes 35/35 known-bad/honest fixtures,
+  including redemption-record, redemption-start, automatic-return-to-Free, adversarial
+  code-duration paraphrases, and honest planned/once-implemented controls) so it
+  cannot decay into an all-green source-shape test. It caught real live false
   claims on 2026-07-26. **Scope addition 2026-07-26: +3 points to the denominator.** Residual gap:
   it is a pre-deploy command, not a CI gate, so nothing yet blocks a deploy that skips it.
   It does **not** prove Rust/Tauri reachability; the separately recorded zero-caller seam passed
