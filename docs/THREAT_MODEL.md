@@ -2,6 +2,43 @@
 
 Status: Living document. Updated as features ship.
 
+> **Source-verified correction — 2026-07-26.** Until this date the sections below
+> described the *designed* v1 construction as if it were the shipping one. It is
+> not. This revision restates every cryptographic row against what the current
+> worktree actually executes, and marks the rest `Planned`.
+>
+> Read alongside the status vocabulary in
+> [`design/osl-master-decision-2026-07-26.md`](design/osl-master-decision-2026-07-26.md) §0.3
+> and the public wording rules in
+> [`design/osl-public-claim-allowlist.md`](design/osl-public-claim-allowlist.md).
+>
+> Verified against worktree `osl-eye-and-features-2026-07-26`, HEAD
+> `fc6b9830c679032692e812c90639a3838b4b26fd`, dirty (104 changed paths). Four other
+> tabs are editing this tree; line anchors below were re-verified at the time of
+> writing and may drift. Every claim here is a **source** claim
+> (`implemented-unwired` / `test-proven-only`), not a runtime one — no statement in
+> this file is `verified-live` on a named release build.
+>
+> **What actually carries traffic today:** one stateless scheme, wire `v=3`
+> (`crates/ipc/src/wire_v2.rs:685`). Both the Double Ratchet DM path (`v=4`) and
+> the group sender-keys path (`v=5`) are present in source and switched off.
+>
+> **`osl-ratchet-next` has no production call path.** The crate is a workspace
+> member (`Cargo.toml:29`) and `crates/ipc/Cargo.toml:73` declares the dependency,
+> and its IPC adapter `crates/ipc/src/wire_rn.rs` genuinely uses it — but nothing
+> uses `wire_rn`. Its only reference outside its own tests is the module
+> declaration `pub mod wire_rn;` at `crates/ipc/src/lib.rs:76`; the two other
+> mentions in the tree (`crates/osl-ratchet-next/src/negotiate.rs:21`,
+> `crates/keystore/src/client.rs:190`) are doc comments. Status:
+> `implemented-unwired`. No forward-secrecy, post-compromise, or
+> post-quantum-authentication claim may be made on its behalf.
+>
+> *Anchor drift note:* the root `Cargo.toml:25-28` comment still asserts that
+> osl-ratchet-next is "Reachable only from its own tests; no other crate or app
+> depends on it." The first half is true in effect; the second half is now false at
+> the Cargo level (`crates/ipc/Cargo.toml:73`). That comment is owned by another
+> tab and was not edited here.
+
 ## Mission
 
 Limit the power of social media companies and government surveillance over
@@ -20,12 +57,12 @@ Briar, or Cwtch. Onboarding states this explicitly.
 
 | Threat | v1 protection | Notes |
 | --- | --- | --- |
-| Discord reads message contents (DM) | Strong | PQXDH + Double Ratchet, hybrid X25519 + ML-KEM-768 |
-| Discord reads message contents (group) | Strong (bounded blast radius) | Sender keys with rotation ≤ 1 h / 500 msgs / membership change / suspicious event |
-| Discord reads image / file contents | Strong | Streaming AEAD with per-attachment key wrapped under message-chain key, padded |
+| Discord reads message contents (DM) | Strong (confidentiality only) | **Stateless hybrid, not a ratchet.** Every DM uses wire `v=3`: a fresh per-message sender ephemeral X25519 plus an ML-KEM-768 encapsulation to the recipient's *long-term* key, HKDF-combined to wrap a fresh AES-256-GCM body key (`crates/ipc/src/wire_v2.rs:685-760`, `crates/crypto/src/pqxdh.rs:141-195`). The Double Ratchet DM path is compiled but dead: `crates/ipc/src/commands.rs:2842` sets `let v4_dm_enabled = false;` so the `if` on `:2843` never runs. See "Forward secrecy" below for exactly which compromise this survives. |
+| Discord reads message contents (group) | Strong (confidentiality only) | **Sender keys are off.** Groups use the same stateless `v=3` scheme as DMs. The `v=5` sender-keys router at `crates/ipc/src/commands.rs:2938` is gated on `AppState::sender_keys_enabled`, whose declaration at `crates/ipc/src/state.rs:280` documents it as defaulting false in production; no production code enables it (only `crates/ipc/tests/phase_a3_integration_sk_roundtrip.rs` does). `apps/osl-hub/src/core_bridge.rs:240` reports `group_sender_keys_enabled: false` to the UI. |
+| Discord reads image / file contents | Planned (source exists, unproven end-to-end) | Streaming XChaCha20-Poly1305 with bucketed padding exists (`crates/ipc/src/attachment_wire.rs:4`), but there is no "message-chain key" to wrap under — no chain exists. Master §10 finding 4 (non-image attachments staged as durable plaintext) is open, so the no-plaintext-at-rest promise is not met. |
 | Discord runs CSAM scanning on uploaded images | Defeated | Discord sees random AEAD ciphertext on its CDN |
 | Discord traffic-analyzes timing / sizes | Partial | Padding always on; jitter and cover traffic opt-in (v2.1) |
-| Future quantum computer + harvested ciphertext | Defeated | ML-KEM-768 hybrid component |
+| Future quantum computer + harvested ciphertext | Defeated (confidentiality only) | ML-KEM-768 is genuinely in the live `v=3` path — a 1088-byte encapsulation per recipient slot (`crates/ipc/src/wire_v2.rs:325-332`, `:731`). This protects *confidentiality* against harvest-now-decrypt-later. It does **not** make authentication post-quantum: sender authentication rides on classical X25519/Ed25519. Never say "post-quantum authentication". |
 | Server operator subpoenaed (single jurisdiction) | None v1 / Partial v2.2 | Threshold sharing across 5 jurisdictions in v2.2 |
 | Server operator compromised across all 5 jurisdictions | Limited v2.2 | "5 servers, 1 operator" model documented honestly |
 | User's ISP correlates Discord usage | None v1 alpha / Partial v2.2 | v1 alpha ships **without bundled VPN or Tor** (deferred to v2.2 — dependency conflict). Users run Mullvad's official app or another VPN externally. v2.2 brings bundled WireGuard + Tor key-server routing. See "Network-layer protection (v1 alpha vs v2.2)" below. |
@@ -33,12 +70,12 @@ Briar, or Cwtch. Onboarding states this explicitly.
 | Modified client on recipient side | None | Document; cannot mitigate |
 | Hardware capture device | None | Document; cannot mitigate |
 | Endpoint malware | Partial | TPM seal helps; cannot fully prevent |
-| Past group messages outside current rotation window | Strong | Sender-keys forward ratchet; rotation heals compromise within ≤ 1 h or 500 msgs |
-| One-time RAM dump of group sender / recipient | Limited | Reveals only messages within the current rotation window; past rotations unrecoverable |
-| Casual hands-on access to unlocked device | Strong | Optional unlock password (default 6+ digits, 15-min inactivity timeout, 10 failed attempts → auto-burn) |
-| Forced unlock under coercion | Partial | Optional duress password apparent-unlocks then silently burns + strips features. Plausibly innocent to casual inspection, NOT to forensic disk analysis. |
+| Past group messages outside current rotation window | **None** | Planned. There is no rotation window because sender keys are off (row 2 above). Every group message is an independent stateless `v=3` message, so a recipient's long-term keys decrypt all of them. Even when `v=5` is enabled the implemented triggers are **24 h or a membership change** (`SENDER_KEY_ROTATE_AFTER_SECS = 24 * 60 * 60` at `crates/ipc/src/commands.rs:2979`; `sender_key_needs_rotation` at `:2997`). No 500-message trigger and no suspicious-event trigger exist anywhere in the tree. |
+| One-time RAM dump of group sender / recipient | None | Planned. Depends on the rotation window above, which does not exist. |
+| Casual hands-on access to unlocked device | **None (unwired)** | Planned. The primitives exist and are test-proven: threshold 10 (`DEFAULT_FAILED_ATTEMPT_THRESHOLD` at `crates/keystore/src/password.rs:62`) returns `VerifyOutcome::DuressByThreshold` (`:283-288`), and `InactivityTimer` defaults to 900 s. But **no production code calls them.** `verify_against_record`, `VerifyOutcome` and `InactivityTimer` are referenced only by the `crates/keystore/src/lib.rs:58-59` re-export and `crates/keystore/tests/password_test.rs`. `crates/keystore/src/duress.rs` likewise has no caller outside `crates/keystore/`. Nothing in `apps/osl-hub` or `crates/ipc` invokes the lockout, the duress flow, or the timer. |
+| Forced unlock under coercion | **None (unwired)** | Planned. `crates/keystore/src/duress.rs` implements the strip/wipe sequence and is test-proven (`crates/keystore/tests/duress_test.rs`), but no production caller exists — nothing outside `crates/keystore/` references it. There is no shipping path from typing a duress password to the flow running. When it is wired, the residual-forensics limits below still apply. |
 | Forensic disk analysis of stripped device post-duress | None | Stripped state retains OPSEC artifacts (binary code paths, installer cache, FS journaling, SSD wear-leveling, restore points). Documented honestly. |
-| MITM via key substitution after reinstall | Recipient-controlled | Server surfaces `last_rotated_at` events; recipient-side fingerprint verification (Signal safety-numbers pattern) |
+| MITM via key substitution after reinstall | **Open critical finding** | The safety number binds only Ed25519; X25519 and ML-KEM ride along unbound, so a keyserver can swap a recipient's *encryption* keys without changing the verified identity. Master §2 P0-1 and §10 finding 1. Until the safety number covers the whole bundle (or the bundle is identity-signed and verified on every use), the verification ceremony does not protect the keys that decrypt messages. |
 | Discord adds fake members to your channel | Limited v1 / Partial v2 | v1 trusts Discord's member list; cryptographic admin-signed membership manifest in v2. Narrow threat — see "Membership-manifest residual risk" below. |
 | Discord fingerprints modded client | Partial v2.6 | UA / locale / timezone / timer / fonts mitigated; canvas/WebGL not mitigated under WebView2 |
 | Build pipeline compromise | Partial v2.5 | Reproducible builds + multi-sig + transparency log |
@@ -47,37 +84,98 @@ Briar, or Cwtch. Onboarding states this explicitly.
 
 ## Cryptographic guarantees
 
-- **Confidentiality (DM)**: hybrid PQXDH handshake (X25519 + ML-KEM-768)
-  followed by a Double Ratchet for forward secrecy and post-compromise
-  security. Per-message symmetric keys via XChaCha20-Poly1305.
-- **Confidentiality (group)**: sender keys with mandatory rotation.
-  Group encryption uses sender keys with rotation triggered hourly,
-  by message count, on membership change, or on suspicious events.
-  Within each rotation, a forward-secure ratchet ensures past message
-  keys cannot be re-derived from current state. A successful attack
-  on past group messages requires either persistent endpoint
-  compromise (which defeats all encryption schemes), or a one-time
-  RAM dump combined with rapid action before the next rotation.
-  Past messages outside the current rotation window remain
-  unrecoverable even with full state compromise.
-- **Forward secrecy**: ratchet step on every DM; one-way HKDF chain
-  step on every group message; compromise of long-term keys does not
-  retro-decrypt past content.
-- **Post-compromise security (DM)**: receiving a new ratchet message
-  after compromise heals the session.
-- **Post-compromise security (group)**: bounded-window — replaced by
-  mandatory rotation. Healing happens at the next rotation (≤ 1 h,
-  ≤ 500 msgs, on membership change, on suspicious event).
-- **Post-quantum**: ML-KEM-768 in the hybrid combiner — defeats
-  harvest-now-decrypt-later. Construction is secure if either X25519
-  or ML-KEM-768 holds; both must break.
-- **Revocability ("burn")**: per-message wrapped keys live on the key
-  server(s). Burn deletes them. Once deleted, ciphertext on Discord's
-  CDN is permanently undecryptable, including against future quantum
-  attacks. Burned messages render as their original stego'd cover
-  text on recipient clients (no "[deleted]" marker), so an observer
-  cannot distinguish burned messages from messages that were always
-  cover text.
+These describe the shipping `v=3` scheme. Where a stronger property was
+previously claimed, it is restated below as `Planned` with the reason.
+
+### What v3 actually provides
+
+- **Confidentiality (DM and group — same scheme)**: for each recipient the
+  sender runs a PQXDH-shaped hybrid handshake — a **fresh per-message
+  ephemeral X25519** keypair plus an ML-KEM-768 encapsulation to the
+  recipient's long-term key — HKDF-combines the result into a wrap key, and
+  uses it to wrap one **fresh random AES-256-GCM body key** shared by all
+  recipient slots (`crates/ipc/src/wire_v2.rs:685-760`). The construction is
+  secure if *either* X25519 or ML-KEM-768 holds. It is **stateless**: no
+  session, no chain, no ratchet, nothing to desynchronize.
+- **Body cipher is AES-256-GCM**, not XChaCha20-Poly1305. XChaCha20-Poly1305
+  is used elsewhere — attachment streaming (`crates/ipc/src/attachment_wire.rs:4`),
+  the local message store (`crates/store/src/cipher.rs:9`), and the unwired
+  `osl-ratchet-next` — but not for message bodies.
+- **Post-quantum confidentiality**: real, and in the live path. ML-KEM-768
+  appears as a 1088-byte ciphertext in every recipient slot
+  (`crates/ipc/src/wire_v2.rs:325-332`). Harvest-now-decrypt-later against
+  message *contents* is defeated. Authentication remains classical.
+- **Sender-side forward secrecy**: partial and one-directional. The sender's
+  per-message ephemeral secret is discarded, and the ML-KEM shared secret is
+  not recoverable from the sender's long-term keys. Compromising the
+  **sender's** long-term identity key does not retro-decrypt what they sent.
+
+### What v3 does not provide
+
+- **Forward secrecy against recipient compromise — `Planned`.** The recipient
+  contributes only long-term keys: their X25519 identity key plays both the
+  `ik` and `spk` roles and there are no one-time prekeys
+  (`crates/ipc/src/wire_v2.rs:722-729`, `OPK is always None`). So a recipient's
+  long-term X25519 secret plus their ML-KEM-768 decapsulation key reconstruct
+  every DH leg and the KEM secret for **every message ever sent to them**.
+  Seizing or malware-extracting one device retro-decrypts that device's entire
+  ciphertext history. *Reason it is not implemented:* forward secrecy requires
+  ratcheting state, and the ratchet was deliberately disabled — see below.
+- **Post-compromise security (DM) — `Planned`.** There is no ratchet step, so
+  nothing heals a compromised session. `crates/ipc/src/commands.rs:2842` reads
+  `let v4_dm_enabled = false;`, which makes the entire `v=4` Double Ratchet
+  branch beginning at `:2843` unreachable. The in-source rationale is explicit
+  and deliberate: `v=4` was "the sole source of the recurring 'ratchet desync'
+  DM failures", so DMs were routed to stateless `v=3` to eliminate the desync
+  class. A compromised recipient stays compromised until they rotate identity
+  keys out of band.
+- **Post-compromise security (group) — `Planned`.** Same reason; additionally
+  the sender-keys lane is off (`crates/ipc/src/commands.rs:2938`, gated on
+  `AppState::sender_keys_enabled`, documented as defaulting false at
+  `crates/ipc/src/state.rs:280`). The stated reason there is multi-device
+  safety: the chain key carries no device id, so one account on two machines
+  desynchronizes.
+- **Bounded group blast radius / rotation window — `Planned`.** Does not exist
+  today. When `v=5` is enabled the implemented triggers are 24 h
+  (`SENDER_KEY_ROTATE_AFTER_SECS`, `crates/ipc/src/commands.rs:2979`) or a
+  membership change (`sender_key_needs_rotation`, `:2997`). The "≤ 1 h",
+  "500 msgs", and "suspicious event" triggers were never implemented.
+- **Sender attribution — `open-security-finding`.** The generic receive path
+  authenticates an in-band key but attributes the plaintext to a
+  caller-supplied identity (master §2 P0-2, §10 finding 2). Until fixed,
+  "who sent this" is not a cryptographic answer.
+
+### Revocability ("burn") — what it destroys and what it does not
+
+Burn is **policy and state deletion, not destruction of decryption
+capability.** State this plainly wherever burn is described.
+
+- The local store's `wrapped_key` column is never populated. `MessageStore::put`
+  (`crates/store/src/lib.rs:194-206`) inserts
+  `(discord_message_id, channel_id, sender_discord_id, sender_osl_user_id,
+  ciphertext, nonce, decrypted_at, burned)` and omits `wrapped_key` entirely.
+  The column exists (`crates/store/src/schema.rs:132`) and every burn path sets
+  it to `NULL` (`crates/store/src/lib.rs:298`, `:342`, `:350`, `:560`) — but it
+  was already `NULL`. Nothing in the tree writes it non-null.
+- What burn does achieve locally is real and worth stating: it zeroblobs the
+  stored `ciphertext`/`nonce` and marks the row burned, so the **local cached
+  plaintext** of those messages is gone.
+- What it does **not** achieve: the ciphertext Discord holds on its CDN remains
+  decryptable by anyone who still has the recipient key material — which,
+  because v3 wraps to long-term recipient keys, is any holder of that
+  recipient's identity keys, forever. Burn does not revoke that.
+- Peer-side burn is `implemented-unwired` and additionally defective — see
+  `docs/qa/two-identity-p2p-verification.md` §6 item 4.
+- The cover-text rendering property (burned messages render as their original
+  cover text, no `[deleted]` marker) is a presentation choice and is unaffected
+  by the above.
+
+*Reason the designed property is not implemented:* server-held per-message
+wrapped keys are a keyserver lifecycle feature that was never built into the
+send path. Making burn cryptographic requires the send path to wrap to a
+per-message key that lives only on the keyserver, plus a proven delete. Until
+then, **do not use the words "cryptographic burn" or "permanently
+undecryptable" anywhere.**
 
 ## Limitations users must understand
 
@@ -88,8 +186,12 @@ Briar, or Cwtch. Onboarding states this explicitly.
    (`SetWindowDisplayAffinity` / `WDA_EXCLUDEFROMCAPTURE`) blocks common
    tools (OBS, ShareX, Game Bar, ShadowPlay) but does not stop phone
    cameras, hardware capture, or modified clients.
-3. **Burn semantics and exposure window.** Burn revokes future
-   decryption of past content. After burn:
+3. **Burn semantics and exposure window.** *`Planned` — the model below
+   describes server-held per-message wrapped keys, which the send path never
+   creates (see "Revocability" above). Today burn deletes the sender's local
+   cached plaintext and marks state; it does not revoke anyone's ability to
+   decrypt the ciphertext Discord still holds.* The intended design was: burn
+   revokes future decryption of past content, and after burn:
     - Recipients with wrapped keys still cached locally retain access
       until their cache zeroes (next user interaction OR 5-minute
       timer, whichever fires first).
@@ -137,8 +239,17 @@ Briar, or Cwtch. Onboarding states this explicitly.
 
 ## Password and duress (v1)
 
-The app supports an optional unlock password and an optional duress
-password. Both are UX gates, not part of cryptographic key
+**Status: `implemented-unwired` (verified 2026-07-26).** The design below is
+built and test-proven in `crates/keystore`, and none of it has a production
+call path. `verify_against_record`, `VerifyOutcome::DuressByThreshold`,
+`InactivityTimer` and `crates/keystore/src/duress.rs` are referenced only by
+the `crates/keystore/src/lib.rs:58-59` re-export and the keystore's own tests.
+Neither `apps/osl-hub` nor `crates/ipc` calls them. Do not describe the
+10-attempt auto-burn, the 15-minute inactivity timeout, or the duress password
+as user-available features.
+
+The app is *designed to* support an optional unlock password and an optional
+duress password. Both are UX gates, not part of cryptographic key
 derivation. Full spec in
 [`design/unlock-and-duress.md`](design/unlock-and-duress.md).
 
@@ -200,6 +311,12 @@ decision; the server only surfaces the event. The user-facing copy
 lives in [`ONBOARDING.md`](ONBOARDING.md).
 
 ## Audit status (v1 alpha vs v1 stable)
+
+**What needs auditing is the scheme that ships.** As of 2026-07-26 that is the
+stateless hybrid `v=3` scheme in `crates/ipc/src/wire_v2.rs`, plus its
+attribution defect (master §10 findings 1–2). The Double Ratchet and
+sender-keys constructions described below are switched off in source and are
+audit scope only for the release that turns them on.
 
 The hybrid PQXDH + Double Ratchet construction is custom (not built
 on libsignal). The sender-keys construction for groups is custom and
@@ -277,11 +394,11 @@ Practical impact for alpha users:
   whether your external VPN is up. This is honest disclosure, not a
   silent fallback. If your external VPN drops, your IP is visible to
   Discord, ISP, and key server until you reconnect.
-- The cryptographic protections (PQXDH + Double Ratchet, sender keys,
-  AEAD, padding, burn semantics) **are unaffected** by the missing
-  network layer — content confidentiality and integrity hold whether
-  or not a VPN is running. The network layer only addresses metadata
-  (who connects, from where, when).
+- Whatever cryptographic protections are actually in effect (today: the
+  stateless hybrid `v=3` scheme and attachment AEAD — not the Double Ratchet
+  or sender keys, and not cryptographic burn) **are unaffected** by the missing
+  network layer. Content confidentiality holds whether or not a VPN is running.
+  The network layer only addresses metadata (who connects, from where, when).
 
 ### v2.2 brings (per original design)
 
