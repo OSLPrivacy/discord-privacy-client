@@ -2119,3 +2119,30 @@ retry/idempotency behavior.
 - D2 retry-window implementation +0 pending independent acceptance.
 - Pricing visual correction +0.
 - No checklist edit; authority remains **100 / 303**.
+
+## 2026-07-27 — AutoScrub availability truth correction
+
+The public FAQ and “How it works” page contradicted the status registry by
+stating that AutoScrub did not exist yet while telling users to download it.
+Website commit `d5443410b16d66ba72a92b525befa952b2a1c5a0`, tree
+`d3c6d321b4868915dff7664a835f3d57eac28720`, parent
+`a95c7da4cb15b7177044e69f3c2f76e930d52b46`, corrects the canonical exception
+sentence and both public pages: AutoScrub is a future optional module, not
+available yet; if introduced, it would be separately downloaded only after
+explicit consent.
+
+Exact blobs:
+
+- `data/pricing.json`: `5698685b793f863a200ce883924b20017125848d`;
+- `docs/faq.html`: `e3173b84308e65409589136bf976469305898e31`; and
+- `docs/how-it-works.html`: `dbab26f5a6bb533355ffe154053e08ce73749226`.
+
+The full public claim scan passed 16/16 files with zero failures and
+`git diff --check` passed. No implementation, browser, build, or deployment
+evidence was introduced.
+
+## Acceptance rows this earns
+
+- AutoScrub availability wording correction +0.
+- No implementation or runtime behavior was awarded.
+- Checklist remains untouched; authority remains **100 / 303**.
