@@ -2716,22 +2716,20 @@ fn drain_peer_inbox_text(
         // more than the burn. Attachment rows still belong to the attachment
         // drain, and unknown framing is left untouched rather than guessed about.
         if let Some(control) = InboundRevocationControl::classify(&bundle) {
-            let (outcome, ack_b64) = apply_inbound_revocation_row(
-                core,
-                security_state,
-                &verified,
-                &burn_storage_key,
+            drain_inbound_revocation_row(
                 control,
-                &bundle,
-            );
-            if outcome.retires_row() {
-                // Receipt first, then retire the row. The burn floor is already
-                // durable, so this ordering costs nothing on failure: the peer
-                // re-sends the notice, this device re-applies it idempotently,
-                // and the receipt is produced again. Deleting first and posting
-                // after would be the same order the audit found on the apply
-                // path itself.
-                if let Some(ack_b64) = ack_b64 {
+                &mut deferred_rows,
+                |control| {
+                    apply_inbound_revocation_row(
+                        core,
+                        security_state,
+                        &verified,
+                        &burn_storage_key,
+                        control,
+                        &bundle,
+                    )
+                },
+                |ack_b64| {
                     let _ = post_revocation_frame(
                         core,
                         &client,
@@ -2744,11 +2742,11 @@ fn drain_peer_inbox_text(
                         None,
                         None,
                     );
-                }
-                let _ = client.delete_control_inbox(&identity, &item.id);
-            } else {
-                deferred_rows = deferred_rows.saturating_add(1);
-            }
+                },
+                || {
+                    let _ = client.delete_control_inbox(&identity, &item.id);
+                },
+            );
             continue;
         }
         if ipc::wire_v2::is_native_overlay_ack_bundle(&bundle) {
@@ -4850,6 +4848,33 @@ impl RevocationRowOutcome {
     }
 }
 
+fn drain_inbound_revocation_row<ApplyRow, PostAck, DeleteRow>(
+    control: InboundRevocationControl,
+    deferred_rows: &mut u32,
+    apply_row: ApplyRow,
+    mut post_ack: PostAck,
+    mut delete_row: DeleteRow,
+) where
+    ApplyRow: FnOnce(InboundRevocationControl) -> (RevocationRowOutcome, Option<String>),
+    PostAck: FnMut(String),
+    DeleteRow: FnMut(),
+{
+    let (outcome, ack_b64) = apply_row(control);
+    if outcome.retires_row() {
+        // Receipt first, then retire the row. The burn floor is already
+        // durable, so this ordering costs nothing on failure: the peer re-sends
+        // the notice, this device re-applies it idempotently, and the receipt
+        // is produced again. Deleting first and posting after would be the same
+        // order the audit found on the apply path itself.
+        if let Some(ack_b64) = ack_b64 {
+            post_ack(ack_b64);
+        }
+        delete_row();
+    } else {
+        *deferred_rows = deferred_rows.saturating_add(1);
+    }
+}
+
 /// Authenticate one inbound `0x0A`/`0x0B` and apply it.
 ///
 /// `storage_key` is the conversation this drain is bound to, and it is the only
@@ -6203,6 +6228,108 @@ mod tests {
         assert!(!RevocationRowOutcome::Deferred.retires_row());
     }
 
+    #[test]
+    fn inbound_revocation_drain_retirement_follows_runtime_apply_outcome() {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let events = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let durable_apply_done = Rc::new(Cell::new(false));
+        let mut deferred_rows = 0;
+
+        {
+            let events = Rc::clone(&events);
+            let durable_apply_done = Rc::clone(&durable_apply_done);
+            let post_events = Rc::clone(&events);
+            let post_durable_apply_done = Rc::clone(&durable_apply_done);
+            let delete_events = Rc::clone(&events);
+            let delete_durable_apply_done = Rc::clone(&durable_apply_done);
+            drain_inbound_revocation_row(
+                InboundRevocationControl::Notice,
+                &mut deferred_rows,
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Notice);
+                    events.borrow_mut().push("apply_notice");
+                    durable_apply_done.set(true);
+                    (RevocationRowOutcome::Applied, Some("ack-body".to_owned()))
+                },
+                move |ack_b64| {
+                    assert_eq!(ack_b64, "ack-body");
+                    assert!(
+                        post_durable_apply_done.get(),
+                        "ack posted before revocation apply completed"
+                    );
+                    post_events.borrow_mut().push("post_ack");
+                },
+                move || {
+                    assert!(
+                        delete_durable_apply_done.get(),
+                        "control-inbox row deleted before revocation apply completed"
+                    );
+                    delete_events.borrow_mut().push("delete_applied");
+                },
+            );
+        }
+
+        assert_eq!(deferred_rows, 0);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["apply_notice", "post_ack", "delete_applied"]
+        );
+
+        events.borrow_mut().clear();
+        durable_apply_done.set(false);
+        drain_inbound_revocation_row(
+            InboundRevocationControl::Notice,
+            &mut deferred_rows,
+            {
+                let events = Rc::clone(&events);
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Notice);
+                    events.borrow_mut().push("defer_notice");
+                    (RevocationRowOutcome::Deferred, None)
+                }
+            },
+            |_| panic!("deferred revocation row must not post an ack"),
+            || panic!("deferred revocation row must not be deleted"),
+        );
+
+        assert_eq!(deferred_rows, 1);
+        assert_eq!(events.borrow().as_slice(), ["defer_notice"]);
+
+        events.borrow_mut().clear();
+        drain_inbound_revocation_row(
+            InboundRevocationControl::Ack,
+            &mut deferred_rows,
+            {
+                let events = Rc::clone(&events);
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Ack);
+                    events.borrow_mut().push("reject_unappliable");
+                    (RevocationRowOutcome::Unappliable, None)
+                }
+            },
+            |_| panic!("unappliable revocation row must not post an ack"),
+            {
+                let events = Rc::clone(&events);
+                let durable_apply_done = Rc::clone(&durable_apply_done);
+                move || {
+                    assert!(
+                        !durable_apply_done.get(),
+                        "unappliable row should retire without a durable apply"
+                    );
+                    events.borrow_mut().push("delete_unappliable");
+                }
+            },
+        );
+
+        assert_eq!(deferred_rows, 1);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["reject_unappliable", "delete_unappliable"]
+        );
+    }
+
     /// Audit: bilateral burn was inert because `apply_peer_revocation` and
     /// `record_revocation_ack` had zero callers outside `security.rs`, and the
     /// drain deleted every `0x0A`/`0x0B` instead. This pins the call path itself,
@@ -6228,6 +6355,14 @@ mod tests {
             arm.contains("apply_inbound_revocation_row"),
             "a classified revocation row must reach the apply path"
         );
+        assert!(
+            arm.contains("drain_inbound_revocation_row"),
+            "a classified revocation row must reach the drain retirement decision"
+        );
+        assert!(
+            arm.contains("delete_control_inbox"),
+            "a classified revocation row must still be retired when terminal"
+        );
         let apply = source
             .split_once("fn apply_inbound_revocation_row")
             .expect("apply path present")
@@ -6242,15 +6377,23 @@ mod tests {
                 "the apply path must still call {required}"
             );
         }
-        // The delete is downstream of the outcome, never unconditional.
-        let delete = arm
-            .find("delete_control_inbox")
-            .expect("the row is still retired when it may be");
-        let retires = arm
-            .find("retires_row")
+        let retirement = source
+            .split_once("fn drain_inbound_revocation_row")
+            .expect("drain retirement helper present")
+            .1;
+        // The delete is downstream of the runtime apply outcome, never
+        // unconditional.
+        let apply_call = retirement
+            .find("let (outcome, ack_b64) = apply_row(control)")
+            .expect("retirement helper calls the apply seam");
+        let retires = retirement
+            .find("outcome.retires_row()")
             .expect("retirement is decided by the outcome");
+        let delete = retirement
+            .find("delete_row()")
+            .expect("the row is still retired when it may be");
         assert!(
-            retires < delete,
+            apply_call < retires && retires < delete,
             "a revocation row must not be deleted before its outcome is known"
         );
     }

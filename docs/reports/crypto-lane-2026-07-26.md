@@ -214,6 +214,26 @@ So restoring the transport (cipher-store `0a17547d`, part upload now 201) does *
 defect. I raised that risk and it turned out the exposure work had already shut the other door this
 morning. **Recorded as closed on both halves, not as a risk this lane is carrying.**
 
+## Lane ownership as of end of session
+
+**Owned:** `crates/keystore/**`, `crates/ipc/**` *except* `wire_rn.rs`, `apps/osl-hub/**`,
+`apps/osl-hub-ui/src/overlay.ts`, `apps/osl-hub-ui/src/security.test.ts`, `scripts/qa/` (the P2P
+rig), and this report.
+
+**Released during the session:** `crates/store/**` → store lane; `crates/ipc/src/wire_rn.rs` →
+ratchet lane (B4 capability negotiation / monotone downgrade pin). Neither was edited from here
+after release.
+
+**Routed out, not fixed here:**
+
+| Item | Owner | Why not this lane |
+|---|---|---|
+| `overlay.test.ts` renderer orientation test | frontend-test owner | Not in this lane's file set; the producer contract is pinned by a Rust test instead |
+| `native_discord_adapter` failing test (`:21382`) under the correct gate | whoever is mid-edit in that file | Still shows ` M` in `git status` — another lane has it open; editing it would collide |
+| `docs/qa/two-identity-p2p-verification.md` §6 items 1, 4, 6 now stale | truth lane | `docs/**` is not this lane's, and all three are stale *because* of work done here |
+| 26 statements overstating burn, incl. `README.md:78` | truth lane | Documentary half of the same gap the burn-outbox work narrowed |
+| Dispatch wiring for the four new QA verbs | blocked, not owned elsewhere | The browser-profile Tauri commands do not exist in this tree yet; the request vocabulary is done and waiting for them |
+
 ## Verification commands and exact results
 
 | Command | Result | Baseline | Verdict |

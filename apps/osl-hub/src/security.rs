@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use ipc::commands::is_discord_snowflake_shaped;
 use ipc::peer_map::{PeerEntry, WhitelistEntry};
 use ipc::scope::{Scope, ScopeInput, ScopeKind};
 use ipc::tofu::KeyBundle;
@@ -36,6 +37,8 @@ const REVOCATION_LEDGER_FILE: &str = "hub_revocation_ledger.json";
 const REVOCATION_OUTBOX_FILE: &str = "hub_revocation_outbox.json";
 /// Sender-local monotonic `send_seq` / `burn_epoch` counters. Encrypted at rest.
 const REVOCATION_COUNTERS_FILE: &str = "hub_revocation_counters.json";
+const SNOWFLAKE_IDENTITY_REFUSAL: &str =
+    "OSL cannot add a friend whose identity is a Discord identifier";
 /// Shown when a burn floor refuses content. Identical to [`PEER_OPEN_ERROR`] so
 /// "burned" and "could not be opened" are indistinguishable to a peer probing
 /// the UI.
@@ -370,6 +373,16 @@ fn safety_number_for_bundle(bundle: &KeyBundle) -> Result<String, String> {
     ipc::tofu::safety_number(bundle).map_err(|_| SAFETY_NUMBER_BUNDLE_REFUSAL.to_owned())
 }
 
+fn reject_discord_identifier_identity(osl_user_id: &str) -> Result<(), String> {
+    // Native OSL user ids are `osl_` plus hex, so they can never be all digits.
+    // Refusing a Discord-snowflake-shaped value only rejects identities that
+    // migration 0029 guarantees cannot resolve on the keyserver.
+    if is_discord_snowflake_shaped(osl_user_id) {
+        return Err(SNOWFLAKE_IDENTITY_REFUSAL.to_owned());
+    }
+    Ok(())
+}
+
 fn stage_pending_key_bundle(
     metadata: &mut PersonMetadata,
     payload: &FriendCodeUnsigned,
@@ -432,6 +445,7 @@ pub fn add_friend_code(
     require_unlocked()?;
     let alias = normalise_alias(alias.as_deref())?;
     let parsed = parse_friend_code(&friend_code)?;
+    reject_discord_identifier_identity(&parsed.payload.osl_user_id)?;
     let self_user_id = active_user_id(core)?;
     if parsed.payload.osl_user_id == self_user_id {
         return Err("OSL refuses to add the active identity as a friend".to_owned());
@@ -762,6 +776,7 @@ pub fn verify_friend_safety_number(
             {
                 return Err(PENDING_KEY_CHANGE_REFUSAL.to_owned());
             }
+            reject_discord_identifier_identity(&payload.osl_user_id)?;
             friend_code_key_bundle(payload)?
         }
         None => trusted_peer_key_bundle(&person_id, &metadata, &current_peer)?,
@@ -3717,6 +3732,228 @@ fn write_encrypted_json_with_key<T: Serialize>(
 mod tests {
     use super::*;
 
+    const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
+
+    struct FileBackedSecurityHarness {
+        dir: std::path::PathBuf,
+        previous_active_account_dir: Option<std::path::PathBuf>,
+        previous_file_key: Option<[u8; 32]>,
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl FileBackedSecurityHarness {
+        fn new(label: &str) -> Self {
+            let serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+            let dir = fresh_test_dir(label);
+            let previous_active_account_dir = keystore::active_account_dir();
+            let previous_file_key = ipc::main_password::get_file_storage_key();
+            keystore::set_active_account_dir(Some(dir.clone()));
+            ipc::main_password::set_file_storage_key(Some(TEST_FILE_KEY));
+            Self {
+                dir,
+                previous_active_account_dir,
+                previous_file_key,
+                _serial: serial,
+            }
+        }
+
+        fn path(&self) -> &Path {
+            &self.dir
+        }
+    }
+
+    impl Drop for FileBackedSecurityHarness {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(self.previous_active_account_dir.clone());
+            ipc::main_password::set_file_storage_key(self.previous_file_key);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn fresh_test_dir(label: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir();
+        for attempt in 0..100 {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let dir = base.join(format!(
+                "osl-hub-security-{label}-{}-{nonce}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create test config dir: {error}"),
+            }
+        }
+        panic!("could not allocate unique test config dir");
+    }
+
+    fn test_friend(seed: u8) -> (String, PersonMetadata, PeerEntry) {
+        let ed25519_public = STANDARD.encode([seed; ED25519_PUBLIC_BYTES]);
+        let x25519_public = STANDARD.encode([seed.wrapping_add(1); X25519_PUBLIC_BYTES]);
+        let mlkem768_public = STANDARD.encode([seed.wrapping_add(2); MLKEM768_PUBLIC_BYTES]);
+        let person_id = person_id(&ed25519_public);
+        let key_bundle = KeyBundle {
+            ed25519_pub: ed25519_public.clone(),
+            x25519_pub: x25519_public.clone(),
+            mlkem768_pub: mlkem768_public.clone(),
+            ratchet_initial_pub: None,
+        };
+        (
+            person_id,
+            PersonMetadata {
+                osl_user_id: format!("osl-test-peer-{seed}"),
+                ed25519_public,
+                safety_number_verified: true,
+                ..PersonMetadata::default()
+            },
+            PeerEntry {
+                osl_user_id: Some(format!("osl-test-peer-{seed}")),
+                pubkey: Some(x25519_public),
+                ik_mlkem768_pub: Some(mlkem768_public),
+                tofu_ed25519_pub: Some(key_bundle.ed25519_pub.clone()),
+                tofu_key_bundle: Some(key_bundle),
+                ..PeerEntry::default()
+            },
+        )
+    }
+
+    fn write_people(dir: &Path, person_id: &str, metadata: PersonMetadata) {
+        let mut people = PeopleFile {
+            version: 1,
+            ..PeopleFile::default()
+        };
+        people.people.insert(person_id.to_owned(), metadata);
+        write_encrypted_json(&dir.join(PEOPLE_FILE), &people).unwrap();
+    }
+
+    fn install_peer_map(core: &HubCoreState, dir: &Path, person_id: &str, peer: PeerEntry) {
+        let mut peers = ipc::peer_map::PeerMap::new();
+        peers.insert(person_id.to_owned(), peer);
+        write_encrypted_json(&dir.join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+    }
+
+    fn load_peer_map(dir: &Path) -> ipc::peer_map::PeerMap {
+        load_encrypted_json::<ipc::peer_map::PeerMap>(&dir.join("peer_map.json")).unwrap()
+    }
+
+    fn install_self_identity(core: &HubCoreState) {
+        *core.osl.identity.lock().unwrap() = Some(keystore::generate_native_identity());
+    }
+
+    fn friend_code_for_identity(identity: &keystore::Identity) -> String {
+        let payload = FriendCodeUnsigned {
+            version: FRIEND_CODE_VERSION,
+            osl_user_id: identity.user_id.clone(),
+            x25519_public: STANDARD.encode(identity.x25519_public.as_bytes()),
+            ed25519_public: STANDARD.encode(identity.ed25519_public.as_bytes()),
+            mlkem768_public: STANDARD.encode(identity.mlkem_public_bytes),
+            ratchet_initial_public: identity
+                .ratchet_initial_pub
+                .map(|key| STANDARD.encode(key.as_bytes())),
+        };
+        let canonical = serde_json::to_vec(&payload).unwrap();
+        let signature = crypto::ed25519::sign(&identity.ed25519_secret, &canonical);
+        let signed = SignedFriendCode {
+            payload,
+            signature: URL_SAFE_NO_PAD.encode(signature.as_bytes()),
+        };
+        format!(
+            "{FRIEND_CODE_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&signed).unwrap())
+        )
+    }
+
+    fn friend_code_with_osl_user_id(osl_user_id: &str) -> String {
+        let mut identity = keystore::generate_native_identity();
+        identity.user_id = osl_user_id.to_owned();
+        friend_code_for_identity(&identity)
+    }
+
+    #[test]
+    fn friend_code_import_refuses_snowflake_identity_without_writing_state() {
+        let harness = FileBackedSecurityHarness::new("snowflake-refused");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+
+        let error = add_friend_code(
+            &core,
+            &HubSecurityState::default(),
+            friend_code_with_osl_user_id("123456789012345678"),
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, SNOWFLAKE_IDENTITY_REFUSAL);
+        assert!(!harness.path().join(PEOPLE_FILE).exists());
+        assert!(!harness.path().join("peer_map.json").exists());
+        assert!(core.osl.peer_map.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn friend_code_import_accepts_native_osl_identity() {
+        let harness = FileBackedSecurityHarness::new("native-accepted");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let friend = keystore::generate_native_identity();
+        let friend_osl_user_id = friend.user_id.clone();
+
+        let added = add_friend_code(
+            &core,
+            &HubSecurityState::default(),
+            friend_code_for_identity(&friend),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(added.disposition, AddFriendDisposition::Added);
+        assert_eq!(added.osl_user_id, friend_osl_user_id);
+        let people: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert!(people
+            .people
+            .values()
+            .any(|person| person.osl_user_id == friend_osl_user_id));
+        let peers = load_peer_map(harness.path());
+        assert!(peers
+            .values()
+            .any(|peer| peer.osl_user_id.as_deref() == Some(friend_osl_user_id.as_str())));
+    }
+
+    #[test]
+    fn friend_code_import_snowflake_shape_boundaries_are_exact() {
+        for (label, osl_user_id, accepted) in [
+            ("sixteen", "1234567890123456", true),
+            ("seventeen", "12345678901234567", false),
+            ("twenty", "12345678901234567890", false),
+            ("twenty-one", "123456789012345678901", true),
+        ] {
+            let harness = FileBackedSecurityHarness::new(label);
+            let core = HubCoreState::default();
+            install_self_identity(&core);
+            let result = add_friend_code(
+                &core,
+                &HubSecurityState::default(),
+                friend_code_with_osl_user_id(osl_user_id),
+                None,
+            );
+
+            if accepted {
+                let added = result.unwrap();
+                assert_eq!(added.disposition, AddFriendDisposition::Added);
+                assert_eq!(added.osl_user_id, osl_user_id);
+                assert!(harness.path().join(PEOPLE_FILE).exists());
+                assert!(harness.path().join("peer_map.json").exists());
+            } else {
+                assert_eq!(result.unwrap_err(), SNOWFLAKE_IDENTITY_REFUSAL);
+                assert!(!harness.path().join(PEOPLE_FILE).exists());
+                assert!(!harness.path().join("peer_map.json").exists());
+            }
+        }
+    }
+
     #[test]
     fn signed_friend_code_rejects_tampering() {
         let identity = keystore::generate_identity("osl-test".to_owned());
@@ -4052,11 +4289,8 @@ mod tests {
 
         // The only empty list that may report complete: resolution succeeded and
         // proved there were no approved recipients.
-        let nobody_approved = revocation_peers_from_map(
-            &ipc::peer_map::PeerMap::new(),
-            &scope,
-            None,
-        );
+        let nobody_approved =
+            revocation_peers_from_map(&ipc::peer_map::PeerMap::new(), &scope, None);
         assert!(nobody_approved.fully_addressed());
         assert_eq!(queue(&nobody_approved), (0, true));
     }
@@ -4127,6 +4361,90 @@ mod tests {
         assert!(!prefs.reach_narrowed_scopes.contains_key("person-a"));
         assert!(prefs.reach_narrowed_scopes.contains_key("person-b"));
         assert_eq!(prefs.burned_manual_scopes, BTreeSet::from([terminal_burn]));
+    }
+
+    #[test]
+    fn remove_friend_preserves_burned_manual_scopes_on_disk() {
+        let harness = FileBackedSecurityHarness::new("remove-preserves-burn");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(31);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        let burned_scope = Scope::dm("burned-terminal").storage_key();
+        let approved_scope = Scope::gc("approved-before-removal").storage_key();
+        let narrowed_scope = Scope::server_channel("space-a", "channel-a").storage_key();
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs
+            .manual_approved_scopes
+            .extend([burned_scope.clone(), approved_scope.clone()]);
+        prefs.manual_approved_scope_people.extend([
+            (burned_scope.clone(), person_id.clone()),
+            (approved_scope.clone(), person_id.clone()),
+        ]);
+        prefs
+            .decrypt_display_by_scope
+            .extend([(burned_scope.clone(), true), (approved_scope.clone(), true)]);
+        prefs
+            .reach_narrowed_scopes
+            .insert(person_id.clone(), BTreeSet::from([narrowed_scope]));
+        prefs.burned_manual_scopes.insert(burned_scope.clone());
+        let withdrawn_before: Vec<String> = prefs
+            .manual_approved_scope_people
+            .iter()
+            .filter(|(_, approved_person_id)| *approved_person_id == &person_id)
+            .map(|(storage_key, _)| storage_key.clone())
+            .collect();
+        assert!(
+            !withdrawn_before.is_empty(),
+            "fixture must withdraw at least one grant"
+        );
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let result = remove_friend(&core, &security, person_id.clone()).unwrap();
+        assert_eq!(result.approvals_withdrawn, withdrawn_before.len());
+        assert!(result.peer_key_removed);
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        for withdrawn in &withdrawn_before {
+            assert!(!stored.manual_approved_scopes.contains(withdrawn));
+            assert!(!stored.manual_approved_scope_people.contains_key(withdrawn));
+            assert!(!stored.decrypt_display_by_scope.contains_key(withdrawn));
+        }
+        assert!(!stored.reach_narrowed_scopes.contains_key(&person_id));
+        assert!(stored.burned_manual_scopes.contains(&burned_scope));
+    }
+
+    #[test]
+    fn remove_friend_rolls_back_peer_map_on_people_write_failure() {
+        let harness = FileBackedSecurityHarness::new("remove-rollback-peer-map");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(41);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        assert!(
+            load_peer_map(harness.path()).contains_key(&person_id),
+            "fixture must start with the peer persisted"
+        );
+        std::fs::create_dir(harness.path().join("hub_people.tmp")).unwrap();
+
+        assert!(remove_friend(&core, &security, person_id.clone()).is_err());
+        assert!(
+            load_peer_map(harness.path()).contains_key(&person_id),
+            "failed People write must restore the peer map on disk"
+        );
     }
 
     #[test]

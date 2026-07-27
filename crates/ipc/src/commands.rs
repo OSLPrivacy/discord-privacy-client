@@ -6309,7 +6309,7 @@ pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
 
 /// True when this string is shaped like a Discord snowflake and therefore can
 /// never resolve as a keyserver identity (migration 0029 refuses them).
-pub(crate) fn is_discord_snowflake_shaped(value: &str) -> bool {
+pub fn is_discord_snowflake_shaped(value: &str) -> bool {
     value.chars().all(|c| c.is_ascii_digit()) && (17..=20).contains(&value.len())
 }
 
