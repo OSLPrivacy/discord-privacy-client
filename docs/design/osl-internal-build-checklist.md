@@ -175,6 +175,10 @@ away, per master §16.3.
   Classification is `test-proven-only`, not product-wide at-rest proof. The held clause is false:
   `crates/ipc/src/peer_map.rs:405-412` and `membership.rs:241-248` write plaintext JSON when the
   main-password storage key is absent, and `main_password.rs:823-827` documents that fallback.
+  Committed UI source adds plaintext browser storage: `main.ts:400-402` names localStorage keys;
+  `:605-629` restores muted person IDs, person-ID-keyed unread counts, and notification
+  IDs/titles/event timestamps; `:4343`, `:5187`, and `:5192` persist them as JSON. These are further
+  product-wide A8 blockers, not store-local defects.
   Independent review also bypassed the proposed known-file sink inventory with
   `File::create_new` plus `std::io::copy`; the product-wide inventory was therefore removed rather
   than blessed. Remediation is a separate crypto/native persistence task, not more store fixtures.
@@ -184,13 +188,16 @@ away, per master §16.3.
   once-implemented copy false-failed. Independent review also rejects `4aea9fe`: activation-key
   and paid-Pro-voucher synonyms plus a two-paragraph “It lasts 30 days” continuation bypass it,
   while “is a planned feature,” “is unimplemented,” and “if automatic expiry is implemented”
-  false-fail. Exact successor `be16e7c71c2ab3f3740a68db8b032e3ca898ac30` adds those credential
-  synonyms and a bounded adjacent-pronoun rule while accepting those explicit limitations. Its
-  adversarial positives and honest negatives make 41/41 crawler fixtures pass; 16/16 public pages,
-  18 pricing markers with zero drift, and 10/10 fail-closed checkout tests also pass. Exact
-  keyserver `90da747` adds a source-owned,
+  false-fail. Independent review also rejects `be16e7c`: product-key and redemption-token
+  synonyms, entity/inline-tag-obscured durations, and both orders of cross-sentence claims bypass
+  it, while “are planned to provide” and “provided expiry is implemented” false-fail. Exact
+  successor `a409fb1d951278f8bcb72be77689d52dfc34e4f5` parses decoded rendered text, joins inline
+  fragments, preserves block boundaries, and evaluates one bounded adjacent segment in either
+  direction. Its adversarial positives and honest negatives make 50/50 crawler fixtures pass;
+  16/16 public pages, 18 pricing markers with zero drift, and 10/10 fail-closed checkout tests also
+  pass. Exact keyserver `90da747` adds a source-owned,
   non-operator-configurable refusal at paid issuance boundaries, but it implements no redemption
-  clock and is not deployment-proven. The website is eight commits ahead of its local
+  clock and is not deployment-proven. The website is nine commits ahead of its local
   `origin/main`, unpushed and undeployed; live Pages identity remains `unknown`. The successor is
   `test-proven-only` pending independent acceptance.
 - C4 stays **1/4; +0**. `48162bd` publishes a real Rust return through a renderer seam, while
@@ -352,7 +359,10 @@ timestamped deltas, not keep this number manually forever.
   exact-archive tests and mutation controls, but earns +0 under the unsplit boundary. The product
   still deliberately persists plaintext JSON without a main-password storage key in
   `peer_map.rs:405-412` and `membership.rs:241-248`, as documented at
-  `main_password.rs:823-827`. A lexical sink inventory was independently bypassed with
+  `main_password.rs:823-827`. Committed `apps/osl-hub-ui/src/main.ts` also persists plaintext
+  browser metadata: muted person IDs (`:400`, `:605-607`, `:4343`), unread counts keyed by person
+  ID (`:401`, `:611-617`, `:5187`), and notification IDs/titles/event timestamps (`:402`,
+  `:621-629`, `:5190-5192`). A lexical sink inventory was independently bypassed with
   `File::create_new` plus `std::io::copy`, so it was not accepted as product completeness.
   Deterministic blind indexes also preserve equality/frequency, counts, sizes, order and burn
   timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
@@ -596,13 +606,14 @@ timestamped deltas, not keep this number manually forever.
   `web-pricing-truth-2026-07-26`. **The remaining point is held for actual promotion to production
   plus the keyserver redemption change** — nothing is deployed. The "your month starts when you enter the code" claim stays
   unpublished until the keyserver redemption change lands.
-  **Independent reviews rejected local `f39b805`, `5a84d77`, and `4aea9fe`: the first two missed
-  direct paraphrases; the third missed activation-key, paid-Pro-voucher, and adjacent-pronoun
-  variants while false-failing explicit planned/unimplemented/conditional copy. Exact successor
-  `be16e7c71c2ab3f3740a68db8b032e3ca898ac30` adds those synonyms and a bounded adjacent-text rule.
-  It passes 16/16 public pages, 41/41 crawler known-bad/honest fixtures, 18 pricing markers with
-  zero drift, and 10/10 checkout tests. It is a clean `test-proven-only` commit pending independent
-  acceptance, eight commits ahead of the local `origin/main` ref, unpushed and undeployed.
+  **Independent reviews rejected local `f39b805`, `5a84d77`, `4aea9fe`, and `be16e7c`. The latest
+  rejection proves product-key/redemption-token, entity/inline-markup, and forward/reverse
+  cross-sentence bypasses plus planned/provided limitation false positives. Exact successor
+  `a409fb1d951278f8bcb72be77689d52dfc34e4f5` uses decoded rendered text and bounded bidirectional
+  adjacent context. It passes 16/16 public pages, 50/50 crawler known-bad/honest fixtures, 18
+  pricing markers with zero drift, and 10/10 checkout tests. It is a clean `test-proven-only`
+  commit pending independent acceptance, nine commits ahead of the local `origin/main` ref,
+  unpushed and undeployed.
   Keyserver `90da747` fails closed at paid issuance boundaries in local source but intentionally
   implements no redemption clock and is not deployment-proven. Pages dashboard/build evidence and
   a public SHA-bound `/build.json` remain `unknown`; redemption is absent.**
@@ -738,9 +749,10 @@ timestamped deltas, not keep this number manually forever.
   [`osl-public-claim-allowlist.md`](osl-public-claim-allowlist.md). A feature can no longer become
   `Available` through a copy edit. **The crawler now exists** (`scripts/check-claims.mjs` in the website repo): it asserts that no page
   contains a forbidden phrase and that every badge matches the manifest, and it carries a known-bad
-  fixture suite (`--self-test`; exact website `be16e7c` passes 41/41 known-bad/honest fixtures,
-  including redemption-record, redemption-start, automatic-return-to-Free, code/key/voucher and
-  bounded-adjacent duration paraphrases, plus honest planned/unimplemented/conditional controls) so it
+  fixture suite (`--self-test`; exact website `a409fb1` passes 50/50 known-bad/honest fixtures,
+  including redemption-record/start/expiry, decoded entities, split inline markup,
+  code/key/voucher/token/product-key synonyms, forward/reverse bounded context, and honest
+  planned/unimplemented/conditional controls) so it
   cannot decay into an all-green source-shape test. It caught real live false
   claims on 2026-07-26. **Scope addition 2026-07-26: +3 points to the denominator.** Residual gap:
   it is a pre-deploy command, not a CI gate, so nothing yet blocks a deploy that skips it.
