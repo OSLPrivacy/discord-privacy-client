@@ -1,0 +1,928 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.oslprivacy.local/c4/native-authority-v3/boundary.schema.json",
+  "title": "OSL C4 native-authority v3 cross-language boundary",
+  "description": "Declarative wire shapes. The x-c4-* sections are mandatory semantic constraints evaluated by conformance.py; plain JSON Schema cannot express cross-field equality or digest recomputation.",
+  "x-c4-canonicalJson": {
+    "encoding": "UTF-8",
+    "objectKeys": "lexicographic-codepoint-order",
+    "arrayOrder": "preserved",
+    "separators": {
+      "item": ",",
+      "key": ":"
+    },
+    "ensureAscii": false,
+    "allowNaN": false,
+    "duplicateKeys": "reject",
+    "insignificantWhitespace": "none"
+  },
+  "x-c4-digests": {
+    "receiptDigestSha256": {
+      "algorithm": "SHA-256",
+      "domainSeparatorUtf8": "OSL/C4/native-placement-receipt/v3",
+      "domainTerminatorHex": "00",
+      "input": "canonical-json(receipt excluding receiptDigestSha256)"
+    },
+    "targetBindingSha256": {
+      "algorithm": "SHA-256",
+      "domainSeparatorUtf8": "OSL/C4/native-target-binding/v3",
+      "domainTerminatorHex": "00",
+      "input": "canonical-json(target excluding bindingSha256)"
+    },
+    "ledgerRecordDigestSha256": {
+      "algorithm": "SHA-256",
+      "domainSeparatorUtf8": "OSL/C4/challenge-ledger/v1",
+      "domainTerminatorHex": "00",
+      "input": "canonical-json(ledger record excluding recordDigestSha256)"
+    },
+    "pipeBindingSha256": {
+      "algorithm": "SHA-256",
+      "domainSeparatorUtf8": "OSL/C4/pipe-client-binding/v1",
+      "domainTerminatorHex": "00",
+      "input": "canonical-json(pipe client process binding)"
+    },
+    "challengeSha256": {
+      "algorithm": "SHA-256",
+      "domainSeparatorUtf8": "",
+      "domainTerminatorHex": "",
+      "input": "32 raw challenge bytes decoded from lowercase hexadecimal"
+    }
+  },
+  "x-c4-semanticRules": [
+    "receipt-canonical-json",
+    "receipt-digest",
+    "target-binding-digest",
+    "carrier-base64-canonical",
+    "carrier-hash-and-lengths",
+    "target-binding-repeated",
+    "pre-readback-exact-carrier",
+    "foreground-exact-target",
+    "single-enter-never-retry",
+    "post-readback-empty-row-plus-one",
+    "monotonic-stages-ordered",
+    "challenge-fresh-and-matched",
+    "emitter-expected-and-pipe-client-equal",
+    "target-expected-equal",
+    "runtime-pipe-protections-all-true",
+    "synthetic-never-runtime-or-full-c4",
+    "runtime-receipt-never-full-c4",
+    "point-delta-always-zero",
+    "ledger-state-field-coherence",
+    "ledger-record-digest"
+  ],
+  "$ref": "#/$defs/verificationRequest",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "nonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "uint32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "positiveUint32": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "windowsExecutablePath": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z]:\\\\(?:[^\\\\/:*?\\\"<>|\\u0000]+\\\\)*[^\\\\/:*?\\\"<>|\\u0000]+\\.exe$"
+    },
+    "fileIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "volumeSerialNumber",
+        "fileIndex",
+        "fileSize",
+        "lastWriteTime100ns"
+      ],
+      "properties": {
+        "volumeSerialNumber": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "fileIndex": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "fileSize": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "lastWriteTime100ns": {
+          "$ref": "#/$defs/positiveInteger"
+        }
+      }
+    },
+    "processBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "processStartTime100ns",
+        "sessionId",
+        "executablePath",
+        "executableSha256",
+        "fileIdentity"
+      ],
+      "properties": {
+        "pid": {
+          "$ref": "#/$defs/positiveUint32"
+        },
+        "processStartTime100ns": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uint32"
+        },
+        "executablePath": {
+          "$ref": "#/$defs/windowsExecutablePath"
+        },
+        "executableSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "fileIdentity": {
+          "$ref": "#/$defs/fileIdentity"
+        }
+      }
+    },
+    "targetBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "processStartTime100ns",
+        "sessionId",
+        "executablePath",
+        "executableSha256",
+        "fileIdentity",
+        "bindingSha256",
+        "hwnd",
+        "rootHwnd",
+        "hostGeneration",
+        "publisher"
+      ],
+      "properties": {
+        "pid": {
+          "$ref": "#/$defs/positiveUint32"
+        },
+        "processStartTime100ns": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uint32"
+        },
+        "executablePath": {
+          "$ref": "#/$defs/windowsExecutablePath"
+        },
+        "executableSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "fileIdentity": {
+          "$ref": "#/$defs/fileIdentity"
+        },
+        "bindingSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "hwnd": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "rootHwnd": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "hostGeneration": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "publisher": {
+          "const": "Discord Inc."
+        }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "challenge",
+        "issuedAtUnixMs",
+        "expiresAtUnixMs"
+      ],
+      "properties": {
+        "schema": {
+          "const": "osl.c4.native-challenge"
+        },
+        "version": {
+          "const": 3
+        },
+        "challenge": {
+          "$ref": "#/$defs/sha256",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "issuedAtUnixMs": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        },
+        "expiresAtUnixMs": {
+          "$ref": "#/$defs/positiveInteger"
+        }
+      }
+    },
+    "readback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetBindingSha256",
+        "classification",
+        "complete",
+        "sha256",
+        "byteLength",
+        "utf16Length"
+      ],
+      "properties": {
+        "targetBindingSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "classification": {
+          "enum": [
+            "exact",
+            "empty"
+          ]
+        },
+        "complete": {
+          "const": true
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "byteLength": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        },
+        "utf16Length": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        }
+      }
+    },
+    "nativeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "evidenceKind",
+        "challenge",
+        "emittedAtUnixMs",
+        "monotonicStagesMs",
+        "emitter",
+        "build",
+        "target",
+        "carrier",
+        "preSend",
+        "action",
+        "postSend",
+        "receiptDigestSha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "osl.c4.native-placement-receipt"
+        },
+        "version": {
+          "const": 3
+        },
+        "evidenceKind": {
+          "const": "native-placement"
+        },
+        "challenge": {
+          "$ref": "#/$defs/sha256",
+          "not": {
+            "const": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        },
+        "emittedAtUnixMs": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "monotonicStagesMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "challengeClaimed",
+            "preSendReadback",
+            "sendInjected",
+            "postContextRevalidated",
+            "receiptEmitted"
+          ],
+          "properties": {
+            "challengeClaimed": {
+              "const": 0
+            },
+            "preSendReadback": {
+              "$ref": "#/$defs/nonNegativeInteger"
+            },
+            "sendInjected": {
+              "$ref": "#/$defs/nonNegativeInteger"
+            },
+            "postContextRevalidated": {
+              "$ref": "#/$defs/nonNegativeInteger"
+            },
+            "receiptEmitted": {
+              "$ref": "#/$defs/nonNegativeInteger"
+            }
+          }
+        },
+        "emitter": {
+          "$ref": "#/$defs/processBinding"
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "features",
+            "debugAssertions",
+            "targetOs",
+            "targetArch",
+            "profile"
+          ],
+          "properties": {
+            "features": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "const": "core"
+                },
+                {
+                  "const": "desktop"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "debugAssertions": {
+              "const": false
+            },
+            "targetOs": {
+              "const": "windows"
+            },
+            "targetArch": {
+              "const": "x86_64"
+            },
+            "profile": {
+              "const": "release"
+            }
+          }
+        },
+        "target": {
+          "$ref": "#/$defs/targetBinding"
+        },
+        "carrier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "targetBindingSha256",
+            "utf8B64",
+            "sha256",
+            "byteLength",
+            "utf16Length"
+          ],
+          "properties": {
+            "targetBindingSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "utf8B64": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 16384,
+              "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "byteLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8192
+            },
+            "utf16Length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8192
+            }
+          }
+        },
+        "preSend": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "targetBindingSha256",
+            "readback",
+            "foreground"
+          ],
+          "properties": {
+            "targetBindingSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "readback": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/readback"
+                },
+                {
+                  "properties": {
+                    "classification": {
+                      "const": "exact"
+                    }
+                  }
+                }
+              ]
+            },
+            "foreground": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "targetBindingSha256",
+                "foregroundHwnd",
+                "foregroundRootHwnd",
+                "foregroundPid",
+                "targetRootHwnd",
+                "keyboardFocusProven",
+                "targetOwnedByTrustedProcess"
+              ],
+              "properties": {
+                "targetBindingSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "foregroundHwnd": {
+                  "$ref": "#/$defs/positiveInteger"
+                },
+                "foregroundRootHwnd": {
+                  "$ref": "#/$defs/positiveInteger"
+                },
+                "foregroundPid": {
+                  "$ref": "#/$defs/positiveUint32"
+                },
+                "targetRootHwnd": {
+                  "$ref": "#/$defs/positiveInteger"
+                },
+                "keyboardFocusProven": {
+                  "const": true
+                },
+                "targetOwnedByTrustedProcess": {
+                  "const": true
+                }
+              }
+            }
+          }
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "targetBindingSha256",
+            "mechanism",
+            "attempted",
+            "acceptedInputCount",
+            "enterCertainty",
+            "retryPolicy",
+            "actionSequence"
+          ],
+          "properties": {
+            "targetBindingSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "mechanism": {
+              "const": "sendinput_enter"
+            },
+            "attempted": {
+              "const": true
+            },
+            "acceptedInputCount": {
+              "const": 2
+            },
+            "enterCertainty": {
+              "const": "injected_once"
+            },
+            "retryPolicy": {
+              "const": "never_auto_retry"
+            },
+            "actionSequence": {
+              "const": 1
+            }
+          }
+        },
+        "postSend": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "targetBindingSha256",
+            "readback",
+            "hostRevalidated",
+            "overlayContextUnchanged",
+            "carrierConsumed",
+            "sentRowProven",
+            "rowDelta",
+            "status"
+          ],
+          "properties": {
+            "targetBindingSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "readback": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/readback"
+                },
+                {
+                  "properties": {
+                    "classification": {
+                      "const": "empty"
+                    },
+                    "byteLength": {
+                      "const": 0
+                    },
+                    "utf16Length": {
+                      "const": 0
+                    },
+                    "sha256": {
+                      "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    }
+                  }
+                }
+              ]
+            },
+            "hostRevalidated": {
+              "const": true
+            },
+            "overlayContextUnchanged": {
+              "const": true
+            },
+            "carrierConsumed": {
+              "const": true
+            },
+            "sentRowProven": {
+              "const": true
+            },
+            "rowDelta": {
+              "const": 1
+            },
+            "status": {
+              "const": "sent"
+            }
+          }
+        },
+        "receiptDigestSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "pipeProtections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "firstInstance",
+        "remoteClientsRejected",
+        "aclExactUser"
+      ],
+      "properties": {
+        "firstInstance": {
+          "type": "boolean"
+        },
+        "remoteClientsRejected": {
+          "type": "boolean"
+        },
+        "aclExactUser": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verificationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "source",
+        "challenge",
+        "nowUnixMs",
+        "expectedEmitter",
+        "pipeClient",
+        "expectedTarget",
+        "pipeProtections",
+        "receiptUtf8B64"
+      ],
+      "properties": {
+        "schema": {
+          "const": "osl.c4.native-verification-request"
+        },
+        "version": {
+          "const": 3
+        },
+        "source": {
+          "enum": [
+            "synthetic",
+            "runtime_named_pipe"
+          ]
+        },
+        "challenge": {
+          "$ref": "#/$defs/challenge"
+        },
+        "nowUnixMs": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        },
+        "expectedEmitter": {
+          "$ref": "#/$defs/processBinding"
+        },
+        "pipeClient": {
+          "$ref": "#/$defs/processBinding"
+        },
+        "expectedTarget": {
+          "$ref": "#/$defs/targetBinding"
+        },
+        "pipeProtections": {
+          "$ref": "#/$defs/pipeProtections"
+        },
+        "receiptUtf8B64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 87384,
+          "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "runtime_named_pipe"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pipeProtections": {
+                "properties": {
+                  "firstInstance": {
+                    "const": true
+                  },
+                  "remoteClientsRejected": {
+                    "const": true
+                  },
+                  "aclExactUser": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "verificationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "source",
+        "status",
+        "parserCryptoValid",
+        "runtimeReceiptAccepted",
+        "fullC4Success",
+        "pointDelta",
+        "receiptSha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "osl.c4.native-verification-result"
+        },
+        "version": {
+          "const": 3
+        },
+        "source": {
+          "enum": [
+            "synthetic",
+            "runtime_named_pipe"
+          ]
+        },
+        "status": {
+          "enum": [
+            "synthetic-parser-crypto-valid",
+            "runtime-native-receipt-valid"
+          ]
+        },
+        "parserCryptoValid": {
+          "const": true
+        },
+        "runtimeReceiptAccepted": {
+          "type": "boolean"
+        },
+        "fullC4Success": {
+          "const": false
+        },
+        "pointDelta": {
+          "const": 0
+        },
+        "receiptSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "source": {
+              "const": "synthetic"
+            },
+            "status": {
+              "const": "synthetic-parser-crypto-valid"
+            },
+            "runtimeReceiptAccepted": {
+              "const": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "source": {
+              "const": "runtime_named_pipe"
+            },
+            "status": {
+              "const": "runtime-native-receipt-valid"
+            },
+            "runtimeReceiptAccepted": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "ledgerRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "challengeSha256",
+        "state",
+        "issuedAtUnixMs",
+        "expiresAtUnixMs",
+        "pipeBindingSha256",
+        "receiptDigestSha256",
+        "updatedAtUnixMs",
+        "recordDigestSha256"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "challengeSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "state": {
+          "enum": [
+            "issued",
+            "connected",
+            "consumed",
+            "expired",
+            "abandoned"
+          ]
+        },
+        "issuedAtUnixMs": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        },
+        "expiresAtUnixMs": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "pipeBindingSha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receiptDigestSha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAtUnixMs": {
+          "$ref": "#/$defs/nonNegativeInteger"
+        },
+        "recordDigestSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "issued"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pipeBindingSha256": {
+                "type": "null"
+              },
+              "receiptDigestSha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "connected"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pipeBindingSha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "receiptDigestSha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "consumed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pipeBindingSha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "receiptDigestSha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "expired",
+                  "abandoned"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "receiptDigestSha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

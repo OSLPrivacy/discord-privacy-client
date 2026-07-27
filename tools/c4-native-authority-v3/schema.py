@@ -102,6 +102,8 @@ def parse_receipt(encoded: bytes) -> dict[str, Any]:
         raise SchemaError("receipt is not valid bounded JSON") from error
     if type(value) is not dict:
         raise SchemaError("receipt root must be an object")
+    if canonical_json(value) != encoded:
+        raise SchemaError("receipt is not canonical JSON")
     validate_receipt(value)
     return value
 

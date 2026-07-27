@@ -13,11 +13,19 @@ from pathlib import Path
 import threading
 from typing import Any, Iterator
 
-from schema import SHA256_RE, canonical_json, sha256_hex
+from schema import (
+    PROCESS_KEYS,
+    SHA256_RE,
+    SchemaError,
+    canonical_json,
+    sha256_hex,
+    validate_process_binding,
+)
 
 
 LEDGER_VERSION = 1
 MAX_TTL_MS = 60_000
+MAX_INTEGER = (1 << 63) - 1
 STATES = {"issued", "connected", "consumed", "expired", "abandoned"}
 TERMINAL_STATES = {"consumed", "expired", "abandoned"}
 RECORD_KEYS = {
@@ -67,8 +75,12 @@ def _challenge_hash(challenge: str) -> str:
 
 
 def binding_digest(binding: dict[str, Any]) -> str:
-    if type(binding) is not dict:
-        raise LedgerError("pipe binding must be an object")
+    if type(binding) is not dict or set(binding) != PROCESS_KEYS:
+        raise LedgerError("pipe binding fields are not exact")
+    try:
+        validate_process_binding(binding, "pipeClient")
+    except SchemaError as error:
+        raise LedgerError("pipe binding is invalid") from error
     return sha256_hex(b"OSL/C4/pipe-client-binding/v1\x00" + canonical_json(binding))
 
 
@@ -159,7 +171,10 @@ class OneShotLedger:
         if type(record["state"]) is not str or record["state"] not in STATES:
             raise LedgerError("ledger state is unknown")
         for key in ("issuedAtUnixMs", "expiresAtUnixMs", "updatedAtUnixMs"):
-            if type(record[key]) is not int or record[key] < 0:
+            if (
+                type(record[key]) is not int
+                or not 0 <= record[key] <= MAX_INTEGER
+            ):
                 raise LedgerError(f"ledger {key} is invalid")
         for key in ("pipeBindingSha256", "receiptDigestSha256"):
             value = record[key]
@@ -167,6 +182,33 @@ class OneShotLedger:
                 type(value) is not str or SHA256_RE.fullmatch(value) is None
             ):
                 raise LedgerError(f"ledger {key} is invalid")
+        issued = record["issuedAtUnixMs"]
+        expires = record["expiresAtUnixMs"]
+        updated = record["updatedAtUnixMs"]
+        if not issued < expires <= issued + MAX_TTL_MS or updated < issued:
+            raise LedgerError("ledger timestamps are incoherent")
+        state = record["state"]
+        pipe_digest = record["pipeBindingSha256"]
+        receipt_digest = record["receiptDigestSha256"]
+        if state == "issued" and (
+            pipe_digest is not None or receipt_digest is not None
+        ):
+            raise LedgerError("issued ledger fields are incoherent")
+        if state == "connected" and (
+            pipe_digest is None or receipt_digest is not None
+        ):
+            raise LedgerError("connected ledger fields are incoherent")
+        if state == "consumed" and (
+            pipe_digest is None or receipt_digest is None
+        ):
+            raise LedgerError("consumed ledger fields are incoherent")
+        if state in {"expired", "abandoned"} and receipt_digest is not None:
+            raise LedgerError("terminal ledger fields are incoherent")
+        if state == "expired":
+            if updated <= expires:
+                raise LedgerError("expired ledger timestamp is incoherent")
+        elif updated > expires:
+            raise LedgerError("non-expired ledger timestamp is incoherent")
         claimed = record["recordDigestSha256"]
         if type(claimed) is not str or not hmac.compare_digest(
             claimed, _record_digest(record)
@@ -232,10 +274,12 @@ class OneShotLedger:
 
     def issue(self, challenge: str, now_ms: int, ttl_ms: int = MAX_TTL_MS) -> None:
         challenge_hash = _challenge_hash(challenge)
-        if type(now_ms) is not int or now_ms < 0:
+        if type(now_ms) is not int or not 0 <= now_ms <= MAX_INTEGER:
             raise LedgerError("issue time is invalid")
         if type(ttl_ms) is not int or not 1 <= ttl_ms <= MAX_TTL_MS:
             raise LedgerError("challenge lifetime is invalid")
+        if now_ms > MAX_INTEGER - ttl_ms:
+            raise LedgerError("challenge expiry is out of range")
         record = {
             "version": LEDGER_VERSION,
             "challengeSha256": challenge_hash,
@@ -273,7 +317,7 @@ class OneShotLedger:
     def _load_for_transition(
         self, challenge: str, now_ms: int
     ) -> tuple[Path, dict[str, Any]]:
-        if type(now_ms) is not int or now_ms < 0:
+        if type(now_ms) is not int or not 0 <= now_ms <= MAX_INTEGER:
             raise LedgerError("transition time is invalid")
         expected = _challenge_hash(challenge)
         path = self._path(challenge)
@@ -329,7 +373,7 @@ class OneShotLedger:
             self._atomic_replace(path, record)
 
     def recover_incomplete(self, now_ms: int) -> int:
-        if type(now_ms) is not int or now_ms < 0:
+        if type(now_ms) is not int or not 0 <= now_ms <= MAX_INTEGER:
             raise LedgerError("recovery time is invalid")
         changed = 0
         with self._locked():

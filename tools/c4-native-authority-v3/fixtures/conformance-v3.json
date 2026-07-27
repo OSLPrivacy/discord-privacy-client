@@ -1,0 +1,382 @@
+{
+  "schema": "osl.c4.native-conformance-fixture",
+  "version": 3,
+  "validRequest": {
+    "schema": "osl.c4.native-verification-request",
+    "version": 3,
+    "source": "synthetic",
+    "challenge": {
+      "schema": "osl.c4.native-challenge",
+      "version": 3,
+      "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+      "issuedAtUnixMs": 1800000000000,
+      "expiresAtUnixMs": 1800000060000
+    },
+    "nowUnixMs": 1800000002000,
+    "expectedEmitter": {
+      "pid": 4242,
+      "processStartTime100ns": 133100000000000000,
+      "sessionId": 2,
+      "executablePath": "C:\\Program Files\\OSL\\osl-privacy-hub.exe",
+      "executableSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileIdentity": {
+        "volumeSerialNumber": 7,
+        "fileIndex": 42420,
+        "fileSize": 5004242,
+        "lastWriteTime100ns": 133000000000004242
+      }
+    },
+    "pipeClient": {
+      "pid": 4242,
+      "processStartTime100ns": 133100000000000000,
+      "sessionId": 2,
+      "executablePath": "C:\\Program Files\\OSL\\osl-privacy-hub.exe",
+      "executableSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileIdentity": {
+        "volumeSerialNumber": 7,
+        "fileIndex": 42420,
+        "fileSize": 5004242,
+        "lastWriteTime100ns": 133000000000004242
+      }
+    },
+    "expectedTarget": {
+      "pid": 7331,
+      "processStartTime100ns": 133100000000000100,
+      "sessionId": 2,
+      "executablePath": "C:\\Users\\Owner\\AppData\\Local\\Discord\\app-1.2.3\\Discord.exe",
+      "executableSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fileIdentity": {
+        "volumeSerialNumber": 7,
+        "fileIndex": 73310,
+        "fileSize": 5007331,
+        "lastWriteTime100ns": 133000000000007331
+      },
+      "bindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+      "hwnd": 1193046,
+      "rootHwnd": 1193046,
+      "hostGeneration": 9,
+      "publisher": "Discord Inc."
+    },
+    "pipeProtections": {
+      "firstInstance": true,
+      "remoteClientsRejected": true,
+      "aclExactUser": true
+    },
+    "receiptUtf8B64": ""
+  },
+  "validReceipt": {
+    "schema": "osl.c4.native-placement-receipt",
+    "version": 3,
+    "evidenceKind": "native-placement",
+    "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+    "emittedAtUnixMs": 1800000001500,
+    "monotonicStagesMs": {
+      "challengeClaimed": 0,
+      "preSendReadback": 300,
+      "sendInjected": 500,
+      "postContextRevalidated": 900,
+      "receiptEmitted": 1000
+    },
+    "emitter": {
+      "pid": 4242,
+      "processStartTime100ns": 133100000000000000,
+      "sessionId": 2,
+      "executablePath": "C:\\Program Files\\OSL\\osl-privacy-hub.exe",
+      "executableSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fileIdentity": {
+        "volumeSerialNumber": 7,
+        "fileIndex": 42420,
+        "fileSize": 5004242,
+        "lastWriteTime100ns": 133000000000004242
+      }
+    },
+    "build": {
+      "features": [
+        "core",
+        "desktop"
+      ],
+      "debugAssertions": false,
+      "targetOs": "windows",
+      "targetArch": "x86_64",
+      "profile": "release"
+    },
+    "target": {
+      "pid": 7331,
+      "processStartTime100ns": 133100000000000100,
+      "sessionId": 2,
+      "executablePath": "C:\\Users\\Owner\\AppData\\Local\\Discord\\app-1.2.3\\Discord.exe",
+      "executableSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fileIdentity": {
+        "volumeSerialNumber": 7,
+        "fileIndex": 73310,
+        "fileSize": 5007331,
+        "lastWriteTime100ns": 133000000000007331
+      },
+      "bindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+      "hwnd": 1193046,
+      "rootHwnd": 1193046,
+      "hostGeneration": 9,
+      "publisher": "Discord Inc."
+    },
+    "carrier": {
+      "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+      "utf8B64": "b3JkaW5hcnkgY292ZXIgdGV4dApzZWNvbmQgbGluZQ==",
+      "sha256": "9fcfb7a20325f7156b60885d937f8bc1a2e745c06afca5728e4ae4d416ed1238",
+      "byteLength": 31,
+      "utf16Length": 31
+    },
+    "preSend": {
+      "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+      "readback": {
+        "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+        "classification": "exact",
+        "complete": true,
+        "sha256": "9fcfb7a20325f7156b60885d937f8bc1a2e745c06afca5728e4ae4d416ed1238",
+        "byteLength": 31,
+        "utf16Length": 31
+      },
+      "foreground": {
+        "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+        "foregroundHwnd": 1193046,
+        "foregroundRootHwnd": 1193046,
+        "foregroundPid": 7331,
+        "targetRootHwnd": 1193046,
+        "keyboardFocusProven": true,
+        "targetOwnedByTrustedProcess": true
+      }
+    },
+    "action": {
+      "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+      "mechanism": "sendinput_enter",
+      "attempted": true,
+      "acceptedInputCount": 2,
+      "enterCertainty": "injected_once",
+      "retryPolicy": "never_auto_retry",
+      "actionSequence": 1
+    },
+    "postSend": {
+      "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+      "readback": {
+        "targetBindingSha256": "764258dbc236e0421dffa842ff5141525a0f2df2a01e292a88b98a89c9dc3b8d",
+        "classification": "empty",
+        "complete": true,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "utf16Length": 0
+      },
+      "hostRevalidated": true,
+      "overlayContextUnchanged": true,
+      "carrierConsumed": true,
+      "sentRowProven": true,
+      "rowDelta": 1,
+      "status": "sent"
+    },
+    "receiptDigestSha256": "4f614c5e5ed541745d6050128be53afa10a5dc46f6c661f33f918e80620c4c33"
+  },
+  "expectedSyntheticResult": {
+    "schema": "osl.c4.native-verification-result",
+    "version": 3,
+    "source": "synthetic",
+    "status": "synthetic-parser-crypto-valid",
+    "parserCryptoValid": true,
+    "runtimeReceiptAccepted": false,
+    "fullC4Success": false,
+    "pointDelta": 0,
+    "receiptSha256": "b1fa7a3c54337719dbfd3aa789d48fe20dfd4bf6349adb5dfeeb88d23b953882"
+  },
+  "invalidMutations": [
+    {
+      "name": "unknown_top_level_receipt_field",
+      "target": "receipt",
+      "path": "/callerVerdict",
+      "value": "pass",
+      "resealReceipt": true
+    },
+    {
+      "name": "wrong_schema_version",
+      "target": "receipt",
+      "path": "/version",
+      "value": 4,
+      "resealReceipt": true
+    },
+    {
+      "name": "non_shipping_feature_set",
+      "target": "receipt",
+      "path": "/build/features",
+      "value": [
+        "core",
+        "desktop",
+        "discord-qa-shell"
+      ],
+      "resealReceipt": true
+    },
+    {
+      "name": "challenge_mismatch",
+      "target": "receipt",
+      "path": "/challenge",
+      "value": "2222222222222222222222222222222222222222222222222222222222222222",
+      "resealReceipt": true
+    },
+    {
+      "name": "expired_challenge",
+      "target": "request",
+      "path": "/nowUnixMs",
+      "value": 1800000060001
+    },
+    {
+      "name": "pipe_client_pid_mismatch",
+      "target": "request",
+      "path": "/pipeClient/pid",
+      "value": 4243
+    },
+    {
+      "name": "emitter_process_start_mismatch",
+      "target": "request",
+      "path": "/expectedEmitter/processStartTime100ns",
+      "value": 133100000000000001
+    },
+    {
+      "name": "emitter_executable_path_mismatch",
+      "target": "request",
+      "path": "/expectedEmitter/executablePath",
+      "value": "C:\\Other\\osl-privacy-hub.exe"
+    },
+    {
+      "name": "emitter_executable_hash_mismatch",
+      "target": "request",
+      "path": "/expectedEmitter/executableSha256",
+      "value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "name": "target_hwnd_mismatch",
+      "target": "request",
+      "path": "/expectedTarget/hwnd",
+      "value": 1193047
+    },
+    {
+      "name": "target_executable_binding_mismatch",
+      "target": "receipt",
+      "path": "/target/executableSha256",
+      "value": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "rebindTarget": true,
+      "resealReceipt": true
+    },
+    {
+      "name": "foreground_binding_mismatch",
+      "target": "receipt",
+      "path": "/preSend/foreground/foregroundRootHwnd",
+      "value": 1193047,
+      "resealReceipt": true
+    },
+    {
+      "name": "carrier_length_mismatch",
+      "target": "receipt",
+      "path": "/carrier/byteLength",
+      "value": 32,
+      "resealReceipt": true
+    },
+    {
+      "name": "pre_send_readback_not_exact",
+      "target": "receipt",
+      "path": "/preSend/readback/classification",
+      "value": "partial",
+      "resealReceipt": true
+    },
+    {
+      "name": "wrong_send_mechanism",
+      "target": "receipt",
+      "path": "/action/mechanism",
+      "value": "uia_send_action",
+      "resealReceipt": true
+    },
+    {
+      "name": "retry_safety_weakened",
+      "target": "receipt",
+      "path": "/action/retryPolicy",
+      "value": "retry",
+      "resealReceipt": true
+    },
+    {
+      "name": "post_context_mutated",
+      "target": "receipt",
+      "path": "/postSend/overlayContextUnchanged",
+      "value": false,
+      "resealReceipt": true
+    },
+    {
+      "name": "unknown_request_field",
+      "target": "request",
+      "path": "/callerStatus",
+      "value": "valid"
+    },
+    {
+      "name": "number_as_string_coercion",
+      "target": "request",
+      "path": "/nowUnixMs",
+      "value": "1800000002000"
+    },
+    {
+      "name": "boolean_as_integer_coercion",
+      "target": "receipt",
+      "path": "/action/acceptedInputCount",
+      "value": true,
+      "resealReceipt": true
+    },
+    {
+      "name": "unknown_nested_receipt_field",
+      "target": "receipt",
+      "path": "/action/callerStatus",
+      "value": "sent",
+      "resealReceipt": true
+    },
+    {
+      "name": "carrier_hash_mismatch",
+      "target": "receipt",
+      "path": "/carrier/sha256",
+      "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "resealReceipt": true
+    },
+    {
+      "name": "post_readback_not_empty",
+      "target": "receipt",
+      "path": "/postSend/readback/classification",
+      "value": "exact",
+      "resealReceipt": true
+    },
+    {
+      "name": "row_delta_not_plus_one",
+      "target": "receipt",
+      "path": "/postSend/rowDelta",
+      "value": 0,
+      "resealReceipt": true
+    },
+    {
+      "name": "enter_certainty_unknown",
+      "target": "receipt",
+      "path": "/action/enterCertainty",
+      "value": "unknown",
+      "resealReceipt": true
+    },
+    {
+      "name": "partial_enter_injection",
+      "target": "receipt",
+      "path": "/action/acceptedInputCount",
+      "value": 1,
+      "resealReceipt": true
+    },
+    {
+      "name": "receipt_digest_mismatch",
+      "target": "receipt",
+      "path": "/emittedAtUnixMs",
+      "value": 1800000001501
+    },
+    {
+      "name": "duplicate_receipt_json_key",
+      "operation": "duplicate_receipt_version"
+    },
+    {
+      "name": "noncanonical_receipt_json",
+      "operation": "append_receipt_newline"
+    }
+  ]
+}
