@@ -1865,3 +1865,125 @@ browser, build, deployment, provider archive, or runtime walkthrough ran.
 - Website Scrub truth correction +0; no implementation or runtime behavior was
   awarded.
 - Authoritative arithmetic remains **100 / 303**.
+
+## 2026-07-27 — active Scrub control contract and exact Notes reachability
+
+### Active Scrub is locked and view-only after review
+
+The authority text previously conflated watching a run with Free/Pro
+entitlement and allowed pause/resume during active automation. Exact product-doc
+commit `00f561f240fa0b200c0f20d138e87449f75b17a8`, tree
+`f4f4de9d976d91ca1a5e7dcb97a6260591c0fdf5`, master-decision blob
+`3a436d15a11b232723fff7418bf7fee61ea1eb0c`, corrects that contract:
+
+- Free Scrub requires review of the exact one-time list and explicit launch,
+  but the reviewed run may continue while the owner is away.
+- Every active Free Scrub or AutoScrub controlled surface is view-only and
+  locked to the approved plan. The owner may observe status, progress, and the
+  current item.
+- Emergency Stop/Revoke is the only active-run control. Clicking the provider
+  surface, editing targets, manually advancing steps, and altering the plan are
+  forbidden.
+- Stop/Revoke invalidates the run authority. Continuing requires fresh review
+  and explicit launch; there is no ordinary pause/resume.
+- Pro distinguishes later or repeated use of approved-plan authority, not
+  merely the ability to leave a one-time run unwatched.
+
+`git diff --check` passed. This is a product-contract correction only. No Scrub
+implementation, browser, runtime, build, or provider workflow was exercised.
+
+Two additional truth-owned files already existed as untracked work and were
+preserved rather than overwritten:
+
+```text
+?? docs/design/osl-current-window-prompts-2026-07-26.md
+?? docs/design/osl-simple-spec.md
+```
+
+Their current untracked text still contains the old distinction at
+`osl-current-window-prompts-2026-07-26.md:79-82` and
+`osl-simple-spec.md:195-199`. Those bytes require their owner's reconciliation;
+they were not included in `00f561f`.
+
+### Notes reachability is absent, not merely unknown
+
+A bounded read-only audit found no public claim that Notes works today, but
+found that the public status sentence was weaker than the inspected source.
+In exact product object `d7d877be4aeeaed83e310d32b1e73aabb54881ab`:
+
+- `apps/osl-hub-ui/src/main.ts:2571` marks the Notes tile unavailable and
+  `main.ts:5139` describes it as planned for a later release;
+- production `main.ts` has no Notes route or
+  `list_osl_notes`/`save_osl_note` caller;
+- `apps/osl-hub/src/lib.rs` does not register `osl_notes`;
+- the production Tauri handler beginning at
+  `apps/osl-hub/src/main.rs:7390` registers neither Notes command; and
+- `apps/osl-hub/src/osl_notes.rs:112` contains the isolated encrypted backend,
+  making the exact status `implemented-unwired`.
+
+Website commit `417910e60ea40cff102acd3ad63ec5076c1f6de2`,
+tree `daf40f598e4d27e1f79bd3da144ba4a175a021f1`, changes the
+machine-readable census and its bound public status copy from generic
+“reachability unproved” to the exact split: Notes is implemented but not wired
+into the source-inspected production app; Scrub-index reachability remains
+unproved.
+
+Exact website blobs:
+
+- `data/at-rest-census.json`:
+  `d1e8b717b22f476e315adfc66f7aa943e329892a`;
+- `docs/status.html`:
+  `009ba1c14f0c6fb59b6300d58557df91de7dae05`; and
+- `scripts/check-claims.mjs`:
+  `b4616e108d8577d470cfa98f9fa3f59bdca73cd6`.
+
+The gate now contains a specific negative control that changes implemented-
+unwired Notes back to unknown reachability and requires
+`AT_REST_REACHABILITY_WORDING`. Through `osl-heavy`, the semantic self-test
+passed 420/420 fixtures and the public scan passed 16/16 files. JSON parsing and
+`git diff --check` passed. This remains `source/static/test-proven-only`; no
+deployed page or runtime was checked.
+
+### Later +0 receipts consumed without promotion
+
+- D2 correction `cb2ba4f684d69675c4f998310e9858a89247ce71`,
+  tree `8c29423e756f610addec71f815ce3673c8d6ef6c`, remains
+  independently **REJECT +0** because its inherited source-closure gate was
+  still red 12/14. Follow-up `3a12760ed526e3170d467a370df70fb7786e4877`,
+  tree `ad10fe3b0f41fb59f59484e56948f8bcadfdd5c7`, is also
+  independently **REJECT +0**. Its frozen contract tests passed 4/4 and worker
+  tests 10/10, but reverting the required wrong-size abort predicate to
+  `!completedObject` and disabling the abort branch both false-greened. The
+  gate still does not bind wrong-size objects to unconditional abort.
+- Visible-row receipt `8ac72658b3790c69d0704f14a0f7f3c10d316099`,
+  tree `78c74b937bc8bdd71c8be8496cacae63c048f43e`, is independently
+  **ACCEPT +0** at source/test tier. No Windows producer, live Discord/VM,
+  deployment, or two-identity runtime receipt was run.
+- Sender-filter successor `a7d7a750bef22d9d15bb79ad8c55d38a9ce63e25`,
+  tree `16caf509e43e2b00ac2007e9b8e8ca04f2490477`, is independently
+  **ACCEPT at source/test tier, REJECT at verified-live/shipping tier, +0**.
+  Exact-object rollout mutations passed 8/8, Worker/D1 tests 4/4, and selector
+  controls 8/8. The production producer registry remains empty and the verifier
+  store unprovisioned, so no live authority or checklist credit follows.
+- Discord-ingestion successor
+  `a939ba08987fc260a3925119af7ca2a51f32b545`, tree
+  `4b9a9e4d3c2cd0ee38c1195a49884ef5c908369f`, is independently
+  **REJECT +0**. Although the retained ZIP map now reaches the parser and
+  generic Discord-object fallback was removed, member bytes still do not bind
+  account or media authority; empty account IDs, caller-selected
+  `authoredBySelf`, mismatched inline attachment bytes, and complete plain JSON
+  remain accepted. The focused exact-object suite was red: 1 failed, 9 passed.
+  The existing public statement that Discord exports are not qualified end to
+  end therefore remains accurate.
+
+## Acceptance rows this earns
+
+- Scrub contract correction +0.
+- Notes reachability truth correction +0.
+- D2 successors +0 by independent REJECT verdicts.
+- Visible-row receipt +0 by its accepted source/test limitation.
+- Sender-filter successor +0 by its split source/test-ACCEPT, live-REJECT
+  verdict.
+- Discord-ingestion successor +0 by independent REJECT.
+- No checklist row or section changed.
+- Authoritative arithmetic remains **100 / 303**.
