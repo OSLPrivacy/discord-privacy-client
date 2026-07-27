@@ -35,7 +35,7 @@ they qualify work. Scope additions increase the denominator; regressions remove 
 ## Progress snapshot
 
 ```text
-Provisional verified progress: 97 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
+Provisional verified progress: 98 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
 Confidence: low (several dirty concurrent worktrees and exact-build rechecks remain)
 Critical path:
 security identity/attribution → reviewed ratchet → two-identity proof
@@ -591,7 +591,7 @@ timestamped deltas, not keep this number manually forever.
 - ⬜ **G4 · Integrate minimum milestone; label rest Coming soon** — exact app/release proof.
   `needs: G1-G3` `weight: 3` `earned: 0`
 
-## H · Website — 25 points (9 earned)
+## H · Website — 25 points (10 earned)
 
 - 🟨 **H1 · One canonical branch/deployment and one pricing model** — **pricing decided 2026-07-26**
   (master 7.14: prepaid one-month $5 code, period starts at redemption, nothing stored, separate
@@ -623,8 +623,15 @@ timestamped deltas, not keep this number manually forever.
   `weight: 3` `earned: 1`
 - ⬜ **H3 · Phone username-only Scrub demo** — clear boundary, honest coverage receipt, desktop CTA.
   `needs: F9 contract` `weight: 4` `earned: 0`
-- 🟨 **H4 · PWS and Burn explanation/animation** — safe FAQ text exists in parts; coherent accessible
-  animation/page missing. `needs: D/A truth` `weight: 3` `earned: 1`
+- 🟨 **H4 · PWS and Burn explanation/animation** — exact local website commit
+  `a52e9b30e4ced423274a7f15e1f3c495d7ea330a` provides one coherent accessible explanation:
+  PWS acts before disclosure, Burn acts after disclosure, both are visibly **Planned**, and all four
+  Burn boundaries plus “not cryptographic erasure” remain explicit. Independent exact-archive
+  review passed 16/16 pages and 54/54 claim fixtures, 270/270 responsive/JS-off/reduced-motion
+  captures, and 120 accessibility combinations; removing either the erasure limitation or the
+  unavoidable-copies/screenshots boundary made the gate fail. This is `test-proven-only`, unpushed,
+  and undeployed; the final point remains held for public promotion and live identity verification.
+  `needs: production promotion` `weight: 3` `earned: 2`
 - 🟨 **H5 · Messenger/email comparison and sources** — **the versioned support matrix half is done**:
   `/docs/status` is generated from `data/pricing.json` (so it cannot drift), is dated, and carries
   per-connector protected send, protected receive, attachments, Scrub, verification date,
