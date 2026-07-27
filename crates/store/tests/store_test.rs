@@ -375,13 +375,24 @@ fn mark_burned_unknown_id_returns_not_found() {
     let tmp = TempDir::new().unwrap();
     let store = open_a(tmp.path());
     let msg = sample("known", "ch", "s", "alice", "stays live", 1);
+    let survivor = sample(
+        "known-survivor",
+        "other-ch",
+        "other-s",
+        "bob",
+        "also stays live",
+        2,
+    );
     store.put(&msg).unwrap();
-    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
+    store.put(&survivor).unwrap();
+    // A one-row fixture lets a faulty `UPDATE messages SET burned = 1` pass:
+    // there is no independent live row for an unknown-id burn to preserve.
     let before = store
         .get("known")
         .unwrap()
         .expect("positive control row should be present");
     assert_eq!(before, msg);
+    assert_eq!(store.get("known-survivor").unwrap(), Some(survivor.clone()));
 
     let err = store.mark_burned("never-existed").unwrap_err();
     assert!(matches!(err, StoreError::NotFound(_)), "got {err:?}");
@@ -391,6 +402,11 @@ fn mark_burned_unknown_id_returns_not_found() {
         .expect("unknown-id burn must not touch a real row");
     assert_eq!(after, msg);
     assert!(!after.burned);
+    assert_eq!(
+        store.get("known-survivor").unwrap(),
+        Some(survivor),
+        "unknown-id burn must not become an unscoped destructive update"
+    );
 }
 
 #[test]
@@ -408,6 +424,20 @@ fn mark_burned_is_idempotent() {
         .expect("row should be present before burn");
     assert_eq!(before, msg);
     store.mark_burned("twice").unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let first_destruction: (Vec<u8>, Vec<u8>, i64) = rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .query_row(
+            "SELECT ciphertext, nonce, burned FROM messages WHERE burned = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    // This rejects an idempotent flag-only implementation: it can make get()
+    // return None on the first call while leaving the sealed body recoverable.
+    assert!(first_destruction.0.iter().all(|byte| *byte == 0));
+    assert!(first_destruction.1.iter().all(|byte| *byte == 0));
+    assert_eq!(first_destruction.2, 1);
     // Second mark is a no-op (already burned). Exercises the
     // idempotency branch.
     store.mark_burned("twice").unwrap();
@@ -417,6 +447,9 @@ fn mark_burned_is_idempotent() {
         .unwrap()
         .expect("burn must not wipe unrelated rows");
     assert_eq!(still_live, other);
+    // This rejects an idempotent implementation whose retry destructively
+    // reuses a broad predicate instead of the burned message's blind index.
+    assert_eq!(store.get("untouched").unwrap(), Some(other));
 }
 
 // ---- corruption ----
@@ -458,21 +491,17 @@ fn corrupted_ciphertext_returns_corrupted_not_panic() {
         .unwrap();
     }
     let store = open_a(&path);
-    // Without it, 'nothing came back' is indistinguishable from 'nothing was ever stored'.
-    let mut corrupted = 0;
-    let mut readable = 0;
-    for msg in [&first, &second] {
-        match store.get(&msg.discord_message_id) {
-            Ok(Some(out)) => {
-                assert_eq!(out, *msg);
-                readable += 1;
-            }
-            Err(StoreError::Corrupted(_)) => corrupted += 1,
-            other => panic!("expected one corrupted and one readable row, got {other:?}"),
-        }
-    }
-    assert_eq!(corrupted, 1);
-    assert_eq!(readable, 1);
+    // The selected row is the first inserted row. Counting one error and one
+    // success would falsely accept a lookup that ignores its requested key.
+    assert!(
+        matches!(store.get("corrupt-a"), Err(StoreError::Corrupted(_))),
+        "the specifically tampered row must surface Corrupted"
+    );
+    assert_eq!(
+        store.get("corrupt-b").unwrap(),
+        Some(second),
+        "a selected-row decryptor must leave the untampered row readable"
+    );
 }
 
 // ---- wrong-secret rejection ----
@@ -537,8 +566,35 @@ fn reopen_with_correct_secret_migration_idempotent() {
     // This catches a reopen path that only handles current-schema databases.
     let store = MessageStore::open(tmp.path(), SECRET_A).unwrap();
     assert_migrated_rows(&store, &rows);
+    // These three distinct ids reject a migration/reopen lookup that returns
+    // an arbitrary first row instead of deriving and using the requested key.
+    assert_eq!(store.get("v3-older").unwrap(), Some(rows[0].clone()));
+    assert_eq!(store.get("v3-newer").unwrap(), Some(rows[1].clone()));
+    assert_eq!(store.get("v3-other").unwrap(), Some(rows[2].clone()));
     let first_open_version = schema_version(tmp.path());
     drop(store);
+
+    // A migration that merely stamps v4 but leaves v3 plaintext fields (or a
+    // reopen writer that persists bodies unchanged) must fail this raw-byte
+    // check. The distinctive fixture values rule out an accidental match.
+    let db_bytes = std::fs::read(tmp.path().join("messages.sqlite")).unwrap();
+    for secret in [
+        "v3-older",
+        "v3-chan-a",
+        "sender-1",
+        "old v3 body",
+        "v3-newer",
+        "newer v3 body",
+        "v3-other",
+        "other channel body",
+    ] {
+        assert!(
+            !db_bytes
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "migration/reopen must not leave the v3 value {secret:?} as a no-op encoding"
+        );
+    }
 
     let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
     assert_migrated_rows(&store2, &rows);
@@ -569,7 +625,17 @@ fn reopen_with_future_schema_version_refuses() {
     let path = tmp.path().to_path_buf();
     {
         // Initialise normally so _meta and the canary are set up.
-        let _ = MessageStore::open(&path, SECRET_A).unwrap();
+        let store = MessageStore::open(&path, SECRET_A).unwrap();
+        let current = sample(
+            "current-schema-positive",
+            "current-channel",
+            "current-sender",
+            "alice",
+            "must survive refusal",
+            9,
+        );
+        store.put(&current).unwrap();
+        assert_eq!(store.get("current-schema-positive").unwrap(), Some(current));
     }
     // Manually stamp a future schema_version to simulate a DB
     // written by a later binary. The migration framework
@@ -585,10 +651,56 @@ fn reopen_with_future_schema_version_refuses() {
         )
         .unwrap();
     }
+    let before_version = schema_version(&path);
+    let before_row: (
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        i64,
+        i64,
+    ) = {
+        let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned FROM messages",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        )
+        .unwrap()
+    };
     match MessageStore::open(&path, SECRET_A) {
         Ok(_) => panic!("future schema must refuse"),
         Err(e) => assert!(matches!(e, StoreError::Schema(_)), "got {e:?}"),
     }
+    // This rejects a future-version handler that performs a partial migration
+    // (or quietly downgrades the stamp) before returning its refusal.
+    assert_eq!(schema_version(&path), before_version);
+    let after_row: (
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        i64,
+        i64,
+    ) = {
+        let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned FROM messages",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        after_row, before_row,
+        "future-schema refusal must not mutate the current row"
+    );
 }
 
 // ---- Beta 1.0: attachment cache ----
