@@ -279,8 +279,14 @@ need their owner's hand; the retirement decision is recorded here.
   **No message body is ever re-encrypted** — the body AAD is still
   `discord_message_id`, recovered from sealed metadata before opening the body.
 - `seq` is assigned in `decrypted_at` order, so channel listing is unchanged.
-- `VACUUM` afterwards, because dropping a table frees pages without scrubbing them and
-  leaving the identifiers recoverable in free pages would defeat the entire migration.
+- `VACUUM` afterwards as defence-in-depth. **Correction, measured after the fact:** the thing
+  that actually removes the old identifiers is `secure_delete=ON`, which zeroes freed cell
+  content at `DROP` time — not the `VACUUM`. With both disabled a raw-file scan still finds the
+  old channel id; with `secure_delete` on and `VACUUM` removed it does not. The earlier wording
+  in this report and in `SECURITY.md` credited `VACUUM` and was wrong. `VACUUM` is kept because
+  it compacts the file and covers residue cell-level scrubbing may not reach, and the
+  `vacuum_pending` marker still guarantees it happens — but the crash window it guards is
+  narrower than first stated.
 - The **canary is verified before the migration runs**, so a wrong secret cannot
   trigger a destructive rewrite of someone's database.
 

@@ -48,9 +48,10 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
 
 - `_meta(key, value)` — `schema_version`, `canary_nonce` and
   `canary_ct`. A transient `vacuum_pending` marker also lives here
-  between a committed migration and the `VACUUM` that scrubs the
-  pages it freed; it is deleted once that scrub completes, and a
-  store that crashed in between finishes the job on next open.
+  between a committed migration and the `VACUUM` that follows it; it
+  is deleted once that completes, and a store that crashed in between
+  finishes the job on next open. See the migration section for what
+  `VACUUM` does and does not do.
 - `messages(mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct,
   ciphertext, nonce, seq, burned, burned_at, wrapped_key)` —
   `mid_bi`, `chan_bi` and `sender_bi` are 32-byte keyed blind
@@ -231,10 +232,18 @@ Attachment `seq` is assigned in legacy `created_at ASC, rowid ASC`
 order.
 
 The canary is verified before migration runs. A wrong
-`identity_secret` therefore cannot trigger a destructive rewrite. The
-post-migration `VACUUM` matters because dropping the old tables frees
-pages that used to contain plaintext identifiers; rewriting the file
-stops those freed pages from retaining the old plaintext.
+`identity_secret` therefore cannot trigger a destructive rewrite.
+
+**What actually scrubs the old identifiers is `secure_delete=ON`, not
+`VACUUM`.** This was measured rather than assumed: with both disabled, a
+raw-file scan after migration still finds the old plaintext channel id;
+with `secure_delete=ON` and `VACUUM` removed, it does not. SQLite zeroes
+freed cell content at `DROP` time, so the identifiers are gone before the
+file is ever rewritten. The `VACUUM` is defence-in-depth — it compacts
+the file and covers residue that cell-level scrubbing may not reach, such
+as overflow pages and freelist structure — and the `vacuum_pending`
+marker exists so a crash cannot skip it. Do not describe `VACUUM` as the
+thing that removes the identifiers.
 
 ## Threading & concurrency
 

@@ -115,6 +115,24 @@ fn all_stored_bytes(db_path: &Path) -> Vec<(String, String, Vec<u8>)> {
     out
 }
 
+/// The database file plus anything SQLite left beside it.
+///
+/// A row is not sealed if its plaintext predecessor is still sitting in the
+/// write-ahead log, and a migration has not scrubbed anything if the old table's
+/// pages are still recoverable in the file's free space. Reading the bytes is
+/// the only way to see either — the SQL layer will not show you a page it has
+/// stopped pointing at.
+fn raw_file_bytes(db_path: &Path) -> Vec<u8> {
+    let mut blob = std::fs::read(db_path).unwrap_or_default();
+    for ext in ["sqlite-wal", "sqlite-shm", "sqlite-journal"] {
+        let side = db_path.with_extension(ext);
+        if side.exists() {
+            blob.extend_from_slice(&std::fs::read(side).unwrap());
+        }
+    }
+    blob
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
@@ -203,37 +221,57 @@ fn no_plaintext_identifier_survives_in_the_raw_file_bytes() {
     let db_path = tmp.path().join("messages.sqlite");
     let store = open_a(tmp.path());
 
+    let msg_id = "998877665544332211";
     let channel_id = "112233445566778899";
+    let sender_did = "555000555000555000";
     let sender_osl = "distinctive-osl-handle";
+    let filename = "distinctive-attachment-name.png";
+    let mime = "image/distinctive-type";
     store
         .put(&sample(
-            "998877665544332211",
+            msg_id,
             channel_id,
-            "555000555000555000",
+            sender_did,
             sender_osl,
             "body text",
             1_700_000_000,
         ))
         .unwrap();
-    assert!(store.get("998877665544332211").unwrap().is_some());
+    store
+        .put_attachment(
+            msg_id,
+            filename,
+            mime,
+            b"PIXELS",
+            Some("dm"),
+            Some(channel_id),
+            Some(sender_did),
+        )
+        .unwrap();
+    // Positive path: everything must be readable before we claim it is hidden.
+    assert!(store.get(msg_id).unwrap().is_some());
+    assert!(store.get_attachment(msg_id, filename).unwrap().is_some());
     drop(store);
 
-    let mut blob = std::fs::read(&db_path).unwrap();
-    for ext in ["sqlite-wal", "sqlite-shm"] {
-        let side = db_path.with_extension(ext);
-        if side.exists() {
-            blob.extend_from_slice(&std::fs::read(side).unwrap());
-        }
-    }
+    let blob = raw_file_bytes(&db_path);
+    assert!(
+        !blob.is_empty(),
+        "positive path: the file sweep must have bytes to inspect"
+    );
 
-    assert!(
-        !contains(&blob, channel_id.as_bytes()),
-        "plaintext channel_id is recoverable from the raw database file"
-    );
-    assert!(
-        !contains(&blob, sender_osl.as_bytes()),
-        "plaintext OSL user id is recoverable from the raw database file"
-    );
+    for (label, needle) in [
+        ("channel id", channel_id.as_bytes()),
+        ("OSL user id", sender_osl.as_bytes()),
+        ("message id", msg_id.as_bytes()),
+        ("sender Discord id", sender_did.as_bytes()),
+        ("attachment filename", filename.as_bytes()),
+        ("attachment MIME", mime.as_bytes()),
+    ] {
+        assert!(
+            !contains(&blob, needle),
+            "plaintext {label} is recoverable from the raw database file"
+        );
+    }
 }
 
 // ---- The owner's first requirement: forward migration ----
@@ -666,10 +704,21 @@ fn migrating_a_v3_database_removes_its_plaintext_identifiers() {
     assert!(store.get("998877665544332211").unwrap().is_some());
     drop(store);
 
-    for (table, col, value) in all_stored_bytes(&db_path) {
+    // Scan the RAW FILE, not the live SQL values.
+    //
+    // Querying live rows only proves the new table is clean. The v3 table's
+    // pages are still in the file until `VACUUM` rewrites it, so a version of
+    // this test that inspected live values would pass with the scrub removed
+    // entirely — and the scrub is the whole point of the migration.
+    for (label, needle) in [
+        ("OSL handle", b"distinctive-osl-handle".as_slice()),
+        ("message id", b"998877665544332211".as_slice()),
+        ("channel id", b"112233445566778899".as_slice()),
+        ("sender id", b"555000555000555000".as_slice()),
+    ] {
         assert!(
-            !contains(&value, b"distinctive-osl-handle"),
-            "migration left a plaintext identifier at {table}.{col}"
+            !contains(&raw_file_bytes(&db_path), needle),
+            "migration left the plaintext {label} recoverable in the database file"
         );
     }
 }
@@ -720,17 +769,33 @@ fn blind_indexes_are_domain_separated_across_fields() {
         .unwrap();
     drop(store);
 
-    let values: HashSet<Vec<u8>> = all_stored_bytes(&db_path)
-        .into_iter()
-        .filter(|(table, _, v)| table == "messages" && v.len() == 32)
-        .map(|(_, _, v)| v)
-        .collect();
+    // Assert on the NAMED columns, pairwise.
+    //
+    // Collecting every 32-byte value and asserting "at least two distinct" is
+    // not the same claim: if channel and sender shared a domain then
+    // `chan_bi == sender_bi`, but `mid_bi` is derived from a different input and
+    // supplies a second distinct value, so that weaker form passes under the
+    // exact regression it is named for.
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let (mid_bi, chan_bi, sender_bi): (Vec<u8>, Vec<u8>, Vec<u8>) = conn
+        .query_row("SELECT mid_bi, chan_bi, sender_bi FROM messages", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
 
-    assert!(
-        values.len() >= 2,
-        "channel and sender blind indexes collided for an identical input — \
-         the per-field domain separation is missing"
+    assert_eq!(
+        chan_bi.len(),
+        32,
+        "positive path: blind indexes must be present"
     );
+    assert_ne!(
+        chan_bi, sender_bi,
+        "channel and sender blind indexes are identical for the same input — \
+         the per-field domain separation is missing, and an offline reader can \
+         tell a channel id equals a sender id"
+    );
+    assert_ne!(mid_bi, chan_bi, "message and channel domains collide");
+    assert_ne!(mid_bi, sender_bi, "message and sender domains collide");
 }
 
 /// A different store secret must produce different blind indexes for the same
