@@ -56,14 +56,14 @@ tree; re-verify anchors before relying on a row.
 |---|---|
 | **Permitted wording** | "Decrypted messages cached on your device are encrypted at rest." |
 | **Status** | `test-proven-only` → **`Beta`** badge |
-| **Evidence** | `crates/store/src/cipher.rs:9` (XChaCha20-Poly1305, random nonce); sealed on insert at `crates/store/src/lib.rs:188-206` |
+| **Evidence** | *Re-anchored 2026-07-27, old citations had drifted.* AEAD: `crates/crypto/src/aead.rs:31`, `:68` (XChaCha20-Poly1305). Fresh nonce + seal: `crates/store/src/cipher.rs:108`. Sealed before write in `MessageStore::put`: `crates/store/src/lib.rs:283-288`. |
 | **Required alongside** | "This does not cover attachments. Non-image attachments are currently written to disk unencrypted — see master §10 finding 4." Do not make this claim on any page that also markets attachments. |
 
 ### A4 · Open source
 
 | | |
 |---|---|
-| **Permitted wording** | "OSL is fully open source, except one optional AutoScrub module you choose to download separately." |
+| **Permitted wording** | "Everything OSL ships today is open source. One optional AutoScrub module will be closed source and separately downloaded when it exists." — **tense-corrected 2026-07-27.** The old wording implied the exception already exists; it does not. `open-core-and-large-privacy-boundary` notes private code still has to move to a separate repository *before public release*, and the checklist treats separate installation/consent as unearned. Present-tensing an unbuilt boundary is the same error as a Planned feature in a feature list. |
 | **Status** | `verified-live` → **`Available`** badge |
 | **Evidence** | Public repository `OSLPrivacy/discord-privacy-client`, Apache-2.0 |
 | **Required alongside** | The exception must be stated in the same sentence, per master §7.6 and §7.10 — never as a footnote. |
@@ -74,7 +74,7 @@ tree; re-verify anchors before relying on a row.
 |---|---|
 | **Permitted wording** | "Blocks common screen-capture tools such as OBS, ShareX, Game Bar and Xbox capture." |
 | **Status** | `implemented-unwired` → **`Planned`** badge (the API call exists; first-paint ordering is an open critical, master §2 P0-5) |
-| **Evidence** | `SetWindowDisplayAffinity` / `WDA_EXCLUDEFROMCAPTURE` at `apps/osl-hub/src/native_discord_overlay.rs:3633-3638` |
+| **Evidence** | *Re-anchored 2026-07-27, and stronger than previously recorded.* The call is `crates/runtime/src/screenshot.rs:83`, and the result is **read back and required to match exactly** at `:91`/`:97` — it does not assume success. The overlay compositor independently re-reads via `GetWindowDisplayAffinity` before treating exclusion as proven (`apps/osl-hub/src/native_discord_overlay.rs:4875`), and non-QA builds select `ScreenshotProtection::On` at `:176`. Stays **Planned** only because first-paint ordering is an open critical (master §2 P0-5). |
 | **Required alongside** | "It cannot stop a phone camera, a hardware capture device, or a modified client. On machines where Windows refuses the protection it does nothing — and we show you when that happens." Never write "screenshot-proof" or "prevents screenshots". Master §3b: this is the feature most likely to be over-read; keep the copy narrow. |
 
 ### A6 · No stored payment data
@@ -83,16 +83,16 @@ tree; re-verify anchors before relying on a row.
 |---|---|
 | **Permitted wording** | "$5 for one month. Nothing renews, nothing to cancel, and we never store your payment details." |
 | **Status** | `verified-live` → **`Available`** badge, for **these three claims only** |
-| **Evidence** | Master §7.14; deployed checkout is a single one-time charge |
+| **Evidence** | Master §7.14; `keyserver-cf/src/lib/stripe.ts:57` uses `mode=payment`, not a subscription. **Limit of repository evidence (recorded 2026-07-27):** the `$5` figure lives behind an external Stripe price ID and cannot be verified from this checkout — it is owner-attested, not source-verifiable. The "nothing renews" and "nothing stored" halves ARE source-supported. |
 | **Required alongside** | Nothing extra. **But:** "your month starts when you enter the code" is **NOT eligible** — see D8. |
 
 ### A7 · Nobody can claim your account before you do
 
 | | |
 |---|---|
-| **Permitted wording** | "Nobody can register your Discord identity on OSL's key server — not even before you do. OSL identities are separate from your Discord account, and the key server refuses Discord identifiers outright." |
+| **Permitted wording** | "OSL identities are separate from your Discord account, and the key server refuses Discord's numeric account IDs outright." — **NARROWED 2026-07-27.** The old wording ("Nobody can register your Discord identity… not even before you do") is **NOT ELIGIBLE**: it is true only for snowflake-shaped IDs. `register.ts:110` validates `isProtocolId` (bounded UTF-8, no control chars) and `:114` rejects only `isDiscordSnowflake` = `/^[0-9]{17,20}$/` (`validation.ts:18`, `:29`). **Any opaque identifier — including a Discord username or alias — is still first-come-first-served**, and most users read "my Discord identity" as their username. |
 | **Status** | `verified-live` → **`Available`** badge |
-| **Evidence** | Migration `keyserver-cf/migrations/0029_authoritative_osl_identity.sql` applied to production 2026-07-26 (owner-confirmed against the live migration list). Worker refuses snowflakes at both surfaces: `keyserver-cf/src/endpoints/register.ts:115` and `keyserver-cf/src/endpoints/pubkeys.ts:21` return `400 "Discord identifiers are not OSL identities"`. Quarantine enforced in `keyserver-cf/src/lib/db.ts:377`, `:474` (`AND identity_lookup_enabled = 1`), re-enable path at `:408-411`. All 111 pre-existing identities start disabled (`identity_lookup_enabled INTEGER NOT NULL DEFAULT 0`). |
+| **Evidence** | Migration `keyserver-cf/migrations/0029_authoritative_osl_identity.sql` applied to production 2026-07-26 (owner-confirmed against the live migration list). Worker refuses snowflakes at both surfaces: `keyserver-cf/src/endpoints/register.ts:114` and `keyserver-cf/src/endpoints/pubkeys.ts:38` return `400 "Discord identifiers are not OSL identities"` (*re-anchored 2026-07-27*). Quarantine enforced in `keyserver-cf/src/lib/db.ts:366`, `:474`, re-enable guarded at `:407` (`AND identity_lookup_enabled = 1`), re-enable path at `:408-411`. All 111 pre-existing identities start disabled (`identity_lookup_enabled INTEGER NOT NULL DEFAULT 0`). |
 | **Required alongside** | "Existing accounts created before this change are switched off until their owner's app re-registers them, which happens automatically the next time they open OSL." *Corrected 2026-07-26:* the previous wording ("until their owner re-registers") implied manual work. `ensure_keyserver_registered` runs on launch **and** unlock, not only for new identities (`crates/ipc/src/commands.rs:7580`, called from `src-tauri/src/bootstrap.rs:1296`, `apps/osl-hub/src/password_lifecycle.rs:384`, `apps/osl-hub/src/core_bridge.rs:306`), and `build_register_request` sends the OSL `user_id` with no snowflake (`crates/keystore/src/client.rs:601`), so a quarantined identity re-enables itself. Do not extend this into a general identity-verification claim — full-bundle identity binding is still an open finding (master §2 P0-1), so this closes account *pre-registration*, not key *substitution*. |
 | **Open risk, not this lane's** | `Identity` carries a `discord_snowflake` field populated by `osl_register_self_snowflake`. Any peer-lookup path keyed on a snowflake rather than an OSL user id is now **permanently unresolvable** under 0029. Raised by the crypto lane 2026-07-26; needs an explicit check by whoever owns peer lookup. It does not falsify A7, but it could break finding a contact. |
 
@@ -103,7 +103,7 @@ deployment. It closes master §2 P0-3 and §10 critical class 3.
 
 | | |
 |---|---|
-| **Permitted wording** | "Encryption, keys and your plaintext stay on your machine." |
+| **Permitted wording** | "Protected-message encryption and decryption run locally. OSL sends ciphertext and public identity keys to its services — never your plaintext or your private keys." — **CORRECTED 2026-07-27.** The old wording was literally false: the client uploads its X25519, Ed25519 and ML-KEM **public** keys on registration (`crates/keystore/src/client.rs:599`), which is necessary and normal, but "keys stay on your machine" does not survive it. |
 | **Status** | `implemented-unwired` → **`Planned`** badge |
 | **Evidence** | Master §6 product contract; no server-side plaintext path in `crates/ipc` |
 | **Required alongside** | If the page also mentions Pro cloud carrier generation or cloud AutoScrub, it must say those send selected data to a server and are not end-to-end private (master §7.1, §7.6). |
