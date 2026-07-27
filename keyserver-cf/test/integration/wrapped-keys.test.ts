@@ -138,9 +138,34 @@ describe("POST /v1/wrapped-keys", () => {
 
   it("409s on duplicate content_id", async () => {
     const body = validBody({ sender_id: senderId });
-    await postSignedWrappedKey(body, senderSigningKey);
-    const res = await postSignedWrappedKey(body, senderSigningKey);
-    expect(res.status).toBe(409);
+    const starved = await testDb
+      .prepare(
+        "SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?",
+      )
+      .bind(body.content_id)
+      .first<{ count: number }>();
+    expect(starved?.count).toBe(0);
+
+    const first = await postSignedWrappedKey(body, senderSigningKey);
+    expect(first.status).toBe(201);
+    expect(await first.json()).toEqual({ content_id: body.content_id });
+    const inserted = await testDb
+      .prepare(
+        "SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?",
+      )
+      .bind(body.content_id)
+      .first<{ count: number }>();
+    expect(inserted?.count).toBe(1);
+
+    const duplicate = await postSignedWrappedKey(body, senderSigningKey);
+    expect(duplicate.status).toBe(409);
+    const retained = await testDb
+      .prepare(
+        "SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?",
+      )
+      .bind(body.content_id)
+      .first<{ count: number }>();
+    expect(retained?.count).toBe(1);
   });
 
   it("400s missing display_duration_seconds when single_use=true", async () => {
