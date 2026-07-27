@@ -723,9 +723,31 @@ A read-only sweep for the rest is running; its output lands at
 `apps/osl-hub/src/**`, discounting `#[cfg(test)]` callers, doc mentions and bare re-exports, and
 excluding anything reachable through `generate_handler!`.
 
-**It has NOT been reviewed.** Treat it as an unverified draft: a false positive here sends someone
-to re-open correct code, which this lane already did once tonight over the keystore tracing
-dependency. Whoever picks it up should re-grep each hit before acting on it.
+**Partially spot-verified — 4 of its claims checked by hand, all 4 confirmed.** It is not fully
+reviewed, so re-grep anything before acting on it, but it is calibrated rather than unknown:
+
+| Claim spot-checked | Observed |
+|---|---|
+| `post_wrapped_key` unused | 0 non-test hits outside `crates/keystore` |
+| `fetch_wrapped_key` unused | 0 non-test hits outside `crates/keystore` |
+| `BurnAlertPayload` unused | 0 non-test hits outside `crates/keystore` |
+| `osl_notes` / `osl_lan` / `osl_assets` not wired | 0 mentions in `apps/osl-hub/src/main.rs`, so not in `generate_handler!` |
+
+**Two of these matter beyond this lane and are routed, not fixed:**
+
+1. **Wrapped-key and prekey-bundle APIs are not in the production path.** `post_wrapped_key` and
+   `fetch_wrapped_key` have no callers, so any claim that the app uses the wrapped-key service for
+   production message-key exchange is unsupported. Relevant to what the B rows may state; this lane
+   is not asserting anything either way about what the live path *does* use, only that it does not
+   use these.
+2. **`osl_notes`, `osl_assets`, `osl_lan` and siblings have UI-facing command strings but no
+   wiring into `generate_handler!`.** The user-visible copy exists; the backend is not reachable.
+   That is a claim-surface question and belongs with the truth lane, alongside its in-app copy
+   sweep — a feature named in the UI whose backend is inert is exactly the kind of thing an in-app
+   claim gate would not catch, because the string is present and truthful-looking.
+
+`BurnAlertPayload` being inert also means any "burn alert is signed and verified" statement is
+currently a claim about unreachable code — the same shape as A7's duress engine.
 
 **Why it is worth finishing:** every entry is a candidate for a checklist row or a user-facing claim
 that asserts something inert. That is exactly the shape of both defects confirmed above.
