@@ -408,6 +408,62 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## Adversarial review of my own guards — it found real defects in my work
+
+I dispatched a reasoning model to hunt tonight's defect shape *in the guards I built to prevent it*,
+on the assumption I had fooled myself the same way. I had. I verified each claim below myself rather
+than accepting it.
+
+**1. My frontend-determinism check was itself a vacuous pass.** CRITICAL, and the sharpest
+irony of the night. The step read:
+
+```bash
+rm -rf dist && npm run build >/dev/null && first="$(tree_hash)"
+```
+
+Bash does **not** apply `set -e` inside an `&&` list. If both builds failed, `first` and `second`
+stayed empty, compared equal, and the step reported **"reproduced exactly"** having built nothing.
+Reproduced locally 2026-07-27: `first=[] second=[] → VACUOUS PASS`. An empty `dist/` also hashes
+deterministically, so the same green appears from an empty tree. Fixed: `set -euo pipefail`,
+separated commands, an explicit non-empty file count, and an explicit empty-hash refusal.
+
+**2. Rollback spliced dispatch input straight into bash.** CRITICAL. `${{ inputs.rollback_to_tag }}`
+and JSON-derived versions were interpolated into `run:` blocks in a `contents: write` job. A tag or
+manifest version containing `$(...)` would execute *before* `rollback-guard.sh` could reject it — the
+guard validated a value that had already been evaluated. Fixed: everything now reaches bash through
+`env:`.
+
+**3. The `hub-release` environment allows zero refs.** CRITICAL, verified via the API:
+`custom_branch_policies: true` with `total_count: 0`. **No `hub-v*` tag can enter the signing
+environment at all.** This is a second, independent reason the signed release path has never run,
+on top of the test failures I found earlier. Owner decision — I did not change a security-relevant
+deployment policy unilaterally.
+
+**4. Reproducibility does not cover the signed binary.** My proof used explicit `RUSTFLAGS` and
+`--config` overrides in `hub-binary`. The signed artefact is built by `tauri-action` in a different
+workflow with **none of those flags**. So what I proved reproducible is *not the binary that ships*.
+The claim must be stated as: the hub binary is reproducible **under the reproducible-build job's
+configuration**. Making the signed path match is the outstanding work, and nothing should claim
+"reproducible release" until it does.
+
+Also found and accepted as accurate, not yet fixed: the real `verify-snapshot-lineage.sh` is never
+invoked by the actual promote/rollback path (only its `--self-test` runs in CI); `preflight.sh` is
+not called by any release workflow; and the window-targeting allowlist has no per-entry expiry.
+Recorded rather than silently carried.
+
+The review also cleared four guards explicitly, on the decisive test — would the self-test still
+pass if the real function were replaced with `return 0`? The aggregate `Rust gate`/`TypeScript gate`
+jobs (skipped and cancelled both fail correctly), the `shell: bash` fixes, and both
+`prove-promotion-gate.sh` and `prove-rollback-guards.sh` exercise real code paths.
+
+## Test counts are meaningless without their gate
+
+Crypto found that `header_proof_is_enforced()` is `!cfg!(feature = "discord-qa-shell")`. So the gate
+I built to auto-select `core,discord-qa-shell` turns test coverage **on** and header-proof
+**enforcement off** simultaneously. Neither gate alone is sufficient. `hub-core-tests.sh` now emits
+a `::warning::` saying so whenever it selects that feature, and my measured **237 passed / 1 failed**
+was taken under plain `--features core` — the gate is now quoted with the number.
+
 ## RESOLVED: the shipped binary is now byte-reproducible
 
 Measured, not asserted. Run **30231394207**, after configuring the levers in CI:

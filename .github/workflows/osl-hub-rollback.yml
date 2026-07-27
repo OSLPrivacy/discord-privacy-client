@@ -68,13 +68,18 @@ jobs:
             echo "target_version=$target_version"
           } >> "$GITHUB_OUTPUT"
 
+      # Values reach bash through env, never through ${{ }} splicing. A tag or a
+      # manifest version containing $(...) would otherwise execute inside a
+      # contents: write job, before any validation had a chance to reject it.
       - name: Apply the rollback guards
+        env:
+          TARGET_TAG: ${{ inputs.rollback_to_tag }}
+          TARGET_IS_DRAFT: ${{ steps.state.outputs.target_is_draft }}
+          CURRENT_VERSION: ${{ steps.state.outputs.current_version }}
+          TARGET_VERSION: ${{ steps.state.outputs.target_version }}
         run: |
           bash scripts/release/rollback-guard.sh \
-            "${{ inputs.rollback_to_tag }}" \
-            "${{ steps.state.outputs.target_is_draft }}" \
-            "${{ steps.state.outputs.current_version }}" \
-            "${{ steps.state.outputs.target_version }}"
+            "$TARGET_TAG" "$TARGET_IS_DRAFT" "$CURRENT_VERSION" "$TARGET_VERSION"
 
       # A published release is not automatically a VM-tested one. Re-run the
       # exact same verifier the promote path uses, against the target's own
@@ -95,6 +100,7 @@ jobs:
       - name: Point the update feed at the earlier attested release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_VERSION: ${{ steps.state.outputs.target_version }}
         run: |
           set -euo pipefail
           # --clobber DELETES the existing asset before uploading. If the upload
@@ -112,8 +118,8 @@ jobs:
           rm -rf verify && mkdir -p verify
           gh release download hub-latest --pattern latest.json --dir verify
           served="$(python3 -c 'import json;print(json.load(open("verify/latest.json"))["version"])')"
-          if [ "$served" != "${{ steps.state.outputs.target_version }}" ]; then
-            echo "::error::feed serves $served, expected ${{ steps.state.outputs.target_version }}" >&2
+          if [ "$served" != "$TARGET_VERSION" ]; then
+            echo "::error::feed serves $served, expected $TARGET_VERSION" >&2
             exit 1
           fi
           echo "feed verified: now serving $served"

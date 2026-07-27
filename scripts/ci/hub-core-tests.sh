@@ -101,6 +101,14 @@ manifest="apps/osl-hub/Cargo.toml"
 features="core"
 if grep -Eq '^[[:space:]]*discord-qa-shell[[:space:]]*=' "$manifest"; then
   features="core,discord-qa-shell"
+  # SECURITY CAVEAT, do not remove. header_proof_is_enforced() is defined as
+  # !cfg!(feature = "discord-qa-shell"), so this feature turns test coverage ON
+  # and header-proof ENFORCEMENT OFF at the same time. Neither gate alone is
+  # sufficient: plain `core` hides qa_selftest_request, and `core,discord-qa-shell`
+  # relaxes an enforcement. A pass here has NOT proven header proof is enforced.
+  # Any claim resting on that enforcement must be measured WITHOUT this feature,
+  # and every test count must be quoted with the gate that produced it.
+  echo "::warning::header-proof enforcement is DISABLED under discord-qa-shell; this run does not prove it"
 else
   # As of origin/main @ 38d0867 neither the feature nor the module exists here;
   # both live on the in-flight Discord branch. If the module ever lands without

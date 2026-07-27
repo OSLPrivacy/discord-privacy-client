@@ -36,10 +36,34 @@ jobs:
       - name: Build the frontend twice and compare the whole tree
         working-directory: apps/osl-hub-ui
         run: |
+          set -euo pipefail
           npm ci --no-audit --no-fund
-          tree_hash() { find dist -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1; }
-          rm -rf dist && npm run build >/dev/null && first="$(tree_hash)"
-          rm -rf dist && npm run build >/dev/null && second="$(tree_hash)"
+          tree_hash() {
+            local n
+            n="$(find dist -type f | wc -l)"
+            # A vacuous pass hides here: an empty dist hashes deterministically,
+            # so "reproduced exactly" would be true of nothing at all.
+            if [ "$n" -eq 0 ]; then
+              echo "::error::dist is empty; there is nothing to compare" >&2
+              exit 1
+            fi
+            find dist -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1
+          }
+          # NOT `build && first=$(...)`. Bash does not apply -e inside an && list,
+          # so a failed build left both variables EMPTY, they compared equal, and
+          # this step reported "reproduced exactly" having built nothing. Verified
+          # reproducible 2026-07-27. This is the same vacuous-pass shape this
+          # workflow exists to catch, in the check itself.
+          rm -rf dist
+          npm run build >/dev/null
+          first="$(tree_hash)"
+          rm -rf dist
+          npm run build >/dev/null
+          second="$(tree_hash)"
+          if [ -z "$first" ] || [ -z "$second" ]; then
+            echo "::error::a tree hash came back empty; refusing to compare nothing" >&2
+            exit 1
+          fi
           echo "first:  $first"
           echo "second: $second"
           if [ "$first" != "$second" ]; then
