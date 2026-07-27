@@ -39,6 +39,13 @@ export const BLOB_SWEEP_BATCH_SIZE = 100;
 export const LINK_GRANT_SWEEP_BATCH_SIZE = 100;
 export const LINK_GRANT_SWEEP_MAX_ROWS = 1000;
 
+function isConsumedMultipartUpload(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; name?: unknown };
+  return candidate.code === "NoSuchUpload"
+    || candidate.name === "NoSuchUpload";
+}
+
 export async function sweepExpired(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   let deleted = 0;
@@ -167,7 +174,11 @@ export async function sweepExpiredAttachments(
               .resumeMultipartUpload(claim.object_key, claim.upload_id)
               .abort();
           } catch (error) {
-            abortFailure = error;
+            // A retry after a crash can observe the provider's terminal
+            // consumed-upload result. Only this exact signal proves the
+            // multipart handle is already fenced; every other error remains
+            // ambiguous and must retain metadata/quota.
+            abortFailure = isConsumedMultipartUpload(error) ? null : error;
           }
           // This second HEAD is mandatory even when abort throws. A
           // predecessor completion may have won the race and published the

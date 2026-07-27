@@ -115,6 +115,45 @@ function d1WithOneMetadataDeleteFailure(real: D1Database): D1Database {
   });
 }
 
+function d1WithOneAbsenceFenceFailure(real: D1Database): D1Database {
+  let shouldFail = true;
+  return new Proxy(real, {
+    get(target, property, receiver) {
+      if (property !== "prepare") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return (sql: string) => {
+        const prepared = target.prepare(sql);
+        if (!shouldFail || !/SET storage_fence_state/.test(sql)) return prepared;
+        return new Proxy(prepared, {
+          get(statement, statementProperty, statementReceiver) {
+            if (statementProperty !== "bind") {
+              const value = Reflect.get(statement, statementProperty, statementReceiver);
+              return typeof value === "function" ? value.bind(statement) : value;
+            }
+            return (...values: unknown[]) => {
+              const bound = statement.bind(...values);
+              return new Proxy(bound, {
+                get(boundStatement, boundProperty, boundReceiver) {
+                  if (boundProperty === "first") {
+                    return async () => {
+                      shouldFail = false;
+                      throw new Error("simulated crash before absence CAS");
+                    };
+                  }
+                  const value = Reflect.get(boundStatement, boundProperty, boundReceiver);
+                  return typeof value === "function" ? value.bind(boundStatement) : value;
+                },
+              });
+            };
+          },
+        });
+      };
+    },
+  }) as D1Database;
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((accept) => {
@@ -273,6 +312,54 @@ describe("bounded predecessor completing-row adoption", () => {
     expect(database.count("SELECT COUNT(*) AS c FROM attachment_parts")).toBe(0);
     expect(await storage.bucket.head(objectKey)).toBeNull();
     expect(storage.liveUploads()).toBe(0);
+  });
+
+  it("treats only terminal consumed-upload retry as fenced after absence-CAS crash", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
+    const database = migratedD1();
+    const storage = memoryR2();
+    openBoundedAdoption(database);
+    const id = "4".repeat(32);
+    const objectKey = "attachments/predecessor-consumed-retry";
+    await predecessorCompleting(database, storage, id, objectKey, new Uint8Array([7, 8]));
+    let abortCalls = 0;
+    const abort = vi.fn(async () => {
+      abortCalls += 1;
+      if (abortCalls === 1) {
+        await storage.bucket.resumeMultipartUpload(objectKey, "upload-1").abort();
+        return;
+      }
+      const error = Object.assign(new Error("upload already consumed"), {
+        code: "NoSuchUpload",
+      });
+      throw error;
+    });
+    const bucket = new Proxy(storage.bucket, {
+      get(target, property, receiver) {
+        if (property === "resumeMultipartUpload") return () => ({ abort });
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+
+    await expect(
+      sweepExpiredAttachments(envWith(d1WithOneAbsenceFenceFailure(database.d1), bucket)),
+    ).resolves.toEqual({ claimed: 1, completed: 0, failed: 1 });
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(1);
+
+    database.exec(
+      "UPDATE attachment_sweep_claims SET retry_not_before = 0 WHERE attachment_id = ?",
+      id,
+    );
+    await expect(sweepExpiredAttachments(envWith(database.d1, bucket))).resolves.toEqual({
+      claimed: 1,
+      completed: 1,
+      failed: 0,
+    });
+    expect(abort).toHaveBeenCalledTimes(2);
+    expect(storage.liveUploads()).toBe(0);
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
   });
 
   it("promotes when predecessor completion wins between HEAD and abort", async () => {

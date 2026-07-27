@@ -123,13 +123,18 @@ export function validateAttachmentPredecessorAdoption(
   );
   requirePattern(
     sweep,
-    /completedObject = await env\.ATTACHMENTS\.head\(claim\.object_key\); let abortFailure:[^;]+ = null;[\s\S]*?\.abort\(\); \} catch \(error\) \{ abortFailure = error; \} completedObject = await env\.ATTACHMENTS\.head\(claim\.object_key\);/,
+    /completedObject = await env\.ATTACHMENTS\.head\(claim\.object_key\); let abortFailure:[^;]+ = null;[\s\S]*?\.abort\(\); \} catch \(error\) \{ abortFailure = isConsumedMultipartUpload\(error\) \? null : error; \} completedObject = await env\.ATTACHMENTS\.head\(claim\.object_key\);/,
     "abort is not bracketed by HEAD and mandatory post-abort HEAD",
   );
   requirePattern(
     sweep,
     /completedObject\?\.size !== claim\.size_bytes[\s\S]*?claim\.storage_fence_state !== "object_absent_confirmed"[\s\S]*?resumeMultipartUpload\(claim\.object_key, claim\.upload_id\)/,
     "wrong-size objects do not unconditionally enter the multipart abort fence",
+  );
+  requirePattern(
+    sources.sweep,
+    /function isConsumedMultipartUpload\(error: unknown\): boolean[\s\S]*?NoSuchUpload[\s\S]*?abortFailure = isConsumedMultipartUpload\(error\) \? null : error/,
+    "retry does not distinguish terminal consumed-upload aborts from unknown failures",
   );
   requirePattern(
     sweep,
