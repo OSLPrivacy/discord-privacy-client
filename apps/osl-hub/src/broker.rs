@@ -80,6 +80,11 @@ const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
 const LOCAL_PROTECTED_LABEL: &str = "local_protected_loopback";
+/// Must change only with the broker relay call sites themselves. The current
+/// send/receive path below uses direct-manual-v3 and never calls
+/// `ipc::wire_rn::{send_rn,receive_rn}`.
+#[cfg(any(feature = "discord-qa-shell", test))]
+const B6_BROKER_RELAY_USES_PERSISTED_RATCHET: bool = false;
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -5942,6 +5947,130 @@ fn native_discord_qa_receipt_context(context: &HubConversationContext) -> bool {
     context.service_id == "discord" && context.account_id.starts_with("native-discord-")
 }
 
+/// Read-only B6 prerequisite receipt for the disposable QA shell.
+///
+/// This is intentionally a preflight, not a proof. In particular, it cannot
+/// award B6 or turn the current direct-manual-v3 relay into a persisted ratchet.
+/// Its purpose is to stop a controller before it creates identities or contacts
+/// a server when the shipping crypto path cannot satisfy the requested runtime.
+#[cfg(any(feature = "discord-qa-shell", test))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordQaB6Preflight {
+    pub schema_version: u8,
+    pub ready: bool,
+    pub blockers: Vec<&'static str>,
+    pub ratchet_wire_in_enabled: bool,
+    pub broker_relay_transport: &'static str,
+    pub keyserver_origin: &'static str,
+    pub identity_public_fingerprint_sha256: Option<String>,
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn b6_keyserver_origin(base_url: &str) -> &'static str {
+    if base_url == ipc::commands::DEFAULT_KEYSERVER_BASE_URL {
+        return "production";
+    }
+    let Ok(parsed) = url::Url::parse(base_url) else {
+        return "untrusted";
+    };
+    let loopback = matches!(parsed.scheme(), "http" | "https")
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed
+            .host_str()
+            .and_then(|host| {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback());
+    if loopback {
+        "loopback"
+    } else {
+        "untrusted"
+    }
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn b6_identity_public_fingerprint(identity: &keystore::Identity) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-B6-IDENTITY-PUBLIC-FINGERPRINT-v1");
+    hash.update(identity.ed25519_public.as_bytes());
+    hash.update(identity.x25519_public.as_bytes());
+    hash.update(identity.mlkem_public_bytes);
+    match identity.ratchet_initial_pub {
+        Some(public) => {
+            hash.update([1]);
+            hash.update(public.as_bytes());
+        }
+        None => hash.update([0]),
+    }
+    sha256_hex(&hash.finalize())
+}
+
+#[cfg(any(feature = "discord-qa-shell", test))]
+fn b6_preflight_for(
+    ratchet_wire_in_enabled: bool,
+    broker_relay_uses_persisted_ratchet: bool,
+    keyserver_origin: &'static str,
+    identity_public_fingerprint_sha256: Option<String>,
+) -> DiscordQaB6Preflight {
+    let mut blockers = Vec::new();
+    if !ratchet_wire_in_enabled {
+        blockers.push("rn_wire_in_disabled");
+    }
+    if !broker_relay_uses_persisted_ratchet {
+        blockers.push("broker_relay_uses_direct_manual_v3");
+    }
+    if keyserver_origin != "loopback" {
+        blockers.push(match keyserver_origin {
+            "production" => "dedicated_qa_keyserver_not_configured",
+            _ => "keyserver_origin_untrusted",
+        });
+    }
+    if identity_public_fingerprint_sha256.is_none() {
+        blockers.push("identity_unavailable");
+    }
+    DiscordQaB6Preflight {
+        schema_version: 1,
+        ready: blockers.is_empty(),
+        blockers,
+        ratchet_wire_in_enabled,
+        broker_relay_transport: if broker_relay_uses_persisted_ratchet {
+            "persisted_rn"
+        } else {
+            "direct_manual_v3"
+        },
+        keyserver_origin,
+        identity_public_fingerprint_sha256,
+    }
+}
+
+/// Inspect only current in-memory/public configuration. No identity is created,
+/// no server is contacted, and no ratchet or ledger state is read or changed.
+#[cfg(feature = "discord-qa-shell")]
+pub fn discord_qa_b6_preflight(core: &HubCoreState) -> DiscordQaB6Preflight {
+    let identity_public_fingerprint_sha256 = core
+        .osl
+        .identity
+        .lock()
+        .ok()
+        .and_then(|identity| identity.as_ref().map(b6_identity_public_fingerprint));
+    let base_url = keystore::osl_config_dir()
+        .map(|dir| ipc::commands::resolve_keyserver_base_url(&dir))
+        .unwrap_or_default();
+    b6_preflight_for(
+        ipc::wire_rn::RN_WIRE_IN_ENABLED,
+        B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
+        b6_keyserver_origin(&base_url),
+        identity_public_fingerprint_sha256,
+    )
+}
+
 fn local_protected_identity_for_receipt(
     core: &HubCoreState,
     context: &HubConversationContext,
@@ -6251,6 +6380,87 @@ mod tests {
     use crate::models::ServiceKind;
     use crate::service_host::owner_profile_namespace;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn b6_preflight_names_every_current_runtime_blocker_without_network_or_state_mutation() {
+        let receipt = b6_preflight_for(
+            ipc::wire_rn::RN_WIRE_IN_ENABLED,
+            B6_BROKER_RELAY_USES_PERSISTED_RATCHET,
+            "production",
+            Some("11".repeat(32)),
+        );
+        assert!(!receipt.ready);
+        assert!(!receipt.ratchet_wire_in_enabled);
+        assert_eq!(receipt.broker_relay_transport, "direct_manual_v3");
+        assert_eq!(receipt.keyserver_origin, "production");
+        assert_eq!(
+            receipt.blockers,
+            [
+                "rn_wire_in_disabled",
+                "broker_relay_uses_direct_manual_v3",
+                "dedicated_qa_keyserver_not_configured",
+            ]
+        );
+    }
+
+    #[test]
+    fn b6_preflight_requires_each_independent_prerequisite() {
+        let fingerprint = || Some("22".repeat(32));
+        let ready = b6_preflight_for(true, true, "loopback", fingerprint());
+        assert!(ready.ready);
+        assert!(ready.blockers.is_empty());
+        assert_eq!(ready.broker_relay_transport, "persisted_rn");
+
+        let mutations = [
+            b6_preflight_for(false, true, "loopback", fingerprint()),
+            b6_preflight_for(true, false, "loopback", fingerprint()),
+            b6_preflight_for(true, true, "production", fingerprint()),
+            b6_preflight_for(true, true, "untrusted", fingerprint()),
+            b6_preflight_for(true, true, "loopback", None),
+        ];
+        for receipt in mutations {
+            assert!(
+                !receipt.ready && receipt.blockers.len() == 1,
+                "one missing B6 prerequisite must independently fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn b6_preflight_accepts_only_numeric_loopback_and_fingerprints_public_identity_material() {
+        assert_eq!(
+            b6_keyserver_origin(ipc::commands::DEFAULT_KEYSERVER_BASE_URL),
+            "production"
+        );
+        assert_eq!(b6_keyserver_origin("http://127.0.0.1:8787"), "loopback");
+        assert_eq!(b6_keyserver_origin("https://[::1]:8787"), "loopback");
+        for value in [
+            "http://localhost:8787",
+            "https://qa.example.test",
+            "http://127.0.0.1:8787?redirect=production",
+            "not a url",
+        ] {
+            assert_eq!(b6_keyserver_origin(value), "untrusted");
+        }
+
+        let identity = keystore::generate_native_identity();
+        let same_identity = identity.clone();
+        let other_identity = keystore::generate_native_identity();
+        let fingerprint = b6_identity_public_fingerprint(&identity);
+        assert_eq!(
+            fingerprint,
+            b6_identity_public_fingerprint(&same_identity),
+            "a process restart loading the same public identity must keep its fingerprint"
+        );
+        assert_ne!(
+            fingerprint,
+            b6_identity_public_fingerprint(&other_identity),
+            "isolated identities must not collapse to one attribution fingerprint"
+        );
+        assert_eq!(fingerprint.len(), 64);
+        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!fingerprint.contains(&identity.user_id));
+    }
 
     /// An inbound `0x0A` is the peer's burn request. It used to be recognised
     /// here and then deleted from the control inbox unread, which authenticated

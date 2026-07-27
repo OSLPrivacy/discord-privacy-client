@@ -5308,6 +5308,10 @@ mod qa_selftest {
         send_in_flight: bool,
         drive_in_flight: bool,
         run_in_flight: bool,
+        /// Read-only, fail-closed qualification for B6. This never claims the
+        /// runtime ran; it names why a controller must stop before creating a
+        /// disposable identity or contacting a server.
+        b6_preflight: broker::DiscordQaB6Preflight,
         /// The current length of the append-only send-stage trail. A harness
         /// baselines this and grades only what was appended after, which is how
         /// it tells "this instance sent nothing" from "this instance sent
@@ -6259,6 +6263,7 @@ mod qa_selftest {
             send_in_flight: SEND_IN_FLIGHT.load(Ordering::SeqCst),
             drive_in_flight: DRIVE_IN_FLIGHT.load(Ordering::SeqCst),
             run_in_flight: RUN_IN_FLIGHT.load(Ordering::SeqCst),
+            b6_preflight: broker::discord_qa_b6_preflight(&app.state::<HubCoreState>()),
             send_stage_trail_bytes: stage_trail_len(),
             send_stage_receipt_present: receipt_exists(SEND_STAGE_RECEIPT_FILE),
             inbound_receipt_present: receipt_exists(INBOUND_RECEIPT_FILE),
