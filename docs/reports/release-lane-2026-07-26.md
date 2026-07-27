@@ -408,6 +408,44 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## Release tooling built by Codex, reviewed here
+
+Two scripts I specified and reviewed rather than typed. Both are dry-run/stub-driven and cannot
+touch a real subscription or release; both self-tests run in CI.
+
+**`scripts/release/create-cold-snapshot.sh`** — creates the cold lineage *provably*. Dry-run by
+default (`--execute` required for any mutating call); derives `--location` from the source **disk**
+rather than a default, which is the Azure policy trap that already rejected one attempt; **requires
+an `--evidence` file** recording that the source was inspected clean while running, and stamps its
+sha256 into the tags; refuses a running VM, a missing or empty evidence file, and an existing
+snapshot name; tags `lineage=release-cold` so `verify-snapshot-lineage.sh` will accept it.
+Self-test 12/0.
+
+**`scripts/release/preflight.sh`** — refuses to cut a tag that would fail or could not be attested:
+tag must equal `hub-v` + the manifest version, tag must not already exist, Rust **and** TypeScript
+must be green **for the exact HEAD sha**, both signing secrets must be present by name, and both
+gate proofs must pass. Missing snapshots and a missing `hub-vm-qa` environment warn loudly without
+blocking, since they block promotion rather than signing. Self-test 9/0. This is the check that
+would have caught a release workflow that had never once been executed.
+
+**Review, in both directions.** I tested each with my own stubs rather than trusting theirs. The
+one that mattered: with **no CI run at all** for the current sha, preflight **fails** rather than
+passes — an absent result is not a green result, which is the vacuous-pass family that produced
+several of today's false greens. Confirmed too that a dry-run snapshot creation issues no mutating
+`az` call, and that preflight reads secret *names* only, never values.
+
+Worth recording honestly: my first adversarial stub was too crude — it matched both `az vm show`
+variants and returned the power state where the OS disk ID was expected, and I briefly read that as
+a defect in the generated script. It was my stub. The script resolves
+`storageProfile.osDisk.managedDisk.id` correctly. A bad harness can produce a false *red* just as
+easily as a false green.
+
+**Divergence worth flagging:** the coordinator records the honest gate as
+`--features core,discord-qa-shell` (731 tests). That is true on the in-flight Discord branch. On
+`origin/main` @ `38d0867` that feature does not exist, so the flag would error there. This is why
+`hub-core-tests.sh` selects by inspection instead of hard-coding either, and refuses outright if the
+module ever appears without its feature.
+
 ## Snapshot-lineage hardening — implemented
 
 `scripts/release/verify-snapshot-lineage.sh` closes the one hole the Python verifier structurally

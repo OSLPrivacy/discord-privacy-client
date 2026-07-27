@@ -236,6 +236,12 @@ jobs:
         run: bash scripts/ci/check-window-targeting.sh --self-test
       - name: No new title-based window targeting
         run: bash scripts/ci/check-window-targeting.sh
+      # Both are dry-run/stub-driven, so they need no Azure or GitHub
+      # credentials and cannot touch a real subscription or release.
+      - name: Cold snapshot creator self-test
+        run: bash scripts/release/create-cold-snapshot.sh --self-test
+      - name: Release preflight self-test
+        run: bash scripts/release/preflight.sh --self-test
 
   # Single stable check name for branch protection, so adding or renaming a
   # Rust job never silently un-enrols a required check.
