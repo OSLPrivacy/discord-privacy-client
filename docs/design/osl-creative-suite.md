@@ -2,7 +2,9 @@
 
 ## Non-negotiable product rules
 
-OSL Notes is the local encrypted workspace for writing, data, visual design, media, and project files. No editor requires an account, subscription, cloud conversion endpoint, telemetry endpoint, or hosted AI service. Opening, autosaving, indexing, previewing, rendering, transcoding, importing, exporting, recovery, and collaboration history must work locally.
+This document specifies the planned OSL Notes product: a local encrypted workspace for writing, data, visual design, media, and project files. The current desktop build does not declare or register the isolated Notes implementation; its production renderer neither imports nor calls the Notes wrappers, and it exposes no Notes workspace. Present-tense implementation details below describe source prototypes, not shipping product behavior.
+
+No editor may require an account, subscription, cloud conversion endpoint, telemetry endpoint, or hosted AI service. Opening, autosaving, indexing, previewing, rendering, transcoding, importing, exporting, recovery, and collaboration history must work locally.
 
 Project files, source media, previews, proxies, thumbnails, fonts added by the user, render caches, undo history, brushes, presets, color profiles, transcripts, OCR, and extension settings are authenticated-encrypted at rest under the active OSL identity. Temporary plaintext is memory-only where possible and placed in an identity-owned encrypted scratch area when a codec requires seekable temporary storage. Locks clear keys and derived previews from memory.
 

@@ -2,7 +2,7 @@
 
 ## Product contract
 
-OSL Notes is a free, local-first knowledge and creative workspace inside OSL. The default experience is useful without plugins or cloud accounts: fast capture, Markdown editing and preview, documents, spreadsheets, drawings, presentations, folders, tags, favorites, full-text search, wiki links, backlinks, local imports, and recoverable Trash. The larger encrypted media-editor program is specified in `osl-creative-suite.md`.
+The planned OSL Notes product is intended to be a free, local-first knowledge and creative workspace inside OSL. Its target default experience is useful without plugins or cloud accounts: fast capture, Markdown editing and preview, documents, spreadsheets, drawings, presentations, folders, tags, favorites, full-text search, wiki links, backlinks, local imports, and recoverable Trash. The larger encrypted media-editor program is specified in `osl-creative-suite.md`.
 
 The current desktop build is deliberately honest. It does not claim OneNote/Obsidian/Office/Adobe parity. Its source tree contains encrypted-note, creative-workspace, extension, and collaboration prototypes, but OSL Notes is not exposed by the current production UI. In particular, encrypted same-LAN collaboration is implemented in isolated source modules but is not declared, registered, or reachable in the desktop product. OCR, decoded PDF page rendering, property formulas/queries, mobile clients, production media codecs/rendering, richer Office round trips, and hosted collaboration remain delivery tracks below.
 
