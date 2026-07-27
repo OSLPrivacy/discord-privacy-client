@@ -1,4 +1,6 @@
 export const MAX_DIRECT_ATTACHMENT_BYTES = 26 * 1024 * 1024;
+// Retained for older importers; current Worker enforcement uses sealed-size
+// limits and never reads plaintext attachment size.
 export const MAX_PLAINTEXT_ATTACHMENT_BYTES = 512 * 1024 * 1024;
 // Leaves a bounded allowance for chunk framing and AEAD tags without asking
 // the store to infer plaintext size from opaque ciphertext.
@@ -8,8 +10,10 @@ export const MAX_ATTACHMENT_PARTS = Math.ceil(
   MAX_SEALED_ATTACHMENT_BYTES / MAX_ATTACHMENT_PART_BYTES,
 );
 
-// These values are duplicated as CHECK constraints in migration 0004. The
-// D1 trigger is authoritative and serializes concurrent reservations.
+// Aggregate quota enforcement lives only in the Worker's `insertObject`
+// conditional `INSERT INTO attachment_objects ... SELECT ... WHERE` statement.
+// D1 serializes that single write statement; migration 0004 creates no trigger,
+// and there is no trigger or CHECK constraint for the row/byte aggregates.
 export const MAX_LIVE_ATTACHMENT_ROWS = 512;
 export const MAX_LIVE_ATTACHMENT_BYTES = 8 * 1024 * 1024 * 1024;
 

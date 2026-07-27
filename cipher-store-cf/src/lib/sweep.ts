@@ -11,6 +11,7 @@ import {
   ATTACHMENT_SWEEP_BATCH_SIZE,
   MAX_LIVE_ATTACHMENT_ROWS,
 } from "./attachment-limits.js";
+import { MAX_LIVE_BLOB_ROWS } from "./blob-limits.js";
 
 /// D1 caps a query at 100 bound parameters. Measured against real D1, not
 /// recalled: 100 succeeds, 101 fails with `D1_ERROR: too many SQL variables`.
@@ -25,23 +26,30 @@ import {
 ///
 /// 90 leaves headroom for the `expires_at` bind and any future predicate.
 export const ATTACHMENT_D1_DELETE_CHUNK_IDS = 90;
+export const BLOB_SWEEP_BATCH_SIZE = 100;
 
 export async function sweepExpired(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
-  // D1 doesn't expose affected-rows directly; do a SELECT-count
-  // first, then DELETE. The two queries don't have to be atomic --
-  // a new expiry crossing the boundary mid-sweep just gets caught
-  // on the next tick.
-  const countRow = await env.DB.prepare(
-    "SELECT COUNT(*) AS c FROM blobs WHERE expires_at < ?"
-  )
-    .bind(now)
-    .first<{ c: number }>();
-  const deleted = countRow?.c ?? 0;
-  if (deleted > 0) {
-    await env.DB.prepare("DELETE FROM blobs WHERE expires_at < ?")
-      .bind(now)
-      .run();
+  let deleted = 0;
+  while (deleted < MAX_LIVE_BLOB_ROWS) {
+    const result = await env.DB.prepare(
+      `SELECT id FROM blobs
+       WHERE expires_at < ? ORDER BY expires_at LIMIT ${BLOB_SWEEP_BATCH_SIZE}`,
+    ).bind(now).all<{ id: ArrayBuffer | Uint8Array }>();
+    const rows = result.results ?? [];
+    if (rows.length === 0) break;
+
+    const ids = rows.map((row) => row.id);
+    for (let offset = 0; offset < ids.length; offset += ATTACHMENT_D1_DELETE_CHUNK_IDS) {
+      const chunk = ids.slice(offset, offset + ATTACHMENT_D1_DELETE_CHUNK_IDS);
+      const placeholders = chunk.map(() => "?").join(", ");
+      await env.DB.prepare(
+        `DELETE FROM blobs
+         WHERE expires_at < ? AND id IN (${placeholders})`,
+      ).bind(now, ...chunk).run();
+    }
+    deleted += rows.length;
+    if (rows.length < BLOB_SWEEP_BATCH_SIZE) break;
   }
   return deleted;
 }

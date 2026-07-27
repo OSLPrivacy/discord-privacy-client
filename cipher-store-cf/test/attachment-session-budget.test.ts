@@ -106,7 +106,7 @@ describe("attachment session admission (HIGH-1)", () => {
     expect(row.expires_at - row.created_at).toBeLessThanOrEqual(MAX_INCOMPLETE_HOLD_SECONDS);
   });
 
-  it("starts the caller's content TTL only once the upload completes", async () => {
+  it("fixes the promised expiry at session creation and moves reclaim on completion", async () => {
     const { env } = harness();
     const token = randomToken();
     const declared = 1024;
@@ -152,7 +152,9 @@ describe("attachment session admission (HIGH-1)", () => {
       session.id,
     );
     expect(row.state).toBe("ready");
-    // ...and only now does the row actually hold the seven-day content TTL.
+    // Completion moves `expires_at` from the short incomplete-session reclaim
+    // deadline to the already-promised instant, not to a fresh TTL. Time spent
+    // uploading reduces the ready-state lifetime.
     expect(row.expires_at - row.created_at).toBeGreaterThan(MAX_INCOMPLETE_HOLD_SECONDS);
     expect(row.expires_at).toBe(completed.expires_at);
   });

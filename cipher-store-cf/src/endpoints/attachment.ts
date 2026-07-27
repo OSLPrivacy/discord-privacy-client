@@ -1,9 +1,11 @@
 /// R2-backed opaque attachment transport.
 ///
 /// Bodies are already sealed by OSL. The Worker never receives identity,
-/// filename, MIME, conversation, or plaintext metadata. Large objects use R2
-/// multipart uploads with bounded streamed parts; D1 stores only opaque object
-/// state, expiry, part receipts, and a SHA-256 digest of the bearer capability.
+/// filename, MIME, conversation, or plaintext metadata. Upload bodies are
+/// deliberately buffered into bounded `Uint8Array`s before R2 because workerd
+/// rejects unknown-length streams; fetch still streams. D1 stores only opaque
+/// object state, expiry, part receipts, and a SHA-256 digest of the bearer
+/// capability.
 
 import type { Env } from "../env.js";
 import {
@@ -446,8 +448,12 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
     await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
     return error(500, "completed_size_mismatch", "completed attachment size did not match");
   }
-  // Completion is the point at which the caller's content TTL starts. Until
-  // now the row carried only the short reclaim deadline.
+  // The promised content expiry was fixed at session creation. The shipping
+  // Rust client rejects a completion receipt whose `expires_at` differs from
+  // the session receipt's value, so completion does not start a fresh TTL: it
+  // only moves the reclaim deadline from the short incomplete-session hold to
+  // the already-promised instant. A slow upload therefore gets less ready-state
+  // lifetime.
   const contentExpiresAt = promisedExpiry(row);
   try {
     await env.DB.batch([

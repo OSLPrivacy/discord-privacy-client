@@ -982,6 +982,41 @@ neither — the only enforcement is the Worker's conditional INSERT. That last o
 is the same class of security-relevant false comment as the migration 0002 defect
 this lane already corrected.
 
+## OPEN, NOT FIXED: the keyserver has the same unbounded-sweep class
+
+Recorded for whoever picks this up, because I ran out of window rather than out
+of confidence that it is real.
+
+`keyserver-cf` scheduled cleanup is unbounded in six places. `index.ts:172` calls
+`sweepExpiredPrivacyRows`, which issues
+`DELETE FROM wrapped_keys WHERE unixepoch(expires_at) <= ? RETURNING content_id`
+at `lib/db.ts:283` with no `LIMIT`, no id batching, and `RETURNING` materialising
+every deleted row purely to count them (`:305`), plus five further unbounded
+receipt deletes at `:287`. Also unbounded: subscription expiry
+(`lib/subscriptions.ts:160`), crypto invoice cleanup
+(`endpoints/crypto-settlement.ts:452`), Stripe checkout claims
+(`lib/stripe-checkout-claims.ts:304`), payment-alert retention
+(`lib/payment-alert-outbox.ts:195`), and the direct control-inbox and link-grant
+deletes at `index.ts:192` and `:216`. The payment-alert *delivery* drain is
+correctly bounded with `LIMIT ?` at `lib/payment-alert-outbox.ts:152`, which
+shows the right pattern already exists in the file.
+
+This is the same failure shape as the two sweeps fixed tonight: exceed a limit,
+throw, get swallowed by the scheduled handler's `try/catch`, and every subsequent
+tick reissues the identical all-or-nothing statement — so it never makes
+progress and the affected table is never reclaimed again.
+
+Two caveats I want stated rather than glossed. It is **less** likely to bite than
+the cipher-store cases, because these tables have no aggregate cap forcing a
+large simultaneous cohort. And `RETURNING` on a large delete is the part most
+likely to fail first, inside a 128 MB isolate.
+
+**How this was found is worth more than the finding.** An analysis named it with
+the wrong file path. I could not locate it, marked it `unverified` rather than
+dismissing it, and had it independently searched for — it was real, one directory
+away. A wrong citation is not a wrong finding, and "I could not confirm this"
+is the correct verdict rather than "this is not a defect."
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not

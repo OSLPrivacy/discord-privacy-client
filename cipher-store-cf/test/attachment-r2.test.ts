@@ -80,7 +80,7 @@ function uploadRequest(body: BodyInit, contentLength?: number): Request {
 }
 
 describe("R2 attachment transport", () => {
-  it("streams upload and fetch while D1 stores only opaque transport metadata", async () => {
+  it("buffers upload and streams fetch while D1 stores only opaque transport metadata", async () => {
     const env = workerEnv();
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const uploaded = await handleAttachmentUpload(

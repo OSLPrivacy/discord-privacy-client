@@ -5,10 +5,17 @@ import {
   MAX_BLOB_BYTES,
   readBoundedBody,
 } from "../src/endpoints/blob.js";
-import { workerEnv } from "./helpers/workerd.js";
+import { BLOB_SWEEP_BATCH_SIZE, sweepExpired } from "../src/lib/sweep.js";
+import { d1Count, d1Run, workerEnv } from "./helpers/workerd.js";
 
 function writableEnv(): Env {
   return workerEnv();
+}
+
+function blobId(index: number): Uint8Array {
+  const id = new Uint8Array(8);
+  new DataView(id.buffer).setBigUint64(0, BigInt(index));
+  return id;
 }
 
 describe("cipher upload body bounds", () => {
@@ -109,4 +116,33 @@ describe("cipher upload body bounds", () => {
       });
     },
   );
+
+  it("reclaims expired blobs in bounded batches while preserving live blobs", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const expiredRows = BLOB_SWEEP_BATCH_SIZE + 1;
+    for (let index = 0; index < expiredRows; index++) {
+      await d1Run(
+        "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)",
+        blobId(index),
+        new Uint8Array([index % 256]),
+        1,
+        now - 60,
+        now - 120,
+        null,
+      );
+    }
+    await d1Run(
+      "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)",
+      blobId(expiredRows),
+      new Uint8Array([255]),
+      1,
+      now + 60,
+      now - 120,
+      null,
+    );
+
+    await expect(sweepExpired(writableEnv())).resolves.toBe(expiredRows);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM blobs WHERE expires_at < ?", now)).toBe(0);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM blobs WHERE expires_at >= ?", now)).toBe(1);
+  });
 });
