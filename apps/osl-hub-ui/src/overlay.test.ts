@@ -884,10 +884,18 @@ describe("trusted composer overlay", () => {
     expect(paint.indexOf("decodedRowBindings")).toBeLessThan(paint.indexOf("outgoingBubbles"));
     expect(apply).not.toContain("outgoingBubbles");
 
-    // A row is painted only when OSL can BOTH decrypt it and place it. Either
-    // half missing means OSL owns no pixel there and Discord's own row shows
-    // through -- there is no partial, approximated or guessed placement.
-    expect(apply).toContain("if (row.plaintext === null || row.row === null) continue;");
+    // A row is painted only when OSL can decrypt it, place it, and carry the
+    // backend's complete native-row/crypto agreement. Any missing half means
+    // OSL owns no pixel there and Discord's own row shows through.
+    expect(apply).toContain(
+      "if (row.plaintext === null || row.row === null\n      || row.orientation === null || row.attribution === null) continue;",
+    );
+    expect(apply).toContain(
+      'author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity',
+    );
+    expect(apply).toContain(
+      "const key = `decoded-${row.attribution.nativeLocatorSha256}`",
+    );
 
     // Rebuilt wholesale from one read, never accumulated: a row kept from an
     // earlier read is decrypted text sitting over whatever Discord has since

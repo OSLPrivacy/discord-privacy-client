@@ -1594,39 +1594,50 @@ pub struct PreparedNativeDiscordOverlayText {
 pub struct RehydratedNativeDiscordRow {
     pub flagtext: String,
     pub plaintext: Option<String>,
-    /// The protected wire direction accepted by this history path.
-    /// This does **not** prove who posted the visible Discord row. `Some`
-    /// exactly when `plaintext` is `Some`. See
-    /// [`RehydratedRowOrientation`].
+    /// Direction accepted only when the native poster proof agrees with the
+    /// authenticated protected wire. `Some` exactly when `plaintext` and
+    /// `attribution` are `Some`.
     pub orientation: Option<RehydratedRowOrientation>,
+    /// Complete native-row plus crypto binding. `Some` exactly when plaintext
+    /// and orientation are `Some`; never constructed from renderer input.
+    pub attribution: Option<RehydratedRowAttribution>,
     #[serde(skip)]
     pub bounds: Option<[i32; 4]>,
 }
 
-/// The accepted protected-wire direction for one rehydrated history row.
-///
-/// The prose token authenticates a scope and the protected wire authenticates
-/// its sender, but neither is bound to the Discord row that currently displays
-/// the public cover. A peer can therefore paste a still-live locally signed
-/// cover into a new row. Treating that wire's `SelfToPeer` orientation as proof
-/// that the visible row was locally posted would label the peer's replay “You.”
-///
-/// Until the trusted native reader supplies an independently verified row
-/// poster/message binding, this history path accepts only a wire signed by the
-/// verified peer and addressed to this identity. That is directional
-/// suppression, not row attribution: the operator can still paste a peer-signed
-/// cover into a row they post. Locally signed history covers fail closed. The
-/// separately verified just-sent carrier path is unaffected.
-///
-/// There is deliberately no `Unknown` variant. A row whose orientation was not
-/// proven has no `plaintext` either, so it is not rendered at all and Discord's
-/// own row shows through -- the fail-closed answer.
+/// Protected-wire direction after exact agreement with native poster evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RehydratedRowOrientation {
-    /// The protected wire was signed by the verified peer and addressed here;
-    /// the visible Discord row's poster remains unverified.
     Incoming,
+    Outgoing,
+}
+
+/// Provider poster class carried by the native proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RehydratedRowPoster {
+    SelfAccount,
+    PeerAccount,
+}
+
+/// Exact agreement between native provider row identity and authenticated
+/// protected content. These are correlation identifiers only; no plaintext,
+/// poster label or renderer-authored ownership is represented.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RehydratedRowAttribution {
+    pub discord_message_id: String,
+    pub poster_identity_sha256: String,
+    pub poster: RehydratedRowPoster,
+    pub native_locator_sha256: String,
+    pub carrier_sha256: String,
+    pub blob_id: String,
+    pub ciphertext_sha256: String,
+    pub payload_id: String,
+    pub scope_binding_sha256: String,
+    pub window_generation: u64,
+    pub orientation: RehydratedRowOrientation,
 }
 
 /// Fixed labels for the decode leg of one transcript rehydration.
@@ -1730,18 +1741,132 @@ pub struct RehydratedNativeDiscordTranscript {
 /// seconds per row.
 const REHYDRATE_DECODE_BUDGET_MS: u64 = 2_000;
 
+fn bounded_attribution_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 96 && !value.chars().any(char::is_control)
+}
+
+/// Validate the native half of the row proof before any pointer is opened.
+///
+/// This is deliberately all-or-nothing. Row order and uniqueness describe a
+/// snapshot, not independent suggestions: accepting the remaining rows after a
+/// duplicate or reordered proof would let an ambiguous producer result choose
+/// which ciphertext is painted over which visible row.
+fn native_row_evidence_batch_is_valid(
+    rows: &[crate::native_discord_adapter::VisibleMessageRow],
+    scope_binding: &str,
+    window_generation: u64,
+) -> bool {
+    if window_generation == 0 {
+        return false;
+    }
+    let expected_scope =
+        crate::native_discord_adapter::native_row_attribution_scope_sha256(scope_binding);
+    let mut self_poster_identity = None::<String>;
+    let mut peer_poster_identity = None::<String>;
+    let mut message_ids = HashSet::with_capacity(rows.len());
+    let mut locators = HashSet::with_capacity(rows.len());
+    let mut carriers = HashSet::with_capacity(rows.len());
+
+    rows.iter().enumerate().all(|(row_index, row)| {
+        let Some(evidence) = row.attribution.as_ref() else {
+            return false;
+        };
+        let poster_identity_agrees = match evidence.poster {
+            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount => {
+                if peer_poster_identity.as_deref()
+                    == Some(evidence.poster_identity_sha256.as_str())
+                {
+                    false
+                } else {
+                    self_poster_identity
+                        .get_or_insert_with(|| evidence.poster_identity_sha256.clone())
+                        .as_str()
+                        == evidence.poster_identity_sha256.as_str()
+                }
+            }
+            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount => {
+                if self_poster_identity.as_deref()
+                    == Some(evidence.poster_identity_sha256.as_str())
+                {
+                    false
+                } else {
+                    peer_poster_identity
+                        .get_or_insert_with(|| evidence.poster_identity_sha256.clone())
+                        .as_str()
+                        == evidence.poster_identity_sha256.as_str()
+                }
+            }
+        };
+        let matching_carriers = row
+            .decode_candidates
+            .iter()
+            .filter(|candidate| {
+                crate::native_discord_adapter::native_row_attribution_carrier_sha256(candidate)
+                    .as_str()
+                    == evidence.carrier_sha256.as_str()
+            })
+            .count();
+
+        evidence.row_index == row_index
+            && evidence.window_generation == window_generation
+            && evidence.scope_binding_sha256.as_str() == expected_scope.as_str()
+            && evidence.native_locator_sha256.as_str() == row.locator_sha256.as_str()
+            && poster_identity_agrees
+            && canonical_hex(&evidence.poster_identity_sha256, 64)
+            && canonical_hex(&evidence.native_locator_sha256, 64)
+            && canonical_hex(&evidence.carrier_sha256, 64)
+            && bounded_attribution_id(&evidence.discord_message_id)
+            && matching_carriers == 1
+            && message_ids.insert(evidence.discord_message_id.clone())
+            && locators.insert(evidence.native_locator_sha256.clone())
+            && carriers.insert(evidence.carrier_sha256.clone())
+    })
+}
+
+fn unproven_rehydrated_rows(
+    rows: Vec<crate::native_discord_adapter::VisibleMessageRow>,
+) -> Vec<RehydratedNativeDiscordRow> {
+    rows.into_iter()
+        .map(|row| RehydratedNativeDiscordRow {
+            flagtext: row.line,
+            plaintext: None,
+            orientation: None,
+            attribution: None,
+            bounds: row.bounds,
+        })
+        .collect()
+}
+
+fn rehydrated_attribution_ids_are_unique(rows: &[RehydratedNativeDiscordRow]) -> bool {
+    let mut discord_messages = HashSet::new();
+    let mut locators = HashSet::new();
+    let mut carriers = HashSet::new();
+    let mut blobs = HashSet::new();
+    let mut ciphertexts = HashSet::new();
+    let mut payloads = HashSet::new();
+    rows.iter()
+        .filter_map(|row| row.attribution.as_ref())
+        .all(|attribution| {
+            discord_messages.insert(attribution.discord_message_id.clone())
+                && locators.insert(attribution.native_locator_sha256.clone())
+                && carriers.insert(attribution.carrier_sha256.clone())
+                && blobs.insert(attribution.blob_id.clone())
+                && ciphertexts.insert(attribution.ciphertext_sha256.clone())
+                && payloads.insert(attribution.payload_id.clone())
+        })
+}
+
 /// Turn the rows read back out of Discord into the transcript the protected
 /// overlay renders.
 ///
 /// Every row in, exactly one row out, in order. The decrypt path is the
 /// established one and is not relaxed for this: a row only yields plaintext when
-/// `prose_token_recv` matched its cover, the blob was still there, the wire
-/// authenticated as one of exactly two named identities, and the payload bound
-/// itself to this exact service, conversation and identity pair in the matching
-/// direction. Both directions are opened -- a transcript in which the operator
-/// cannot read their own half is broken -- and each is proven in full and
-/// separately, so widening never softened the inbound check. Nothing here
-/// consumes a
+/// native producer proved the row/message/poster/carrier/scope/generation,
+/// `prose_token_recv` matched that exact carrier, the blob was still there, the
+/// wire authenticated as one of exactly two named identities, and the payload
+/// bound itself to this exact service, conversation and identity pair in the
+/// same direction as the native poster. Both directions are opened only after
+/// that agreement. Nothing here consumes a
 /// message: `consume_peer_message` is deliberately not called, so a rehydration
 /// can neither burn a view-once message nor disturb the replay guard.
 ///
@@ -1752,10 +1877,27 @@ const REHYDRATE_DECODE_BUDGET_MS: u64 = 2_000;
 pub fn rehydrate_native_discord_overlay_history(
     core: &HubCoreState,
     broker: &HubBrokerState,
+    scope_binding: &str,
+    window_generation: u64,
     rows: Vec<crate::native_discord_adapter::VisibleMessageRow>,
 ) -> Result<RehydratedNativeDiscordTranscript, String> {
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
+    let mut counts = RehydrateDecodeCounts {
+        rows: rows.len(),
+        ..RehydrateDecodeCounts::default()
+    };
+    if !native_row_evidence_batch_is_valid(
+        &rows,
+        scope_binding,
+        window_generation,
+    ) {
+        counts.refused = rows.len();
+        return Ok(RehydratedNativeDiscordTranscript {
+            rows: unproven_rehydrated_rows(rows),
+            counts,
+        });
+    }
     // Same gate `open_peer_prose_text` applies. With decrypted display off the
     // covers still come back, so the conversation is visible; nothing is opened.
     let decrypt_display_enabled =
@@ -1775,18 +1917,16 @@ pub fn rehydrate_native_discord_overlay_history(
     // Discord's own row shows through. Nothing is invented, nothing is dropped,
     // and no row is consumed -- the next edge reads again from scratch.
     let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);
-    let mut counts = RehydrateDecodeCounts::default();
     let rows = rehydrated_rows(
-        // The row locator is the reader's own content-free key for the row. This
-        // path re-derives nothing from it and deliberately does not forward it:
-        // the renderer contract is the cover, the message and where the row is,
-        // and nothing else. The rectangle DOES travel -- it is the only thing
-        // that can put decrypted text over the row it belongs to, and dropping it
-        // here alongside the locator is why nothing downstream could.
-        rows.into_iter()
-            .map(|row| (row.line, row.decode_candidates, row.bounds)),
-        |candidates| {
-            counts.rows += 1;
+        rows.into_iter().map(|row| {
+            (
+                row.line,
+                row.decode_candidates,
+                row.bounds,
+                row.attribution,
+            )
+        }),
+        |candidates, evidence| {
             if !decrypt_display_enabled {
                 counts.display_off += 1;
                 return None;
@@ -1795,117 +1935,97 @@ pub fn rehydrate_native_discord_overlay_history(
                 counts.budget_exhausted += 1;
                 return None;
             }
-            // ONE row, SEVERAL candidate covers, tried in order, first that
-            // authenticates wins.
-            //
-            // A row's accessible subtree spells its message across several nodes
-            // and repeats it inside every ancestor that contains it, and the
-            // concatenation of all of them is what used to be handed to the
-            // decoder. `decode_token` arithmetic-decodes the whole word sequence
-            // and then requires the parsed words to equal the canonical encoder
-            // output exactly, so one extra or duplicated word means the payload
-            // never reconstructs and the HMAC never verifies -- which is the
-            // whole of "9 rows read, 9 pointer_absent, 0 blob_gone".
-            //
-            // Asking each node separately is safe BECAUSE the 12-byte pointer is
-            // HMAC-authenticated: a wrong candidate cannot forge a token, so N
-            // candidates have exactly the security properties of one. No proof is
-            // relaxed -- each candidate runs the identical, complete
-            // `authenticate_oriented_prose_pointer`.
-            //
-            // Cost does not multiply either. `prose_token_recv_classified` does
-            // the local stego match FIRST and only fetches once a token has
-            // authenticated, so a wrong candidate costs arithmetic and no
-            // network. The 2,000 ms budget still bounds the whole leg and is
-            // re-asked before every candidate, so a slow store cannot turn a
-            // wider search into a longer stall.
-            let mut recovered = None;
-            let mut refusal = None;
-            for candidate in candidates {
-                if Instant::now() >= decode_deadline {
-                    break;
-                }
-                counts.candidates += 1;
-                match authenticate_oriented_prose_pointer(
-                    core,
-                    broker,
-                    &context_token,
-                    &manual.person_id,
-                    candidate,
-                    // Only an inbound wire can safely classify a history row.
-                    // Token authentication is scope-bound and the wire proves
-                    // its cryptographic sender, but neither proves who posted
-                    // this visible Discord row. In particular, a peer can paste
-                    // a still-live `SelfToPeer` cover into a new row. Until the
-                    // trusted native reader supplies an independent row/poster
-                    // binding, accepting that orientation would label the
-                    // peer's replay “You.” Refuse it and leave Discord's row
-                    // visible instead.
-                    &[PeerWireOrientation::PeerToSelf],
-                ) {
-                    Ok(authenticated) => {
-                        recovered = Some(authenticated);
-                        break;
-                    }
-                    // "This was never a token" is the ONLY verdict a wrong
-                    // candidate can reach, because it is decided by the local
-                    // HMAC before any fetch. It is therefore the only one worth
-                    // trying the next node past. Every other verdict means a
-                    // token really did authenticate out of THIS candidate, so
-                    // the row's answer is already known and a further node could
-                    // only find the same message a second time.
-                    Err(PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken)) => {
-                        continue;
-                    }
-                    // Candidate-independent (the peer, the scope approval, the
-                    // key store) or already past the HMAC. Either way, asking
-                    // again with different words cannot change it.
-                    Err(failure) => {
-                        refusal = Some(failure);
-                        break;
-                    }
-                }
-            }
-            let (payload, orientation) = match recovered {
-                Some(authenticated) => authenticated,
-                None => {
-                    // Classified, not discarded. The verdict itself is unchanged --
-                    // every one of these still paints nothing -- but "ordinary chat"
-                    // and "the cipher store is unreachable" are different facts about
-                    // this conversation and used to leave the same trace: none.
-                    match refusal {
-                        // Every candidate this row offered said the same thing,
-                        // or it offered none at all. THIS is the label that must
-                        // be read beside `rehydrate_decode_candidates`.
-                        None
-                        | Some(PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::NotAToken,
-                        )) => counts.pointer_absent += 1,
-                        Some(PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::PointerBlobGone,
-                        )) => counts.pointer_blob_gone += 1,
-                        Some(PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::Transport,
-                        )) => counts.store_unreachable += 1,
-                        Some(PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)) => {
-                            counts.refused += 1
+            let evidence = evidence.expect("batch validation required native row proof");
+            let candidate = candidates
+                .iter()
+                .find(|candidate| {
+                    crate::native_discord_adapter::native_row_attribution_carrier_sha256(candidate)
+                        .as_str()
+                        == evidence.carrier_sha256.as_str()
+                })
+                .expect("batch validation required exactly one bound carrier");
+            counts.candidates += 1;
+            let authenticated = match authenticate_oriented_prose_pointer(
+                core,
+                broker,
+                &context_token,
+                &manual.person_id,
+                candidate,
+                &[PeerWireOrientation::PeerToSelf, PeerWireOrientation::SelfToPeer],
+            ) {
+                Ok(authenticated) => authenticated,
+                Err(failure) => {
+                    match failure {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
+                            counts.pointer_absent += 1
                         }
-                        Some(PeerProsePointerError::Local(_)) => counts.refused += 1,
+                        PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::PointerBlobGone,
+                        ) => counts.pointer_blob_gone += 1,
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
+                            counts.store_unreachable += 1
+                        }
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
+                        | PeerProsePointerError::Local(_) => counts.refused += 1,
                     }
                     return None;
                 }
             };
             // A view-once message is spent by being seen once. A rehydration
             // is not that once.
-            if payload.view_once {
+            if authenticated.payload.view_once {
                 counts.view_once_skipped += 1;
                 return None;
             }
+            let (poster, orientation) = match (evidence.poster, authenticated.orientation) {
+                (
+                    crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount,
+                    PeerWireOrientation::SelfToPeer,
+                ) => (RehydratedRowPoster::SelfAccount, RehydratedRowOrientation::Outgoing),
+                (
+                    crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+                    PeerWireOrientation::PeerToSelf,
+                ) => (RehydratedRowPoster::PeerAccount, RehydratedRowOrientation::Incoming),
+                _ => {
+                    counts.refused += 1;
+                    return None;
+                }
+            };
+            if !canonical_hex(&authenticated.blob_id, 16)
+                || !canonical_hex(&authenticated.ciphertext_sha256, 64)
+                || !bounded_attribution_id(&authenticated.payload.message_id)
+            {
+                counts.refused += 1;
+                return None;
+            }
+            let attribution = RehydratedRowAttribution {
+                discord_message_id: evidence.discord_message_id.clone(),
+                poster_identity_sha256: evidence.poster_identity_sha256.clone(),
+                poster,
+                native_locator_sha256: evidence.native_locator_sha256.clone(),
+                carrier_sha256: evidence.carrier_sha256.clone(),
+                blob_id: authenticated.blob_id,
+                ciphertext_sha256: authenticated.ciphertext_sha256,
+                payload_id: authenticated.payload.message_id.clone(),
+                scope_binding_sha256: evidence.scope_binding_sha256.clone(),
+                window_generation: evidence.window_generation,
+                orientation,
+            };
             counts.plaintext += 1;
-            debug_assert_eq!(orientation, PeerWireOrientation::PeerToSelf);
-            Some((payload.plaintext, RehydratedRowOrientation::Incoming))
+            Some((authenticated.payload.plaintext, orientation, attribution))
         },
     );
+    let mut rows = rows;
+    if !rehydrated_attribution_ids_are_unique(&rows) {
+        let opened = counts.plaintext;
+        for row in &mut rows {
+            row.plaintext = None;
+            row.orientation = None;
+            row.attribution = None;
+        }
+        counts.plaintext = 0;
+        counts.refused += opened;
+    }
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
 }
 
@@ -1915,28 +2035,42 @@ pub fn rehydrate_native_discord_overlay_history(
 /// in order. A row whose pointer did not decode keeps its place carrying `None`
 /// instead of vanishing, because a dropped row is a hole behind an opaque
 /// capture shield exactly where the operator's history should be.
-/// The flagtext and the decode candidates are deliberately separate arguments.
+/// The flagtext, decode candidates and native proof are deliberately separate
+/// arguments.
 /// The flagtext is the row as a human sees it -- every descendant name run
 /// together -- and it is the only honest label for the row, so it is what comes
 /// back out. The candidates are each descendant name on its own, and they are
 /// the only thing a decoder can use. Handing the display string to the decoder
 /// is precisely the defect this signature exists to make unrepresentable.
 fn rehydrated_rows(
-    rows: impl IntoIterator<Item = (String, Vec<String>, Option<[i32; 4]>)>,
-    mut decoded: impl FnMut(&[String]) -> Option<(String, RehydratedRowOrientation)>,
+    rows: impl IntoIterator<
+        Item = (
+            String,
+            Vec<String>,
+            Option<[i32; 4]>,
+            Option<crate::native_discord_adapter::NativeDiscordRowAttributionEvidence>,
+        ),
+    >,
+    mut decoded: impl FnMut(
+        &[String],
+        Option<&crate::native_discord_adapter::NativeDiscordRowAttributionEvidence>,
+    ) -> Option<(String, RehydratedRowOrientation, RehydratedRowAttribution)>,
 ) -> Vec<RehydratedNativeDiscordRow> {
     rows.into_iter()
-        .map(|(flagtext, candidates, bounds)| {
-            // Text and accepted wire direction are produced and carried as one
-            // answer. Neither field is a trusted visible-row author verdict.
-            let (plaintext, orientation) = match decoded(&candidates) {
-                Some((plaintext, orientation)) => (Some(plaintext), Some(orientation)),
-                None => (None, None),
+        .map(|(flagtext, candidates, bounds, evidence)| {
+            // Text, direction and the complete proof are one indivisible answer.
+            let (plaintext, orientation, attribution) =
+                match decoded(&candidates, evidence.as_ref()) {
+                Some((plaintext, orientation, attribution)) => {
+                    (Some(plaintext), Some(orientation), Some(attribution))
+                }
+                None => (None, None, None),
             };
             RehydratedNativeDiscordRow {
                 flagtext,
                 plaintext,
                 orientation,
+                attribution,
                 bounds,
             }
         })
@@ -2011,7 +2145,7 @@ fn authenticate_peer_prose_pointer_classified(
     // Exactly one orientation was accepted, so the proven one carries no
     // information here and is dropped rather than plumbed to callers that have
     // always known this path is inbound.
-    .map(|(payload, _)| payload)
+    .map(|authenticated| authenticated.payload)
 }
 
 fn authenticate_peer_prose_pointer(
@@ -2039,6 +2173,13 @@ fn authenticate_peer_prose_pointer(
 /// only then decrypt and validate the payload's own bindings. Nothing is
 /// decrypted before an orientation has been proven, so widening `accepted` adds
 /// a second complete proof rather than removing part of the first.
+struct AuthenticatedProsePointer {
+    payload: PeerProtectedPayload,
+    orientation: PeerWireOrientation,
+    blob_id: String,
+    ciphertext_sha256: String,
+}
+
 fn authenticate_oriented_prose_pointer(
     core: &HubCoreState,
     broker: &HubBrokerState,
@@ -2046,7 +2187,7 @@ fn authenticate_oriented_prose_pointer(
     sender_person_id: &str,
     cover_text: &str,
     accepted: &[PeerWireOrientation],
-) -> Result<(PeerProtectedPayload, PeerWireOrientation), PeerProsePointerError> {
+) -> Result<AuthenticatedProsePointer, PeerProsePointerError> {
     if cover_text.is_empty() || cover_text.len() > MAX_PROSE_COVER_BYTES {
         return Err(PeerProsePointerFailure::Rejected.into());
     }
@@ -2104,11 +2245,13 @@ fn authenticate_oriented_prose_pointer(
         ),
     }
     .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
-    // The orientation travels with the payload. It is the only proof of
-    // authorship this path will ever have -- it was decided by which identity's
-    // signature verified the wire, above -- and a caller that needs to say who
-    // wrote a row must not have to guess it back.
-    Ok((payload, orientation))
+    let ciphertext_sha256 = sha256_hex(recovered.wire.as_bytes());
+    Ok(AuthenticatedProsePointer {
+        payload,
+        orientation,
+        blob_id: recovered.blob_id,
+        ciphertext_sha256,
+    })
 }
 
 /// A committed protected message plus the public carrier text that points at
@@ -9738,6 +9881,7 @@ mod tests {
                     "Deckard 3:14 PM see you at six".to_owned(),
                     vec!["see you at six".to_owned()],
                     Some([12, 40, 700, 62]),
+                    None,
                 ),
                 // A protected row whose cover really does resolve -- and whose
                 // display line is the concatenation that CANNOT decode: author,
@@ -9755,6 +9899,7 @@ ok i will weekend again with you"
                             .to_owned(),
                     ],
                     Some([12, 64, 700, 86]),
+                    None,
                 ),
                 // A protected row whose blob is gone: burned, expired, or never ours.
                 // Its rectangle could not be read either, which must not drop it.
@@ -9762,11 +9907,12 @@ ok i will weekend again with you"
                     "the quiet harbour waits for morning".to_owned(),
                     vec!["the quiet harbour waits for morning".to_owned()],
                     None,
+                    None,
                 ),
             ],
             // The decoder sees candidates, never the display line, and takes the
             // FIRST that authenticates.
-            |candidates: &[String]| {
+            |candidates: &[String], _evidence| {
                 candidates
                     .iter()
                     .any(|candidate| candidate == "ok i will weekend again with you")
@@ -9774,6 +9920,19 @@ ok i will weekend again with you"
                         (
                             "dinner is at the usual place".to_owned(),
                             RehydratedRowOrientation::Incoming,
+                            RehydratedRowAttribution {
+                                discord_message_id: "123456789".to_owned(),
+                                poster_identity_sha256: "a".repeat(64),
+                                poster: RehydratedRowPoster::PeerAccount,
+                                native_locator_sha256: "b".repeat(64),
+                                carrier_sha256: "c".repeat(64),
+                                blob_id: "d".repeat(16),
+                                ciphertext_sha256: "e".repeat(64),
+                                payload_id: "payload-1".to_owned(),
+                                scope_binding_sha256: "f".repeat(64),
+                                window_generation: 7,
+                                orientation: RehydratedRowOrientation::Incoming,
+                            },
                         )
                     })
             },
@@ -9807,6 +9966,13 @@ ok i will weekend again with you",
         assert_eq!(rows[0].orientation, None);
         assert_eq!(rows[1].orientation, Some(RehydratedRowOrientation::Incoming));
         assert_eq!(rows[2].orientation, None);
+        assert_eq!(
+            rows[1]
+                .attribution
+                .as_ref()
+                .map(|proof| proof.discord_message_id.as_str()),
+            Some("123456789")
+        );
 
         // Each row keeps the rectangle it was read with, in order, so the row
         // that decoded can actually be painted over. A row whose rectangle could
@@ -9824,16 +9990,24 @@ ok i will weekend again with you",
         // read otherwise -- a silently renamed or dropped key would blank the
         // eye rather than mislabel it, and this assertion is what catches it
         // here instead of on screen.
-        let wire = serde_json::to_string(&rows).expect("rehydrated rows serialise");
-        assert_eq!(
-            wire,
-            "[{\"flagtext\":\"Deckard 3:14 PM see you at six\",\"plaintext\":null,\
-\"orientation\":null},\
-{\"flagtext\":\"Deckard 3:15 PM ok i will weekend again with you ok i will weekend again with you\",\
-\"plaintext\":\"dinner is at the usual place\",\"orientation\":\"incoming\"},\
-{\"flagtext\":\"the quiet harbour waits for morning\",\"plaintext\":null,\
-\"orientation\":null}]"
-        );
+        let wire = serde_json::to_value(&rows).expect("rehydrated rows serialise");
+        let wire_rows = wire.as_array().expect("rows are an array");
+        for row in wire_rows {
+            let keys = row
+                .as_object()
+                .expect("row is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            assert_eq!(
+                keys,
+                HashSet::from(["attribution", "flagtext", "orientation", "plaintext"])
+            );
+        }
+        assert!(wire_rows[0]["attribution"].is_null());
+        assert_eq!(wire_rows[1]["attribution"]["poster"], "peer_account");
+        assert_eq!(wire_rows[1]["attribution"]["orientation"], "incoming");
+        assert!(wire_rows[2]["attribution"].is_null());
     }
 
     /// History rehydration refuses locally signed covers without claiming that
@@ -9850,14 +10024,16 @@ ok i will weekend again with you",
                 "Peer 3:16 PM the harbour lights are on".to_owned(),
                 vec!["the harbour lights are on".to_owned()],
                 Some([12, 88, 700, 110]),
+                None,
             )],
             // This models the production refusal. It does not turn the accepted
             // peer wire direction into a trusted visible-row author.
-            |_: &[String]| None,
+            |_: &[String], _evidence| None,
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].plaintext, None);
         assert_eq!(rows[0].orientation, None);
+        assert_eq!(rows[0].attribution, None);
         let wire = serde_json::to_string(&rows).expect("rehydrated rows serialise");
         assert!(!wire.contains("\"orientation\":\"outgoing\""));
     }
@@ -9909,34 +10085,22 @@ ok i will weekend again with you",
         assert!(body.contains("counts.budget_exhausted += 1;"));
         // Still one row out per row in: the budget may only turn a plaintext into
         // `None`, never remove a row from the transcript.
+        assert!(body.contains("row.line,\n                row.decode_candidates,"));
+        // Native evidence selects exactly one committed carrier before any
+        // pointer is opened. The decrypt therefore cannot roam across the other
+        // accessible names in the row.
+        let selection = body
+            .find("native_row_attribution_carrier_sha256(candidate)")
+            .expect("native proof selects its exact carrier");
+        assert!(selection < decrypt);
         assert!(body.contains(
-            "rows.into_iter()\n            .map(|row| (row.line, row.decode_candidates, row.bounds))"
+            ".expect(\"batch validation required exactly one bound carrier\")"
         ));
-        // The decode leg is handed CANDIDATES, and the wall-clock budget is
-        // re-asked before each one -- so widening the search per row cannot
-        // widen the leg's bound. A candidate loop that only checked the deadline
-        // once per row would multiply the worst case by the candidate count.
-        let loop_start = body
-            .find("for candidate in candidates {")
-            .expect("each candidate cover is tried on its own");
-        assert!(
-            decrypt > loop_start,
-            "the decrypt runs inside the candidate loop"
-        );
-        let per_candidate_gate = body[loop_start..]
-            .find("if Instant::now() >= decode_deadline {")
-            .expect("the budget is re-asked before every candidate");
-        assert!(
-            loop_start + per_candidate_gate < decrypt,
-            "the per-candidate budget gate runs before the decrypt it guards"
-        );
-        // The FIRST candidate that authenticates wins, and no further candidate
-        // is asked once one has. What is captured is the whole authenticated
-        // answer -- payload AND the orientation that proved it -- because a row
-        // whose author was proven and then dropped is the misattribution defect
-        // this leg feeds the renderer with.
-        assert!(body.contains("recovered = Some(authenticated);"));
-        assert!(body.contains("let (payload, orientation) = match recovered {"));
+        // The authenticated answer keeps all crypto correlation identifiers and
+        // its wire orientation for the native-poster agreement.
+        assert!(body.contains("blob_id: authenticated.blob_id"));
+        assert!(body.contains("ciphertext_sha256: authenticated.ciphertext_sha256"));
+        assert!(body.contains("payload_id: authenticated.payload.message_id.clone()"));
     }
 
     /// A display feature that paints nothing must say why, and every reason must
@@ -9986,8 +10150,8 @@ ok i will weekend again with you",
                     .expect("the rehydrate entry point is terminated")];
         // Every row that goes in is tallied, before any early return can skip it.
         let rows_counted = body
-            .find("counts.rows += 1;")
-            .expect("every row is counted on the way in");
+            .find("rows: rows.len(),")
+            .expect("every input row is counted before validation");
         for terminal in [
             "counts.display_off += 1",
             "counts.budget_exhausted += 1",

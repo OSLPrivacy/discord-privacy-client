@@ -5889,6 +5889,55 @@ pub struct VisibleMessageRow {
     /// `RehydrateRowText::candidates`.
     pub decode_candidates: Vec<String>,
     pub bounds: Option<[i32; 4]>,
+    /// Provider-owned row identity, or `None` when Discord's accessibility
+    /// provider did not prove the native message id and poster for this exact
+    /// row. Renderer input can never populate this type.
+    pub attribution: Option<NativeDiscordRowAttributionEvidence>,
+}
+
+/// Which provider identity Discord proved posted one visible native row.
+///
+/// This is not inferred from the protected wire. The native producer must
+/// classify the provider-owned poster identity against its independently
+/// verified self account and conversation participant identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeDiscordRowPoster {
+    SelfAccount,
+    PeerAccount,
+}
+
+/// Native producer evidence binding one visible Discord row to its provider
+/// message/poster identity and to the public carrier in that row.
+///
+/// No renderer field can construct this on the production path. Every value is
+/// emitted by the bounded native row read, and the broker rechecks the locator,
+/// carrier, scope, generation, row order and wire/poster orientation before
+/// returning plaintext.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDiscordRowAttributionEvidence {
+    pub discord_message_id: String,
+    pub poster_identity_sha256: String,
+    pub poster: NativeDiscordRowPoster,
+    pub native_locator_sha256: String,
+    pub carrier_sha256: String,
+    pub scope_binding_sha256: String,
+    pub window_generation: u64,
+    pub row_index: usize,
+}
+
+/// Domain-separated scope commitment shared by the native producer and broker.
+pub fn native_row_attribution_scope_sha256(scope_binding: &str) -> String {
+    stable_hash("discord-row-attribution-scope", scope_binding)
+}
+
+/// Domain-separated public-carrier commitment shared by producer and broker.
+pub fn native_row_attribution_carrier_sha256(carrier: &str) -> String {
+    stable_hash("discord-row-attribution-carrier", carrier)
+}
+
+/// Domain-separated provider identity commitment emitted by the native producer.
+pub fn native_row_attribution_poster_sha256(provider_identity: &str) -> String {
+    stable_hash("discord-row-attribution-poster", provider_identity)
 }
 
 /// Why one rehydration walk stopped.
@@ -8992,6 +9041,10 @@ mod windows {
                 bounds: row
                     .bounds
                     .filter(|[left, top, right, bottom]| right > left && bottom > top),
+                // Discord's current MSAA provider does not expose a stable native
+                // message id plus independently proven poster identity. Missing
+                // proof is represented, never guessed from visible names.
+                attribution: None,
             })
             .collect()
     }
@@ -23568,12 +23621,14 @@ mod tests {
             line: "see you at six".to_owned(),
             decode_candidates: Vec::new(),
             bounds: Some([10, 20, 300, 44]),
+            attribution: None,
         };
         let unplaceable = VisibleMessageRow {
             locator_sha256: "locator-2".to_owned(),
             line: "and again tomorrow".to_owned(),
             decode_candidates: Vec::new(),
             bounds: None,
+            attribution: None,
         };
         assert_eq!(placed.bounds, Some([10, 20, 300, 44]));
         assert_eq!(unplaceable.bounds, None);
@@ -23591,6 +23646,7 @@ mod tests {
             line: line.to_owned(),
             decode_candidates: Vec::new(),
             bounds: Some([0, top, 700, bottom]),
+            attribution: None,
         }
     }
 
@@ -23661,6 +23717,7 @@ mod tests {
                 line: "Deckard invisible".to_owned(),
                 decode_candidates: Vec::new(),
                 bounds: None,
+                attribution: None,
             },
             read_row("Deckard visible", 0, 44),
         ];

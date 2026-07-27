@@ -3029,12 +3029,12 @@ fn qa_named_rehydrate_refusal<T>(
 struct RehydratedNativeDiscordRowDto {
     flagtext: String,
     plaintext: Option<String>,
-    /// Wire direction from the authenticated scoped envelope.
-    /// This does not identify or authenticate the visible Discord row's poster
-    /// or native message.
-    /// `Some` exactly when `plaintext` is `Some`; the renderer refuses to paint
-    /// a row that has text without an envelope direction.
+    /// Direction accepted only after the native poster proof and authenticated
+    /// wire agree. `Some` exactly when `plaintext` and `attribution` are `Some`.
     orientation: Option<broker::RehydratedRowOrientation>,
+    /// Native producer evidence joined to crypto-owned identifiers by the
+    /// broker. This command accepts no renderer-authored attribution fields.
+    attribution: Option<broker::RehydratedRowAttribution>,
     row: Option<NativeDiscordRowRectDto>,
 }
 
@@ -3163,6 +3163,8 @@ async fn rehydrate_native_discord_overlay_history(
         let rehydrated = broker::rehydrate_native_discord_overlay_history(
             &core,
             &app.state::<HubBrokerState>(),
+            &scope_binding,
+            host.generation,
             rows,
         )?;
         qa_named_rehydrate_refusal(
@@ -3250,6 +3252,7 @@ async fn rehydrate_native_discord_overlay_history(
                 flagtext: row.flagtext,
                 plaintext: row.plaintext,
                 orientation: row.orientation,
+                attribution: row.attribution,
                 row: frame
                     .as_ref()
                     .zip(row.bounds)

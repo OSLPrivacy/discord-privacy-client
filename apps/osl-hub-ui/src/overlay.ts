@@ -27,6 +27,12 @@ import {
   clearCarrierRowGeometry,
   type NativeDiscordCarrierRowBinding,
 } from "./discord-carrier-row-binding";
+import {
+  nativeDiscordAttributionsAreUnique,
+  parseNativeDiscordRowAttribution,
+  type NativeDiscordRowAttribution,
+  type NativeDiscordRowOrientation,
+} from "./discord-row-attribution";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -466,17 +472,10 @@ interface DecodedDiscordRowRect {
 interface RehydratedDiscordRow {
   flagtext: string;
   plaintext: string | null;
-  /**
-   * The only protected-wire direction history rehydration currently returns:
-   * `incoming`, after the backend verifies a peer-signed wire addressed here.
-   * This is not proof that the peer posted the visible Discord row.
-   *
-   * A locally signed cover is not proof that the visible Discord row was posted
-   * locally: a peer can replay that cover in a new row. Until the trusted native
-   * reader supplies an independent poster/message binding, `outgoing` is not a
-   * valid history verdict. Non-null exactly when `plaintext` is non-null.
-   */
-  orientation: "incoming" | null;
+  /** Backend verdict after native poster and authenticated wire agreement. */
+  orientation: NativeDiscordRowOrientation | null;
+  /** Complete response-only row/content proof; never renderer-authored input. */
+  attribution: NativeDiscordRowAttribution | null;
   row: DecodedDiscordRowRect | null;
 }
 
@@ -522,21 +521,28 @@ function parseDecodedDiscordRowRect(value: unknown): DecodedDiscordRowRect | nul
 }
 
 function parseRehydratedDiscordRow(value: unknown): RehydratedDiscordRow | null {
-  if (!exactKeys(value, ["flagtext", "plaintext", "orientation", "row"])) return null;
+  if (!exactKeys(value, ["flagtext", "plaintext", "orientation", "attribution", "row"])) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.flagtext !== "string" || utf8Length(record.flagtext) > MAX_ROW_FLAGTEXT_BYTES) return null;
   if (record.plaintext !== null
     && (typeof record.plaintext !== "string" || utf8Length(record.plaintext) > MAX_PROTECTED_DRAFT_BYTES)) return null;
-  // Only a peer-signed inbound wire is accepted. This is a wire-direction
-  // verdict, not a visible-row author verdict: row/poster binding is absent.
-  if (record.orientation !== null && record.orientation !== "incoming") return null;
-  if ((record.plaintext === null) !== (record.orientation === null)) return null;
+  if (record.orientation !== null
+    && record.orientation !== "incoming"
+    && record.orientation !== "outgoing") return null;
+  const attribution = record.attribution === null
+    ? null
+    : parseNativeDiscordRowAttribution(record.attribution);
+  if (record.attribution !== null && attribution === null) return null;
+  if ((record.plaintext === null) !== (record.orientation === null)
+    || (record.plaintext === null) !== (attribution === null)
+    || (attribution !== null && attribution.orientation !== record.orientation)) return null;
   const row = record.row === null ? null : parseDecodedDiscordRowRect(record.row);
   if (record.row !== null && row === null) return null;
   return {
     flagtext: record.flagtext,
     plaintext: record.plaintext as string | null,
-    orientation: record.orientation as "incoming" | null,
+    orientation: record.orientation as NativeDiscordRowOrientation | null,
+    attribution,
     row,
   };
 }
@@ -555,6 +561,8 @@ function parseRehydratedDiscordTranscript(value: unknown): RehydratedDiscordTran
     if (!row) return null;
     rows.push(row);
   }
+  const attributions = rows.flatMap((row) => row.attribution ? [row.attribution] : []);
+  if (!nativeDiscordAttributionsAreUnique(attributions)) return null;
   return { read: record.read, retryAfterMs: Number(record.retryAfterMs), rows };
 }
 
@@ -696,25 +704,19 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
   decodedRows.length = 0;
   decodedRowBindings.clear();
   const presentation = decodedRowPresentation();
-  let index = 0;
   for (const row of rows) {
     // Undecodable, or unplaceable. Either way OSL owns no pixel over it.
-    if (row.plaintext === null || row.row === null) continue;
-    // This is only the backend's peer-signed wire direction. It does not
-    // authenticate the poster of this visible row.
-    if (row.orientation === null) continue;
-    // Positional keys, so a row that is still the nth decodable row keeps its
-    // DOM node across reads instead of being destroyed and rebuilt on a scroll.
-    const key = `decoded-${index}`;
-    index += 1;
+    if (row.plaintext === null || row.row === null
+      || row.orientation === null || row.attribution === null) continue;
+    // Producer-owned row identity, not position or renderer input. A reordered
+    // response cannot silently reuse the DOM node for another Discord row.
+    const key = `decoded-${row.attribution.nativeLocatorSha256}`;
     messagePlaintext.set(key, row.plaintext);
     decodedRows.push({
       key,
       kind: "text",
-      // Presentation follows the protected wire's verified peer sender. This
-      // label is not authenticated visible-row ownership.
-      direction: "incoming",
-      author: verifiedFriendIdentity,
+      direction: row.orientation,
+      author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity,
       timestamp: transcriptTimestamp(),
       plaintext: row.plaintext,
       // Born in whichever mode the eye is already in, so a read that lands with
@@ -723,14 +725,9 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
     });
     decodedRowBindings.set(key, {
       ...presentation,
-      // A decoded row has no OSL message id and no carrier proof -- it is a row
-      // on screen that OSL was able to open, which may be years old and may have
-      // been sent from another device entirely. The row key is its identity
-      // here; the two hash fields exist for the just-sent carrier path and are
-      // deliberately empty rather than invented. Nothing reads them back.
-      messageId: key,
-      nativeLocatorSha256: "",
-      carrierSha256: "",
+      messageId: row.attribution.discordMessageId,
+      nativeLocatorSha256: row.attribution.nativeLocatorSha256,
+      carrierSha256: row.attribution.carrierSha256,
       leftPx: row.row.leftPx,
       topPx: row.row.topPx,
       widthPx: row.row.widthPx,
