@@ -14,6 +14,7 @@ import {
 import {
   claimNextExpiredAttachment,
   completeAttachmentSweepClaim,
+  finalizeAttachmentReadyClaim,
   newAttachmentSweepWorkerId,
   releaseAttachmentSweepClaimAfterFailure,
   requireAttachmentSweepClaimSchema,
@@ -144,6 +145,51 @@ export async function sweepExpiredAttachments(
     if (!claim) break;
     result.claimed += 1;
     try {
+      if (claim.state === "completing") {
+        let completedObject = await env.ATTACHMENTS.head(claim.object_key);
+        if (!completedObject && claim.upload_id) {
+          // Abort is the R2-side fence for the opposite ordering: once abort
+          // succeeds, the old multipart handle cannot subsequently publish.
+          // If completion won just before abort, abort refuses or the
+          // post-abort HEAD observes the object; either way metadata is kept.
+          await env.ATTACHMENTS
+            .resumeMultipartUpload(claim.object_key, claim.upload_id)
+            .abort();
+          completedObject = await env.ATTACHMENTS.head(claim.object_key);
+        }
+        if (completedObject?.size === claim.size_bytes) {
+          // Multipart completion may have committed R2 before its original D1
+          // ready CAS lost the lease. Never delete that successful object.
+          // Recovery publishes it through the exact same claim/version fence.
+          const recovered = await finalizeAttachmentReadyClaim(
+            env,
+            claim,
+            now,
+          );
+          if (recovered === "ready") {
+            result.completed += 1;
+          } else {
+            result.failed += 1;
+          }
+          continue;
+        }
+        if (completedObject) {
+          // A completed object of the wrong size is not the declared
+          // ciphertext and must never be published as ready.
+          await env.ATTACHMENTS.delete(claim.object_key);
+        } else {
+          // A successful abort plus an empty post-abort HEAD proves this
+          // multipart upload can no longer materialize after metadata removal.
+          await env.ATTACHMENTS.delete(claim.object_key);
+        }
+        const completion = await completeAttachmentSweepClaim(env, claim, now);
+        if (completion === "stale") {
+          result.failed += 1;
+        } else {
+          result.completed += 1;
+        }
+        continue;
+      }
       await removeAttachmentStorage(env, claim);
       const completion = await completeAttachmentSweepClaim(env, claim, now);
       if (completion === "stale") {

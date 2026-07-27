@@ -132,8 +132,12 @@ The mailbox must exist before the route is enabled.
 - Attachment cleanup claims at most 100 expired objects per invocation through
   migration `0008`'s D1 companion table. Each claim is bound to a random Worker
   identity and token, fenced by a monotonic lease version, and recoverable after
-  a two-minute lease. R2 cleanup remains first and idempotent; only the exact
-  live claim may then delete metadata. A failed object keeps its indexed row,
+  a two-minute lease. Multipart completion acquires that same exclusive claim
+  before R2 assembly and publishes `ready` only if its exact version still
+  owns the row. Recovery promotes a correctly sized completed R2 object instead
+  of deleting it; an incomplete upload is removed only after abort fences any
+  later completion and a post-abort HEAD remains empty. Only the exact live
+  claim may then delete metadata. A failed object keeps its indexed row,
   receives bounded retry backoff, and does not prevent unrelated claims from
   running. The previous Worker ignores the additive claim table, while the
   matching Worker refuses before any sweep mutation if the table is absent.

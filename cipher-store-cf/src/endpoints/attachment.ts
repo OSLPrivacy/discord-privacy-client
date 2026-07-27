@@ -19,6 +19,12 @@ import {
   MAX_LIVE_ATTACHMENT_ROWS,
   MAX_SEALED_ATTACHMENT_BYTES,
 } from "../lib/attachment-limits.js";
+import {
+  acquireAttachmentCompletionClaim,
+  finalizeAttachmentReadyClaim,
+  newAttachmentSweepWorkerId,
+  releaseAttachmentCompletionClaimAfterFailure,
+} from "../lib/attachment-sweep-claims.js";
 import { error, json, notFound } from "../lib/http.js";
 
 export {
@@ -425,12 +431,24 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
       || parts.some((part, index) => part.part_number !== index + 1)) {
     return error(409, "parts_incomplete", "attachment parts are incomplete");
   }
-  const claimed = await env.DB.prepare(
-    "UPDATE attachment_objects SET state = 'completing' WHERE id = ? AND state = 'uploading'",
-  ).bind(id).run();
-  if ((claimed.meta.changes ?? 0) !== 1) return error(409, "upload_not_open", "attachment upload is not open");
+  const completionClaim = await acquireAttachmentCompletionClaim(
+    env,
+    id,
+    newAttachmentSweepWorkerId(),
+    Math.floor(Date.now() / 1000),
+  );
+  if (!completionClaim || !completionClaim.upload_id) {
+    return error(
+      409,
+      "completion_fenced",
+      "attachment completion is fenced by storage recovery",
+    );
+  }
 
-  const upload = env.ATTACHMENTS.resumeMultipartUpload(row.object_key, row.upload_id);
+  const upload = env.ATTACHMENTS.resumeMultipartUpload(
+    completionClaim.object_key,
+    completionClaim.upload_id,
+  );
   let completed: R2Object;
   try {
     completed = await upload.complete(parts.map((part) => ({
@@ -438,14 +456,14 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
       etag: part.etag,
     })));
   } catch (completionError) {
-    await env.DB.prepare(
-      "UPDATE attachment_objects SET state = 'uploading' WHERE id = ? AND state = 'completing'",
-    ).bind(id).run().catch(() => undefined);
+    await releaseAttachmentCompletionClaimAfterFailure(env, completionClaim)
+      .catch(() => "stale");
     throw completionError;
   }
-  if (completed.size !== row.size_bytes) {
-    await env.ATTACHMENTS.delete(row.object_key).catch(() => undefined);
-    await env.DB.prepare("DELETE FROM attachment_objects WHERE id = ?").bind(id).run();
+  if (completed.size !== completionClaim.size_bytes) {
+    // Keep the fenced `completing` row. Recovery will observe the mismatched
+    // object under its own later claim and remove it; deleting here after the
+    // completion lease expires could race a newer recovery owner.
     return error(500, "completed_size_mismatch", "completed attachment size did not match");
   }
   // The promised content expiry was fixed at session creation. The shipping
@@ -454,22 +472,40 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
   // only moves the reclaim deadline from the short incomplete-session hold to
   // the already-promised instant. A slow upload therefore gets less ready-state
   // lifetime.
-  const contentExpiresAt = promisedExpiry(row);
-  try {
-    await env.DB.batch([
-      env.DB.prepare(
-        `UPDATE attachment_objects
-            SET state = 'ready', upload_id = NULL, expires_at = ?
-          WHERE id = ? AND state = 'completing'`,
-      ).bind(contentExpiresAt, id),
-      env.DB.prepare("DELETE FROM attachment_parts WHERE attachment_id = ?").bind(id),
-    ]);
+  const contentExpiresAt = completionClaim.content_expires_at!;
+  const finalized = await finalizeAttachmentReadyClaim(
+    env,
+    completionClaim,
+    Math.floor(Date.now() / 1000),
+  );
+  if (finalized === "ready") {
     return json({ id, expires_at: contentExpiresAt, size_bytes: row.size_bytes }, 201);
-  } catch (metadataError) {
-    // Leave the row in `completing`. Fetch stays closed; authenticated delete
-    // and the expiry sweep use HEAD to remove the completed object safely.
-    throw metadataError;
   }
+
+  // A recovery Worker may have won after this completion lease expired. Its
+  // only successful path for a correctly sized completed object is the same
+  // ready CAS, so recognize that result idempotently after checking R2 still
+  // holds the declared ciphertext.
+  const current = await env.DB.prepare(
+    `SELECT object_key, size_bytes, expires_at, content_expires_at,
+            fetch_token_sha256_hex, state, upload_id
+       FROM attachment_objects WHERE id = ? LIMIT 1`,
+  ).bind(id).first<AttachmentRow>();
+  if (current?.state === "ready") {
+    const object = await env.ATTACHMENTS.head(current.object_key);
+    if (object?.size === current.size_bytes) {
+      return json({
+        id,
+        expires_at: promisedExpiry(current),
+        size_bytes: current.size_bytes,
+      }, 200);
+    }
+  }
+  return error(
+    409,
+    "completion_fenced",
+    "attachment completion is being recovered",
+  );
 }
 
 export async function handleAttachmentUpload(request: Request, env: Env): Promise<Response> {

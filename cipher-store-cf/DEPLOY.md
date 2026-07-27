@@ -49,7 +49,12 @@ cleanup claim boundary. It must be applied before the matching Worker: the
 previous Worker never names the companion table and remains unchanged after
 the migration, while the matching Worker performs a read-only exact-column
 gate before legacy expiry marking, R2 cleanup, or metadata deletion. A missing
-or partial `0008` schema therefore fails the attachment sweep closed. The
+or partial `0008` schema therefore fails the attachment sweep closed.
+Multipart completion uses the same identity/token/version claim before R2
+completion and also fails before touching R2 when `0008` is absent. An expired
+`completing` claim recovers an already completed, correctly sized R2 object to
+`ready`; it never deletes that object. Only a successful multipart abort plus
+an empty post-abort HEAD permits incomplete metadata removal. The
 presence of this file in a checkout is not evidence that any live D1 database
 has applied it.
 

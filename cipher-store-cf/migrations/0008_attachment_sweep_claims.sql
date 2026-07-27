@@ -4,7 +4,9 @@
 -- The previous Worker never names this companion table, so the migration is
 -- inert until the new code is deployed. The new Worker claims through this
 -- table before touching R2 and therefore fails closed, without deleting
--- storage or metadata, when the table is absent.
+-- storage or metadata, when the table is absent. Multipart completion also
+-- acquires this same claim before its asynchronous R2 `complete`, so an expiry
+-- sweep and completion can never own one attachment at the same lease version.
 --
 -- Each claim is bound to both a random Worker invocation id and a distinct
 -- random token. `lease_version` increases on every claim, reclaim, or explicit

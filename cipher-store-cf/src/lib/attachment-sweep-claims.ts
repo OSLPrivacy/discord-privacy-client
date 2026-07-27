@@ -10,6 +10,9 @@ const CLAIM_TOKEN_RE = /^[0-9a-f]{64}$/;
 export interface AttachmentSweepClaim {
   attachment_id: string;
   object_key: string;
+  size_bytes: number;
+  content_expires_at: number | null;
+  state: "uploading" | "completing" | "ready";
   upload_id: string | null;
   worker_id: string;
   claim_token: string;
@@ -31,6 +34,8 @@ export type AttachmentSweepCompletion =
   | "completed"
   | "already_completed"
   | "stale";
+
+export type AttachmentReadyCompletion = "ready" | "stale";
 
 function randomHex(bytes: number): string {
   const value = new Uint8Array(bytes);
@@ -100,6 +105,11 @@ export async function claimNextExpiredAttachment(
        LEFT JOIN attachment_sweep_claims AS existing
          ON existing.attachment_id = candidate.id
       WHERE candidate.expires_at <= ?
+        AND candidate.state IN ('uploading', 'completing', 'ready')
+        AND (
+          candidate.state <> 'completing'
+          OR existing.attachment_id IS NOT NULL
+        )
         AND (
           existing.attachment_id IS NULL
           OR (
@@ -137,6 +147,9 @@ export async function claimNextExpiredAttachment(
   const row = await env.DB.prepare(
     `SELECT object_row.id AS attachment_id,
             object_row.object_key,
+            object_row.size_bytes,
+            object_row.content_expires_at,
+            object_row.state,
             object_row.upload_id,
             claim.worker_id,
             claim.claim_token,
@@ -158,6 +171,246 @@ export async function claimNextExpiredAttachment(
     claimed.lease_version,
   ).first<AttachmentSweepClaim>();
   return row ?? null;
+}
+
+/// Acquire the same exclusive, versioned fence used by the sweeper before
+/// multipart completion touches R2.
+///
+/// The claim write is one atomic SQLite statement. An active sweep claim
+/// excludes completion; an expired claim can be recovered monotonically only
+/// while the object is still an unexpired `uploading` session. The subsequent
+/// state CAS is safe as a separate statement because the newly active claim
+/// already excludes every sweep Worker.
+export async function acquireAttachmentCompletionClaim(
+  env: Env,
+  attachmentId: string,
+  workerId: string,
+  now: number,
+): Promise<AttachmentSweepClaim | null> {
+  validateWorkerId(workerId);
+  if (!WORKER_ID_RE.test(attachmentId) || !Number.isSafeInteger(now) || now <= 0) {
+    throw new Error("attachment completion claim input is invalid");
+  }
+  const claimToken = randomHex(32);
+  const leaseExpiresAt = now + ATTACHMENT_SWEEP_LEASE_SECONDS;
+  const claimed = await env.DB.prepare(
+    `INSERT INTO attachment_sweep_claims
+       (attachment_id, worker_id, claim_token, lease_version,
+        lease_expires_at, retry_not_before, attempt_count, last_claimed_at)
+     SELECT candidate.id, ?, ?, 1, ?, 0, 1, ?
+       FROM attachment_objects AS candidate
+       LEFT JOIN attachment_sweep_claims AS existing
+         ON existing.attachment_id = candidate.id
+      WHERE candidate.id = ?
+        AND candidate.state = 'uploading'
+        AND candidate.expires_at > ?
+        AND (
+          existing.attachment_id IS NULL
+          OR (
+            existing.lease_expires_at <= ?
+            AND existing.retry_not_before <= ?
+          )
+        )
+     ON CONFLICT(attachment_id) DO UPDATE SET
+       worker_id = excluded.worker_id,
+       claim_token = excluded.claim_token,
+       lease_version = attachment_sweep_claims.lease_version + 1,
+       lease_expires_at = excluded.lease_expires_at,
+       retry_not_before = 0,
+       attempt_count = attachment_sweep_claims.attempt_count + 1,
+       last_claimed_at = excluded.last_claimed_at
+     WHERE attachment_sweep_claims.lease_expires_at <= ?
+       AND attachment_sweep_claims.retry_not_before <= ?
+     RETURNING attachment_id, worker_id, claim_token, lease_version,
+               lease_expires_at, attempt_count`,
+  ).bind(
+    workerId,
+    claimToken,
+    leaseExpiresAt,
+    now,
+    attachmentId,
+    now,
+    now,
+    now,
+    now,
+    now,
+  ).first<ClaimedIdentity>();
+  if (!claimed) return null;
+
+  const transitioned = await env.DB.prepare(
+    `UPDATE attachment_objects
+        SET state = 'completing'
+      WHERE id = ?
+        AND state = 'uploading'
+        AND expires_at > ?
+        AND EXISTS (
+          SELECT 1 FROM attachment_sweep_claims AS owned
+           WHERE owned.attachment_id = attachment_objects.id
+             AND owned.worker_id = ?
+             AND owned.claim_token = ?
+             AND owned.lease_version = ?
+             AND owned.lease_expires_at > ?
+        )`,
+  ).bind(
+    attachmentId,
+    now,
+    claimed.worker_id,
+    claimed.claim_token,
+    claimed.lease_version,
+    now,
+  ).run();
+  if ((transitioned.meta.changes ?? 0) !== 1) {
+    await env.DB.prepare(
+      `DELETE FROM attachment_sweep_claims
+        WHERE attachment_id = ?
+          AND worker_id = ?
+          AND claim_token = ?
+          AND lease_version = ?`,
+    ).bind(
+      attachmentId,
+      claimed.worker_id,
+      claimed.claim_token,
+      claimed.lease_version,
+    ).run();
+    return null;
+  }
+
+  return env.DB.prepare(
+    `SELECT object_row.id AS attachment_id,
+            object_row.object_key,
+            object_row.size_bytes,
+            object_row.content_expires_at,
+            object_row.state,
+            object_row.upload_id,
+            claim.worker_id,
+            claim.claim_token,
+            claim.lease_version,
+            claim.lease_expires_at,
+            claim.attempt_count
+       FROM attachment_objects AS object_row
+       JOIN attachment_sweep_claims AS claim
+         ON claim.attachment_id = object_row.id
+      WHERE object_row.id = ?
+        AND object_row.state = 'completing'
+        AND claim.worker_id = ?
+        AND claim.claim_token = ?
+        AND claim.lease_version = ?
+      LIMIT 1`,
+  ).bind(
+    attachmentId,
+    claimed.worker_id,
+    claimed.claim_token,
+    claimed.lease_version,
+  ).first<AttachmentSweepClaim>();
+}
+
+/// Publish a completed R2 object only if this exact completion or recovery
+/// claim is still the current monotonic fence.
+///
+/// The ready-state UPDATE is the irreversible metadata decision and is one
+/// atomic CAS. Cleanup follows only after readiness is durable. If cleanup is
+/// interrupted, retries see an idempotent ready row; no path can create ready
+/// metadata before the caller has independently observed the R2 object.
+export async function finalizeAttachmentReadyClaim(
+  env: Env,
+  claim: AttachmentSweepClaim,
+  now: number,
+): Promise<AttachmentReadyCompletion> {
+  validateClaim(claim);
+  const contentExpiresAt = claim.content_expires_at;
+  if (
+    claim.state !== "completing"
+    || !Number.isSafeInteger(contentExpiresAt)
+    || contentExpiresAt! <= 0
+  ) {
+    throw new Error("attachment ready claim state is invalid");
+  }
+  const ready = await env.DB.prepare(
+    `UPDATE attachment_objects
+        SET state = 'ready', upload_id = NULL, expires_at = ?
+      WHERE id = ?
+        AND state = 'completing'
+        AND object_key = ?
+        AND size_bytes = ?
+        AND EXISTS (
+          SELECT 1 FROM attachment_sweep_claims AS owned
+           WHERE owned.attachment_id = attachment_objects.id
+             AND owned.worker_id = ?
+             AND owned.claim_token = ?
+             AND owned.lease_version = ?
+             AND owned.lease_expires_at > ?
+        )
+     RETURNING id`,
+  ).bind(
+    contentExpiresAt,
+    claim.attachment_id,
+    claim.object_key,
+    claim.size_bytes,
+    claim.worker_id,
+    claim.claim_token,
+    claim.lease_version,
+    now,
+  ).first<{ id: string }>();
+  if (ready?.id !== claim.attachment_id) return "stale";
+
+  await env.DB.prepare(
+    "DELETE FROM attachment_parts WHERE attachment_id = ?",
+  ).bind(claim.attachment_id).run();
+  await env.DB.prepare(
+    `DELETE FROM attachment_sweep_claims
+      WHERE attachment_id = ?
+        AND worker_id = ?
+        AND claim_token = ?
+        AND lease_version = ?`,
+  ).bind(
+    claim.attachment_id,
+    claim.worker_id,
+    claim.claim_token,
+    claim.lease_version,
+  ).run();
+  return "ready";
+}
+
+/// Return a failed multipart completion to `uploading` only while its exact
+/// claim still owns the fence. A recovered sweep claim makes this operation a
+/// harmless stale result.
+export async function releaseAttachmentCompletionClaimAfterFailure(
+  env: Env,
+  claim: AttachmentSweepClaim,
+): Promise<"released" | "stale"> {
+  validateClaim(claim);
+  const released = await env.DB.prepare(
+    `UPDATE attachment_objects
+        SET state = 'uploading'
+      WHERE id = ?
+        AND state = 'completing'
+        AND EXISTS (
+          SELECT 1 FROM attachment_sweep_claims AS owned
+           WHERE owned.attachment_id = attachment_objects.id
+             AND owned.worker_id = ?
+             AND owned.claim_token = ?
+             AND owned.lease_version = ?
+        )`,
+  ).bind(
+    claim.attachment_id,
+    claim.worker_id,
+    claim.claim_token,
+    claim.lease_version,
+  ).run();
+  if ((released.meta.changes ?? 0) !== 1) return "stale";
+  await env.DB.prepare(
+    `DELETE FROM attachment_sweep_claims
+      WHERE attachment_id = ?
+        AND worker_id = ?
+        AND claim_token = ?
+        AND lease_version = ?`,
+  ).bind(
+    claim.attachment_id,
+    claim.worker_id,
+    claim.claim_token,
+    claim.lease_version,
+  ).run();
+  return "released";
 }
 
 /// Delete metadata only for the exact claim that already completed R2 cleanup.
