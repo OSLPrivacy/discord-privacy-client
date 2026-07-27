@@ -946,6 +946,53 @@ contract and is unrelated to this change.
 No runtime, verified-live, or two-identity claim is made. No acceptance row is earned by
 these source and test proofs.
 
+## Round 7 — QA-shell browser-profile verb policy
+
+Starting revision: `e83a487`. No live process, Discord session, or second identity was used.
+
+The requested pre-fix command was:
+
+`osl-cargo check --features desktop,discord-qa-shell --bin osl-privacy-hub --target
+x86_64-pc-windows-gnu`
+
+It exited 101 with exactly four `E0004` non-exhaustive-match errors in `main.rs`: `run_timeout`
+(then line 5115), `Observation::ready_for` (then line 5439), `insert_verb_criteria` (then line
+5925), and `run_receive_side_verb` (then line 6358). Each error named the same four missing
+variants: `ListBrowserProfiles`, `GrantBrowserProfile`, `RevokeBrowserProfile`, and
+`RunBrowserImport`.
+
+The QA shell has no production driver for those operations. It now accepts each spelling only
+long enough to return a distinct named refusal (`main.rs:5107-5110,6412-6427`), bypasses a
+misleading readiness wait (`main.rs:5451-5457`), and inserts a distinct graded-false criterion
+(`main.rs:5955-5986`). No wildcard arm was added. Therefore future `Verb` growth remains
+compiler-enforced at all four match sites.
+
+Compiler exhaustiveness cannot by itself prove the policy remains refused and graded false.
+`security.test.ts:244-298` pins both properties for all four verbs and has negative controls
+against wildcard arms in the criteria and driver matches.
+
+Focused evidence:
+
+- `osl-cargo check --features desktop,discord-qa-shell --bin osl-privacy-hub --target
+  x86_64-pc-windows-gnu`: exit 0; `Finished dev profile ... in 6.47s`; 14 existing library
+  warnings and 8 binary warnings.
+- `osl-cargo check --features desktop --bin osl-privacy-hub --target
+  x86_64-pc-windows-gnu`: exit 0; `Finished dev profile ... in 3.84s`; 15 existing library
+  warnings and 8 binary warnings.
+- `npm test -- --run src/security.test.ts`: 1 file passed, 5 tests passed, 0 failed.
+
+Verdict: `test-proven-only` for the compile-time and source-policy gates. The verbs themselves
+are explicitly unavailable and fail closed. This earns no runtime or two-identity claim.
+
+### Evidence correction for Round 6
+
+Store's subsequent exact-archive audit found that commit `e83a487` does not contain the IPC and
+keystore dependency closure needed to compile the reported broker/security focused tests.
+Accordingly, Round 6's control-inbox and file-backed friend-removal behavioural verdicts are
+corrected from `test-proven-only` to `blocked`. The passing commands recorded there exercised
+later dirty-tree dependencies and are not evidence for the exact committed bytes. They remain
+blocked until an explicit minimal prerequisite commit and an exact-archive mutation run pass.
+
 ## Acceptance rows this earns
 
 None.

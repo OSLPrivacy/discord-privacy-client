@@ -241,6 +241,62 @@ describe("bundled preview security boundary", () => {
     }
   });
 
+  it("keeps every QA browser-profile verb explicitly fail-closed", () => {
+    const source = readRelative("../../osl-hub/src/main.rs");
+    const criteria = source.slice(
+      source.indexOf("fn insert_verb_criteria("),
+      source.indexOf("fn write_verdict("),
+    );
+    const driver = source.slice(
+      source.indexOf("fn run_receive_side_verb("),
+      source.indexOf("fn refused_verdict("),
+    );
+    const arm = (body: string, verb: string): string => {
+      const start = body.indexOf(`Verb::${verb} => {`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const rest = body.slice(start);
+      const next = rest.indexOf("\n            Verb::", 1);
+      return next < 0 ? rest : rest.slice(0, next);
+    };
+
+    for (const [verb, criterion, refusal] of [
+      [
+        "ListBrowserProfiles",
+        "browser_profile_list_driven",
+        "LIST_BROWSER_PROFILES_UNAVAILABLE",
+      ],
+      [
+        "GrantBrowserProfile",
+        "browser_profile_grant_driven",
+        "GRANT_BROWSER_PROFILE_UNAVAILABLE",
+      ],
+      [
+        "RevokeBrowserProfile",
+        "browser_profile_revoke_driven",
+        "REVOKE_BROWSER_PROFILE_UNAVAILABLE",
+      ],
+      [
+        "RunBrowserImport",
+        "browser_profile_import_driven",
+        "RUN_BROWSER_IMPORT_UNAVAILABLE",
+      ],
+    ] as const) {
+      const criterionArm = arm(criteria, verb);
+      expect(criterionArm).toContain(`"${criterion}"`);
+      expect(criterionArm).toMatch(/\n\s+false,/);
+      expect(criterionArm).toContain(`Some(${refusal}.to_owned())`);
+
+      const driverArm = arm(driver, verb);
+      expect(driverArm).toContain('outcome = "refused";');
+      expect(driverArm).toContain(`outcome_detail.refusal = Some(${refusal});`);
+    }
+
+    // The compiler guards enum exhaustiveness. These negative controls guard
+    // against weakening that property locally while keeping the build green.
+    expect(criteria).not.toMatch(/\n\s*_\s*=>/);
+    expect(driver).not.toMatch(/\n\s*_\s*=>/);
+  });
+
   it("does not turn a stuck transcript read into an automatic retry storm", () => {
     const source = readRelative("./overlay.ts");
     const run = source.slice(

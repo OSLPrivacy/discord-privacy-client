@@ -5104,6 +5104,10 @@ mod qa_selftest {
     /// whole budget legitimately.
     const RUN_TIMEOUT_SLACK: Duration = Duration::from_secs(45);
     const ZORDER_WALK_LIMIT: usize = 128;
+    const LIST_BROWSER_PROFILES_UNAVAILABLE: &str = "list-browser-profiles-unavailable";
+    const GRANT_BROWSER_PROFILE_UNAVAILABLE: &str = "grant-browser-profile-unavailable";
+    const REVOKE_BROWSER_PROFILE_UNAVAILABLE: &str = "revoke-browser-profile-unavailable";
+    const RUN_BROWSER_IMPORT_UNAVAILABLE: &str = "run-browser-import-unavailable";
 
     /// The outer bound the watcher enforces on one whole invocation, per verb.
     ///
@@ -5114,6 +5118,12 @@ mod qa_selftest {
     fn run_timeout(verb: Verb) -> Duration {
         match verb {
             Verb::Status => Duration::from_secs(30),
+            // These verbs are accepted only so this build can refuse them by
+            // name. They do not drive state or wait for readiness.
+            Verb::ListBrowserProfiles
+            | Verb::GrantBrowserProfile
+            | Verb::RevokeBrowserProfile
+            | Verb::RunBrowserImport => Duration::from_secs(30),
             Verb::Host => READINESS_TIMEOUT + HOST_TIMEOUT + RUN_TIMEOUT_SLACK,
             Verb::Send => RUN_TIMEOUT,
             Verb::Drain | Verb::Rehydrate => READINESS_TIMEOUT + VERB_TIMEOUT + RUN_TIMEOUT_SLACK,
@@ -5438,6 +5448,13 @@ mod qa_selftest {
         fn ready_for(&self, verb: Verb) -> bool {
             match verb {
                 Verb::Status => true,
+                // Readiness cannot make an unavailable browser-profile driver
+                // available. Proceed directly to its named refusal instead of
+                // waiting and misreporting the request as `not-ready`.
+                Verb::ListBrowserProfiles
+                | Verb::GrantBrowserProfile
+                | Verb::RevokeBrowserProfile
+                | Verb::RunBrowserImport => true,
                 // Hosting exists to establish adoption and overlay context, so
                 // requiring either before the command would make it inert.
                 Verb::Host => self.owner.is_some(),
@@ -5935,6 +5952,38 @@ mod qa_selftest {
                         .then(|| "The read-only sweep did not complete".to_owned()),
                 );
             }
+            Verb::ListBrowserProfiles => {
+                insert(
+                    criteria,
+                    "browser_profile_list_driven",
+                    false,
+                    Some(LIST_BROWSER_PROFILES_UNAVAILABLE.to_owned()),
+                );
+            }
+            Verb::GrantBrowserProfile => {
+                insert(
+                    criteria,
+                    "browser_profile_grant_driven",
+                    false,
+                    Some(GRANT_BROWSER_PROFILE_UNAVAILABLE.to_owned()),
+                );
+            }
+            Verb::RevokeBrowserProfile => {
+                insert(
+                    criteria,
+                    "browser_profile_revoke_driven",
+                    false,
+                    Some(REVOKE_BROWSER_PROFILE_UNAVAILABLE.to_owned()),
+                );
+            }
+            Verb::RunBrowserImport => {
+                insert(
+                    criteria,
+                    "browser_profile_import_driven",
+                    false,
+                    Some(RUN_BROWSER_IMPORT_UNAVAILABLE.to_owned()),
+                );
+            }
             Verb::Host => {
                 let host = outcome.host.as_ref();
                 insert(
@@ -6359,6 +6408,22 @@ mod qa_selftest {
             Verb::Send => unreachable!("the send verb is driven by run_once"),
             Verb::Status => {
                 outcome_detail.status = Some(status_report(app, &outcome_detail.instance));
+            }
+            Verb::ListBrowserProfiles => {
+                outcome = "refused";
+                outcome_detail.refusal = Some(LIST_BROWSER_PROFILES_UNAVAILABLE);
+            }
+            Verb::GrantBrowserProfile => {
+                outcome = "refused";
+                outcome_detail.refusal = Some(GRANT_BROWSER_PROFILE_UNAVAILABLE);
+            }
+            Verb::RevokeBrowserProfile => {
+                outcome = "refused";
+                outcome_detail.refusal = Some(REVOKE_BROWSER_PROFILE_UNAVAILABLE);
+            }
+            Verb::RunBrowserImport => {
+                outcome = "refused";
+                outcome_detail.refusal = Some(RUN_BROWSER_IMPORT_UNAVAILABLE);
             }
             Verb::Host => {
                 let action = host_action.expect("accepted host requests resolve host inputs");
