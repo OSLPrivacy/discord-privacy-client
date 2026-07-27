@@ -243,6 +243,35 @@ away, per master §16.3.
   and is `implemented-unwired`.
 - Arithmetic is unchanged: **97 + 0 = 97 / 303**.
 
+**2026-07-27 post-H4 exact reconciliation (+0).**
+
+- Product truth +0 · independent exact-archive review accepts
+  `62e362e4e05a0431d0842c384454271359223648` as `test-proven-only` truth hardening.
+  Reachable UI now describes authorization expiry/refusal and says local authorization was
+  consumed; the broker stores no per-message key and destroys no such key. This corrects claims
+  without adding a key lifecycle, runtime proof, or checklist point.
+- F1 +0 · exact `3a5875f24b2871094a6b5c7d9b5ebab195db9db9` is rejected for VM
+  admission. Its 25/25 mutation matrix closes malformed-evidence cases, but the VM evidence author
+  can still synthesize the agent-selected native journal and its unkeyed public-hash chain. F1
+  remains 4/6 and no VM run is authorized by this object.
+- VMQA +0 · exact `b9369ec9e9ebcd549fa5866a88392db955b07484` is rejected. Independent
+  reproduction created accepted build evidence from a clean unrelated product-shaped repository
+  plus arbitrary `/bin/true` while supplying matching caller-selected commit/tree facts. VM
+  execution remains blocked; no F1, F2, release, or infrastructure row moves.
+- Website/A8 +0 · exact `5ec4d4fbd0953350a6ad9460e653b4ecc31f166c` contains truthful
+  qualified copy, but its semantic gate still accepts the false broader sentence “All private state
+  is encrypted at rest.” It is unpushed and undeployed. H1 and A8 remain 3/4.
+- Keyserver +0 · independent review accepts exact
+  `91bfcaac4e319a5ab0fad77ecf9b0002cbf09779` as a `test-proven-only` trusted-admission
+  successor. It binds exact clean source, recomputed trees/tools/artifacts, internally captured
+  D1/deployment evidence, and stable active-version reads. Full admission was not run because it
+  requires disk-heavy clean builds/installs; production lacks 0031, so Artifact A is presently
+  eligible and Artifact B must refuse. No deploy, migration, or point follows.
+- At this reconciliation point the VM and Scrub repairs after the rejected objects are uncommitted
+  dirty work and are excluded. They require exact commits and independent acceptance before any
+  narrative or score change.
+- Arithmetic remains **98 + 0 + 0 + 0 + 0 + 0 = 98 / 303**.
+
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
 
