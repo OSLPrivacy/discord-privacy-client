@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r9`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r10`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,19 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r10` — **correction to the r8 Rust-gate note, which was true but could be read as more
+  reassuring than it is.** Two distinct facts, verified in source: (1) `qa_selftest_request.rs` and
+  its tests are gated `all(core, discord-qa-shell)`, so plain `--features core` omits them — that is
+  the 731-test gate; but (2) the **dispatch itself** lives in `apps/osl-hub/src/main.rs:5009`, and
+  `main.rs` is a bin with `required-features = ["desktop"]` (`apps/osl-hub/Cargo.toml:54-57`), so
+  `--features core` does not compile `main.rs` **at all**. Consequence: *no* Linux lib-test run
+  exercises that dispatch, including the corrected 731 gate — **only the Windows desktop build
+  does.** Do not read "run the 731 gate" as "the irreversible-send dispatch is covered".
+  Related live trap: the QA trigger dispatches on the first non-whitespace byte being `{`, so a
+  UTF-8 BOM — which PowerShell's default `Set-Content` emits — fails that test and falls through to
+  the **legacy SEND verb, which has an irreversible side effect**. Source:
+  `docs/qa/two-identity-p2p-verification.md`, and the generalisable rule recorded there — **when a
+  capability looks missing, check the caller before the callee.**
 - `r9` — burn language corrected across the repository, which had been stating two positions at
   once: `THREAT_MODEL.md` said the words were unearned while 26 older statements still claimed
   cryptographic erasure. **`README.md` — the public front page — is the important one**: it said
