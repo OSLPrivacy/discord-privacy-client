@@ -11,7 +11,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply osl-keyserver-prod --local",
-    "db:migrate:prod": "wrangler d1 migrations apply osl-keyserver-prod --remote"
+    "db:migrate:prod": "wrangler d1 migrations apply osl-keyserver-prod --remote",
+    "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",

@@ -1440,3 +1440,134 @@ No checklist row is claimed. The `meta.changes` result closes an evidence gap,
 and the control-inbox change bounds server housekeeping, but this lane has no
 verified mapping from either result to an acceptance row. Nothing is claimed as
 `verified-live` or `runtime-proven`.
+
+---
+
+## Audit follow-up — cross-boundary gates
+
+No live infrastructure was read or changed. Status for every result in this
+section is `test-proven-only`, except the caller boundaries explicitly marked
+`implemented-unwired`.
+
+### Independent reproduction before changing tests
+
+The store audit's three negative controls were rerun locally rather than accepted
+on report:
+
+1. Removing the `LINK_GRANT_ENABLED` branch from the full Worker route left the
+   old deployment-gate tests green: 3 passed, 16 skipped. The missing issuer key
+   produced another 503, so the test did not establish which guard fired
+   (`keyserver-cf/src/index.ts:304-320`,
+   `keyserver-cf/test/integration/link-grant.test.ts:100-110`).
+2. Changing only the keyserver request domain to
+   `discord-privacy-client/link-grant/NEGATIVE-CONTROL` left 49/49 keyserver
+   tests green. The request signer and verifier both used
+   `canonicalLinkGrantBytes`, so they agreed with each other while disagreeing
+   with the shipping Rust client (`keyserver-cf/src/lib/canonical.ts:370-405`,
+   `crates/ipc/src/cipher_store_client.rs:879-900`).
+3. Changing only the keyserver issuer domain to
+   `OSL-LINK-GRANT-NEGATIVE-CONTROL` left 32/32 issuer-side tests green. None
+   passed the minted authorization to the cipher-store verifier
+   (`keyserver-cf/src/lib/link-grant-issuer.ts:59-61`,
+   `cipher-store-cf/src/lib/link-grant.ts:33-66`).
+4. Adding a redundant `UPDATE users SET rn_capabilities = rn_capabilities` on
+   equal-bitmap replay left the old “write-free” test green: 1 passed, 13
+   skipped. It asserted response and final bitmap only
+   (`keyserver-cf/test/integration/rn-capability.test.ts:228-275`).
+
+These runs prove gaps in the tests. They do not prove current wire drift: the
+unmodified request domains and grant domains agree.
+
+### Gates added, with failing mutations
+
+The route test now asserts the exact default-off response and drives the full
+Worker with a valid issuer environment to prove the explicit enabled hand-off
+(`keyserver-cf/test/integration/link-grant.test.ts:100-124`). Removing the
+feature flag now fails:
+
+```text
+Expected  {"error":"link_grant_not_enabled"}
+Received  {"error":"link grant issuance is not enabled on this deployment"}
+Test Files  1 failed (1)
+Tests       1 failed | 3 passed | 16 skipped
+```
+
+A disposable Node-side cross-repo test read the dirty working tree's Rust domain
+constant and compared the keyserver's actual canonical bytes with the Rust
+contract vector. Changing only the keyserver domain failed at the first
+length-prefixed field:
+
+```text
+expected Uint8Array ... LP length 50 ...
+to deeply equal Uint8Array ... LP length 36 ...
+Test Files  1 failed (1)
+Tests       1 failed (1)
+```
+
+That gate is `blocked`, not committed. Clean HEAD `e83a487` does not contain
+`LINK_GRANT_DOMAIN` or `request_link_grant`; both exist only in another lane's
+uncommitted `crates/ipc/src/cipher_store_client.rs` work, outside this lane's
+write scope. Applying the staged server diff to a clean worktree made the test
+fail with `Rust LINK_GRANT_DOMAIN constant is missing`. Committing a gate against
+an absent dependency would make clean CI red rather than protect a shipped
+boundary. Crypto must land the Rust side first; then the disposable comparison
+should become a standing Node gate.
+
+The cipher-store test now imports the real keyserver issuer, mints a real
+authorization, and passes it to the real cipher-store verifier backed by local
+D1 (`cipher-store-cf/test/link-grant.test.ts:12-16`, `:78-92`). Changing only
+the issuer domain now fails:
+
+```text
+Expected  {"ok":true}
+Received  {"ok":false,"status":401,"code":"grant_signature",
+           "message":"grant signature did not verify"}
+Test Files  1 failed (1)
+Tests       1 failed | 12 skipped
+```
+
+The RN replay test installs a real-D1 `BEFORE UPDATE` guard for its exact
+identity before replaying the signed body
+(`keyserver-cf/test/integration/rn-capability.test.ts:243-274`). A redundant
+`users` update now fails:
+
+```text
+expected 500 to be 200
+Test Files  1 failed (1)
+Tests       1 failed | 13 skipped
+```
+
+Unmutated focused gates:
+
+```text
+keyserver Worker link-grant + issuer       2 files / 33 tests passed
+keyserver RN write-free replay             1 test passed / 13 skipped
+keyserver tsc --noEmit                     exit 0
+cipher-store link-grant + link lane        2 files / 34 tests passed
+cipher-store tsc --noEmit                  exit 0
+```
+
+### Boundary reported to crypto
+
+Status: `implemented-unwired`.
+
+Production registration still calls legacy `reg_msg` and builds a
+`RegisterRequest` with no `rn_capabilities`
+(`crates/keystore/src/client.rs:599-625`). The keyserver can store and serve the
+bitmap, but the shipping registration path does not advertise it. No keystore
+file was changed here.
+
+`request_link_grant` exists only in the dirty working copy at
+`crates/ipc/src/cipher_store_client.rs:903-975`; repository search finds only
+its definition, with no production caller, and clean HEAD `e83a487` does not
+contain it. Status is `implemented-unwired` in the working tree and `blocked` at
+the commit boundary. The keyserver and cipher-store work therefore remains
+preparatory, never a production repair. The default-off keyserver flag, missing
+issuer secret, and missing cipher-store public key still keep the lane dark.
+
+## Acceptance rows this earns
+
+No checklist row is claimed. These changes turn four previously vacuous or
+same-author assertions into mutation-sensitive cross-boundary gates. They do not
+make RN advertisement or view-once link creation reachable, and nothing is
+claimed as `verified-live` or `runtime-proven`.

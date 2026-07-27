@@ -41,6 +41,7 @@ const CONTROL_INBOX_DELETE_DOMAIN = "discord-privacy-client/control-inbox-delete
 const PREKEY_BUNDLE_GET_DOMAIN = "discord-privacy-client/prekey-bundle-get/v1";
 const WRAPPED_KEY_GET_DOMAIN = "discord-privacy-client/wrapped-key-get/v1";
 const WRAPPED_KEY_POST_DOMAIN = "discord-privacy-client/wrapped-key-post/v1";
+const LINK_GRANT_DOMAIN = "discord-privacy-client/link-grant/v1";
 
 export const SIGNED_COMMAND_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 
@@ -367,6 +368,42 @@ export function canonicalControlInboxGetBytes(args: {
     parts.push(lpString(args.sender_id));
   }
   return concatBytes(parts);
+}
+
+// ---- link-creation grant request ----
+//
+// The client asks the keyserver to vouch for it so the cipher-store will
+// accept ONE view-once link creation. This message authenticates the
+// *request*; it is deliberately NOT the grant. The grant the keyserver
+// signs in reply carries no identity at all (see
+// `lib/link-grant-issuer.ts`), so the keyserver knows who asked and the
+// cipher-store never does.
+//
+// Wire:
+//   LP(domain) || LP(user_id) || LP(timestamp_ms decimal string)
+//   || LP(request_id base64url string)
+//
+// `request_id` is the single-use anchor: the server records SHA-256 over
+// these exact bytes, so a captured issuance request cannot be replayed
+// into a second grant inside the freshness window. `timestamp_ms` bounds
+// how long a captured request is worth replaying at all.
+//
+// The Rust client builds the byte-identical message in
+// `crates/ipc/src/cipher_store_client.rs` (`link_grant_canonical_bytes`).
+
+export const LINK_GRANT_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+
+export function canonicalLinkGrantBytes(args: {
+  user_id: string;
+  timestamp_ms: number;
+  request_id: string;
+}): Uint8Array {
+  return concatBytes([
+    lpString(LINK_GRANT_DOMAIN),
+    lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
+  ]);
 }
 
 export function canonicalControlInboxDeleteBytes(args: {

@@ -6,7 +6,7 @@
 /// failure mode reads as "no OSL-RN capability" rather than as
 /// "capable" — see `crates/osl-ratchet-next/src/negotiate.rs`, layer L1.
 
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
   buildRegMsg,
@@ -238,8 +238,34 @@ describe("rn_capabilities — monotonicity", () => {
     );
     expect((await pubkeys(userId)).rn_capabilities).toBe(RN_CAP_WIRE_RN);
 
-    // Replaying the identical body is a no-op, not a second raise.
-    const replay = await post(raise);
+    // Any matched UPDATE on this identity now aborts in real D1. This
+    // makes "write-free" an observed storage property rather than an
+    // inference from the unchanged response and bitmap.
+    await env.DB.prepare(
+      "CREATE TABLE rn_replay_write_guard (user_id TEXT PRIMARY KEY)",
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO rn_replay_write_guard (user_id) VALUES (?)",
+    ).bind(userId).run();
+    await env.DB.prepare(
+      `CREATE TRIGGER rn_replay_must_not_update
+       BEFORE UPDATE ON users
+       WHEN EXISTS (
+         SELECT 1 FROM rn_replay_write_guard WHERE user_id = OLD.user_id
+       )
+       BEGIN
+         SELECT RAISE(ABORT, 'RN replay attempted a users write');
+       END`,
+    ).run();
+
+    let replay: Response;
+    try {
+      // Replaying the identical body is a no-op, not a second raise.
+      replay = await post(raise);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER rn_replay_must_not_update").run();
+      await env.DB.prepare("DROP TABLE rn_replay_write_guard").run();
+    }
     expect(replay.status).toBe(200);
     const rj = (await replay.json()) as Record<string, unknown>;
     expect(rj.status).toBe("noop");

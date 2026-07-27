@@ -9,6 +9,11 @@ import {
 } from "../src/lib/link-grant.js";
 import { sweepExpiredLinkGrantConsumptions } from "../src/lib/sweep.js";
 import { d1Count, d1Run, workerEnv } from "./helpers/workerd.js";
+import {
+  loadIssuerKey,
+  mintGrant,
+  resetIssuerKeyCache,
+} from "../../keyserver-cf/src/lib/link-grant-issuer.js";
 
 function b64u(bytes: Uint8Array): string {
   let s = "";
@@ -26,7 +31,12 @@ async function issuer() {
   );
   let bin = "";
   for (const b of raw) bin += String.fromCharCode(b);
-  return { pair, pubB64: btoa(bin) };
+  const pkcs8 = new Uint8Array(
+    (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer,
+  );
+  let secret = "";
+  for (const b of pkcs8) secret += String.fromCharCode(b);
+  return { pair, pubB64: btoa(bin), secretB64: btoa(secret) };
 }
 
 function randomJti(): string {
@@ -66,6 +76,21 @@ function request(auth?: string): Request {
 const now = () => Math.floor(Date.now() / 1000);
 
 describe("link-creation grants", () => {
+  it("accepts a grant minted by the real keyserver issuer", async () => {
+    const iss = await issuer();
+    resetIssuerKeyCache();
+    const key = await loadIssuerKey({
+      LINK_GRANT_SECRET_B64: iss.secretB64,
+      LINK_GRANT_PUBKEY_B64: iss.pubB64,
+    } as never);
+    expect(key).not.toBeNull();
+
+    const grant = await mintGrant(key!, now());
+    await expect(
+      verifyLinkGrant(request(grant.authorization), testEnv(iss.pubB64)),
+    ).resolves.toEqual({ ok: true });
+  });
+
   it("accepts a fresh, correctly signed, anonymous grant", async () => {
     const iss = await issuer();
     const env = testEnv(iss.pubB64);

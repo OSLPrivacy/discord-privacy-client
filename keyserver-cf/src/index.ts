@@ -10,6 +10,7 @@
 ///   GET    /v1/prekey-bundle/:user_id
 ///   POST   /v1/prekey-bundle/replenish
 ///   GET    /v1/selector-manifest
+///   POST   /v1/link-grant           (anonymous view-once link grant)
 ///
 /// F1.2 (Stripe + licenses):
 ///   POST   /v1/checkout-session
@@ -41,6 +42,7 @@ import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
+import { handleLinkGrant } from "./endpoints/link-grant.js";
 import { handleBillingPortal } from "./endpoints/portal.js";
 import {
   handlePrekeyBundleGet,
@@ -198,6 +200,21 @@ export default {
     } catch {
       console.error("[cron] control_inbox sweep failed");
     }
+    // View-once link-grant bookkeeping. Spent request receipts expire on
+    // their own clock; quota rows are dropped once their UTC day is over,
+    // so the table holds at most today's active identities and never
+    // accumulates a history of who created links when.
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM link_grant_receipts WHERE expires_at <= ?").bind(now),
+        env.DB.prepare("DELETE FROM link_grant_quota WHERE day < ?").bind(
+          Math.floor(now / (24 * 60 * 60)),
+        ),
+      ]);
+    } catch {
+      console.error("[cron] link grant sweep failed");
+    }
   },
 };
 
@@ -283,6 +300,24 @@ async function dispatch(
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);
+    }
+    if (path === "/v1/link-grant") {
+      // Deliberately dark. `DEPLOY.md` section 12 records that 0028's link-grant
+      // lane is committed-but-undeployed pending a fresh owner decision, and the
+      // 2026-07-26 audit declined to promote its single-use KV race *because* the
+      // route was unreachable. Migration 0029 had to ship with 0028 (wrangler
+      // applies pending migrations together), so the table now exists; this gate
+      // keeps the documented behaviour -- no grant can be issued, and
+      // cipher-store-cf's POST /v1/link keeps answering 503 -- instead of
+      // activating the lane as a side effect of a security deploy.
+      // Flip by setting LINK_GRANT_ENABLED = "true" in wrangler.toml [vars].
+      if (env.LINK_GRANT_ENABLED !== "true") {
+        return new Response(JSON.stringify({ error: "link_grant_not_enabled" }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return await handleLinkGrant(request, env);
     }
     if (path === "/v1/checkout-session") {
       return withCors(await handleCheckout(request, env), request);
