@@ -483,6 +483,10 @@ function New-StepResult {
     }
 }
 
+# The pid `launch` established for this run. Once set, every later verb must resolve to THAT
+# process, not merely to something wearing the same window class.
+$script:VmqaPinnedPid = 0
+
 function Resolve-StepSubject {
     param(
         [Parameter(Mandatory)][string]$Identifier,
@@ -491,6 +495,16 @@ function Resolve-StepSubject {
     try {
         $subject = Resolve-VmqaSubject -Identifier $Identifier -RunNonce $RunNonce
         Assert-VmqaSubject -Subject $subject -RunNonce $RunNonce | Out-Null
+        # `launch` verifies the started pid AND its image path, but every later verb re-resolves by
+        # window class alone. If the launched process exits and another one carrying the same
+        # identifier appears, the run would silently change subject mid-flight and keep grading -
+        # the wrong-process false green, arriving late instead of at the start. Pinning the pid
+        # makes the swap a hard stop rather than an invisible substitution.
+        if ($script:VmqaPinnedPid -ne 0 -and $subject.Pid -ne $script:VmqaPinnedPid) {
+            return [ordered]@{ ok = $false; subject = $null; status = 'blocked'
+                detail = "VMQA_SUBJECT_SWAPPED: resolved pid $($subject.Pid) is not the launched pid $($script:VmqaPinnedPid)"
+                markerWindowsTotal = $subject.MarkerWindowsTotal }
+        }
         return [ordered]@{ ok = $true; subject = $subject; status = ''; detail = ''; markerWindowsTotal = $subject.MarkerWindowsTotal }
     } catch {
         $message = [string]$_.Exception.Message
@@ -646,6 +660,10 @@ function Invoke-Step {
         'launch' {
             $exeSha = ([string](Get-PropertyValue -Object $stepArgs -Name 'exeSha256' -Required)).ToLowerInvariant()
             $timeoutSeconds = [int](Get-PropertyValue -Object $stepArgs -Name 'timeoutSeconds' -Default 60)
+            # Clear any pin from an earlier launch in this same run. A run may legitimately
+            # launch, kill and relaunch; without this the relaunch resolves a new pid, fails the
+            # pin check and is blocked for a reason that is not a defect.
+            $script:VmqaPinnedPid = 0
             $exePath = Join-Path (Join-Path 'C:\OSL-VMQA' $exeSha) 'osl-privacy-hub.exe'
             if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'fail' -Detail "staged exe missing: $exePath"
@@ -668,6 +686,10 @@ function Invoke-Step {
             if (-not [string]::Equals($subject.ExePath, $canonicalExePath, [StringComparison]::OrdinalIgnoreCase)) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'fail' -Detail "marker image path '$($subject.ExePath)' did not match staged exe '$canonicalExePath'"
             }
+            # Pin from here on. This is the only place a subject's identity is established by
+            # something stronger than a window class: we started the process ourselves and matched
+            # both its pid and its image path.
+            $script:VmqaPinnedPid = $subject.Pid
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail "pid=$($subject.Pid); exe=$($subject.ExePath)"
         }
         'shot' {
@@ -878,6 +900,9 @@ function Process-RunDirectory {
         return $true
     }
 
+    # Clear the pin per run. A pid carried over from a previous run would block this one for a
+    # reason that has nothing to do with it.
+    $script:VmqaPinnedPid = 0
     $runNonce = Get-RunNonce
     $stepResults = @()
     foreach ($step in $steps) {
