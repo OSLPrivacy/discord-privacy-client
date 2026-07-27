@@ -775,7 +775,7 @@ from `generate_handler!` or `main`.
 | `DuressEngine` / `DuressHandlers` / `WipeStep` | `keystore/duress.rs:242,:154,:70` | A duress password triggers a resumable wipe of identity, prekeys, TPM/keyring material, caches |
 | `BurnAlertPayload` / `sign_burn_alert` / `verify_burn_alert` | `keystore/burn_alert.rs:34,:75,:83` | Recipients get authenticated burn-alert messages proving the sender authored them |
 | `KeyServerClient::burn` / `BurnScope` | `keystore/client.rs:919`, `burn.rs:35` | A local burn also deletes keyserver wrapped keys |
-| `PrekeyState` / `replenish_prekeys` / `fetch_prekey_bundle` | `keystore/prekeys.rs:101`, `client.rs:831,:758` | Signed SPK/OPK replenishment and one-time prekey fetch are live production flows |
+| `PrekeyState` / `replenish_prekeys` / `fetch_prekey_bundle` | `keystore/prekeys.rs:101`, `client.rs:831,:758` | Signed SPK/OPK replenishment and one-time prekey fetch would be available if a production caller were wired; none was found in this inventory |
 | `WrappedKeyUpload` / `post_wrapped_key` / `fetch_wrapped_key` | `keystore/wrapped_key.rs:15`, `client.rs:805,:782` | Message keys are uploaded to and fetched from the wrapped-key service |
 | `next_peer_send_seq` / `peer_scope_commitment` / `admit_peer_content_seq` | `security.rs:2387,:2416,:2435` | Every protected message carries a sequence, and content below a burn floor is refused before rendering |
 | `plan_local_burn` / `plan_remote_friend_burn` / `apply_remote_consent_revocation` / `BurnReplayJournal::accept` | `burn_contract.rs:150,:271,:206,:388` | Burns require signed confirmations, Pro gating, revocable consent, replay journals |
@@ -1514,3 +1514,91 @@ Restoring positive acknowledgements requires a real sequence-bearing content env
 
 None. This is a production false-ack/data-retirement correction and reachability gate, `+0`
 pending independent audit; bilateral burn remains unavailable and unproved end to end.
+
+## Round 15 — stateless-v3 production truth for dormant ratchet, sender keys, and prekeys
+
+Source/test commit:
+`0d558341a68a1aa257959206efc7598242e7a044` (parent
+`744209e92fd555ad7e9ece6a0f3982b27cef5df2`, tree
+`68f3fc323bd6272d96cf0b0219815c36728d7133`). Its exact paths are:
+
+- `apps/osl-hub-ui/src/security.test.ts`
+- `crates/ipc/src/commands.rs`
+- `crates/ipc/src/lib.rs`
+
+The committed production caller is
+`main.rs:4187-4216,7493` → `broker.rs:1228-1253` →
+`cmd_osl_encrypt_message_v2_wire`. Inside that dispatcher,
+`commands.rs:2843-2853` sets `v4_dm_enabled = false`, so the retained
+Double Ratchet branch cannot run. `commands.rs:2950-2953` gates group
+sender keys on `AppState::sender_keys_enabled`; `state.rs:275-280` says
+that flag defaults false and the complete production Rust census found no
+setter to true. Both paths fall through to stateless wire v3 at
+`commands.rs:2972-2982`.
+
+Wire v3 uses the recipient identity X25519 key as both IK and SPK and
+passes `None` for the OPK (`wire_v2.rs:722-733`). The keystore definitions
+for `fetch_prekey_bundle` and `replenish_prekeys` exist, but the complete
+production Rust census under `apps/osl-hub/src` and `crates/ipc/src` found
+no call to those methods or `replenish_using_state`.
+
+The owned IPC public documentation now states the reachable stateless-v3
+posture and preserves the implemented-but-disabled v4/v5 and prekey facts
+(`lib.rs:3-13`). Stale dispatcher comments that said DMs/groups route
+through v4/v5 were narrowed to prototype/explicit-enable wording
+(`commands.rs:2826-2830,2932-2934`).
+
+### Nonvacuous gate and focused evidence
+
+`security.test.ts:10-92,421-567` scans every Rust source file under the
+two production roots, excludes `tests`, `testdata`, and `fixtures`, strips
+the conventional `cfg(test)` module plus comments, and requires:
+
+- the registered Tauri command, main wrapper, broker call, IPC dispatcher,
+  and real v3 fallback as positive controls;
+- the wire-v3 identity-as-SPK/OPK-None construction and both implemented
+  prekey methods as implementation positives;
+- no production v4 enable, sender-key enable, or prekey lifecycle call;
+- the corrected owned public wording; and
+- failure-capable mutations removing each positive caller/fallback stage,
+  enabling v4, enabling v5, adding a prekey call, weakening the corrected
+  claim, and adding comment/cfg(test)-only decoys.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "keeps ratchet,
+sender-key, and prekey claims bound to the shipping path" --reporter=dot`
+
+Result: 1 test passed, 0 failed, 5 skipped.
+
+The first focused runs failed on two real controls: the keystore methods
+are synchronous `pub fn`, not `pub async fn`, and the v3-removal mutation
+initially changed an earlier helper rather than the reachable dispatcher
+fallback. Both test defects were corrected before the passing run.
+
+### Precise remaining blocker
+
+Root `README.md:42-48` still says direct messages ride a Double Ratchet
+with forward secrecy and groups/server channels use sender keys. The
+focused claim-sensitive draft failed at `security.test.ts:419` with:
+
+`expected README to contain "Production messaging currently uses stateless wire v3"`
+
+after every owned production-path control passed. Crypto owns only the
+listed Rust/UI paths and the truth lane owns `docs/**`/website but not root
+README, so neither lane is authorized to edit that file. The handoff is
+published at:
+
+`/home/liamw/.local/share/ai-context-bus/messages/20260727T183234Z-beca80c1.json`
+
+The global public claim therefore remains blocked on an owner for
+`README.md`. No Cargo, build, install, browser, deployment, live Discord,
+or runtime action was performed.
+
+Status: `source/test-proven-only`, `+0`.
+
+## Acceptance rows this earns
+
+None. The owned IPC claims and production reachability gate are corrected,
+but the root README remains false and outside both active claim-writing
+lanes; no runtime or checklist row is earned.
