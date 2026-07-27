@@ -87,7 +87,7 @@ describe("producer-owned deployment evidence receipt v3", () => {
         artifact: "B",
         producer_sequence: 8,
         database: {
-          migration_row_count: 3,
+          migration_row_count: 4,
           schema_object_count: 3,
         },
         transition: {

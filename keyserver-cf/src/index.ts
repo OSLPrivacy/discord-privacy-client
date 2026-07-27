@@ -62,6 +62,10 @@ import {
 import {
   handleSenderFilterCapabilityFloorGet,
 } from "./endpoints/sender-filter-capability-floor.js";
+import {
+  handleSenderFilterRolloutRootAdvance,
+  handleSenderFilterRolloutRootProvision,
+} from "./endpoints/sender-filter-rollout-root.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import {
   handleWrappedKeysDelete,
@@ -319,6 +323,12 @@ async function dispatch(
 
   if (method === "POST") {
     if (path === "/v1/register") return await handleRegister(request, env);
+    if (path === "/v1/internal/sender-filter-rollout-root/provision") {
+      return await handleSenderFilterRolloutRootProvision(request, env);
+    }
+    if (path === "/v1/internal/sender-filter-rollout-root/advance") {
+      return await handleSenderFilterRolloutRootAdvance(request, env);
+    }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {

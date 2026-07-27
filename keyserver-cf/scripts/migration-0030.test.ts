@@ -135,7 +135,7 @@ describe("migration 0030 preparatory derived-identity namespace", () => {
     const refused = await register(db, body);
     expect(refused.status).toBe(400);
     expect(await refused.json()).toEqual({
-      error: "reserved derived identity namespace requires root proof verification",
+      error: "canonical identity proofs are required",
     });
     const count = await db
       .prepare("SELECT COUNT(*) AS count FROM users WHERE user_id = ?")
@@ -155,10 +155,8 @@ describe("migration 0030 preparatory derived-identity namespace", () => {
     const pair = await generateEd25519Pair();
     const body = await signedRegisterBody("ordinary-after-0030", pair);
 
-    // Unknown request fields are not authority. They are ignored and the D1
-    // guard fixes the durable state at scheme 0 with no unverified root.
-    body.identity_scheme = 1;
-    body.ik_root_ed25519_pub = pair.publicKeyB64;
+    // The legacy signed shape remains scheme 0. Scheme 1 is a distinct
+    // canonical proof-bearing branch, never a flag silently ignored here.
     expect((await register(db, body)).status).toBe(201);
     expect((await register(db, body)).status).toBe(200);
 

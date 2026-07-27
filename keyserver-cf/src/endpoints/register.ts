@@ -22,6 +22,7 @@
 /// consumer).
 
 import type { Env } from "../env.js";
+import { handleCanonicalIdentityRegister } from "./canonical-identity.js";
 import {
   enableIdentityLookup,
   getSignedIdentityForRegistration,
@@ -95,6 +96,14 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     body = (await request.json()) as Record<string, unknown>;
   } catch {
     return badRequest("malformed JSON body");
+  }
+  if (
+    body &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    body.identity_scheme === 1
+  ) {
+    return await handleCanonicalIdentityRegister(body, env);
   }
 
   // --- presence ---

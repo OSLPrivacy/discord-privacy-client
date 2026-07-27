@@ -52,6 +52,10 @@ export const DEPLOYMENT_FIXTURE_MIGRATIONS = [
     name: "0032_sender_filter_capability_floor.sql",
     sha256: "7".repeat(64),
   },
+  {
+    name: "0033_canonical_identity_rollout_authority.sql",
+    sha256: "8".repeat(64),
+  },
 ];
 
 export const TEST_PRODUCER_KEY_ID =

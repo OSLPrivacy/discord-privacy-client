@@ -459,6 +459,10 @@ export interface SignedIdentityRow {
   registered_at: string;
   last_rotated_at: string | null;
   identity_lookup_enabled: number;
+  identity_scheme: number;
+  identity_revision: number;
+  ik_root_ed25519_pub: string | null;
+  identity_bundle_proof_sig: string | null;
 }
 
 export async function getSignedIdentity(
@@ -469,7 +473,9 @@ export async function getSignedIdentity(
     .prepare(
       `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
               ik_ratchet_initial_pub, ik_x25519_signature, rn_capabilities,
-              registered_at, last_rotated_at, identity_lookup_enabled
+              registered_at, last_rotated_at, identity_lookup_enabled,
+              identity_scheme, identity_revision, ik_root_ed25519_pub,
+              identity_bundle_proof_sig
          FROM users
         WHERE user_id = ?
           AND identity_lookup_enabled = 1`,
@@ -487,7 +493,9 @@ export async function getSignedIdentityForRegistration(
     .prepare(
       `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
               ik_ratchet_initial_pub, ik_x25519_signature, rn_capabilities,
-              registered_at, last_rotated_at, identity_lookup_enabled
+              registered_at, last_rotated_at, identity_lookup_enabled,
+              identity_scheme, identity_revision, ik_root_ed25519_pub,
+              identity_bundle_proof_sig
          FROM users WHERE user_id = ?`,
     )
     .bind(userId)

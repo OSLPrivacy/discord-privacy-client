@@ -18,6 +18,7 @@
     "readiness:admit": "node scripts/admit-readiness-archive.mjs",
     "readiness:assert-refusal": "node scripts/assert-readiness-refusal.mjs",
     "sender-filter:admission": "node scripts/create-sender-filter-deployment-receipt.mjs",
+    "sender-filter:provision-genesis": "node scripts/provision-sender-filter-rollout-genesis.mjs",
     "release:select": "node scripts/select-trusted-release.mjs"
   },
   "devDependencies": {

@@ -50,6 +50,12 @@ export async function handlePubkeys(env: Env, userId: string): Promise<Response>
     rn_capabilities: row.rn_capabilities,
   };
   body.registration_sig = row.ik_x25519_signature;
+  if (row.identity_scheme === 1) {
+    body.identity_scheme = 1;
+    body.identity_revision = row.identity_revision;
+    body.ik_root_ed25519_pub = row.ik_root_ed25519_pub;
+    body.identity_bundle_proof_sig = row.identity_bundle_proof_sig;
+  }
   return json(body);
 }
 

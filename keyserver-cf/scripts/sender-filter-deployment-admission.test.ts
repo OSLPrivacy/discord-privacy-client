@@ -78,14 +78,18 @@ describe("source-only signed sender-filter deployment admission", () => {
     const files = validateSenderFilterSourceClosure(
       await committedSourceValues(),
     );
-    expect(files).toHaveLength(7);
+    expect(files).toHaveLength(19);
     expect(files.every((file) => file.bytes > 0)).toBe(true);
     expect(files.map((file) => file.role)).toEqual(
       expect.arrayContaining([
         "migration-0031",
+        "migration-0033-canonical-rollout-authority",
         "signed-sender-filter-route",
         "capability-route",
         "signed-filter-canonical-bytes",
+        "canonical-opaque-id-and-full-bundle-proof",
+        "shipping-rollout-root-genesis-and-cas",
+        "shipping-d1-admin-genesis-provisioning-interface",
         "nonempty-route-behavior-fixture",
       ]),
     );

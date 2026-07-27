@@ -6,7 +6,7 @@ const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 export const MAX_PROTOCOL_ID_BYTES = 256;
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
 const REQUEST_ID_RE = /^[A-Za-z0-9_-]{43}$/;
-const RESERVED_DERIVED_ID_RE = /^osl1_[a-z2-7]{32}$/;
+const RESERVED_DERIVED_ID_RE = /^osl1_(?:[a-z2-7]{32}|[a-z2-7]{52})$/;
 
 export function isNonEmptyBase64(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && BASE64_RE.test(value);
@@ -26,7 +26,14 @@ export function isProtocolId(value: unknown): value is string {
   );
 }
 
-/** Reserved derived-identity namespace: lowercase RFC4648 base32, no padding. */
+/**
+ * Reserved derived-identity namespace.
+ *
+ * The 32-character lowercase RFC 4648 base32 form is the never-activated
+ * preparatory scheme. Canonical scheme 1 uses the full SHA-256 digest, which
+ * is 52 lowercase RFC 4648 base32 characters without padding. Both remain
+ * reserved from legacy first-write-wins registration.
+ */
 export function isReservedDerivedId(value: unknown): value is string {
   return typeof value === "string" && RESERVED_DERIVED_ID_RE.test(value);
 }
