@@ -4,12 +4,15 @@ A step file is a JSON array of `{ id, verb, args }`. `vmqa-run.sh run --steps <f
 strict V2 request envelope (`schemaVersion`, `runId`, `identifier`, `runStartUtc`, executable
 SHA-256, build-identity SHA-256, the closed build identity, and `steps`) and drops it on the share.
 Unknown fields and every schema version other than 2 are refused. `run` and `selftest` require a
-retained `build-identity.json` and the exact local executable path so the host measures the bytes
-independently instead of trusting caller-provided digests. They also require the retained
-exact-build evidence directory (`source.tar`, dist archive/manifest, raw npm/Cargo logs, and the
-closed build log) whose hashes are part of the identity and are copied beside each run. The caller
-must also supply the independently selected full expected commit and tree to build, stamp, run,
-selftest, and cleanup verification; the embedded identity cannot choose its own trust root.
+producer-owned bundle. Its `build-identity.json`, exact executable and loader, dist, source archive,
+dist archive/manifest, raw npm setup/build and Cargo stdout/stderr, and closed build log are all
+hash-bound and copied beside each run. `vmqa_build_evidence.py create` owns the immutable source
+commit/tree pin, extracts that exact Git object into a fresh scratch, builds into a fresh empty
+artifact target with fixed hashed tools and closed environments, and atomically publishes every
+output under one new bundle root. A caller supplies only a Git object provider and the new bundle
+path; it cannot select artifacts, logs, expected revisions, a shared target, or separate
+destinations. `push`, `run`, and `selftest` reopen and validate the complete bundle immediately
+before use. Production consumers refuse fixture-mode bundles.
 
 ## Why there is only one self-test step file
 

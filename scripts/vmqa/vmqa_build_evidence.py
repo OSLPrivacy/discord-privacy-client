@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
-import io
 import json
 import os
 import re
@@ -13,14 +14,25 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 SCHEMA_VERSION = 2
+PINNED_COMMIT = "be5355d79e558ad6abf8f3cc5ee0a228829e7def"
+PINNED_TREE = "56427995071bf2224627ada8da447545b19ba55e"
+PINNED_LOADER_SOURCE = Path(
+    "/mnt/c/Users/liamw/OSL-Scrub-Demo/WebView2Loader.dll"
+)
+PINNED_LOADER_SHA256 = (
+    "8427b1fc58ec707813e5c0a51eb5d69397bb333250a7b891be4d3b123f1e0f1c"
+)
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+TARGET_ARTIFACT_PATH = "x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
+NPM_SETUP_COMMAND = ["npm", "ci", "--no-audit", "--no-fund"]
 EXPECTED_COMMANDS = [
     ["npm", "run", "build"],
     [
@@ -36,18 +48,67 @@ EXPECTED_COMMANDS = [
         "--message-format=json",
     ],
 ]
+IDENTITY_COMMANDS = [EXPECTED_COMMANDS[0], EXPECTED_COMMANDS[1][:-1]]
+FINAL_EXE = "outputs/osl-privacy-hub.exe"
+FINAL_LOADER = "outputs/WebView2Loader.dll"
+FINAL_DIST = "outputs/dist"
+FINAL_EVIDENCE = "build-evidence"
+FIXTURE_LOADER_BYTES = b"fixture-WebView2Loader-produced-by-vmqa\n"
 EVIDENCE_FILES = {
     "source.tar",
     "dist.tar",
     "dist-manifest.json",
+    "npm-ci.log",
+    "npm-ci.stderr",
     "npm-build.log",
+    "npm-build.stderr",
     "cargo-build.jsonl",
+    "cargo-build.stderr",
+    "WebView2Loader.dll",
     "build-log.json",
 }
 REQUIRED_SOURCE_PATHS = {
     "Cargo.toml",
     "apps/osl-hub/Cargo.toml",
     "apps/osl-hub-ui/package.json",
+}
+REQUIRED_PRODUCT_MARKERS = {
+    "apps/osl-hub/Cargo.toml": re.compile(rb'name\s*=\s*"osl-privacy-hub"')
+}
+PRODUCTION_TOOL_PINS = {
+    "git": (
+        Path("/usr/bin/git"),
+        "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+    ),
+    "npm": (
+        Path("/home/liamw/.nvm/versions/node/v24.14.0/bin/npm"),
+        "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
+    ),
+    "node": (
+        Path("/home/liamw/.nvm/versions/node/v24.14.0/bin/node"),
+        "e237a2839d0cbdc9a9a2adda1a184afc0f5b20306ffbe923af5686550472d8a8",
+    ),
+    "osl-cargo": (
+        Path("/home/liamw/.local/bin/osl-cargo"),
+        "b27c3f5c974184f086fcb24da95d6397c333155f2ab2e5e638eafdac57da600a",
+    ),
+    "rustc": (
+        Path("/home/liamw/.cargo/bin/rustc"),
+        "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10",
+    ),
+    "cargo": (
+        Path("/home/liamw/.cargo/bin/cargo"),
+        "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10",
+    ),
+}
+FIXTURE_TOOL_HASHES = {
+    "git": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+    "npm": "98e96abb7d7cb4d4ab4ec48c28ea8c9b554dd36f5516781a2153de7656c63738",
+    "node": "cb67aa7b5cab36272fe17bc6cf971c73545da2f4cc97669dcde9f32dc1e72bdf",
+    "osl-cargo": "50523faf76d2cf9ac9e8b0e1f1e7821e574ec4278b5d82147d0263863227e0a1",
+    "rustc": "3fff206f83d8b45a2c637a02e4ff1bd39cefbaf311d3f97e496dc0e974ac0196",
+    "cargo": "2e9339e58bac8d36b1312ea8fbcab6c045eb401ac4fc0842ff64a9bab88b1afe",
+    "osl-cargo-outside": "31148061d99f824e925c5f274585bf2ba3be00d025af8604f8b4c07eb842767d",
 }
 
 
@@ -140,7 +201,11 @@ def git_tree_from_archive(archive: tarfile.TarFile) -> str:
 
 def dist_entries_from_directory(directory: Path) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for path in sorted(candidate for candidate in directory.rglob("*") if candidate.is_file()):
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise EvidenceError(f"dist contains a symlink: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(directory).as_posix()
         entries.append(
             {
@@ -228,9 +293,21 @@ def parse_cargo_artifact(path: Path) -> str:
     return artifacts[0]
 
 
-def git_output(repository: Path, *args: str) -> str:
+def git_environment() -> dict[str, str]:
+    return {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+    }
+
+
+def git_output(repository: Path, git_path: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(repository), *args],
+        [str(git_path), "-C", str(repository), *args],
+        env=git_environment(),
         text=True,
         capture_output=True,
         check=False,
@@ -240,47 +317,107 @@ def git_output(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def create_evidence(args: argparse.Namespace) -> None:
-    source = Path(args.source_repo).resolve()
-    dist = Path(args.dist).resolve()
-    exe = Path(args.exe).resolve()
-    loader = Path(args.loader).resolve()
-    npm_log = Path(args.npm_log).resolve()
-    cargo_log = Path(args.cargo_log).resolve()
-    output = Path(args.output).resolve()
-    for path, label in (
-        (exe, "executable"),
-        (loader, "loader"),
-        (npm_log, "npm log"),
-        (cargo_log, "cargo log"),
+def require_new_bundle_path(raw_path: str) -> tuple[Path, int]:
+    output = Path(os.path.abspath(raw_path))
+    if os.path.lexists(output):
+        raise EvidenceError(f"bundle destination already exists: {output}")
+    parent = output.parent
+    if not parent.is_dir():
+        raise EvidenceError(f"bundle parent must already exist: {parent}")
+    cursor = Path(output.anchor)
+    for part in output.parts[1:-1]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise EvidenceError(f"bundle path contains a symlink component: {cursor}")
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    parent_fd = os.open(parent, flags)
+    parent_stat = os.stat(parent, follow_symlinks=False)
+    opened_stat = os.fstat(parent_fd)
+    if (parent_stat.st_dev, parent_stat.st_ino) != (
+        opened_stat.st_dev,
+        opened_stat.st_ino,
     ):
-        if not path.is_file():
-            raise EvidenceError(f"{label} is missing: {path}")
-    if not dist.is_dir():
-        raise EvidenceError(f"dist directory is missing: {dist}")
-    if git_output(source, "status", "--porcelain=v1", "--untracked-files=all"):
-        raise EvidenceError("source worktree is not clean")
-    commit = git_output(source, "rev-parse", "HEAD")
-    tree = git_output(source, "rev-parse", "HEAD^{tree}")
-    if not COMMIT_RE.fullmatch(commit) or not COMMIT_RE.fullmatch(tree):
-        raise EvidenceError("source commit/tree is not exact")
+        os.close(parent_fd)
+        raise EvidenceError("bundle parent changed while it was opened")
+    return output, parent_fd
+
+
+def rename_noreplace(source: Path, parent_fd: int, destination_name: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise EvidenceError("atomic no-overwrite publication requires renameat2")
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,
+        os.fsencode(source),
+        parent_fd,
+        os.fsencode(destination_name),
+        1,
+    )
+    if result != 0:
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise EvidenceError("bundle destination appeared before atomic publication")
+        raise OSError(code, os.strerror(code))
+
+
+def extract_source_tar(source_tar: Path, scratch: Path) -> None:
+    with tarfile.open(source_tar, "r:") as archive:
+        for member in archive.getmembers():
+            name = safe_member_name(member.name, "source archive")
+            destination = scratch / name
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise EvidenceError("source archive contains an unsupported extraction member")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            data = archive.extractfile(member)
+            if data is None:
+                raise EvidenceError(f"source archive member cannot be read: {name}")
+            destination.write_bytes(data.read())
+            destination.chmod(member.mode & 0o777)
+
+
+def archive_pinned_source(provider: Path, destination: Path, git_path: Path) -> None:
+    try:
+        provider_commit = git_output(
+            provider, git_path, "rev-parse", f"{PINNED_COMMIT}^{{commit}}"
+        )
+    except EvidenceError as exc:
+        raise EvidenceError("source provider lacks the immutable pinned commit") from exc
+    if provider_commit != PINNED_COMMIT:
+        raise EvidenceError("source provider lacks the immutable pinned commit")
     if (
-        commit != args.expected_commit
-        or tree != args.expected_tree
-        or not COMMIT_RE.fullmatch(args.expected_commit)
-        or not COMMIT_RE.fullmatch(args.expected_tree)
+        git_output(provider, git_path, "rev-parse", f"{PINNED_COMMIT}^{{tree}}")
+        != PINNED_TREE
     ):
-        raise EvidenceError("source differs from independently expected commit/tree")
-    output.mkdir(parents=True, exist_ok=True)
-    actual = {path.name for path in output.iterdir()}
-    if actual:
-        raise EvidenceError(f"evidence output directory is not empty: {sorted(actual)}")
-    source_tar = output / "source.tar"
+        raise EvidenceError("source provider pinned tree differs from immutable pin")
     subprocess.run(
-        ["git", "-C", str(source), "archive", "--format=tar", "-o", str(source_tar), "HEAD"],
+        [
+            str(git_path),
+            "-C",
+            str(provider),
+            "archive",
+            "--format=tar",
+            "-o",
+            str(destination),
+            PINNED_COMMIT,
+        ],
+        env=git_environment(),
         check=True,
     )
-    with tarfile.open(source_tar, "r:") as archive:
+    with tarfile.open(destination, "r:") as archive:
         files = {
             safe_member_name(member.name, "source archive")
             for member in archive.getmembers()
@@ -290,85 +427,460 @@ def create_evidence(args: argparse.Namespace) -> None:
             raise EvidenceError(
                 f"source archive lacks product files: {sorted(REQUIRED_SOURCE_PATHS - files)}"
             )
-        if archive.pax_headers.get("comment") != commit:
+        # Paths alone are not provenance: a clean look-alike repository can
+        # reproduce the same tree shape and feed an arbitrary executable.
+        # Require the pinned product package marker in the archived bytes.
+        for marker_path, marker in REQUIRED_PRODUCT_MARKERS.items():
+            member = archive.extractfile(marker_path)
+            if member is None or marker.search(member.read()) is None:
+                raise EvidenceError("source archive is not the pinned OSL product")
+        if archive.pax_headers.get("comment") != PINNED_COMMIT:
             raise EvidenceError("source archive does not carry the named Git commit")
-        if git_tree_from_archive(archive) != tree:
+        if git_tree_from_archive(archive) != PINNED_TREE:
             raise EvidenceError("source archive bytes do not reproduce the named Git tree")
-    entries = dist_entries_from_directory(dist)
-    (output / "dist-manifest.json").write_text(
-        json.dumps(
-            {"schemaVersion": 2, "files": entries},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n",
-        encoding="utf-8",
+
+
+def run_command(
+    argv: list[str], cwd: Path, environment: dict[str, str]
+) -> tuple[bytes, bytes]:
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        check=False,
     )
-    write_dist_tar(dist, output / "dist.tar", entries)
-    (output / "npm-build.log").write_bytes(npm_log.read_bytes())
-    (output / "cargo-build.jsonl").write_bytes(cargo_log.read_bytes())
-    artifact_path = Path(parse_cargo_artifact(cargo_log)).resolve()
-    if artifact_path != exe:
-        raise EvidenceError(
-            f"cargo compiler artifact {artifact_path} differs from supplied executable {exe}"
-        )
-    try:
-        artifact_relative = exe.relative_to(source).as_posix()
-    except ValueError as exc:
-        raise EvidenceError("executable is outside the named source repository") from exc
-    if not artifact_relative.endswith(
-        "/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
-    ):
-        raise EvidenceError("executable is not the exact Windows release artifact path")
-    osl_cargo = shutil.which("osl-cargo")
-    if osl_cargo is None:
-        raise EvidenceError("osl-cargo is unavailable")
-    def version(*command: str) -> str:
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            raise EvidenceError(f"toolchain command failed: {command!r}")
-        return result.stdout.strip()
-    log = {
-        "schemaVersion": 2,
-        "source": {
-            "commit": commit,
-            "tree": tree,
-            "clean": True,
-            "dirtyFingerprint": EMPTY_SHA256,
-            "archiveFile": "source.tar",
-            "archiveSha256": sha256_file(source_tar),
-        },
-        "ui": {
-            "distSha256": dist_digest(entries),
-            "archiveFile": "dist.tar",
-            "archiveSha256": sha256_file(output / "dist.tar"),
-            "manifestFile": "dist-manifest.json",
-            "manifestSha256": sha256_file(output / "dist-manifest.json"),
-        },
-        "commands": EXPECTED_COMMANDS,
-        "toolchain": {
-            "rustc": version("rustc", "-Vv").replace("\n", ";"),
-            "cargo": version("cargo", "-V"),
-            "node": version("node", "-v"),
-            "npm": version("npm", "-v"),
-            "oslCargoSha256": sha256_file(Path(osl_cargo)),
-        },
-        "outputs": {
-            "npmFile": "npm-build.log",
-            "npmSha256": sha256_file(output / "npm-build.log"),
-            "cargoFile": "cargo-build.jsonl",
-            "cargoSha256": sha256_file(output / "cargo-build.jsonl"),
-        },
-        "artifact": {
-            "path": artifact_relative,
-            "sha256": sha256_file(exe),
-            "sizeBytes": exe.stat().st_size,
+    if result.returncode != 0:
+        raise EvidenceError(f"build command failed ({result.returncode}): {argv!r}")
+    return result.stdout, result.stderr
+
+
+def selected_tool_pins(
+    fixture: bool, fixture_scenario: str = "valid"
+) -> dict[str, tuple[Path, str]]:
+    if not fixture:
+        return PRODUCTION_TOOL_PINS
+    fixture_dir = Path(__file__).resolve().parent / "fixtures" / "fake-build-tools"
+    cargo_tool = (
+        "osl-cargo-outside" if fixture_scenario == "outside-artifact" else "osl-cargo"
+    )
+    return {
+        "git": (Path("/usr/bin/git"), FIXTURE_TOOL_HASHES["git"]),
+        "osl-cargo": (
+            fixture_dir / cargo_tool,
+            FIXTURE_TOOL_HASHES[cargo_tool],
+        ),
+        **{
+            name: (fixture_dir / name, FIXTURE_TOOL_HASHES[name])
+            for name in ("npm", "node", "rustc", "cargo")
         },
     }
-    (output / "build-log.json").write_text(
-        json.dumps(log, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+
+
+def validate_tools(
+    fixture: bool, fixture_scenario: str = "valid"
+) -> dict[str, dict[str, str]]:
+    tools: dict[str, dict[str, str]] = {}
+    for name, (invoked, expected_sha) in selected_tool_pins(
+        fixture, fixture_scenario
+    ).items():
+        if not invoked.is_file():
+            raise EvidenceError(f"pinned {name} tool is missing: {invoked}")
+        resolved = invoked.resolve(strict=True)
+        observed_sha = sha256_file(resolved)
+        if observed_sha != expected_sha:
+            raise EvidenceError(
+                f"pinned {name} tool changed: expected {expected_sha}, got {observed_sha}"
+            )
+        tools[name] = {
+            "name": name,
+            "invokedPath": invoked.as_posix(),
+            "resolvedPath": resolved.as_posix(),
+            "sha256": observed_sha,
+        }
+    return tools
+
+
+def build_environments(
+    tools: dict[str, dict[str, str]],
+    work: Path,
+    cargo_target: Path,
+) -> tuple[dict[str, str], dict[str, str]]:
+    path_dirs: list[str] = []
+    for name in ("node", "cargo", "rustc", "osl-cargo", "npm"):
+        directory = str(Path(tools[name]["invokedPath"]).parent)
+        if directory not in path_dirs:
+            path_dirs.append(directory)
+    for directory in ("/usr/bin", "/bin"):
+        if directory not in path_dirs:
+            path_dirs.append(directory)
+    common = {
+        "HOME": "/home/liamw",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "LOGNAME": "liamw",
+        "PATH": ":".join(path_dirs),
+        "USER": "liamw",
+    }
+    npm_environment = {
+        **common,
+        "npm_config_audit": "false",
+        "npm_config_cache": (work / "npm-cache").as_posix(),
+        "npm_config_fund": "false",
+    }
+    cargo_environment = {
+        **common,
+        "CARGO_HOME": "/home/liamw/.cargo",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": cargo_target.as_posix(),
+        "OSL_CARGO_JOBS": "3",
+        "OSL_CARGO_MAXLOAD": "24",
+        "OSL_CARGO_MIN_HOST_FREE_GB": "50",
+        "RUSTUP_HOME": "/home/liamw/.rustup",
+    }
+    return npm_environment, cargo_environment
+
+
+def read_loader_once(fixture: bool) -> tuple[bytes, str]:
+    if fixture:
+        return FIXTURE_LOADER_BYTES, "fixture:embedded"
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(PINNED_LOADER_SOURCE, flags)
+    except OSError as exc:
+        raise EvidenceError("immutable VMQA WebView2 loader is missing") from exc
+    with os.fdopen(descriptor, "rb") as handle:
+        data = handle.read()
+    if hashlib.sha256(data).hexdigest() != PINNED_LOADER_SHA256:
+        raise EvidenceError("immutable VMQA WebView2 loader changed")
+    return data, PINNED_LOADER_SOURCE.as_posix()
+
+
+def execution_record(
+    *,
+    logical_argv: list[str],
+    actual_argv: list[str],
+    cwd: str,
+    environment: dict[str, str],
+    stdout_file: str,
+    stderr_file: str,
+    evidence: Path,
+) -> dict[str, Any]:
+    return {
+        "logicalArgv": logical_argv,
+        "argv": actual_argv,
+        "cwd": cwd,
+        "environment": environment,
+        "exitCode": 0,
+        "stdoutFile": stdout_file,
+        "stdoutSha256": sha256_file(evidence / stdout_file),
+        "stderrFile": stderr_file,
+        "stderrSha256": sha256_file(evidence / stderr_file),
+    }
+
+
+def make_identity(log: dict[str, Any], evidence: Path) -> dict[str, Any]:
+    return {
+        "schemaVersion": 2,
+        "source": {
+            "commit": log["source"]["commit"],
+            "tree": log["source"]["tree"],
+            "clean": True,
+            "dirtyFingerprint": EMPTY_SHA256,
+        },
+        "ui": {
+            "path": FINAL_DIST,
+            "distSha256": log["ui"]["distSha256"],
+        },
+        "build": {
+            "target": "x86_64-pc-windows-gnu",
+            "features": ["desktop"],
+            "profile": "release",
+            "commands": IDENTITY_COMMANDS,
+            "toolchain": log["toolchain"],
+        },
+        "artifacts": {
+            "executable": {
+                "name": "osl-privacy-hub.exe",
+                "path": FINAL_EXE,
+                "sha256": log["artifact"]["sha256"],
+                "sizeBytes": log["artifact"]["sizeBytes"],
+            },
+            "loader": {
+                "name": "WebView2Loader.dll",
+                "path": FINAL_LOADER,
+                "sha256": log["loader"]["sha256"],
+                "sizeBytes": log["loader"]["sizeBytes"],
+            },
+        },
+        "evidence": {
+            "directory": FINAL_EVIDENCE,
+            "sourceArchiveSha256": sha256_file(evidence / "source.tar"),
+            "distArchiveSha256": sha256_file(evidence / "dist.tar"),
+            "distManifestSha256": sha256_file(evidence / "dist-manifest.json"),
+            "npmBuildLogSha256": sha256_file(evidence / "npm-build.log"),
+            "cargoBuildLogSha256": sha256_file(evidence / "cargo-build.jsonl"),
+            "buildLogSha256": sha256_file(evidence / "build-log.json"),
+        },
+    }
+
+
+def create_evidence(args: argparse.Namespace) -> None:
+    forbidden_inputs = {
+        name: getattr(args, name)
+        for name in (
+            "dist",
+            "exe",
+            "loader",
+            "npm_log",
+            "cargo_log",
+            "expected_commit",
+            "expected_tree",
+            "exe_destination",
+            "dist_destination",
+            "loader_destination",
+            "shared_target_dir",
+        )
+        if getattr(args, name) is not None
+    }
+    if forbidden_inputs:
+        raise EvidenceError(
+            "caller-authored build inputs are forbidden: "
+            + ", ".join(sorted(forbidden_inputs))
+        )
+    fixture = bool(args.fixture)
+    fixture_scenario = args.fixture_scenario
+    provider = Path(args.source_repo).resolve()
+    output, parent_fd = require_new_bundle_path(args.output)
+    if fixture and not output.as_posix().startswith("/tmp/"):
+        os.close(parent_fd)
+        raise EvidenceError("fixture bundles are restricted to /tmp")
+    tools = validate_tools(fixture, fixture_scenario)
+    loader_bytes, loader_source = read_loader_once(fixture)
+    work = Path(tempfile.mkdtemp(prefix=".vmqa-build-", dir=output.parent))
+    published = False
+    published_inode: tuple[int, int] | None = None
+    try:
+        bundle = work / "bundle"
+        evidence = bundle / FINAL_EVIDENCE
+        outputs = bundle / "outputs"
+        scratch = work / "scratch"
+        cargo_target = work / "cargo-target"
+        bundle.mkdir()
+        evidence.mkdir()
+        outputs.mkdir()
+        scratch.mkdir()
+        cargo_target.mkdir()
+        if any(cargo_target.iterdir()):
+            raise EvidenceError("producer-owned Cargo target was not born empty")
+        source_tar = evidence / "source.tar"
+        archive_pinned_source(provider, source_tar, Path(tools["git"]["invokedPath"]))
+        extract_source_tar(source_tar, scratch)
+        ui_dir = scratch / "apps/osl-hub-ui"
+        hub_dir = scratch / "apps/osl-hub"
+        npm_environment, cargo_environment = build_environments(
+            tools, work, cargo_target
+        )
+        npm_ci_argv = [tools["npm"]["invokedPath"], *NPM_SETUP_COMMAND[1:]]
+        npm_build_argv = [tools["npm"]["invokedPath"], *EXPECTED_COMMANDS[0][1:]]
+        cargo_argv = [
+            tools["osl-cargo"]["invokedPath"],
+            *EXPECTED_COMMANDS[1][1:],
+        ]
+        npm_ci_stdout, npm_ci_stderr = run_command(
+            npm_ci_argv, ui_dir, npm_environment
+        )
+        npm_stdout, npm_stderr = run_command(
+            npm_build_argv, ui_dir, npm_environment
+        )
+        cargo_stdout, cargo_stderr = run_command(
+            cargo_argv, hub_dir, cargo_environment
+        )
+        (evidence / "npm-ci.log").write_bytes(npm_ci_stdout)
+        (evidence / "npm-ci.stderr").write_bytes(npm_ci_stderr)
+        (evidence / "npm-build.log").write_bytes(npm_stdout)
+        (evidence / "npm-build.stderr").write_bytes(npm_stderr)
+        (evidence / "cargo-build.jsonl").write_bytes(cargo_stdout)
+        (evidence / "cargo-build.stderr").write_bytes(cargo_stderr)
+        (evidence / "WebView2Loader.dll").write_bytes(loader_bytes)
+        if hashlib.sha256((evidence / "WebView2Loader.dll").read_bytes()).hexdigest() != hashlib.sha256(loader_bytes).hexdigest():
+            raise EvidenceError("retained loader bytes changed after the single owned read")
+        dist = ui_dir / "dist"
+        if not dist.is_dir():
+            raise EvidenceError("owned npm build did not produce dist directory")
+        reported_artifact = Path(
+            parse_cargo_artifact(evidence / "cargo-build.jsonl")
+        )
+        artifact_path = (
+            reported_artifact
+            if reported_artifact.is_absolute()
+            else hub_dir / reported_artifact
+        ).resolve()
+        canonical_artifact = (cargo_target / TARGET_ARTIFACT_PATH).resolve()
+        if artifact_path != canonical_artifact or not canonical_artifact.is_file():
+            raise EvidenceError(
+                "owned cargo build did not produce the canonical fresh-target executable"
+            )
+        entries = dist_entries_from_directory(dist)
+        (evidence / "dist-manifest.json").write_text(
+            json.dumps(
+                {"schemaVersion": 2, "files": entries},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_dist_tar(dist, evidence / "dist.tar", entries)
+        def version(command: list[str], environment: dict[str, str]) -> str:
+            result = subprocess.run(
+                command,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                raise EvidenceError(f"toolchain command failed: {command!r}")
+            return result.stdout.strip()
+
+        tool_descriptors = [tools[name] for name in sorted(tools)]
+        log = {
+            "schemaVersion": 2,
+            "mode": "fixture" if fixture else "production",
+            "source": {
+                "commit": PINNED_COMMIT,
+                "tree": PINNED_TREE,
+                "clean": True,
+                "dirtyFingerprint": EMPTY_SHA256,
+                "archiveFile": "source.tar",
+                "archiveSha256": sha256_file(source_tar),
+            },
+            "ui": {
+                "distSha256": dist_digest(entries),
+                "archiveFile": "dist.tar",
+                "archiveSha256": sha256_file(evidence / "dist.tar"),
+                "manifestFile": "dist-manifest.json",
+                "manifestSha256": sha256_file(evidence / "dist-manifest.json"),
+                "finalPath": FINAL_DIST,
+            },
+            "commands": EXPECTED_COMMANDS,
+            "toolchain": {
+                "rustc": version(
+                    [tools["rustc"]["invokedPath"], "-Vv"], cargo_environment
+                ).replace("\n", ";"),
+                "cargo": version(
+                    [tools["cargo"]["invokedPath"], "-V"], cargo_environment
+                ),
+                "node": version(
+                    [tools["node"]["invokedPath"], "-v"], npm_environment
+                ),
+                "npm": version(
+                    [tools["npm"]["invokedPath"], "-v"], npm_environment
+                ),
+                "tools": tool_descriptors,
+            },
+            "outputs": {
+                "npmFile": "npm-build.log",
+                "npmSha256": sha256_file(evidence / "npm-build.log"),
+                "cargoFile": "cargo-build.jsonl",
+                "cargoSha256": sha256_file(evidence / "cargo-build.jsonl"),
+            },
+            "artifact": {
+                "path": canonical_artifact.as_posix(),
+                "finalPath": FINAL_EXE,
+                "sha256": sha256_file(canonical_artifact),
+                "sizeBytes": canonical_artifact.stat().st_size,
+            },
+            "loader": {
+                "sourcePath": loader_source,
+                "file": "WebView2Loader.dll",
+                "finalPath": FINAL_LOADER,
+                "sha256": hashlib.sha256(loader_bytes).hexdigest(),
+                "sizeBytes": len(loader_bytes),
+            },
+            "execution": [
+                execution_record(
+                    logical_argv=NPM_SETUP_COMMAND,
+                    actual_argv=npm_ci_argv,
+                    cwd="apps/osl-hub-ui",
+                    environment=npm_environment,
+                    stdout_file="npm-ci.log",
+                    stderr_file="npm-ci.stderr",
+                    evidence=evidence,
+                ),
+                execution_record(
+                    logical_argv=EXPECTED_COMMANDS[0],
+                    actual_argv=npm_build_argv,
+                    cwd="apps/osl-hub-ui",
+                    environment=npm_environment,
+                    stdout_file="npm-build.log",
+                    stderr_file="npm-build.stderr",
+                    evidence=evidence,
+                ),
+                execution_record(
+                    logical_argv=EXPECTED_COMMANDS[1],
+                    actual_argv=cargo_argv,
+                    cwd="apps/osl-hub",
+                    environment=cargo_environment,
+                    stdout_file="cargo-build.jsonl",
+                    stderr_file="cargo-build.stderr",
+                    evidence=evidence,
+                ),
+            ],
+        }
+        (evidence / "build-log.json").write_text(
+            json.dumps(log, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        shutil.copyfile(canonical_artifact, outputs / "osl-privacy-hub.exe")
+        shutil.copyfile(evidence / "WebView2Loader.dll", outputs / "WebView2Loader.dll")
+        shutil.copytree(dist, outputs / "dist")
+        identity = make_identity(log, evidence)
+        (bundle / "build-identity.json").write_text(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        verify_bundle(bundle, allow_fixture=fixture)
+        parent_stat = os.stat(output.parent, follow_symlinks=False)
+        opened_stat = os.fstat(parent_fd)
+        if (parent_stat.st_dev, parent_stat.st_ino) != (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+        ):
+            raise EvidenceError("bundle parent changed before publication")
+        staged_stat = os.stat(bundle, follow_symlinks=False)
+        published_inode = (staged_stat.st_dev, staged_stat.st_ino)
+        rename_noreplace(bundle, parent_fd, output.name)
+        published = True
+        final_stat = os.stat(output, follow_symlinks=False)
+        if (final_stat.st_dev, final_stat.st_ino) != published_inode:
+            raise EvidenceError("published bundle path was swapped")
+        verify_bundle(output, allow_fixture=fixture)
+        final_stat = os.stat(output, follow_symlinks=False)
+        if (final_stat.st_dev, final_stat.st_ino) != published_inode:
+            raise EvidenceError("published bundle changed during final validation")
+    except Exception:
+        should_cleanup = False
+        if published and published_inode is not None:
+            try:
+                current = os.stat(output, follow_symlinks=False)
+                should_cleanup = (
+                    output.is_dir()
+                    and not output.is_symlink()
+                    and (current.st_dev, current.st_ino) == published_inode
+                )
+            except OSError:
+                pass
+        if should_cleanup:
+            shutil.rmtree(output)
+        raise
+    finally:
+        os.close(parent_fd)
+        if work.exists():
+            shutil.rmtree(work)
 
 
 def verify_evidence(
@@ -376,7 +888,8 @@ def verify_evidence(
 ) -> dict[str, Any]:
     actual_files = {path.name for path in directory.iterdir()}
     if actual_files != EVIDENCE_FILES or not all(
-        (directory / name).is_file() for name in EVIDENCE_FILES
+        (directory / name).is_file() and not (directory / name).is_symlink()
+        for name in EVIDENCE_FILES
     ):
         raise EvidenceError(
             f"build evidence files are not exact; missing={sorted(EVIDENCE_FILES - actual_files)} "
@@ -386,17 +899,23 @@ def verify_evidence(
         load_json(directory / "build-log.json", "build log"),
         {
             "schemaVersion",
+            "mode",
             "source",
             "ui",
             "commands",
             "toolchain",
             "outputs",
             "artifact",
+            "loader",
+            "execution",
         },
         "buildLog",
     )
     if type(log["schemaVersion"]) is not int or log["schemaVersion"] != 2:
         raise EvidenceError("buildLog.schemaVersion must be exactly 2")
+    if log["mode"] not in ("production", "fixture"):
+        raise EvidenceError("buildLog.mode is not exact")
+    fixture = log["mode"] == "fixture"
     source = exact_object(
         log["source"],
         {"commit", "tree", "clean", "dirtyFingerprint", "archiveFile", "archiveSha256"},
@@ -410,6 +929,7 @@ def verify_evidence(
             "archiveSha256",
             "manifestFile",
             "manifestSha256",
+            "finalPath",
         },
         "buildLog.ui",
     )
@@ -419,21 +939,177 @@ def verify_evidence(
         "buildLog.outputs",
     )
     artifact = exact_object(
-        log["artifact"], {"path", "sha256", "sizeBytes"}, "buildLog.artifact"
+        log["artifact"],
+        {"path", "finalPath", "sha256", "sizeBytes"},
+        "buildLog.artifact",
     )
+    loader = exact_object(
+        log["loader"],
+        {"sourcePath", "file", "finalPath", "sha256", "sizeBytes"},
+        "buildLog.loader",
+    )
+    expected_loader_source = (
+        "fixture:embedded" if fixture else PINNED_LOADER_SOURCE.as_posix()
+    )
+    expected_loader_sha = (
+        hashlib.sha256(FIXTURE_LOADER_BYTES).hexdigest()
+        if fixture
+        else PINNED_LOADER_SHA256
+    )
+    if (
+        loader["sourcePath"] != expected_loader_source
+        or loader["file"] != "WebView2Loader.dll"
+        or loader["finalPath"] != FINAL_LOADER
+        or loader["sha256"] != expected_loader_sha
+        or type(loader["sizeBytes"]) is not int
+        or loader["sizeBytes"] < 1
+        or sha256_file(directory / "WebView2Loader.dll") != loader["sha256"]
+        or (directory / "WebView2Loader.dll").stat().st_size != loader["sizeBytes"]
+    ):
+        raise EvidenceError(
+            "build log loader does not bind the immutable retained bytes"
+        )
+    if not isinstance(artifact["path"], str):
+        raise EvidenceError("build log artifact path must be a string")
+    artifact_path = PurePosixPath(artifact["path"])
+    target_suffix = PurePosixPath(TARGET_ARTIFACT_PATH)
+    if (
+        not artifact_path.is_absolute()
+        or artifact_path.parts[-len(target_suffix.parts) :] != target_suffix.parts
+    ):
+        raise EvidenceError("build log artifact is not in the producer-owned Cargo target")
+    retained_target = artifact_path
+    for _ in target_suffix.parts:
+        retained_target = retained_target.parent
+    if retained_target.name != "cargo-target":
+        raise EvidenceError("build log artifact target is not producer-owned")
+    retained_work = retained_target.parent
+    if not retained_work.name.startswith(".vmqa-build-"):
+        raise EvidenceError("build log artifact target is not inside producer scratch")
+
     toolchain = exact_object(
         log["toolchain"],
-        {"rustc", "cargo", "node", "npm", "oslCargoSha256"},
+        {"rustc", "cargo", "node", "npm", "tools"},
         "buildLog.toolchain",
     )
     for name in ("rustc", "cargo", "node", "npm"):
         if not isinstance(toolchain[name], str) or not toolchain[name]:
             raise EvidenceError(f"build log toolchain {name} must be a nonempty string")
-    if (
-        not isinstance(toolchain["oslCargoSha256"], str)
-        or not SHA_RE.fullmatch(toolchain["oslCargoSha256"])
-    ):
-        raise EvidenceError("build log osl-cargo digest is invalid")
+    if not isinstance(toolchain["tools"], list) or len(toolchain["tools"]) != 6:
+        raise EvidenceError("build log tool descriptors are not exact")
+    observed_tools: dict[str, dict[str, str]] = {}
+    for index, raw in enumerate(toolchain["tools"]):
+        descriptor = exact_object(
+            raw,
+            {"name", "invokedPath", "resolvedPath", "sha256"},
+            f"buildLog.toolchain.tools[{index}]",
+        )
+        name = descriptor["name"]
+        if (
+            not isinstance(name, str)
+            or name in observed_tools
+            or not all(
+                isinstance(descriptor[key], str) and descriptor[key]
+                for key in ("invokedPath", "resolvedPath")
+            )
+            or not isinstance(descriptor["sha256"], str)
+            or not SHA_RE.fullmatch(descriptor["sha256"])
+        ):
+            raise EvidenceError("build log tool descriptor is invalid")
+        observed_tools[name] = descriptor
+    pins = selected_tool_pins(fixture)
+    if set(observed_tools) != set(pins):
+        raise EvidenceError("build log tool names are not exact")
+    for name, (invoked, expected_sha) in pins.items():
+        descriptor = observed_tools[name]
+        if (
+            descriptor["invokedPath"] != invoked.as_posix()
+            or descriptor["resolvedPath"] != invoked.resolve(strict=True).as_posix()
+            or descriptor["sha256"] != expected_sha
+        ):
+            raise EvidenceError(f"build log {name} path/hash differs from immutable pin")
+
+    npm_environment, cargo_environment = build_environments(
+        observed_tools, retained_work, Path(retained_target.as_posix())
+    )
+    npm_ci_argv = [
+        observed_tools["npm"]["invokedPath"],
+        *NPM_SETUP_COMMAND[1:],
+    ]
+    npm_build_argv = [
+        observed_tools["npm"]["invokedPath"],
+        *EXPECTED_COMMANDS[0][1:],
+    ]
+    cargo_argv = [
+        observed_tools["osl-cargo"]["invokedPath"],
+        *EXPECTED_COMMANDS[1][1:],
+    ]
+    execution = log["execution"]
+    if not isinstance(execution, list) or len(execution) != 3:
+        raise EvidenceError("build log execution records are not exact")
+    expected_execution = [
+        (
+            NPM_SETUP_COMMAND,
+            npm_ci_argv,
+            "apps/osl-hub-ui",
+            npm_environment,
+            "npm-ci.log",
+            "npm-ci.stderr",
+        ),
+        (
+            EXPECTED_COMMANDS[0],
+            npm_build_argv,
+            "apps/osl-hub-ui",
+            npm_environment,
+            "npm-build.log",
+            "npm-build.stderr",
+        ),
+        (
+            EXPECTED_COMMANDS[1],
+            cargo_argv,
+            "apps/osl-hub",
+            cargo_environment,
+            "cargo-build.jsonl",
+            "cargo-build.stderr",
+        ),
+    ]
+    for index, (
+        logical_argv,
+        actual_argv,
+        cwd,
+        environment,
+        stdout_file,
+        stderr_file,
+    ) in enumerate(expected_execution):
+        record = exact_object(
+            execution[index],
+            {
+                "logicalArgv",
+                "argv",
+                "cwd",
+                "environment",
+                "exitCode",
+                "stdoutFile",
+                "stdoutSha256",
+                "stderrFile",
+                "stderrSha256",
+            },
+            f"buildLog.execution[{index}]",
+        )
+        if (
+            record["logicalArgv"] != logical_argv
+            or record["argv"] != actual_argv
+            or record["cwd"] != cwd
+            or record["environment"] != environment
+            or record["exitCode"] != 0
+            or record["stdoutFile"] != stdout_file
+            or record["stderrFile"] != stderr_file
+            or record["stdoutSha256"] != sha256_file(directory / stdout_file)
+            or record["stderrSha256"] != sha256_file(directory / stderr_file)
+        ):
+            raise EvidenceError(
+                "build log execution record differs from retained invocation bytes"
+            )
     if log["commands"] != EXPECTED_COMMANDS:
         raise EvidenceError("build log argv is not the exact supported build")
     if (
@@ -445,6 +1121,8 @@ def verify_evidence(
         or source["dirtyFingerprint"] != EMPTY_SHA256
     ):
         raise EvidenceError("build log source identity is invalid")
+    if source["commit"] != PINNED_COMMIT or source["tree"] != PINNED_TREE:
+        raise EvidenceError("build log source differs from immutable VMQA pin")
     expected_names = {
         "source.tar",
         "dist.tar",
@@ -478,7 +1156,14 @@ def verify_evidence(
         outputs["npmFile"]: outputs["npmSha256"],
         outputs["cargoFile"]: outputs["cargoSha256"],
     }
-    if set(file_bindings) != EVIDENCE_FILES - {"build-log.json"}:
+    if set(file_bindings) != EVIDENCE_FILES - {
+        "build-log.json",
+        "npm-ci.log",
+        "npm-ci.stderr",
+        "npm-build.stderr",
+        "cargo-build.stderr",
+        "WebView2Loader.dll",
+    }:
         raise EvidenceError("build log evidence filenames are not exact")
     for name, expected_sha in file_bindings.items():
         if not isinstance(expected_sha, str) or not SHA_RE.fullmatch(expected_sha):
@@ -493,6 +1178,10 @@ def verify_evidence(
         }
         if not REQUIRED_SOURCE_PATHS.issubset(files):
             raise EvidenceError("source archive is not an OSL product source archive")
+        for marker_path, marker in REQUIRED_PRODUCT_MARKERS.items():
+            member = archive.extractfile(marker_path)
+            if member is None or marker.search(member.read()) is None:
+                raise EvidenceError("source archive is not the pinned OSL product")
         if archive.pax_headers.get("comment") != source["commit"]:
             raise EvidenceError("source archive commit differs from build log")
         if git_tree_from_archive(archive) != source["tree"]:
@@ -509,7 +1198,11 @@ def verify_evidence(
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, raw in enumerate(manifest["files"]):
-        entry = exact_object(raw, {"path", "sha256", "sizeBytes"}, f"distManifest.files[{index}]")
+        entry = exact_object(
+            raw,
+            {"path", "sha256", "sizeBytes"},
+            f"distManifest.files[{index}]",
+        )
         if not isinstance(entry["path"], str):
             raise EvidenceError("dist manifest path must be a string")
         name = safe_member_name(entry["path"], "dist manifest")
@@ -524,17 +1217,20 @@ def verify_evidence(
     if entries != sorted(entries, key=lambda entry: entry["path"]):
         raise EvidenceError("dist manifest is not path-sorted")
     verify_dist_tar(directory / "dist.tar", entries)
-    if ui["distSha256"] != dist_digest(entries):
-        raise EvidenceError("build log dist digest differs from retained dist bytes")
-    cargo_artifact = Path(parse_cargo_artifact(directory / "cargo-build.jsonl")).resolve()
-    if cargo_artifact != exe_path.resolve():
-        raise EvidenceError("retained cargo artifact path differs from independent executable")
     if (
-        not isinstance(artifact["path"], str)
-        or not artifact["path"].endswith(
-            "/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
+        ui["finalPath"] != FINAL_DIST
+        or ui["distSha256"] != dist_digest(entries)
+    ):
+        raise EvidenceError("build log dist digest differs from retained dist bytes")
+    cargo_artifact = PurePosixPath(
+        parse_cargo_artifact(directory / "cargo-build.jsonl")
+    )
+    if cargo_artifact != artifact_path:
+        raise EvidenceError(
+            "retained cargo artifact is not the canonical owned fresh-target output"
         )
-        or Path(cargo_artifact).name != PurePosixPath(artifact["path"]).name
+    if (
+        artifact["finalPath"] != FINAL_EXE
         or not isinstance(artifact["sha256"], str)
         or not SHA_RE.fullmatch(artifact["sha256"])
         or artifact["sha256"] != sha256_file(exe_path)
@@ -545,6 +1241,7 @@ def verify_evidence(
     evidence = exact_object(
         identity["evidence"],
         {
+            "directory",
             "sourceArchiveSha256",
             "distArchiveSha256",
             "distManifestSha256",
@@ -555,6 +1252,7 @@ def verify_evidence(
         "buildIdentity.evidence",
     )
     expected_evidence = {
+        "directory": FINAL_EVIDENCE,
         "sourceArchiveSha256": sha256_file(directory / "source.tar"),
         "distArchiveSha256": sha256_file(directory / "dist.tar"),
         "distManifestSha256": sha256_file(directory / "dist-manifest.json"),
@@ -571,38 +1269,168 @@ def verify_evidence(
         "dirtyFingerprint": source["dirtyFingerprint"],
     }:
         raise EvidenceError("build identity source differs from build log")
-    if identity["ui"]["distSha256"] != ui["distSha256"]:
+    if identity["ui"] != {
+        "path": FINAL_DIST,
+        "distSha256": ui["distSha256"],
+    }:
         raise EvidenceError("build identity dist digest differs from build log")
-    if identity["build"]["commands"] != [
-        EXPECTED_COMMANDS[0],
-        EXPECTED_COMMANDS[1][:-1],
-    ]:
+    if identity["build"]["commands"] != IDENTITY_COMMANDS:
         raise EvidenceError("build identity argv differs from build log")
     if identity["build"]["toolchain"] != toolchain:
         raise EvidenceError("build identity toolchain differs from build log")
     if identity["artifacts"]["executable"] != {
         "name": "osl-privacy-hub.exe",
+        "path": FINAL_EXE,
         "sha256": artifact["sha256"],
         "sizeBytes": artifact["sizeBytes"],
     }:
         raise EvidenceError("build identity executable differs from build log")
+    if identity["artifacts"]["loader"] != {
+        "name": "WebView2Loader.dll",
+        "path": FINAL_LOADER,
+        "sha256": loader["sha256"],
+        "sizeBytes": loader["sizeBytes"],
+    }:
+        raise EvidenceError("build identity loader differs from retained build evidence")
     return log
 
 
+def verify_bundle(bundle: Path, *, allow_fixture: bool = False) -> dict[str, Any]:
+    if bundle.is_symlink() or not bundle.is_dir():
+        raise EvidenceError("build bundle must be a real directory")
+    actual_root = {path.name for path in bundle.iterdir()}
+    if actual_root != {"build-identity.json", FINAL_EVIDENCE, "outputs"}:
+        raise EvidenceError("build bundle root entries are not exact")
+    identity_path = bundle / "build-identity.json"
+    evidence = bundle / FINAL_EVIDENCE
+    outputs = bundle / "outputs"
+    if (
+        identity_path.is_symlink()
+        or not identity_path.is_file()
+        or evidence.is_symlink()
+        or not evidence.is_dir()
+        or outputs.is_symlink()
+        or not outputs.is_dir()
+    ):
+        raise EvidenceError("build bundle contains a symlink or wrong entry type")
+    output_entries = {path.name for path in outputs.iterdir()}
+    if output_entries != {"osl-privacy-hub.exe", "WebView2Loader.dll", "dist"}:
+        raise EvidenceError("build bundle output entries are not exact")
+    exe = bundle / FINAL_EXE
+    loader = bundle / FINAL_LOADER
+    dist = bundle / FINAL_DIST
+    if (
+        exe.is_symlink()
+        or not exe.is_file()
+        or loader.is_symlink()
+        or not loader.is_file()
+        or dist.is_symlink()
+        or not dist.is_dir()
+    ):
+        raise EvidenceError("build bundle output contains a symlink or wrong type")
+    identity = exact_object(
+        load_json(identity_path, "build identity"),
+        {"schemaVersion", "source", "ui", "build", "artifacts", "evidence"},
+        "buildIdentity",
+    )
+    if identity["schemaVersion"] != SCHEMA_VERSION:
+        raise EvidenceError("buildIdentity.schemaVersion must be exactly 2")
+    exact_object(
+        identity["source"],
+        {"commit", "tree", "clean", "dirtyFingerprint"},
+        "buildIdentity.source",
+    )
+    exact_object(identity["ui"], {"path", "distSha256"}, "buildIdentity.ui")
+    build = exact_object(
+        identity["build"],
+        {"target", "features", "profile", "commands", "toolchain"},
+        "buildIdentity.build",
+    )
+    if (
+        build["target"] != "x86_64-pc-windows-gnu"
+        or build["features"] != ["desktop"]
+        or build["profile"] != "release"
+        or build["commands"] != IDENTITY_COMMANDS
+    ):
+        raise EvidenceError("build identity build boundary is not exact")
+    artifacts = exact_object(
+        identity["artifacts"], {"executable", "loader"}, "buildIdentity.artifacts"
+    )
+    exact_object(
+        artifacts["executable"],
+        {"name", "path", "sha256", "sizeBytes"},
+        "buildIdentity.artifacts.executable",
+    )
+    exact_object(
+        artifacts["loader"],
+        {"name", "path", "sha256", "sizeBytes"},
+        "buildIdentity.artifacts.loader",
+    )
+    log = verify_evidence(evidence, exe, identity)
+    if log["mode"] == "fixture" and not allow_fixture:
+        raise EvidenceError("fixture build evidence is forbidden in production")
+    manifest = load_json(evidence / "dist-manifest.json", "dist manifest")
+    if dist_entries_from_directory(dist) != manifest["files"]:
+        raise EvidenceError("published dist differs from retained manifest")
+    if (
+        sha256_file(loader) != artifacts["loader"]["sha256"]
+        or loader.stat().st_size != artifacts["loader"]["sizeBytes"]
+        or loader.read_bytes() != (evidence / "WebView2Loader.dll").read_bytes()
+    ):
+        raise EvidenceError("published loader differs from retained owned bytes")
+    if (
+        sha256_file(exe) != artifacts["executable"]["sha256"]
+        or exe.stat().st_size != artifacts["executable"]["sizeBytes"]
+    ):
+        raise EvidenceError("published executable differs from retained identity")
+    return identity
+
+
+def verify_bundle_command(args: argparse.Namespace) -> None:
+    verify_bundle(
+        Path(args.bundle),
+        allow_fixture=bool(args.internal_test_fixture),
+    )
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    create = subparsers.add_parser("create")
-    create.add_argument("--source-repo", required=True)
-    create.add_argument("--dist", required=True)
-    create.add_argument("--exe", required=True)
-    create.add_argument("--loader", required=True)
-    create.add_argument("--npm-log", required=True)
-    create.add_argument("--cargo-log", required=True)
-    create.add_argument("--output", required=True)
-    create.add_argument("--expected-commit", required=True)
-    create.add_argument("--expected-tree", required=True)
-    create.set_defaults(function=create_evidence)
+    for command, fixture, fixture_scenario in (
+        ("create", False, "valid"),
+        ("create-fixture", True, "valid"),
+        ("create-fixture-outside-artifact", True, "outside-artifact"),
+    ):
+        create = subparsers.add_parser(command, allow_abbrev=False)
+        create.add_argument("--source-repo", required=True)
+        create.add_argument("--output", required=True)
+        for forbidden_option in (
+            "--dist",
+            "--exe",
+            "--loader",
+            "--npm-log",
+            "--cargo-log",
+            "--expected-commit",
+            "--expected-tree",
+            "--exe-destination",
+            "--dist-destination",
+            "--loader-destination",
+            "--shared-target-dir",
+        ):
+            create.add_argument(forbidden_option, help=argparse.SUPPRESS)
+        create.set_defaults(
+            function=create_evidence,
+            fixture=fixture,
+            fixture_scenario=fixture_scenario,
+        )
+    verify = subparsers.add_parser("verify-bundle", allow_abbrev=False)
+    verify.add_argument("--bundle", required=True)
+    verify.add_argument(
+        "--internal-test-fixture",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    verify.set_defaults(function=verify_bundle_command)
     args = parser.parse_args()
     try:
         args.function(args)

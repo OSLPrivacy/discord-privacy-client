@@ -12,7 +12,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vmqa_build_evidence import EvidenceError, verify_evidence
+from vmqa_build_evidence import (
+    EvidenceError,
+    FINAL_DIST,
+    FINAL_EVIDENCE,
+    FINAL_EXE,
+    FINAL_LOADER,
+    PINNED_COMMIT,
+    PINNED_TREE,
+    verify_evidence,
+)
 
 
 SCHEMA_VERSION = 2
@@ -190,8 +199,7 @@ def validate_build_identity(
     *,
     exe_path: Path,
     evidence_dir: Path,
-    expected_commit: str,
-    expected_tree: str,
+    allow_fixture: bool = False,
 ) -> dict[str, Any]:
     identity = exact_object(
         value,
@@ -212,15 +220,12 @@ def validate_build_identity(
         raise ContractError("buildIdentity.source.clean must be true")
     if source["dirtyFingerprint"] != EMPTY_SHA256:
         raise ContractError("buildIdentity.source.dirtyFingerprint must hash an empty status")
-    if (
-        not COMMIT_RE.fullmatch(expected_commit)
-        or not COMMIT_RE.fullmatch(expected_tree)
-    ):
-        raise ContractError("independently expected source commit/tree is invalid")
-    if source["commit"] != expected_commit or source["tree"] != expected_tree:
-        raise ContractError("build identity differs from independently expected source")
+    if source["commit"] != PINNED_COMMIT or source["tree"] != PINNED_TREE:
+        raise ContractError("build identity differs from immutable VMQA source pin")
 
-    ui = exact_object(identity["ui"], {"distSha256"}, "buildIdentity.ui")
+    ui = exact_object(identity["ui"], {"path", "distSha256"}, "buildIdentity.ui")
+    if ui["path"] != FINAL_DIST:
+        raise ContractError("buildIdentity.ui.path is not producer-owned")
     require_sha(ui["distSha256"], "buildIdentity.ui.distSha256")
 
     build = exact_object(
@@ -263,15 +268,40 @@ def validate_build_identity(
         raise ContractError("buildIdentity.build.commands are not the exact release build argv")
     toolchain = exact_object(
         build["toolchain"],
-        {"rustc", "cargo", "node", "npm", "oslCargoSha256"},
+        {"rustc", "cargo", "node", "npm", "tools"},
         "buildIdentity.build.toolchain",
     )
     for key in ("rustc", "cargo", "node", "npm"):
         require_text(toolchain[key], f"buildIdentity.build.toolchain.{key}", maximum=512)
-    require_sha(
-        toolchain["oslCargoSha256"],
-        "buildIdentity.build.toolchain.oslCargoSha256",
-    )
+    if not isinstance(toolchain["tools"], list) or len(toolchain["tools"]) != 6:
+        raise ContractError("buildIdentity.build.toolchain.tools must bind six tools")
+    tool_names: set[str] = set()
+    for index, raw in enumerate(toolchain["tools"]):
+        tool = exact_object(
+            raw,
+            {"name", "invokedPath", "resolvedPath", "sha256"},
+            f"buildIdentity.build.toolchain.tools[{index}]",
+        )
+        name = require_text(
+            tool["name"], f"buildIdentity.build.toolchain.tools[{index}].name"
+        )
+        if name in tool_names:
+            raise ContractError("buildIdentity.build.toolchain.tools has duplicates")
+        tool_names.add(name)
+        require_text(
+            tool["invokedPath"],
+            f"buildIdentity.build.toolchain.tools[{index}].invokedPath",
+        )
+        require_text(
+            tool["resolvedPath"],
+            f"buildIdentity.build.toolchain.tools[{index}].resolvedPath",
+        )
+        require_sha(
+            tool["sha256"],
+            f"buildIdentity.build.toolchain.tools[{index}].sha256",
+        )
+    if tool_names != {"git", "npm", "node", "osl-cargo", "rustc", "cargo"}:
+        raise ContractError("buildIdentity.build.toolchain.tools names are not exact")
 
     artifacts = exact_object(
         identity["artifacts"], {"executable", "loader"}, "buildIdentity.artifacts"
@@ -281,10 +311,17 @@ def validate_build_identity(
         ("loader", "WebView2Loader.dll"),
     ):
         artifact = exact_object(
-            artifacts[name], {"name", "sha256", "sizeBytes"}, f"buildIdentity.artifacts.{name}"
+            artifacts[name],
+            {"name", "path", "sha256", "sizeBytes"},
+            f"buildIdentity.artifacts.{name}",
         )
         if artifact["name"] != expected_name:
             raise ContractError(f"buildIdentity.artifacts.{name}.name is not {expected_name}")
+        expected_path = FINAL_EXE if name == "executable" else FINAL_LOADER
+        if artifact["path"] != expected_path:
+            raise ContractError(
+                f"buildIdentity.artifacts.{name}.path is not producer-owned"
+            )
         require_sha(artifact["sha256"], f"buildIdentity.artifacts.{name}.sha256")
         if type(artifact["sizeBytes"]) is not int or artifact["sizeBytes"] <= 0:
             raise ContractError(f"buildIdentity.artifacts.{name}.sizeBytes must be positive")
@@ -292,6 +329,7 @@ def validate_build_identity(
     evidence = exact_object(
         identity["evidence"],
         {
+            "directory",
             "sourceArchiveSha256",
             "distArchiveSha256",
             "distManifestSha256",
@@ -301,7 +339,11 @@ def validate_build_identity(
         },
         "buildIdentity.evidence",
     )
+    if evidence["directory"] != FINAL_EVIDENCE:
+        raise ContractError("buildIdentity.evidence.directory is not producer-owned")
     for name, digest in evidence.items():
+        if name == "directory":
+            continue
         require_sha(digest, f"buildIdentity.evidence.{name}")
     executable = artifacts["executable"]
     if not exe_path.is_file():
@@ -311,9 +353,11 @@ def validate_build_identity(
     if exe_path.stat().st_size != executable["sizeBytes"]:
         raise ContractError("build identity executable size differs from independent bytes")
     try:
-        verify_evidence(evidence_dir, exe_path, identity)
+        build_log = verify_evidence(evidence_dir, exe_path, identity)
     except EvidenceError as exc:
         raise ContractError(str(exc)) from exc
+    if build_log["mode"] == "fixture" and not allow_fixture:
+        raise ContractError("fixture build evidence is forbidden in production")
     return identity
 
 
@@ -546,8 +590,7 @@ def verify_pair(args: argparse.Namespace) -> None:
         load_json(identity_path, "build identity"),
         exe_path=Path(args.exe),
         evidence_dir=Path(args.evidence_dir),
-        expected_commit=args.expected_commit,
-        expected_tree=args.expected_tree,
+        allow_fixture=args.internal_test_fixture,
     )
     identity_sha = sha256_file(identity_path)
     for side in ("positive", "negative"):
@@ -572,8 +615,7 @@ def verify_run(args: argparse.Namespace) -> None:
         load_json(identity_path, "build identity"),
         exe_path=Path(args.exe),
         evidence_dir=Path(args.evidence_dir),
-        expected_commit=args.expected_commit,
-        expected_tree=args.expected_tree,
+        allow_fixture=args.internal_test_fixture,
     )
     identity_sha = sha256_file(identity_path)
     request_path = Path(args.request)
@@ -595,8 +637,7 @@ def validate_build(args: argparse.Namespace) -> None:
         load_json(Path(args.build_identity), "build identity"),
         exe_path=Path(args.exe),
         evidence_dir=Path(args.evidence_dir),
-        expected_commit=args.expected_commit,
-        expected_tree=args.expected_tree,
+        allow_fixture=args.internal_test_fixture,
     )
 
 
@@ -654,8 +695,7 @@ def validate_cleanup(args: argparse.Namespace) -> None:
         load_json(identity_path, "build identity"),
         exe_path=Path(args.exe),
         evidence_dir=directory / "build-evidence",
-        expected_commit=args.expected_commit,
-        expected_tree=args.expected_tree,
+        allow_fixture=args.internal_test_fixture,
     )
     identity_sha = sha256_file(identity_path)
     request = validate_request(
@@ -961,8 +1001,7 @@ def main() -> int:
     pair.add_argument("--build-identity", required=True)
     pair.add_argument("--exe", required=True)
     pair.add_argument("--evidence-dir", required=True)
-    pair.add_argument("--expected-commit", required=True)
-    pair.add_argument("--expected-tree", required=True)
+    pair.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
     pair.set_defaults(function=verify_pair)
     run = subparsers.add_parser("verify-run")
     run.add_argument("--request", required=True)
@@ -970,21 +1009,18 @@ def main() -> int:
     run.add_argument("--build-identity", required=True)
     run.add_argument("--exe", required=True)
     run.add_argument("--evidence-dir", required=True)
-    run.add_argument("--expected-commit", required=True)
-    run.add_argument("--expected-tree", required=True)
+    run.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
     run.set_defaults(function=verify_run)
     build = subparsers.add_parser("validate-build")
     build.add_argument("--build-identity", required=True)
     build.add_argument("--exe", required=True)
     build.add_argument("--evidence-dir", required=True)
-    build.add_argument("--expected-commit", required=True)
-    build.add_argument("--expected-tree", required=True)
+    build.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
     build.set_defaults(function=validate_build)
     cleanup = subparsers.add_parser("verify-cleanup")
     cleanup.add_argument("--directory", required=True)
     cleanup.add_argument("--exe", required=True)
-    cleanup.add_argument("--expected-commit", required=True)
-    cleanup.add_argument("--expected-tree", required=True)
+    cleanup.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
     cleanup.set_defaults(function=validate_cleanup)
     args = parser.parse_args()
     try:

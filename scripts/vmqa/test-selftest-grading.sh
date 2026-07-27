@@ -45,87 +45,42 @@ AGENT_SHA='1111111111111111111111111111111111111111111111111111111111111111'
 WIN32_SHA='2222222222222222222222222222222222222222222222222222222222222222'
 SURFACE_CLASS='Tauri Window'
 FIXTURE_PNG="$TMP/fixture.png"
-FIXTURE_SOURCE="$TMP/source"
-FIXTURE_EXE="$FIXTURE_SOURCE/apps/osl-hub/target/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
-FIXTURE_LOADER="$(dirname -- "$FIXTURE_EXE")/WebView2Loader.dll"
-FIXTURE_DIST="$FIXTURE_SOURCE/apps/osl-hub-ui/dist"
-EVIDENCE_DIR="$TMP/build-evidence"
-BUILD_IDENTITY="$TMP/build-identity.json"
-mkdir -p -- "$FIXTURE_SOURCE/apps/osl-hub" "$FIXTURE_SOURCE/apps/osl-hub-ui"
-printf '[workspace]\nmembers=[]\n' >"$FIXTURE_SOURCE/Cargo.toml"
-printf '[package]\nname=\"osl-hub\"\nversion=\"0.0.0\"\n' >"$FIXTURE_SOURCE/apps/osl-hub/Cargo.toml"
-printf '{\"name\":\"osl-hub-ui\",\"version\":\"0.0.0\"}\n' >"$FIXTURE_SOURCE/apps/osl-hub-ui/package.json"
-printf 'apps/osl-hub/target/\napps/osl-hub-ui/dist/\n' >"$FIXTURE_SOURCE/.gitignore"
-git -C "$FIXTURE_SOURCE" init -q
-git -C "$FIXTURE_SOURCE" config user.name vmqa-fixture
-git -C "$FIXTURE_SOURCE" config user.email vmqa@example.invalid
-git -C "$FIXTURE_SOURCE" add .
-git -C "$FIXTURE_SOURCE" commit -qm fixture
-EXPECTED_COMMIT="$(git -C "$FIXTURE_SOURCE" rev-parse HEAD)"
-EXPECTED_TREE="$(git -C "$FIXTURE_SOURCE" rev-parse HEAD^{tree})"
-mkdir -p -- "$(dirname -- "$FIXTURE_EXE")" "$FIXTURE_DIST"
-printf 'independent executable fixture bytes\n' >"$FIXTURE_EXE"
-printf 'loader\n' >"$FIXTURE_LOADER"
-printf '<!doctype html><title>fixture</title>\n' >"$FIXTURE_DIST/index.html"
-printf 'npm fixture build output\n' >"$TMP/npm-build.log"
-printf '{"reason":"compiler-artifact","target":{"name":"osl-privacy-hub"},"executable":"%s"}\n' \
-  "$FIXTURE_EXE" >"$TMP/cargo-build.jsonl"
-python3 "$SCRIPT_DIR/vmqa_build_evidence.py" create \
-  --source-repo "$FIXTURE_SOURCE" --dist "$FIXTURE_DIST" \
-  --exe "$FIXTURE_EXE" --loader "$FIXTURE_LOADER" \
-  --npm-log "$TMP/npm-build.log" --cargo-log "$TMP/cargo-build.jsonl" \
-  --output "$EVIDENCE_DIR" --expected-commit "$EXPECTED_COMMIT" \
-  --expected-tree "$EXPECTED_TREE" || exit 1
+FIXTURE_SOURCE="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+FIXTURE_BUNDLE="$TMP/build-bundle"
+python3 "$SCRIPT_DIR/vmqa_build_evidence.py" create-fixture \
+  --source-repo "$FIXTURE_SOURCE" --output "$FIXTURE_BUNDLE" || exit 1
+FIXTURE_EXE="$FIXTURE_BUNDLE/outputs/osl-privacy-hub.exe"
+FIXTURE_LOADER="$FIXTURE_BUNDLE/outputs/WebView2Loader.dll"
+FIXTURE_DIST="$FIXTURE_BUNDLE/outputs/dist"
+EVIDENCE_DIR="$FIXTURE_BUNDLE/build-evidence"
+BUILD_IDENTITY="$FIXTURE_BUNDLE/build-identity.json"
+python3 "$SCRIPT_DIR/vmqa_build_evidence.py" verify-bundle \
+  --bundle "$FIXTURE_BUNDLE" --internal-test-fixture || exit 1
+python3 "$VMQA_CONTRACT" validate-build \
+  --build-identity "$BUILD_IDENTITY" --exe "$FIXTURE_EXE" \
+  --evidence-dir "$EVIDENCE_DIR" --internal-test-fixture || exit 1
 EXE_SHA="$(sha256sum "$FIXTURE_EXE" | awk '{print $1}')"
 EXE_SIZE="$(stat -c %s "$FIXTURE_EXE")"
-jq -n \
-  --arg exe "$EXE_SHA" \
-  --argjson exeSize "$EXE_SIZE" \
-  --arg loaderSha "$(sha256sum "$FIXTURE_LOADER" | awk '{print $1}')" \
-  --argjson loaderSize "$(stat -c %s "$FIXTURE_LOADER")" \
-  --arg sourceArchiveSha256 "$(sha256sum "$EVIDENCE_DIR/source.tar" | awk '{print $1}')" \
-  --arg distArchiveSha256 "$(sha256sum "$EVIDENCE_DIR/dist.tar" | awk '{print $1}')" \
-  --arg distManifestSha256 "$(sha256sum "$EVIDENCE_DIR/dist-manifest.json" | awk '{print $1}')" \
-  --arg npmBuildLogSha256 "$(sha256sum "$EVIDENCE_DIR/npm-build.log" | awk '{print $1}')" \
-  --arg cargoBuildLogSha256 "$(sha256sum "$EVIDENCE_DIR/cargo-build.jsonl" | awk '{print $1}')" \
-  --arg buildLogSha256 "$(sha256sum "$EVIDENCE_DIR/build-log.json" | awk '{print $1}')" \
-  --slurpfile log "$EVIDENCE_DIR/build-log.json" \
-  '{
-    schemaVersion:2,
-    source:{
-      commit:$log[0].source.commit,
-      tree:$log[0].source.tree,
-      clean:true,
-      dirtyFingerprint:"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    ui:{distSha256:$log[0].ui.distSha256},
-    build:{
-      target:"x86_64-pc-windows-gnu",features:["desktop"],profile:"release",
-      commands:[
-        ["npm","run","build"],
-        ["osl-cargo","build","--release","--features","desktop","--bin",
-         "osl-privacy-hub","--target","x86_64-pc-windows-gnu"]
-      ],
-      toolchain:$log[0].toolchain
-    },
-    artifacts:{
-      executable:{name:"osl-privacy-hub.exe",sha256:$exe,sizeBytes:$exeSize},
-      loader:{
-        name:"WebView2Loader.dll",
-        sha256:$loaderSha,
-        sizeBytes:$loaderSize
-      }
-    },
-    evidence:{
-      sourceArchiveSha256:$sourceArchiveSha256,
-      distArchiveSha256:$distArchiveSha256,
-      distManifestSha256:$distManifestSha256,
-      npmBuildLogSha256:$npmBuildLogSha256,
-      cargoBuildLogSha256:$cargoBuildLogSha256,
-      buildLogSha256:$buildLogSha256
-    }
-  }' >"$BUILD_IDENTITY"
 BUILD_IDENTITY_SHA="$(sha256sum "$BUILD_IDENTITY" | awk '{print $1}')"
+
+check_consumer_bundle_mutation() {
+  local name="$1" path="$2" saved="$TMP/saved-$3" rc had_errexit=false
+  case "$-" in *e*) had_errexit=true ;; esac
+  cp -- "$path" "$saved"
+  printf 'mutation\n' >>"$path"
+  set +e
+  verify_bundle_for_use "$FIXTURE_BUNDLE" internal-test-fixture >/dev/null 2>&1
+  rc=$?
+  [ "$had_errexit" = true ] && set -e || set +e
+  mv -- "$saved" "$path"
+  if [ "$rc" -eq 9 ]; then
+    printf '  ok    %-46s exit=%s\n' "$name" "$rc"
+    pass_count=$((pass_count+1))
+  else
+    printf '  FAIL  %-46s exit=%s want=9\n' "$name" "$rc"
+    fail_count=$((fail_count+1))
+  fi
+}
 
 make_fixture_png() {
   local path="$1" width="$2" height="$3" mode="${4:-gradient}"
@@ -277,8 +232,7 @@ check() {
   local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got out
   out="$(grade_selftest "$posf" "$negf" "$posrc" "$negrc" \
     "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
-    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" \
-    "$EXPECTED_COMMIT" "$EXPECTED_TREE" 2>&1)"
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" true 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ]; then
     printf '  ok    %-46s exit=%s\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -297,8 +251,7 @@ check_msg() {
   local name="$1" want="$2" pattern="$3" posf="$4" negf="$5" out got
   out="$(grade_selftest "$posf" "$negf" 0 3 \
     "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
-    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" \
-    "$EXPECTED_COMMIT" "$EXPECTED_TREE" 2>&1)"
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" true 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qi -- "$pattern"; then
     printf '  ok    %-46s exit=%s +msg\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -321,8 +274,7 @@ check_fetch_preserves_blocked_verdict() {
     # the saved verdict path, or selftest grades an empty filename as a vacuous control.
     cmd_run() { set -e; return 3; }
     set +e
-    fetch_run_verdict vm identifier steps "$BUILD_IDENTITY" "$FIXTURE_EXE" \
-      "$EVIDENCE_DIR" "$EXPECTED_COMMIT" "$EXPECTED_TREE" 1 fetch-blocked
+    fetch_run_verdict vm identifier steps "$FIXTURE_BUNDLE" 1 fetch-blocked
   )"
   rc=$?
   set +e
@@ -362,6 +314,13 @@ replace_retained_png() {
 }
 
 echo "grade_selftest regression:"
+
+# This is the exact full-bundle helper called before push, run, and selftest.
+# A changed published loader or dist must stop at that boundary, before SHARE is reachable.
+check_consumer_bundle_mutation \
+  "published loader mutation blocks consumer" "$FIXTURE_LOADER" loader
+check_consumer_bundle_mutation \
+  "published dist mutation blocks consumer" "$FIXTURE_DIST/index.html" dist
 
 # A blocked VM run is a measured verdict, not an absent one. cmd_run restores errexit before
 # returning 3; fetch_run_verdict must capture that status without being terminated by it.
@@ -428,8 +387,7 @@ for verdict in "$sub_pos" "$sub_neg"; do
 done
 grade_selftest "$sub_pos" "$sub_neg" 0 3 \
   "$AGENT_SHA" "$WIN32_SHA" "$SUB_EXE_SHA" "$SURFACE_CLASS" \
-  "$SUB_BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" \
-  "$EXPECTED_COMMIT" "$EXPECTED_TREE" >/dev/null 2>&1
+  "$SUB_BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" true >/dev/null 2>&1
 sub_rc=$?
 if [ "$sub_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "coherent digest substitution -> INVALID" "$sub_rc"
@@ -443,7 +401,7 @@ python3 "$SCRIPT_DIR/vmqa-contract.py" verify-run \
   --verdict "$sub_pos" \
   --build-identity "$SUB_BUILD_IDENTITY" \
   --exe "$FIXTURE_EXE" --evidence-dir "$EVIDENCE_DIR" \
-  --expected-commit "$EXPECTED_COMMIT" --expected-tree "$EXPECTED_TREE" >/dev/null 2>&1
+  --internal-test-fixture >/dev/null 2>&1
 ordinary_sub_rc=$?
 if [ "$ordinary_sub_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "ordinary run digest substitution -> INVALID" "$ordinary_sub_rc"
@@ -456,8 +414,7 @@ BAD_SCALAR_IDENTITY="$TMP/bad-scalar-build-identity.json"
 jq '.build.toolchain.rustc={}' "$BUILD_IDENTITY" >"$BAD_SCALAR_IDENTITY"
 python3 "$SCRIPT_DIR/vmqa-contract.py" validate-build \
   --build-identity "$BAD_SCALAR_IDENTITY" --exe "$FIXTURE_EXE" \
-  --evidence-dir "$EVIDENCE_DIR" --expected-commit "$EXPECTED_COMMIT" \
-  --expected-tree "$EXPECTED_TREE" >/dev/null 2>&1
+  --evidence-dir "$EVIDENCE_DIR" --internal-test-fixture >/dev/null 2>&1
 bad_scalar_rc=$?
 if [ "$bad_scalar_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "nested build scalar object -> INVALID" "$bad_scalar_rc"

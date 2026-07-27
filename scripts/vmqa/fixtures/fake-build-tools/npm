@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-v" ]; then printf '0.0.0-vmqa-fixture\n'; exit 0; fi
+if [ "${1:-}" = "ci" ]; then
+  [ "$#" -eq 3 ]
+  [ "$2" = "--no-audit" ] && [ "$3" = "--no-fund" ]
+  case "$PWD" in */apps/osl-hub-ui) ;; *) echo "wrong npm ci cwd: $PWD" >&2; exit 91;; esac
+  mkdir -p node_modules
+  : > node_modules/.vmqa-fixture-ci
+  printf 'fixture npm ci stdout\n'
+  printf 'fixture npm ci stderr\n' >&2
+  exit 0
+fi
+[ "$#" -eq 2 ]
+[ "$1" = "run" ] && [ "$2" = "build" ]
+case "$PWD" in */apps/osl-hub-ui) ;; *) echo "wrong npm cwd: $PWD" >&2; exit 91;; esac
+[ -f node_modules/.vmqa-fixture-ci ]
+mkdir -p dist
+printf 'fixture-dist-produced-by-npm\n' > dist/index.html
+printf 'fixture npm stdout\n'
+printf 'fixture npm stderr\n' >&2

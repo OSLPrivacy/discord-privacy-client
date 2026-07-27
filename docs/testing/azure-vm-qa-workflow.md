@@ -146,25 +146,26 @@ collecting a log.
 
 Target is under three minutes per iteration once setup is snapshotted.
 
-1. **Host** — `npm run build` first. The frontend `dist` is embedded at *compile* time and there are
-   **two** embeds (`webview/dist` as well), so a Cargo build before the frontend build ships a stale
-   UI that looks like a code bug. Then cross-compile:
-   `cargo build --features desktop --bin osl-privacy-hub --target x86_64-pc-windows-gnu`.
-2. **Host** — create a strict V2 build identity from a clean checkout. It binds the full commit and
-   tree, an empty tracked/untracked status digest, UI dist digest, Windows target, exact
-   `["desktop"]` feature set, release profile, build argv, Rust/Cargo/Node/npm and `osl-cargo`
-   identity, and independently measured executable/loader sizes and SHA-256. A bare executable
-   digest is not a build identity. Both `run` and `selftest` require `--exe` so the host can
-   remeasure the exact local executable rather than trusting the identity's digest. Use
-   `vmqa-run.sh build --source-repo <clean-product-repo> --evidence-dir <empty-dir>
-   --expected-commit <full-sha> --expected-tree <full-sha>` and `vmqa-run.sh stamp ...` with the
-   same independent expectations. Every later `run`, `selftest`, and cleanup verification requires
-   those expectations again. The evidence directory retains the Git archive,
-   deterministic dist archive and manifest, raw npm/Cargo output, and a closed build log binding
-   the exact compiler-artifact path and digest. The verifier recomputes the Git tree ID from the
-   retained source archive, so rewriting the commit/tree fields coherently is still rejected. `run`
-   and `selftest` require that directory and copy it into the run report so an independent reviewer
-   can rebuild the named commit with the retained argv or recompute every digest.
+1. **Host** — let `vmqa_build_evidence.py create` own the build boundary. It archives the immutable
+   pinned commit/tree into a fresh source scratch, creates a fresh empty artifact target, runs the
+   fixed `npm ci`, `npm run build`, and Windows `osl-cargo build` argv, and accepts only the
+   executable reported at the exact path in that owned target. The frontend `dist` is embedded at
+   *compile* time, so reversing that order can ship stale UI. The subprocesses use closed
+   allowlisted environments and pinned absolute tools whose hashes are retained. Cargo still runs
+   through the central `osl-cargo` disk-safety gate.
+2. **Host** — publish one new producer-owned bundle with
+   `vmqa-run.sh build --source-repo <git-object-provider> --bundle-dir <new-path>`. The source
+   repository supplies Git objects only; the immutable Python commit/tree pin is the trust root.
+   The command refuses caller-selected artifacts, logs, expected revisions, target directories, or
+   output destinations. It atomically publishes, without replacement, `build-identity.json`,
+   `build-evidence/`, and `outputs/` under that one root. The strict V2 identity binds the source,
+   deterministic dist, Windows target, exact `["desktop"]` feature set, release profile, actual
+   resolved argv and tool hashes, raw stdout/stderr, executable, loader, and every final relative
+   path and digest. The loader is read once into owned storage before either retained or published
+   copy is made. The producer reopens and verifies the complete published bundle before success.
+   `push`, `run`, and `selftest` take only `--bundle-dir` and immediately reverify the complete
+   executable/loader/dist/evidence/identity bundle before use. Fixture-mode bundles are rejected by
+   those production boundaries.
 3. **Host** — upload `osl-privacy-hub.exe` and `WebView2Loader.dll` under
    `builds/<sha256>/` only if the hash moved. Write `runs/<vm>/<runId>/request.json` naming the run id
    and the verbs
@@ -238,8 +239,7 @@ Target is under three minutes per iteration once setup is snapshotted.
   executable digest is harness-invalid. The independent executable bytes and retained
   `build-identity.json` are the trust roots; matching caller-authored digests are not.
 - **Console cleanup text is not retained evidence.** After deallocation, use
-  `vmqa-fleet.sh cleanup-receipt <vm> <run-report-dir> <exact-local-exe> <expected-commit>
-  <expected-tree>`. The run ID,
+  `vmqa-fleet.sh cleanup-receipt <vm> <run-report-dir> <exact-local-exe>`. The run ID,
   executable digest, and build-identity digest are derived from the retained run rather than
   accepted as caller arguments. The command retains raw Azure instance-view and subscription
   census JSON, the complete followed REST page chain, plus closed projections; hashes every file

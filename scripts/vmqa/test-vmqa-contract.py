@@ -5,123 +5,67 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
+import vmqa_build_evidence as evidence_module
+
 
 SCRIPT = Path(__file__).with_name("vmqa-contract.py")
 EVIDENCE_SCRIPT = Path(__file__).with_name("vmqa_build_evidence.py")
-EXE_BYTES = b"x"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FAKE_TOOLS = Path(__file__).with_name("fixtures") / "fake-build-tools"
+PINNED_COMMIT = "be5355d79e558ad6abf8f3cc5ee0a228829e7def"
+PINNED_TREE = "56427995071bf2224627ada8da447545b19ba55e"
+EXE_BYTES = b"fixture-exe-produced-by-osl-cargo\n"
 EXE_SHA = hashlib.sha256(EXE_BYTES).hexdigest()
 SUBSCRIPTION_ID = "00000000-0000-0000-0000-000000000001"
 SUBSCRIPTION_SHA = hashlib.sha256(SUBSCRIPTION_ID.encode()).hexdigest()
 
 
 class CleanupContractTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "run"
-        self.root.mkdir()
-        self.source = Path(self.temp.name) / "source"
-        (self.source / "apps/osl-hub").mkdir(parents=True)
-        (self.source / "apps/osl-hub-ui").mkdir(parents=True)
-        (self.source / "Cargo.toml").write_text("[workspace]\nmembers=[]\n")
-        (self.source / "apps/osl-hub/Cargo.toml").write_text(
-            '[package]\nname="osl-hub"\nversion="0.0.0"\n'
-        )
-        (self.source / "apps/osl-hub-ui/package.json").write_text(
-            '{"name":"osl-hub-ui","version":"0.0.0"}\n'
-        )
-        (self.source / ".gitignore").write_text(
-            "apps/osl-hub/target/\napps/osl-hub-ui/dist/\n"
-        )
-        subprocess.run(["git", "-C", str(self.source), "init", "-q"], check=True)
-        subprocess.run(
-            ["git", "-C", str(self.source), "config", "user.name", "vmqa-fixture"],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.source),
-                "config",
-                "user.email",
-                "vmqa@example.invalid",
-            ],
-            check=True,
-        )
-        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
-        subprocess.run(
-            ["git", "-C", str(self.source), "commit", "-qm", "fixture"], check=True
-        )
-        self.expected_commit = subprocess.run(
-            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        self.expected_tree = subprocess.run(
-            ["git", "-C", str(self.source), "rev-parse", "HEAD^{tree}"],
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        self.exe = (
-            self.source
-            / "apps/osl-hub/target/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
-        )
-        self.exe.parent.mkdir(parents=True)
-        self.exe.write_bytes(EXE_BYTES)
-        self.loader = self.exe.with_name("WebView2Loader.dll")
-        self.loader.write_bytes(b"l")
-        self.dist = self.source / "apps/osl-hub-ui/dist"
-        self.dist.mkdir()
-        (self.dist / "index.html").write_text("<title>fixture</title>\n")
-        npm_log = Path(self.temp.name) / "npm.log"
-        npm_log.write_text("npm fixture\n")
-        cargo_log = Path(self.temp.name) / "cargo.jsonl"
-        cargo_log.write_text(
-            json.dumps(
-                {
-                    "reason": "compiler-artifact",
-                    "target": {"name": "osl-privacy-hub"},
-                    "executable": str(self.exe),
-                }
-            )
-            + "\n"
-        )
-        self.evidence = self.root / "build-evidence"
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.owned = tempfile.TemporaryDirectory()
+        root = Path(cls.owned.name)
+        cls.owned_bundle = root / "bundle"
+        environment = os.environ.copy()
+        environment["VMQA_ATTACK_SENTINEL"] = "must-not-cross-build-boundary"
         subprocess.run(
             [
                 "python3",
                 str(EVIDENCE_SCRIPT),
-                "create",
+                "create-fixture",
                 "--source-repo",
-                str(self.source),
-                "--dist",
-                str(self.dist),
-                "--exe",
-                str(self.exe),
-                "--loader",
-                str(self.loader),
-                "--npm-log",
-                str(npm_log),
-                "--cargo-log",
-                str(cargo_log),
+                str(REPO_ROOT),
                 "--output",
-                str(self.evidence),
-                "--expected-commit",
-                self.expected_commit,
-                "--expected-tree",
-                self.expected_tree,
+                str(cls.owned_bundle),
             ],
+            env=environment,
             check=True,
         )
-        build_log = json.loads((self.evidence / "build-log.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.owned.cleanup()
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "run"
+        self.root.mkdir()
+        self.source = REPO_ROOT
+        self.bundle = self.root / "bundle"
+        shutil.copytree(self.owned_bundle, self.bundle)
+        self.exe = self.bundle / "outputs/osl-privacy-hub.exe"
+        self.loader = self.bundle / "outputs/WebView2Loader.dll"
+        self.dist = self.bundle / "outputs/dist"
+        self.evidence = self.root / "build-evidence"
+        shutil.copytree(self.bundle / "build-evidence", self.evidence)
         vm_id = (
             f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/rg/"
             "providers/Microsoft.Compute/virtualMachines/vm"
@@ -181,66 +125,9 @@ class CleanupContractTests(unittest.TestCase):
                 }
             ],
         }
-        self.identity = {
-            "schemaVersion": 2,
-            "source": {
-                "commit": build_log["source"]["commit"],
-                "tree": build_log["source"]["tree"],
-                "clean": True,
-                "dirtyFingerprint": hashlib.sha256(b"").hexdigest(),
-            },
-            "ui": {"distSha256": build_log["ui"]["distSha256"]},
-            "build": {
-                "target": "x86_64-pc-windows-gnu",
-                "features": ["desktop"],
-                "profile": "release",
-                "commands": [
-                    ["npm", "run", "build"],
-                    [
-                        "osl-cargo",
-                        "build",
-                        "--release",
-                        "--features",
-                        "desktop",
-                        "--bin",
-                        "osl-privacy-hub",
-                        "--target",
-                        "x86_64-pc-windows-gnu",
-                    ],
-                ],
-                "toolchain": build_log["toolchain"],
-            },
-            "artifacts": {
-                "executable": {
-                    "name": "osl-privacy-hub.exe",
-                    "sha256": EXE_SHA,
-                    "sizeBytes": len(EXE_BYTES),
-                },
-                "loader": {
-                    "name": "WebView2Loader.dll",
-                    "sha256": hashlib.sha256(b"l").hexdigest(),
-                    "sizeBytes": 1,
-                },
-            },
-            "evidence": {
-                "sourceArchiveSha256": self._file_sha(
-                    self.evidence / "source.tar"
-                ),
-                "distArchiveSha256": self._file_sha(self.evidence / "dist.tar"),
-                "distManifestSha256": self._file_sha(
-                    self.evidence / "dist-manifest.json"
-                ),
-                "npmBuildLogSha256": self._file_sha(
-                    self.evidence / "npm-build.log"
-                ),
-                "cargoBuildLogSha256": self._file_sha(
-                    self.evidence / "cargo-build.jsonl"
-                ),
-                "buildLogSha256": self._file_sha(
-                    self.evidence / "build-log.json"
-                ),
-            },
-        }
+        self.identity = json.loads(
+            (self.bundle / "build-identity.json").read_text()
+        )
         self._write("build-identity.json", self.identity)
         self.request = {
             "schemaVersion": 2,
@@ -293,6 +180,14 @@ class CleanupContractTests(unittest.TestCase):
     @staticmethod
     def _file_sha(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    @staticmethod
+    def _fake_environment(**extra: str) -> dict[str, str]:
+        import os
+        env = os.environ.copy()
+        env["PATH"] = f"{FAKE_TOOLS}:{env['PATH']}"
+        env.update(extra)
+        return env
 
     def _sha(self, name: str) -> str:
         return hashlib.sha256((self.root / name).read_bytes()).hexdigest()
@@ -354,10 +249,22 @@ class CleanupContractTests(unittest.TestCase):
                 str(self.root),
                 "--exe",
                 str(self.exe),
-                "--expected-commit",
-                self.expected_commit,
-                "--expected-tree",
-                self.expected_tree,
+                "--internal-test-fixture",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def _verify_bundle(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "verify-bundle",
+                "--bundle",
+                str(self.bundle),
+                "--internal-test-fixture",
             ],
             text=True,
             capture_output=True,
@@ -366,6 +273,26 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_accepts_exact_hash_bound_deallocated_zero_leak_receipt(self) -> None:
         self.assertEqual(self._verify().returncode, 0)
+
+    def test_production_validator_refuses_fixture_bundle(self) -> None:
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "validate-build",
+                "--build-identity",
+                str(self.root / "build-identity.json"),
+                "--exe",
+                str(self.exe),
+                "--evidence-dir",
+                str(self.evidence),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("fixture build evidence is forbidden", result.stderr)
 
     def test_rejects_schema_version_999(self) -> None:
         self.receipt["schemaVersion"] = 999
@@ -511,63 +438,315 @@ class CleanupContractTests(unittest.TestCase):
             ],
             check=True,
         )
+        fake_exe = (
+            unrelated
+            / "preseeded-target/x86_64-pc-windows-gnu/release/"
+            "osl-privacy-hub.exe"
+        )
+        fake_exe.parent.mkdir(parents=True)
+        shutil.copy2("/bin/true", fake_exe)
         subprocess.run(["git", "-C", str(unrelated), "add", "."], check=True)
         subprocess.run(
             ["git", "-C", str(unrelated), "commit", "-qm", "fixture"], check=True
         )
-        fake_dist = unrelated / "apps/osl-hub-ui/dist"
-        fake_dist.mkdir()
-        (fake_dist / "index.html").write_text("fake\n")
-        fake_exe = (
-            unrelated
-            / "apps/osl-hub/target/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
+        status = subprocess.run(
+            ["git", "-C", str(unrelated), "status", "--porcelain=v1"],
+            text=True,
+            capture_output=True,
+            check=True,
         )
-        fake_exe.parent.mkdir(parents=True)
-        fake_exe.write_bytes(b"arbitrary")
-        fake_loader = fake_exe.with_name("WebView2Loader.dll")
-        fake_loader.write_bytes(b"l")
-        npm_log = Path(self.temp.name) / "unrelated-npm.log"
-        npm_log.write_text("fake\n")
-        cargo_log = Path(self.temp.name) / "unrelated-cargo.jsonl"
-        cargo_log.write_text(
-            json.dumps(
-                {
-                    "reason": "compiler-artifact",
-                    "target": {"name": "osl-privacy-hub"},
-                    "executable": str(fake_exe),
-                }
-            )
-            + "\n"
+        self.assertEqual(status.stdout, "")
+        output = Path(self.temp.name) / "unrelated-bundle"
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "create-fixture",
+                "--source-repo",
+                str(unrelated),
+                "--output",
+                str(output),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
         )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("lacks the immutable pinned commit", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_create_refuses_obsolete_caller_selected_executable(self) -> None:
+        evidence = self.root / "obsolete-evidence"
         result = subprocess.run(
             [
                 "python3",
                 str(EVIDENCE_SCRIPT),
                 "create",
                 "--source-repo",
-                str(unrelated),
-                "--dist",
-                str(fake_dist),
-                "--exe",
-                str(fake_exe),
-                "--loader",
-                str(fake_loader),
-                "--npm-log",
-                str(npm_log),
-                "--cargo-log",
-                str(cargo_log),
+                str(self.source),
                 "--output",
-                str(Path(self.temp.name) / "unrelated-evidence"),
-                "--expected-commit",
-                self.expected_commit,
-                "--expected-tree",
-                self.expected_tree,
+                str(evidence),
+                "--exe-destination",
+                str(self.root / "obsolete.exe"),
+                "--dist-destination",
+                str(self.root / "obsolete-dist"),
+                "--loader-destination",
+                str(self.root / "obsolete-loader.dll"),
+                "--exe",
+                "/bin/true",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=self._fake_environment(),
+        )
+        self.assertEqual(result.returncode, 9)
+        self.assertIn("caller-authored build inputs are forbidden", result.stderr)
+        self.assertIn("exe", result.stderr)
+        self.assertFalse(evidence.exists())
+
+    def test_create_refuses_aliased_legacy_destinations(self) -> None:
+        alias = self.root / "one-caller-path"
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "create",
+                "--source-repo",
+                str(self.source),
+                "--output",
+                str(alias),
+                "--exe-destination",
+                str(alias),
+                "--dist-destination",
+                str(alias),
+                "--loader-destination",
+                str(alias),
             ],
             text=True,
             capture_output=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 9)
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("caller-authored build inputs are forbidden", result.stderr)
+        self.assertFalse(alias.exists())
+
+    def test_create_fixture_refuses_symlinked_bundle_parent(self) -> None:
+        real_parent = self.root / "real-parent"
+        real_parent.mkdir()
+        linked_parent = self.root / "linked-parent"
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "create-fixture",
+                "--source-repo",
+                str(self.source),
+                "--output",
+                str(linked_parent / "bundle"),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("symlink component", result.stderr)
+        self.assertFalse((real_parent / "bundle").exists())
+
+    def test_create_fixture_refuses_existing_file_directory_and_final_symlink(
+        self,
+    ) -> None:
+        targets = {
+            "file": self.root / "existing-file",
+            "directory": self.root / "existing-directory",
+            "symlink": self.root / "existing-symlink",
+        }
+        targets["file"].write_text("occupied\n")
+        targets["directory"].mkdir()
+        targets["symlink"].symlink_to(self.root / "missing-target")
+        for label, target in targets.items():
+            with self.subTest(label=label):
+                result = subprocess.run(
+                    [
+                        "python3",
+                        str(EVIDENCE_SCRIPT),
+                        "create-fixture",
+                        "--source-repo",
+                        str(self.source),
+                        "--output",
+                        str(target),
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 9, result.stderr)
+                self.assertIn("destination already exists", result.stderr)
+
+    def test_atomic_publication_refuses_destination_that_appeared(self) -> None:
+        parent = self.root / "publish-parent"
+        parent.mkdir()
+        staged = parent / "staged"
+        staged.mkdir()
+        destination = parent / "bundle"
+        destination.mkdir()
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with self.assertRaisesRegex(
+                evidence_module.EvidenceError,
+                "destination appeared before atomic publication",
+            ):
+                evidence_module.rename_noreplace(staged, parent_fd, destination.name)
+        finally:
+            os.close(parent_fd)
+        self.assertTrue(staged.is_dir())
+        self.assertTrue(destination.is_dir())
+
+    def test_owned_build_retains_produced_bytes_and_both_streams(self) -> None:
+        build_log = json.loads((self.evidence / "build-log.json").read_text())
+        self.assertEqual(self.exe.read_bytes(), EXE_BYTES)
+        self.assertEqual(hashlib.sha256(self.exe.read_bytes()).hexdigest(), EXE_SHA)
+        self.assertEqual(build_log["artifact"]["sha256"], EXE_SHA)
+        self.assertEqual(build_log["artifact"]["sizeBytes"], len(EXE_BYTES))
+        self.assertEqual(self.loader.read_bytes(), (self.evidence / "WebView2Loader.dll").read_bytes())
+        self.assertEqual(build_log["loader"]["sha256"], self._file_sha(self.loader))
+        self.assertEqual(
+            (self.evidence / "npm-ci.log").read_bytes(),
+            b"fixture npm ci stdout\n",
+        )
+        self.assertEqual(
+            (self.evidence / "npm-ci.stderr").read_bytes(),
+            b"fixture npm ci stderr\n",
+        )
+        self.assertEqual(
+            (self.evidence / "npm-build.log").read_bytes(),
+            b"fixture npm stdout\n",
+        )
+        self.assertEqual(
+            (self.evidence / "npm-build.stderr").read_bytes(),
+            b"fixture npm stderr\n",
+        )
+        self.assertIn(
+            b"fixture cargo stderr",
+            (self.evidence / "cargo-build.stderr").read_bytes(),
+        )
+        self.assertEqual(build_log["mode"], "fixture")
+        self.assertEqual(
+            build_log["artifact"]["path"],
+            build_log["execution"][2]["environment"]["CARGO_TARGET_DIR"]
+            + "/x86_64-pc-windows-gnu/release/osl-privacy-hub.exe",
+        )
+        for execution in build_log["execution"]:
+            self.assertTrue(Path(execution["argv"][0]).is_absolute())
+            self.assertEqual(
+                execution["logicalArgv"][0],
+                "npm" if "npm" in execution["stdoutFile"] else "osl-cargo",
+            )
+            self.assertNotIn("VMQA_ATTACK_SENTINEL", execution["environment"])
+            self.assertEqual(
+                execution["stdoutSha256"],
+                self._file_sha(self.evidence / execution["stdoutFile"]),
+            )
+            self.assertEqual(
+                execution["stderrSha256"],
+                self._file_sha(self.evidence / execution["stderrFile"]),
+            )
+        tool_names = {tool["name"] for tool in build_log["toolchain"]["tools"]}
+        self.assertEqual(
+            tool_names, {"git", "npm", "node", "osl-cargo", "rustc", "cargo"}
+        )
+
+    def test_final_bundle_rejects_published_executable_mutation(self) -> None:
+        self.exe.write_bytes(Path("/bin/true").read_bytes())
+        self.assertEqual(self._verify_bundle().returncode, 9)
+
+    def test_final_bundle_rejects_published_loader_mutation(self) -> None:
+        with self.loader.open("ab") as handle:
+            handle.write(b"x")
+        self.assertEqual(self._verify_bundle().returncode, 9)
+
+    def test_final_bundle_rejects_published_dist_mutation(self) -> None:
+        (self.dist / "index.html").write_text("caller swapped final dist\n")
+        self.assertEqual(self._verify_bundle().returncode, 9)
+
+    def test_rejects_changed_retained_loader_bytes(self) -> None:
+        with (self.evidence / "WebView2Loader.dll").open("ab") as handle:
+            handle.write(b"x")
+        self.assertEqual(self._verify().returncode, 9)
+
+    def test_preseeded_canonical_caller_target_and_path_shadow_are_refused(
+        self,
+    ) -> None:
+        caller_target = self.root / "caller-target"
+        canonical = (
+            caller_target
+            / "x86_64-pc-windows-gnu/release/osl-privacy-hub.exe"
+        )
+        canonical.parent.mkdir(parents=True)
+        shutil.copy2("/bin/true", canonical)
+        shadow = self.root / "shadow"
+        shadow.mkdir()
+        marker = self.root / "shadow-ran"
+        shadow_tool = shadow / "osl-cargo"
+        shadow_tool.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf ran > {marker}\n"
+            f"printf '%s\\n' '{{\"reason\":\"compiler-artifact\","
+            "\"target\":{\"name\":\"osl-privacy-hub\"},"
+            f"\"executable\":\"{canonical}\"}}'\n"
+        )
+        shadow_tool.chmod(0o755)
+        environment = self._fake_environment()
+        environment["PATH"] = f"{shadow}:{environment['PATH']}"
+        output = self.root / "rejected-bundle"
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "create",
+                "--source-repo",
+                str(self.source),
+                "--output",
+                str(output),
+                "--shared-target-dir",
+                str(caller_target),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("shared_target_dir", result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertFalse(output.exists())
+        self.assertEqual(canonical.read_bytes(), Path("/bin/true").read_bytes())
+
+    def test_fixture_outside_artifact_result_reaches_discovery_and_refuses(
+        self,
+    ) -> None:
+        output = self.root / "outside-artifact-bundle"
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "create-fixture-outside-artifact",
+                "--source-repo",
+                str(self.source),
+                "--output",
+                str(output),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn(
+            "did not produce the canonical fresh-target executable",
+            result.stderr,
+        )
+        self.assertFalse(output.exists())
 
     def test_rejects_coherently_rewritten_source_tree_identity(self) -> None:
         build_log_path = self.evidence / "build-log.json"
@@ -590,10 +769,36 @@ class CleanupContractTests(unittest.TestCase):
                 str(self.exe),
                 "--evidence-dir",
                 str(self.evidence),
-                "--expected-commit",
-                self.expected_commit,
-                "--expected-tree",
-                self.expected_tree,
+                "--internal-test-fixture",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9)
+
+    def test_rejects_coherently_rewritten_source_commit_identity(self) -> None:
+        build_log_path = self.evidence / "build-log.json"
+        build_log = json.loads(build_log_path.read_text())
+        build_log["source"]["commit"] = "f" * 40
+        build_log_path.write_text(
+            json.dumps(build_log, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        self.identity["source"]["commit"] = "f" * 40
+        self.identity["evidence"]["buildLogSha256"] = self._file_sha(build_log_path)
+        self._write("build-identity.json", self.identity)
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "validate-build",
+                "--build-identity",
+                str(self.root / "build-identity.json"),
+                "--exe",
+                str(self.exe),
+                "--evidence-dir",
+                str(self.evidence),
+                "--internal-test-fixture",
             ],
             text=True,
             capture_output=True,
@@ -650,10 +855,7 @@ class CleanupContractTests(unittest.TestCase):
                 str(self.exe),
                 "--evidence-dir",
                 str(self.evidence),
-                "--expected-commit",
-                self.expected_commit,
-                "--expected-tree",
-                self.expected_tree,
+                "--internal-test-fixture",
             ],
             text=True,
             capture_output=True,

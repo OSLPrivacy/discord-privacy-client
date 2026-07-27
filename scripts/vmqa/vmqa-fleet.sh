@@ -124,20 +124,17 @@ cmd_leak_check() {
 
 cmd_cleanup_receipt() {
   local vm="${1:-}" out_dir="${2:-}" exe="${3:-}"
-  local expected_commit="${4:-}" expected_tree="${5:-}"
   local rg subscription_id subscription_sha captured
   local run_id exe_sha identity_sha request_sha verdict_sha
   local raw_instance_sha raw_census_sha raw_pages_sha instance_sha census_sha running_count contract
   local page_url page_next page_count page_tmp pages_tmp
-  [ $# -eq 5 ] || {
-    echo "cleanup-receipt needs <vm> <run-report-dir> <exact-local-exe> <expected-commit> <expected-tree>" >&2
+  [ $# -eq 3 ] || {
+    echo "cleanup-receipt needs <vm> <run-report-dir> <exact-local-exe>" >&2
     return 64
   }
   fleet_rg "$vm" >/dev/null || { echo "unknown vm: $vm" >&2; return 64; }
   [ -d "$out_dir" ] || { echo "run report directory is missing: $out_dir" >&2; return 66; }
   [ -f "$exe" ] || { echo "exact local executable is missing: $exe" >&2; return 66; }
-  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || { echo "expected commit is invalid" >&2; return 64; }
-  [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || { echo "expected tree is invalid" >&2; return 64; }
   command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; return 69; }
   command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; return 69; }
   for retained in build-identity.json request.json verdict.json; do
@@ -151,8 +148,7 @@ cmd_cleanup_receipt() {
     --request "$out_dir/request.json" \
     --verdict "$out_dir/verdict.json" \
     --build-identity "$out_dir/build-identity.json" \
-    --exe "$exe" --evidence-dir "$out_dir/build-evidence" \
-    --expected-commit "$expected_commit" --expected-tree "$expected_tree" || return 9
+    --exe "$exe" --evidence-dir "$out_dir/build-evidence" || return 9
   run_id="$(jq -er '.runId' "$out_dir/request.json")" || return 9
   exe_sha="$(jq -er '.artifacts.executable.sha256' "$out_dir/build-identity.json")" || return 9
   identity_sha="$(sha256sum "$out_dir/build-identity.json" | awk '{print $1}')"
@@ -290,8 +286,7 @@ cmd_cleanup_receipt() {
         capturedUtc:$captured
       }
     ' >"$out_dir/azure-cleanup-receipt.json"
-  if ! python3 "$contract" verify-cleanup --directory "$out_dir" --exe "$exe" \
-      --expected-commit "$expected_commit" --expected-tree "$expected_tree"; then
+  if ! python3 "$contract" verify-cleanup --directory "$out_dir" --exe "$exe"; then
     echo "REFUSED: Azure cleanup JSON did not prove deallocation and zero subscription leaks" >&2
     return 9
   fi
@@ -394,7 +389,7 @@ vmqa-fleet.sh — VM lifecycle, snapshots and leak prevention
   start  <vm|pair>                 waits for running AND guest agent Ready
   stop   <vm|pair>                 deallocate (not 'stop' — stop still bills compute)
   leak-check                       subscription-wide; exit 7 if anything is running
-  cleanup-receipt <vm> <run-report-dir> <exact-local-exe> <expected-commit> <expected-tree>
+  cleanup-receipt <vm> <run-report-dir> <exact-local-exe>
                                    retain raw and projected, run-bound Azure cleanup JSON
   stop-all --yes                   deallocate every fleet VM currently running
 
