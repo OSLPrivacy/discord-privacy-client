@@ -407,17 +407,9 @@ fn checkpoint_after_shred(conn: &Connection) -> Result<(), StoreError> {
             "burn shred could not truncate SQLite WAL because a reader is active".to_string(),
         ));
     }
-    schema::clear_shred_checkpoint_pending(conn)?;
-    // Clearing the durable recovery marker is itself a WAL write. It contains
-    // no secret, but leaving a non-empty WAL makes the physical-shred contract
-    // ambiguous and defeats the exact recovery checks. Truncate that final
-    // bookkeeping frame too.
-    if checkpoint(conn)? != 0 {
-        return Err(StoreError::Sealer(
-            "burn shred cleared its recovery marker but could not truncate the final WAL frame"
-                .to_string(),
-        ));
-    }
+    // Do not clear the marker here.  With an external anchor, clearing it
+    // first creates an unanchored crash window.  The caller clears it in the
+    // same SQLite transaction that advances the cleared-state anchor.
     Ok(())
 }
 
@@ -599,15 +591,25 @@ impl MessageStore {
         let index_key = cipher::derive_index_key(identity_secret)?;
         schema::check_canary(&conn, &key)?;
         schema::migrate(&conn, &key, &index_key)?;
-        if schema::shred_checkpoint_pending(&conn)? {
-            checkpoint_after_shred(&conn)?;
-        }
         validate_all_attachment_manifests(&conn, &key, &index_key)?;
         let anchor = provider
             .map(|provider| {
                 anchor::AnchorBinding::enroll_or_reconcile(&conn, identity_secret, provider)
             })
             .transpose()?;
+        if schema::shred_checkpoint_pending(&conn)? {
+            checkpoint_after_shred(&conn)?;
+            if let Some(anchor) = &anchor {
+                let tx = conn.unchecked_transaction()?;
+                schema::clear_shred_checkpoint_pending(&tx)?;
+                anchor.commit(tx)?;
+            } else {
+                schema::clear_shred_checkpoint_pending(&conn)?;
+            }
+            // The marker clear is a WAL frame.  It is safe to truncate only
+            // after its anchored commit has succeeded.
+            checkpoint_after_shred(&conn)?;
+        }
         Ok(MessageStore {
             conn: Mutex::new(conn),
             key,
@@ -632,8 +634,13 @@ impl MessageStore {
     /// the database later reopened by the caller.
     fn sync_anchor_after_checkpoint(&self, conn: &mut Connection) -> Result<(), StoreError> {
         if let Some(anchor) = &self.anchor {
-            anchor.commit(conn.transaction()?)?;
+            let tx = conn.transaction()?;
+            schema::clear_shred_checkpoint_pending(&tx)?;
+            anchor.commit(tx)?;
+        } else {
+            schema::clear_shred_checkpoint_pending(conn)?;
         }
+        checkpoint_after_shred(conn)?;
         Ok(())
     }
 

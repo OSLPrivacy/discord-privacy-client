@@ -31,11 +31,21 @@ impl Default for Fault {
 struct TestAnchor {
     records: Mutex<BTreeMap<[u8; 32], AnchorRecord>>,
     fault: Mutex<Fault>,
+    calls: Mutex<usize>,
+    fault_call: Mutex<Option<usize>>,
 }
 
 impl TestAnchor {
     fn set_fault(&self, fault: Fault) {
         *self.fault.lock().unwrap() = fault;
+        *self.fault_call.lock().unwrap() = None;
+        *self.calls.lock().unwrap() = 0;
+    }
+
+    fn set_fault_on_call(&self, fault: Fault, call: usize) {
+        *self.fault.lock().unwrap() = fault;
+        *self.fault_call.lock().unwrap() = Some(call);
+        *self.calls.lock().unwrap() = 0;
     }
 
     fn record_count(&self) -> usize {
@@ -64,7 +74,17 @@ impl MonotonicAnchor for TestAnchor {
         expected: Option<AnchorRecord>,
         next: AnchorRecord,
     ) -> Result<(), StoreError> {
-        let fault = *self.fault.lock().unwrap();
+        let call = {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            *calls
+        };
+        let configured = *self.fault.lock().unwrap();
+        let fault = match *self.fault_call.lock().unwrap() {
+            Some(wanted) if wanted == call => configured,
+            Some(_) => Fault::None,
+            None => configured,
+        };
         if fault == Fault::BeforeAdvance {
             return Err(StoreError::Anchor(
                 "test: crash before provider CAS".to_string(),
@@ -255,6 +275,41 @@ fn anchored_crash_before_or_after_provider_advance_recovers_without_successful_r
             Some(message("crash", "recoverable ambiguity"))
         );
         assert_eq!(anchor.generation(), 2);
+    }
+}
+
+#[test]
+fn anchored_pending_shred_reconciles_before_marker_clear_after_first_cas_crash() {
+    let tmp = TempDir::new().unwrap();
+    let anchor = Arc::new(TestAnchor::default());
+    let store = open(tmp.path(), anchor.clone());
+    store.put(&message("pending", "body")).unwrap();
+    // The destructive transaction is externally anchored, then its caller
+    // dies before checkpoint/marker clear. A restart must first reconcile that
+    // pending anchor, not mutate metadata under an unverified state.
+    anchor.set_fault_on_call(Fault::AfterAdvance, 1);
+    assert!(matches!(store.mark_burned("pending"), Err(StoreError::Anchor(_))));
+    drop(store);
+    anchor.set_fault(Fault::None);
+    let reopened = open(tmp.path(), anchor.clone());
+    assert_eq!(reopened.get("pending").unwrap(), None);
+}
+
+#[test]
+fn anchored_marker_clear_cas_crash_reconciles_on_repeated_restart() {
+    let tmp = TempDir::new().unwrap();
+    let anchor = Arc::new(TestAnchor::default());
+    let store = open(tmp.path(), anchor.clone());
+    store.put(&message("burn", "body")).unwrap();
+    // Call 1 anchors pending destruction; call 2 is the cleared-marker CAS.
+    anchor.set_fault_on_call(Fault::BeforeAdvance, 2);
+    assert!(matches!(store.mark_burned("burn"), Err(StoreError::Anchor(_))));
+    drop(store);
+    anchor.set_fault(Fault::None);
+    for _ in 0..2 {
+        let reopened = open(tmp.path(), anchor.clone());
+        assert_eq!(reopened.get("burn").unwrap(), None);
+        drop(reopened);
     }
 }
 
