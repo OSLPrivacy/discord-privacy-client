@@ -596,3 +596,84 @@ every illustration has an equivalent text description (proving no image lacks `a
 ### Checklist
 
 **96 / 303.** Rows = headers = snapshot, 0 section mismatches.
+
+---
+
+## 14 · Two claim-eligibility changes, and a re-derivation
+
+### Attachments were broken in production — applied, not just noted
+
+Part upload returned HTTP 500 for as long as it existed: the request body was piped through a
+`TransformStream` and R2 requires a known length. It passed its tests the whole time because the R2
+test double accepts any stream. Fixed and deployed as cipher-store `0a17547d`; production re-probed,
+part upload now returns 201.
+
+What I changed as a result:
+
+- **The website needed no change**, and that is worth stating precisely rather than claiming credit.
+  `image-send` was already `Planned`, absent from the checkout summary, and flagged `sellable: false`,
+  so nothing on the site rested on attachments working. The conservative call made earlier turns out
+  to have been right for a stronger reason than the one I had.
+- **Checklist D2 marker corrected 🧪 → 🛑.** The single earned point **stands** — it was awarded for
+  substantial source existing, not for uploads succeeding, and withdrawing it would be
+  over-correction. But labelling it *test-proven* was untrue for a path that could not execute, so
+  the marker is wrong and is fixed.
+- **Allowlist B row updated** to record that attachments could not execute in production, with the
+  standing instruction: **treat any "attachment sent successfully" reported before 2026-07-26 as
+  unproven, and re-derive from evidence rather than from a prior award.**
+- **Not assumed:** the possible upside — that audit CRITICAL #4's plaintext-at-rest exposure may be
+  structurally nil if nothing was ever uploadable — is recorded as being established by other lanes,
+  not treated as true.
+
+### The updater key is real — no correction was needed, and I am not inventing one
+
+Verified directly rather than accepting the premise: `apps/osl-hub/tauri.conf.json:50` base64-decodes
+to `untrusted comment: minisign public key: 3B6AE4739858E8D4` and `src-tauri/tauri.conf.json:39` to
+`44AD89E36BC119F8` — real, distinct, correct for two feeds. A sweep of `docs/**` found **no document
+claiming the key is a placeholder or empty**, so there was nothing of mine to retract.
+
+I did refine the I4 note, which had implied more than it should: the key *material* is real; what is
+still unproven is a signed release artifact demonstrated on a real candidate.
+
+### The feature-gate exclusion does not reach A8 — checked, not assumed
+
+`qa_selftest_request` — the module deciding whether an incoming trigger becomes a harmless status
+read or the irreversible send — is gated at `apps/osl-hub/src/lib.rs:68` by
+`#[cfg(all(feature = "core", feature = "discord-qa-shell"))]`. The lane-standard `--features core`
+compiles it out entirely. That is real and serious.
+
+It does **not** touch the A8 award. Those tests are in `crates/keystore/src/storage.rs` with **no cfg
+feature gate at all**, and run under `cargo test -p keystore`, which never involves the osl-hub
+feature set. More importantly, **the award rests on source inspection I performed directly** — the
+`Zeroize, ZeroizeOnDrop` derive and the two named tests — and the crypto lane's 176/0/1 was only
+corroboration. An inherited number is not a measurement, which is exactly the rule that caught this.
+
+Strengthening it further: that test carries its own **negative control**, honestly labelled. It does
+not compile against the pre-fix code because `InnerIdentity` had no `Zeroize` derive, and its author
+states plainly that this is a compile-time control rather than a runtime one, because reading a freed
+buffer to observe the wipe would be undefined behaviour. That is the standard being asked for.
+
+### My own gates could pass vacuously — fixed and proven in both directions
+
+Same family as the four false greens. Every gate I own reported success when it had measured
+**nothing**: if the glob broke, `check-claims` printed "scanned 0 files, 0 failed" and exited 0.
+
+Floors added (delegated to Codex, verified here):
+
+| Gate | Floor | Fires? |
+|---|---|---|
+| `check-claims` | ≥12 html files, non-empty registry, non-empty required_phrases | **yes** — 2 files → exit 1 |
+| `pricing-sync` | ≥12 `osl:` markers | **yes** — 0 markers → exit 1 |
+| `screenshot-matrix` | ≥200 captures | **yes** — 3 captures → exit 1 |
+| `check-a11y` | ≥100 combinations, ≥20 interactive controls found | floor present; counts controls per run |
+
+Each was proven by starving its input, not by reading the code. One honest note on method: my first
+negative test of `pricing-sync` **failed to fire and I was wrong to expect it to** — two pages already
+carry 15 markers, above the floor. The inadequate test was mine, not a broken guard; with a
+marker-free page it exits 1 correctly.
+
+### Gates after all of this
+
+`check-claims` 16 files / 0 failed · `--self-test` 23/23 · `pricing-sync` 18 markers / 0 drift ·
+`build-status --check` clean · `screenshot-matrix` 270 captures / 0 failed / 0 unmeasurable ·
+`check-a11y` 120 combinations, 0 on all four measures. Checklist **96/303**, consistent.

@@ -130,7 +130,17 @@ timestamped deltas, not keep this number manually forever.
   `cipher_store_client.rs:811-812`, `:847`, `wire_v2.rs:1098`). A unit test is the *appropriate*
   proof for a memory-wiping property — it cannot be observed end to end — so this is not the
   "shallow test" failure the rule guards against. Verified by source inspection, not by running
-  cargo: this lane does not contend for the cargo lock. Not full marks, because master §10 medium 9
+  cargo: this lane does not contend for the cargo lock. **Re-checked 2026-07-26 against the
+  feature-gate exclusion and it does NOT apply here.** `qa_selftest_request` is gated at
+  `apps/osl-hub/src/lib.rs:68` by `#[cfg(all(feature = "core", feature = "discord-qa-shell"))]`, so
+  `--features core` compiles it out — but these tests live in `crates/keystore/src/storage.rs` with
+  **no cfg feature gate at all** and run under `cargo test -p keystore`, which never involves the
+  osl-hub feature set. **The award rests on source inspection the writer performed directly**; the
+  lane's inherited 176/0/1 is corroboration only, and an inherited number is not a measurement.
+  Strengthening the case: the test documents its own **negative control** — it does not compile
+  against the pre-fix code, because `InnerIdentity` had no `Zeroize` derive — and honestly labels
+  that a compile-time rather than runtime control, noting that reading a freed buffer to observe the
+  wipe would be undefined behaviour. Not full marks, because master §10 medium 9
   also covers plaintext identifiers **at rest**, and no comprehensive at-rest audit was delivered.
   `needs: none` `weight: 4` `earned: 3`
 
@@ -195,9 +205,18 @@ timestamped deltas, not keep this number manually forever.
 - 🟨 **D1 · Structure-compatible text/image/video/file carriers** — text shaping works in QA;
   literal line/size/file-type parity and host transformations need proof. `needs: C contract`
   `weight: 5` `earned: 2`
-- 🧪 **D2 · Encrypted attachment transport** — substantial source exists; pending cover handoff,
-  media measurement, cleanup, and no-plaintext-at-rest remain. `needs: A6,D1` `weight: 5`
-  `earned: 1`
+- 🛑 **D2 · Encrypted attachment transport** — **status marker corrected 2026-07-26 from 🧪 to 🛑;
+  the point is NOT withdrawn, and the reason matters.** Attachment upload was **broken in
+  production, and had been before today**: the body was piped through a `TransformStream`, and R2
+  requires a known length, so **every upload failed**. It passed its tests only because the R2 test
+  double accepts any stream — a textbook false green, the same family as a harness that confirms
+  whatever it happens to find. The server side is now fixed **and deployed**: cipher-store version `0a17547d`, production
+  re-probed, part upload returns 201 where it previously returned HTTP 500. The single earned point stands because it was
+  awarded for substantial source existing, **not** for uploads succeeding; withdrawing it would be
+  over-correction. But 🧪 "test-proven" was an untrue label for a path that could not execute, so
+  the marker is corrected. **Treat any "attachment sent successfully" reported anywhere before
+  2026-07-26 as unproven.** Pending cover handoff, media measurement, cleanup, and
+  no-plaintext-at-rest all remain. `needs: A6,D1` `weight: 5` `earned: 1`
 - 🧪 **D3 · View-once text** — mechanisms exist; two-identity second-open refusal unproved.
   `needs: B6` `weight: 4` `earned: 1`
 - 🧪 **D4 · View-once image/protected viewer** — viewer/link foundations exist; first-paint
@@ -359,8 +378,12 @@ timestamped deltas, not keep this number manually forever.
   "clean restore attested as a string, not a boolean", and "no installer at all". A gate proven to
   refuse every tested way of promoting an untested or substituted build is a real safety guarantee.
   Rollback has `scripts/release/prove-rollback-guards.sh` and `.github/workflows/osl-hub-rollback.yml`.
-  **Held back:** "signed candidate" is not proven — `required_signatures` is `false` on the protected
-  branch and no signing was demonstrated on a real candidate — and the reproducible build has not been
+  **Held back:** "signed candidate" is not proven *end to end*. Refined 2026-07-26: the updater key
+  material is real and is **not** a placeholder — `apps/osl-hub/tauri.conf.json:50` decodes to
+  minisign public key `3B6AE4739858E8D4` and `src-tauri/tauri.conf.json:39` to `44AD89E36BC119F8`,
+  correctly different for two feeds, verified by the writer. What is still missing is a signed
+  release artifact demonstrated on a real candidate, and `required_signatures` is `false` on the
+  protected branch — and the reproducible build has not been
   shown to actually reproduce. `needs: I2,I3` `weight: 4` `earned: 2`
 - ⬜ **I5 · Public docs/site truth reconciliation** — claims match exact binary.
   `needs: all release features,H` `weight: 2` `earned: 0`
