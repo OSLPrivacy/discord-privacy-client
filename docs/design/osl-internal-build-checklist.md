@@ -35,7 +35,7 @@ they qualify work. Scope additions increase the denominator; regressions remove 
 ## Progress snapshot
 
 ```text
-Provisional verified progress: 98 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
+Provisional verified progress: 99 / 303 points = 33%   (was 85 / 303 = 28%, which understated section H by 2)
 Confidence: low (several dirty concurrent worktrees and exact-build rechecks remain)
 Critical path:
 security identity/attribution → reviewed ratchet → two-identity proof
@@ -270,7 +270,16 @@ away, per master §16.3.
 - At this reconciliation point the VM and Scrub repairs after the rejected objects are uncommitted
   dirty work and are excluded. They require exact commits and independent acceptance before any
   narrative or score change.
-- Arithmetic remains **98 + 0 + 0 + 0 + 0 + 0 = 98 / 303**.
+- Website H7 +1 · exact website chain ending at
+  `71c9420583c9da02cd3cfcc55abaf6730c82355b` (tree
+  `17beb7b37f3f9b83bc072f82b66ea49a433df2e3`) is independently accepted for the
+  source-bound comparison half. It preserves seven fixed dimensions, 15 official DeleteMe/Abine
+  sources, explicit conflicts/unknowns, exact `Planned` and `sellable:false` OSL limitations, and
+  exactly 20 named semantic mutations; the final 12/12 field-isolation audit rejects replacement
+  or appended operational wording independently in every referenced capability `evidence` and
+  `public_note`. This is local `test-proven-only` evidence, unpushed and undeployed; it proves no
+  DeleteMe efficacy, live source refresh, or OSL runtime equivalence.
+- Arithmetic is now **98 + 1 = 99 / 303**.
 
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
@@ -620,7 +629,7 @@ timestamped deltas, not keep this number manually forever.
 - ⬜ **G4 · Integrate minimum milestone; label rest Coming soon** — exact app/release proof.
   `needs: G1-G3` `weight: 3` `earned: 0`
 
-## H · Website — 25 points (10 earned)
+## H · Website — 25 points (11 earned)
 
 - 🟨 **H1 · One canonical branch/deployment and one pricing model** — **pricing decided 2026-07-26**
   (master 7.14: prepaid one-month $5 code, period starts at redemption, nothing stored, separate
@@ -671,8 +680,18 @@ timestamped deltas, not keep this number manually forever.
   `needs: research,E7` `weight: 4` `earned: 1`
 - ⬜ **H6 · Website retrospective score; app live score distinction** — transparent components, no
   fake live scan. `needs: product model` `weight: 2` `earned: 0`
-- ⬜ **H7 · DeleteMe research/comparison** — honest scope/data/verification/price analysis.
-  `needs: research` `weight: 2` `earned: 0`
+- 🟨 **H7 · DeleteMe research/comparison** — exact local website chain ending at
+  `71c9420583c9da02cd3cfcc55abaf6730c82355b` adds a versioned US-consumer
+  DeleteMe/Abine research manifest with exactly seven dimensions and 15 official sources. Facts
+  carry source IDs, dates, confidence and qualifiers; scope conflicts and genuine unknowns remain
+  explicit; every comparison binds stable OSL capability IDs to the exact current `Planned`,
+  `sellable:false` limitations. The ordinary claim gate and self-test both enforce the manifest:
+  154/154 fixtures pass, exactly 20 named mutations execute once and fail for their intended
+  reasons, 16/16 public pages pass, and the final independent 12/12 evidence/public-note
+  replacement-and-append audit passes. Two independent exact-object reviews accept **1/2**.
+  This is `test-proven-only`, unpushed and undeployed; the remaining point requires maintained
+  source refresh/public comparison evidence and does not follow from competitor claims alone.
+  `needs: maintained source refresh/public comparison` `weight: 2` `earned: 1`
 - 🟨 **H8 · Accessibility/motion/responsive/claim test matrix** — the responsive and claim halves are
   now evidenced: a 252-capture matrix (14 pages × 320/360/390/768/1024/1440 px × JS-on/JS-off/
   reduced-motion) reports 0 failed and 0 unmeasurable, with meaningful content visible before scroll
