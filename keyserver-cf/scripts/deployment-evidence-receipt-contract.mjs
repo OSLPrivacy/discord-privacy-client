@@ -361,13 +361,22 @@ function validateMigrations(value, expectedMigrations, artifact) {
     }
   });
   if (artifact === "B") {
+    const migration0030 = value.findIndex(
+      (entry) =>
+        entry.name ===
+        "0030_reserve_derived_identity_namespace.sql",
+    );
+    const migration0031 = value.findIndex((entry) =>
+      entry.name.startsWith("0031_"),
+    );
     if (
       value.length !== expectedMigrations.length ||
-      !value.at(-1).name.startsWith("0031_") ||
-      value.at(-2)?.name !==
-        "0030_reserve_derived_identity_namespace.sql"
+      migration0030 < 0 ||
+      migration0031 !== migration0030 + 1
     ) {
-      throw new Error("Artifact B requires the exact ordered 0030 then 0031 tail");
+      throw new Error(
+        "Artifact B requires the exact ordered 0030 then 0031 chain",
+      );
     }
   } else if (value.some((entry) => entry.name.startsWith("0031_"))) {
     throw new Error("Artifact A migration evidence includes migration 0031");

@@ -23,19 +23,17 @@
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
-    sign_control_inbox_post_lane,
+    sign_control_inbox_post_lane, sign_sender_filter_floor_get,
 };
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
 };
-use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::sender_filter_rollout::{
-    load_sender_filter_capability_floor,
-    record_sender_filter_capability_floor,
-    SenderFilterCapabilityFloor,
-    SENDER_FILTER_CAPABILITY_VERSION,
+    validate_sender_filter_capability_floor_observation, SenderFilterCapabilityFloor,
+    SenderFilterCapabilityFloorObservation, SENDER_FILTER_CAPABILITY_VERSION,
 };
+use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
 use crate::{Error, Result};
@@ -1161,17 +1159,15 @@ impl KeyServerClient {
 
     /// Shipping Worker/client rollout boundary for one active peer.
     ///
-    /// This method, rather than the broker, owns both the live capability
-    /// observation and the durable downgrade floor:
+    /// This method, rather than the broker, owns both live observations:
     ///
-    /// - A legacy Worker with the exact legacy health response receives the
-    ///   byte-identical unfiltered signed GET. Rows are narrowed locally before
-    ///   the broker sees them, preserving legacy availability without exposing
-    ///   another sender's rows to the active conversation.
-    /// - Artifact B capability version 1 raises the write-once per-account
-    ///   floor before the first filtered GET.
-    /// - Artifact A, pre-0031 Artifact B, malformed capability evidence, or a
-    ///   capability disappearance after the floor was raised all fail closed.
+    /// - `/v1/healthz` must advertise the exact capability.
+    /// - The identity-authenticated D1 authority route must return a fresh,
+    ///   request-bound, immutable version-1 floor derived from migration 0031.
+    ///
+    /// The filtered drain is the only live tail. A legacy Worker, Artifact A,
+    /// pre-0031 Artifact B, missing migration 0032, malformed authority
+    /// evidence, or capability disappearance all fail closed.
     pub fn get_control_inbox_compatible_from(
         &self,
         identity: &Identity,
@@ -1188,47 +1184,12 @@ impl KeyServerClient {
             ));
         }
         let capability = self.probe_control_inbox_sender_filter_capability()?;
-        let initial_floor = load_sender_filter_capability_floor(identity)?;
-        let measured_floor = match (capability, initial_floor) {
-            (
-                ControlInboxSenderFilterCapability::Version1,
-                SenderFilterCapabilityFloor::NeverObserved,
-            ) => {
-                record_sender_filter_capability_floor(identity, unix_timestamp_ms())?;
-                load_sender_filter_capability_floor(identity)?
-            }
-            (_, floor) => floor,
-        };
+        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;
         match (capability, measured_floor) {
             (
                 ControlInboxSenderFilterCapability::Version1,
                 SenderFilterCapabilityFloor::Version1,
             ) => self.get_control_inbox_from(identity, sender_id),
-            (
-                ControlInboxSenderFilterCapability::Version1,
-                SenderFilterCapabilityFloor::NeverObserved,
-            ) => Err(Error::Transport(
-                "control-inbox sender-filter capability floor was not measured".into(),
-            )),
-            (
-                ControlInboxSenderFilterCapability::Legacy,
-                SenderFilterCapabilityFloor::NeverObserved,
-            ) => {
-                let items = self
-                    .get_control_inbox(identity)?
-                    .into_iter()
-                    .filter(|item| item.sender_id == sender_id)
-                    .collect::<Vec<_>>();
-                Ok(FilteredControlInbox {
-                    delivery: ControlInboxDeliveryDisposition {
-                        live: items.len() as u64,
-                        retryable: 0,
-                        quarantined: 0,
-                        retired: 0,
-                    },
-                    items,
-                })
-            }
             (ControlInboxSenderFilterCapability::Legacy, SenderFilterCapabilityFloor::Version1) => {
                 Err(Error::Transport(
                     "control-inbox sender-filter capability downgrade refused".into(),
@@ -1267,6 +1228,32 @@ impl KeyServerClient {
             "control-inbox sender-filter capability is unavailable, malformed, or transitional"
                 .into(),
         ))
+    }
+
+    fn observe_sender_filter_capability_floor(
+        &self,
+        identity: &Identity,
+    ) -> Result<SenderFilterCapabilityFloor> {
+        let timestamp_ms = unix_timestamp_ms();
+        let request_id = fresh_request_id();
+        let signature = sign_sender_filter_floor_get(identity, timestamp_ms, &request_id);
+        let path = format!(
+            "/v1/sender-filter-capability-floor/{}?ts={}&request_id={}&sig={}",
+            urlencode_segment(&identity.user_id),
+            timestamp_ms,
+            request_id,
+            urlencode_query_value(&STANDARD.encode(signature.as_bytes())),
+        );
+        let response = self.send_request("GET", &path, None)?;
+        check_2xx(&response)?;
+        let observation: SenderFilterCapabilityFloorObservation =
+            serde_json::from_slice(&response.body)?;
+        validate_sender_filter_capability_floor_observation(
+            identity,
+            timestamp_ms,
+            &request_id,
+            observation,
+        )
     }
 
     /// Drain only the rows one specific peer sent.

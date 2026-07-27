@@ -23,6 +23,8 @@ use sha2::{Digest, Sha256};
 pub const CONTROL_INBOX_POST_DOMAIN: &[u8] = b"discord-privacy-client/control-inbox-post/v1";
 pub const CONTROL_INBOX_GET_DOMAIN: &[u8] = b"discord-privacy-client/control-inbox-get/v1";
 pub const CONTROL_INBOX_DELETE_DOMAIN: &[u8] = b"discord-privacy-client/control-inbox-delete/v1";
+pub const SENDER_FILTER_FLOOR_GET_DOMAIN: &[u8] =
+    b"discord-privacy-client/sender-filter-floor-get/v1";
 
 /// Canonical bytes the POST signature covers. Must agree byte-for-
 /// byte with `canonicalControlInboxPostBytes` in the keyserver TS.
@@ -151,6 +153,27 @@ pub fn canonical_control_inbox_get_bytes_filtered(
     buf
 }
 
+/// Canonical bytes for a fresh observation of the independently administered
+/// sender-filter capability floor.
+///
+/// Wire: LP(domain) || LP(user_id) || LP(timestamp_ms_str) || LP(request_id)
+///
+/// `request_id` is 256 bits of client-generated entropy. The D1-backed Worker
+/// echoes it in the response, so a cached response cannot be substituted after
+/// local state deletion or process restart.
+pub fn canonical_sender_filter_floor_get_bytes(
+    user_id: &str,
+    timestamp_ms: i64,
+    request_id: &str,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    write_lp(&mut buf, SENDER_FILTER_FLOOR_GET_DOMAIN);
+    write_lp(&mut buf, user_id.as_bytes());
+    write_lp(&mut buf, timestamp_ms.to_string().as_bytes());
+    write_lp(&mut buf, request_id.as_bytes());
+    buf
+}
+
 /// Canonical bytes the DELETE signature covers.
 ///
 /// Wire: LP(domain) || LP(user_id) || LP(inbox_id_hex) || LP(timestamp_ms_str)
@@ -221,6 +244,16 @@ pub fn sign_control_inbox_get_filtered(
 ) -> ed25519::Signature {
     let bytes =
         canonical_control_inbox_get_bytes_filtered(&identity.user_id, timestamp_ms, sender_id);
+    ed25519::sign(&identity.ed25519_secret, &bytes)
+}
+
+pub fn sign_sender_filter_floor_get(
+    identity: &Identity,
+    timestamp_ms: i64,
+    request_id: &str,
+) -> ed25519::Signature {
+    let bytes =
+        canonical_sender_filter_floor_get_bytes(&identity.user_id, timestamp_ms, request_id);
     ed25519::sign(&identity.ed25519_secret, &bytes)
 }
 

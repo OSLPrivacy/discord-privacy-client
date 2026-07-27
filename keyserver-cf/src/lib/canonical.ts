@@ -38,6 +38,8 @@ const UNREGISTER_DOMAIN = "discord-privacy-client/unregister/v1";
 const CONTROL_INBOX_POST_DOMAIN = "discord-privacy-client/control-inbox-post/v1";
 const CONTROL_INBOX_GET_DOMAIN = "discord-privacy-client/control-inbox-get/v1";
 const CONTROL_INBOX_DELETE_DOMAIN = "discord-privacy-client/control-inbox-delete/v1";
+const SENDER_FILTER_FLOOR_GET_DOMAIN =
+  "discord-privacy-client/sender-filter-floor-get/v1";
 const PREKEY_BUNDLE_GET_DOMAIN = "discord-privacy-client/prekey-bundle-get/v1";
 const WRAPPED_KEY_GET_DOMAIN = "discord-privacy-client/wrapped-key-get/v1";
 const WRAPPED_KEY_POST_DOMAIN = "discord-privacy-client/wrapped-key-post/v1";
@@ -368,6 +370,26 @@ export function canonicalControlInboxGetBytes(args: {
     parts.push(lpString(args.sender_id));
   }
   return concatBytes(parts);
+}
+
+/**
+ * Identity-authenticated request for the Worker/D1-owned sender-filter floor.
+ *
+ * The 256-bit request id is echoed by the response. Together with the signed
+ * timestamp, it prevents a previously observed response from being replayed
+ * after the caller deletes local data or restarts.
+ */
+export function canonicalSenderFilterFloorGetBytes(args: {
+  user_id: string;
+  timestamp_ms: number;
+  request_id: string;
+}): Uint8Array {
+  return concatBytes([
+    lpString(SENDER_FILTER_FLOOR_GET_DOMAIN),
+    lpString(args.user_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
+  ]);
 }
 
 // ---- link-creation grant request ----

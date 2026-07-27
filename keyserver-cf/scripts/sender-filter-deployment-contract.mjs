@@ -18,10 +18,16 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
       sha256:
         "2b44b32a0eeaa20da1ed91bb4af2f862227a88bd8c25ee148aaf1e69fc3a86db",
     }),
+  "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql":
+    Object.freeze({
+      role: "migration-0032-capability-floor-authority",
+      sha256:
+        "862ad79d48b9712199c8cee2958f7be392e483b1ddc98177b1ca1115b6ce06c5",
+    }),
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
     sha256:
-      "8ac9d9dd5735daa36a7e9188be4348863ede03f3e4f06e6133f5e6f5f78005bd",
+      "921fb415480a5ae88044fb030257dbb7d0ffb0eff0e2ec25548477c1e36de5f6",
   }),
   "keyserver-cf/src/endpoints/control-inbox.ts": Object.freeze({
     role: "signed-sender-filter-route",
@@ -33,10 +39,16 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     sha256:
       "8328a29f38669343f24b88a2848066eb03d5fd397b8aece36695323576950d0c",
   }),
+  "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts":
+    Object.freeze({
+      role: "identity-authenticated-capability-floor-authority",
+      sha256:
+        "3f5b7c78d828655344a5b94fa2a6d6ab4ba99509f61457b27dc59630f462a2b5",
+    }),
   "keyserver-cf/src/lib/canonical.ts": Object.freeze({
     role: "signed-filter-canonical-bytes",
     sha256:
-      "32b151c675659792d1e5d0081a3e1bd1557cd5f3d74567966bc937c84724cd9d",
+      "618ace3df4d9494f780179034bb1e3253a5a1cade77750a1731c7965a9ec3d86",
   }),
   "keyserver-cf/src/lib/control-inbox-sweep.ts": Object.freeze({
     role: "capability-schema-projection",
@@ -48,6 +60,12 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
       role: "nonempty-route-behavior-fixture",
       sha256:
         "2dc27d68fdb9c838d07ecccfc28b51f269ba5525f55b71685f324bef7636d462",
+    }),
+  "keyserver-cf/test/integration/sender-filter-capability-floor.test.ts":
+    Object.freeze({
+      role: "nonempty-authority-and-anti-reset-fixture",
+      sha256:
+        "a515a84f6ea2e56be0a8fcfda557938f7c359ecd70c07ad62e92a688a209b9d8",
     }),
 });
 
@@ -61,6 +79,8 @@ export const SENDER_FILTER_ROUTE_CONTRACT = Object.freeze({
   health_capability: "control_inbox_sender_disposition",
   health_capability_version: 1,
   migration: "0031_control_inbox_sender_retention.sql",
+  authority_path: "/v1/sender-filter-capability-floor/:user_id",
+  authority_migration: "0032_sender_filter_capability_floor.sql",
 });
 
 export function sha256(bytes) {

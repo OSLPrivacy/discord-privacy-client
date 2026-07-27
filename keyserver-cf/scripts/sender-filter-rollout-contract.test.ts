@@ -60,31 +60,39 @@ function deploymentFixture(
   artifact: "A" | "B",
   closure: ReturnType<typeof validateRolloutSourceClosure>,
 ) {
-  const migrationDigest =
+  const migration0031Digest =
     closure.file_sha256[
       "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql"
+    ];
+  const migration0032Digest =
+    closure.file_sha256[
+      "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql"
     ];
   const expectation = structuredClone(
     deploymentEvidenceExpectation(artifact),
   );
-  expectation.expectedMigrations[1].sha256 = migrationDigest;
+  expectation.expectedMigrations[1].sha256 = migration0031Digest;
+  expectation.expectedMigrations[2].sha256 = migration0032Digest;
   const payload = deploymentEvidencePayload(artifact);
-  if (artifact === "B") payload.migrations[1].sha256 = migrationDigest;
+  if (artifact === "B") {
+    payload.migrations[1].sha256 = migration0031Digest;
+    payload.migrations[2].sha256 = migration0032Digest;
+  }
   const producerReceipt = signDeploymentEvidencePayload(payload);
   const verifier = createDeploymentEvidenceVerifierStoreFixture(artifact);
   return { expectation, producerReceipt, verifier };
 }
 
 describe("shipping sender-filter Worker/client rollout closure", () => {
-  it("covers all 12 version-skew cells without cross-sender leakage", () => {
-    expect(VERSION_SKEW_MATRIX).toHaveLength(12);
+  it("covers all 18 version-skew cells without cross-sender leakage", () => {
+    expect(VERSION_SKEW_MATRIX).toHaveLength(18);
     expect(
       new Set(
         VERSION_SKEW_MATRIX.map(
           (entry) => `${entry.schema}/${entry.worker}/${entry.client}`,
         ),
-      ).size,
-    ).toBe(12);
+    ).size,
+    ).toBe(18);
     for (const entry of VERSION_SKEW_MATRIX) {
       const result = evaluateVersionSkewScenario({
         ...entry,
@@ -92,7 +100,7 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
         rows: continuityRows(),
       });
       expect(result.cross_sender_leakage).toBe(false);
-      if (entry.worker === "legacy") {
+      if (entry.worker === "legacy" && entry.client === "legacy") {
         expect(result).toMatchObject({
           accepted: true,
           request_mode: "legacy",
@@ -100,7 +108,10 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
         });
       } else if (
         entry.worker === "artifact-a" ||
-        entry.schema === "pre-0031"
+        entry.schema === "pre-0031" ||
+        entry.client === "sender-filter" &&
+          (entry.worker !== "artifact-b" ||
+            entry.schema !== "0031+0032")
       ) {
         expect(result).toMatchObject({
           accepted: false,
@@ -212,7 +223,7 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
     expect(
       evaluateVersionSkewScenario({
         worker: "artifact-b",
-        schema: "0031",
+        schema: "0031+0032",
         client: "sender-filter",
         senderId: SENDER,
         rows: blockedRows(),
@@ -221,6 +232,19 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
       accepted: true,
       request_mode: "filtered",
       active_sender_reachable: true,
+    });
+    expect(
+      evaluateVersionSkewScenario({
+        worker: "artifact-b",
+        schema: "0031",
+        client: "sender-filter",
+        senderId: SENDER,
+        rows: blockedRows(),
+      }),
+    ).toMatchObject({
+      accepted: false,
+      fail_closed: true,
+      refusal: "authoritative-floor-unavailable",
     });
   });
 
@@ -235,11 +259,20 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
     const blockCommentedMigration = structuredClone(files);
     const migrationPath =
       "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql";
+    const floorMigrationPath =
+      "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql";
     blockCommentedMigration[migrationPath] =
       `/*\n${blockCommentedMigration[migrationPath]}\n*/`;
     expect(() =>
       validateRolloutSourceClosure(blockCommentedMigration),
     ).toThrow(/migration 0031 semantic contract/);
+
+    const blockCommentedFloorMigration = structuredClone(files);
+    blockCommentedFloorMigration[floorMigrationPath] =
+      `/*\n${blockCommentedFloorMigration[floorMigrationPath]}\n*/`;
+    expect(() =>
+      validateRolloutSourceClosure(blockCommentedFloorMigration),
+    ).toThrow(/migration 0032 authority contract/);
 
     const ignoredProbe = structuredClone(files);
     ignoredProbe["crates/keystore/src/client.rs"] = ignoredProbe[
@@ -249,29 +282,42 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
       "let _ignored = self.probe_control_inbox_sender_filter_capability()?;\n        let capability = ControlInboxSenderFilterCapability::Version1;",
     );
     expect(() => validateRolloutSourceClosure(ignoredProbe)).toThrow(
-      /ignores, falsifies, or bypasses measured capability-floor dataflow/,
+      /live-tail measured floor|legacy\/direct bypass/,
     );
 
-    const falseFloorRaise = structuredClone(files);
-    falseFloorRaise["crates/keystore/src/client.rs"] = falseFloorRaise[
+    const deadMeasuredFlow = structuredClone(files);
+    deadMeasuredFlow["crates/keystore/src/client.rs"] = deadMeasuredFlow[
       "crates/keystore/src/client.rs"
     ].replace(
-      "record_sender_filter_capability_floor(identity, unix_timestamp_ms())?;",
-      "if false {\n                    record_sender_filter_capability_floor(identity, unix_timestamp_ms())?;\n                }",
+      "let capability = self.probe_control_inbox_sender_filter_capability()?;\n        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;\n        match (capability, measured_floor) {",
+      "if false {\n            let capability = self.probe_control_inbox_sender_filter_capability()?;\n            let measured_floor = self.observe_sender_filter_capability_floor(identity)?;\n            let _ = match (capability, measured_floor) {",
+    ).replace(
+      "            }\n        }\n    }\n\n    fn probe_control_inbox_sender_filter_capability",
+      "            };\n        }\n        self.get_control_inbox_from(identity, sender_id)\n    }\n\n    fn probe_control_inbox_sender_filter_capability",
     );
-    expect(() => validateRolloutSourceClosure(falseFloorRaise)).toThrow(
-      /falsifies/,
+    expect(() => validateRolloutSourceClosure(deadMeasuredFlow)).toThrow(
+      /live-tail measured floor|legacy\/direct bypass/,
     );
 
-    const missingMeasuredReload = structuredClone(files);
-    missingMeasuredReload["crates/keystore/src/client.rs"] =
-      missingMeasuredReload["crates/keystore/src/client.rs"].replace(
-        "load_sender_filter_capability_floor(identity)?\n            }",
-        "initial_floor\n            }",
+    const falseMeasuredFloor = structuredClone(files);
+    falseMeasuredFloor["crates/keystore/src/client.rs"] =
+      falseMeasuredFloor["crates/keystore/src/client.rs"].replace(
+        "let measured_floor = self.observe_sender_filter_capability_floor(identity)?;",
+        "let _ignored = self.observe_sender_filter_capability_floor(identity)?;\n        let measured_floor = SenderFilterCapabilityFloor::Version1;",
       );
     expect(() =>
-      validateRolloutSourceClosure(missingMeasuredReload),
-    ).toThrow(/measured capability-floor dataflow/);
+      validateRolloutSourceClosure(falseMeasuredFloor),
+    ).toThrow(/live-tail measured floor|legacy\/direct bypass/);
+
+    const filteredLegacyCall = structuredClone(files);
+    filteredLegacyCall["crates/keystore/src/client.rs"] =
+      filteredLegacyCall["crates/keystore/src/client.rs"].replace(
+        'Err(Error::Transport(\n                    "control-inbox sender-filter capability downgrade refused".into(),\n                ))',
+        "Ok(FilteredControlInbox { delivery: ControlInboxDeliveryDisposition { live: 0, retryable: 0, quarantined: 0, retired: 0 }, items: self.get_control_inbox(identity)?.into_iter().filter(|item| item.sender_id == sender_id).collect() })",
+      );
+    expect(() =>
+      validateRolloutSourceClosure(filteredLegacyCall),
+    ).toThrow(/live-tail measured floor|legacy\/direct bypass/);
 
     const brokerBypass = structuredClone(files);
     brokerBypass["apps/osl-hub/src/broker.rs"] = brokerBypass[
@@ -284,58 +330,52 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
       /dead branch or direct bypass/,
     );
 
-    const deletionReset = structuredClone(files);
-    deletionReset["crates/keystore/src/sender_filter_rollout.rs"] =
-      deletionReset["crates/keystore/src/sender_filter_rollout.rs"].replace(
-        '_ => Err(Error::Transport(\n            "sender-filter capability floor or identity anchor is absent".into(),\n        )),',
-        "_ => Ok(SenderFilterCapabilityFloor::NeverObserved),",
-      );
-    expect(() => validateRolloutSourceClosure(deletionReset)).toThrow(
-      /one-sided identity-anchor absence/,
+    const callerWrittenFloor = structuredClone(files);
+    callerWrittenFloor[
+      "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts"
+    ] = callerWrittenFloor[
+      "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts"
+    ].replace(
+      "VALUES (?, 1, 1, ?)",
+      "VALUES (?, Number(url.searchParams.get('floor')), 1, ?)",
+    );
+    expect(() => validateRolloutSourceClosure(callerWrittenFloor)).toThrow(
+      /authority SQL is missing or caller-controlled/,
     );
 
-    const bothDeletedReset = structuredClone(files);
-    bothDeletedReset["crates/keystore/src/sender_filter_rollout.rs"] =
-      bothDeletedReset[
+    const resettableMigration = structuredClone(files);
+    resettableMigration[floorMigrationPath] =
+      resettableMigration[floorMigrationPath].replace(
+        "CREATE TRIGGER sender_filter_capability_floor_no_delete",
+        "CREATE TRIGGER sender_filter_capability_floor_delete_allowed",
+      );
+    expect(() => validateRolloutSourceClosure(resettableMigration)).toThrow(
+      /migration 0032 authority contract/,
+    );
+
+    const falseNeverObserved = structuredClone(files);
+    falseNeverObserved["crates/keystore/src/sender_filter_rollout.rs"] =
+      falseNeverObserved[
         "crates/keystore/src/sender_filter_rollout.rs"
       ].replace(
-        '(None, None) => Err(Error::Transport(\n            "sender-filter capability floor genesis is not provisioned".into(),\n        )),',
-        "(None, None) => Ok(SenderFilterCapabilityFloor::NeverObserved),",
+        "pub(crate) enum SenderFilterCapabilityFloor {\n    Version1,\n}",
+        "pub(crate) enum SenderFilterCapabilityFloor {\n    NeverObserved,\n    Version1,\n}",
       );
-    expect(() => validateRolloutSourceClosure(bothDeletedReset)).toThrow(
-      /one-sided identity-anchor absence/,
+    expect(() => validateRolloutSourceClosure(falseNeverObserved)).toThrow(
+      /reopen or bypass monotonic authority/,
     );
 
-    const replayedFloorZero = structuredClone(files);
-    replayedFloorZero["crates/keystore/src/sender_filter_rollout.rs"] =
-      replayedFloorZero[
+    const futureMonotonicVersion = structuredClone(files);
+    futureMonotonicVersion["crates/keystore/src/sender_filter_rollout.rs"] =
+      futureMonotonicVersion[
         "crates/keystore/src/sender_filter_rollout.rs"
       ].replace(
-        'Err(Error::Transport(\n                    "sender-filter capability floor genesis is not independently provisioned"\n                        .into(),\n                ))',
-        "Ok(SenderFilterCapabilityFloor::NeverObserved)",
+        "observation.monotonic_version != 1",
+        "observation.monotonic_version == 0",
       );
-    expect(() => validateRolloutSourceClosure(replayedFloorZero)).toThrow(
-      /one-sided identity-anchor absence/,
-    );
-
-    const missingParentFsync = structuredClone(files);
-    missingParentFsync["crates/keystore/src/sender_filter_rollout.rs"] =
-      missingParentFsync[
-        "crates/keystore/src/sender_filter_rollout.rs"
-      ].replaceAll("sync_parent(path)?;", "let _ = path;");
-    expect(() => validateRolloutSourceClosure(missingParentFsync)).toThrow(
-      /sync_parent|parent durability/,
-    );
-
-    const loweringAlias = structuredClone(files);
-    loweringAlias["crates/keystore/src/sender_filter_rollout.rs"] =
-      loweringAlias["crates/keystore/src/sender_filter_rollout.rs"].replace(
-        "#[cfg(test)]",
-        "use std::fs::remove_file as erase_floor;\nfn reset_floor(path: &Path) { let erase_again = erase_floor; let _ = erase_again(path); }\n\n#[cfg(test)]",
-      );
-    expect(() => validateRolloutSourceClosure(loweringAlias)).toThrow(
-      /aliased lowering path/,
-    );
+    expect(() =>
+      validateRolloutSourceClosure(futureMonotonicVersion),
+    ).toThrow(/monotonic_version|reopen or bypass monotonic authority/);
 
     const typedLoweringAlias = structuredClone(files);
     typedLoweringAlias["crates/keystore/src/sender_filter_rollout.rs"] =
@@ -343,32 +383,75 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
         "crates/keystore/src/sender_filter_rollout.rs"
       ].replace(
         "#[cfg(test)]",
-        "fn typed_reset(path: &Path) { let erase: fn(&Path) -> std::io::Result<()> = std::fs::remove_file; let _ = erase(path); }\n\n#[cfg(test)]",
+        "type FloorMutation = fn(&std::path::Path) -> std::io::Result<()>;\nfn typed_floor_mutation(path: &std::path::Path) { let mutate = std::fs::remove_file as FloorMutation; let _ = mutate(path); }\n\n#[cfg(test)]",
       );
     expect(() => validateRolloutSourceClosure(typedLoweringAlias)).toThrow(
-      /aliased lowering path/,
+      /typed lowering path/,
     );
 
-    const safeCommentAndAlias = structuredClone(files);
-    safeCommentAndAlias[migrationPath] +=
+    for (const [label, injected] of [
+      [
+        "cast-through-type alias",
+        "type FloorMutation = fn(&std::path::Path) -> std::io::Result<()>;\nfn mutate_floor(path: &std::path::Path) { let mutate = std::fs::remove_file as FloorMutation; let _ = mutate(path); }\n",
+      ],
+      [
+        "const function-pointer alias",
+        "const FLOOR_MUTATION: fn(&std::path::Path) -> std::io::Result<()> = std::fs::remove_file;\n",
+      ],
+      [
+        "static function-pointer alias",
+        "static FLOOR_MUTATION: fn(&std::path::Path) -> std::io::Result<()> = std::fs::remove_file;\n",
+      ],
+      [
+        "parenthesized local alias",
+        "fn mutate_floor(path: &std::path::Path) { let mutate = (std::fs::remove_file); let _ = mutate(path); }\n",
+      ],
+      [
+        "parenthesized transitive alias",
+        "fn mutate_floor(path: &std::path::Path) { let first = (std::fs::remove_file); let second = (first); let third = (second); let _ = third(path); }\n",
+      ],
+      [
+        "renamed import and parenthesized alias",
+        "use std::fs::remove_file as erase_floor;\nfn mutate_floor(path: &std::path::Path) { let mutate = (erase_floor); let _ = mutate(path); }\n",
+      ],
+      [
+        "higher-order function pointer",
+        "fn invoke_floor_mutation(mutate: fn(&std::path::Path) -> std::io::Result<()>, path: &std::path::Path) { let _ = mutate(path); }\nfn mutate_floor(path: &std::path::Path) { invoke_floor_mutation(std::fs::remove_file, path); }\n",
+      ],
+    ] as const) {
+      const mutation = structuredClone(files);
+      mutation["crates/keystore/src/sender_filter_rollout.rs"] =
+        mutation[
+          "crates/keystore/src/sender_filter_rollout.rs"
+        ].replace("#[cfg(test)]", `${injected}\n#[cfg(test)]`);
+      expect(
+        () => validateRolloutSourceClosure(mutation),
+        label,
+      ).toThrow(/direct, aliased, or typed lowering path/);
+    }
+
+    const earlyDirectReturn = structuredClone(files);
+    earlyDirectReturn["crates/keystore/src/client.rs"] =
+      earlyDirectReturn["crates/keystore/src/client.rs"].replace(
+        "let capability = self.probe_control_inbox_sender_filter_capability()?;",
+        "return self.get_control_inbox_from(identity, sender_id);\n        let capability = self.probe_control_inbox_sender_filter_capability()?;",
+      );
+    expect(() => validateRolloutSourceClosure(earlyDirectReturn)).toThrow(
+      /live-tail measured floor|validation prefix/,
+    );
+
+    const safeComments = structuredClone(files);
+    safeComments[migrationPath] +=
       "\n/* ALTER TABLE ignored_decoy ADD COLUMN ignored; */\n";
-    safeCommentAndAlias["crates/keystore/src/sender_filter_rollout.rs"] =
-      safeCommentAndAlias[
+    safeComments["crates/keystore/src/sender_filter_rollout.rs"] =
+      safeComments[
         "crates/keystore/src/sender_filter_rollout.rs"
       ].replace(
         "#[cfg(test)]",
-        "use std::fs::metadata as inspect_floor;\nfn harmless_inspection(path: &Path) { let _ = inspect_floor(path); }\n\n#[cfg(test)]",
+        "// std::fs::remove_file as TypedReset is forbidden in production.\n#[cfg(test)]",
       );
-    expect(() => validateRolloutSourceClosure(safeCommentAndAlias)).not
+    expect(() => validateRolloutSourceClosure(safeComments)).not
       .toThrow();
-
-    const nonAtomic = structuredClone(files);
-    nonAtomic["crates/keystore/src/sender_filter_rollout.rs"] = nonAtomic[
-      "crates/keystore/src/sender_filter_rollout.rs"
-    ].replace("fs::rename(&temporary, path)?;", "fs::write(path, bytes)?;");
-    expect(() => validateRolloutSourceClosure(nonAtomic)).toThrow(
-      /atomic replacement/,
-    );
   });
 
   it("keeps producer trust and verifier storage internal and unprovisioned", async () => {

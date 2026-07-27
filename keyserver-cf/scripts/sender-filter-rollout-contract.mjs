@@ -28,17 +28,24 @@ export const ROLLOUT_WORKERS = Object.freeze([
   "artifact-a",
   "artifact-b",
 ]);
-export const ROLLOUT_SCHEMAS = Object.freeze(["pre-0031", "0031"]);
+export const ROLLOUT_SCHEMAS = Object.freeze([
+  "pre-0031",
+  "0031",
+  "0031+0032",
+]);
 export const ROLLOUT_CLIENTS = Object.freeze(["legacy", "sender-filter"]);
 export const ROLLOUT_SOURCE_PATHS = Object.freeze([
   "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql",
+  "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql",
   "keyserver-cf/src/index.ts",
   "keyserver-cf/src/endpoints/control-inbox.ts",
   "keyserver-cf/src/endpoints/healthz.ts",
+  "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts",
   "keyserver-cf/src/readiness/bridge/control-inbox.ts",
   "keyserver-cf/src/readiness/bridge/healthz.ts",
   "keyserver-cf/src/lib/canonical.ts",
   "crates/keystore/src/client.rs",
+  "crates/keystore/src/control_inbox.rs",
   "crates/keystore/src/sender_filter_rollout.rs",
   "apps/osl-hub/src/broker.rs",
 ]);
@@ -50,8 +57,12 @@ export const ROLLOUT_CALL_SITES = Object.freeze({
     "crates/keystore/src/client.rs::KeyServerClient::get_control_inbox_compatible_from",
   migration:
     "keyserver-cf/migrations/0031_control_inbox_sender_retention.sql",
+  floor_migration:
+    "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql",
   worker_health:
     "keyserver-cf/src/endpoints/healthz.ts::handleHealthz",
+  worker_floor:
+    "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts::handleSenderFilterCapabilityFloorGet",
   worker_inbox:
     "keyserver-cf/src/endpoints/control-inbox.ts::handleControlInboxGetInner",
 });
@@ -300,6 +311,7 @@ export function requestForClient({
   client,
   senderId,
   capabilityProbe,
+  authoritativeFloorAvailable,
   capabilityPreviouslyObserved = false,
 }) {
   requireChoice(client, ROLLOUT_CLIENTS, "rollout client");
@@ -317,6 +329,9 @@ export function requestForClient({
       refusal: null,
     };
   }
+  if (typeof authoritativeFloorAvailable !== "boolean") {
+    throw new Error("authoritative floor availability must be boolean");
+  }
   const capability = classifyCapability(
     capabilityProbe,
     capabilityPreviouslyObserved,
@@ -326,13 +341,16 @@ export function requestForClient({
   }
   if (capability.mode === "legacy") {
     return {
-      mode: "legacy",
-      request: {
-        sender_param: null,
-        signed_sender: null,
-        signature_valid: true,
-      },
-      refusal: null,
+      mode: "refuse",
+      request: null,
+      refusal: "authoritative-floor-unavailable",
+    };
+  }
+  if (!authoritativeFloorAvailable) {
+    return {
+      mode: "refuse",
+      request: null,
+      refusal: "authoritative-floor-unavailable",
     };
   }
   return {
@@ -412,6 +430,8 @@ export function evaluateVersionSkewScenario({
     client,
     senderId,
     capabilityProbe,
+    authoritativeFloorAvailable:
+      worker === "artifact-b" && schema === "0031+0032",
     capabilityPreviouslyObserved,
   });
   if (clientRequest.mode === "refuse") {
@@ -480,6 +500,13 @@ const PHASES = Object.freeze({
     legacy: ["legacy", 200, "positive"],
     filtered: ["none", null, "empty"],
   },
+  "legacy-0031-0032": {
+    worker: "legacy",
+    schema: "0031+0032",
+    capability: ["legacy", 200, null],
+    legacy: ["legacy", 200, "positive"],
+    filtered: ["none", null, "empty"],
+  },
   "artifact-a-pre-0031": {
     worker: "artifact-a",
     schema: "pre-0031",
@@ -494,6 +521,13 @@ const PHASES = Object.freeze({
     legacy: ["none", null, "empty"],
     filtered: ["none", null, "empty"],
   },
+  "artifact-a-0031-0032": {
+    worker: "artifact-a",
+    schema: "0031+0032",
+    capability: ["transitional", 200, 0],
+    legacy: ["none", null, "empty"],
+    filtered: ["none", null, "empty"],
+  },
   "artifact-b-pre-0031": {
     worker: "artifact-b",
     schema: "pre-0031",
@@ -504,6 +538,13 @@ const PHASES = Object.freeze({
   "artifact-b-0031": {
     worker: "artifact-b",
     schema: "0031",
+    capability: ["filtered", 200, 1],
+    legacy: ["legacy", 200, "positive"],
+    filtered: ["none", null, "empty"],
+  },
+  "artifact-b-0031-0032": {
+    worker: "artifact-b",
+    schema: "0031+0032",
     capability: ["filtered", 200, 1],
     legacy: ["legacy", 200, "positive"],
     filtered: ["filtered", 200, "positive"],
@@ -522,6 +563,7 @@ const PHASE_RECEIPT_FIELDS = Object.freeze([
   "expected_commit",
   "format",
   "migration_0031_sha256",
+  "migration_0032_sha256",
   "phase",
   "producer_identity",
   "producer_key_id",
@@ -614,6 +656,7 @@ function validateDerivedPhaseReceipt(receiptValue) {
   requireCommit(receipt.expected_commit, "rollout expected commit");
   requireSha(receipt.archive_id, "rollout archive");
   requireSha(receipt.migration_0031_sha256, "migration 0031 digest");
+  requireSha(receipt.migration_0032_sha256, "migration 0032 digest");
   requireSha(receipt.source_closure_sha256, "source closure digest");
   requireSha(
     receipt.producer_receipt_sha256,
@@ -714,9 +757,24 @@ export async function deriveAuthenticatedSenderFilterPhaseReceipt(
       "authenticated rollout migration does not match the source closure",
     );
   }
+  const migration0032 = deploymentExpectation.expectedMigrations.find(
+    (entry) =>
+      entry.name === "0032_sender_filter_capability_floor.sql",
+  );
+  if (
+    !migration0032 ||
+    migration0032.sha256 !==
+      sourceClosure.file_sha256[
+        "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql"
+      ]
+  ) {
+    throw new Error(
+      "authenticated rollout floor authority migration is absent",
+    );
+  }
   const phase =
     payload.artifact === "B"
-      ? "artifact-b-0031"
+      ? "artifact-b-0031-0032"
       : "artifact-a-pre-0031";
   return validateDerivedPhaseReceipt({
     format: SENDER_FILTER_PHASE_RECEIPT_FORMAT,
@@ -725,6 +783,7 @@ export async function deriveAuthenticatedSenderFilterPhaseReceipt(
     expected_commit: payload.expected_commit,
     archive_id: payload.archive_id,
     migration_0031_sha256: migration0031.sha256,
+    migration_0032_sha256: migration0032.sha256,
     source_closure_sha256: sourceClosure.source_closure_sha256,
     call_sites: ROLLOUT_CALL_SITES,
     captured_at: payload.timestamps.issued_at,
@@ -780,7 +839,7 @@ export async function admitSenderFilterRolloutPlan(optionsValue) {
   }
   let nextSelection = "none";
   if (reasons.length === 0) {
-    if (receipt.phase === "artifact-b-0031") {
+    if (receipt.phase === "artifact-b-0031-0032") {
       nextSelection = "stable-compatible";
     }
   }
@@ -1079,34 +1138,58 @@ function requireShippingClientDataflow(source) {
   if (!boundary) {
     throw new Error("shipping client compatibility function is absent");
   }
-  const code = boundary.body.replace(/\s+/g, " ");
+  const code = boundary.body.replace(/\s+/g, " ").trim();
   const probeCalls =
     code.match(/\bprobe_control_inbox_sender_filter_capability\s*\(/g) ?? [];
-  const floorLoads =
-    code.match(/\bload_sender_filter_capability_floor\s*\(/g) ?? [];
-  const floorRecords =
-    code.match(/\brecord_sender_filter_capability_floor\s*\(/g) ?? [];
+  const floorObservations =
+    code.match(/\bobserve_sender_filter_capability_floor\s*\(/g) ?? [];
+  const filteredCalls =
+    code.match(/\bget_control_inbox_from\s*\(/g) ?? [];
+  const unfilteredCalls =
+    code.match(/\bget_control_inbox\s*\(/g) ?? [];
+  const liveTailStart = code.indexOf("let capability");
+  const liveTail = liveTailStart < 0 ? "" : code.slice(liveTailStart);
+  const liveHead =
+    /^let\s+capability\s*=\s*self\s*\.\s*probe_control_inbox_sender_filter_capability\s*\(\s*\)\s*\?\s*;\s*let\s+measured_floor\s*=\s*self\s*\.\s*observe_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*;\s*match\s*\(\s*capability\s*,\s*measured_floor\s*\)/.exec(
+      liveTail,
+    );
+  const matchBrace = liveHead
+    ? liveTail.indexOf("{", liveHead[0].length)
+    : -1;
+  const matchEnd =
+    matchBrace < 0
+      ? -1
+      : matchingDelimiter(liveTail, matchBrace, "{", "}");
+  const matchBody =
+    matchEnd < 0 ? "" : liveTail.slice(matchBrace + 1, matchEnd);
   if (
     probeCalls.length !== 1 ||
-    floorLoads.length !== 2 ||
-    floorRecords.length !== 1 ||
-    !/let\s+capability\s*=\s*self\s*\.\s*probe_control_inbox_sender_filter_capability\s*\(\s*\)\s*\?\s*;\s*let\s+initial_floor\s*=\s*load_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*;\s*let\s+measured_floor\s*=\s*match\s*\(\s*capability\s*,\s*initial_floor\s*\)\s*\{\s*\(\s*ControlInboxSenderFilterCapability\s*::\s*Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved\s*,?\s*\)\s*=>\s*\{\s*record_sender_filter_capability_floor\s*\(\s*identity\s*,\s*unix_timestamp_ms\s*\(\s*\)\s*,?\s*\)\s*\?\s*;\s*load_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*\}\s*,?\s*\(\s*_\s*,\s*floor\s*\)\s*=>\s*floor\s*,?\s*\}\s*;\s*match\s*\(\s*capability\s*,\s*measured_floor\s*\)\s*\{/.test(
-      code,
-    )
+    floorObservations.length !== 1 ||
+    filteredCalls.length !== 1 ||
+    unfilteredCalls.length !== 0 ||
+    !liveHead ||
+    matchEnd !== liveTail.length - 1 ||
+    !/\(\s*ControlInboxSenderFilterCapability\s*::\s*Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1\s*,?\s*\)\s*=>\s*self\s*\.\s*get_control_inbox_from\s*\(\s*identity\s*,\s*sender_id\s*\)/.test(
+      matchBody,
+    ) ||
+    !/\(\s*ControlInboxSenderFilterCapability\s*::\s*Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1\s*,?\s*\)\s*=>\s*(?:\{\s*)?Err\s*\(/.test(
+      matchBody,
+    ) ||
+    /\bif\s+false\b|\bwhile\s+false\b/.test(liveTail)
   ) {
     throw new Error(
-      "shipping client ignores, falsifies, or bypasses measured capability-floor dataflow",
+      "shipping client lacks a live-tail measured floor or has a legacy/direct bypass",
     );
   }
-  for (const branch of [
-    /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1[\s\S]*get_control_inbox_from/,
-    /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*Err\s*\(/,
-    /Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*get_control_inbox\s*\(/,
-    /Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1[\s\S]*Err\s*\(/,
-  ]) {
-    if (!branch.test(code)) {
-      throw new Error("shipping client compatibility branch is incomplete");
-    }
+  const prefix = code.slice(0, liveTailStart);
+  if (
+    (prefix.match(/\bif\s*!valid_control_inbox_sender_id\s*\(/g) ?? [])
+      .length !== 2 ||
+    /\b(?:probe_control_inbox_sender_filter_capability|observe_sender_filter_capability_floor|get_control_inbox(?:_from)?)\s*\(/.test(
+      prefix,
+    )
+  ) {
+    throw new Error("shipping client validation prefix is not exact");
   }
 }
 
@@ -1141,103 +1224,52 @@ function requireNonLowerableFloor(source) {
   const production = source.split("#[cfg(test)]")[0];
   const functions = rustFunctions(production);
   const reachable = reachableFunctions(functions, [
-    "load_sender_filter_capability_floor",
-    "record_sender_filter_capability_floor",
+    "validate_sender_filter_capability_floor_observation",
   ]);
   for (const required of [
-    "load_sender_filter_capability_floor",
-    "record_sender_filter_capability_floor",
-    "load_from_paths",
-    "write_receipt_atomically",
-    "sync_parent",
+    "validate_sender_filter_capability_floor_observation",
+    "sender_filter_floor_identity_anchor_sha256",
+    "write_lp",
   ]) {
     if (!reachable.has(required)) {
       throw new Error(`capability floor call graph does not reach ${required}`);
     }
   }
-  const load = functions.get("load_from_paths").body.replace(/\s+/g, " ");
-  if (
-    !/\(\s*None\s*,\s*None\s*\)\s*=>\s*Err\s*\(/.test(load) ||
-    /Ok\s*\(\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved\s*\)/.test(
-      load,
-    ) ||
-    !/\(\s*Some\s*\([^)]*\)\s*,\s*Some\s*\([^)]*\)\s*\)[\s\S]*Version1/.test(
-      load,
-    ) ||
-    !/_\s*=>\s*Err\s*\(/.test(load)
-  ) {
-    throw new Error(
-      "capability floor does not fail closed on one-sided identity-anchor absence",
-    );
-  }
-  const atomic = functions
-    .get("write_receipt_atomically")
+  const validate = functions
+    .get("validate_sender_filter_capability_floor_observation")
     .body.replace(/\s+/g, " ");
-  if (
-    !/file\s*\.\s*sync_all\s*\(\s*\)\s*\?/.test(atomic) ||
-    !/fs\s*::\s*rename\s*\(\s*&\s*temporary\s*,\s*path\s*\)\s*\?/.test(
-      atomic,
-    ) ||
-    !/sync_parent\s*\(\s*path\s*\)\s*\?/.test(atomic)
-  ) {
-    throw new Error(
-      "capability floor atomic replacement or parent durability is absent",
-    );
-  }
-  const record = functions
-    .get("record_sender_filter_capability_floor")
-    .body.replace(/\s+/g, " ");
-  if (
-    !/write_receipt_atomically\s*\(\s*&\s*anchor_path[\s\S]*write_receipt_atomically\s*\(\s*&\s*local_path/.test(
-      record,
-    )
-  ) {
-    throw new Error("capability floor is not anchored before local publication");
-  }
   const code = maskCodeTrivia(production);
-  const forbidden = new Set([
-    "remove_file",
-    "remove_dir",
-    "remove_dir_all",
-    "set_len",
-    "truncate",
-  ]);
-  const aliases = new Set(forbidden);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const match of code.matchAll(
-      /\buse\s+(?:std\s*::\s*)?(?:fs\s*::\s*)?([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)/g,
-    )) {
-      if (aliases.has(match[1]) && !aliases.has(match[2])) {
-        aliases.add(match[2]);
-        changed = true;
-      }
-    }
-    for (const match of code.matchAll(
-      /\blet\s+([A-Za-z_]\w*)(?:\s*:[^=;]+)?\s*=\s*(?:std\s*::\s*)?(?:fs\s*::\s*)?([A-Za-z_]\w*)\s*;/g,
-    )) {
-      if (aliases.has(match[2]) && !aliases.has(match[1])) {
-        aliases.add(match[1]);
-        changed = true;
-      }
-    }
-    for (const match of code.matchAll(
-      /\b([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)/g,
-    )) {
-      if (aliases.has(match[1]) && !aliases.has(match[2])) {
-        aliases.add(match[2]);
-        changed = true;
-      }
-    }
+  if (
+    !/observation\s*\.\s*capability_version\s*!=\s*SENDER_FILTER_CAPABILITY_VERSION/.test(
+      validate,
+    ) ||
+    !/observation\s*\.\s*monotonic_version\s*!=\s*1/.test(validate) ||
+    !/observation\s*\.\s*request_timestamp_ms\s*!=\s*request_timestamp_ms/.test(
+      validate,
+    ) ||
+    !/observation\s*\.\s*request_id\s*!=\s*request_id/.test(validate) ||
+    !/sender_filter_floor_identity_anchor_sha256\s*\(\s*identity\s*\)/.test(
+      validate,
+    ) ||
+    !/Ok\s*\(\s*SenderFilterCapabilityFloor\s*::\s*Version1\s*\)/.test(
+      validate,
+    ) ||
+    /\bNeverObserved\b/.test(code)
+  ) {
+    throw new Error(
+      "capability floor observation can reopen or bypass monotonic authority",
+    );
   }
-  const called = functionCalls(code);
-  for (const alias of aliases) {
-    if (called.has(alias)) {
-      throw new Error(
-        "sender-filter capability floor exposes an aliased lowering path",
-      );
-    }
+  if (
+    /\b(?:std\s*::\s*)?fs\s*::/.test(code) ||
+    /\b(?:remove_file|remove_dir|remove_dir_all|set_len|truncate|reset|erase|delete)\b/.test(
+      code,
+    ) ||
+    /\btype\s+[A-Za-z_]\w*\s*=\s*(?:unsafe\s+)?fn\s*\(/.test(code)
+  ) {
+    throw new Error(
+      "sender-filter capability floor exposes a direct, aliased, or typed lowering path",
+    );
   }
 }
 
@@ -1272,11 +1304,32 @@ export function validateRolloutSourceClosure(filesValue) {
       throw new Error(`migration 0031 semantic contract missing ${sql}`);
     }
   }
+  const floorMigration = executableSqlStatements(
+    files[
+      "keyserver-cf/migrations/0032_sender_filter_capability_floor.sql"
+    ],
+  );
+  for (const sql of [
+    "create table sender_filter_capability_floors",
+    "capability_version integer not null check (capability_version = 1)",
+    "monotonic_version integer not null check (monotonic_version = 1)",
+    "create trigger sender_filter_capability_floor_no_update",
+    "create trigger sender_filter_capability_floor_no_delete",
+    "raise(abort, 'sender-filter capability floor is immutable')",
+    "raise(abort, 'sender-filter capability floor cannot be deleted')",
+  ]) {
+    if (!floorMigration.some((statement) => statement.includes(sql))) {
+      throw new Error(`migration 0032 authority contract missing ${sql}`);
+    }
+  }
   const uncommentedIndex = stripComments(files["keyserver-cf/src/index.ts"]);
   if (
     !uncommentedIndex.includes('path === "/v1/healthz"') ||
     !uncommentedIndex.includes(
       "handleControlInboxGet(request, env, inboxUserId)",
+    ) ||
+    !uncommentedIndex.includes(
+      "handleSenderFilterCapabilityFloorGet",
     )
   ) {
     throw new Error("Worker route entrypoint binding mismatch");
@@ -1284,7 +1337,11 @@ export function validateRolloutSourceClosure(filesValue) {
   requireCode(
     files["keyserver-cf/src/index.ts"],
     "keyserver-cf/src/index.ts",
-    [/handleHealthz\s*\(\s*env\s*\)/, /handleControlInboxGet\s*\(/],
+    [
+      /handleHealthz\s*\(\s*env\s*\)/,
+      /handleControlInboxGet\s*\(/,
+      /handleSenderFilterCapabilityFloorGet\s*\(/,
+    ],
   );
   requireCode(
     files["keyserver-cf/src/endpoints/healthz.ts"],
@@ -1307,11 +1364,43 @@ export function validateRolloutSourceClosure(filesValue) {
     ],
   );
   requireCode(
+    files[
+      "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts"
+    ],
+    "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts",
+    [
+      /canonicalSenderFilterFloorGetBytes\s*\(/,
+      /verifyEd25519\s*\(\s*publicKey\s*,\s*canonical\s*,\s*signature\s*\)/,
+      /liveSenderFilterSchemaVersionOne\s*\(\s*env\s*\.\s*DB\s*\)/,
+      /marker\s*\?\s*\.\s*version\s*!==\s*FLOOR_CAPABILITY_VERSION/,
+      /request_timestamp_ms\s*:\s*timestampMs/,
+      /request_id\s*:\s*requestId/,
+    ],
+  );
+  const floorEndpoint = stripComments(
+    files[
+      "keyserver-cf/src/endpoints/sender-filter-capability-floor.ts"
+    ],
+  ).replace(/\s+/g, " ");
+  for (const pattern of [
+    /INSERT INTO sender_filter_capability_floors/,
+    /capability_version, monotonic_version/,
+    /VALUES \(\?, 1, 1, \?\)/,
+    /ON CONFLICT\(identity_anchor_sha256\) DO NOTHING/,
+  ]) {
+    if (!pattern.test(floorEndpoint)) {
+      throw new Error(
+        "Worker floor authority SQL is missing or caller-controlled",
+      );
+    }
+  }
+  requireCode(
     files["keyserver-cf/src/lib/canonical.ts"],
     "keyserver-cf/src/lib/canonical.ts",
     [
       /args\s*\.\s*sender_id\s*!==\s*undefined\s*&&\s*args\s*\.\s*sender_id\s*!==\s*null/,
       /parts\s*\.\s*push\s*\(\s*lpString\s*\(\s*args\s*\.\s*sender_id\s*\)\s*\)/,
+      /canonicalSenderFilterFloorGetBytes[\s\S]*lpString\s*\(\s*args\s*\.\s*request_id\s*\)/,
     ],
   );
   requireCode(
@@ -1330,6 +1419,14 @@ export function validateRolloutSourceClosure(filesValue) {
     throw new Error("Artifact A health marker binding mismatch");
   }
   requireShippingClientDataflow(files["crates/keystore/src/client.rs"]);
+  requireCode(
+    files["crates/keystore/src/control_inbox.rs"],
+    "crates/keystore/src/control_inbox.rs",
+    [
+      /canonical_sender_filter_floor_get_bytes[\s\S]*write_lp\s*\(\s*&mut\s+buf\s*,\s*request_id\s*\.\s*as_bytes\s*\(\s*\)\s*\)/,
+      /sign_sender_filter_floor_get[\s\S]*ed25519\s*::\s*sign\s*\(\s*&identity\s*\.\s*ed25519_secret\s*,\s*&bytes\s*\)/,
+    ],
+  );
   const floorProduction = files[
     "crates/keystore/src/sender_filter_rollout.rs"
   ].split("#[cfg(test)]")[0];
@@ -1337,13 +1434,10 @@ export function validateRolloutSourceClosure(filesValue) {
     floorProduction,
     "crates/keystore/src/sender_filter_rollout.rs",
     [
-      /osl_config_dir\s*\(\s*\)/,
-      /osl_base_dir\s*\(\s*\)/,
-      /identity_anchor_sha256\s*\(\s*identity\s*\)/,
-      /write_receipt_atomically\s*\(/,
-      /sync_parent\s*\(\s*path\s*\)/,
-      /crypto\s*::\s*ed25519\s*::\s*sign\s*\(/,
-      /crypto\s*::\s*ed25519\s*::\s*verify\s*\(/,
+      /sender_filter_floor_identity_anchor_sha256\s*\(\s*identity\s*\)/,
+      /observation\s*\.\s*monotonic_version\s*!=\s*1/,
+      /observation\s*\.\s*request_timestamp_ms\s*!=\s*request_timestamp_ms/,
+      /observation\s*\.\s*request_id\s*!=\s*request_id/,
       /SenderFilterCapabilityFloor\s*::\s*Version1/,
     ],
   );

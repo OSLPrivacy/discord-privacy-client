@@ -59,6 +59,9 @@ import {
   handleControlInboxGet,
   handleControlInboxPost,
 } from "./endpoints/control-inbox.js";
+import {
+  handleSenderFilterCapabilityFloorGet,
+} from "./endpoints/sender-filter-capability-floor.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import {
   handleWrappedKeysDelete,
@@ -286,6 +289,17 @@ async function dispatch(
     }
     const inboxUserId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
     if (inboxUserId !== null) return await handleControlInboxGet(request, env, inboxUserId);
+    const floorUserId = matchParam(
+      path,
+      /^\/v1\/sender-filter-capability-floor\/([^/]+)$/,
+    );
+    if (floorUserId !== null) {
+      return await handleSenderFilterCapabilityFloorGet(
+        request,
+        env,
+        floorUserId,
+      );
+    }
     const um = path.match(
       /^\/v1\/update-manifest\/([^/]+)\/([^/]+)\/([^/]+)$/,
     );

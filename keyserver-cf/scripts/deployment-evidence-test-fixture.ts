@@ -48,6 +48,10 @@ export const DEPLOYMENT_FIXTURE_MIGRATIONS = [
     name: "0031_control_inbox_sender_retention.sql",
     sha256: "6".repeat(64),
   },
+  {
+    name: "0032_sender_filter_capability_floor.sql",
+    sha256: "7".repeat(64),
+  },
 ];
 
 export const TEST_PRODUCER_KEY_ID =
@@ -263,7 +267,7 @@ export function deploymentEvidencePayload(
   const selectedBundle = DEPLOYMENT_FIXTURE_BUNDLES[artifact];
   const activeA = artifact === "A";
   const migrations = DEPLOYMENT_FIXTURE_MIGRATIONS
-    .slice(0, artifact === "A" ? 1 : 2)
+    .slice(0, artifact === "A" ? 1 : DEPLOYMENT_FIXTURE_MIGRATIONS.length)
     .map((entry, index) => ({
       applied_order: index + 1,
       ...entry,
