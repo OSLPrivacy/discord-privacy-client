@@ -4,19 +4,15 @@ import worker from "../src/index.js";
 import {
   D2_CRON,
   D2_CYCLE_MARKER,
-  D2_DATABASE_ID,
-  D2_DATABASE_NAME,
+  D2_LOCAL_EVIDENCE_FORMAT,
   D2_MIGRATION_0010_SHA256,
   D2_RECOVERY_MARKER,
   D2_RELEASE_COMMIT,
-  D2_RELEASE_FORMAT,
   D2_RELEASE_SOURCE_SHA256,
   D2_RELEASE_TREE,
   D2_REQUIRED_MIGRATIONS,
-  D2_R2_BUCKET,
-  D2_WORKER_NAME,
-  type D2ReleaseProbeEvidence,
-  verifyD2Migration0010Release,
+  type D2LocalEvidence,
+  verifyD2Migration0010LocalEvidence,
 } from "../scripts/d2-0010-release-contract.js";
 import {
   d1All,
@@ -27,9 +23,6 @@ import {
 } from "./helpers/workerd.js";
 
 const NOW = 1_900_000_000;
-const ACCOUNT_SHA256 = "a".repeat(64);
-const VERSION_ID = "11111111-1111-4111-8111-111111111111";
-const ROLLBACK_VERSION_ID = "22222222-2222-4222-8222-222222222222";
 const DIGEST = "d".repeat(64);
 
 interface SeededCompleting {
@@ -222,6 +215,12 @@ describe("local D2 migration-0010 release witness", () => {
       ),
     ).toBe(0);
     expect(
+      await d1Count(
+        "SELECT COUNT(*) AS c FROM attachment_objects WHERE id = ?",
+        exact.id,
+      ),
+    ).toBe(1);
+    expect(
       await d1First<{ state: string; size_bytes: number }>(
         "SELECT state, size_bytes FROM attachment_objects WHERE id = ?",
         exact.id,
@@ -262,54 +261,26 @@ describe("local D2 migration-0010 release witness", () => {
          FROM attachment_predecessor_recovery
         WHERE singleton = 1`,
     );
-    const evidence: D2ReleaseProbeEvidence = {
-      format: D2_RELEASE_FORMAT,
+    const evidence: D2LocalEvidence = {
+      format: D2_LOCAL_EVIDENCE_FORMAT,
+      environment: "local",
       source: {
         commit_sha: D2_RELEASE_COMMIT,
         tree_sha: D2_RELEASE_TREE,
         manifest_sha256: D2_RELEASE_SOURCE_SHA256,
       },
-      d1: {
-        account_sha256: ACCOUNT_SHA256,
-        database_id: D2_DATABASE_ID,
-        database_name: D2_DATABASE_NAME,
-        observed_at_ms: 1_000,
+      runtime: {
+        engine: "workerd",
+        invocation: "manual",
+        scheduled_callback_observed: true,
+        natural_cron_observation: "unknown",
+        marker: D2_CYCLE_MARKER,
+      },
+      migration: {
         applied_migrations: applied.map((row) => row.name),
         migration_0010_sha256: D2_MIGRATION_0010_SHA256,
         recovery_marker: recovery,
         claim_columns: ["claim_origin", "storage_fence_state"],
-      },
-      worker: {
-        account_sha256: ACCOUNT_SHA256,
-        worker_name: D2_WORKER_NAME,
-        version_id: VERSION_ID,
-        activated_at_ms: 2_000,
-        traffic_percentage: 100,
-        source: {
-          commit_sha: D2_RELEASE_COMMIT,
-          tree_sha: D2_RELEASE_TREE,
-          manifest_sha256: D2_RELEASE_SOURCE_SHA256,
-        },
-        handlers: ["fetch", "scheduled"],
-        d1_binding: { binding: "DB", database_id: D2_DATABASE_ID },
-        r2_binding: {
-          binding: "ATTACHMENTS",
-          bucket_name: D2_R2_BUCKET,
-        },
-      },
-      r2: {
-        account_sha256: ACCOUNT_SHA256,
-        binding: "ATTACHMENTS",
-        bucket_name: D2_R2_BUCKET,
-      },
-      scheduled: {
-        worker_version_id: VERSION_ID,
-        cron: D2_CRON,
-        scheduled_time_ms: 3_000,
-        event_time_ms: 3_010,
-        outcome: "ok",
-        marker: D2_CYCLE_MARKER,
-        manual_invocation: false,
       },
       witnesses: {
         legacy_no_object: {
@@ -347,65 +318,30 @@ describe("local D2 migration-0010 release witness", () => {
           quota_after: "released",
         },
       },
-      retry: {
-        no_such_upload: {
-          count: 1,
-          discriminator: "code",
-          value: "NoSuchUpload",
-          post_abort_head: "absent",
-          decision: "resume-idempotently",
-        },
-        unknown_abort: {
-          count: 1,
-          discriminator: "code",
-          value: "InternalError",
-          decision: "retain",
-          delete_calls: 0,
-          metadata_after: "retained",
-          quota_after: "retained",
-        },
-        crash_retry: {
-          count: 1,
-          absence_fence_persisted: true,
-          lease_version_increased: true,
-          final_cleanup: "completed",
-        },
-      },
       cleanup: {
         created_rows: 3,
-        created_completed_objects: 2,
+        created_objects: 2,
         remaining_rows: 0,
         remaining_objects: 0,
-        remaining_multipart_uploads: 0,
-      },
-      rollback: {
-        requested_target_version_id: ROLLBACK_VERSION_ID,
-        target_source_digest_sha256: "b".repeat(64),
-        decision: "refused",
-        reason: "migration-0010-before-worker",
-        mutations_performed: 0,
       },
     };
     expect(
-      verifyD2Migration0010Release(evidence, {
-        account_sha256: ACCOUNT_SHA256,
-      }),
+      verifyD2Migration0010LocalEvidence(evidence),
     ).toMatchObject({
-      verdict: "release-probe-accepted",
-      witness_counts: {
-        legacy_no_object: 1,
-        exact_size: 1,
-        wrong_size: 1,
-      },
+      verdict: "local-runtime-evidence-only",
+      environment: "local",
+      invocation: "manual",
+      natural_cron_observation: "unknown",
+      executed_witnesses: [
+        "legacy-no-object",
+        "exact-size",
+        "wrong-size",
+      ],
       cleanup: {
         remaining_rows: 0,
         remaining_objects: 0,
-        remaining_multipart_uploads: 0,
       },
-      rollback: {
-        decision: "refused",
-        mutations_performed: 0,
-      },
+      production_authorized: false,
     });
   });
 });
