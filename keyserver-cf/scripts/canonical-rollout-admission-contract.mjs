@@ -13,6 +13,8 @@ export const CANONICAL_ROLLOUT_DATABASE = Object.freeze({
 export const CANONICAL_ROLLOUT_WORKER_NAME = "oslprivacy-keyserver";
 export const CANONICAL_ROLLOUT_MIGRATION =
   "0033_canonical_identity_rollout_authority.sql";
+export const CANONICAL_PREKEY_MIGRATION =
+  "0034_scheme1_prekey_owner_proofs.sql";
 export const CANONICAL_ROLLOUT_EVIDENCE_FORMAT =
   "osl.keyserver.canonical-rollout-predeploy-evidence.v1";
 export const CANONICAL_ROLLOUT_EVIDENCE_ENVELOPE_FORMAT =
@@ -34,6 +36,7 @@ export const TRUSTED_CANONICAL_ROLLOUT_EVIDENCE_PRODUCERS =
 export const CANONICAL_ROLLOUT_SOURCE_PATHS = Object.freeze([
   "keyserver-cf/wrangler.toml",
   "keyserver-cf/migrations/0033_canonical_identity_rollout_authority.sql",
+  "keyserver-cf/migrations/0034_scheme1_prekey_owner_proofs.sql",
   "keyserver-cf/src/index.ts",
   "keyserver-cf/src/endpoints/sender-filter-rollout-root.ts",
   "keyserver-cf/scripts/provision-sender-filter-rollout-genesis.mjs",
@@ -145,12 +148,6 @@ function exactSourceAnchor(value) {
   return source;
 }
 
-function requireSourceText(source, needle, label) {
-  if (!source.includes(needle)) {
-    throw new Error(`canonical rollout source lacks ${label}`);
-  }
-}
-
 export function validateCanonicalRolloutSourceClosure(fileValues) {
   const files = exact(
     fileValues,
@@ -172,40 +169,35 @@ export function validateCanonicalRolloutSourceClosure(fileValues) {
     });
   }
 
+  // Parse active TOML lines rather than accepting a security-critical string
+  // merely because it survives in a comment or dead helper. Migration and
+  // route semantics are exercised through real D1/SELF/main() tests; this
+  // function's job is to hash and bind their complete reviewed bytes.
   const wrangler = texts["keyserver-cf/wrangler.toml"];
-  requireSourceText(wrangler, `name = "${CANONICAL_ROLLOUT_WORKER_NAME}"`, "exact Worker name");
-  requireSourceText(wrangler, 'binding = "DB"', "exact D1 binding");
-  requireSourceText(wrangler, 'database_name = "osl-keyserver-prod"', "exact D1 database name");
-  requireSourceText(
-    wrangler,
-    'database_id = "1de837cd-3bf6-4d33-be82-12d358523600"',
-    "exact D1 database id",
-  );
-  requireSourceText(wrangler, 'migrations_dir = "migrations"', "exact D1 migration directory");
-
-  const migration =
-    texts["keyserver-cf/migrations/0033_canonical_identity_rollout_authority.sql"];
-  for (const [needle, label] of [
-    ["singleton INTEGER PRIMARY KEY CHECK (singleton = 1)", "one-time genesis singleton"],
-    ["admission_receipt_sha256 TEXT NOT NULL UNIQUE", "receipt replay ledger"],
-    ["sender_filter_rollout_genesis_no_delete", "receipt/genesis no-delete guard"],
-    ["sender_filter_rollout_root_no_delete", "root no-delete guard"],
-    ["NEW.monotonic_version = OLD.monotonic_version + 1", "root monotonic CAS guard"],
-  ]) {
-    requireSourceText(migration, needle, label);
+  const activeLines = wrangler.split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (!activeLines.includes(`name = "${CANONICAL_ROLLOUT_WORKER_NAME}"`)) {
+    throw new Error("canonical rollout source lacks active exact Worker name");
   }
-
-  const index = texts["keyserver-cf/src/index.ts"];
-  requireSourceText(index, "handleSenderFilterRolloutRootProvision(request, env)", "shipping root provision route");
-  requireSourceText(index, "handleSenderFilterRolloutRootAdvance(request, env)", "shipping root CAS route");
-  const endpoint =
-    texts["keyserver-cf/src/endpoints/sender-filter-rollout-root.ts"];
-  requireSourceText(endpoint, "sender_filter_rollout_genesis", "shipping D1 genesis consumer");
-  requireSourceText(endpoint, "AND monotonic_version = ?", "shipping monotonic CAS");
-  const provisioning =
-    texts["keyserver-cf/scripts/provision-sender-filter-rollout-genesis.mjs"];
-  requireSourceText(provisioning, "validateCanonicalRolloutProvisioningReceipt", "provisioning admission consumer");
-  requireSourceText(provisioning, "admission_receipt_sha256", "D1 receipt replay consumption");
+  const d1Start = activeLines.indexOf("[[d1_databases]]");
+  const d1End = activeLines.findIndex(
+    (line, index) => index > d1Start && line.startsWith("[["),
+  );
+  const d1Block = activeLines.slice(
+    d1Start,
+    d1End === -1 ? activeLines.length : d1End,
+  );
+  for (const line of [
+    'binding = "DB"',
+    'database_name = "osl-keyserver-prod"',
+    'database_id = "1de837cd-3bf6-4d33-be82-12d358523600"',
+    'migrations_dir = "migrations"',
+  ]) {
+    if (d1Start === -1 || !d1Block.includes(line)) {
+      throw new Error(`canonical rollout D1 source lacks active ${line}`);
+    }
+  }
 
   return Object.freeze(result);
 }
@@ -213,7 +205,14 @@ export function validateCanonicalRolloutSourceClosure(fileValues) {
 function validatePredeployPayload(value, source, nowMs) {
   const evidence = exact(
     value,
-    ["capture", "database", "format", "migration", "worker"],
+    [
+      "capture",
+      "database",
+      "format",
+      "migration",
+      "prekey_migration",
+      "worker",
+    ],
     "canonical rollout predeploy evidence",
   );
   if (evidence.format !== CANONICAL_ROLLOUT_EVIDENCE_FORMAT) {
@@ -253,6 +252,26 @@ function validatePredeployPayload(value, source, nowMs) {
     migration.applied_at,
     "canonical rollout migration application",
   );
+  const prekeyMigration = exact(
+    evidence.prekey_migration,
+    ["applied_at", "applied_order", "database_id", "name", "sha256"],
+    "scheme-1 prekey migration evidence",
+  );
+  if (
+    prekeyMigration.name !== CANONICAL_PREKEY_MIGRATION ||
+    prekeyMigration.database_id !== CANONICAL_ROLLOUT_DATABASE.database_id ||
+    prekeyMigration.applied_order !== 34
+  ) {
+    throw new Error("scheme-1 prekey migration evidence is not exact");
+  }
+  digest(prekeyMigration.sha256, "scheme-1 prekey migration digest");
+  const prekeyMigrationApplied = timestamp(
+    prekeyMigration.applied_at,
+    "scheme-1 prekey migration application",
+  );
+  if (prekeyMigrationApplied < migrationApplied) {
+    throw new Error("scheme-1 prekey migration order is invalid");
+  }
 
   const worker = exact(
     evidence.worker,
@@ -264,6 +283,7 @@ function validatePredeployPayload(value, source, nowMs) {
       "deployment_id",
       "keyserver_tree",
       "name",
+      "provider_observation",
       "repository_tree",
       "version_id",
     ],
@@ -285,7 +305,52 @@ function validatePredeployPayload(value, source, nowMs) {
     worker.deployed_at,
     "canonical rollout Worker deployment",
   );
-  if (migrationApplied >= workerDeployed) {
+  const providerObservation = exact(
+    worker.provider_observation,
+    [
+      "account_fingerprint_sha256",
+      "deployment_id",
+      "observed_at",
+      "provider",
+      "script_name",
+      "traffic_percent",
+      "version_id",
+    ],
+    "canonical rollout provider Worker observation",
+  );
+  digest(
+    providerObservation.account_fingerprint_sha256,
+    "canonical rollout provider account fingerprint",
+  );
+  uuid(
+    providerObservation.version_id,
+    "canonical rollout provider Worker version",
+  );
+  uuid(
+    providerObservation.deployment_id,
+    "canonical rollout provider Worker deployment",
+  );
+  const providerObservedAt = timestamp(
+    providerObservation.observed_at,
+    "canonical rollout provider Worker observation",
+  );
+  if (
+    providerObservation.provider !== "cloudflare-workers-api" ||
+    providerObservation.script_name !== CANONICAL_ROLLOUT_WORKER_NAME ||
+    providerObservation.version_id !== worker.version_id ||
+    providerObservation.deployment_id !== worker.deployment_id ||
+    providerObservation.traffic_percent !== 100 ||
+    providerObservedAt < workerDeployed ||
+    providerObservedAt > captureFinish
+  ) {
+    throw new Error(
+      "canonical rollout provider did not observe the exact Worker at 100% traffic",
+    );
+  }
+  if (
+    migrationApplied >= workerDeployed ||
+    prekeyMigrationApplied >= workerDeployed
+  ) {
     throw new Error("worker-first canonical rollout is refused");
   }
   if (workerDeployed > captureFinish) {
@@ -415,6 +480,16 @@ export function createCanonicalRolloutProvisioningAdmission({
   if (!migrationFile || checkedEvidence.migration.sha256 !== migrationFile.sha256) {
     throw new Error("applied migration digest does not match the exact Worker source");
   }
+  const prekeyMigrationFile = files.find((entry) =>
+    entry.path.endsWith(`/${CANONICAL_PREKEY_MIGRATION}`));
+  if (
+    !prekeyMigrationFile ||
+    checkedEvidence.prekey_migration.sha256 !== prekeyMigrationFile.sha256
+  ) {
+    throw new Error(
+      "applied scheme-1 prekey migration digest does not match exact source",
+    );
+  }
   uuid(receiptNonce, "canonical rollout admission nonce");
   const payload = {
     format: CANONICAL_ROLLOUT_ADMISSION_FORMAT,
@@ -431,6 +506,7 @@ export function createCanonicalRolloutProvisioningAdmission({
     source_files: files,
     database: { ...CANONICAL_ROLLOUT_DATABASE },
     migration: checkedEvidence.migration,
+    prekey_migration: checkedEvidence.prekey_migration,
     worker: checkedEvidence.worker,
   };
   return Object.freeze({
@@ -460,6 +536,7 @@ export function validateCanonicalRolloutProvisioningReceipt(
       "format",
       "issued_at",
       "migration",
+      "prekey_migration",
       "payload_sha256",
       "producer_evidence",
       "producer_identity",
@@ -502,6 +579,8 @@ export function validateCanonicalRolloutProvisioningReceipt(
     receipt.producer_identity !== verifiedEvidence.producer_identity ||
     canonical(receipt.migration) !==
       canonical(verifiedEvidence.payload.migration) ||
+    canonical(receipt.prekey_migration) !==
+      canonical(verifiedEvidence.payload.prekey_migration) ||
     canonical(receipt.worker) !==
       canonical(verifiedEvidence.payload.worker)
   ) {
@@ -538,6 +617,23 @@ export function validateCanonicalRolloutProvisioningReceipt(
     migration.applied_at,
     "canonical rollout receipt migration application",
   );
+  const prekeyMigration = exact(
+    receipt.prekey_migration,
+    ["applied_at", "applied_order", "database_id", "name", "sha256"],
+    "canonical rollout receipt prekey migration",
+  );
+  if (
+    prekeyMigration.name !== CANONICAL_PREKEY_MIGRATION ||
+    prekeyMigration.applied_order !== 34 ||
+    prekeyMigration.database_id !== CANONICAL_ROLLOUT_DATABASE.database_id
+  ) {
+    throw new Error("canonical rollout receipt prekey migration is not exact");
+  }
+  digest(prekeyMigration.sha256, "canonical rollout receipt prekey migration");
+  const prekeyMigrationApplied = timestamp(
+    prekeyMigration.applied_at,
+    "canonical rollout receipt prekey migration application",
+  );
   const worker = exact(
     receipt.worker,
     [
@@ -548,6 +644,7 @@ export function validateCanonicalRolloutProvisioningReceipt(
       "deployment_id",
       "keyserver_tree",
       "name",
+      "provider_observation",
       "repository_tree",
       "version_id",
     ],
@@ -569,8 +666,49 @@ export function validateCanonicalRolloutProvisioningReceipt(
     worker.deployed_at,
     "canonical rollout receipt Worker deployment",
   );
-  if (migrationApplied >= workerDeployed || workerDeployed > issuedAt) {
+  if (
+    migrationApplied >= workerDeployed ||
+    prekeyMigrationApplied < migrationApplied ||
+    prekeyMigrationApplied >= workerDeployed ||
+    workerDeployed > issuedAt
+  ) {
     throw new Error("canonical rollout receipt is worker-first or time-incoherent");
+  }
+  const providerObservation = exact(
+    worker.provider_observation,
+    [
+      "account_fingerprint_sha256",
+      "deployment_id",
+      "observed_at",
+      "provider",
+      "script_name",
+      "traffic_percent",
+      "version_id",
+    ],
+    "canonical rollout receipt provider observation",
+  );
+  digest(
+    providerObservation.account_fingerprint_sha256,
+    "canonical rollout receipt provider account fingerprint",
+  );
+  if (
+    providerObservation.provider !== "cloudflare-workers-api" ||
+    providerObservation.script_name !== CANONICAL_ROLLOUT_WORKER_NAME ||
+    providerObservation.version_id !== worker.version_id ||
+    providerObservation.deployment_id !== worker.deployment_id ||
+    providerObservation.traffic_percent !== 100 ||
+    timestamp(
+      providerObservation.observed_at,
+      "canonical rollout receipt provider observation",
+    ) < workerDeployed ||
+    timestamp(
+      providerObservation.observed_at,
+      "canonical rollout receipt provider observation",
+    ) > issuedAt
+  ) {
+    throw new Error(
+      "canonical rollout receipt lacks exact provider-observed 100% traffic",
+    );
   }
   if (
     !Array.isArray(receipt.source_files) ||
@@ -600,6 +738,16 @@ export function validateCanonicalRolloutProvisioningReceipt(
     file.path.endsWith(`/${CANONICAL_ROLLOUT_MIGRATION}`));
   if (!migrationFile || migrationFile.sha256 !== migration.sha256) {
     throw new Error("canonical rollout receipt migration is not source-bound");
+  }
+  const prekeyMigrationFile = receipt.source_files.find((file) =>
+    file.path.endsWith(`/${CANONICAL_PREKEY_MIGRATION}`));
+  if (
+    !prekeyMigrationFile ||
+    prekeyMigrationFile.sha256 !== prekeyMigration.sha256
+  ) {
+    throw new Error(
+      "canonical rollout receipt prekey migration is not source-bound",
+    );
   }
   return receipt;
 }

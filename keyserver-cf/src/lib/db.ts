@@ -1110,12 +1110,290 @@ export interface OpkInput {
   pub_b64: string;
 }
 
+export interface Scheme1OpkInput extends OpkInput {
+  owner_proof_json: string;
+}
+
+export interface Scheme1PrekeyContext {
+  user_id: string;
+  ik_root_ed25519_pub: string;
+  ik_ed25519_pub: string;
+  identity_revision: number;
+  identity_bundle_commitment_b64: string;
+  rn_capabilities: number;
+  spk_pub_b64: string;
+  spk_signature_b64: string;
+  spk_rotated_at: string;
+  highest_generation: number;
+  batch_commitment_b64: string;
+}
+
+export async function getScheme1PrekeyContext(
+  db: D1Database,
+  userId: string,
+): Promise<Scheme1PrekeyContext | null> {
+  return await db.prepare(
+    `SELECT user_id, ik_root_ed25519_pub, ik_ed25519_pub,
+            identity_revision, identity_bundle_commitment_b64,
+            rn_capabilities, spk_pub_b64, spk_signature_b64,
+            spk_rotated_at, highest_generation, batch_commitment_b64
+       FROM prekey_lifecycle_authority
+      WHERE user_id = ?`,
+  ).bind(userId).first<Scheme1PrekeyContext>();
+}
+
+export async function getPrekeyBundleSpk(
+  db: D1Database,
+  userId: string,
+): Promise<SpkInput | null> {
+  const row = await db.prepare(
+    `SELECT spk_pub AS pub_b64,
+            spk_signature AS signature_b64,
+            spk_rotated_at AS rotated_at
+       FROM prekey_bundles
+      WHERE user_id = ?`,
+  ).bind(userId).first<SpkInput>();
+  return row ?? null;
+}
+
 export type PrekeyReplenishResult =
   | "ok"
   | "replay"
   | "stale_identity"
   | "stale_spk"
-  | "missing_spk";
+  | "missing_spk"
+  | "stale_lifecycle";
+
+export interface Scheme1ReplenishAuthority {
+  user_id: string;
+  ik_root_ed25519_pub: string;
+  ik_ed25519_pub: string;
+  identity_revision: number;
+  identity_bundle_proof_sig: string;
+  identity_bundle_commitment_b64: string;
+  rn_capabilities: number;
+  lifecycle_generation: number;
+  batch_commitment_b64: string;
+}
+
+/**
+ * Atomic scheme-1 lifecycle CAS + SPK/pool mutation.
+ *
+ * Migration 0034's authority trigger admits generation 1 once, then requires
+ * exactly `old + 1`; its no-delete trigger makes caller restoration unable to
+ * reset that floor. Any stale generation aborts the whole D1 batch, including
+ * the replay receipt.
+ */
+export async function upsertScheme1PrekeyBundleAuthenticated(
+  db: D1Database,
+  authority: Scheme1ReplenishAuthority,
+  spk: SpkInput,
+  spkWasProvided: boolean,
+  replacePool: boolean,
+  opks: Scheme1OpkInput[],
+  requestDigest: Uint8Array,
+  receiptExpiresAt: number,
+): Promise<PrekeyReplenishResult> {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare("DELETE FROM prekey_replenish_receipts WHERE expires_at < ?")
+      .bind(nowSeconds),
+    db.prepare(
+      `INSERT INTO prekey_replenish_receipts
+         (user_id, signer_ed25519_pub, request_digest, expires_at)
+       SELECT ?1, ?2, ?3, ?4
+        WHERE EXISTS (
+          SELECT 1 FROM users
+           WHERE user_id = ?1
+             AND identity_scheme = 1
+             AND identity_revision = ?5
+             AND ik_root_ed25519_pub = ?6
+             AND ik_ed25519_pub = ?2
+             AND identity_bundle_proof_sig = ?7
+             AND rn_capabilities = ?8
+             AND identity_lookup_enabled = 1
+        )`,
+    ).bind(
+      authority.user_id,
+      authority.ik_ed25519_pub,
+      requestDigest,
+      receiptExpiresAt,
+      authority.identity_revision,
+      authority.ik_root_ed25519_pub,
+      authority.identity_bundle_proof_sig,
+      authority.rn_capabilities,
+    ),
+    db.prepare(
+      `INSERT INTO prekey_lifecycle_authority (
+         user_id, ik_root_ed25519_pub, ik_ed25519_pub, identity_revision,
+         identity_bundle_commitment_b64, rn_capabilities, proof_version,
+         identity_blob_version, lifecycle_version, spk_pub_b64,
+         spk_signature_b64, spk_rotated_at, highest_generation,
+         batch_commitment_b64, updated_at_ms
+       )
+       SELECT ?1, ?5, ?2, ?6, ?7, ?8, 1, 3, 2, ?9, ?10, ?11, ?12, ?13, ?14
+        WHERE EXISTS (
+          SELECT 1 FROM prekey_replenish_receipts
+           WHERE user_id = ?1
+             AND signer_ed25519_pub = ?2
+             AND request_digest = ?3
+             AND expires_at = ?4
+        )
+       ON CONFLICT(user_id) DO UPDATE SET
+         ik_ed25519_pub = excluded.ik_ed25519_pub,
+         identity_revision = excluded.identity_revision,
+         identity_bundle_commitment_b64 =
+           excluded.identity_bundle_commitment_b64,
+         rn_capabilities = excluded.rn_capabilities,
+         proof_version = excluded.proof_version,
+         identity_blob_version = excluded.identity_blob_version,
+         lifecycle_version = excluded.lifecycle_version,
+         spk_pub_b64 = excluded.spk_pub_b64,
+         spk_signature_b64 = excluded.spk_signature_b64,
+         spk_rotated_at = excluded.spk_rotated_at,
+         highest_generation = excluded.highest_generation,
+         batch_commitment_b64 = excluded.batch_commitment_b64,
+         updated_at_ms = excluded.updated_at_ms`,
+    ).bind(
+      authority.user_id,
+      authority.ik_ed25519_pub,
+      requestDigest,
+      receiptExpiresAt,
+      authority.ik_root_ed25519_pub,
+      authority.identity_revision,
+      authority.identity_bundle_commitment_b64,
+      authority.rn_capabilities,
+      spk.pub_b64,
+      spk.signature_b64,
+      spk.rotated_at,
+      authority.lifecycle_generation,
+      authority.batch_commitment_b64,
+      nowMs,
+    ),
+  ];
+  if (replacePool) {
+    statements.push(
+      db.prepare(
+        `DELETE FROM opk_pool
+          WHERE user_id = ?1
+            AND EXISTS (
+              SELECT 1 FROM prekey_lifecycle_authority
+               WHERE user_id = ?1
+                 AND highest_generation = ?2
+                 AND batch_commitment_b64 = ?3
+            )`,
+      ).bind(
+        authority.user_id,
+        authority.lifecycle_generation,
+        authority.batch_commitment_b64,
+      ),
+    );
+  }
+  statements.push(
+    db.prepare(
+      `INSERT INTO prekey_bundles
+         (user_id, spk_pub, spk_signature, spk_rotated_at)
+       SELECT ?1, ?2, ?3, ?4
+        WHERE EXISTS (
+          SELECT 1 FROM prekey_lifecycle_authority
+           WHERE user_id = ?1
+             AND highest_generation = ?5
+             AND batch_commitment_b64 = ?6
+        )
+       ON CONFLICT(user_id) DO UPDATE SET
+         prev_spk_pub = CASE
+           WHEN ?7 = 1 AND prekey_bundles.spk_pub <> excluded.spk_pub
+             THEN prekey_bundles.spk_pub
+           ELSE prekey_bundles.prev_spk_pub
+         END,
+         prev_spk_signature = CASE
+           WHEN ?7 = 1 AND prekey_bundles.spk_pub <> excluded.spk_pub
+             THEN prekey_bundles.spk_signature
+           ELSE prekey_bundles.prev_spk_signature
+         END,
+         prev_spk_rotated_at = CASE
+           WHEN ?7 = 1 AND prekey_bundles.spk_pub <> excluded.spk_pub
+             THEN prekey_bundles.spk_rotated_at
+           ELSE prekey_bundles.prev_spk_rotated_at
+         END,
+         spk_pub = excluded.spk_pub,
+         spk_signature = excluded.spk_signature,
+         spk_rotated_at = excluded.spk_rotated_at`,
+    ).bind(
+      authority.user_id,
+      spk.pub_b64,
+      spk.signature_b64,
+      spk.rotated_at,
+      authority.lifecycle_generation,
+      authority.batch_commitment_b64,
+      spkWasProvided ? 1 : 0,
+    ),
+  );
+  for (const opk of opks) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO opk_pool (
+           user_id, opk_id, opk_pub, owner_proof_json,
+           lifecycle_generation, batch_commitment_b64
+         )
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6
+          WHERE EXISTS (
+            SELECT 1 FROM prekey_lifecycle_authority
+             WHERE user_id = ?1
+               AND highest_generation = ?5
+               AND batch_commitment_b64 = ?6
+          )`,
+      ).bind(
+        authority.user_id,
+        opk.id,
+        opk.pub_b64,
+        opk.owner_proof_json,
+        authority.lifecycle_generation,
+        authority.batch_commitment_b64,
+      ),
+    );
+  }
+  let results: D1Result[];
+  try {
+    results = await db.batch(statements);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      /prekey_replenish_receipts/i.test(message) &&
+      /UNIQUE|PRIMARY/i.test(message)
+    ) {
+      return "replay";
+    }
+    if (/prekey lifecycle CAS is stale|lifecycle genesis is invalid/i.test(message)) {
+      return "stale_lifecycle";
+    }
+    if (/OPK pool quota exceeded/i.test(message)) {
+      throw new OpkPoolQuotaExceeded("OPK pool quota exceeded");
+    }
+    if (
+      /scheme-1 OPK owner proof row is invalid|UNIQUE constraint failed/i.test(
+        message,
+      )
+    ) {
+      throw new OpkIdConflict("OPK id/public key already used");
+    }
+    throw error;
+  }
+  if ((results[1]?.meta?.changes ?? 0) !== 1) return "stale_identity";
+  if ((results[2]?.meta?.changes ?? 0) !== 1) return "stale_lifecycle";
+  const bundleIndex = replacePool ? 4 : 3;
+  if ((results[bundleIndex]?.meta?.changes ?? 0) !== 1) {
+    return "stale_lifecycle";
+  }
+  for (let index = 0; index < opks.length; index += 1) {
+    if ((results[bundleIndex + 1 + index]?.meta?.changes ?? 0) !== 1) {
+      return "stale_lifecycle";
+    }
+  }
+  return "ok";
+}
 
 /** Atomic, current-identity-bound SPK rotation + OPK append. */
 export async function upsertPrekeyBundleAuthenticated(
@@ -1305,10 +1583,20 @@ export interface PrekeyBundleResponse {
   ik_ed25519_pub: string;
   ik_mlkem768_pub: string;
   ik_ratchet_initial_pub: string | null;
+  registration_sig?: string;
+  rn_capabilities?: number;
+  identity_scheme?: number;
+  identity_revision?: number;
+  ik_root_ed25519_pub?: string;
+  identity_bundle_proof_sig?: string;
   spk_pub: string;
   spk_signature: string;
   spk_rotated_at: string;
-  opk: { id: number; pub_b64: string } | null;
+  opk: {
+    id: number;
+    pub_b64: string;
+    owner_proof?: Record<string, unknown>;
+  } | null;
   remaining_opk_count: number;
 }
 
@@ -1317,7 +1605,8 @@ export class ConsumingGetReplay extends Error {}
 export type PopPrekeyBundleResult =
   | { status: "ok"; bundle: PrekeyBundleResponse }
   | { status: "not_found" }
-  | { status: "stale_identity" };
+  | { status: "stale_identity" }
+  | { status: "invalid_scheme1_state" };
 
 /**
  * Atomic pop. The OPK pick + delete is a single SQL statement
@@ -1356,7 +1645,9 @@ export async function popPrekeyBundleAuthenticated(
     db
       .prepare(
         `SELECT user_id, ik_x25519_pub, ik_ed25519_pub, ik_mlkem768_pub,
-                ik_ratchet_initial_pub
+                ik_ratchet_initial_pub, ik_x25519_signature,
+                rn_capabilities, identity_scheme, identity_revision,
+                ik_root_ed25519_pub, identity_bundle_proof_sig
            FROM users WHERE user_id = ?`,
       )
       .bind(recipientId)
@@ -1366,6 +1657,12 @@ export async function popPrekeyBundleAuthenticated(
         ik_ed25519_pub: string;
         ik_mlkem768_pub: string;
         ik_ratchet_initial_pub: string | null;
+        ik_x25519_signature: string;
+        rn_capabilities: number;
+        identity_scheme: number;
+        identity_revision: number;
+        ik_root_ed25519_pub: string | null;
+        identity_bundle_proof_sig: string | null;
       }>(),
     db
       .prepare(
@@ -1376,6 +1673,24 @@ export async function popPrekeyBundleAuthenticated(
       .first<{ spk_pub: string; spk_signature: string; spk_rotated_at: string }>(),
   ]);
   if (!userRow || !spkRow) return { status: "not_found" };
+  let scheme1Context: Scheme1PrekeyContext | null = null;
+  if (userRow.identity_scheme === 1) {
+    scheme1Context = await getScheme1PrekeyContext(db, recipientId);
+    if (
+      !scheme1Context ||
+      !userRow.ik_root_ed25519_pub ||
+      !userRow.identity_bundle_proof_sig ||
+      scheme1Context.ik_root_ed25519_pub !== userRow.ik_root_ed25519_pub ||
+      scheme1Context.ik_ed25519_pub !== userRow.ik_ed25519_pub ||
+      scheme1Context.identity_revision !== userRow.identity_revision ||
+      scheme1Context.rn_capabilities !== userRow.rn_capabilities ||
+      scheme1Context.spk_pub_b64 !== spkRow.spk_pub ||
+      scheme1Context.spk_signature_b64 !== spkRow.spk_signature ||
+      scheme1Context.spk_rotated_at !== spkRow.spk_rotated_at
+    ) {
+      return { status: "invalid_scheme1_state" };
+    }
+  }
 
   // The receipt insert and OPK pop are one D1 transaction. An exact
   // replay collides on the receipt PK and aborts the batch before the
@@ -1394,7 +1709,29 @@ export async function popPrekeyBundleAuthenticated(
         WHERE EXISTS (
           SELECT 1 FROM users
            WHERE user_id = ?1 AND ik_ed25519_pub = ?4
-        )`,
+        )
+          AND (
+            ?6 = 0 OR (
+              EXISTS (
+                SELECT 1 FROM users
+                 WHERE user_id = ?3
+                   AND identity_scheme = 1
+                   AND identity_revision = ?7
+                   AND ik_root_ed25519_pub = ?8
+                   AND ik_ed25519_pub = ?9
+                   AND identity_bundle_proof_sig = ?10
+                   AND rn_capabilities = ?11
+              )
+              AND EXISTS (
+                SELECT 1 FROM prekey_lifecycle_authority
+                 WHERE user_id = ?3
+                   AND identity_revision = ?7
+                   AND ik_root_ed25519_pub = ?8
+                   AND ik_ed25519_pub = ?9
+                   AND rn_capabilities = ?11
+              )
+            )
+          )`,
     )
     .bind(
       requesterId,
@@ -1402,12 +1739,24 @@ export async function popPrekeyBundleAuthenticated(
       recipientId,
       expectedRequesterEd25519Pub,
       receiptExpiry,
+      userRow.identity_scheme,
+      userRow.identity_revision,
+      userRow.ik_root_ed25519_pub ?? "",
+      userRow.ik_ed25519_pub,
+      userRow.identity_bundle_proof_sig ?? "",
+      userRow.rn_capabilities,
     );
   const popStmt = db
     .prepare(
       `DELETE FROM opk_pool
         WHERE user_id = ?3
-          AND opk_id = (SELECT MIN(opk_id) FROM opk_pool WHERE user_id = ?3)
+          AND (lifecycle_generation, opk_id) = (
+            SELECT lifecycle_generation, opk_id
+              FROM opk_pool
+             WHERE user_id = ?3
+             ORDER BY lifecycle_generation ASC, opk_id ASC
+             LIMIT 1
+          )
           AND EXISTS (
             SELECT 1 FROM consuming_get_receipts
              WHERE requester_id = ?1
@@ -1419,13 +1768,46 @@ export async function popPrekeyBundleAuthenticated(
             SELECT 1 FROM users
              WHERE user_id = ?1 AND ik_ed25519_pub = ?4
           )
-        RETURNING opk_id, opk_pub`,
+          AND (
+            ?5 = 0 OR (
+              owner_proof_json IS NOT NULL
+              AND json_valid(owner_proof_json)
+              AND lifecycle_generation >= 1
+              AND EXISTS (
+                SELECT 1
+                  FROM users
+                 WHERE user_id = ?3
+                   AND identity_scheme = 1
+                   AND identity_revision = ?6
+                   AND ik_root_ed25519_pub = ?7
+                   AND ik_ed25519_pub = ?8
+                   AND identity_bundle_proof_sig = ?9
+                   AND rn_capabilities = ?10
+              )
+              AND EXISTS (
+                SELECT 1
+                  FROM prekey_lifecycle_authority
+                 WHERE user_id = ?3
+                   AND ik_root_ed25519_pub = ?7
+                   AND ik_ed25519_pub = ?8
+                   AND identity_revision = ?6
+                   AND rn_capabilities = ?10
+              )
+            )
+          )
+        RETURNING opk_id, opk_pub, owner_proof_json, lifecycle_generation`,
     )
     .bind(
       requesterId,
       requestDigest,
       recipientId,
       expectedRequesterEd25519Pub,
+      userRow.identity_scheme,
+      userRow.identity_revision,
+      userRow.ik_root_ed25519_pub ?? "",
+      userRow.ik_ed25519_pub,
+      userRow.identity_bundle_proof_sig ?? "",
+      userRow.rn_capabilities,
     );
   const countStmt = db
     .prepare("SELECT COUNT(*) AS c FROM opk_pool WHERE user_id = ?")
@@ -1433,6 +1815,8 @@ export async function popPrekeyBundleAuthenticated(
   let batchResults: D1Result<{
     opk_id?: number;
     opk_pub?: string;
+    owner_proof_json?: string | null;
+    lifecycle_generation?: number;
     c?: number;
   }>[];
   try {
@@ -1455,25 +1839,60 @@ export async function popPrekeyBundleAuthenticated(
   }
   const popRes = batchResults[2];
   const countRes = batchResults[3];
-  const popped = popRes?.results?.[0] as { opk_id: number; opk_pub: string } | undefined;
+  const popped = popRes?.results?.[0] as {
+    opk_id: number;
+    opk_pub: string;
+    owner_proof_json: string | null;
+    lifecycle_generation: number;
+  } | undefined;
   const remaining = ((countRes?.results?.[0] as { c: number } | undefined)?.c) ?? 0;
-  const consumedOpk = popped
-    ? { id: popped.opk_id, pub_b64: popped.opk_pub }
-    : null;
+  let consumedOpk: PrekeyBundleResponse["opk"] = null;
+  if (popped) {
+    if (userRow.identity_scheme === 1) {
+      if (!popped.owner_proof_json || popped.lifecycle_generation < 1) {
+        return { status: "invalid_scheme1_state" };
+      }
+      let ownerProof: unknown;
+      try {
+        ownerProof = JSON.parse(popped.owner_proof_json);
+      } catch {
+        return { status: "invalid_scheme1_state" };
+      }
+      if (!ownerProof || typeof ownerProof !== "object" || Array.isArray(ownerProof)) {
+        return { status: "invalid_scheme1_state" };
+      }
+      consumedOpk = {
+        id: popped.opk_id,
+        pub_b64: popped.opk_pub,
+        owner_proof: ownerProof as Record<string, unknown>,
+      };
+    } else {
+      consumedOpk = { id: popped.opk_id, pub_b64: popped.opk_pub };
+    }
+  }
 
+  const bundle: PrekeyBundleResponse = {
+    user_id: userRow.user_id,
+    ik_x25519_pub: userRow.ik_x25519_pub,
+    ik_ed25519_pub: userRow.ik_ed25519_pub,
+    ik_mlkem768_pub: userRow.ik_mlkem768_pub,
+    ik_ratchet_initial_pub: userRow.ik_ratchet_initial_pub ?? null,
+    spk_pub: spkRow.spk_pub,
+    spk_signature: spkRow.spk_signature,
+    spk_rotated_at: spkRow.spk_rotated_at,
+    opk: consumedOpk,
+    remaining_opk_count: remaining,
+  };
+  if (userRow.identity_scheme === 1) {
+    bundle.registration_sig = userRow.ik_x25519_signature;
+    bundle.rn_capabilities = userRow.rn_capabilities;
+    bundle.identity_scheme = 1;
+    bundle.identity_revision = userRow.identity_revision;
+    bundle.ik_root_ed25519_pub = userRow.ik_root_ed25519_pub!;
+    bundle.identity_bundle_proof_sig = userRow.identity_bundle_proof_sig!;
+  }
   return {
     status: "ok",
-    bundle: {
-      user_id: userRow.user_id,
-      ik_x25519_pub: userRow.ik_x25519_pub,
-      ik_ed25519_pub: userRow.ik_ed25519_pub,
-      ik_mlkem768_pub: userRow.ik_mlkem768_pub,
-      ik_ratchet_initial_pub: userRow.ik_ratchet_initial_pub ?? null,
-      spk_pub: spkRow.spk_pub,
-      spk_signature: spkRow.spk_signature,
-      spk_rotated_at: spkRow.spk_rotated_at,
-      opk: consumedOpk,
-      remaining_opk_count: remaining,
-    },
+    bundle,
   };
 }

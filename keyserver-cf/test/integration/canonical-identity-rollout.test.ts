@@ -178,6 +178,27 @@ describe("canonical identity and rollout authority in the shipping Worker", () =
         provisionedAt + 1,
       ).run(),
     ).rejects.toThrow();
+    // This is a semantic singleton test, not a source-text assertion: if the
+    // migration is weakened to allow singleton values 1 and 2, the second
+    // distinct pre-root digest must still fail in the real migrated D1.
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO sender_filter_rollout_genesis
+         (singleton, nonce_sha256, admission_receipt_sha256, worker_commit,
+          repository_tree, keyserver_tree, provisioned_at_ms, consumed_at_ms)
+         VALUES (2, ?, ?, ?, ?, ?, ?, NULL)`,
+      ).bind(
+        "e".repeat(64),
+        "c".repeat(64),
+        "4".repeat(40),
+        "5".repeat(40),
+        "6".repeat(40),
+        provisionedAt + 2,
+      ).run(),
+    ).rejects.toThrow();
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM sender_filter_rollout_genesis",
+    ).first()).toEqual({ count: 1 });
 
     const genesisTimestamp = Date.now();
     const genesisRequestId = requestId("G");

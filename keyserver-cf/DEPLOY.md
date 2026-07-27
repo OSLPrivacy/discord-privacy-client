@@ -87,7 +87,8 @@ npm run db:migrate:prod
 
 Wrangler reports each `00NN_*.sql` as applied. Re-runs are no-ops.
 
-### Canonical identity / sender-filter rollout (migration 0033)
+### Canonical identity, scheme-1 prekeys, and sender-filter rollout
+(`0033` then `0034`)
 
 This ordering is mandatory and fail-closed. It is an operator sequence, not
 permission to deploy: the repository's production migration and deploy scripts
@@ -100,14 +101,20 @@ release.
    `DB` to database name `osl-keyserver-prod`, database ID
    `1de837cd-3bf6-4d33-be82-12d358523600`, with migrations directory
    `migrations`. Any other binding or database is a refusal.
-3. Apply `0033_canonical_identity_rollout_authority.sql` to that exact D1
-   database **before** deploying the scheme-1 Worker. Read back the
-   `d1_migrations` row and the migration bytes' SHA-256. If the row is absent,
-   empty, or its application time/order cannot be proved, stop. A Worker-first
-   rollout is forbidden.
+3. Apply `0033_canonical_identity_rollout_authority.sql`, then
+   `0034_scheme1_prekey_owner_proofs.sql`, to that exact D1 database
+   **before** deploying the scheme-1 Worker. Read back both `d1_migrations`
+   rows, strict orders 33 then 34, application times, and the committed
+   migration bytes' SHA-256 values. If either row is absent/empty, the order
+   differs, or either digest cannot be proved, stop. The matching Worker reads
+   migration-0034 columns/tables, so Worker-first is both unsafe and
+   unavailable.
 4. Deploy only the exact frozen Worker commit/tree, then collect immutable
    Worker version/deployment IDs and deployment time. The deployment time must
-   be strictly later than migration 0033's application time.
+   be strictly later than both migrations. Signed producer evidence must also
+   contain the Cloudflare provider observation that this exact version and
+   deployment serve **100%** of script traffic; a fresh signature without
+   those provider facts is a refusal.
 5. Put those read-only facts in the exact
    `osl.keyserver.canonical-rollout-predeploy-evidence.v1` payload, signed in
    an `osl.keyserver.canonical-rollout-predeploy-envelope.v1` by an
@@ -151,14 +158,23 @@ release.
      --output /absolute/private/path/genesis-derived-receipt.json
    ```
 
-   The command exclusively creates and fsyncs the fixed mode-0600 recovery
-   manifest before any remote call. One D1 `INSERT ... RETURNING` atomically
-   consumes the admission receipt, reserves the singleton genesis digest, and
-   performs a nonempty readback. Any process/transport/parse error is
-   ambiguous: do not rerun with
-   another output path or generate another nonce. Recover the exact nonce from
-   the fixed manifest.
-8. Use that retained nonce once with the shipping root-provision route. Then
+   The command exclusively creates, file-fsyncs, inode/link-checks, and
+   directory-fsyncs the fixed mode-0600 recovery manifest before any remote
+   call. D1 atomically consumes the admission receipt and reserves the
+   singleton genesis digest; a separate SELECT supplies the authoritative
+   readback. Any process/transport/parse error is ambiguous. A retry, even
+   with another derived `--output`, must load the fixed manifest and reuse its
+   exact nonce, provision time, admission, and source. It must never generate
+   a second nonce.
+8. The only recovery authority is
+   `/var/lib/oslprivacy/keyserver/canonical-rollout-genesis.json`, created
+   owner-only and synced before D1 mutation. `--output` is only a derived
+   receipt path and never selects the nonce/state location. After mutation,
+   require a separate authoritative D1 SELECT that returns the singleton,
+   nonce/receipt digests, exact Worker commit, repository tree, keyserver tree,
+   provision time, and unconsumed state. A matching INSERT `RETURNING` body
+   alone is not sufficient.
+9. Use that retained nonce once with the shipping root-provision route. Then
    advance the root from monotonic version 1 to 2 with one exact CAS. Read back
    one consumed genesis row, one immutable root row, one consumed admission
    receipt, the nonempty root fields, and the stale-version `changes=0`

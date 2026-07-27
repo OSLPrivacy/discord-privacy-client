@@ -4,6 +4,7 @@ import {
   open,
   readFile,
 } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -178,6 +179,7 @@ export function buildGenesisProvisioning(
     `'${source.repository_tree}', '${source.keyserver_tree}', ` +
     `${provisionedAtMs}, NULL) ` +
     "RETURNING singleton, nonce_sha256, admission_receipt_sha256, " +
+    "worker_commit, repository_tree, keyserver_tree, " +
     "provisioned_at_ms, consumed_at_ms;";
   return {
     manifest: {
@@ -198,6 +200,9 @@ export function buildGenesisProvisioning(
       singleton: 1,
       nonce_sha256: nonceSha256,
       admission_receipt_sha256: receiptSha256,
+      worker_commit: source.commit,
+      repository_tree: source.repository_tree,
+      keyserver_tree: source.keyserver_tree,
       provisioned_at_ms: provisionedAtMs,
       consumed_at_ms: null,
     },
@@ -209,7 +214,7 @@ export function runWranglerGenesisProvision(
   expectedReadback,
   spawn = spawnSync,
 ) {
-  const result = spawn(
+  const execute = (command) => spawn(
     process.execPath,
     [
       "./node_modules/wrangler/bin/wrangler.js",
@@ -220,7 +225,7 @@ export function runWranglerGenesisProvision(
       "--config",
       "wrangler.toml",
       "--command",
-      sql,
+      command,
       "--json",
     ],
     {
@@ -229,23 +234,47 @@ export function runWranglerGenesisProvision(
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  if (result.status !== 0) {
+  const mutation = execute(sql);
+  if (mutation.status === 0) {
+    let mutationEvidence;
+    try {
+      mutationEvidence = JSON.parse(String(mutation.stdout));
+    } catch {
+      throw new Error("Wrangler did not return JSON mutation evidence");
+    }
+    if (
+      !Array.isArray(mutationEvidence) ||
+      mutationEvidence.length === 0 ||
+      mutationEvidence.some((entry) => entry?.success !== true)
+    ) {
+      throw new Error("D1 did not confirm sender-filter genesis provisioning");
+    }
+  }
+  const readbackSql =
+    "SELECT singleton, nonce_sha256, admission_receipt_sha256, " +
+    "worker_commit, repository_tree, keyserver_tree, " +
+    "provisioned_at_ms, consumed_at_ms " +
+    "FROM sender_filter_rollout_genesis WHERE singleton = 1;";
+  const observation = execute(readbackSql);
+  if (observation.status !== 0) {
     throw new Error(
-      `D1 genesis provisioning failed: ${String(result.stderr).trim()}`,
+      `D1 genesis authoritative readback failed: ${
+        String(observation.stderr).trim()
+      }`,
     );
   }
   let parsed;
   try {
-    parsed = JSON.parse(String(result.stdout));
+    parsed = JSON.parse(String(observation.stdout));
   } catch {
-    throw new Error("Wrangler did not return JSON provisioning evidence");
+    throw new Error("Wrangler did not return JSON readback evidence");
   }
   if (
     !Array.isArray(parsed) ||
     parsed.length === 0 ||
     parsed.some((entry) => entry?.success !== true)
   ) {
-    throw new Error("D1 did not confirm sender-filter genesis provisioning");
+    throw new Error("D1 did not confirm authoritative genesis readback");
   }
   const readbacks = parsed.flatMap((entry) =>
     Array.isArray(entry.results) ? entry.results : []);
@@ -253,36 +282,52 @@ export function runWranglerGenesisProvision(
     readbacks.length !== 1 ||
     JSON.stringify(readbacks[0]) !== JSON.stringify(expectedReadback)
   ) {
-    throw new Error("D1 genesis post-provision readback is empty or mismatched");
+    const mutationFailure = mutation.status === 0
+      ? ""
+      : `; mutation also failed: ${String(mutation.stderr).trim()}`;
+    throw new Error(
+      `D1 genesis post-provision readback is empty or mismatched${mutationFailure}`,
+    );
   }
   return readbacks[0];
 }
 
-async function syncDirectory(directory) {
-  const handle = await open(directory, "r");
-  try {
-    await handle.sync();
-  } finally {
+async function openProtectedDirectory(
+  directory,
+  expectedUid = process.getuid?.(),
+  io = { lstat, open },
+) {
+  const handle = await io.open(directory, "r");
+  const [metadata, linkedMetadata] = await Promise.all([
+    handle.stat(),
+    io.lstat(directory),
+  ]);
+  if (
+    !metadata.isDirectory() ||
+    linkedMetadata.isSymbolicLink() ||
+    !linkedMetadata.isDirectory() ||
+    (metadata.mode & 0o777) !== 0o700 ||
+    !Number.isInteger(expectedUid) ||
+    metadata.uid !== expectedUid ||
+    linkedMetadata.uid !== expectedUid ||
+    metadata.dev !== linkedMetadata.dev ||
+    metadata.ino !== linkedMetadata.ino
+  ) {
     await handle.close();
+    throw new Error(
+      "canonical recovery directory must be owner-only, owner-matched, and non-symlink",
+    );
   }
+  return { handle, metadata };
 }
 
 async function requireProtectedDirectory(
   directory,
   expectedUid = process.getuid?.(),
+  io = { lstat, open },
 ) {
-  const metadata = await lstat(directory);
-  if (
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink() ||
-    (metadata.mode & 0o777) !== 0o700 ||
-    !Number.isInteger(expectedUid) ||
-    metadata.uid !== expectedUid
-  ) {
-    throw new Error(
-      "canonical recovery directory must be owner-only, owner-matched, and non-symlink",
-    );
-  }
+  const { handle } = await openProtectedDirectory(directory, expectedUid, io);
+  await handle.close();
 }
 
 async function pathExists(targetPath) {
@@ -336,12 +381,13 @@ export async function refuseExistingCanonicalRecoveryState(
   {
     expectedPath = CANONICAL_GENESIS_RECOVERY_PATH,
     expectedUid = process.getuid?.(),
+    io = { lstat, open },
   } = {},
 ) {
   if (recoveryPath !== expectedPath || !path.isAbsolute(recoveryPath)) {
     throw new Error("canonical recovery path is not exact");
   }
-  await requireProtectedDirectory(path.dirname(recoveryPath), expectedUid);
+  await requireProtectedDirectory(path.dirname(recoveryPath), expectedUid, io);
   if (await pathExists(recoveryPath)) {
     throw new Error(
       "canonical sender-filter recovery state already exists; recover its exact nonce",
@@ -355,6 +401,7 @@ export async function reserveCanonicalRecoveryManifest(
   {
     expectedPath = CANONICAL_GENESIS_RECOVERY_PATH,
     expectedUid = process.getuid?.(),
+    io = { lstat, open },
   } = {},
 ) {
   if (recoveryPath !== expectedPath || !path.isAbsolute(recoveryPath)) {
@@ -362,28 +409,46 @@ export async function reserveCanonicalRecoveryManifest(
   }
   validateRecoveryManifest(manifest);
   const directory = path.dirname(recoveryPath);
-  await requireProtectedDirectory(directory, expectedUid);
-  const handle = await open(recoveryPath, "wx", 0o600);
+  const {
+    handle: directoryHandle,
+    metadata: directoryMetadata,
+  } = await openProtectedDirectory(directory, expectedUid, io);
+  let handle;
   try {
+    handle = await io.open(recoveryPath, "wx", 0o600);
     await handle.writeFile(`${JSON.stringify(manifest)}\n`, "utf8");
     await handle.sync();
-    const metadata = await handle.stat();
+    const [metadata, linkedFile, linkedDirectory] = await Promise.all([
+      handle.stat(),
+      io.lstat(recoveryPath),
+      io.lstat(directory),
+    ]);
     if (
       !metadata.isFile() ||
+      linkedFile.isSymbolicLink() ||
+      !linkedFile.isFile() ||
       (metadata.mode & 0o777) !== 0o600 ||
       metadata.uid !== expectedUid ||
-      metadata.nlink !== 1
+      linkedFile.uid !== expectedUid ||
+      metadata.nlink !== 1 ||
+      linkedFile.nlink !== 1 ||
+      metadata.dev !== linkedFile.dev ||
+      metadata.ino !== linkedFile.ino ||
+      linkedDirectory.isSymbolicLink() ||
+      linkedDirectory.dev !== directoryMetadata.dev ||
+      linkedDirectory.ino !== directoryMetadata.ino
     ) {
       throw new Error(
         "canonical recovery reservation is not an owner-only single-link file",
       );
     }
+    // The data reaches stable storage before the directory entry. Both are
+    // synced through already-verified handles; neither path is reopened.
+    await directoryHandle.sync();
   } finally {
-    await handle.close();
+    await handle?.close();
+    await directoryHandle.close();
   }
-  // The one canonical name is created exclusively and synced before remote
-  // mutation. It is never renamed, unlinked, or replaced by this command.
-  await syncDirectory(directory);
   return recoveryPath;
 }
 
@@ -392,33 +457,86 @@ export async function loadCanonicalRecoveryManifest(
   {
     expectedPath = CANONICAL_GENESIS_RECOVERY_PATH,
     expectedUid = process.getuid?.(),
+    io = { lstat, open },
   } = {},
 ) {
   if (recoveryPath !== expectedPath || !path.isAbsolute(recoveryPath)) {
     throw new Error("canonical recovery path is not exact");
   }
-  await requireProtectedDirectory(path.dirname(recoveryPath), expectedUid);
-  const metadata = await lstat(recoveryPath);
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    (metadata.mode & 0o777) !== 0o600 ||
-    metadata.uid !== expectedUid ||
-    metadata.nlink !== 1 ||
-    metadata.size <= 0 ||
-    metadata.size > 64 * 1024
-  ) {
-    throw new Error(
-      "canonical recovery state is not an owner-only single-link regular file",
-    );
-  }
-  let manifest;
+  const directory = path.dirname(recoveryPath);
+  const {
+    handle: directoryHandle,
+    metadata: directoryMetadata,
+  } = await openProtectedDirectory(directory, expectedUid, io);
+  let handle;
   try {
-    manifest = JSON.parse(await readFile(recoveryPath, "utf8"));
-  } catch {
-    throw new Error("canonical recovery state is not JSON");
+    try {
+      handle = await io.open(
+        recoveryPath,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      if (error?.code === "ELOOP") {
+        throw new Error(
+          "canonical recovery state is not an owner-only single-link regular file",
+        );
+      }
+      throw error;
+    }
+    const [metadata, linkedFile, linkedDirectory] = await Promise.all([
+      handle.stat(),
+      io.lstat(recoveryPath),
+      io.lstat(directory),
+    ]);
+    if (
+      !metadata.isFile() ||
+      linkedFile.isSymbolicLink() ||
+      !linkedFile.isFile() ||
+      (metadata.mode & 0o777) !== 0o600 ||
+      metadata.uid !== expectedUid ||
+      linkedFile.uid !== expectedUid ||
+      metadata.nlink !== 1 ||
+      linkedFile.nlink !== 1 ||
+      metadata.dev !== linkedFile.dev ||
+      metadata.ino !== linkedFile.ino ||
+      linkedDirectory.isSymbolicLink() ||
+      linkedDirectory.dev !== directoryMetadata.dev ||
+      linkedDirectory.ino !== directoryMetadata.ino ||
+      metadata.size <= 0 ||
+      metadata.size > 64 * 1024
+    ) {
+      throw new Error(
+        "canonical recovery state is not an owner-only single-link regular file",
+      );
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(await handle.readFile("utf8"));
+    } catch {
+      throw new Error("canonical recovery state is not JSON");
+    }
+    return validateRecoveryManifest(manifest);
+  } finally {
+    await handle?.close();
+    await directoryHandle.close();
   }
-  return validateRecoveryManifest(manifest);
+}
+
+export async function loadCanonicalRecoveryManifestIfPresent(
+  recoveryPath = CANONICAL_GENESIS_RECOVERY_PATH,
+  options = {},
+) {
+  const {
+    expectedPath = CANONICAL_GENESIS_RECOVERY_PATH,
+    expectedUid = process.getuid?.(),
+    io = { lstat, open },
+  } = options;
+  if (recoveryPath !== expectedPath || !path.isAbsolute(recoveryPath)) {
+    throw new Error("canonical recovery path is not exact");
+  }
+  await requireProtectedDirectory(path.dirname(recoveryPath), expectedUid, io);
+  if (!(await pathExists(recoveryPath))) return null;
+  return await loadCanonicalRecoveryManifest(recoveryPath, options);
 }
 
 export async function provisionSenderFilterGenesis(
@@ -434,7 +552,7 @@ export async function provisionSenderFilterGenesis(
     recoveryOptions,
   );
   try {
-    provision(sql);
+    await provision(sql);
   } catch (error) {
     // Any process/transport/parse failure may be ambiguous. The one canonical
     // reservation remains intact, so recovery reuses this exact nonce and no
@@ -445,6 +563,26 @@ export async function provisionSenderFilterGenesis(
     );
   }
   return recoveryPath;
+}
+
+export async function resumeSenderFilterGenesis(
+  recoveryPath,
+  manifest,
+  sql,
+  provision = runWranglerGenesisProvision,
+) {
+  if (recoveryPath !== CANONICAL_GENESIS_RECOVERY_PATH) {
+    throw new Error("canonical recovery path is not exact");
+  }
+  validateRecoveryManifest(manifest);
+  try {
+    return await provision(sql);
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; ` +
+      `protected recovery manifest retained at ${recoveryPath}`,
+    );
+  }
 }
 
 export async function writeDerivedProvisioningReceipt(
@@ -479,14 +617,35 @@ export async function writeDerivedProvisioningReceipt(
   return receipt;
 }
 
-async function main() {
-  const options = parseGenesisProvisioningArguments(process.argv.slice(2));
-  assertCurrentCanonicalRolloutSource({
+export async function runGenesisProvisioningCli(
+  argv,
+  dependencies = {},
+) {
+  const options = parseGenesisProvisioningArguments(argv);
+  const assertSource =
+    dependencies.assertCurrentSource ?? assertCurrentCanonicalRolloutSource;
+  const readAdmission =
+    dependencies.readAdmission ?? readCanonicalRolloutProvisioningReceipt;
+  const loadRecovery =
+    dependencies.loadRecovery ?? loadCanonicalRecoveryManifestIfPresent;
+  const random = dependencies.randomBytes ?? randomBytes;
+  const now = dependencies.now ?? Date.now;
+  const provision =
+    dependencies.provision ?? provisionSenderFilterGenesis;
+  const resumeProvision =
+    dependencies.resumeProvision ?? resumeSenderFilterGenesis;
+  const wranglerProvision =
+    dependencies.wranglerProvision ?? runWranglerGenesisProvision;
+  const writeReceipt =
+    dependencies.writeReceipt ?? writeDerivedProvisioningReceipt;
+  const write = dependencies.write ?? ((text) => process.stdout.write(text));
+
+  assertSource({
     expectedCommit: options.expectedCommit,
     expectedRepositoryTree: options.expectedTree,
     expectedKeyserverTree: options.expectedKeyserverTree,
   });
-  const receipt = await readCanonicalRolloutProvisioningReceipt(
+  const receipt = await readAdmission(
     options.admissionPath,
     {
       expectedCommit: options.expectedCommit,
@@ -494,30 +653,58 @@ async function main() {
       expectedKeyserverTree: options.expectedKeyserverTree,
     },
   );
-  await refuseExistingCanonicalRecoveryState();
-  const { manifest, sql, expectedReadback } = buildGenesisProvisioning(
-    randomBytes(32),
-    Date.now(),
-    receipt,
-  );
-  let readback;
-  await provisionSenderFilterGenesis(
+  const retainedManifest = await loadRecovery(
     CANONICAL_GENESIS_RECOVERY_PATH,
-    manifest,
-    sql,
-    (statement) => {
-      readback = runWranglerGenesisProvision(statement, expectedReadback);
-      return readback;
-    },
   );
-  await writeDerivedProvisioningReceipt(
+  const built = retainedManifest
+    ? buildGenesisProvisioning(
+      Buffer.from(retainedManifest.genesis_nonce, "base64url"),
+      retainedManifest.provisioned_at_ms,
+      receipt,
+    )
+    : buildGenesisProvisioning(random(32), now(), receipt);
+  if (
+    retainedManifest &&
+    JSON.stringify(retainedManifest) !== JSON.stringify(built.manifest)
+  ) {
+    throw new Error(
+      "retained canonical recovery manifest does not match this admission/source",
+    );
+  }
+  const { manifest, sql, expectedReadback } = built;
+  let readback;
+  const invokeWrangler = (statement) => {
+    readback = wranglerProvision(statement, expectedReadback);
+    return readback;
+  };
+  if (retainedManifest) {
+    await resumeProvision(
+      CANONICAL_GENESIS_RECOVERY_PATH,
+      manifest,
+      sql,
+      invokeWrangler,
+    );
+  } else {
+    await provision(
+      CANONICAL_GENESIS_RECOVERY_PATH,
+      manifest,
+      sql,
+      invokeWrangler,
+    );
+  }
+  await writeReceipt(
     options.outputPath,
     manifest,
     readback,
   );
-  process.stdout.write(
+  write(
     "Sender-filter genesis provisioned; canonical recovery state retained and derived receipt written.\n",
   );
+  return { manifest, readback };
+}
+
+async function main() {
+  await runGenesisProvisioningCli(process.argv.slice(2));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

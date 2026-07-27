@@ -68,7 +68,7 @@ function base32LowerNoPad(bytes: Uint8Array): string {
   return output;
 }
 
-function decodeCanonicalBase64(
+export function decodeCanonicalBase64(
   value: unknown,
   expectedLength: number,
   label: string,
@@ -129,7 +129,7 @@ function decodeCanonicalEd25519PublicKey(
   return bytes;
 }
 
-function decodeCanonicalEd25519SignatureBytes(
+export function decodeCanonicalEd25519SignatureBytes(
   value: unknown,
   label: string,
 ): Uint8Array {
