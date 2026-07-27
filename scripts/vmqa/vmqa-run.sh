@@ -32,10 +32,18 @@ die_usage() { echo "$*" >&2; usage; exit 64; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 69; }; }
 sha_file() { sha256sum "$1" | awk '{print $1}'; }
 verify_bundle_for_use() {
-  local bundle_dir="$1" mode="${2:-production}"
+  local bundle_dir="$1" mode="${2:-production}" fixture_seal="${3:-}"
   local fixture_args=()
-  [ "$mode" = "internal-test-fixture" ] \
-    && fixture_args+=(--internal-test-fixture)
+  if [ "$mode" = "internal-test-fixture" ]; then
+    [ -n "$fixture_seal" ] || {
+      echo "internal fixture validation requires its detached producer seal" >&2
+      return 9
+    }
+    fixture_args+=(--internal-test-fixture --internal-test-seal "$fixture_seal")
+  elif [ -n "$fixture_seal" ]; then
+    echo "caller-selected producer seal is forbidden in production" >&2
+    return 9
+  fi
   python3 "$SCRIPT_DIR/vmqa_build_evidence.py" verify-bundle \
     --bundle "$bundle_dir" "${fixture_args[@]}"
 }
@@ -371,7 +379,7 @@ grade_selftest() {
   local expected_surface_class="${8:-}"
   local expected_build_identity="${9:-}" expected_exe_path="${10:-}"
   local expected_evidence_dir="${11:-}"
-  local internal_test_fixture="${12:-false}"
+  local internal_test_seal="${12:-}" internal_test_fixture="${13:-false}"
   local fixture_args=()
   local pos neg markers neg_markers colors launch_neg shot_neg neg_steps neg_ping result
   local launch_pid neg_launch_pid surface_pid surface_width surface_height foreground_pre foreground_post
@@ -392,8 +400,16 @@ grade_selftest() {
   local artifact_file artifact_actual_sha artifact_size artifact_signature artifact_ok=false
   local png_json png_width png_height png_colors png_bit_depth png_color_type png_stride
   local structured_surface_ok
-  [ "$internal_test_fixture" = "true" ] \
-    && fixture_args+=(--internal-test-fixture)
+  if [ "$internal_test_fixture" = "true" ]; then
+    [ -n "$internal_test_seal" ] || {
+      echo "SELFTEST INVALID: detached fixture producer seal is missing" >&2
+      return 9
+    }
+    fixture_args+=(--internal-test-fixture --internal-test-seal "$internal_test_seal")
+  elif [ -n "$internal_test_seal" ]; then
+    echo "SELFTEST INVALID: caller-selected producer seal is forbidden" >&2
+    return 9
+  fi
   if [ -z "$expected_build_identity" ] || [ -z "$expected_exe_path" ] \
      || [ -z "$expected_evidence_dir" ] \
      || ! python3 "$VMQA_CONTRACT" verify-pair \
@@ -737,7 +753,7 @@ cmd_selftest() {
   set -e
   grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc" \
     "$expected_agent_sha" "$expected_win32_sha" "$exe_sha" \
-    "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe" "$evidence_dir"
+    "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe" "$evidence_dir" "" false
 }
 
 

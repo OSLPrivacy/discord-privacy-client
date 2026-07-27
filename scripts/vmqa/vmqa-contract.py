@@ -21,6 +21,7 @@ from vmqa_build_evidence import (
     PINNED_COMMIT,
     PINNED_TREE,
     verify_evidence,
+    verify_producer_seal,
 )
 
 
@@ -124,8 +125,16 @@ class ContractError(ValueError):
 
 
 def load_json(path: Path, label: str) -> Any:
+    return load_json_with_sha(path, label)[0]
+
+
+def load_json_with_sha(path: Path, label: str) -> tuple[Any, str]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = path.read_bytes()
+        return (
+            json.loads(payload.decode("utf-8")),
+            hashlib.sha256(payload).hexdigest(),
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ContractError(f"{label} is not valid UTF-8 JSON: {exc}") from exc
 
@@ -194,12 +203,22 @@ def validate_schema_version(value: Any, label: str) -> None:
         )
 
 
+def internal_fixture_seal(args: argparse.Namespace) -> Path | None:
+    raw = getattr(args, "internal_test_seal", None)
+    if raw is not None and not getattr(args, "internal_test_fixture", False):
+        raise ContractError("caller-selected producer seal is forbidden in production")
+    return Path(raw) if raw is not None else None
+
+
 def validate_build_identity(
     value: Any,
     *,
+    identity_path: Path,
+    identity_sha: str,
     exe_path: Path,
     evidence_dir: Path,
     allow_fixture: bool = False,
+    fixture_seal: Path | None = None,
 ) -> dict[str, Any]:
     identity = exact_object(
         value,
@@ -358,6 +377,16 @@ def validate_build_identity(
         raise ContractError(str(exc)) from exc
     if build_log["mode"] == "fixture" and not allow_fixture:
         raise ContractError("fixture build evidence is forbidden in production")
+    try:
+        verify_producer_seal(
+            identity_path,
+            mode=build_log["mode"],
+            allow_fixture=allow_fixture,
+            fixture_seal=fixture_seal,
+            identity_sha=identity_sha,
+        )
+    except EvidenceError as exc:
+        raise ContractError(str(exc)) from exc
     return identity
 
 
@@ -586,13 +615,18 @@ def validate_verdict(
 
 def verify_pair(args: argparse.Namespace) -> None:
     identity_path = Path(args.build_identity)
+    identity_value, identity_sha = load_json_with_sha(
+        identity_path, "build identity"
+    )
     identity = validate_build_identity(
-        load_json(identity_path, "build identity"),
+        identity_value,
+        identity_path=identity_path,
+        identity_sha=identity_sha,
         exe_path=Path(args.exe),
         evidence_dir=Path(args.evidence_dir),
         allow_fixture=args.internal_test_fixture,
+        fixture_seal=internal_fixture_seal(args),
     )
-    identity_sha = sha256_file(identity_path)
     for side in ("positive", "negative"):
         request_path = Path(getattr(args, f"{side}_request"))
         verdict_path = Path(getattr(args, f"{side}_verdict"))
@@ -611,13 +645,18 @@ def verify_pair(args: argparse.Namespace) -> None:
 
 def verify_run(args: argparse.Namespace) -> None:
     identity_path = Path(args.build_identity)
+    identity_value, identity_sha = load_json_with_sha(
+        identity_path, "build identity"
+    )
     identity = validate_build_identity(
-        load_json(identity_path, "build identity"),
+        identity_value,
+        identity_path=identity_path,
+        identity_sha=identity_sha,
         exe_path=Path(args.exe),
         evidence_dir=Path(args.evidence_dir),
         allow_fixture=args.internal_test_fixture,
+        fixture_seal=internal_fixture_seal(args),
     )
-    identity_sha = sha256_file(identity_path)
     request_path = Path(args.request)
     request = validate_request(
         load_json(request_path, "request"),
@@ -633,11 +672,18 @@ def verify_run(args: argparse.Namespace) -> None:
 
 
 def validate_build(args: argparse.Namespace) -> None:
+    identity_path = Path(args.build_identity)
+    identity_value, identity_sha = load_json_with_sha(
+        identity_path, "build identity"
+    )
     validate_build_identity(
-        load_json(Path(args.build_identity), "build identity"),
+        identity_value,
+        identity_path=identity_path,
+        identity_sha=identity_sha,
         exe_path=Path(args.exe),
         evidence_dir=Path(args.evidence_dir),
         allow_fixture=args.internal_test_fixture,
+        fixture_seal=internal_fixture_seal(args),
     )
 
 
@@ -691,13 +737,18 @@ def validate_cleanup(args: argparse.Namespace) -> None:
         },
         "azureCleanupReceipt",
     )
+    identity_value, identity_sha = load_json_with_sha(
+        identity_path, "build identity"
+    )
     identity = validate_build_identity(
-        load_json(identity_path, "build identity"),
+        identity_value,
+        identity_path=identity_path,
+        identity_sha=identity_sha,
         exe_path=Path(args.exe),
         evidence_dir=directory / "build-evidence",
         allow_fixture=args.internal_test_fixture,
+        fixture_seal=internal_fixture_seal(args),
     )
-    identity_sha = sha256_file(identity_path)
     request = validate_request(
         load_json(request_path, "request"),
         identity=identity,
@@ -1002,6 +1053,7 @@ def main() -> int:
     pair.add_argument("--exe", required=True)
     pair.add_argument("--evidence-dir", required=True)
     pair.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
+    pair.add_argument("--internal-test-seal", help=argparse.SUPPRESS)
     pair.set_defaults(function=verify_pair)
     run = subparsers.add_parser("verify-run")
     run.add_argument("--request", required=True)
@@ -1010,17 +1062,20 @@ def main() -> int:
     run.add_argument("--exe", required=True)
     run.add_argument("--evidence-dir", required=True)
     run.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument("--internal-test-seal", help=argparse.SUPPRESS)
     run.set_defaults(function=verify_run)
     build = subparsers.add_parser("validate-build")
     build.add_argument("--build-identity", required=True)
     build.add_argument("--exe", required=True)
     build.add_argument("--evidence-dir", required=True)
     build.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
+    build.add_argument("--internal-test-seal", help=argparse.SUPPRESS)
     build.set_defaults(function=validate_build)
     cleanup = subparsers.add_parser("verify-cleanup")
     cleanup.add_argument("--directory", required=True)
     cleanup.add_argument("--exe", required=True)
     cleanup.add_argument("--internal-test-fixture", action="store_true", help=argparse.SUPPRESS)
+    cleanup.add_argument("--internal-test-seal", help=argparse.SUPPRESS)
     cleanup.set_defaults(function=validate_cleanup)
     args = parser.parse_args()
     try:

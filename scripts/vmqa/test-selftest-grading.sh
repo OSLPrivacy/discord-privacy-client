@@ -49,16 +49,19 @@ FIXTURE_SOURCE="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 FIXTURE_BUNDLE="$TMP/build-bundle"
 python3 "$SCRIPT_DIR/vmqa_build_evidence.py" create-fixture \
   --source-repo "$FIXTURE_SOURCE" --output "$FIXTURE_BUNDLE" || exit 1
+FIXTURE_SEAL="$FIXTURE_BUNDLE.producer-seal.json"
 FIXTURE_EXE="$FIXTURE_BUNDLE/outputs/osl-privacy-hub.exe"
 FIXTURE_LOADER="$FIXTURE_BUNDLE/outputs/WebView2Loader.dll"
 FIXTURE_DIST="$FIXTURE_BUNDLE/outputs/dist"
 EVIDENCE_DIR="$FIXTURE_BUNDLE/build-evidence"
 BUILD_IDENTITY="$FIXTURE_BUNDLE/build-identity.json"
 python3 "$SCRIPT_DIR/vmqa_build_evidence.py" verify-bundle \
-  --bundle "$FIXTURE_BUNDLE" --internal-test-fixture || exit 1
+  --bundle "$FIXTURE_BUNDLE" --internal-test-fixture \
+  --internal-test-seal "$FIXTURE_SEAL" || exit 1
 python3 "$VMQA_CONTRACT" validate-build \
   --build-identity "$BUILD_IDENTITY" --exe "$FIXTURE_EXE" \
-  --evidence-dir "$EVIDENCE_DIR" --internal-test-fixture || exit 1
+  --evidence-dir "$EVIDENCE_DIR" --internal-test-fixture \
+  --internal-test-seal "$FIXTURE_SEAL" || exit 1
 EXE_SHA="$(sha256sum "$FIXTURE_EXE" | awk '{print $1}')"
 EXE_SIZE="$(stat -c %s "$FIXTURE_EXE")"
 BUILD_IDENTITY_SHA="$(sha256sum "$BUILD_IDENTITY" | awk '{print $1}')"
@@ -69,7 +72,8 @@ check_consumer_bundle_mutation() {
   cp -- "$path" "$saved"
   printf 'mutation\n' >>"$path"
   set +e
-  verify_bundle_for_use "$FIXTURE_BUNDLE" internal-test-fixture >/dev/null 2>&1
+  verify_bundle_for_use "$FIXTURE_BUNDLE" internal-test-fixture \
+    "$FIXTURE_SEAL" >/dev/null 2>&1
   rc=$?
   [ "$had_errexit" = true ] && set -e || set +e
   mv -- "$saved" "$path"
@@ -232,7 +236,7 @@ check() {
   local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got out
   out="$(grade_selftest "$posf" "$negf" "$posrc" "$negrc" \
     "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
-    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" true 2>&1)"
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" "$FIXTURE_SEAL" true 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ]; then
     printf '  ok    %-46s exit=%s\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -251,7 +255,7 @@ check_msg() {
   local name="$1" want="$2" pattern="$3" posf="$4" negf="$5" out got
   out="$(grade_selftest "$posf" "$negf" 0 3 \
     "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" "$SURFACE_CLASS" \
-    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" true 2>&1)"
+    "$BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" "$FIXTURE_SEAL" true 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qi -- "$pattern"; then
     printf '  ok    %-46s exit=%s +msg\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -355,13 +359,29 @@ check "stale embedded build identity -> INVALID" 9 \
       '.buildIdentity.source.commit="ffffffffffffffffffffffffffffffffffffffff"')" \
   "$(mkjson neg_for_stale_build "$GOOD_NEG")"
 
-# All caller-controlled executable digests are coherently substituted, including
-# request, verdict, launch, cleanup, and build identity. Independent executable
-# bytes remain unchanged; the strict contract must reject before ordinary grading.
-SUB_EXE_SHA='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
-SUB_BUILD_IDENTITY="$TMP/substituted-build-identity.json"
-jq --arg sha "$SUB_EXE_SHA" '.artifacts.executable.sha256=$sha' \
-  "$BUILD_IDENTITY" >"$SUB_BUILD_IDENTITY"
+# Replace the actual executable bytes, then coherently rewrite every dependent
+# build-log, identity, request, verdict, launch, and cleanup field. Internal
+# self-consistency alone accepts this shape; the detached producer seal must reject it.
+SUB_BUNDLE="$TMP/substituted-bundle"
+cp -a -- "$FIXTURE_BUNDLE" "$SUB_BUNDLE"
+SUB_EXE="$SUB_BUNDLE/outputs/osl-privacy-hub.exe"
+SUB_EVIDENCE="$SUB_BUNDLE/build-evidence"
+SUB_BUILD_IDENTITY="$SUB_BUNDLE/build-identity.json"
+printf 'coherently replaced executable bytes\n' >"$SUB_EXE"
+SUB_EXE_SHA="$(sha256sum "$SUB_EXE" | awk '{print $1}')"
+SUB_EXE_SIZE="$(stat -c %s "$SUB_EXE")"
+jq --arg sha "$SUB_EXE_SHA" --argjson size "$SUB_EXE_SIZE" \
+  '.artifact.sha256=$sha | .artifact.sizeBytes=$size' \
+  "$SUB_EVIDENCE/build-log.json" >"$SUB_EVIDENCE/build-log.json.tmp"
+mv -- "$SUB_EVIDENCE/build-log.json.tmp" "$SUB_EVIDENCE/build-log.json"
+SUB_BUILD_LOG_SHA="$(sha256sum "$SUB_EVIDENCE/build-log.json" | awk '{print $1}')"
+jq --arg sha "$SUB_EXE_SHA" --argjson size "$SUB_EXE_SIZE" \
+  --arg buildLogSha "$SUB_BUILD_LOG_SHA" '
+    .artifacts.executable.sha256=$sha
+    | .artifacts.executable.sizeBytes=$size
+    | .evidence.buildLogSha256=$buildLogSha
+  ' "$SUB_BUILD_IDENTITY" >"$SUB_BUILD_IDENTITY.tmp"
+mv -- "$SUB_BUILD_IDENTITY.tmp" "$SUB_BUILD_IDENTITY"
 sub_pos="$(mkjson substituted_pos "$GOOD_POS")"
 sub_neg="$(mkjson substituted_neg "$GOOD_NEG")"
 sub_identity_sha="$(sha256sum "$SUB_BUILD_IDENTITY" | awk '{print $1}')"
@@ -387,7 +407,8 @@ for verdict in "$sub_pos" "$sub_neg"; do
 done
 grade_selftest "$sub_pos" "$sub_neg" 0 3 \
   "$AGENT_SHA" "$WIN32_SHA" "$SUB_EXE_SHA" "$SURFACE_CLASS" \
-  "$SUB_BUILD_IDENTITY" "$FIXTURE_EXE" "$EVIDENCE_DIR" true >/dev/null 2>&1
+  "$SUB_BUILD_IDENTITY" "$SUB_EXE" "$SUB_EVIDENCE" \
+  "$FIXTURE_SEAL" true >/dev/null 2>&1
 sub_rc=$?
 if [ "$sub_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "coherent digest substitution -> INVALID" "$sub_rc"
@@ -400,8 +421,8 @@ python3 "$SCRIPT_DIR/vmqa-contract.py" verify-run \
   --request "$(dirname -- "$sub_pos")/request.json" \
   --verdict "$sub_pos" \
   --build-identity "$SUB_BUILD_IDENTITY" \
-  --exe "$FIXTURE_EXE" --evidence-dir "$EVIDENCE_DIR" \
-  --internal-test-fixture >/dev/null 2>&1
+  --exe "$SUB_EXE" --evidence-dir "$SUB_EVIDENCE" \
+  --internal-test-fixture --internal-test-seal "$FIXTURE_SEAL" >/dev/null 2>&1
 ordinary_sub_rc=$?
 if [ "$ordinary_sub_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "ordinary run digest substitution -> INVALID" "$ordinary_sub_rc"
@@ -414,7 +435,8 @@ BAD_SCALAR_IDENTITY="$TMP/bad-scalar-build-identity.json"
 jq '.build.toolchain.rustc={}' "$BUILD_IDENTITY" >"$BAD_SCALAR_IDENTITY"
 python3 "$SCRIPT_DIR/vmqa-contract.py" validate-build \
   --build-identity "$BAD_SCALAR_IDENTITY" --exe "$FIXTURE_EXE" \
-  --evidence-dir "$EVIDENCE_DIR" --internal-test-fixture >/dev/null 2>&1
+  --evidence-dir "$EVIDENCE_DIR" --internal-test-fixture \
+  --internal-test-seal "$FIXTURE_SEAL" >/dev/null 2>&1
 bad_scalar_rc=$?
 if [ "$bad_scalar_rc" -eq 9 ]; then
   printf '  ok    %-46s exit=%s\n' "nested build scalar object -> INVALID" "$bad_scalar_rc"

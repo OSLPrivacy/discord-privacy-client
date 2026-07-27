@@ -9,8 +9,10 @@ import errno
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -53,6 +55,9 @@ FINAL_EXE = "outputs/osl-privacy-hub.exe"
 FINAL_LOADER = "outputs/WebView2Loader.dll"
 FINAL_DIST = "outputs/dist"
 FINAL_EVIDENCE = "build-evidence"
+PRODUCTION_SEAL_DIRECTORY = Path("/var/lib/osl-vmqa/producer-seals")
+PRODUCTION_SEAL_USER = "osl-vmqa-producer"
+SEAL_SCHEMA_VERSION = 1
 FIXTURE_LOADER_BYTES = b"fixture-WebView2Loader-produced-by-vmqa\n"
 EVIDENCE_FILES = {
     "source.tar",
@@ -134,11 +139,189 @@ def exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
     return value
 
 
-def load_json(path: Path, label: str) -> Any:
+def load_json_with_sha(path: Path, label: str) -> tuple[Any, str]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = path.read_bytes()
+        return (
+            json.loads(payload.decode("utf-8")),
+            hashlib.sha256(payload).hexdigest(),
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise EvidenceError(f"{label} is not valid UTF-8 JSON: {exc}") from exc
+
+
+def load_json(path: Path, label: str) -> Any:
+    return load_json_with_sha(path, label)[0]
+
+
+def fixture_seal_path(bundle: Path) -> Path:
+    return bundle.with_name(f"{bundle.name}.producer-seal.json")
+
+
+def require_real_directory(path: Path, label: str) -> os.stat_result:
+    try:
+        value = os.lstat(path)
+    except OSError as exc:
+        raise EvidenceError(f"{label} is missing: {path}") from exc
+    if not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode):
+        raise EvidenceError(f"{label} must be a real directory: {path}")
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor /= part
+        if cursor.is_symlink():
+            raise EvidenceError(f"{label} contains a symlink component: {cursor}")
+    return value
+
+
+def production_seal_owner(*, for_write: bool) -> int:
+    try:
+        producer = pwd.getpwnam(PRODUCTION_SEAL_USER)
+    except KeyError as exc:
+        raise EvidenceError(
+            f"dedicated producer account is not provisioned: {PRODUCTION_SEAL_USER}"
+        ) from exc
+    if Path(producer.pw_shell).name not in {"false", "nologin"}:
+        raise EvidenceError("dedicated producer account must be non-login")
+    directory_stat = require_real_directory(
+        PRODUCTION_SEAL_DIRECTORY, "protected producer-seal directory"
+    )
+    if directory_stat.st_uid != producer.pw_uid:
+        raise EvidenceError(
+            "protected producer-seal directory is not owned by the dedicated producer"
+        )
+    if stat.S_IMODE(directory_stat.st_mode) != 0o755:
+        raise EvidenceError(
+            "protected producer-seal directory mode must be exactly 0755"
+        )
+    if for_write and os.geteuid() != producer.pw_uid:
+        raise EvidenceError(
+            "production create must run as the dedicated producer identity"
+        )
+    return producer.pw_uid
+
+
+def producer_seal_record(identity_sha: str, mode: str) -> dict[str, Any]:
+    if not SHA_RE.fullmatch(identity_sha):
+        raise EvidenceError("producer-seal identity digest is invalid")
+    return {
+        "schemaVersion": SEAL_SCHEMA_VERSION,
+        "producer": (
+            "internal-vmqa-fixture"
+            if mode == "fixture"
+            else PRODUCTION_SEAL_USER
+        ),
+        "mode": mode,
+        "identitySha256": identity_sha,
+        "sourceCommit": PINNED_COMMIT,
+        "sourceTree": PINNED_TREE,
+    }
+
+
+def verify_producer_seal(
+    identity_path: Path,
+    *,
+    mode: str,
+    allow_fixture: bool = False,
+    fixture_seal: Path | None = None,
+    identity_sha: str | None = None,
+) -> Path:
+    if mode not in ("production", "fixture"):
+        raise EvidenceError("producer-seal mode is not exact")
+    if identity_sha is None:
+        identity_sha = sha256_file(identity_path)
+    if not SHA_RE.fullmatch(identity_sha):
+        raise EvidenceError("producer-seal identity digest is invalid")
+    if mode == "fixture":
+        if not allow_fixture:
+            raise EvidenceError("fixture producer seal is forbidden in production")
+        if fixture_seal is None:
+            raise EvidenceError("internal fixture validation requires its detached producer seal")
+        seal_path = fixture_seal
+        expected_owner = None
+        expected_mode = 0o444
+    else:
+        if fixture_seal is not None:
+            raise EvidenceError("caller-selected producer seal is forbidden in production")
+        expected_owner = production_seal_owner(for_write=False)
+        expected_mode = 0o444
+        seal_path = PRODUCTION_SEAL_DIRECTORY / f"{identity_sha}.json"
+    try:
+        seal_stat = os.lstat(seal_path)
+    except OSError as exc:
+        raise EvidenceError(
+            f"producer-authenticated seal is missing for identity {identity_sha}"
+        ) from exc
+    if (
+        not stat.S_ISREG(seal_stat.st_mode)
+        or stat.S_ISLNK(seal_stat.st_mode)
+        or stat.S_IMODE(seal_stat.st_mode) != expected_mode
+        or (expected_owner is not None and seal_stat.st_uid != expected_owner)
+    ):
+        raise EvidenceError("producer-authenticated seal has unsafe ownership or mode")
+    seal = exact_object(
+        load_json(seal_path, "producer seal"),
+        {
+            "schemaVersion",
+            "producer",
+            "mode",
+            "identitySha256",
+            "sourceCommit",
+            "sourceTree",
+        },
+        "producerSeal",
+    )
+    if seal != producer_seal_record(identity_sha, mode):
+        raise EvidenceError(
+            "producer-authenticated seal does not bind the retained build identity"
+        )
+    return seal_path
+
+
+def publish_producer_seal(
+    identity_path: Path,
+    bundle_output: Path,
+    *,
+    fixture: bool,
+) -> tuple[Path, tuple[int, int]]:
+    mode = "fixture" if fixture else "production"
+    record = producer_seal_record(sha256_file(identity_path), mode)
+    if fixture:
+        seal_path = fixture_seal_path(bundle_output)
+        parent = bundle_output.parent
+    else:
+        production_seal_owner(for_write=True)
+        seal_path = PRODUCTION_SEAL_DIRECTORY / f"{record['identitySha256']}.json"
+        parent = PRODUCTION_SEAL_DIRECTORY
+    if os.path.lexists(seal_path):
+        raise EvidenceError(f"producer seal already exists: {seal_path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    parent_fd = os.open(parent, flags)
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=".vmqa-producer-seal-", dir=parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        payload = (
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        with os.fdopen(temporary_fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o444)
+        temporary_stat = os.stat(temporary, follow_symlinks=False)
+        inode = (temporary_stat.st_dev, temporary_stat.st_ino)
+        rename_noreplace(temporary, parent_fd, seal_path.name)
+        final_stat = os.stat(seal_path, follow_symlinks=False)
+        if (final_stat.st_dev, final_stat.st_ino) != inode:
+            raise EvidenceError("published producer seal path was swapped")
+        return seal_path, inode
+    finally:
+        os.close(parent_fd)
+        if temporary.exists():
+            temporary.unlink()
 
 
 def safe_member_name(name: str, label: str) -> str:
@@ -653,15 +836,26 @@ def create_evidence(args: argparse.Namespace) -> None:
     fixture = bool(args.fixture)
     fixture_scenario = args.fixture_scenario
     provider = Path(args.source_repo).resolve()
+    if not fixture:
+        # Refuse before resolving or executing any build tool unless the fixed
+        # producer-only trust store is ready.
+        production_seal_owner(for_write=True)
     output, parent_fd = require_new_bundle_path(args.output)
     if fixture and not output.as_posix().startswith("/tmp/"):
         os.close(parent_fd)
         raise EvidenceError("fixture bundles are restricted to /tmp")
+    if fixture and os.path.lexists(fixture_seal_path(output)):
+        os.close(parent_fd)
+        raise EvidenceError(
+            f"producer seal destination already exists: {fixture_seal_path(output)}"
+        )
     tools = validate_tools(fixture, fixture_scenario)
     loader_bytes, loader_source = read_loader_once(fixture)
     work = Path(tempfile.mkdtemp(prefix=".vmqa-build-", dir=output.parent))
     published = False
     published_inode: tuple[int, int] | None = None
+    seal_path: Path | None = None
+    seal_inode: tuple[int, int] | None = None
     try:
         bundle = work / "bundle"
         evidence = bundle / FINAL_EVIDENCE
@@ -843,7 +1037,7 @@ def create_evidence(args: argparse.Namespace) -> None:
             json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        verify_bundle(bundle, allow_fixture=fixture)
+        verify_bundle(bundle, allow_fixture=fixture, require_seal=False)
         parent_stat = os.stat(output.parent, follow_symlinks=False)
         opened_stat = os.fstat(parent_fd)
         if (parent_stat.st_dev, parent_stat.st_ino) != (
@@ -858,11 +1052,38 @@ def create_evidence(args: argparse.Namespace) -> None:
         final_stat = os.stat(output, follow_symlinks=False)
         if (final_stat.st_dev, final_stat.st_ino) != published_inode:
             raise EvidenceError("published bundle path was swapped")
-        verify_bundle(output, allow_fixture=fixture)
+        verify_bundle(output, allow_fixture=fixture, require_seal=False)
         final_stat = os.stat(output, follow_symlinks=False)
         if (final_stat.st_dev, final_stat.st_ino) != published_inode:
             raise EvidenceError("published bundle changed during final validation")
+        seal_path, seal_inode = publish_producer_seal(
+            output / "build-identity.json",
+            output,
+            fixture=fixture,
+        )
+        verify_bundle(
+            output,
+            allow_fixture=fixture,
+            fixture_seal=seal_path if fixture else None,
+        )
+        final_stat = os.stat(output, follow_symlinks=False)
+        if (final_stat.st_dev, final_stat.st_ino) != published_inode:
+            raise EvidenceError("published bundle changed after producer sealing")
+        print(f"producer_seal={seal_path}")
     except Exception:
+        should_cleanup_seal = False
+        if seal_path is not None and seal_inode is not None:
+            try:
+                current_seal = os.stat(seal_path, follow_symlinks=False)
+                should_cleanup_seal = (
+                    not seal_path.is_symlink()
+                    and seal_path.is_file()
+                    and (current_seal.st_dev, current_seal.st_ino) == seal_inode
+                )
+            except OSError:
+                pass
+        if should_cleanup_seal:
+            seal_path.unlink()
         should_cleanup = False
         if published and published_inode is not None:
             try:
@@ -1295,7 +1516,13 @@ def verify_evidence(
     return log
 
 
-def verify_bundle(bundle: Path, *, allow_fixture: bool = False) -> dict[str, Any]:
+def verify_bundle(
+    bundle: Path,
+    *,
+    allow_fixture: bool = False,
+    fixture_seal: Path | None = None,
+    require_seal: bool = True,
+) -> dict[str, Any]:
     if bundle.is_symlink() or not bundle.is_dir():
         raise EvidenceError("build bundle must be a real directory")
     actual_root = {path.name for path in bundle.iterdir()}
@@ -1328,8 +1555,11 @@ def verify_bundle(bundle: Path, *, allow_fixture: bool = False) -> dict[str, Any
         or not dist.is_dir()
     ):
         raise EvidenceError("build bundle output contains a symlink or wrong type")
+    identity_value, identity_sha = load_json_with_sha(
+        identity_path, "build identity"
+    )
     identity = exact_object(
-        load_json(identity_path, "build identity"),
+        identity_value,
         {"schemaVersion", "source", "ui", "build", "artifacts", "evidence"},
         "buildIdentity",
     )
@@ -1369,6 +1599,8 @@ def verify_bundle(bundle: Path, *, allow_fixture: bool = False) -> dict[str, Any
     log = verify_evidence(evidence, exe, identity)
     if log["mode"] == "fixture" and not allow_fixture:
         raise EvidenceError("fixture build evidence is forbidden in production")
+    if log["mode"] == "production" and fixture_seal is not None:
+        raise EvidenceError("caller-selected producer seal is forbidden in production")
     manifest = load_json(evidence / "dist-manifest.json", "dist manifest")
     if dist_entries_from_directory(dist) != manifest["files"]:
         raise EvidenceError("published dist differs from retained manifest")
@@ -1383,13 +1615,27 @@ def verify_bundle(bundle: Path, *, allow_fixture: bool = False) -> dict[str, Any
         or exe.stat().st_size != artifacts["executable"]["sizeBytes"]
     ):
         raise EvidenceError("published executable differs from retained identity")
+    if require_seal:
+        verify_producer_seal(
+            identity_path,
+            mode=log["mode"],
+            allow_fixture=allow_fixture,
+            fixture_seal=fixture_seal,
+            identity_sha=identity_sha,
+        )
     return identity
 
 
 def verify_bundle_command(args: argparse.Namespace) -> None:
+    fixture_seal = (
+        Path(args.internal_test_seal)
+        if args.internal_test_seal is not None
+        else None
+    )
     verify_bundle(
         Path(args.bundle),
         allow_fixture=bool(args.internal_test_fixture),
+        fixture_seal=fixture_seal,
     )
 
 
@@ -1430,6 +1676,7 @@ def main() -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    verify.add_argument("--internal-test-seal", help=argparse.SUPPRESS)
     verify.set_defaults(function=verify_bundle_command)
     args = parser.parse_args()
     try:

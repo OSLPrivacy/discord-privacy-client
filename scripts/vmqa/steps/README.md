@@ -9,10 +9,15 @@ dist archive/manifest, raw npm setup/build and Cargo stdout/stderr, and closed b
 hash-bound and copied beside each run. `vmqa_build_evidence.py create` owns the immutable source
 commit/tree pin, extracts that exact Git object into a fresh scratch, builds into a fresh empty
 artifact target with fixed hashed tools and closed environments, and atomically publishes every
-output under one new bundle root. A caller supplies only a Git object provider and the new bundle
-path; it cannot select artifacts, logs, expected revisions, a shared target, or separate
-destinations. `push`, `run`, and `selftest` reopen and validate the complete bundle immediately
-before use. Production consumers refuse fixture-mode bundles.
+output under one new bundle root. It also publishes an identity-SHA-named seal outside that bundle
+in the fixed `/var/lib/osl-vmqa/producer-seals` store. The store must be owned by the dedicated
+non-login `osl-vmqa-producer` account with mode `0755`; seal files are producer-owned mode `0444`.
+The caller must have no producer shell or arbitrary-command sudo authority. Production create
+refuses before any build tool runs if that boundary is absent. A caller supplies only a Git object
+provider and the new bundle path; it cannot select artifacts, logs, expected revisions, a shared
+target, destinations, or a seal. `push`, `run`, and `selftest` recompute the identity hash, look up
+the corresponding protected seal, and validate the complete bundle immediately before use.
+Production consumers refuse fixture-mode bundles and fixture seals.
 
 ## Why there is only one self-test step file
 

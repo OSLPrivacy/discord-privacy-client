@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import vmqa_build_evidence as evidence_module
 
@@ -49,6 +50,9 @@ class CleanupContractTests(unittest.TestCase):
             env=environment,
             check=True,
         )
+        cls.owned_seal = evidence_module.fixture_seal_path(cls.owned_bundle)
+        if not cls.owned_seal.is_file():
+            raise AssertionError("fixture producer did not publish its detached seal")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -61,6 +65,7 @@ class CleanupContractTests(unittest.TestCase):
         self.source = REPO_ROOT
         self.bundle = self.root / "bundle"
         shutil.copytree(self.owned_bundle, self.bundle)
+        self.seal = self.owned_seal
         self.exe = self.bundle / "outputs/osl-privacy-hub.exe"
         self.loader = self.bundle / "outputs/WebView2Loader.dll"
         self.dist = self.bundle / "outputs/dist"
@@ -250,6 +255,8 @@ class CleanupContractTests(unittest.TestCase):
                 "--exe",
                 str(self.exe),
                 "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
             ],
             text=True,
             capture_output=True,
@@ -265,6 +272,29 @@ class CleanupContractTests(unittest.TestCase):
                 "--bundle",
                 str(self.bundle),
                 "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def _validate_bundle_contract(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "validate-build",
+                "--build-identity",
+                str(self.bundle / "build-identity.json"),
+                "--exe",
+                str(self.exe),
+                "--evidence-dir",
+                str(self.bundle / "build-evidence"),
+                "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
             ],
             text=True,
             capture_output=True,
@@ -293,6 +323,45 @@ class CleanupContractTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 9, result.stderr)
         self.assertIn("fixture build evidence is forbidden", result.stderr)
+
+    def test_fixture_validation_requires_its_detached_producer_seal(self) -> None:
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "verify-bundle",
+                "--bundle",
+                str(self.bundle),
+                "--internal-test-fixture",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("requires its detached producer seal", result.stderr)
+
+    def test_caller_selected_fixture_seal_is_forbidden_in_production(self) -> None:
+        result = subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "validate-build",
+                "--build-identity",
+                str(self.root / "build-identity.json"),
+                "--exe",
+                str(self.exe),
+                "--evidence-dir",
+                str(self.evidence),
+                "--internal-test-seal",
+                str(self.seal),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("caller-selected producer seal is forbidden", result.stderr)
 
     def test_rejects_schema_version_999(self) -> None:
         self.receipt["schemaVersion"] = 999
@@ -505,6 +574,46 @@ class CleanupContractTests(unittest.TestCase):
         self.assertIn("exe", result.stderr)
         self.assertFalse(evidence.exists())
 
+    def test_production_create_checks_protected_seal_store_before_build_tools(
+        self,
+    ) -> None:
+        arguments = type(
+            "Arguments",
+            (),
+            {
+                "fixture": False,
+                "fixture_scenario": "valid",
+                "source_repo": str(self.source),
+                "output": str(self.root / "must-not-build"),
+                "dist": None,
+                "exe": None,
+                "loader": None,
+                "npm_log": None,
+                "cargo_log": None,
+                "expected_commit": None,
+                "expected_tree": None,
+                "exe_destination": None,
+                "dist_destination": None,
+                "loader_destination": None,
+                "shared_target_dir": None,
+            },
+        )()
+        with (
+            mock.patch.object(
+                evidence_module,
+                "production_seal_owner",
+                side_effect=evidence_module.EvidenceError("seal preflight refused"),
+            ) as seal_preflight,
+            mock.patch.object(evidence_module, "validate_tools") as build_tools,
+        ):
+            with self.assertRaisesRegex(
+                evidence_module.EvidenceError, "seal preflight refused"
+            ):
+                evidence_module.create_evidence(arguments)
+        seal_preflight.assert_called_once_with(for_write=True)
+        build_tools.assert_not_called()
+        self.assertFalse(Path(arguments.output).exists())
+
     def test_create_refuses_aliased_legacy_destinations(self) -> None:
         alias = self.root / "one-caller-path"
         result = subprocess.run(
@@ -584,6 +693,31 @@ class CleanupContractTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 9, result.stderr)
                 self.assertIn("destination already exists", result.stderr)
 
+    def test_create_fixture_refuses_preexisting_detached_seal_without_bundle(
+        self,
+    ) -> None:
+        output = self.root / "sealed-output"
+        seal = evidence_module.fixture_seal_path(output)
+        seal.write_text("caller-owned stale seal\n")
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVIDENCE_SCRIPT),
+                "create-fixture",
+                "--source-repo",
+                str(self.source),
+                "--output",
+                str(output),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("producer seal destination already exists", result.stderr)
+        self.assertFalse(output.exists())
+        self.assertEqual(seal.read_text(), "caller-owned stale seal\n")
+
     def test_atomic_publication_refuses_destination_that_appeared(self) -> None:
         parent = self.root / "publish-parent"
         parent.mkdir()
@@ -605,6 +739,13 @@ class CleanupContractTests(unittest.TestCase):
 
     def test_owned_build_retains_produced_bytes_and_both_streams(self) -> None:
         build_log = json.loads((self.evidence / "build-log.json").read_text())
+        seal = json.loads(self.seal.read_text())
+        self.assertFalse(self.seal.is_relative_to(self.bundle))
+        self.assertEqual(self.seal.stat().st_mode & 0o777, 0o444)
+        self.assertEqual(
+            seal["identitySha256"],
+            self._file_sha(self.bundle / "build-identity.json"),
+        )
         self.assertEqual(self.exe.read_bytes(), EXE_BYTES)
         self.assertEqual(hashlib.sha256(self.exe.read_bytes()).hexdigest(), EXE_SHA)
         self.assertEqual(build_log["artifact"]["sha256"], EXE_SHA)
@@ -660,6 +801,55 @@ class CleanupContractTests(unittest.TestCase):
     def test_final_bundle_rejects_published_executable_mutation(self) -> None:
         self.exe.write_bytes(Path("/bin/true").read_bytes())
         self.assertEqual(self._verify_bundle().returncode, 9)
+
+    def test_detached_seal_rejects_coherent_executable_and_metadata_rewrite(
+        self,
+    ) -> None:
+        replacement = b"coherently-replaced-executable\n"
+        replacement_sha = hashlib.sha256(replacement).hexdigest()
+        self.exe.write_bytes(replacement)
+        build_log_path = self.bundle / "build-evidence/build-log.json"
+        build_log = json.loads(build_log_path.read_text())
+        build_log["artifact"]["sha256"] = replacement_sha
+        build_log["artifact"]["sizeBytes"] = len(replacement)
+        build_log_path.write_text(
+            json.dumps(build_log, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        identity_path = self.bundle / "build-identity.json"
+        identity = json.loads(identity_path.read_text())
+        identity["artifacts"]["executable"]["sha256"] = replacement_sha
+        identity["artifacts"]["executable"]["sizeBytes"] = len(replacement)
+        identity["evidence"]["buildLogSha256"] = self._file_sha(build_log_path)
+        identity_path.write_text(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        for result in (self._verify_bundle(), self._validate_bundle_contract()):
+            self.assertEqual(result.returncode, 9, result.stderr)
+            self.assertIn("producer-authenticated seal", result.stderr)
+
+    def test_detached_seal_rejects_coherent_log_and_metadata_rewrite(self) -> None:
+        npm_log = self.bundle / "build-evidence/npm-build.log"
+        npm_log.write_bytes(b"coherently-replaced-npm-log\n")
+        replacement_sha = self._file_sha(npm_log)
+        build_log_path = self.bundle / "build-evidence/build-log.json"
+        build_log = json.loads(build_log_path.read_text())
+        build_log["outputs"]["npmSha256"] = replacement_sha
+        for execution in build_log["execution"]:
+            if execution["stdoutFile"] == "npm-build.log":
+                execution["stdoutSha256"] = replacement_sha
+        build_log_path.write_text(
+            json.dumps(build_log, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        identity_path = self.bundle / "build-identity.json"
+        identity = json.loads(identity_path.read_text())
+        identity["evidence"]["npmBuildLogSha256"] = replacement_sha
+        identity["evidence"]["buildLogSha256"] = self._file_sha(build_log_path)
+        identity_path.write_text(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        for result in (self._verify_bundle(), self._validate_bundle_contract()):
+            self.assertEqual(result.returncode, 9, result.stderr)
+            self.assertIn("producer-authenticated seal", result.stderr)
 
     def test_final_bundle_rejects_published_loader_mutation(self) -> None:
         with self.loader.open("ab") as handle:
@@ -770,6 +960,8 @@ class CleanupContractTests(unittest.TestCase):
                 "--evidence-dir",
                 str(self.evidence),
                 "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
             ],
             text=True,
             capture_output=True,
@@ -799,6 +991,8 @@ class CleanupContractTests(unittest.TestCase):
                 "--evidence-dir",
                 str(self.evidence),
                 "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
             ],
             text=True,
             capture_output=True,
@@ -856,6 +1050,8 @@ class CleanupContractTests(unittest.TestCase):
                 "--evidence-dir",
                 str(self.evidence),
                 "--internal-test-fixture",
+                "--internal-test-seal",
+                str(self.seal),
             ],
             text=True,
             capture_output=True,

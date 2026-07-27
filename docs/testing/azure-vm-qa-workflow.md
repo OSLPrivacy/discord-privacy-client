@@ -152,7 +152,11 @@ Target is under three minutes per iteration once setup is snapshotted.
    executable reported at the exact path in that owned target. The frontend `dist` is embedded at
    *compile* time, so reversing that order can ship stale UI. The subprocesses use closed
    allowlisted environments and pinned absolute tools whose hashes are retained. Cargo still runs
-   through the central `osl-cargo` disk-safety gate.
+   through the central `osl-cargo` disk-safety gate. Production creation refuses before resolving
+   or executing any build tool unless it is running as the dedicated non-login
+   `osl-vmqa-producer` account and `/var/lib/osl-vmqa/producer-seals` is a real producer-owned
+   `0755` directory. The operator must not have a general shell or arbitrary-command sudo rule for
+   that account; its only admitted operation is the reviewed fixed `create` entrypoint.
 2. **Host** — publish one new producer-owned bundle with
    `vmqa-run.sh build --source-repo <git-object-provider> --bundle-dir <new-path>`. The source
    repository supplies Git objects only; the immutable Python commit/tree pin is the trust root.
@@ -163,9 +167,14 @@ Target is under three minutes per iteration once setup is snapshotted.
    resolved argv and tool hashes, raw stdout/stderr, executable, loader, and every final relative
    path and digest. The loader is read once into owned storage before either retained or published
    copy is made. The producer reopens and verifies the complete published bundle before success.
-   `push`, `run`, and `selftest` take only `--bundle-dir` and immediately reverify the complete
-   executable/loader/dist/evidence/identity bundle before use. Fixture-mode bundles are rejected by
-   those production boundaries.
+   It then publishes a detached `0444` producer-owned seal, named by the SHA-256 of the final
+   identity, in the fixed protected seal directory. The seal is deliberately outside the
+   caller-writable bundle. `push`, `run`, and `selftest` take only `--bundle-dir`, recompute the
+   identity SHA-256, look up that exact protected seal without a caller path, and immediately
+   reverify the complete executable/loader/dist/evidence/identity bundle before use. A coherent
+   byte-and-metadata rewrite therefore selects an unissued seal and refuses. Fixture-mode bundles
+   and their test-only detached seals are rejected by those production boundaries. Retain the
+   protected seal entry for at least as long as any run or cleanup evidence that names the build.
 3. **Host** — upload `osl-privacy-hub.exe` and `WebView2Loader.dll` under
    `builds/<sha256>/` only if the hash moved. Write `runs/<vm>/<runId>/request.json` naming the run id
    and the verbs
@@ -236,8 +245,9 @@ Target is under three minutes per iteration once setup is snapshotted.
   prose-only, or incompletely cleaned is an invalid control.
 - **Closed schemas are part of the measurement.** `schemaVersion: 999`, an unknown field at any
   graded level, a stale embedded commit/tree/dist/toolchain identity, or a coherently substituted
-  executable digest is harness-invalid. The independent executable bytes and retained
-  `build-identity.json` are the trust roots; matching caller-authored digests are not.
+  executable digest is harness-invalid. The protected producer seal is the independent trust
+  anchor; the retained identity and executable/evidence bytes must reproduce what it seals.
+  Matching caller-authored bytes and digests are not sufficient.
 - **Console cleanup text is not retained evidence.** After deallocation, use
   `vmqa-fleet.sh cleanup-receipt <vm> <run-report-dir> <exact-local-exe>`. The run ID,
   executable digest, and build-identity digest are derived from the retained run rather than
