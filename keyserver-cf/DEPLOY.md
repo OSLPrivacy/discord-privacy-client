@@ -712,7 +712,7 @@ node scripts/assert-readiness-refusal.mjs \
 If either assertion fails, stop. Passing only proves that the unsafe choices
 are rejected for the stated absent-schema evidence. It never authorizes
 Artifact A, Artifact B, a migration, or a deployment. A fresh trusted
-`readiness:admit` invocation is still required for any actual selection.
+`release:select` invocation is still required for a positive selection.
 
 ### Source-only sender-filter deployment-admission receipt
 
@@ -752,7 +752,42 @@ authorizing deployment. A later release still needs a fresh trusted read-only
 capture tied to the exact active Worker commit; changing or replacing the
 fixture is not a substitute.
 
-### Exact safe order
+### Enforced production-action boundary
+
+The package production entrypoints intentionally refuse:
+
+```sh
+npm run deploy
+npm run db:migrate:prod
+```
+
+Both commands exit nonzero before invoking Wrangler. The deploy refusal exists
+because the current trusted archive proves selection but does not yet provide
+an executor that uploads the exact admitted bundle. The migration refusal
+exists because the current evidence has no trusted mapping from the active
+bridge Worker version to its exact Git commit and ordered migration. Do not
+replace either command with a direct Wrangler invocation.
+
+The only positive release selector runs source closure and trusted readiness
+admission in the same process; it accepts no receipt-file argument:
+
+```sh
+npm run release:select -- \
+  --expected-commit "$EXPECTED_COMMIT" \
+  --archive-dir "$READINESS_ARCHIVE_DIR" \
+  --artifact B \
+  --expected-active-version "$EXPECTED_ACTIVE_VERSION"
+```
+
+This selector requires the exact commit, repository/keyserver trees, all seven
+nonempty sender-filter source paths and hashes, signed route contract, exact
+production database/environment, fresh stable Worker version, archive id,
+schema query hashes, capability table, and disposition marker. Missing,
+mismatched, or stale evidence is refused. Even a passing result says
+`execution_authorized=false` and `execution_performed=false`; it is not
+permission to deploy or migrate.
+
+### Exact safe order (blocked at production mutation)
 
 1. Prove the currently live Worker refuses a snowflake and the reserved
    `osl1_...` namespace. If the `osl1_...` refusal is not proved, deploy and
@@ -767,18 +802,15 @@ fixture is not a substitute.
    npx vitest run --config vitest.node.config.ts
    ```
 
-3. Apply migration 0030 and then migration 0031, in that order. Do not pause
-   between them and the Worker deploy:
+3. Stop before production migration. `npm run db:migrate:prod` is an
+   intentional refusal until a trusted receipt maps the active bridge Worker
+   version to its exact commit and proves the 0030→0031 order. No current
+   source fixture earns that fact.
 
-   ```sh
-   npx wrangler d1 migrations apply osl-keyserver-prod --remote
-   ```
-
-4. Immediately deploy the exact Worker tested in step 2:
-
-   ```sh
-   npx wrangler deploy
-   ```
+4. Stop before production deploy. A positive `release:select` result proves
+   only the exact candidate selection. `npm run deploy` remains an intentional
+   refusal until an executor can prove it uploads the exact admitted Artifact
+   A or B bundle rather than rebuilding or selecting other worktree bytes.
 
 5. Require the read-only capability probe to pass before calling the release
    healthy:

@@ -9,15 +9,16 @@
     "test": "vitest run && vitest run --config vitest.node.config.ts",
     "test:watch": "vitest",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node scripts/refuse-unadmitted-production-action.mjs deploy",
     "db:migrate:local": "wrangler d1 migrations apply osl-keyserver-prod --local",
-    "db:migrate:prod": "wrangler d1 migrations apply osl-keyserver-prod --remote",
+    "db:migrate:prod": "node scripts/refuse-unadmitted-production-action.mjs migrate",
     "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs",
     "readiness:build": "node scripts/build-readiness-artifacts.mjs",
     "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
     "readiness:admit": "node scripts/admit-readiness-archive.mjs",
     "readiness:assert-refusal": "node scripts/assert-readiness-refusal.mjs",
-    "sender-filter:admission": "node scripts/create-sender-filter-deployment-receipt.mjs"
+    "sender-filter:admission": "node scripts/create-sender-filter-deployment-receipt.mjs",
+    "release:select": "node scripts/select-trusted-release.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",
