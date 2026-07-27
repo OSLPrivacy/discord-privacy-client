@@ -397,6 +397,48 @@ Blinding removes the labels, not the shape. An offline reader still learns:
 So: **the social graph's labels are gone; its shape is not.** The phrase "the social
 graph is protected" is still unearned and `crates/store/SECURITY.md` says so.
 
+## Round 3 — findings I had left unread
+
+**Correction to my own close.** I reported four crypto areas as "unreviewed" because my first
+adversarial dispatch was truncated by a `| tail -80`. That was wrong. The *second* run completed
+and covered all five sections; I had only ever read its tail. Five findings sat unactioned in a
+file I already had. Truncating the dispatch was the visible mistake; not re-reading the
+replacement was the one that actually cost something.
+
+Three closed (commit `bc239b1`):
+
+- **Attachment metadata transplanted into a message row.** The two metadata encodings begin
+  identically — four length-prefixed strings then an `i64` — and message decoding accepted
+  trailing bytes, so an attachment blob decoded cleanly as a message: cache key read as a message
+  id, MIME read as an OSL identity. Both decoders now require the reader to consume the whole
+  input.
+
+  **Honest attribution, measured by disabling each defence separately:** the exhaustion check is
+  *not* what blocks this. With exhaustion off and the selector re-derivation on, the transplant is
+  still refused; with **both** off it succeeds and an attachment is served as an authenticated
+  message in the attacker's chosen channel. The selector check does the work. Exhaustion is kept
+  as defence-in-depth and for decode paths with no selector to cross-check. This is the second
+  time tonight I nearly credited the wrong mechanism — the first was `VACUUM` over
+  `secure_delete`.
+
+- **Fresh-v4 initialisation was not atomic.** Table creation and the version stamp were separate
+  autocommit operations. A crash between them left a `messages` table with no recorded version;
+  the next open read that as *legacy* and tried to migrate it by selecting plaintext columns v4
+  does not have. A crash during first-run init could leave a store that never opens again. Now one
+  transaction.
+
+- **`seq` ties had no tie-breaker.** `next_seq` is `MAX+1` under a per-instance mutex, so two
+  `MessageStore` instances on one file can assign the same value. No crypto impact and no nonce
+  reuse; ordering was unstable at a `LIMIT` boundary and attachment trimming could evict an
+  arbitrary row. Both queries now order by `(seq, blind index)`.
+
+Two left unfixed and recorded rather than dropped:
+
+- Body and canary AADs are not namespace-disjoint (Low). Unreachable with real Discord ids, which
+  cannot contain `/`; the store API does not validate its arguments.
+- Migration `INSERT OR REPLACE` would collapse two legacy rows sharing a blind index (Low).
+  Requires an identifier collision.
+
 ## Handoffs
 
 ### To the crypto lane
@@ -458,8 +500,8 @@ takes the same lock internally.
 
 ```
 flock /tmp/osl-cargo.lock -c "cargo test -p store"
-  → 14 passed (blind_index_test), 13 passed (burn_defects_test),
-    17 passed (store_test), 0 failed, 0 ignored.  44 total.
+  → 16 passed (blind_index_test), 13 passed (burn_defects_test),
+    17 passed (store_test), 0 failed, 0 ignored.  46 total.
 
 flock /tmp/osl-cargo.lock -c "cargo clippy -p store --all-targets"   → clean, no warnings
 cargo fmt -p store -- --check                                        → clean
@@ -467,7 +509,7 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
   → Finished. store cross-compiles for the shipping target.
 ```
 
-**On the test count and the gate that produced it.** 44 is measured, not inherited, and the gate
+**On the test count and the gate that produced it.** 46 is measured, not inherited, and the gate
 is the bare one: `osl-cargo test -p store`, no features.
 
 Naming the gate matters now, because the fleet learned tonight that a gate can move a number in
@@ -534,6 +576,10 @@ its evidence:
 | Older binaries refuse an upgraded database cleanly | version-pin assertion | Earned |
 | A v1 profile migrates all the way to v4 and stays writable | true v1 fixture, no v2 columns, no attachments table | Earned (coverage, not a fix) |
 | Orphaned attachments are purged at migration | failing-first, with a negative control on linked rows | Earned |
+| A row cannot be retargeted into another conversation on disk | failing-first; also blocks attachment-metadata transplant | Earned |
+| A populated database with its canary removed refuses to open | failing-first, covers attacker's and owner's secret | Earned |
+| Five pre-existing tests no longer pass against a no-op | each observed failing against a stubbed writer | Earned |
+| Message bodies and attachment bytes are unreadable in the file | failing-first against a no-op cipher | Earned |
 | Hub builds with these changes | `osl-cargo -C apps/osl-hub check --features desktop …` → Finished | Earned |
 | **Burn is cryptographic / revokes recipient access** | **false; unchanged by this work** | **Not earned** |
 | **`messages.sqlite` hides the social graph** | **labels yes, shape no — see "What is still visible"** | **Partially earned; do not state unqualified** |
