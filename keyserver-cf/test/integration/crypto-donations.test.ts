@@ -442,7 +442,7 @@ describe("anonymous node-verified crypto donations", () => {
           delivery_public_key_spki: publicKey,
         }),
       },
-    ), checkoutEnv(), watcher("btc"));
+    ), checkoutEnv(), watcher("btc"), () => true);
     expect(proResponse.status).toBe(200);
     const pro = await proResponse.json() as {
       invoice_id: string; amount_atomic: string; expires_at: number;
@@ -455,7 +455,7 @@ describe("anonymous node-verified crypto donations", () => {
         headers: await settlementHeaders(proEvidence),
         body: JSON.stringify(proEvidence),
       },
-    ), checkoutEnv());
+    ), checkoutEnv(), undefined, () => true);
     expect(replay.status).toBe(409);
     await expect(replay.json()).resolves.toMatchObject({
       error: "payment reference is already assigned to another invoice",
