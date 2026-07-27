@@ -142,6 +142,30 @@ away, per master §16.3.
   The pre-existing crypto-checkout gate is 9/10 (`Pay once` versus `One month`). H1 stays 3/4.
 - Arithmetic is explicit: **97 + 1 − 1 + 0 = 97 / 303**.
 
+**2026-07-27 D7/website non-scoring safety reconciliation (+0).**
+
+- D7 stays **1/4**. On committed product HEAD
+  `05282a493fbb165e2011edc2991a273ead3dddc6`, the native-overlay receipt lane provides a real
+  authenticated, sender/recipient/scope/expiry-correlated receipt foundation and admits a receipt
+  only against an existing sent-message record. That supports the existing foundation point.
+  However, all three production `Opened` emission branches in `drain_peer_inbox_text` call
+  `send_native_overlay_acknowledgment` without a locked mutual-consent decision, and incoming
+  `Opened` acknowledgments can pass validation into the encrypted ledger/UI without one.
+  `OpenedReceiptConsent` and `opened_receipt_status` exist only as an unwired contract/test
+  foundation. This is an `open-security-finding`, not a point withdrawal or a new point.
+  Immediate fix: fail closed by suppressing production `Opened` emission and rejecting incoming
+  `Opened` before ledger/UI admission while leaving `Received` behavior intact. Restore condition:
+  durable, scope-bound, identity-bound, signed, expiring and revocable mutual consent, checked under
+  the receipt-state lock at both emission and admission. Pending dirty or later crypto bytes are
+  not evidence until committed and independently adjudicated.
+- H1 stays **3/4**. Exact local website candidate
+  `4e2256333c53e6b6e17462657260f5d6499ec9ee` supersedes `15fa16c` as the candidate under review.
+  Its local gates pass and its checkout is deliberately disabled because the promised paid-code
+  redemption/one-month enforcement is absent. It is clean, four commits ahead of the local
+  `origin/main` ref, unpushed and undeployed. No Pages build/live SHA proof or keyserver redemption
+  exists, so status remains `test-proven-only` and H1 earns +0.
+- Arithmetic is unchanged: **97 + 0 + 0 = 97 / 303**.
+
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
 
@@ -383,8 +407,14 @@ timestamped deltas, not keep this number manually forever.
   in [`../qa/two-identity-p2p-verification.md`](../qa/two-identity-p2p-verification.md) §6 item 4;
   Tab 5 owns the fix. Authenticated offline/retry/peer receipt proof and security audit still
   required. `needs: A7,B6` `weight: 4` `earned: 0`
-- 🧪 **D7 · Receipts** — sent/received/opened/deleted/expired outcomes must be separate, mutual where
-  required, and evidence-bound. `needs: B6,D3-D6` `weight: 4` `earned: 1`
+- 🛑 **D7 · Receipts** — **1/4 retained; `open-security-finding`.** The authenticated,
+  correlation-bound native-overlay receipt/ledger foundation is real, so the existing foundation
+  point stands. Production `Opened` emission and admission do not consult locked mutual consent;
+  the separate signed consent contract is `implemented-unwired`. Until durable scope-bound mutual
+  consent is wired at both boundaries, fail closed by suppressing outbound `Opened` and rejecting
+  inbound `Opened` before ledger/UI admission, while preserving `Received`. Sent/received/opened/
+  deleted/expired outcomes must still become separate, mutual where required, and evidence-bound.
+  `needs: B6,D3-D6` `weight: 4` `earned: 1`
 
 ## E · Every offered app — 40 points (4 earned)
 
@@ -460,14 +490,12 @@ timestamped deltas, not keep this number manually forever.
   one-time compute credits). Canonical production line is GitHub `main`; production serves exactly
   `main` (verified by the `?v=` asset stamp). Single manifest `data/pricing.json` now **drives every surface**: 19 markers across all 15 pages, `pricing-sync --check` reports 0 drift, and `check-claims` reports 0 conflicting price/renewal/entitlement claims on every page. The allowlist A6 limitation ("Nothing renews, and OSL never stores your payment details") now ships on `index.html`, which previously showed two `$5 / month` checkout buttons with no renewal disclosure at all, and is pinned in `required_phrases` so it cannot regress. Build-identity stamp and claim crawler are done on branch `web-pricing-truth-2026-07-26`. **The remaining point is held for actual promotion to production plus the keyserver redemption change** — nothing is deployed. The "your month starts when you enter the code" claim stays
   unpublished until the keyserver redemption change lands.
-  **Exact local candidate `15fa16c95123e1b524858719b8d097aa434b05a6` does not cross that last
-  point:** its required local identity/pricing/status/claim gates are green and it is
-  `test-proven-only`, but it is three commits ahead of the local `origin/main` ref, unpushed and
-  undeployed. Pages dashboard build settings, a Pages build record, and a live SHA-bound
-  `/build.json` remain `unknown`; the keyserver redemption half is also absent. Independent audit
-  still finds false/duplicate-meta, nested-HTML, control-file and undeclared-served-file binding
-  gaps in the local artifact verifier, plus a missing ignored-file refusal and one pre-existing
-  crypto-checkout test failure.**
+  **Exact local candidate `4e2256333c53e6b6e17462657260f5d6499ec9ee` does not cross that last
+  point:** it closes the prior local artifact-contract gaps, passes the required local gates, and
+  deliberately disables checkout because paid-code redemption/one-month enforcement is absent.
+  It is a clean `test-proven-only` commit, four commits ahead of the local `origin/main` ref,
+  unpushed and undeployed. Pages dashboard/build evidence and a public SHA-bound `/build.json`
+  remain `unknown`; keyserver redemption is absent.**
   `needs: keyserver redemption period (DEC-2026-07-26-PRO-CODES)` `weight: 4` `earned: 3`
 - 🟨 **H2 · Responsive visual fixes from Zhao/Jester screenshots** — preview branches contain newer
   work; exact screenshot mapping and canonical integration remain. `needs: screenshot refs`

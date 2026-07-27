@@ -2,7 +2,7 @@
 
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
-authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r15**), and the
+authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r16**), and the
 scoreboard remains `docs/design/osl-internal-build-checklist.md` (**97 / 303**).
 
 ## Lane roster and exclusive ownership
@@ -155,6 +155,19 @@ deployment occurred, and production behavior must not be inferred.
   though the bytes are excluded. The pre-existing crypto-checkout gate is 9/10. This is not locally
   promotion-ready; H1 remains 3/4.
 - **Net arithmetic:** B5 `+1`, F1 `−1`, H1 `+0`; **97 + 1 − 1 + 0 = 97 / 303**.
+- **D7 safety tie-breaker: +0.** Committed product HEAD
+  `05282a493fbb165e2011edc2991a273ead3dddc6` retains D7 at 1/4 for the authenticated,
+  sent-record-correlated receipt foundation, but production `Opened` emission and admission lack
+  locked mutual consent. Status is `open-security-finding`; the consent contract is
+  `implemented-unwired`. Immediate closure is fail-closed suppression/rejection of `Opened` while
+  preserving `Received`. Restore requires durable scope/identity-bound signed, expiring, revocable
+  mutual consent checked under the receipt-state lock on both sides. Pending crypto work is not
+  credited.
+- **Website candidate `4e225633`: +0, superseding `15fa16c` as the local candidate.** Exact
+  `4e2256333c53e6b6e17462657260f5d6499ec9ee` is clean and local-gate green. Checkout is disabled;
+  the branch is four commits ahead of the local `origin/main`, unpushed and undeployed. Pages
+  dashboard/build/live SHA proof and keyserver redemption remain absent/`unknown`; H1 stays 3/4.
+- **Current arithmetic:** D7 `+0`, H1 `+0`; **97 + 0 + 0 = 97 / 303**.
 
 ## Coordination infrastructure built today
 

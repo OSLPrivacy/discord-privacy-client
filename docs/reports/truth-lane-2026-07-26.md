@@ -1735,3 +1735,57 @@ Pages rollback path. No local commit is evidence that those conditions hold.
 - F1 −1 correction: 5/6 → 4/6; the previous runtime award is withdrawn.
 - H1 +0: 3/4 remains.
 - Net score: **97 / 303**.
+
+## 2026-07-27 — D7 mutual-consent tie-breaker and website candidate refresh
+
+### D7 stays 1/4, with an open security finding
+
+I independently read committed product HEAD
+`05282a493fbb165e2011edc2991a273ead3dddc6`, excluding the dirty broker worktree and any pending
+crypto fix.
+
+The retained foundation point is real:
+
+- native-overlay acknowledgments are authenticated under the peer wire path;
+- validation binds message id, service, conversation, sender, recipient and expiry;
+- admission requires a matching encrypted sent-message ledger record; and
+- the receipt ledger advances monotonically from Sent → Received → Opened.
+
+That is enough for D7's existing authenticated/correlated foundation point. It is not enough for
+another point and it does not prove live or two-identity behavior.
+
+The security finding is also exact. `drain_peer_inbox_text` has three production paths that emit
+`NativeOverlayAcknowledgmentStatus::Opened` through `send_native_overlay_acknowledgment`: an
+already-consumed single row, a newly consumed single row, and a reassembled logical message.
+None consults locked mutual consent. Incoming acknowledgments accept `Opened` through
+`validate_native_overlay_acknowledgment` and `apply_native_overlay_acknowledgment_record`, then
+write it to the encrypted ledger and return it toward UI, again without a consent decision.
+`control_contract.rs` contains a signed, identity/scope-bound, expiring and revocable
+`OpenedReceiptConsent` plus `opened_receipt_status`, but current committed production code has no
+caller for that contract.
+
+Immediate fix: fail closed. Suppress every production `Opened` emission and reject every incoming
+`Opened` before ledger mutation or UI projection. Keep ordinary and view-once `Received`
+acknowledgments unchanged. Restore `Opened` only after durable mutual-consent state is bound to the
+two identities and exact scope, signed, expiring and revocable, and checked while holding the
+receipt-state transition lock at both emission and admission. Later dirty or pending crypto bytes
+are not evidence for this adjudication.
+
+Status: `open-security-finding`. Score effect: **D7 +0; 1/4 retained**.
+
+### Website exact `4e225633` remains local/test-only
+
+Exact website commit `4e2256333c53e6b6e17462657260f5d6499ec9ee` has parent `15fa16c`, tree
+`10234165a4c718a1385c869a2b1df834c7dd8a5b`, and a clean local worktree. It is four commits ahead
+of the local `origin/main` ref. Its local promotion gates pass and checkout is deliberately
+disabled because the keyserver has no proved paid-code redemption/one-month enforcement.
+
+No push or deployment occurred. There is no Cloudflare Pages build/dashboard record, public
+SHA-bound `/build.json`, or keyserver redemption proof. This is `test-proven-only`; H1 remains
+3/4 and earns +0.
+
+## Acceptance rows this earns
+
+- D7 +0: 1/4 remains; security status corrected.
+- H1 +0: 3/4 remains.
+- Arithmetic: **97 + 0 + 0 = 97 / 303**.
