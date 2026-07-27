@@ -2287,3 +2287,21 @@ release evidence was produced.
 
 - Homepage message-scope qualification +0.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — privacy collection wording correction
+
+`docs/privacy.html:86` said “From within OSL itself, we collect nothing,”
+while the same page documents license-validation requests containing a license
+key and timestamp. Website commit `599da8a41d34ebce37ad335b3c8d57e72bbc38c2`,
+tree `2cf8352fbc4629dd091f7114b267cbcb37bb76a3`, parent
+`f8d8510ef677e88a0bc5a4e8d58be40b4cb2b524`, narrows the claim to no collection
+of message content or connected-service contacts. Exact `docs/privacy.html`
+blob: `242b287cd038be139723f343e2c1586d77d11a9d`.
+
+`git diff --check` passed. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Privacy collection wording correction +0.
+- Checklist remains untouched; authority remains **100 / 303**.
