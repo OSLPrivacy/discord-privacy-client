@@ -412,6 +412,13 @@ function Get-AgentSha {
     return ''
 }
 
+function Get-Win32Sha {
+    if (Test-Path -LiteralPath $Win32ModulePath -PathType Leaf) {
+        return Get-Sha256 -Path $Win32ModulePath
+    }
+    return ''
+}
+
 function Get-VmNameFromImds {
     $uri = 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text'
     return [string](Invoke-RestMethod -Method Get -Uri $uri -Headers @{ Metadata = 'true' } -TimeoutSec 10)
@@ -429,6 +436,7 @@ function Write-Heartbeat {
         vmName = $VmName
         utc = [datetime]::UtcNow.ToString('o')
         agentSha256 = Get-AgentSha
+        win32Sha256 = Get-Win32Sha
         sessionId = $sessionId
         interactiveUserName = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         isInteractiveSession = ($sessionId -ne 0)
@@ -619,6 +627,7 @@ function Invoke-SurfaceShot {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
+    [void](Assert-VmqaTrustedSurfaceBounds -Surface $Surface)
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $left = [int]$Surface.Rect.Left
     $top = [int]$Surface.Rect.Top
@@ -738,6 +747,10 @@ function Invoke-Step {
                 -Facts ([ordered]@{ launchedPid = $subject.Pid; exeSha256 = $subject.ExeSha256 })
         }
         'shot' {
+            if ($script:VmqaPinnedPid -le 0) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' `
+                    -Detail 'VMQA_NO_LAUNCH_PROVENANCE: shot requires a successful exact-path launch in this run'
+            }
             $name = [string](Get-PropertyValue -Object $stepArgs -Name 'name' -Required)
             $safeName = [IO.Path]::GetFileName($name)
             if ([string]::IsNullOrWhiteSpace($safeName)) {
@@ -796,18 +809,32 @@ function Invoke-Step {
             Put-BlobBytes -Name "$RunBlobPrefix/$artifactRel" -Bytes $pngBytes
             # Report the subject alongside the pixels, so a reader can tell WHICH window this
             # frame is evidence about rather than inferring it from the filename.
-            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; pngSha256={4}; subjectPid={5}; surfaceHwnd={6}; subjectRect={7},{8} {9}x{10}; foreground=true; sampleGridOwned=true; postCaptureBound=true' -f `
+            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; pngSha256={4}; subjectPid={5}; surfaceHwnd={6}; subjectRect={7},{8} {9}x{10}; boundsSource={11}; rawRect={12},{13} {14}x{15}; dpi={16}; normalizedForCapture={17}; foreground=true; sampleGridOwned=true; postCaptureBound=true' -f `
                 $artifactRel, $shot['width'], $shot['height'], $shot['distinctColors'], $pngSha256, `
                 $shotSubject['subject'].Pid, $shotSurface.Hwnd, $shotSurface.Rect.Left, $shotSurface.Rect.Top, `
-                ($shotSurface.Rect.Right - $shotSurface.Rect.Left), ($shotSurface.Rect.Bottom - $shotSurface.Rect.Top)
+                ($shotSurface.Rect.Right - $shotSurface.Rect.Left), ($shotSurface.Rect.Bottom - $shotSurface.Rect.Top), `
+                $shotSurface.BoundsSource, $shotSurface.RawRect.Left, $shotSurface.RawRect.Top, `
+                ($shotSurface.RawRect.Right - $shotSurface.RawRect.Left), `
+                ($shotSurface.RawRect.Bottom - $shotSurface.RawRect.Top), $shotSurface.Dpi, `
+                $shotSurface.NormalizedForCapture
             if ([int]$shot['distinctColors'] -lt 16) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail $detail -Artifacts @($artifactRel)
             }
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail $detail -Artifacts @($artifactRel) `
                 -Facts ([ordered]@{
                     surfacePid = $shotSubject['subject'].Pid
+                    surfaceHwnd = $shotSurface.Hwnd.ToInt64()
                     surfaceWidth = $shot['width']
                     surfaceHeight = $shot['height']
+                    rawSurfaceWidth = $shotSurface.RawRect.Right - $shotSurface.RawRect.Left
+                    rawSurfaceHeight = $shotSurface.RawRect.Bottom - $shotSurface.RawRect.Top
+                    boundsSource = $shotSurface.BoundsSource
+                    boundsWithinVirtualDesktop = $true
+                    coversVirtualDesktop = $false
+                    surfaceDpi = $shotSurface.Dpi
+                    normalizedForCapture = $shotSurface.NormalizedForCapture
+                    artifactPath = $artifactRel
+                    pngSha256 = $pngSha256
                     foregroundPre = $true
                     foregroundPost = $surfaceStillForeground
                     sampleGridPre = $true
@@ -871,6 +898,17 @@ function Invoke-Step {
             return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail "ms=$ms"
         }
         'kill' {
+            if ($script:VmqaPinnedPid -le 0) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' `
+                    -Detail 'VMQA_NO_LAUNCH_PROVENANCE: kill requires a successful exact-path launch in this run'
+            }
+            $pinnedPid = $script:VmqaPinnedPid
+            $live = Get-Process -Id $pinnedPid -ErrorAction SilentlyContinue
+            if ($null -eq $live) {
+                return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
+                    -Detail "already exited pid=$pinnedPid" `
+                    -Facts ([ordered]@{ cleanupPid = $pinnedPid; cleanupOutcome = 'already-exited' })
+            }
             $resolved = Resolve-StepSubject -Identifier $identifier -RunNonce $RunNonce
             if (-not $resolved['ok']) {
                 return New-StepResult -Id $stepId -Verb $verb -Status $resolved['status'] -Detail $resolved['detail']
@@ -878,7 +916,9 @@ function Invoke-Step {
             $subject = $resolved['subject']
             Assert-VmqaSubject -Subject $subject -RunNonce $RunNonce | Out-Null
             Stop-Process -Id $subject.Pid -Force
-            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' -Detail "stopped pid=$($subject.Pid)"
+            return New-StepResult -Id $stepId -Verb $verb -Status 'pass' `
+                -Detail "stopped pid=$($subject.Pid)" `
+                -Facts ([ordered]@{ cleanupPid = $subject.Pid; cleanupOutcome = 'stopped' })
         }
         default {
             return New-StepResult -Id $stepId -Verb $verb -Status 'blocked' -Detail "unknown verb: $verb"
@@ -930,6 +970,7 @@ function New-BlockedVerdict {
         runId = $RunId
         vmName = $VmName
         agentSha = Get-AgentSha
+        win32Sha = Get-Win32Sha
         runStartUtc = $RunStartUtc
         agentStartedUtc = $AgentStartedUtc.ToString('o')
         finishedUtc = [datetime]::UtcNow.ToString('o')
@@ -978,6 +1019,10 @@ function Process-RunDirectory {
         $runStartRaw = [string](Get-PropertyValue -Object $request -Name 'runStartUtc' -Required)
         $runStartUtc = ([datetime]$runStartRaw).ToUniversalTime()
         [void](Get-PropertyValue -Object $request -Name 'identifier' -Required)
+        $requestExeSha256 = ([string](Get-PropertyValue -Object $request -Name 'exeSha256' -Required)).ToLowerInvariant()
+        if ($requestExeSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'VMQA_BAD_REQUEST_EXE_SHA256'
+        }
         $steps = @(Get-PropertyValue -Object $request -Name 'steps' -Required)
     } catch {
         $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis ('invalid-request: ' + $_.Exception.Message) -RequestSha256 $actualSha
@@ -1010,6 +1055,7 @@ function Process-RunDirectory {
         runId = $runIdFromPrefix
         vmName = $VmName
         agentSha = Get-AgentSha
+        win32Sha = Get-Win32Sha
         claimedUtc = [datetime]::UtcNow.ToString('o')
         agentPid = [Diagnostics.Process]::GetCurrentProcess().Id
     }
@@ -1044,8 +1090,10 @@ function Process-RunDirectory {
         # earlier attempt be graded as this run's result. The digest is already computed to validate
         # the .ready sentinel, so binding it costs nothing and closes the reuse case completely.
         requestSha256 = $actualSha
+        requestExeSha256 = $requestExeSha256
         vmName = $VmName
         agentSha = Get-AgentSha
+        win32Sha = Get-Win32Sha
         runStartUtc = $runStartUtc.ToString('o')
         agentStartedUtc = $AgentStartedUtc.ToString('o')
         finishedUtc = [datetime]::UtcNow.ToString('o')

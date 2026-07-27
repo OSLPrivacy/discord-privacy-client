@@ -81,6 +81,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 public class VmqaNative {
+    public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+    public const int DWMWA_CLOAKED = 14;
     public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
 
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
@@ -90,8 +92,15 @@ public class VmqaNative {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(
         IntPtr hWnd, int attribute, out int value, int valueSize);
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+    public static extern int DwmGetWindowAttributeRect(
+        IntPtr hWnd, int attribute, out RECT value, int valueSize);
+    [DllImport("dwmapi.dll")] public static extern int DwmFlush();
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(
+        IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
@@ -108,6 +117,8 @@ public class VmqaNative {
 
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
 
     public struct RECT { public int Left, Top, Right, Bottom; }
 
@@ -123,6 +134,10 @@ public class VmqaNative {
         public uint   Pid;
         public string ClassName;
         public RECT   Rect;
+        public RECT   RawRect;
+        public string BoundsSource;
+        public uint   Dpi;
+        public bool   NormalizedForCapture;
     }
 
     // Enumeration lives in C# on purpose: an exception thrown out of a PowerShell callback
@@ -150,55 +165,222 @@ public class VmqaNative {
         return found;
     }
 
-    public static List<Surface> VisibleTopLevelWindowsForPid(uint wantedPid) {
+    private static bool Contains(RECT outer, RECT inner) {
+        return inner.Left >= outer.Left && inner.Top >= outer.Top &&
+               inner.Right <= outer.Right && inner.Bottom <= outer.Bottom;
+    }
+
+    private static string RectText(RECT r) {
+        return r.Left + "," + r.Top + " " +
+               (r.Right - r.Left) + "x" + (r.Bottom - r.Top);
+    }
+
+    public static void ValidateExtendedFrameBounds(RECT raw, RECT dwm, RECT virtualScreen) {
+        if (dwm.Right <= dwm.Left || dwm.Bottom <= dwm.Top)
+            throw new InvalidOperationException("VMQA_DWM_BOUNDS_EMPTY");
+        if ((dwm.Right - dwm.Left) < 200 || (dwm.Bottom - dwm.Top) < 120)
+            throw new InvalidOperationException("VMQA_DWM_BOUNDS_TOO_SMALL");
+        if (!Contains(raw, dwm))
+            throw new InvalidOperationException(
+                "VMQA_DWM_BOUNDS_OUTSIDE_GETWINDOWRECT: raw=" + RectText(raw) +
+                " dwm=" + RectText(dwm));
+        if (!Contains(virtualScreen, dwm))
+            throw new InvalidOperationException(
+                "VMQA_DWM_BOUNDS_OUTSIDE_VIRTUAL_SCREEN: dwm=" + RectText(dwm) +
+                " virtual=" + RectText(virtualScreen));
+        if (dwm.Left == virtualScreen.Left && dwm.Top == virtualScreen.Top &&
+            dwm.Right == virtualScreen.Right && dwm.Bottom == virtualScreen.Bottom)
+            throw new InvalidOperationException("VMQA_DWM_BOUNDS_WHOLE_DESKTOP");
+    }
+
+    public static RECT TrustedExtendedFrameBounds(IntPtr h, RECT virtualScreen) {
+        RECT raw;
+        if (!GetWindowRect(h, out raw))
+            throw new InvalidOperationException("VMQA_GETWINDOWRECT_FAILED");
+        RECT dwm;
+        int hr = DwmGetWindowAttributeRect(
+            h, DWMWA_EXTENDED_FRAME_BOUNDS, out dwm, Marshal.SizeOf(typeof(RECT)));
+        if (hr != 0)
+            throw new InvalidOperationException(
+                "VMQA_DWM_BOUNDS_UNTRUSTED: hwnd=" + h +
+                " HRESULT=0x" + hr.ToString("x8"));
+        ValidateExtendedFrameBounds(raw, dwm, virtualScreen);
+        return dwm;
+    }
+
+    private static RECT TrustedOccluderBounds(IntPtr h, RECT virtualScreen) {
+        RECT raw;
+        if (!GetWindowRect(h, out raw))
+            throw new InvalidOperationException("VMQA_OCCLUDER_GETWINDOWRECT_FAILED");
+        RECT dwm;
+        int hr = DwmGetWindowAttributeRect(
+            h, DWMWA_EXTENDED_FRAME_BOUNDS, out dwm, Marshal.SizeOf(typeof(RECT)));
+        if (hr != 0)
+            throw new InvalidOperationException(
+                "VMQA_OCCLUDER_DWM_BOUNDS_UNTRUSTED: hwnd=" + h +
+                " HRESULT=0x" + hr.ToString("x8"));
+        if (dwm.Right <= dwm.Left || dwm.Bottom <= dwm.Top)
+            throw new InvalidOperationException("VMQA_OCCLUDER_DWM_BOUNDS_EMPTY");
+        if (!Contains(raw, dwm))
+            throw new InvalidOperationException("VMQA_OCCLUDER_DWM_BOUNDS_OUTSIDE_GETWINDOWRECT");
+        if (!Contains(virtualScreen, dwm))
+            throw new InvalidOperationException("VMQA_OCCLUDER_DWM_BOUNDS_OUTSIDE_VIRTUAL_SCREEN");
+        return dwm;
+    }
+
+    public static Surface BuildTrustedSurface(
+        IntPtr h, uint pid, string className, RECT raw, RECT dwm, RECT virtualScreen, uint dpi) {
+        ValidateExtendedFrameBounds(raw, dwm, virtualScreen);
+        if (dpi != 96)
+            throw new InvalidOperationException("VMQA_DWM_DPI_UNTRUSTED: dpi=" + dpi);
+        Surface s = new Surface();
+        s.Hwnd = h; s.Pid = pid; s.ClassName = className;
+        s.Rect = dwm; s.RawRect = raw;
+        s.BoundsSource = "dwm-extended-frame"; s.Dpi = dpi;
+        return s;
+    }
+
+    public static List<Surface> VisibleTopLevelWindowsForPid(
+        uint wantedPid, string markerClass, RECT virtualScreen) {
         List<Surface> found = new List<Surface>();
         bool failed = false;
+        string failureMessage = "";
         bool completed = EnumWindows(delegate(IntPtr h, IntPtr l) {
             try {
                 uint pid;
                 if (GetWindowThreadProcessId(h, out pid) == 0) throw new InvalidOperationException("GetWindowThreadProcessId");
                 if (pid != wantedPid || !IsWindowVisible(h) || IsIconic(h)) return true;
-                int cloaked;
-                if (DwmGetWindowAttribute(h, 14, out cloaked, sizeof(int)) != 0) throw new InvalidOperationException("DwmGetWindowAttribute");
-                if (cloaked != 0) return true;
-                RECT rect;
-                if (!GetWindowRect(h, out rect)) throw new InvalidOperationException("GetWindowRect");
                 StringBuilder sb = new StringBuilder(512);
-                GetClassName(h, sb, sb.Capacity);
-                Surface s = new Surface();
-                s.Hwnd = h; s.Pid = pid; s.ClassName = sb.ToString(); s.Rect = rect;
-                found.Add(s);
-            } catch { failed = true; return false; }
+                if (GetClassName(h, sb, sb.Capacity) <= 0)
+                    throw new InvalidOperationException("GetClassName");
+                string className = sb.ToString();
+                // The marker is identity, never pixels. Some marker HWNDs do not publish DWM
+                // state at all; skip it before either DWM query.
+                if (String.Equals(className, markerClass, StringComparison.Ordinal)) return true;
+                int cloaked;
+                if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, sizeof(int)) != 0) throw new InvalidOperationException("DwmGetWindowAttribute");
+                if (cloaked != 0) return true;
+                RECT raw;
+                if (!GetWindowRect(h, out raw)) throw new InvalidOperationException("GetWindowRect");
+                // Auxiliary Tauri/Chromium top-level HWNDs may be visible but tiny. They are not
+                // capture surfaces and must be excluded before applying the selected-surface
+                // minimum-size validator, or one helper window poisons the whole enumeration.
+                if ((raw.Right - raw.Left) < 200 || (raw.Bottom - raw.Top) < 120) return true;
+                RECT dwm = TrustedExtendedFrameBounds(h, virtualScreen);
+                uint dpi = GetDpiForWindow(h);
+                found.Add(BuildTrustedSurface(h, pid, className, raw, dwm, virtualScreen, dpi));
+            } catch (Exception ex) { failed = true; failureMessage = ex.Message; return false; }
             return true;
         }, IntPtr.Zero);
-        if (!completed || failed) throw new InvalidOperationException("VMQA_SURFACE_ENUMERATION_FAILED");
+        if (!completed || failed)
+            throw new InvalidOperationException(
+                "VMQA_SURFACE_ENUMERATION_FAILED: " + failureMessage);
         return found;
+    }
+
+    public static bool NormalizeVisibleTopLevelWindowForPid(
+        uint wantedPid, string markerClass, RECT virtualScreen) {
+        List<Surface> found = new List<Surface>();
+        string failureMessage = "";
+        bool failed = false;
+        bool completed = EnumWindows(delegate(IntPtr h, IntPtr l) {
+            try {
+                uint pid;
+                if (GetWindowThreadProcessId(h, out pid) == 0)
+                    throw new InvalidOperationException("GetWindowThreadProcessId");
+                if (pid != wantedPid || !IsWindowVisible(h) || IsIconic(h)) return true;
+                StringBuilder sb = new StringBuilder(512);
+                if (GetClassName(h, sb, sb.Capacity) <= 0)
+                    throw new InvalidOperationException("GetClassName");
+                if (String.Equals(sb.ToString(), markerClass, StringComparison.Ordinal)) return true;
+                int cloaked;
+                if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, sizeof(int)) != 0)
+                    throw new InvalidOperationException("DwmGetWindowAttribute");
+                if (cloaked != 0) return true;
+                RECT raw;
+                if (!GetWindowRect(h, out raw))
+                    throw new InvalidOperationException("GetWindowRect");
+                if ((raw.Right - raw.Left) < 200 || (raw.Bottom - raw.Top) < 120) return true;
+                Surface candidate = new Surface();
+                candidate.Hwnd = h;
+                candidate.Pid = pid;
+                candidate.ClassName = sb.ToString();
+                candidate.RawRect = raw;
+                found.Add(candidate);
+            } catch (Exception ex) { failed = true; failureMessage = ex.Message; return false; }
+            return true;
+        }, IntPtr.Zero);
+        if (!completed || failed)
+            throw new InvalidOperationException(
+                "VMQA_SURFACE_PREP_ENUMERATION_FAILED: " + failureMessage);
+        if (found.Count != 1) {
+            StringBuilder details = new StringBuilder();
+            foreach (Surface candidate in found) {
+                if (details.Length > 0) details.Append("; ");
+                details.Append("hwnd=").Append(candidate.Hwnd)
+                    .Append(" class=").Append(candidate.ClassName)
+                    .Append(" raw=").Append(RectText(candidate.RawRect));
+            }
+            throw new InvalidOperationException(
+                "VMQA_SURFACE_PREP_AMBIGUOUS: candidateCount=" + found.Count +
+                " candidates=[" + details.ToString() + "]");
+        }
+
+        RECT selectedRaw = found[0].RawRect;
+        if (Contains(virtualScreen, selectedRaw)) return false;
+
+        int virtualWidth = virtualScreen.Right - virtualScreen.Left;
+        int virtualHeight = virtualScreen.Bottom - virtualScreen.Top;
+        if (virtualWidth < 264 || virtualHeight < 184)
+            throw new InvalidOperationException(
+                "VMQA_SURFACE_PREP_SCREEN_TOO_SMALL: virtual=" + RectText(virtualScreen));
+        int width = Math.Min(960, virtualWidth - 64);
+        int height = Math.Min(700, virtualHeight - 64);
+        int x = virtualScreen.Left + (virtualWidth - width) / 2;
+        int y = virtualScreen.Top + (virtualHeight - height) / 2;
+        if (!SetWindowPos(
+                found[0].Hwnd, IntPtr.Zero, x, y, width, height,
+                SWP_NOZORDER | SWP_NOACTIVATE))
+            throw new InvalidOperationException("VMQA_SURFACE_PREP_SETWINDOWPOS_FAILED");
+        int hr = DwmFlush();
+        if (hr != 0)
+            throw new InvalidOperationException(
+                "VMQA_SURFACE_PREP_DWMFLUSH_FAILED: HRESULT=0x" + hr.ToString("x8"));
+        return true;
     }
 
     private static bool RectanglesIntersect(RECT a, RECT b) {
         return a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top;
     }
 
-    public static bool HasOccludingWindowAbove(IntPtr target) {
-        RECT targetRect;
-        if (!GetWindowRect(target, out targetRect)) throw new InvalidOperationException("VMQA_TARGET_RECT_FAILED");
+    public static bool HasOccludingWindowAbove(
+        IntPtr target, RECT targetRect, RECT virtualScreen) {
         bool targetSeen = false;
         bool occluderSeen = false;
         bool failed = false;
+        string failureMessage = "";
         EnumWindows(delegate(IntPtr h, IntPtr l) {
             if (h == target) { targetSeen = true; return false; }
             try {
                 if (!IsWindowVisible(h) || IsIconic(h)) return true;
+                StringBuilder sb = new StringBuilder(512);
+                if (GetClassName(h, sb, sb.Capacity) <= 0)
+                    throw new InvalidOperationException("GetClassName");
+                if (sb.ToString().EndsWith("-sic", StringComparison.Ordinal)) return true;
                 int cloaked;
-                if (DwmGetWindowAttribute(h, 14, out cloaked, sizeof(int)) != 0) throw new InvalidOperationException("DwmGetWindowAttribute");
+                if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, sizeof(int)) != 0) throw new InvalidOperationException("DwmGetWindowAttribute");
                 if (cloaked != 0) return true;
-                RECT rect;
-                if (!GetWindowRect(h, out rect)) throw new InvalidOperationException("GetWindowRect");
+                // Occluders may legitimately be small (tooltips/taskbar) or cover the entire
+                // virtual screen. They still need trustworthy DWM geometry, but the selected
+                // OSL surface's minimum-size and whole-desktop rules do not apply to them.
+                RECT rect = TrustedOccluderBounds(h, virtualScreen);
                 if (RectanglesIntersect(rect, targetRect)) { occluderSeen = true; return false; }
-            } catch { failed = true; return false; }
+            } catch (Exception ex) { failed = true; failureMessage = ex.Message; return false; }
             return true;
         }, IntPtr.Zero);
-        if (failed) throw new InvalidOperationException("VMQA_OCCLUSION_ENUMERATION_FAILED");
+        if (failed)
+            throw new InvalidOperationException(
+                "VMQA_OCCLUSION_ENUMERATION_FAILED: " + failureMessage);
         if (occluderSeen) return true;
         if (!targetSeen) throw new InvalidOperationException("VMQA_TARGET_NOT_IN_Z_ORDER");
         return false;
@@ -345,6 +527,45 @@ function Get-VmqaWindowRect {
     }
 }
 
+function Get-VmqaVirtualScreenRect {
+    [CmdletBinding()]
+    param()
+    $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $rect = New-Object VmqaNative+RECT
+    $rect.Left = $bounds.Left
+    $rect.Top = $bounds.Top
+    $rect.Right = $bounds.Right
+    $rect.Bottom = $bounds.Bottom
+    return $rect
+}
+
+function Get-VmqaCaptureWorkAreaRect {
+    [CmdletBinding()]
+    param()
+    Add-Type -AssemblyName System.Windows.Forms
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $rect = New-Object VmqaNative+RECT
+    $rect.Left = $bounds.Left
+    $rect.Top = $bounds.Top
+    $rect.Right = $bounds.Right
+    $rect.Bottom = $bounds.Bottom
+    return $rect
+}
+
+function Assert-VmqaTrustedSurfaceBounds {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Surface)
+    if ($Surface.BoundsSource -cne 'dwm-extended-frame') {
+        throw "VMQA_UNTRUSTED_BOUNDS_SOURCE: expected=dwm-extended-frame actual=$($Surface.BoundsSource)"
+    }
+    if ([uint32]$Surface.Dpi -ne 96) {
+        throw "VMQA_DWM_DPI_UNTRUSTED: dpi=$($Surface.Dpi)"
+    }
+    $virtual = Get-VmqaVirtualScreenRect
+    [VmqaNative]::ValidateExtendedFrameBounds($Surface.RawRect, $Surface.Rect, $virtual)
+    return $true
+}
+
 function Get-VmqaVisibleSurface {
     [CmdletBinding()]
     param(
@@ -353,8 +574,17 @@ function Get-VmqaVisibleSurface {
     )
     [void](Assert-VmqaSubject -Subject $Subject -RunNonce $RunNonce)
     $markerClass = "$($Subject.Identifier)-sic"
+    $virtual = Get-VmqaVirtualScreenRect
+    $workArea = Get-VmqaCaptureWorkAreaRect
+    # Some VM display profiles are smaller than OSL's requested startup size. Reposition and
+    # resize only the unique non-marker HWND owned by the exact launched PID, without activating
+    # it or synthesizing input. Capture still re-queries DWM afterward and fails closed on any
+    # untrusted, off-screen, or whole-desktop extended-frame result.
+    $normalized = [VmqaNative]::NormalizeVisibleTopLevelWindowForPid(
+        [uint32]$Subject.Pid, $markerClass, $workArea)
     $candidates = @(
-        [VmqaNative]::VisibleTopLevelWindowsForPid([uint32]$Subject.Pid) |
+        [VmqaNative]::VisibleTopLevelWindowsForPid(
+            [uint32]$Subject.Pid, $markerClass, $virtual) |
             Where-Object {
                 $_.ClassName -cne $markerClass -and
                 ($_.Rect.Right - $_.Rect.Left) -ge 200 -and
@@ -367,6 +597,8 @@ function Get-VmqaVisibleSurface {
     if ($candidates.Count -gt 1) {
         throw "VMQA_AMBIGUOUS_VISIBLE_SURFACE: pid $($Subject.Pid) has $($candidates.Count) visible top-level windows at least 200x120"
     }
+    $candidates[0].NormalizedForCapture = $normalized
+    [void](Assert-VmqaTrustedSurfaceBounds -Surface $candidates[0])
     return $candidates[0]
 }
 
@@ -435,11 +667,14 @@ function Test-VmqaSurfaceStillBound {
             return $false
         }
         [int]$cloaked = 0
-        if ([VmqaNative]::DwmGetWindowAttribute($Surface.Hwnd, 14, [ref]$cloaked, 4) -ne 0 -or $cloaked -ne 0) {
+        if ([VmqaNative]::DwmGetWindowAttribute(
+                $Surface.Hwnd, [VmqaNative]::DWMWA_CLOAKED, [ref]$cloaked, 4) -ne 0 -or
+            $cloaked -ne 0) {
             return $false
         }
-        $now = New-Object VmqaNative+RECT
-        if (-not [VmqaNative]::GetWindowRect($Surface.Hwnd, [ref]$now)) { return $false }
+        [void](Assert-VmqaTrustedSurfaceBounds -Surface $Surface)
+        $now = [VmqaNative]::TrustedExtendedFrameBounds(
+            $Surface.Hwnd, (Get-VmqaVirtualScreenRect))
         return $now.Left -eq $Surface.Rect.Left -and $now.Top -eq $Surface.Rect.Top -and
             $now.Right -eq $Surface.Rect.Right -and $now.Bottom -eq $Surface.Rect.Bottom
     } catch {
@@ -471,7 +706,9 @@ function Test-VmqaSurfaceUnoccluded {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Surface)
     try {
-        return -not [VmqaNative]::HasOccludingWindowAbove($Surface.Hwnd)
+        [void](Assert-VmqaTrustedSurfaceBounds -Surface $Surface)
+        return -not [VmqaNative]::HasOccludingWindowAbove(
+            $Surface.Hwnd, $Surface.Rect, (Get-VmqaVirtualScreenRect))
     } catch {
         return $false
     }

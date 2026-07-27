@@ -178,9 +178,23 @@ Target is under three minutes per iteration once setup is snapshotted.
   must resolve the unique visible non-marker top-level window owned by that exact PID, foreground
   it, capture only its rectangle, and re-check PID, rectangle, foreground and occlusion before and
   after capture. A whole-desktop colour count once passed on Firefox while OSL was not visible.
-- **Use DWM extended-frame bounds for the capture rectangle.** `GetWindowRect` includes the
-  invisible resize border; on the 1024×768 QA desktop it reported a maximized surface as
-  `0,0 1044x788` and the fail-closed capture correctly refused it as off-screen.
+- **Use DWM extended-frame bounds for the capture rectangle, with no `GetWindowRect` fallback.**
+  The selected non-marker top-level HWND must return `S_OK` from
+  `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` and the result must be nonempty, at least
+  200×120, inside both `GetWindowRect` and the virtual screen, not the whole virtual desktop, and
+  stable before/after capture. `GetWindowRect` is retained only as an outer sanity bound.
+- **Normalize an oversized launched window before measuring it.** The Scrub demo asks for
+  1044×788 on the 1024×768 VM. The agent may use `SetWindowPos(..., SWP_NOACTIVATE)` on the unique
+  ≥200×120 non-marker HWND owned by the exact launched PID to fit it inside the primary working
+  area. It then discards that preparatory geometry and re-queries DWM. Small auxiliary HWNDs are
+  ineligible; multiple qualifying HWNDs, any DWM failure, off-screen results and whole-desktop
+  results remain refusals.
+- **A screenshot verdict is not enough.** The host snapshots the live heartbeat's
+  `agentSha256` and `win32Sha256`, requires both verdicts to match them, downloads the one exact
+  `artifacts/selftest.png`, checks its PNG bytes and SHA-256 against the shot fact, and requires
+  exact surface HWND/PID plus `stopped`/`already-exited` cleanup for the launched PID. The negative
+  must contain exactly `S0:stage,S1:launch,S2:ping,S3:shot,S4:kill`; a shorter blocked verdict is a
+  vacuous control, not evidence.
 
 ## Input injection: where it is banned and where it is required
 

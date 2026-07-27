@@ -40,27 +40,69 @@ TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 pass_count=0; fail_count=0
 
-mkjson() { printf '%s\n' "$2" > "$TMP/$1.json"; printf '%s' "$TMP/$1.json"; }
+AGENT_SHA='1111111111111111111111111111111111111111111111111111111111111111'
+WIN32_SHA='2222222222222222222222222222222222222222222222222222222222222222'
+EXE_SHA='3333333333333333333333333333333333333333333333333333333333333333'
+FIXTURE_PNG="$TMP/fixture.png"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
+  | base64 -d >"$FIXTURE_PNG"
+PNG_SHA="$(sha256sum "$FIXTURE_PNG" | awk '{print $1}')"
+
+mkjson() {
+  local dir="$TMP/$1"
+  mkdir -p -- "$dir/artifacts"
+  printf '%s\n' "$2" | jq \
+    --arg agent "$AGENT_SHA" --arg win32 "$WIN32_SHA" --arg exe "$EXE_SHA" --arg png "$PNG_SHA" '
+      .agentSha //= $agent
+      | .win32Sha //= $win32
+      | .requestExeSha256 //= $exe
+      | .steps |= map(
+          if .verb == "launch" then
+            .facts = ((.facts // {}) | .exeSha256 //= $exe)
+          elif .verb == "shot" then
+            .facts = ((.facts // {}) | .pngSha256 //= $png | .artifactPath //= "artifacts/selftest.png")
+            | .artifacts //= ["artifacts/selftest.png"]
+          elif .verb == "kill" and .status == "pass" then
+            .facts = ((.facts // {}) | .cleanupPid //= 101 | .cleanupOutcome //= "stopped")
+          else . end
+        )
+    ' >"$dir/verdict.json"
+  jq -n --arg exe "$EXE_SHA" '{exeSha256:$exe}' >"$dir/request.json"
+  cp -- "$FIXTURE_PNG" "$dir/artifacts/selftest.png"
+  printf '%s' "$dir/verdict.json"
+}
+
+mutate_json() {
+  local name="$1" source_json="$2" filter="$3" mutated
+  mutated="$(printf '%s\n' "$source_json" | jq "$filter")"
+  mkjson "$name" "$mutated"
+}
 
 # A fully healthy positive half: launched, apparatus proven non-empty, real pixels.
 GOOD_POS='{"runId":"p","requestSha256":"aa","overall":"pass","steps":[
+  {"id":"S0","verb":"stage","status":"pass"},
   {"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},
   {"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},
   {"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{
-    "surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,
+    "surfacePid":101,"surfaceHwnd":909,"surfaceWidth":960,"surfaceHeight":640,
+    "rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame",
+    "boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,
     "foregroundPre":true,"foregroundPost":true,
     "sampleGridPre":true,"sampleGridPost":true,
-    "unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}'
+    "unoccludedPre":true,"unoccludedPost":true,"rectStable":true}},
+  {"id":"S4","verb":"kill","status":"pass","facts":{"cleanupPid":101,"cleanupOutcome":"stopped"}}]}'
 
 # A genuine negative control: it RAN, its apparatus passed, and launch was correctly refused.
 GOOD_NEG='{"runId":"n","requestSha256":"bb","overall":"blocked","steps":[
+  {"id":"S0","verb":"stage","status":"pass"},
   {"id":"S1","verb":"launch","status":"blocked"},
   {"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},
-  {"id":"S3","verb":"shot","status":"blocked"}]}'
+  {"id":"S3","verb":"shot","status":"blocked"},
+  {"id":"S4","verb":"kill","status":"blocked"}]}'
 
 check() {
   local name="$1" want="$2" posf="$3" negf="$4" posrc="${5:-0}" negrc="${6:-3}" got
-  grade_selftest "$posf" "$negf" "$posrc" "$negrc" >/dev/null 2>&1
+  grade_selftest "$posf" "$negf" "$posrc" "$negrc" "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" >/dev/null 2>&1
   got=$?
   if [ "$got" -eq "$want" ]; then
     printf '  ok    %-46s exit=%s\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -76,7 +118,7 @@ check() {
 # lane keeps finding elsewhere. So for overlapping guards we assert the diagnostic too.
 check_msg() {
   local name="$1" want="$2" pattern="$3" posf="$4" negf="$5" out got
-  out="$(grade_selftest "$posf" "$negf" 0 3 2>&1)"
+  out="$(grade_selftest "$posf" "$negf" 0 3 "$AGENT_SHA" "$WIN32_SHA" "$EXE_SHA" 2>&1)"
   got=$?
   if [ "$got" -eq "$want" ] && printf '%s' "$out" | grep -qi -- "$pattern"; then
     printf '  ok    %-46s exit=%s +msg\n' "$name" "$got"; pass_count=$((pass_count+1))
@@ -165,7 +207,7 @@ check "positive markerWindowsTotal 0 -> not PASS" 1 \
 
 # An all-black frame clears a pixel count but not a colour floor.
 check "positive distinctColors below floor -> not PASS" 1 \
-  "$(mkjson pos_black '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":3,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
+  "$(mkjson pos_black '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":3,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame","boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
   "$(mkjson gn3 "$GOOD_NEG")"
 
 # Whole-desktop colour cannot substitute for a window bound to the process launch. This is the
@@ -176,12 +218,60 @@ check "missing surface binding facts -> not PASS" 1 \
   "$(mkjson gn_surface "$GOOD_NEG")"
 
 check "surface pid differs from launch -> not PASS" 1 \
-  "$(mkjson pos_swap '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":202,"surfaceWidth":960,"surfaceHeight":640,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
+  "$(mkjson pos_swap '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":202,"surfaceWidth":960,"surfaceHeight":640,"rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame","boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":true,"rectStable":true}}]}')" \
   "$(mkjson gn_swap "$GOOD_NEG")"
 
 check "post-capture occlusion -> not PASS" 1 \
-  "$(mkjson pos_occluded '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":false,"rectStable":true}}]}')" \
+  "$(mkjson pos_occluded '{"runId":"p","overall":"pass","steps":[{"id":"S1","verb":"launch","status":"pass","facts":{"launchedPid":101}},{"id":"S2","verb":"ping","status":"pass","markerWindowsTotal":1},{"id":"S3","verb":"shot","status":"pass","distinctColors":4016,"facts":{"surfacePid":101,"surfaceWidth":960,"surfaceHeight":640,"rawSurfaceWidth":980,"rawSurfaceHeight":660,"boundsSource":"dwm-extended-frame","boundsWithinVirtualDesktop":true,"coversVirtualDesktop":false,"surfaceDpi":96,"foregroundPre":true,"foregroundPost":true,"sampleGridPre":true,"sampleGridPost":true,"unoccludedPre":true,"unoccludedPost":false,"rectStable":true}}]}')" \
   "$(mkjson gn_occluded "$GOOD_NEG")"
+
+check "GetWindowRect fallback source -> not PASS" 1 \
+  "$(mutate_json pos_raw_source "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.boundsSource)="get-window-rect"')" \
+  "$(mkjson gn_raw_source "$GOOD_NEG")"
+
+check "GetWindowRect invisible border -> not PASS" 1 \
+  "$(mutate_json pos_raw_bounds "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts) |= (.surfaceWidth=1044 | .surfaceHeight=788 | .rawSurfaceWidth=1044 | .rawSurfaceHeight=788 | .boundsWithinVirtualDesktop=false)')" \
+  "$(mkjson gn_raw_bounds "$GOOD_NEG")"
+
+check "whole-desktop bounds -> not PASS" 1 \
+  "$(mutate_json pos_desktop_bounds "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts) |= (.surfaceWidth=1024 | .surfaceHeight=768 | .rawSurfaceWidth=1024 | .rawSurfaceHeight=768 | .coversVirtualDesktop=true)')" \
+  "$(mkjson gn_desktop_bounds "$GOOD_NEG")"
+
+check_msg "truncated two-step negative -> INVALID" 9 "exact five-step" \
+  "$(mkjson pos_for_short_neg "$GOOD_POS")" \
+  "$(mutate_json neg_two_step "$GOOD_NEG" '.steps = [.steps[0], .steps[1]]')"
+
+check "wrong positive agent hash -> not PASS" 1 \
+  "$(mutate_json pos_bad_agent "$GOOD_POS" '.agentSha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"')" \
+  "$(mkjson neg_for_bad_agent "$GOOD_NEG")"
+
+check "wrong negative win32 hash -> not PASS" 1 \
+  "$(mkjson pos_for_bad_win32 "$GOOD_POS")" \
+  "$(mutate_json neg_bad_win32 "$GOOD_NEG" '.win32Sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')"
+
+check "surface HWND absent -> not PASS" 1 \
+  "$(mutate_json pos_no_hwnd "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.surfaceHwnd)=0')" \
+  "$(mkjson neg_for_no_hwnd "$GOOD_NEG")"
+
+check "cleanup outcome absent -> not PASS" 1 \
+  "$(mutate_json pos_no_cleanup "$GOOD_POS" '(.steps[] | select(.verb=="kill").facts.cleanupOutcome)="unknown"')" \
+  "$(mkjson neg_for_no_cleanup "$GOOD_NEG")"
+
+check "claimed screenshot hash mismatch -> not PASS" 1 \
+  "$(mutate_json pos_bad_png_sha "$GOOD_POS" '(.steps[] | select(.verb=="shot").facts.pngSha256)="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"')" \
+  "$(mkjson neg_for_bad_png_sha "$GOOD_NEG")"
+
+missing_png_pos="$(mkjson pos_missing_png "$GOOD_POS")"
+rm -f -- "$(dirname -- "$missing_png_pos")/artifacts/selftest.png"
+check "missing retained screenshot bytes -> not PASS" 1 \
+  "$missing_png_pos" "$(mkjson neg_for_missing_png "$GOOD_NEG")"
+
+bad_request_pos="$(mkjson pos_bad_request_exe "$GOOD_POS")"
+jq '.exeSha256="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' \
+  "$(dirname -- "$bad_request_pos")/request.json" >"$(dirname -- "$bad_request_pos")/request.json.tmp"
+mv -- "$(dirname -- "$bad_request_pos")/request.json.tmp" "$(dirname -- "$bad_request_pos")/request.json"
+check "request exeSha256 mismatch -> not PASS" 1 \
+  "$bad_request_pos" "$(mkjson neg_for_bad_request "$GOOD_NEG")"
 
 # A missing verdict file must never be read as a legitimate outcome via its exit code alone.
 check "absent negative verdict file -> INVALID" 9 \
@@ -196,4 +286,4 @@ check "positive fails, good control -> fail not INVALID" 1 \
 echo
 printf 'passed=%s failed=%s\n' "$pass_count" "$fail_count"
 [ "$fail_count" -eq 0 ] || exit 1
-[ "$pass_count" -ge 15 ] || { echo "refusing to report success on fewer than 15 assertions" >&2; exit 1; }
+[ "$pass_count" -ge 26 ] || { echo "refusing to report success on fewer than 26 assertions" >&2; exit 1; }
