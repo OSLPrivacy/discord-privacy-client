@@ -2120,6 +2120,24 @@ absence `UPDATE`. Production R2 retry behavior is also unknown.
 - Image pricing visual qualification +0.
 - No checklist edit; authority remains **100 / 303**.
 
+## 2026-07-27 — FAQ image-protection claim qualification
+
+`docs/faq.html:95` previously said “OSL protects supported text and images,”
+which contradicted the canonical image capability’s Planned/unavailable status.
+Website commit `e1127020a890f698e734873c09301074a5017b87`, tree
+`0348ba4c47a3de81a3e637c197298ac9f291be0f`, parent
+`ea4f26c4afbeb4822d45c3648e8c07e3e2d3090e`, narrows the answer to supported
+text today and marks encrypted image sending Planned and unavailable. Blob:
+`docs/faq.html` `66a6d7118013248d29fe6e8be9f46f30ef49f3cd`.
+
+The full public scan passed 16/16 files with zero failures and
+`git diff --check` passed. No runtime or implementation evidence was added.
+
+## Acceptance rows this earns
+
+- FAQ image-protection wording correction +0.
+- No checklist edit or score movement; authority remains **100 / 303**.
+
 ## Acceptance rows this earns
 
 - D2 retry-window implementation +0 pending independent acceptance.
