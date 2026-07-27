@@ -129,7 +129,14 @@ The mailbox must exist before the route is enabled.
 - **TLS-terminator logs** (Cloudflare edge) are out of our control. Onion-routing the client side is a Phase 6+ research item.
 - **Cleanup cron** runs every 5 minutes and deletes expired rows. For view-once links it also destroys the ciphertext of any link past its reservation window or its TTL, regardless of client confirmation, and purges the content-free receipt a day after expiry.
 - **View-once links record no IP, user agent, referrer or timing.** The entire retrieval record is `retrieved_at` at second granularity plus a small integer count.
-- Attachment cleanup aborts expired incomplete multipart sessions and deletes completed R2 objects before their minimal D1 rows. The hard row cap bounds the entire sweep backlog.
+- Attachment cleanup claims at most 100 expired objects per invocation through
+  migration `0008`'s D1 companion table. Each claim is bound to a random Worker
+  identity and token, fenced by a monotonic lease version, and recoverable after
+  a two-minute lease. R2 cleanup remains first and idempotent; only the exact
+  live claim may then delete metadata. A failed object keeps its indexed row,
+  receives bounded retry backoff, and does not prevent unrelated claims from
+  running. The previous Worker ignores the additive claim table, while the
+  matching Worker refuses before any sweep mutation if the table is absent.
 
 ## Deploy
 

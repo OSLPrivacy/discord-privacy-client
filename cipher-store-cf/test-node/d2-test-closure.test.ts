@@ -96,8 +96,8 @@ describe("D2 test-closure gate", () => {
   it("rejects severing the production attachment sweep call", () => {
     const severed = replaceOnce(
       sources.workerSource,
-      "await sweepExpiredAttachments(env);",
-      "await Promise.resolve();",
+      "const attachmentSweep = await sweepExpiredAttachments(env);",
+      "const attachmentSweep = { failed: 0 };",
     );
     expect(() => assertD2TestClosure(withSource("workerSource", severed))).toThrow(
       /one attachment sweep/,
@@ -112,8 +112,9 @@ describe("D2 test-closure gate", () => {
     );
     const markerFirst = replaceOnce(
       withoutMarker,
-      "      await sweepExpiredAttachments(env);\n",
-      "      console.log(CYCLE_MARKER);\n      await sweepExpiredAttachments(env);\n",
+      "      const attachmentSweep = await sweepExpiredAttachments(env);\n",
+      "      console.log(CYCLE_MARKER);\n"
+        + "      const attachmentSweep = await sweepExpiredAttachments(env);\n",
     );
     expect(() =>
       assertD2TestClosure(withSource("workerSource", markerFirst)),

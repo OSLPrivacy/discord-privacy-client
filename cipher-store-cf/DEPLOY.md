@@ -44,6 +44,15 @@ because NULL *is* the burned state, and the residual row is a
 content-free receipt so the sender can be told "Retrieved at HH:MM" or
 "Expired without being retrieved".
 
+Migration `0008_attachment_sweep_claims.sql` is the additive attachment
+cleanup claim boundary. It must be applied before the matching Worker: the
+previous Worker never names the companion table and remains unchanged after
+the migration, while the matching Worker performs a read-only exact-column
+gate before legacy expiry marking, R2 cleanup, or metadata deletion. A missing
+or partial `0008` schema therefore fails the attachment sweep closed. The
+presence of this file in a checkout is not evidence that any live D1 database
+has applied it.
+
 ## §3 Provision KV (rate-limit)
 
 ```sh

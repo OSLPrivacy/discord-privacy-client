@@ -176,7 +176,7 @@ describe("attachment session admission (HIGH-1)", () => {
 
     const { sweepExpiredAttachments } = await import("../src/lib/sweep.js");
     const swept = await sweepExpiredAttachments(env);
-    expect(swept).toBe(1);
+    expect(swept).toEqual({ claimed: 1, completed: 1, failed: 0 });
     expect(await d1Count("SELECT COUNT(*) FROM attachment_objects")).toBe(0);
   });
 });

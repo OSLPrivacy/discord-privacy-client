@@ -82,7 +82,10 @@ export default {
       console.error("[blob-sweep] failed");
     }
     try {
-      await sweepExpiredAttachments(env);
+      const attachmentSweep = await sweepExpiredAttachments(env);
+      if (attachmentSweep.failed !== 0) {
+        throw new Error("one or more attachment claims remain retryable");
+      }
       // Fixed, identifier-free witness for the read-only D2 promotion helper.
       // It deliberately carries no count: the helper obtains before/after
       // counts from one hard-coded aggregate D1 query and server-filters this

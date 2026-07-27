@@ -86,14 +86,22 @@ describe("attachment quota and expiry sweep", () => {
       ATTACHMENTS: r2WithOverrides(real.ATTACHMENTS, { delete: remove }),
     } as unknown as Env;
 
-    await expect(sweepExpiredAttachments(env)).resolves.toBe(MAX_LIVE_ATTACHMENT_ROWS);
+    let completed = 0;
+    while (completed < MAX_LIVE_ATTACHMENT_ROWS) {
+      const result = await sweepExpiredAttachments(env);
+      expect(result.failed).toBe(0);
+      expect(result.completed).toBe(result.claimed);
+      expect(result.claimed).toBeLessThanOrEqual(ATTACHMENT_SWEEP_BATCH_SIZE);
+      completed += result.completed;
+    }
+    expect(completed).toBe(MAX_LIVE_ATTACHMENT_ROWS);
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
     expect(await real.ATTACHMENTS.head("attachments/0")).toBeNull();
     expect(await real.ATTACHMENTS.head(`attachments/${MAX_LIVE_ATTACHMENT_ROWS - 1}`)).toBeNull();
-    expect(remove).toHaveBeenCalledTimes(Math.ceil(MAX_LIVE_ATTACHMENT_ROWS / ATTACHMENT_SWEEP_BATCH_SIZE));
-  }, 20_000);
+    expect(remove).toHaveBeenCalledTimes(MAX_LIVE_ATTACHMENT_ROWS);
+  }, 40_000);
 
-  it("reclaims more than D1's 100-variable boundary in one sweep", async () => {
+  it("reclaims more than one legacy selection batch through isolated claims", async () => {
     const real = workerEnv();
     const rows = ATTACHMENT_SWEEP_BATCH_SIZE + 1;
     for (let index = 0; index < rows; index++) {
@@ -106,13 +114,22 @@ describe("attachment quota and expiry sweep", () => {
       await real.ATTACHMENTS.put(objectKey, new Uint8Array([index % 256]));
     }
 
-    await expect(sweepExpiredAttachments(real)).resolves.toBe(rows);
+    await expect(sweepExpiredAttachments(real)).resolves.toEqual({
+      claimed: ATTACHMENT_SWEEP_BATCH_SIZE,
+      completed: ATTACHMENT_SWEEP_BATCH_SIZE,
+      failed: 0,
+    });
+    await expect(sweepExpiredAttachments(real)).resolves.toEqual({
+      claimed: 1,
+      completed: 1,
+      failed: 0,
+    });
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
     expect(await real.ATTACHMENTS.head("attachments/d1-boundary/0")).toBeNull();
     expect(await real.ATTACHMENTS.head(`attachments/d1-boundary/${rows - 1}`)).toBeNull();
   });
 
-  it("keeps retryable metadata if an R2 batch deletion fails", async () => {
+  it("keeps retryable metadata if an R2 deletion fails", async () => {
     const real = workerEnv();
     await insertAttachment({
       id: "0".repeat(32),
@@ -126,7 +143,11 @@ describe("attachment quota and expiry sweep", () => {
       ATTACHMENTS: r2WithOverrides(real.ATTACHMENTS, { delete: remove }),
     } as unknown as Env;
 
-    await expect(sweepExpiredAttachments(env)).rejects.toThrow("r2 unavailable");
+    await expect(sweepExpiredAttachments(env)).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      failed: 1,
+    });
     expect(remove).toHaveBeenCalledOnce();
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(1);
     expect(await real.ATTACHMENTS.head("attachments/0")).not.toBeNull();
@@ -151,7 +172,11 @@ describe("attachment quota and expiry sweep", () => {
     } as unknown as Env;
 
     await expect(upload.uploadPart(1, new Uint8Array([1]))).resolves.toMatchObject({ partNumber: 1 });
-    await expect(sweepExpiredAttachments(env)).resolves.toBe(1);
+    await expect(sweepExpiredAttachments(env)).resolves.toEqual({
+      claimed: 1,
+      completed: 1,
+      failed: 0,
+    });
     expect(resume).toHaveBeenCalledWith(objectKey, upload.uploadId);
     await expect(upload.uploadPart(2, new Uint8Array([2]))).rejects.toThrow();
     expect(await real.ATTACHMENTS.head(objectKey)).toBeNull();
@@ -207,7 +232,11 @@ describe("attachment quota and expiry sweep", () => {
     await expect(upload.uploadPart(1, new Uint8Array([1]))).resolves.toMatchObject({
       partNumber: 1,
     });
-    await expect(sweepExpiredAttachments(env)).resolves.toBe(1);
+    await expect(sweepExpiredAttachments(env)).resolves.toEqual({
+      claimed: 1,
+      completed: 1,
+      failed: 0,
+    });
     expect(resume).toHaveBeenCalledWith(objectKey, upload.uploadId);
     expect(abortObservedWithMetadata).toHaveBeenCalledWith(1);
     await expect(upload.uploadPart(2, new Uint8Array([2]))).rejects.toThrow();
@@ -261,9 +290,11 @@ describe("attachment quota and expiry sweep", () => {
       }),
     } as unknown as Env;
 
-    await expect(sweepExpiredAttachments(env)).rejects.toThrow(
-      "r2 abort unavailable",
-    );
+    await expect(sweepExpiredAttachments(env)).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      failed: 1,
+    });
     expect(abort).toHaveBeenCalledOnce();
     expect(
       await d1Count(
@@ -331,7 +362,11 @@ describe("attachment quota and expiry sweep", () => {
       created_at: now,
     });
 
-    await expect(sweepExpiredAttachments(real)).resolves.toBe(0);
+    await expect(sweepExpiredAttachments(real)).resolves.toEqual({
+      claimed: 0,
+      completed: 0,
+      failed: 0,
+    });
     expect(
       await d1Count(
         "SELECT COUNT(*) AS c FROM attachment_objects WHERE id IN (?, ?, ?)",
