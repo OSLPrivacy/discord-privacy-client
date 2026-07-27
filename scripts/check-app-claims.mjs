@@ -40,9 +40,16 @@ const MIN_TS_STRING_LITERALS = 300; // Ensures the app copy scan cannot pass aft
 const MIN_RUST_STRING_LITERALS = 40; // Ensures the Rust high-precision subset cannot pass after extracting nothing.
 const MIN_README_BYTES = 1; // Ensures the public README claim surface was actually scanned.
 
-const NEGATOR_LOOKBACK_CHARS = 60;
-const NEGATOR_RE =
-  /(?:\bdoes\s+not\b|\bis\s+not\b|\bcannot\b|\bwithout\b|\bnever\b|\bnot\b|\bno\s|n't\b)/i;
+const REQUIRED_ATTACHMENT_BANS = [
+  "discord attachment scanning defeated",
+  "defeats discord attachment scanning",
+  "discord cannot scan attachments",
+  "discord sees only decoys",
+  "discord's attachment scanner is defeated by osl",
+  "osl bypasses discord's attachment inspection",
+  "discord receives harmless cover files instead of the attachment",
+  "uploaded files are opaque to discord's scanners",
+];
 
 function repoRelative(filePath) {
   return path.relative(REPO_ROOT, filePath).split(path.sep).join("/");
@@ -50,6 +57,85 @@ function repoRelative(filePath) {
 
 async function readUtf8(filePath) {
   return fs.readFile(filePath, "utf8");
+}
+
+function decodeClaimEntity(entity) {
+  const body = entity.slice(1, -1).toLowerCase();
+  if (/^#\d+$/.test(body)) {
+    const codePoint = Number.parseInt(body.slice(1), 10);
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+  }
+  if (/^#x[0-9a-f]+$/.test(body)) {
+    const codePoint = Number.parseInt(body.slice(2), 16);
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+  }
+  return new Map([
+    ["amp", "&"],
+    ["apos", "'"],
+    ["gt", ">"],
+    ["lt", "<"],
+    ["nbsp", " "],
+    ["quot", '"'],
+  ]).get(body) ?? entity;
+}
+
+function normalizedClaimTextWithSourceMap(source) {
+  const characters = [];
+  const sourceIndexes = [];
+  const blockTags =
+    /^(?:address|article|aside|blockquote|br|dd|div|dl|dt|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|section|table|td|th|tr|ul)$/i;
+
+  function append(character, sourceIndex) {
+    const normalized = character === "’" || character === "‘" ? "'" : character;
+    if (normalized === "\n" || normalized === "\r") {
+      if (characters.length > 0 && characters.at(-1) !== "\n") {
+        characters.push("\n");
+        sourceIndexes.push(sourceIndex);
+      }
+      return;
+    }
+    if (/\s/.test(normalized)) {
+      if (characters.length === 0 || characters.at(-1) === " " || characters.at(-1) === "\n") {
+        return;
+      }
+      characters.push(" ");
+      sourceIndexes.push(sourceIndex);
+      return;
+    }
+    characters.push(normalized.toLowerCase());
+    sourceIndexes.push(sourceIndex);
+  }
+
+  for (let index = 0; index < source.length;) {
+    if (source[index] === "<") {
+      const close = source.indexOf(">", index + 1);
+      if (close !== -1) {
+        const tag = source.slice(index, close + 1).match(/^<\s*\/?\s*([a-z][a-z0-9]*)\b/i);
+        if (tag && blockTags.test(tag[1])) {
+          append("\n", index);
+        }
+        index = close + 1;
+        continue;
+      }
+    }
+    if (source[index] === "&") {
+      const entity = source.slice(index).match(/^&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/i);
+      if (entity) {
+        for (const character of decodeClaimEntity(entity[0])) {
+          append(character, index);
+        }
+        index += entity[0].length;
+        continue;
+      }
+    }
+    append(source[index], index);
+    index += 1;
+  }
+
+  return {
+    text: characters.join(""),
+    sourceIndexes,
+  };
 }
 
 function splitMarkdownRow(line) {
@@ -142,7 +228,7 @@ function parseBannedPhrases(markdown) {
     const matches = firstCell.matchAll(/"([^"]+)"/g);
     for (const match of matches) {
       for (const alternative of splitQuotedAlternatives(match[1])) {
-        const normalized = alternative.trim().toLowerCase();
+        const normalized = normalizedClaimTextWithSourceMap(alternative.trim()).text;
         if (normalized) {
           phrases.set(normalized, alternative.trim());
         }
@@ -850,9 +936,125 @@ function excerptAround(text, index, length) {
     .trim();
 }
 
-function hasNegatorBefore(text, index) {
-  const before = text.slice(Math.max(0, index - NEGATOR_LOOKBACK_CHARS), index);
-  return NEGATOR_RE.test(before);
+function sentenceBounds(text, start, end) {
+  const before = text.slice(0, start);
+  const leftBoundary = Math.max(
+    before.lastIndexOf("."),
+    before.lastIndexOf("!"),
+    before.lastIndexOf("?"),
+    before.lastIndexOf(";"),
+    before.lastIndexOf("\n"),
+  );
+  const boundaryIndexes = [".", "!", "?", ";", "\n"]
+    .map((boundary) => text.indexOf(boundary, end))
+    .filter((index) => index !== -1);
+  const rightBoundary =
+    boundaryIndexes.length === 0 ? text.length : Math.min(...boundaryIndexes);
+  return {
+    start: leftBoundary + 1,
+    end: rightBoundary,
+  };
+}
+
+function genericNegationGovernsClaim(text, start, end) {
+  const bounds = sentenceBounds(text, start, end);
+  const before = text.slice(bounds.start, start);
+  return (
+    /\b(?:is|are|was|were|does|do|did|has|have|had|can|could|will|would)\s+not\s+(?:yet\s+)?(?:an?\s+)?$/i.test(before)
+    || /\bnever\s+(?:an?\s+)?$/i.test(before)
+    || /\bnot\s+(?:an?\s+)?(?:claim|promise|assertion)\s+(?:of|that)\s*$/i.test(before)
+  );
+}
+
+function attachmentLimitationGovernsClaim(text, start, end) {
+  const bounds = sentenceBounds(text, start, end);
+  const before = text.slice(bounds.start, start);
+  const after = text.slice(end, bounds.end);
+  const limitation =
+    "(?:planned|unproved|unproven|unknown|not\\s+yet\\s+implemented|not\\s+established)";
+  const beforePattern = new RegExp(
+    `(?:\\b${limitation}\\b|\\bno\\b[^.!?;]{0,80}\\b(?:proves?|establishes?|shows?|demonstrates?|verifies?)\\s+)`
+      + "\\s*"
+      + "(?:(?:claim|property|behaviou?r|assertion)\\s+)?"
+      + "(?:(?:that|whether|if)\\s+)?"
+      + "(?:(?:the|this|it|osl|release|build|feature|transport)\\s+){0,6}$",
+    "i",
+  );
+  const afterPattern = new RegExp(
+    "^\\s*(?:,?\\s*(?:(?:a|the|this)\\s+)?"
+      + "(?:(?:claim|property|behaviou?r|assertion)\\s+)?"
+      + "(?:(?:that|which)\\s+)?)?"
+      + `(?:is|are|remains?|stays?|has\\s+not\\s+been|have\\s+not\\s+been)\\s+${limitation}\\b`,
+    "i",
+  );
+  return beforePattern.test(before) || afterPattern.test(after);
+}
+
+function semanticAttachmentClaimSpans(text) {
+  const spans = [];
+  const sentencePattern = /[^.!?;\n]+[.!?;]?/g;
+
+  function token(sentence, pattern) {
+    const match = sentence.match(pattern);
+    return match && match.index !== undefined
+      ? { start: match.index, end: match.index + match[0].length }
+      : null;
+  }
+
+  function tokenAfter(sentence, pattern, after) {
+    if (!after) {
+      return null;
+    }
+    const match = sentence.slice(after.end).match(pattern);
+    return match && match.index !== undefined
+      ? {
+          start: after.end + match.index,
+          end: after.end + match.index + match[0].length,
+        }
+      : null;
+  }
+
+  function record(sentenceStart, tokens) {
+    const present = tokens.filter(Boolean);
+    if (present.length !== tokens.length) {
+      return;
+    }
+    const start = sentenceStart + Math.min(...present.map((item) => item.start));
+    const end = sentenceStart + Math.max(...present.map((item) => item.end));
+    const key = `${start}:${end}`;
+    if (!spans.some((span) => span.key === key)) {
+      spans.push({ key, start, end });
+    }
+  }
+
+  for (const sentenceMatch of text.matchAll(sentencePattern)) {
+    const sentence = sentenceMatch[0];
+    const sentenceStart = sentenceMatch.index ?? 0;
+    const discord = token(sentence, /\bdiscord\b/i);
+    const attachment = token(sentence, /\b(?:attachments?|uploaded\s+files?|files?)\b/i);
+    const inspection = token(sentence, /\b(?:scann?(?:er|ers|ing|ed|s)?|inspection)\b/i);
+    const defeated = token(
+      sentence,
+      /\b(?:defeat(?:ed|s|ing)?|solv(?:e|ed|es|ing)|bypass(?:ed|es|ing)?|neutraliz(?:e|ed|es|ing)|block(?:ed|s|ing)?|evad(?:e|ed|es|ing)|opaque)\b/i,
+    );
+    record(sentenceStart, [discord, attachment, inspection, defeated]);
+
+    const receives = token(sentence, /\b(?:receiv(?:e|es|ed|ing)|gets?|sees?)\b/i);
+    const cover = token(sentence, /\b(?:harmless\s+)?cover\s+files?\b/i);
+    const instead = token(sentence, /\b(?:instead\s+of|rather\s+than)\b/i);
+    const replacedAttachment = tokenAfter(
+      sentence,
+      /\b(?:attachments?|uploaded\s+files?|files?)\b/i,
+      instead,
+    );
+    record(sentenceStart, [discord, receives, cover, instead, replacedAttachment]);
+
+    const decoy = token(sentence, /\bdecoys?\b/i);
+    const exclusive = token(sentence, /\b(?:only|instead\s+of|rather\s+than)\b/i);
+    record(sentenceStart, [discord, decoy, exclusive]);
+  }
+
+  return spans.map(({ start, end }) => ({ start, end }));
 }
 
 function countNewlinesBefore(text, index) {
@@ -890,25 +1092,56 @@ function analyseFragments(file, fragments, bannedPhrases) {
   const violations = [];
 
   for (const fragment of fragments) {
-    const lower = fragment.text.toLowerCase();
+    const normalized = normalizedClaimTextWithSourceMap(fragment.text);
+    const lower = normalized.text;
+    const exactAttachmentRanges = [];
 
     for (const phrase of bannedPhrases) {
       const contextGated = CONTEXT_GATED_TERMS.has(phrase.normalized);
       let index = lower.indexOf(phrase.normalized);
       while (index !== -1) {
+        const end = index + phrase.normalized.length;
+        const attachmentClaim = REQUIRED_ATTACHMENT_BANS.includes(phrase.normalized);
         const gatedOut =
           contextGated && !inSecurityContext(lower, index, phrase.normalized.length);
-        if (!gatedOut && !hasNegatorBefore(lower, index)) {
+        const limited =
+          genericNegationGovernsClaim(lower, index, end)
+          || (attachmentClaim && attachmentLimitationGovernsClaim(lower, index, end));
+        if (attachmentClaim) {
+          exactAttachmentRanges.push({ start: index, end });
+        }
+        if (!gatedOut && !limited) {
+          const sourceIndex = normalized.sourceIndexes[index] ?? 0;
           violations.push({
             file,
-            line: fragment.line + countNewlinesBefore(fragment.text, index),
+            line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
             phrase: phrase.display,
-            excerpt: excerptAround(fragment.text, index, phrase.normalized.length),
+            excerpt: excerptAround(fragment.text, sourceIndex, phrase.normalized.length),
           });
         }
 
         index = lower.indexOf(phrase.normalized, index + phrase.normalized.length);
       }
+    }
+
+    for (const span of semanticAttachmentClaimSpans(lower)) {
+      const overlapsExact = exactAttachmentRanges.some(
+        (exact) => span.start < exact.end && span.end > exact.start,
+      );
+      if (overlapsExact || attachmentLimitationGovernsClaim(lower, span.start, span.end)) {
+        continue;
+      }
+      const sourceIndex = normalized.sourceIndexes[span.start] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: "attachment-scanning overclaim",
+        excerpt: excerptAround(
+          fragment.text,
+          sourceIndex,
+          Math.max(1, span.end - span.start),
+        ),
+      });
     }
   }
 
@@ -975,11 +1208,32 @@ async function loadBannedPhrases() {
   return parseBannedPhrases(allowlist);
 }
 
+function bannedPhraseInputFailures(bannedPhrases) {
+  const failures = [];
+  if (bannedPhrases.length < MIN_BANNED_PHRASES) {
+    failures.push({
+      name: "banned phrases parsed from section D",
+      expected: MIN_BANNED_PHRASES,
+      actual: bannedPhrases.length,
+    });
+  }
+  const present = new Set(bannedPhrases.map((phrase) => phrase.normalized));
+  const attachmentBanCount = REQUIRED_ATTACHMENT_BANS.filter((phrase) => present.has(phrase)).length;
+  if (attachmentBanCount < REQUIRED_ATTACHMENT_BANS.length) {
+    failures.push({
+      name: "attachment bans parsed from section D",
+      expected: REQUIRED_ATTACHMENT_BANS.length,
+      actual: attachmentBanCount,
+    });
+  }
+  return failures;
+}
+
 async function scanRepository() {
   const bannedPhrases = await loadBannedPhrases();
   const rows = [];
   const allViolations = [];
-  const floorFailures = [];
+  const floorFailures = bannedPhraseInputFailures(bannedPhrases);
   let tsStringCount = 0;
   let rustStringCount = 0;
   let readmeBytes = 0;
@@ -1035,14 +1289,6 @@ async function scanRepository() {
     violations: readmeViolations.length,
   });
 
-  if (bannedPhrases.length < MIN_BANNED_PHRASES) {
-    floorFailures.push({
-      name: "banned phrases parsed from section D",
-      expected: MIN_BANNED_PHRASES,
-      actual: bannedPhrases.length,
-    });
-  }
-
   if (tsStringCount < MIN_TS_STRING_LITERALS) {
     floorFailures.push({
       name: "TypeScript string literals extracted",
@@ -1086,7 +1332,8 @@ async function scanRepository() {
 }
 
 async function runSelfTest() {
-  const bannedPhrases = await loadBannedPhrases();
+  const allowlist = await readUtf8(ALLOWLIST_PATH);
+  const bannedPhrases = parseBannedPhrases(allowlist);
   const fixtures = [
     {
       name: "catches destroys-keys inversion",
@@ -1148,6 +1395,130 @@ async function runSelfTest() {
       text: "This is not cryptographic burn.",
       shouldFlag: false,
     },
+    {
+      name: "unrelated prior negation cannot launder decoy claim",
+      text: "This feature is not beta. Discord sees only decoys.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches scanner defeated formulation",
+      text: "Discord's attachment scanner is defeated by OSL.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches inspection bypass formulation",
+      text: "OSL bypasses Discord's attachment inspection.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches cover-file substitution formulation",
+      text: "Discord receives harmless cover files instead of the attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches opaque-upload formulation",
+      text: "Uploaded files are opaque to Discord's scanners.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches inline-markup scanner defeat",
+      text: "Discord&apos;s attachment scanner is de<strong>feated</strong> by OSL.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches inline-markup entity bypass",
+      text: "OSL bypasses Discord&#39;s <em>attachment inspection</em>.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches inline-markup cover substitution",
+      text: "Discord receives harmless&nbsp;<strong>cover files</strong> instead of the attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches reversed scanner defeat",
+      text: "Defeated by OSL is Discord&#x27;s attachment scanner.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches reversed inspection bypass",
+      text: "Discord's attachment inspection is bypassed by OSL.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches neutralized-scanner synonym",
+      text: "OSL neutralizes Discord's attachment scanner.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches blocked-inspection synonym",
+      text: "OSL blocks Discord's attachment inspection.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches evaded-scanner synonym",
+      text: "OSL evades Discord's attachment scanner.",
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated planned sentence cannot launder decoy claim",
+      text: "Image transport is Planned. Discord sees only decoys.",
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated unproved clause cannot launder bypass claim",
+      text: "Another feature is unproved; OSL bypasses Discord's attachment inspection.",
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated unknown sentence cannot launder opaque claim",
+      text: "Beta status is unknown. Uploaded files are opaque to Discord's scanners.",
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated unimplemented sentence cannot launder cover claim",
+      text:
+        "AutoScrub is not yet implemented. Discord receives harmless cover files instead of the attachment.",
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated not-established sentence cannot launder defeated claim",
+      text:
+        "The release date is not established. Discord's attachment scanner is defeated by OSL.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes attached Planned limitation",
+      text: "The claim that Discord sees only decoys is Planned.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached unproved limitation",
+      text: "Whether Discord's attachment scanner is defeated by OSL is unproved.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached unknown limitation",
+      text: "Whether OSL bypasses Discord's attachment inspection is unknown.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached not-yet-implemented limitation",
+      text:
+        "Discord receiving harmless cover files instead of the attachment is not yet implemented.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes attached not-established limitation",
+      text:
+        "The assertion that uploaded files are opaque to Discord's scanners is not established.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes leading attached unproved limitation",
+      text: "It is unproved that Discord sees only decoys.",
+      shouldFlag: false,
+    },
   ];
   const rustFixtures = [
     {
@@ -1178,6 +1549,46 @@ async function runSelfTest() {
   ];
 
   let failures = 0;
+  const renamedSection = allowlist.replace(
+    "## D · NOT ELIGIBLE",
+    "## D (renamed) · NOT ELIGIBLE",
+  );
+  const sectionStart = allowlist.indexOf("## D · NOT ELIGIBLE");
+  const sectionEnd = allowlist.indexOf("\n## E ·", sectionStart);
+  const starvedSection =
+    sectionStart === -1 || sectionEnd === -1
+      ? allowlist
+      : `${allowlist.slice(0, sectionStart)}`
+        + "## D · NOT ELIGIBLE — these phrases may not appear anywhere\n\n"
+        + "| Forbidden phrase | Why it is forbidden |\n|---|---|\n"
+        + `${allowlist.slice(sectionEnd + 1)}`;
+  const inputCases = [
+    {
+      name: "real docs allowlist supplies every required attachment ban",
+      passed: bannedPhraseInputFailures(bannedPhrases).length === 0,
+    },
+    {
+      name: "renamed section D fails the production phrase floor",
+      passed:
+        parseBannedPhrases(renamedSection).length === 0
+        && bannedPhraseInputFailures(parseBannedPhrases(renamedSection)).length > 0,
+    },
+    {
+      name: "starved section D fails the production phrase floor",
+      passed:
+        parseBannedPhrases(starvedSection).length === 0
+        && bannedPhraseInputFailures(parseBannedPhrases(starvedSection)).length > 0,
+    },
+  ];
+  for (const inputCase of inputCases) {
+    if (!inputCase.passed) {
+      failures += 1;
+    }
+    console.log(
+      `${inputCase.passed ? "PASS" : "FAIL"} ${inputCase.name}`,
+    );
+  }
+
   for (const fixture of fixtures) {
     const violations = analyseFragments(
       `self-test/${fixture.name}`,
@@ -1191,7 +1602,8 @@ async function runSelfTest() {
     }
 
     console.log(
-      `${ok ? "PASS" : "FAIL"} ${fixture.name}: expected ${fixture.shouldFlag ? "flag" : "pass"}, actual ${flagged ? "flag" : "pass"}`,
+      `${ok ? "PASS" : "FAIL"} ${fixture.name}: expected ${fixture.shouldFlag ? "flag" : "pass"}, actual ${flagged ? "flag" : "pass"}`
+        + (ok ? "" : ` (${violations.map((violation) => violation.phrase).join(", ") || "no violation"})`),
     );
   }
 
@@ -1210,7 +1622,7 @@ async function runSelfTest() {
   }
 
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
