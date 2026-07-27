@@ -1638,41 +1638,94 @@ fn a_populated_store_with_its_canary_deleted_refuses_to_open() {
 fn message_bodies_and_attachment_bytes_are_not_readable_in_the_file() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
+    let message_a = sample(
+        "mb1",
+        "chan-a",
+        "sender-a",
+        "alice",
+        "SENTINEL-BODY-the-quick-brown-fox-said-something-private-A",
+        1_700_000_000,
+    );
+    let message_b = sample(
+        "mb2",
+        "chan-b",
+        "sender-b",
+        "bob",
+        "SENTINEL-BODY-the-quick-brown-fox-said-something-private-B",
+        1_700_000_001,
+    );
+    let attachment_a = b"SENTINEL-ATTACHMENT-BYTES-not-a-real-png-A";
+    let attachment_b = b"SENTINEL-ATTACHMENT-BYTES-not-a-real-png-B";
+
+    {
+        let store = open_a(tmp.path());
+        store.put(&message_a).unwrap();
+        store.put(&message_b).unwrap();
+        store
+            .put_attachment("mb1", "a.png", "image/png", attachment_a, None, None, None)
+            .unwrap();
+        store
+            .put_attachment("mb2", "b.png", "image/png", attachment_b, None, None, None)
+            .unwrap();
+
+        // Positive path: the store must genuinely be holding distinct records
+        // before we claim they disappear from the database files.
+        assert_eq!(
+            store.get("mb1").unwrap().unwrap(),
+            message_a,
+            "positive path: the first body must round-trip before we claim it is hidden"
+        );
+        assert_eq!(
+            store.get("mb2").unwrap().unwrap(),
+            message_b,
+            "positive path: the second body must round-trip before we claim it is hidden"
+        );
+        assert_eq!(
+            store.get_attachment("mb1", "a.png").unwrap().unwrap().1,
+            attachment_a,
+            "positive path: the first attachment must round-trip first"
+        );
+        assert_eq!(
+            store.get_attachment("mb2", "b.png").unwrap().unwrap().1,
+            attachment_b,
+            "positive path: the second attachment must round-trip first"
+        );
+    }
+
+    // Restart the store before inspecting the persisted files, so this proof
+    // covers the reopen path and the live SQLite sidecars the reopened
+    // connection keeps around.
     let store = open_a(tmp.path());
-
-    let body = "SENTINEL-BODY-the-quick-brown-fox-said-something-private";
-    let attachment = b"SENTINEL-ATTACHMENT-BYTES-not-a-real-png";
-
-    store
-        .put(&sample("mb1", "chan", "s1", "alice", body, 1_700_000_000))
-        .unwrap();
-    store
-        .put_attachment("mb1", "f.png", "image/png", attachment, None, None, None)
-        .unwrap();
-
-    // Positive path: the store must genuinely be holding this, or "not found in
-    // the file" would be true of a database that stored nothing at all.
     assert_eq!(
-        store.get("mb1").unwrap().unwrap().plaintext,
-        body,
-        "positive path: the body must round-trip before we claim it is hidden"
+        store.get("mb1").unwrap().unwrap(),
+        message_a,
+        "restart path: the first body must still round-trip after reopen"
     );
     assert_eq!(
-        store.get_attachment("mb1", "f.png").unwrap().unwrap().1,
-        attachment,
-        "positive path: the attachment must round-trip first"
+        store.get("mb2").unwrap().unwrap(),
+        message_b,
+        "restart path: the second body must still round-trip after reopen"
     );
-    drop(store);
+    assert_eq!(
+        store.get_attachment("mb1", "a.png").unwrap().unwrap().1,
+        attachment_a,
+        "restart path: the first attachment must still round-trip after reopen"
+    );
+    assert_eq!(
+        store.get_attachment("mb2", "b.png").unwrap().unwrap().1,
+        attachment_b,
+        "restart path: the second attachment must still round-trip after reopen"
+    );
 
-    let blob = raw_file_bytes(&db_path);
-    assert!(
-        !contains(&blob, body.as_bytes()),
-        "the message body is stored in the clear — it is readable in the \
-         database file without the store key"
-    );
-    assert!(
-        !contains(&blob, attachment),
-        "the decrypted attachment bytes are stored in the clear"
+    let artifacts = raw_store_artifacts(&db_path);
+    assert_artifacts_exclude(
+        &artifacts,
+        &[
+            ("message body 1", message_a.plaintext.as_bytes()),
+            ("message body 2", message_b.plaintext.as_bytes()),
+            ("attachment bytes 1", attachment_a),
+            ("attachment bytes 2", attachment_b),
+        ],
     );
 }
 
