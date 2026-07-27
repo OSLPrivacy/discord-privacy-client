@@ -1,5 +1,27 @@
 #!/usr/bin/env node
 
+// WHAT THIS GATE CANNOT DO, BY CONSTRUCTION (recorded 2026-07-27)
+//
+// This is a STRING gate. It answers exactly one question: does this text
+// contain a phrase section D forbids? It cannot answer whether the code behind
+// the text is reachable.
+//
+// The case that proves the limit: `osl_notes` has UI command strings that are
+// entirely truthful sentences, and no backend command registered anywhere. This
+// gate reads the string, finds nothing forbidden, and passes -- correctly, on
+// its own terms. The sentence is not a lie about what the code does; it is a
+// true sentence about code that is not wired. No property of the STRING
+// distinguishes it from the same sentence about working code.
+//
+// A narrow reachability check bolted on here would cover almost nothing --
+// registry ids are not command names, and most UI strings carry no capability
+// marker at all -- while making this gate LOOK more complete. That is the
+// false-confidence failure this file exists to prevent.
+//
+// That class is caught by a DIFFERENT gate with a different input: a
+// reachability sweep over generate_handler! and the call graph. It belongs with
+// whoever owns app Rust. See "F0" in docs/design/osl-public-claim-allowlist.md.
+
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import process from "node:process";

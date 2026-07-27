@@ -234,7 +234,43 @@ Two rules that follow from the table and are easy to get wrong:
 - **A claim assembled from two eligible rows is not automatically eligible.** "Encrypted
   and it disappears" is not A2 + burn; it is a new claim, and it is false.
 
-## F0 · Structural gap — two lists that must agree, with nothing enforcing it
+## F0 · The claim gates cannot catch unreachable code — a class, not a bug
+
+**Recorded 2026-07-27**, after the crypto lane's sweep found **17 subsystems with zero production
+callers** (`docs/reports/crypto-lane-2026-07-26.md`), among them encrypted Notes, a chunked asset
+vault, LAN collaboration, a plugin sandbox, the duress wipe engine, signed burn alerts, keyserver
+wrapped-key deletion and timed-message expiry.
+
+**`check-app-claims.mjs` is a STRING gate and cannot catch this class by construction.** It answers
+one question: does this text contain a §D phrase? `osl_notes` has UI command strings that are
+*entirely truthful sentences* with no backend command registered anywhere. The gate reads them, finds
+nothing forbidden, and passes — correctly, on its own terms. The sentence is not a lie about what the
+code does; it is a true sentence about code that is not wired, and no property of the string
+distinguishes the two.
+
+Bolting a narrow reachability check onto the string gate would cover almost nothing — registry ids
+are not command names, and most UI strings carry no capability marker — while making the gate *look*
+complete. **That is the false-confidence failure the gates exist to prevent**, so it was not done.
+
+**Where the class can be caught:** a reachability sweep over `generate_handler!` and the call graph,
+which is a different gate with a different input, and which the crypto lane has now built once by
+hand. It belongs with whoever owns app Rust.
+
+**Cross-check performed against the 17 (2026-07-27).** Every one maps to a capability already
+recorded here as `Planned` / `implemented-unwired` — duress, bilateral burn and burn alerts, keyserver
+wrapped-key deletion, one-time prekeys, timed deletion, opened receipts, attachments, overlay guards —
+or to something claimed nowhere at all: **Notes, assets, LAN collaboration and plugins have no row in
+this file and no mention on the website.** So the sweep produced **no live false claim** on the
+surfaces this file governs. That is the conservatism holding against a defect class it was not
+designed for, not evidence the gates are sufficient.
+
+**Scope of that statement, stated precisely:** it was checked against the rows in this file and
+against the deployed website copy. It was **not** checked against every checklist row, and thirteen
+of the seventeen are Codex counts the crypto lane explicitly marked **unverified** — only
+`post_wrapped_key`, `fetch_wrapped_key`, `BurnAlertPayload` and one other were hand-verified. Anyone
+acting on the other thirteen must re-grep first.
+
+## F1 · Structural gap — two lists that must agree, with nothing enforcing it
 
 **Recorded 2026-07-27.** Capability statuses exist in **two places**: the rows in this file, and
 `capability_registry` in `data/pricing.json` in the website repository. `check-claims` verifies that
