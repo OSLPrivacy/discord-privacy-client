@@ -9,6 +9,7 @@ import type { Env } from "../env.js";
 import { removeAttachmentStorage } from "../endpoints/attachment.js";
 import {
   ATTACHMENT_SWEEP_BATCH_SIZE,
+  INCOMPLETE_SESSION_TTL_SECONDS,
   MAX_LIVE_ATTACHMENT_ROWS,
 } from "./attachment-limits.js";
 import { MAX_LIVE_BLOB_ROWS } from "./blob-limits.js";
@@ -94,8 +95,37 @@ const LINK_RECEIPT_RETENTION_SECONDS = 24 * 60 * 60;
 
 export async function sweepExpiredAttachments(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
+  const staleLegacyCreatedBefore = now - INCOMPLETE_SESSION_TTL_SECONDS;
   let deleted = 0;
   while (deleted < MAX_LIVE_ATTACHMENT_ROWS) {
+    // Migration 0006 added `content_expires_at`, but a Worker that predates the
+    // new session-budget write path can still create an `uploading` row with a
+    // null promised expiry and the caller's long content TTL in `expires_at`.
+    // With no accepted part receipt, that row is an abandoned quota reservation
+    // once it is older than the same bounded hold applied to current sessions.
+    //
+    // Mark at most one sweep batch expired in a single atomic D1 statement.
+    // This is metadata-only: storage removal still goes through the existing
+    // R2-first path below, and any R2 failure leaves this now-expired row in D1
+    // for a later retry.
+    await env.DB.prepare(
+      `UPDATE attachment_objects SET expires_at = ?
+        WHERE id IN (
+          SELECT candidate.id
+            FROM attachment_objects AS candidate
+           WHERE candidate.state = 'uploading'
+             AND candidate.content_expires_at IS NULL
+             AND candidate.created_at < ?
+             AND candidate.expires_at >= ?
+             AND NOT EXISTS (
+               SELECT 1 FROM attachment_parts AS part
+                WHERE part.attachment_id = candidate.id
+             )
+           ORDER BY candidate.created_at
+           LIMIT ${ATTACHMENT_SWEEP_BATCH_SIZE}
+        )`,
+    ).bind(now - 1, staleLegacyCreatedBefore, now).run();
+
     const result = await env.DB.prepare(
       `SELECT id, object_key, upload_id FROM attachment_objects
        WHERE expires_at < ? ORDER BY expires_at LIMIT ${ATTACHMENT_SWEEP_BATCH_SIZE}`,

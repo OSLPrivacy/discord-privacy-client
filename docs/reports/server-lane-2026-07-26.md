@@ -2574,3 +2574,161 @@ No checklist edit and no B5 point are claimed. This earns
 fail-closed preparatory D1 boundary, plus `test-proven-only` exact safe
 rollout/rollback evidence. Derived identities remain `implemented-unwired`;
 production migration state remains `unknown` in this task.
+
+---
+
+## Legacy multipart reservation cleanup
+
+Timestamp: `2026-07-26T22:52:39-07:00`.
+
+This follow-up was local-only at committed base
+`cab3d3ec170e2aa933371e88c1051c94d1d68d63`. No production D1/R2 row, object,
+multipart upload, migration, Worker, or deployment was read or mutated.
+
+The defect lead came from the preceding aggregate-only production audit: one
+row was `uploading`, live, had `content_expires_at IS NULL`, and had no
+`attachment_parts`. Those aggregate facts remain `verified-live` only at that
+earlier timestamp. This section does not infer that row's identifier, creator,
+age, exact expiry, upload id, or R2 state.
+
+### Failing-first proof
+
+The current scheduled sweep selected only `expires_at < now`
+(`cipher-store-cf/src/lib/sweep.ts` before this change). A real local
+Miniflare D1/R2 test created:
+
+- a valid R2 multipart upload and `upload_id`;
+- an old `state = 'uploading'` metadata row;
+- `content_expires_at = NULL`;
+- a future legacy `expires_at`;
+- zero D1 part receipts.
+
+The test also uploaded one R2 part directly without creating a D1 receipt, so
+the multipart handle was non-vacuous while the metadata shape exactly exercised
+the no-part predicate. Before the fix:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+  ./node_modules/.bin/vitest run test/attachment-sweep.test.ts \
+  -t "stale legacy no-part" --reporter=verbose
+× expires a stale legacy no-part reservation and aborts R2 before metadata removal
+  expected +0 to be 1
+Test Files  1 failed (1)
+Tests  1 failed | 5 skipped (6)
+```
+
+This is `runtime-proven`: a legacy-shaped reservation older than the current
+15-minute incomplete-session hold was not reclaimed while its long
+`expires_at` remained in the future.
+
+### Smallest bounded fix
+
+At the start of each existing attachment sweep batch, one atomic metadata-only
+statement now marks at most `ATTACHMENT_SWEEP_BATCH_SIZE` rows expired when all
+of these are true:
+
+- `state = 'uploading'`;
+- `content_expires_at IS NULL`;
+- `created_at` is older than `INCOMPLETE_SESSION_TTL_SECONDS`;
+- the row is not already expired;
+- no `attachment_parts` receipt exists.
+
+The exact predicate and batch limit are
+`cipher-store-cf/src/lib/sweep.ts:96-127`. The marked row then enters the
+unchanged cleanup path: `removeAttachmentStorage` resumes and aborts the
+multipart upload first (`cipher-store-cf/src/lib/sweep.ts:129-146`;
+`cipher-store-cf/src/endpoints/attachment.ts:562-575`), and only afterward can
+the conditional D1 delete run (`cipher-store-cf/src/lib/sweep.ts:147-155`).
+There is no new direct-delete branch. If R2 abort fails, the now-expired D1
+metadata remains retryable for the next scheduled run.
+
+### Runtime and mutation evidence
+
+The focused real-D1/R2 file passes eight tests:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH \
+  ./node_modules/.bin/vitest run test/attachment-sweep.test.ts \
+  --reporter=verbose
+Test Files  1 passed (1)
+Tests  8 passed (8)
+```
+
+The new positive control records the D1 row count from inside the real resumed
+multipart handle's `abort`: it observes `1`, the subsequent upload-part call
+fails because R2 was aborted, and only then is the final D1 count `0`
+(`cipher-store-cf/test/attachment-sweep.test.ts:161-220`).
+
+The R2-failure control makes `abort` throw, proves metadata was present at that
+moment, then proves the row remains present and marked expired and the real
+multipart upload is still usable
+(`cipher-store-cf/test/attachment-sweep.test.ts:222-284`). Negative controls
+also prove that a fresh legacy row, a current-schema row with non-null promised
+expiry, and a legacy row with a D1 part receipt are not marked or aborted
+(`cipher-store-cf/test/attachment-sweep.test.ts:286-352`).
+
+Candidate baseline in a disposable archive:
+
+```text
+Test Files  1 passed (1)
+Tests  3 passed | 5 skipped (8)
+```
+
+Independent semantic mutations failed as intended:
+
+```text
+legacy mark disabled:
+  stale row: expected 0 to be 1
+
+content_expires_at IS NULL predicate removed:
+  protected controls: expected 1 to be 0
+
+created_at age predicate neutralized while retaining its bind:
+  protected controls: expected 1 to be 0
+
+NOT EXISTS attachment_parts predicate removed:
+  protected controls: expected 1 to be 0
+
+R2 abort call bypassed while D1 deletion remained:
+  expected resumeMultipartUpload call, received 0 calls
+  abort-failure path resolved 1 instead of rejecting
+```
+
+These mutations make both selection safety and R2-before-D1 ordering
+non-vacuous. The controls fail on the exact missing guard rather than on test
+setup or SQL binding errors.
+
+Full Worker and type gates:
+
+```text
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm test
+Test Files  12 passed (12)
+Tests  104 passed (104)
+
+$ PATH=/home/liamw/.nvm/versions/node/v24.14.0/bin:$PATH npm run typecheck
+> tsc --noEmit
+```
+
+### Status boundary
+
+| Claim | Tier | Exact bound |
+|---|---|---|
+| Current local source detects old null-expiry/no-part reservations after 15 minutes | `runtime-proven` | Real D1 selection and real valid multipart handle |
+| Multipart abort precedes metadata removal | `runtime-proven` | Abort callback observes D1 count 1; post-sweep count is 0 |
+| Abort failure retains retryable metadata | `runtime-proven` | Throwing abort leaves count 1 and expired metadata |
+| Fresh, current-schema, and part-receipted rows are excluded | `runtime-proven` | Three nonempty negative controls, each with a valid multipart handle |
+| Local scheduled cleanup path has this behavior | `runtime-proven` | `scheduled()` already calls this exact sweep; real local D1/R2 exercised the called function |
+| Production cleanup has this behavior | `unknown` | No deploy or post-deploy probe was performed |
+| Exact production row origin or R2 multipart state | `unknown` | No row content or R2 state was read |
+
+No migration is needed for this Worker-only repair. A future authorized release
+would deploy the Worker first and then use aggregate-only D1 health counts on a
+later scheduled cycle; it must not directly delete the observed row or manually
+abort an unknown multipart upload.
+
+## Acceptance rows this earns
+
+No checklist edit and no B5 point are claimed. This earns
+`runtime-proven` local cleanup safety for the legacy reservation shape and
+R2-before-D1 failure ordering. Production remediation, and the specific
+production row's age, origin, identifier, and R2 state, remain `unknown`.
