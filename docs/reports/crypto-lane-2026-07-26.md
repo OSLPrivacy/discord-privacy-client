@@ -1359,3 +1359,158 @@ The 0031 server migration and Worker are not deployed by this lane, so productio
 
 None. This is a fail-closed 0031 client/broker readiness slice; truth must adjudicate any
 future row only after the server and runtime evidence exist.
+
+## Round 13 — native visible-row runtime receipt product path
+
+Source commit:
+`8ac72658b3790c69d0704f14a0f7f3c10d316099` (parent
+`ff117dd12422444b0e41aa45e20dd2c3397226d3`, tree
+`78c74b937bc8bdd71c8be8496cacae63c048f43e`). The commit remains an ancestor of
+the current product head. It contains exactly these eight paths:
+
+- `apps/osl-hub-ui/src/discord-headless-qa-adapter.ts`
+- `apps/osl-hub-ui/src/main.ts`
+- `apps/osl-hub-ui/src/native-visible-row-runtime-receipt.test.ts`
+- `apps/osl-hub/capabilities/hub.json`
+- `apps/osl-hub/permissions/hub.toml`
+- `apps/osl-hub/src/broker.rs`
+- `apps/osl-hub/src/main.rs`
+- `apps/osl-hub/src/native_discord_adapter.rs`
+
+The QA-only product caller is source-reachable through the protected Discord header's
+`#discord-qa-row-proof` click handler, the zero-input
+`request_native_discord_visible_row_qa_receipt` invoke, its capability and permission, and
+the real Tauri handler registration (`main.ts:2510,4492,6384`;
+`discord-headless-qa-adapter.ts:171-176`; `capabilities/hub.json:82`;
+`permissions/hub.toml:82-84`; `main.rs:1825,7458`). The command accepts no renderer-selected
+target, row, identity, scope, path, or receipt data.
+
+On Windows, the command binds the trusted OSL main HWND/process, re-proves the lock and
+overlay context, and asks the adopted Discord host for the exact current accessibility
+target. The native producer uses the same visible-row read as the product overlay and
+supplies producer-owned poster/message/carrier evidence plus peer-anchor and
+different-nonself controls (`native_discord_adapter.rs:6979-7018,10287-10315`). The broker
+runs the resulting rows through the existing production authentication/orientation function
+and reduces them to bounded counts and tri-state outcomes
+(`broker.rs:2186-2400,2407-2425`). After the native/broker work, `main.rs` rechecks the same
+context and lock before `broker.rs` atomically writes only the nonsecret receipt
+(`main.rs:1860-1863`; `broker.rs:2178,2431-2437`).
+
+The receipt binds build hash, hashed OSL HWND/PID, hashed Discord HWND/PID, scope hash, and
+window generation. It carries row/proof and authenticated own/peer counts plus explicit
+`accepted`, `refused`, or `not_observed` outcomes for own outgoing, peer incoming, peer
+anchor, zero rows, missing proof, mixed scope, different nonself, replay, reorder, and
+persistence. It cannot represent plaintext, raw HWND/PID, account/message IDs, or
+carrier/blob/ciphertext/payload IDs.
+
+### Exact focused evidence
+
+Both Rust commands ran through `osl-cargo` with the explicit
+`core,discord-qa-shell` feature set:
+
+- `osl-cargo test --manifest-path apps/osl-hub/Cargo.toml --lib --features
+  core,discord-qa-shell
+  native_visible_row_runtime_receipt_is_tri_state_nonsecret_and_atomic`:
+  1 passed, 0 failed, 768 filtered out.
+- `osl-cargo test --manifest-path apps/osl-hub/Cargo.toml --lib --features
+  core,discord-qa-shell
+  native_visible_row_qa_osl_target_hash_binds_window_and_process`:
+  1 passed, 0 failed, 768 filtered out.
+
+The focused UI source/mutation gate
+`npm test -- --run src/native-visible-row-runtime-receipt.test.ts` passed 3/3 before the
+immutable commit. It removes registration, ACL, capability, caller, producer, broker,
+peer-anchor, refusal, and persistence edges one at a time and requires every mutation to
+fail. `git diff-tree --check 8ac7265^ 8ac7265` produced no output.
+
+Status is `source/test-proven-only`. The Windows-only accessibility code was not compiled for
+Windows and no adopted live Discord HWND, real Windows receipt, VM harness, deployment,
+focus/input action, or network action was exercised. The route is absent without the
+`discord-qa-shell` feature and the matching UI QA environment flag. Runtime acceptance,
+two-identity behavior, and a live receipt therefore remain `unknown`.
+
+## Acceptance rows this earns
+
+None. This is `+0` pending independent Windows runtime audit; it makes no production-runtime
+claim.
+
+## Round 14 — refuse peer burn notices until content admission is reachable
+
+Source commit:
+`797d0577535baa1447dd7528bf3bdd5e0cf436b2` (parent
+`940c202fe343d3b49cfac4f959cad704ce44f54c`, tree
+`269b0186d09cc708b8a6d206c6bbba6f13999bd0`). The exact source scope is
+`apps/osl-hub/src/broker.rs` and `apps/osl-hub/src/security.rs`.
+
+The frozen `e40bc93` zero-caller inventory was rechecked before choosing this leaf. Timed
+fail-closed overlays and the legacy `DuressEngine` remain implemented-unwired, but their
+present-tense claims have already been corrected and mutation-gated. The separate Burn-password
+path remains reachable; it was not changed.
+
+The next severe crypto-owned reachability gap was the bilateral text burn floor:
+`security::next_peer_send_seq`, `peer_scope_commitment`, and
+`admit_peer_content_seq` remain definitions with zero production callers. Production content
+therefore carries no authenticated sequence/commitment and does not consult the recorded floor
+before plaintext release. Despite that, the live control-inbox drain authenticated a peer `0x0A`
+notice, called `apply_peer_revocation`, returned a positive ack, and deleted the request.
+Persisting a dormant floor was being reported as enforced behavior.
+
+### Fail-closed production behavior
+
+The live drain still performs sender/scope routing, v3 type authentication, decryption, and strict
+notice parsing. A well-formed authenticated peer notice now produces
+`RevocationRowOutcome::EnforcementUnavailable`:
+
+- no dormant floor is applied;
+- no positive acknowledgement is posted;
+- the control-inbox row is not deleted; and
+- the row contributes to the deferred count for a later build whose content path really calls the
+  admission contract.
+
+Malformed or unauthenticated notices remain permanently unappliable and may be retired. The
+separate inbound `0x0B` acknowledgment path still calls `record_revocation_ack`; this correction
+does not suppress receipts for a request whose enforcement was independently completed elsewhere.
+
+The source comments now explicitly state that local-row and OSL cipher-store cleanup destroys no
+per-message key or long-term decryption authority. `apply_peer_revocation` is labelled as a future
+sequence-bearing contract helper, not production enforcement.
+
+### Exact focused evidence
+
+Both commands used `osl-cargo` with `--features core`; this compiles the library path, not
+`main.rs` command handlers:
+
+- `osl-cargo test --manifest-path apps/osl-hub/Cargo.toml --lib --features core
+  production_revocation_notice_refuses_until_content_admission_is_reachable`:
+  1 passed, 0 failed, 708 filtered out.
+- `osl-cargo test --manifest-path apps/osl-hub/Cargo.toml --lib --features core
+  inbound_revocation_drain_retirement_follows_runtime_apply_outcome`:
+  1 passed, 0 failed, 708 filtered out.
+
+The source gate has positive controls for the live text drain and inbox client, ordered
+authentication/decrypt/parse stages, explicit non-retiring outcome, the still-reachable ack branch,
+and all three implemented contract definitions. It fails mutations that:
+
+1. turn the unsupported notice into `Applied` with an ack;
+2. make unsupported outcomes retire;
+3. remove or alias the exact authentication call;
+4. remove or alias the exact decrypt call;
+5. remove or alias strict notice parsing;
+6. remove or alias the real ack recorder;
+7. remove the production drain-to-policy call; or
+8. add a synthetic production caller for any of the three dormant sequence/admission functions.
+
+The first two attempted test runs exposed detector false-greens—mixed coordinate spaces, then
+substring aliases such as `_DISABLED`—and failed. Both detector defects were corrected before the
+final passing exact run. `git diff-tree --check 797d057^ 797d057` produced no output.
+
+Status is `source/test-proven-only`. No live peer notice, two-identity exchange, keyserver mutation,
+deployment, browser, or runtime receipt was exercised. The request can remain queued indefinitely
+in this build; that is intentional fail-closed behavior, not evidence that bilateral burn works.
+Restoring positive acknowledgements requires a real sequence-bearing content envelope and an
+`admit_peer_content_seq` call before every plaintext release.
+
+## Acceptance rows this earns
+
+None. This is a production false-ack/data-retirement correction and reachability gate, `+0`
+pending independent audit; bilateral burn remains unavailable and unproved end to end.
