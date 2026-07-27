@@ -35,7 +35,7 @@ they qualify work. Scope additions increase the denominator; regressions remove 
 ## Progress snapshot
 
 ```text
-Provisional verified progress: 99 / 303 points = 33%   (was 85 / 303 = 28%, which understated section H by 2)
+Provisional verified progress: 100 / 303 points = 33%   (was 85 / 303 = 28%, which understated section H by 2)
 Confidence: low (several dirty concurrent worktrees and exact-build rechecks remain)
 Critical path:
 security identity/attribution → reviewed ratchet → two-identity proof
@@ -279,7 +279,21 @@ away, per master §16.3.
   or appended operational wording independently in every referenced capability `evidence` and
   `public_note`. This is local `test-proven-only` evidence, unpushed and undeployed; it proves no
   DeleteMe efficacy, live source refresh, or OSL runtime equivalence.
-- Arithmetic is now **98 + 1 = 99 / 303**.
+- Website/A8 +1 · exact website chain ending at
+  `d158c88a188a6a006ea21c0a9fc0c630f513e91a` (parent
+  `8abdc2ff28c9c3cf6385bc66250f30407845a894`, tree
+  `6295020f7f20900c9ff869d479b744f4e7d131ef`, gate blob
+  `51a8b0551e91155597c84f7b2abfd9295bc6cd31`, archive SHA-256
+  `f5cafc221a879438fbaf08105a75ce591ec32eaeba96b0d9fbb1fc04907d5e5a`) is
+  independently accepted at the source/static-test tier. The authoritative machine-readable
+  census has raw SHA-256
+  `a7468b174b07301873eee1a1a9e5e01f5af30716df2dbb4bac13f65820c83246` and
+  accounts for exactly 18 backends, nine bound public claims, and 44 source anchors. The final
+  gate passes 16/16 public surfaces, 419/419 self-test fixtures, and 38/38 inherited receiver
+  controls; it closes all eight previously rejected DOM alias/order/lifecycle cases, including
+  harmless remove and front-insertion distinctions. This is unpushed and undeployed and proves
+  no named runtime or release bytes; A6 remains 0/5.
+- Arithmetic is now **99 + 1 = 100 / 303**.
 
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
@@ -341,7 +355,7 @@ recorded more favourably than the evidence supported.
 The Telegram bot must calculate the live percentage/ETA from current weighted acceptance items and
 timestamped deltas, not keep this number manually forever.
 
-## A · Identity, trust, storage, and security — 40 points (8 earned)
+## A · Identity, trust, storage, and security — 40 points (9 earned)
 
 - 🟨 **A1 · Local OSL identity and recovery** — create/import/unlock exists; recovery/capture and
   password-at-rest claims need reconciliation. `needs: none` `weight: 6` `earned: 3`
@@ -365,7 +379,7 @@ timestamped deltas, not keep this number manually forever.
   not cryptographic — `MessageStore::put` (`crates/store/src/lib.rs:194-206`) never writes
   `wrapped_key`, so every `wrapped_key = NULL` on the burn paths nulls an already-null column.
   `needs: A1` `weight: 5` `earned: 0`
-- 🟨 **A8 · Secret zeroization and metadata minimization** — **+1 awarded 2026-07-26 by the checklist
+- ✅ **A8 · Secret zeroization and metadata minimization** — **+1 awarded 2026-07-26 by the checklist
   writer, which the crypto lane did not claim.** Both halves of the row got real work with evidence
   of the right kind. Zeroization: `crates/keystore/src/storage.rs:75` now derives
   `Zeroize, ZeroizeOnDrop` on the secret-carrying struct, with
@@ -403,8 +417,14 @@ timestamped deltas, not keep this number manually forever.
   `:621-629`, `:5190-5192`). A lexical sink inventory was independently bypassed with
   `File::create_new` plus `std::io::copy`, so it was not accepted as product completeness.
   Deterministic blind indexes also preserve equality/frequency, counts, sizes, order and burn
-  timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
-  `needs: none` `weight: 4` `earned: 3`
+  timing, so A6/social-graph secrecy is explicitly unearned. **Final A8 truth-accounting point
+  awarded 2026-07-27:** exact website chain `d158c88a188a6a006ea21c0a9fc0c630f513e91a`
+  binds every public at-rest claim to one machine-readable 18-backend/44-anchor census and
+  independently passes 419/419 static gate fixtures, including contradictory additions,
+  missing/unwired backends, unreachable truthful strings, and DOM order/lifecycle distinctions.
+  The census expressly limits itself to source-inspected/static-test-proven evidence; runtime,
+  release, migration, swap, backup, and A6 claims remain unproved.
+  `needs: none` `weight: 4` `earned: 4`
 
 ## B · Encryption and two-identity communication — 30 points (8 earned)
 
