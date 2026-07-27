@@ -812,6 +812,7 @@ function Write-Verdict {
 
 function New-BlockedVerdict {
     param(
+        [string]$RequestSha256 = '',
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][string]$VmName,
         [Parameter(Mandatory)][string]$Diagnosis,
@@ -826,6 +827,7 @@ function New-BlockedVerdict {
         agentStartedUtc = $AgentStartedUtc.ToString('o')
         finishedUtc = [datetime]::UtcNow.ToString('o')
         overall = 'blocked'
+        requestSha256 = $RequestSha256
         diagnosis = $Diagnosis
         steps = @()
         diffKey = ''
@@ -854,7 +856,7 @@ function Process-RunDirectory {
     $runIdFromPrefix = ($RunBlobPrefix -split '/')[-1]
     if ($actualSha -cne $expectedSha) {
         Write-Log "torn request $requestBlob expected=$expectedSha actual=$actualSha"
-        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis 'torn-request'
+        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis 'torn-request' -RequestSha256 $actualSha
         Write-Verdict -RunBlobPrefix $RunBlobPrefix -Verdict $blocked
         return $true
     }
@@ -871,7 +873,7 @@ function Process-RunDirectory {
         [void](Get-PropertyValue -Object $request -Name 'identifier' -Required)
         $steps = @(Get-PropertyValue -Object $request -Name 'steps' -Required)
     } catch {
-        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis ('invalid-request: ' + $_.Exception.Message)
+        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -Diagnosis ('invalid-request: ' + $_.Exception.Message) -RequestSha256 $actualSha
         Write-Verdict -RunBlobPrefix $RunBlobPrefix -Verdict $blocked
         return $true
     }
@@ -897,6 +899,11 @@ function Process-RunDirectory {
     $verdict = [ordered]@{
         schemaVersion = 1
         runId = $runId
+        # Bind the verdict to the exact request bytes that produced it. A runId alone does not do
+        # this: reusing a runId (which `run --run-id` permits) would let a verdict left by an
+        # earlier attempt be graded as this run's result. The digest is already computed to validate
+        # the .ready sentinel, so binding it costs nothing and closes the reuse case completely.
+        requestSha256 = $actualSha
         vmName = $VmName
         agentSha = Get-AgentSha
         runStartUtc = $runStartUtc.ToString('o')

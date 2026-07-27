@@ -213,6 +213,23 @@ cmd_run() {
     return 5
   fi
 
+  # The verdict must be bound to the request we actually sent, not merely carry the same runId.
+  # `run` permits run-id reuse, so a verdict left by an earlier attempt under the same id would
+  # otherwise be graded as this run's result - freshness at the level of identity rather than time.
+  local sent_sha got_sha
+  sent_sha="$(sha_file "$request_tmp")"
+  got_sha="$(jq -r '.requestSha256 // empty' "$verdict_tmp" 2>/dev/null || true)"
+  if [ -z "$got_sha" ]; then
+    echo "REFUSING VERDICT: it carries no requestSha256, so it cannot be bound to this request (agent too old?)" >&2
+    rm -f -- "$request_tmp" "$verdict_tmp"
+    return 3
+  fi
+  if [ "$got_sha" != "$sent_sha" ]; then
+    echo "REFUSING VERDICT: it answers a different request (verdict requestSha256=$got_sha, we sent $sent_sha)" >&2
+    rm -f -- "$request_tmp" "$verdict_tmp"
+    return 3
+  fi
+
   report_dir="$REPO_ROOT/docs/reports/vmqa/$run_id"
   mkdir -p -- "$report_dir"
   jq . "$verdict_tmp" | tee "$report_dir/verdict.json"
