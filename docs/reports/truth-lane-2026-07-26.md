@@ -1102,3 +1102,42 @@ Checklist score remains **96 / 303**. Crypto, Scrub and VM in-flight claims were
 ## Acceptance rows this earns
 
 None.
+
+---
+
+## 21 · Tonight's three shortest honest +1 boundaries
+
+Owner priority is point acquisition without converting implementation into runtime evidence. This
+map uses only completed evidence already accepted at r13. It does not consume the dirty Scrub,
+release, crypto or VM worktrees as proof, and it does not change the checklist.
+
+| Rank | Exact row and possible delta | Why accepted evidence stops short | Single missing real boundary / probe | Owner lane | Executable command or artifact contract | External mutation / owner confirmation |
+|---:|---|---|---|---|---|---|
+| 1 | **C4 · Production tri-state sent proof**, `1/4 → 2/4` | Discord visibly accepted clean multi-line carriers in the correct Deckard conversation, but OSL reported those sends as failures. The accepted row already says sends landed while receipts lied. A staged or source-level fix is not a production sent proof. | On one exact shipping-config build, perform one authorised send and prove the returned terminal state is `Sent`, with `placed=true` and `enter_sent=true`, while Discord contains exactly one corresponding new row and the composer is empty. This crosses the row's duplicate-safe boundary by removing the false-negative result that could trigger a second send; the command exposes no caller-supplied idempotency token, so inventing a same-token retry would not be evidence. Remaining authority-mode and broader production coverage stay unearned. | Native Discord adapter / QA lane | One evidence bundle must bind executable SHA-256 and run start; retain the command response with `carrier.status=Sent`, `placed=true`, `enter_sent=true`; prove byte-exact pre-Enter readback and an empty post-Enter composer; and include a screenshot plus before/after row count showing exactly one new carrier in the named conversation. No stale append-only trail or QA-shell-only row proof is admissible as the production result. | **Yes.** It sends one real Discord message. Obtain owner confirmation for the target conversation and text before running. |
+| 2 | **F2 · Detected sites/accounts and ownership**, `3/5 → 4/5` | Commit `ae9d5a1` completed a fail-closed four-verb/five-frame capture contract, but the lane report correctly leaves the renderer grant/revoke path `test-proven-only` and the VM take `blocked`. No live Windows UI/IPC walkthrough has produced the resulting account list. | Produce one verifier-green exact-build VM walkthrough showing default-unchecked profile state, explicit grant, a positive resulting account list, and persisted revoke. This is the exact walkthrough named by F2; it does not finish F1's Firefox/beyond-Chromium scope or F10's challenge/stop/restart matrix. | Scrub lane, with VM lane providing the interactive Windows subject | After a disposable identity exists: `scripts/qa/vm-run-loop.sh --self-test --share <share>` then `scripts/qa/vm-run-loop.sh --share <share> --verbs list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`. Green means the exact five PNG/JSON pairs `01-browser-profile-picker` through `05-profile-after-revoke`, positive detected-site count, matching run/build/PID hashes, and `processCleanup` stopped/already-exited. Failed takes remain retained. | **Yes, at the current precondition.** The warm VM has no OSL identity; creating one with the staged build registers on the live keyserver. That production identity mutation needs owner confirmation. The four browser verbs themselves do not mutate a provider account. |
+| 3 | **I3 · Green public Rust/TypeScript/selector/security CI**, `1/3 → 2/3` | Commit `b9aa48e` locally wires and refusal-tests the keyserver floor, but it is still one commit ahead of origin. The dedicated release worktree now also has three dirty in-flight release files, which are not evidence. No GitHub-hosted run covers the edited floor, and the accepted Rust gate is red. | Produce one public GitHub-hosted run on one pushed, clean exact SHA where all four named surfaces—Rust, TypeScript, selector, and public security/audit—conclude success, and where the keyserver matrix visibly executes the 297-test floor. One branch run earns only the next point; full marks remain for the stable authoritative line. | Release lane; source owners must first close the Rust failures without weakening or skipping their gates | Preconditions: clean worktree and reviewed commit. External commands, only after approval: `git push origin release-lane-2026-07-26`; then `gh run list --branch release-lane-2026-07-26 --commit <sha> --json databaseId,headSha,name,status,conclusion,url` and `gh run view <run-id> --json headSha,jobs,url --exit-status`. Artifact contract: every cited run has the same `headSha`, all four named gates are `success`, and the keyserver job log contains the floor assertion rather than merely a green matrix shell. | **Yes.** Pushing the branch and starting public CI mutate GitHub state and require owner confirmation. No production deployment or release is part of this probe. |
+
+### Why B6 is not in the top three tonight
+
+**B6 · Controlled two-identity proof** remains the next high-value target, not a smaller dependency
+chain. Its row is still gated by B3/B4/B5; B4 is 0, B5 is partial, the VM report says the crypto pair
+has neither Discord nor an OSL identity, and completed evidence does not show a peer receive/eye
+path. The one-sided Deckard screenshot cannot be rounded into two identities.
+
+The first honest B6 point would require a fresh two-profile run with `separate-profiles` and
+`mutual-pairing` green, then P1 and P2 green on the same run: A sends, B drives the real drain,
+decrypts, renders, and attributes the row to A. The existing command contract is:
+
+```powershell
+scripts\qa\osl-p2p-loop.ps1 -BundleB org.oslprivacy.hubqab `
+  -TempRootB "<launcher tempRoot>" `
+  -ConfirmDriveLiveConversation -OperatorDrivesReceiveSide
+```
+
+That run currently also requires creating/registering B's disposable identity and driving a real
+Discord conversation, both external mutations requiring owner confirmation. Offline queue,
+restart, receipt ordering, view-once, burn and the remaining B6 points stay unearned.
+
+## Acceptance rows this earns
+
+None.
