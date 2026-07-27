@@ -823,6 +823,53 @@ non-rotating root already exists in substance; it just is not published.
 to a person. Anyone can generate a root key and register its derived id. Human
 identity binding remains the safety-number ceremony, and nothing here replaces it.
 
+## The two suites do not have equal credibility — do not average them
+
+Stated plainly because both report a green number and those numbers do not mean
+the same thing.
+
+**`keyserver-cf` runs under `@cloudflare/vitest-pool-workers`** with real D1 and
+`readD1Migrations` applying the actual `migrations/*.sql` (`vitest.config.ts`).
+Its CHECK constraints, foreign keys and the `BEFORE INSERT` triggers from 0016
+and 0027 are genuinely exercised. When its control-inbox tests say a quota
+holds, a real database enforced it.
+
+**`cipher-store-cf` ran plain vitest under Node** against hand-written doubles.
+Its green suite was compatible with every attachment upload in production
+returning 500, for the entire life of the feature. That is not a hypothetical
+about that suite; it is what actually happened.
+
+The gap is being closed in the order the evidence dictates, not the order that
+looks tidiest:
+
+1. **Done** (`d5ea447`). The R2 doubles now refuse an unknown-length body with
+   workerd's own message and honour `onlyIf`. This had to come first because
+   *the pool-workers migration does not close it* — a permissive double plus a
+   correct source is a defect with a note on it, not a closed defect, and it
+   could be reintroduced tomorrow with the suite staying green.
+   `test/harness-strictness.test.ts` proves the guard fires, and includes a
+   positive control so it cannot pass by refusing everything.
+2. **In progress.** Migrate cipher-store to `vitest-pool-workers`, which closes
+   most of the D1 gaps and the Node-versus-workerd runtime-global split — the
+   category ranked highest precisely because it has already hidden a
+   production-wide failure once.
+3. **Recorded, not chased.** Two gaps neither step closes:
+   - **KV semantics.** Link-grant single-use replay suppression is a `Map`
+     around a security decision, and production KV is eventually consistent and
+     non-atomic. Same class as HIGH-2. Bounded for now only because the lane is
+     dark behind `LINK_GRANT_ENABLED`; it must be fixed *before* that flag is
+     ever flipped, not after.
+   - **Native rate-limit binding semantics** on the keyserver, which are
+     provider-side and permissive by documentation. Nothing security-critical
+     leans on them — control-inbox admission is enforced by D1 predicates and
+     triggers — but no test can prove the provider's behaviour.
+
+**Still open after all three:** `D1 batch()` atomicity is not modelled, and
+`handleAttachmentComplete` uses `batch()` for exactly the crash-and-retry
+transition those tests exist to prove. Real D1 under pool-workers makes an
+interrupted-batch test possible for the first time, so it is sequenced after
+step 2 rather than written against a shim that cannot express it.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not
