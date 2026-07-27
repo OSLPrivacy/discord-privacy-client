@@ -408,6 +408,48 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## RESOLVED: the shipped binary is now byte-reproducible
+
+Measured, not asserted. Run **30231394207**, after configuring the levers in CI:
+
+| Job | Result |
+|---|---|
+| **hub binary is reproducible** | **success — two identical builds produced the same hash** |
+| | `00cabfc401869919ad257eff6208c9bf036e3d9732da742b286fd2cbd8253fa1` |
+| legacy binary build 1 / 2 | **success** — the legacy app builds again for the first time since May |
+| legacy binary is reproducible | failure — **and this is the control** |
+
+The control is the part that makes this evidence rather than luck. In the same run, on the same
+runner image, the hub binary **with** the determinism flags reproduced exactly while the legacy
+binary **without** them did not. That is a clean A/B: the flags are what changed the outcome.
+
+What did it, in the order I expect them to matter:
+
+- `codegen-units=1` — parallel codegen partitions non-deterministically
+- `-Clink-arg=/Brepro` — the MSVC PE header carries a **build timestamp** by default
+- `--remap-path-prefix=$GITHUB_WORKSPACE=.` — keeps the runner's absolute path out of the binary
+- `CARGO_INCREMENTAL=0`, pinned `SOURCE_DATE_EPOCH`
+
+Sequence for the record: **assumed in both directions → measured NO (run 30230442447) → measured
+YES with named levers (run 30231394207)**, and none of it required touching
+`apps/osl-hub/Cargo.toml`.
+
+### Two of my own earlier positions were wrong, and I have corrected them
+
+1. **My `hub deterministic profile exists` preflight was a hard failure.** I wrote it believing the
+   profile was the lever. It is not — reproducibility was achieved with that profile still absent.
+   Keeping it fatal would block the workflow forever over a no-op. It is now informational and
+   exits 0, printing why, and says that if the profile is ever added the flags should move into it
+   so there is one source of truth.
+2. **I recommended adding `[profile.release-deterministic]` to `apps/osl-hub/Cargo.toml`.**
+   Withdraw that. It would have changed nothing, avoided a contested serialized central file for no
+   gain, and left a reproducibility claim resting on an empty profile. `Reproducible release` can
+   now be argued for the **hub binary** on evidence — subject to truth's allowlist judgement, and
+   noting it is the binary that is proven, not yet the installer.
+
+The legacy job now carries the same flags, since the A/B control is already recorded above and a
+permanently red legacy check is just noise.
+
 ## Verified before rebasing: the keyserver fix is NOT on the integration line
 
 Asked to verify `5cd4f81` from HEAD before starting the rebase. The answer is that it does not yet

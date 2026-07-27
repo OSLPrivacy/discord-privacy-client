@@ -48,12 +48,10 @@ jobs:
           fi
           echo "frontend dist tree-hash \`$first\` reproduced exactly." >> "$GITHUB_STEP_SUMMARY"
 
-  # apps/osl-hub declares its OWN [workspace], so it does not inherit the root
-  # Cargo.toml's [profile.release-deterministic]. The shipped binary currently
-  # has no deterministic profile at all. This preflight makes that a loud,
-  # actionable failure instead of a silent gap behind a green legacy check.
+  # Informational only. Determinism is configured in the hub-binary job, not by
+  # this profile - see the note this step prints.
   hub-profile-preflight:
-    name: hub deterministic profile exists
+    name: hub deterministic profile note
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -63,20 +61,22 @@ jobs:
             echo "apps/osl-hub declares [profile.release-deterministic]."
             exit 0
           fi
-          cat >&2 <<'MSG'
-          ::error::apps/osl-hub/Cargo.toml has no [profile.release-deterministic].
-          apps/osl-hub is an isolated Cargo workspace and does NOT inherit the root
-          profile, so the binary that actually ships cannot be built deterministically.
-          Owner: the crate owner for apps/osl-hub (this release lane does not edit
-          apps/**). Required addition to apps/osl-hub/Cargo.toml:
+          cat <<'MSG'
+          NOTE: apps/osl-hub/Cargo.toml has no [profile.release-deterministic].
+          That is no longer a blocker, and this check is deliberately NOT fatal.
 
-            [profile.release-deterministic]
-            inherits = "release"
-            # keep these pinned in step with the root profile
+          The root profile of that name contains only `inherits = "release"` and a
+          comment citing a design document absent from this repository. It pins no
+          determinism flags, so adding it here would change nothing while making a
+          reproducibility claim look supported. Determinism is configured in the
+          hub-binary job instead - codegen-units=1, /Brepro, --remap-path-prefix,
+          CARGO_INCREMENTAL=0 - and osl-privacy-hub.exe reproduced exactly on
+          2026-07-26 (run 30231394207) with those set and this profile still absent.
 
-          Tracked in docs/reports/release-lane-2026-07-26.md.
+          Adding the profile is optional consolidation, not a prerequisite. If it is
+          added, move the flags into it and delete them here so there is one source.
           MSG
-          exit 1
+          exit 0
 
   hub-binary:
     name: hub binary build ${{ matrix.run }}
@@ -215,8 +215,21 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+      # Same levers as the hub job. Run 30231394207 is the recorded control:
+      # the hub binary WITH these flags reproduced exactly while this legacy
+      # binary WITHOUT them did not, which is what shows the flags did it.
       - name: Build deterministic
-        run: cargo build --profile release-deterministic
+        shell: bash
+        env:
+          RUSTFLAGS: >-
+            --remap-path-prefix=${{ github.workspace }}=.
+            -Clink-arg=/Brepro
+          CARGO_INCREMENTAL: '0'
+          SOURCE_DATE_EPOCH: '1700000000'
+        run: |
+          cargo build --profile release-deterministic \
+            --config 'profile.release-deterministic.codegen-units=1' \
+            --config 'profile.release-deterministic.incremental=false'
       - name: Hash artifact
         shell: bash
         run: |
