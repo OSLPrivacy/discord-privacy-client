@@ -62,6 +62,20 @@ az vm list -d --query "[?powerState=='VM running'].name" -o tsv   # leak check, 
 
 **Deallocate when finished.** A `D2s_v3` left running is the only way this costs real money.
 
+### Record the store schema version in the lineage
+
+The store schema is now **v4**, and v4 bumps `SCHEMA_VERSION`, so an **older binary refuses to open
+a database a v4 build has opened**. That is the correct, safe failure — but it is indistinguishable
+from a broken build at a glance, and this gate is exactly where mixed binaries meet one profile: a
+snapshot taken before v4, restored later, and pointed at a v4 database.
+
+So the cold lineage must record the store schema version it was built against, in the snapshot tags
+alongside `lineage=release-cold`. Any snapshot predating v4 must say so. If a candidate refuses to
+start on a restored VM, check the schema version before filing it as a bad build.
+
+This does not affect a genuinely cold image — it has no database at all — but it does affect every
+warm image, and it affects any cold image reused after a schema bump.
+
 ### Creating the cold lineage — it must be *provably* cold
 
 Two lineages share this subscription and must never be confused. Scrub's first snapshot,
