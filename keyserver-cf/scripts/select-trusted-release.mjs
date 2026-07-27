@@ -20,6 +20,9 @@ import {
   loadDeploymentEvidenceVerifierChallenge,
   readDeploymentEvidenceReceipt,
 } from "./deployment-evidence-receipt-io.mjs";
+import {
+  UNPROVISIONED_DEPLOYMENT_EVIDENCE_VERIFIER_STORE,
+} from "./deployment-evidence-verifier-store.mjs";
 
 const FLAGS = Object.freeze([
   "--expected-commit",
@@ -99,11 +102,9 @@ export async function runTrustedReleaseSelectionCli(
   const trustedProducers =
     dependencies.trustedProducers ??
     TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS;
-  const consumeReceipt =
-    dependencies.consumeReceipt ?? consumeDeploymentEvidenceOnce;
-  const loadVerifierChallenge =
-    dependencies.loadVerifierChallenge ??
-    loadDeploymentEvidenceVerifierChallenge;
+  const verifierStore =
+    dependencies.verifierStore ??
+    UNPROVISIONED_DEPLOYMENT_EVIDENCE_VERIFIER_STORE;
 
   const producerReceipt = await loadProducerReceipt(
     options.producerReceiptPath,
@@ -119,9 +120,9 @@ export async function runTrustedReleaseSelectionCli(
       "deployment evidence producer is not independently trusted",
     );
   }
-  const verifierChallenge = await loadVerifierChallenge(
+  const verifierChallenge = await loadDeploymentEvidenceVerifierChallenge(
     producerReceipt.producer_key_id,
-    { nowMs: now() },
+    { nowMs: now(), verifierStore },
   );
   const expectedMigrations = await loadMigrations(options.expectedCommit);
   const sourceReceipt = createSenderFilterDeploymentReceipt({
@@ -163,7 +164,9 @@ export async function runTrustedReleaseSelectionCli(
     },
     { trustedProducers, nowMs: now() },
   );
-  await consumeReceipt(verifiedProducerReceipt);
+  await consumeDeploymentEvidenceOnce(verifiedProducerReceipt, {
+    verifierStore,
+  });
   write(`${JSON.stringify(selection, null, 2)}\n`);
   return selection;
 }

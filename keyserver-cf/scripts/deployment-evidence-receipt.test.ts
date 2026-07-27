@@ -1,16 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import {
-  mkdtemp,
-  rename,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  deploymentEvidenceSenderFilterCanonicalBytes,
   TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS,
   verifyDeploymentEvidenceReceipt,
 } from "./deployment-evidence-receipt-contract.mjs";
@@ -22,6 +18,14 @@ import {
   readDeploymentEvidenceReceipt,
 } from "./deployment-evidence-receipt-io.mjs";
 import {
+  createD1DeploymentEvidenceVerifierStore,
+} from "./deployment-evidence-verifier-store.mjs";
+import { canonicalControlInboxGetBytes } from "../src/lib/canonical.js";
+import {
+  canonicalJson,
+  sha256,
+} from "./readiness-artifact-contract.mjs";
+import {
   DEPLOYMENT_FIXTURE_ACTIVE_VERSION,
   DEPLOYMENT_FIXTURE_ARCHIVE,
   DEPLOYMENT_FIXTURE_COMMIT,
@@ -31,13 +35,13 @@ import {
   TEST_PRODUCER_IDENTITY,
   TEST_PRODUCER_KEY_ID,
   TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+  createDeploymentEvidenceVerifierStoreFixture,
   deploymentEvidenceChallenge,
   deploymentEvidenceEnvelope,
   deploymentEvidenceExpectation,
   deploymentEvidencePayload,
   deploymentEvidenceVerifierState,
   signDeploymentEvidencePayload,
-  writeDeploymentEvidenceVerifierStateFixture,
 } from "./deployment-evidence-test-fixture.js";
 
 const REPO_ROOT = path.resolve(
@@ -71,7 +75,7 @@ function challengeRequest(artifact: "A" | "B" = "B") {
   };
 }
 
-describe("producer-owned deployment evidence receipt v2", () => {
+describe("producer-owned deployment evidence receipt v3", () => {
   it("admits nonempty exact Artifact B and Artifact A observation fixtures", () => {
     const finalReceipt = verify(
       deploymentEvidencePayload("B"),
@@ -95,7 +99,10 @@ describe("producer-owned deployment evidence receipt v2", () => {
           deployment_observation_field_count: 4,
           sender_filter_route: {
             item_count: 1,
-            request_signature_byte_count: 37,
+            request_signature_byte_count: 64,
+            registered_signer: {
+              observation_field_count: 3,
+            },
             response_field_count: 3,
           },
         },
@@ -156,6 +163,17 @@ describe("producer-owned deployment evidence receipt v2", () => {
     ).toThrow(/producer signature is invalid/);
   });
 
+  it("keeps the production verifier binding unprovisioned and fail closed", async () => {
+    await expect(
+      loadDeploymentEvidenceVerifierChallenge(TEST_PRODUCER_KEY_ID, {
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).rejects.toThrow(/verifier store is unprovisioned/);
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload())),
+    ).rejects.toThrow(/verifier store is unprovisioned/);
+  });
+
   it("refuses every zeroed raw-observation or lineage digest", () => {
     const zeroCases: Array<
       [string, (payload: Record<string, any>) => void]
@@ -175,6 +193,9 @@ describe("producer-owned deployment evidence receipt v2", () => {
       ["Worker bundle", (p) => { p.worker.bundle_sha256 = "0".repeat(64); }],
       ["deployment observation", (p) => { p.worker.deployment_observation_sha256 = "0".repeat(64); }],
       ["health response", (p) => { p.worker.health_route.response_sha256 = "0".repeat(64); }],
+      ["registered signer query", (p) => { p.worker.sender_filter_route.registered_signer.lookup_query_sha256 = "0".repeat(64); }],
+      ["registered signer observation", (p) => { p.worker.sender_filter_route.registered_signer.observation_sha256 = "0".repeat(64); }],
+      ["canonical request", (p) => { p.worker.sender_filter_route.request_canonical_sha256 = "0".repeat(64); }],
       ["request signature", (p) => { p.worker.sender_filter_route.request_signature_sha256 = "0".repeat(64); }],
       ["sender response", (p) => { p.worker.sender_filter_route.response_sha256 = "0".repeat(64); }],
       ["capability response", (p) => { p.sender_filter.health_response_sha256 = "0".repeat(64); }],
@@ -260,7 +281,17 @@ describe("producer-owned deployment evidence receipt v2", () => {
       [
         "signature bytes",
         (p) => { p.worker.sender_filter_route.request_signature_b64 = "AQ=="; },
-        /request observation mismatch/,
+        /canonical nonempty base64|exactly 64 bytes/,
+      ],
+      [
+        "registered signer bytes",
+        (p) => { p.worker.sender_filter_route.registered_signer.observation.user_id = "other"; },
+        /registered signer observation digest mismatch/,
+      ],
+      [
+        "registered signer cardinality",
+        (p) => { p.worker.sender_filter_route.registered_signer.observation_field_count = 0; },
+        /raw cardinality/,
       ],
       [
         "sender bytes",
@@ -300,6 +331,84 @@ describe("producer-owned deployment evidence receipt v2", () => {
     }
   });
 
+  it("verifies exactly 64 Ed25519 signature bytes over production canonical request bytes", () => {
+    const payload = deploymentEvidencePayload();
+    const route = payload.worker.sender_filter_route;
+    expect(
+      Buffer.from(
+        deploymentEvidenceSenderFilterCanonicalBytes({
+          requestUserId: route.request_user_id,
+          requestTimestampMs: route.request_timestamp_ms,
+          requestSenderId: route.request_sender_id,
+        }),
+      ),
+    ).toEqual(
+      Buffer.from(
+        canonicalControlInboxGetBytes({
+          user_id: route.request_user_id,
+          timestamp_ms: route.request_timestamp_ms,
+          sender_id: route.request_sender_id,
+        }),
+      ),
+    );
+    expect(() => verify(payload)).not.toThrow();
+
+    const shortSignature = deploymentEvidencePayload();
+    const shortBytes = Buffer.alloc(63, 0x41);
+    shortSignature.worker.sender_filter_route.request_signature_b64 =
+      shortBytes.toString("base64");
+    shortSignature.worker.sender_filter_route.request_signature_byte_count =
+      shortBytes.byteLength;
+    shortSignature.worker.sender_filter_route.request_signature_sha256 =
+      sha256(shortBytes);
+    expect(() => verify(shortSignature)).toThrow(
+      /exactly 64 bytes/,
+    );
+
+    const arbitrarySignature = deploymentEvidencePayload();
+    const arbitraryBytes = Buffer.alloc(64, 0x41);
+    arbitrarySignature.worker.sender_filter_route.request_signature_b64 =
+      arbitraryBytes.toString("base64");
+    arbitrarySignature.worker.sender_filter_route.request_signature_sha256 =
+      sha256(arbitraryBytes);
+    expect(() => verify(arbitrarySignature)).toThrow(
+      /does not verify against the registered key/,
+    );
+
+    const wrongRegisteredKey = deploymentEvidencePayload();
+    const otherKey = generateKeyPairSync("ed25519").publicKey.export({
+      format: "der",
+      type: "spki",
+    });
+    const signer =
+      wrongRegisteredKey.worker.sender_filter_route.registered_signer;
+    signer.observation.ik_ed25519_pub_b64 =
+      Buffer.from(otherKey).subarray(-32).toString("base64");
+    signer.observation_sha256 = sha256(
+      Buffer.from(canonicalJson(signer.observation)),
+    );
+    expect(() => verify(wrongRegisteredKey)).toThrow(
+      /does not verify against the registered key/,
+    );
+
+    const changedRequest = deploymentEvidencePayload();
+    changedRequest.worker.sender_filter_route.request_sender_id =
+      "sender-tampered";
+    changedRequest.worker.sender_filter_route.request_canonical_sha256 =
+      sha256(
+        deploymentEvidenceSenderFilterCanonicalBytes({
+          requestUserId:
+            changedRequest.worker.sender_filter_route.request_user_id,
+          requestTimestampMs:
+            changedRequest.worker.sender_filter_route.request_timestamp_ms,
+          requestSenderId: "sender-tampered",
+        }),
+      );
+    expect(() => verify(changedRequest)).toThrow(
+      /does not verify against the registered key/,
+    );
+  });
+
   it("refuses a producer-chosen or forged challenge even when re-signed", () => {
     const forgedNonce = deploymentEvidencePayload();
     forgedNonce.challenge.nonce_b64 = Buffer.alloc(32, 0x41).toString("base64");
@@ -316,10 +425,7 @@ describe("producer-owned deployment evidence receipt v2", () => {
   });
 
   it("refuses a caller-forged challenge even if pure inputs agree", async () => {
-    const testStateDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-forged-challenge-"),
-    );
-    await writeDeploymentEvidenceVerifierStateFixture(testStateDirectory);
+    const verifier = createDeploymentEvidenceVerifierStoreFixture();
     const payload = deploymentEvidencePayload();
     payload.challenge.nonce_b64 =
       Buffer.alloc(32, 0x41).toString("base64");
@@ -334,7 +440,9 @@ describe("producer-owned deployment evidence receipt v2", () => {
       },
     );
     await expect(
-      consumeDeploymentEvidenceOnce(purelyVerified, { testStateDirectory }),
+      consumeDeploymentEvidenceOnce(purelyVerified, {
+        verifierStore: verifier.store,
+      }),
     ).rejects.toThrow(/challenge is absent, forged, stale, or replayed/);
   });
 
@@ -426,18 +534,14 @@ describe("producer-owned deployment evidence receipt v2", () => {
   });
 
   it("issues a nonce only from initialized durable verifier state", async () => {
-    const testStateDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-challenge-"),
-    );
-    await writeDeploymentEvidenceVerifierStateFixture(
-      testStateDirectory,
+    const verifier = createDeploymentEvidenceVerifierStoreFixture(
       "B",
       { pending_challenge: null },
     );
     const challenge = await issueDeploymentEvidenceChallenge(
       challengeRequest(),
       {
-        testStateDirectory,
+        verifierStore: verifier.store,
         nowMs: Date.parse("2026-07-27T11:59:45.000Z"),
         randomBytesFn: () => Buffer.alloc(32, 0x7a),
         randomUuidFn: () =>
@@ -447,37 +551,37 @@ describe("producer-owned deployment evidence receipt v2", () => {
     expect(challenge).toEqual(deploymentEvidenceChallenge());
     await expect(
       loadDeploymentEvidenceVerifierChallenge(TEST_PRODUCER_KEY_ID, {
-        testStateDirectory,
+        verifierStore: verifier.store,
         nowMs: DEPLOYMENT_FIXTURE_NOW,
       }),
     ).resolves.toEqual(challenge);
     await expect(
       issueDeploymentEvidenceChallenge(challengeRequest(), {
-        testStateDirectory,
+        verifierStore: verifier.store,
         nowMs: DEPLOYMENT_FIXTURE_NOW,
       }),
     ).rejects.toThrow(/already has a pending challenge/);
 
-    const emptyStateDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-no-genesis-"),
+    const missing = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {},
+      { missing: true },
     );
     await expect(
       issueDeploymentEvidenceChallenge(challengeRequest(), {
-        testStateDirectory: emptyStateDirectory,
+        verifierStore: missing.store,
         nowMs: DEPLOYMENT_FIXTURE_NOW,
       }),
     ).rejects.toThrow(/state is missing; genesis is forbidden/);
   });
 
-  it("consumes once and refuses replay or deleted-ledger genesis reset", async () => {
-    const testStateDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-consume-"),
-    );
-    const { statePath } =
-      await writeDeploymentEvidenceVerifierStateFixture(testStateDirectory);
+  it("consumes once and refuses replay or caller-file genesis reset", async () => {
+    const verifier = createDeploymentEvidenceVerifierStoreFixture();
     const verified = verify(deploymentEvidencePayload());
     await expect(
-      consumeDeploymentEvidenceOnce(verified, { testStateDirectory }),
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: verifier.store,
+      }),
     ).resolves.toMatchObject({
       sequence: 8,
       current_worker_version: DEPLOYMENT_FIXTURE_ACTIVE_VERSION,
@@ -485,31 +589,41 @@ describe("producer-owned deployment evidence receipt v2", () => {
       pending_challenge: null,
     });
     await expect(
-      consumeDeploymentEvidenceOnce(verified, { testStateDirectory }),
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: verifier.store,
+      }),
     ).rejects.toThrow(/challenge is absent, forged, stale, or replayed/);
 
-    await rename(statePath, `${statePath}.deleted-for-test`);
-    await expect(
-      consumeDeploymentEvidenceOnce(verified, { testStateDirectory }),
-    ).rejects.toThrow(/state is missing; genesis is forbidden/);
-
-    const freshEmptyDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-reset-"),
+    const callerDirectory = await mkdtemp(
+      path.join(tmpdir(), "deployment-verifier-caller-restore-"),
+    );
+    await writeFile(
+      path.join(callerDirectory, `${TEST_PRODUCER_KEY_ID}.json`),
+      JSON.stringify(deploymentEvidenceVerifierState()),
     );
     await expect(
       consumeDeploymentEvidenceOnce(verified, {
-        testStateDirectory: freshEmptyDirectory,
+        verifierStore: verifier.store,
+        testStateDirectory: callerDirectory,
+      } as any),
+    ).rejects.toThrow(/options fields are not exact/);
+    expect(verifier.current()?.state.pending_challenge).toBeNull();
+
+    const missing = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {},
+      { missing: true },
+    );
+    await expect(
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: missing.store,
       }),
     ).rejects.toThrow(/state is missing; genesis is forbidden/);
   });
 
   it("refuses a Worker rollback recorded anywhere in durable history", async () => {
-    const testStateDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-rollback-"),
-    );
     const base = deploymentEvidenceVerifierState();
-    await writeDeploymentEvidenceVerifierStateFixture(
-      testStateDirectory,
+    const rollback = createDeploymentEvidenceVerifierStoreFixture(
       "B",
       {
         seen_worker_versions: [
@@ -524,14 +638,12 @@ describe("producer-owned deployment evidence receipt v2", () => {
     );
     const verified = verify(deploymentEvidencePayload());
     await expect(
-      consumeDeploymentEvidenceOnce(verified, { testStateDirectory }),
+      consumeDeploymentEvidenceOnce(verified, {
+        verifierStore: rollback.store,
+      }),
     ).rejects.toThrow(/Worker rollback or replay refused/);
 
-    const downgradeDirectory = await mkdtemp(
-      path.join(tmpdir(), "deployment-verifier-downgrade-"),
-    );
-    await writeDeploymentEvidenceVerifierStateFixture(
-      downgradeDirectory,
+    const downgrade = createDeploymentEvidenceVerifierStoreFixture(
       "B",
       {
         current_artifact: "B",
@@ -540,10 +652,93 @@ describe("producer-owned deployment evidence receipt v2", () => {
     );
     await expect(
       issueDeploymentEvidenceChallenge(challengeRequest("A"), {
-        testStateDirectory: downgradeDirectory,
+        verifierStore: downgrade.store,
         nowMs: DEPLOYMENT_FIXTURE_NOW,
       }),
     ).rejects.toThrow(/transition is not permitted/);
+  });
+
+  it("refuses a compare-and-swap conflict once without retry or mutation", async () => {
+    const verifier = createDeploymentEvidenceVerifierStoreFixture(
+      "B",
+      {},
+      { conflict: true },
+    );
+    const before = verifier.current();
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: verifier.store,
+      }),
+    ).rejects.toThrow(/compare-and-swap refused/);
+    expect(verifier.casCalls()).toBe(1);
+    expect(verifier.current()).toEqual(before);
+  });
+
+  it("adapts a single conditional D1 update and never creates genesis", async () => {
+    let row: { state_version: number; state_json: string } | null = {
+      state_version: 3,
+      state_json: canonicalJson(deploymentEvidenceVerifierState()),
+    };
+    let updateCalls = 0;
+    const database = {
+      prepare(sql: string) {
+        return {
+          bind(...values: any[]) {
+            return {
+              async first() {
+                expect(sql).toContain("SELECT");
+                return row === null ? null : { ...row };
+              },
+              async run() {
+                expect(sql).toContain(
+                  "WHERE producer_key_id = ?\n  AND state_version = ?",
+                );
+                updateCalls += 1;
+                const [
+                  nextVersion,
+                  nextStateJson,
+                  _updatedAt,
+                  producerKeyId,
+                  expectedVersion,
+                ] = values;
+                if (
+                  row === null ||
+                  producerKeyId !== TEST_PRODUCER_KEY_ID ||
+                  row.state_version !== expectedVersion
+                ) {
+                  return { meta: { changes: 0 } };
+                }
+                row = {
+                  state_version: nextVersion,
+                  state_json: nextStateJson,
+                };
+                return { meta: { changes: 1 } };
+              },
+            };
+          },
+        };
+      },
+    };
+    const store = createD1DeploymentEvidenceVerifierStore(database, {
+      administratorIdentity: "test://independent-verifier-administrator",
+      databaseId: "12345678-1234-4abc-8def-123456789abc",
+      environment: "production",
+    });
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: store,
+      }),
+    ).resolves.toMatchObject({ state_epoch: 4, sequence: 8 });
+    expect(updateCalls).toBe(1);
+    expect(row?.state_version).toBe(4);
+
+    row = null;
+    await expect(
+      consumeDeploymentEvidenceOnce(verify(deploymentEvidencePayload()), {
+        verifierStore: store,
+      }),
+    ).rejects.toThrow(/state is missing; genesis is forbidden/);
+    expect(updateCalls).toBe(1);
   });
 
   it("refuses stale, reversed, and overlong receipt or challenge times", () => {

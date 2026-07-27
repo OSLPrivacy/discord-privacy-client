@@ -11,13 +11,13 @@ import {
 } from "./sender-filter-deployment-contract.mjs";
 
 export const DEPLOYMENT_EVIDENCE_ENVELOPE_FORMAT =
-  "osl.keyserver.deployment-evidence-envelope.v2";
+  "osl.keyserver.deployment-evidence-envelope.v3";
 export const DEPLOYMENT_EVIDENCE_PAYLOAD_FORMAT =
-  "osl.keyserver.deployment-evidence-payload.v2";
+  "osl.keyserver.deployment-evidence-payload.v3";
 export const DEPLOYMENT_EVIDENCE_CHALLENGE_FORMAT =
-  "osl.keyserver.deployment-evidence-challenge.v2";
+  "osl.keyserver.deployment-evidence-challenge.v3";
 export const DEPLOYMENT_EVIDENCE_DOMAIN =
-  "OSL-KEYSERVER-DEPLOYMENT-EVIDENCE-v2\u0000";
+  "OSL-KEYSERVER-DEPLOYMENT-EVIDENCE-v3\u0000";
 export const DEPLOYMENT_EVIDENCE_MAX_ACTION_MS = 15 * 60_000;
 export const DEPLOYMENT_EVIDENCE_MAX_AGE_MS = 120_000;
 export const DEPLOYMENT_EVIDENCE_CLOCK_SKEW_MS = 10_000;
@@ -42,6 +42,21 @@ export const DEPLOYMENT_SCHEMA_FINGERPRINT_QUERY = `SELECT
 FROM sqlite_schema
 WHERE name NOT LIKE 'sqlite_%'
 ORDER BY type ASC, name ASC, tbl_name ASC, sql ASC`;
+
+export const DEPLOYMENT_REGISTERED_SIGNER_QUERY = `SELECT
+  user_id,
+  ik_ed25519_pub,
+  identity_lookup_enabled
+FROM users
+WHERE user_id = ?
+  AND identity_lookup_enabled = 1`;
+
+const CONTROL_INBOX_GET_DOMAIN =
+  "discord-privacy-client/control-inbox-get/v1";
+const ED25519_SPKI_PREFIX = Buffer.from(
+  "302a300506032b6570032100",
+  "hex",
+);
 
 export const DEPLOYMENT_TRANSITIONS = Object.freeze({
   "legacy:A": "legacy-to-artifact-a",
@@ -122,6 +137,17 @@ function requireNonemptyString(value, label) {
   }
 }
 
+function requireProtocolId(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    /[\u0000-\u001f\u007f-\u009f]/.test(value) ||
+    new TextEncoder().encode(value).byteLength > 256
+  ) {
+    throw new Error(`${label} must be a bounded protocol identifier`);
+  }
+}
+
 function requirePositiveInteger(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${label} must be positive`);
@@ -169,7 +195,12 @@ function decodeBase64(value, label, exactBytes) {
     decoded.byteLength === 0 ||
     (exactBytes !== undefined && decoded.byteLength !== exactBytes)
   ) {
-    throw new Error(`${label} is not canonical nonempty base64`);
+    throw new Error(
+      `${label} is not canonical nonempty base64` +
+        (exactBytes === undefined
+          ? ""
+          : ` of exactly ${exactBytes} bytes`),
+    );
   }
   return decoded;
 }
@@ -187,6 +218,38 @@ function parseTimestamp(value, label) {
 
 function observationDigest(value) {
   return sha256(Buffer.from(canonicalJson(value)));
+}
+
+function concatBytes(parts) {
+  return Buffer.concat(parts.map((part) => Buffer.from(part)));
+}
+
+function lpString(value) {
+  const bytes = Buffer.from(value, "utf8");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.byteLength);
+  return concatBytes([length, bytes]);
+}
+
+export function deploymentEvidenceSenderFilterCanonicalBytes({
+  requestUserId,
+  requestTimestampMs,
+  requestSenderId,
+}) {
+  requireProtocolId(requestUserId, "sender-filter request user id");
+  requireProtocolId(requestSenderId, "sender-filter requested sender id");
+  if (
+    !Number.isSafeInteger(requestTimestampMs) ||
+    requestTimestampMs <= 0
+  ) {
+    throw new Error("sender-filter request timestamp must be positive");
+  }
+  return concatBytes([
+    lpString(CONTROL_INBOX_GET_DOMAIN),
+    lpString(requestUserId),
+    lpString(String(requestTimestampMs)),
+    lpString(requestSenderId),
+  ]);
 }
 
 function requireRecomputedObservation(
@@ -583,9 +646,14 @@ function validateSenderRoute(value, artifact) {
       "item_count",
       "method",
       "path",
+      "registered_signer",
+      "request_canonical_sha256",
+      "request_sender_id",
       "request_signature_b64",
       "request_signature_byte_count",
       "request_signature_sha256",
+      "request_timestamp_ms",
+      "request_user_id",
       "response",
       "response_field_count",
       "response_sha256",
@@ -599,14 +667,74 @@ function validateSenderRoute(value, artifact) {
   ) {
     throw new Error("producer sender-filter route contract mismatch");
   }
+  requireProtocolId(
+    sender.request_user_id,
+    "producer sender-filter request user id",
+  );
+  requireProtocolId(
+    sender.request_sender_id,
+    "producer sender-filter requested sender id",
+  );
+  if (
+    !Number.isSafeInteger(sender.request_timestamp_ms) ||
+    sender.request_timestamp_ms <= 0
+  ) {
+    throw new Error("producer sender-filter request timestamp is invalid");
+  }
+  const registeredSigner = requireObject(
+    sender.registered_signer,
+    "producer registered sender-filter signer",
+  );
+  requireExactKeys(
+    registeredSigner,
+    [
+      "lookup_query_sha256",
+      "observation",
+      "observation_field_count",
+      "observation_sha256",
+    ],
+    "producer registered sender-filter signer",
+  );
+  requireSha256(
+    registeredSigner.lookup_query_sha256,
+    "producer registered signer lookup query",
+  );
+  if (
+    registeredSigner.lookup_query_sha256 !==
+      sha256(Buffer.from(DEPLOYMENT_REGISTERED_SIGNER_QUERY))
+  ) {
+    throw new Error("producer registered signer lookup query mismatch");
+  }
+  const signerObservation = requireRecomputedObservation(
+    registeredSigner.observation,
+    registeredSigner.observation_field_count,
+    registeredSigner.observation_sha256,
+    "producer registered signer",
+  );
+  requireExactKeys(
+    signerObservation,
+    ["identity_lookup_enabled", "ik_ed25519_pub_b64", "user_id"],
+    "producer registered signer observation",
+  );
+  if (
+    signerObservation.user_id !== sender.request_user_id ||
+    signerObservation.identity_lookup_enabled !== 1
+  ) {
+    throw new Error("producer registered signer identity mismatch");
+  }
+  const signerPublicKey = decodeBase64(
+    signerObservation.ik_ed25519_pub_b64,
+    "producer registered signer Ed25519 key",
+    32,
+  );
   const signature = decodeBase64(
     sender.request_signature_b64,
     "producer sender-filter request signature",
+    64,
   );
-  requirePositiveInteger(
-    sender.request_signature_byte_count,
-    "producer request signature cardinality",
-  );
+  if (sender.request_signature_byte_count !== 64) {
+    throw new Error("producer request signature cardinality must be exactly 64");
+  }
   requireSha256(
     sender.request_signature_sha256,
     "producer signed sender request digest",
@@ -616,6 +744,37 @@ function validateSenderRoute(value, artifact) {
     sender.request_signature_sha256 !== sha256(signature)
   ) {
     throw new Error("producer signed sender request observation mismatch");
+  }
+  const canonicalRequest = deploymentEvidenceSenderFilterCanonicalBytes({
+    requestUserId: sender.request_user_id,
+    requestTimestampMs: sender.request_timestamp_ms,
+    requestSenderId: sender.request_sender_id,
+  });
+  requireSha256(
+    sender.request_canonical_sha256,
+    "producer sender-filter canonical request digest",
+  );
+  if (
+    sender.request_canonical_sha256 !== sha256(canonicalRequest)
+  ) {
+    throw new Error("producer sender-filter canonical request digest mismatch");
+  }
+  const publicKey = createPublicKey({
+    key: Buffer.concat([ED25519_SPKI_PREFIX, signerPublicKey]),
+    format: "der",
+    type: "spki",
+  });
+  if (
+    !verifySignature(
+      null,
+      canonicalRequest,
+      publicKey,
+      signature,
+    )
+  ) {
+    throw new Error(
+      "producer sender-filter signature does not verify against the registered key",
+    );
   }
   const response = requireRecomputedObservation(
     sender.response,
@@ -630,6 +789,7 @@ function validateSenderRoute(value, artifact) {
       sender.filtered_sender_id.length === 0 ||
       !Number.isSafeInteger(sender.item_count) ||
       sender.item_count <= 0 ||
+      sender.request_sender_id !== sender.filtered_sender_id ||
       response.filtered_sender_id !== sender.filtered_sender_id ||
       !Array.isArray(response.items) ||
       response.items.length !== sender.item_count ||

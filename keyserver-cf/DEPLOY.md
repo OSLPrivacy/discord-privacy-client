@@ -783,8 +783,11 @@ npm run release:select -- \
 The receipt is not an operator-authored JSON form. Its Ed25519 signature must
 verify against a separately enrolled release-producer public key. Before any
 authorized production action, an independent verifier must already have a
-durable, private lineage record and must issue a one-use random challenge from
-that record. The producer signs the exact challenge, prior receipt, prior
+lineage record in its separately administered transactional D1-style store and
+must issue a one-use random challenge from that record. Challenge issue and
+receipt consumption each advance a positive monotonic version with one
+conditional `UPDATE ... WHERE state_version = ?`; a compare-and-swap conflict
+refuses without retry. The producer signs the exact challenge, prior receipt, prior
 Worker version and deployment ID, permitted A/B transition, new Worker version
 and deployment ID, exact commit/archive, and A/B bundle hashes. A producer-
 chosen nonce, a challenge copied from another lineage, an unrecorded first
@@ -800,10 +803,20 @@ cardinality must be positive and exact. A digest-only assertion, zero digest,
 empty schema/migration/signature/probe, or caller-supplied collection is not a
 producer receipt.
 
+The sender-filter request observation includes the exact registered requester
+row selected by the production identity lookup query. Its raw Ed25519 public
+key must be exactly 32 bytes, and the request signature must be exactly 64
+bytes and verify against that registered key over the same length-prefixed
+`control-inbox-get/v1` bytes used by the Worker: recipient user ID, decimal
+timestamp, and requested sender ID. Arbitrary nonempty signature bytes, a
+different registered key, or a signature over a different request are refused.
+
 The selector checks freshness and timestamp ordering, requires nonempty schema
 and positive Artifact B route fixtures, and consumes the pending verifier
 challenge while atomically advancing its private lineage. The verifier state
 is not a receipt-side file and the selector exposes no state-directory flag.
+Restoring, deleting, or replacing caller files cannot change its monotonic
+version or resurrect a consumed challenge.
 There is deliberately no source bootstrap or genesis API: if the state record
 is absent, deleted, malformed, or reset, challenge issue and receipt
 consumption both fail closed. Restoring lineage would require an independent
@@ -811,7 +824,8 @@ operator-controlled recovery procedure and review; presenting sequence 1 or a
 zero previous-receipt hash never creates authority.
 
 No production release-producer public key or verifier lineage is enrolled in
-source today. That is deliberate: inventing a public key, challenge, or
+source today, and the selector's production verifier-store binding is
+unprovisioned. That is deliberate: inventing a public key, challenge, or
 lineage anchor without an independently controlled producer and verifier would
 create fake authority. Therefore every production receipt currently refuses.
 A future key enrollment, durable verifier provisioning/recovery process, and

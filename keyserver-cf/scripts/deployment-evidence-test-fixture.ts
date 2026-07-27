@@ -3,19 +3,23 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
 import {
   DEPLOYMENT_EVIDENCE_CHALLENGE_FORMAT,
   DEPLOYMENT_EVIDENCE_ENVELOPE_FORMAT,
   DEPLOYMENT_EVIDENCE_PAYLOAD_FORMAT,
   DEPLOYMENT_MIGRATION_LIST_QUERY,
+  DEPLOYMENT_REGISTERED_SIGNER_QUERY,
   DEPLOYMENT_SCHEMA_FINGERPRINT_QUERY,
+  deploymentEvidenceSenderFilterCanonicalBytes,
   deploymentEvidenceSigningBytes,
 } from "./deployment-evidence-receipt-contract.mjs";
 import {
   DEPLOYMENT_EVIDENCE_VERIFIER_STATE_FORMAT,
-  deploymentEvidenceVerifierStatePath,
 } from "./deployment-evidence-receipt-io.mjs";
+import {
+  DEPLOYMENT_EVIDENCE_VERIFIER_ADMINISTRATION_DOMAIN,
+  DEPLOYMENT_EVIDENCE_VERIFIER_STORE_FORMAT,
+} from "./deployment-evidence-verifier-store.mjs";
 import { canonicalJson, sha256 } from "./readiness-artifact-contract.mjs";
 
 export const DEPLOYMENT_FIXTURE_NOW =
@@ -56,11 +60,27 @@ const TEST_PROBE_NONCE = Buffer.from(
   "artifact-isolation-positive-nonce",
   "utf8",
 );
-const TEST_REQUEST_SIGNATURE = Buffer.from(
-  "signed-sender-filter-positive-fixture",
-  "utf8",
-);
 const testPair = generateKeyPairSync("ed25519");
+const testRequesterPair = generateKeyPairSync("ed25519");
+const TEST_REQUEST_USER_ID = "recipient-positive";
+const TEST_REQUEST_SENDER_ID = "sender-positive";
+const TEST_REQUEST_TIMESTAMP_MS = Date.parse(
+  "2026-07-27T11:59:56.000Z",
+);
+const TEST_REQUEST_CANONICAL =
+  deploymentEvidenceSenderFilterCanonicalBytes({
+    requestUserId: TEST_REQUEST_USER_ID,
+    requestTimestampMs: TEST_REQUEST_TIMESTAMP_MS,
+    requestSenderId: TEST_REQUEST_SENDER_ID,
+  });
+const TEST_REQUEST_SIGNATURE = sign(
+  null,
+  TEST_REQUEST_CANONICAL,
+  testRequesterPair.privateKey,
+);
+const TEST_REQUESTER_PUBLIC_KEY = Buffer.from(
+  testRequesterPair.publicKey.export({ format: "der", type: "spki" }),
+).subarray(-32);
 
 export const TEST_TRUSTED_DEPLOYMENT_PRODUCERS = {
   [TEST_PRODUCER_KEY_ID]: {
@@ -148,19 +168,74 @@ export function deploymentEvidenceVerifierState(
   };
 }
 
-export async function writeDeploymentEvidenceVerifierStateFixture(
-  testStateDirectory: string,
+export function createDeploymentEvidenceVerifierStoreFixture(
   artifact: "A" | "B" = "B",
   overrides: Record<string, unknown> = {},
+  controls: { missing?: boolean; conflict?: boolean } = {},
 ) {
-  await mkdir(testStateDirectory, { recursive: true, mode: 0o700 });
-  const state = deploymentEvidenceVerifierState(artifact, overrides);
-  const statePath = deploymentEvidenceVerifierStatePath(
-    TEST_PRODUCER_KEY_ID,
-    { testStateDirectory },
-  );
-  await writeFile(statePath, `${canonicalJson(state)}\n`, { mode: 0o600 });
-  return { state, statePath };
+  const initialState = deploymentEvidenceVerifierState(artifact, overrides);
+  let snapshot: {
+    monotonic_version: number;
+    state: Record<string, any>;
+  } | null = controls.missing
+    ? null
+    : {
+        monotonic_version: Number(initialState.state_epoch),
+        state: initialState,
+      };
+  let casCalls = 0;
+  const store = {
+    format: DEPLOYMENT_EVIDENCE_VERIFIER_STORE_FORMAT,
+    provisioned: true,
+    administration_domain:
+      DEPLOYMENT_EVIDENCE_VERIFIER_ADMINISTRATION_DOMAIN,
+    administrator_identity: "test://independent-verifier-administrator",
+    database_id: "12345678-1234-4abc-8def-123456789abc",
+    environment: "production",
+    async readCurrent(producerKeyId: string) {
+      if (
+        snapshot === null ||
+        snapshot.state.producer_key_id !== producerKeyId
+      ) {
+        return null;
+      }
+      return structuredClone(snapshot);
+    },
+    async compareAndSwap(input: {
+      expected_monotonic_version: number;
+      next_monotonic_version: number;
+      next_state: Record<string, any>;
+      producer_key_id: string;
+    }) {
+      casCalls += 1;
+      if (
+        controls.conflict ||
+        snapshot === null ||
+        snapshot.state.producer_key_id !== input.producer_key_id ||
+        snapshot.monotonic_version !== input.expected_monotonic_version
+      ) {
+        return {
+          applied: false,
+          observed_monotonic_version:
+            snapshot?.monotonic_version ??
+            input.expected_monotonic_version,
+        };
+      }
+      snapshot = {
+        monotonic_version: input.next_monotonic_version,
+        state: structuredClone(input.next_state),
+      };
+      return {
+        applied: true,
+        observed_monotonic_version: input.next_monotonic_version,
+      };
+    },
+  };
+  return {
+    store,
+    current: () => structuredClone(snapshot),
+    casCalls: () => casCalls,
+  };
 }
 
 function artifactProbe(
@@ -251,6 +326,11 @@ export function deploymentEvidencePayload(
     service: "oslprivacy-keyserver",
     version_id: DEPLOYMENT_FIXTURE_ACTIVE_VERSION,
   };
+  const registeredSignerObservation = {
+    identity_lookup_enabled: 1,
+    ik_ed25519_pub_b64: TEST_REQUESTER_PUBLIC_KEY.toString("base64"),
+    user_id: TEST_REQUEST_USER_ID,
+  };
   return {
     format: DEPLOYMENT_EVIDENCE_PAYLOAD_FORMAT,
     producer_identity: TEST_PRODUCER_IDENTITY,
@@ -311,9 +391,22 @@ export function deploymentEvidencePayload(
         method: "GET",
         path: "/v1/control-inbox/:user_id",
         status: artifact === "B" ? 200 : 503,
+        registered_signer: {
+          lookup_query_sha256: sha256(
+            Buffer.from(DEPLOYMENT_REGISTERED_SIGNER_QUERY),
+          ),
+          observation: registeredSignerObservation,
+          observation_field_count:
+            Object.keys(registeredSignerObservation).length,
+          observation_sha256: digest(registeredSignerObservation),
+        },
+        request_canonical_sha256: sha256(TEST_REQUEST_CANONICAL),
+        request_sender_id: TEST_REQUEST_SENDER_ID,
         request_signature_b64: TEST_REQUEST_SIGNATURE.toString("base64"),
         request_signature_byte_count: TEST_REQUEST_SIGNATURE.byteLength,
         request_signature_sha256: sha256(TEST_REQUEST_SIGNATURE),
+        request_timestamp_ms: TEST_REQUEST_TIMESTAMP_MS,
+        request_user_id: TEST_REQUEST_USER_ID,
         response: senderResponse,
         response_field_count: Object.keys(senderResponse).length,
         response_sha256: digest(senderResponse),

@@ -619,7 +619,9 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     expect(early.status).toBe(409);
 
     const future = await settlementEvidence(invoice, "btc", 2);
-    future.observed_at = Math.floor(Date.now() / 1000) + 301;
+    // Stay decisively outside the accepted +300-second skew even if the
+    // asynchronous Ed25519 signing below crosses a wall-clock second.
+    future.observed_at = Math.floor(Date.now() / 1000) + 600;
     const futureResponse = await handleCryptoSettlement(new Request(
       "http://test/v1/internal/crypto/settle",
       {

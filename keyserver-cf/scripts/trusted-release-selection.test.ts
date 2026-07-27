@@ -24,6 +24,7 @@ import {
   DEPLOYMENT_FIXTURE_BUNDLES,
   DEPLOYMENT_FIXTURE_MIGRATIONS,
   TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+  createDeploymentEvidenceVerifierStoreFixture,
   deploymentEvidenceChallenge,
   deploymentEvidenceEnvelope,
 } from "./deployment-evidence-test-fixture.js";
@@ -280,16 +281,13 @@ describe("trusted keyserver release selection", () => {
 
     let admittedArgs: string[] = [];
     let output = "";
-    let consumed = 0;
+    const verifier = createDeploymentEvidenceVerifierStoreFixture();
     const selected = await runTrustedReleaseSelectionCli(args, {
       loadSource: async () => sourceInputs(),
       loadMigrations: async () => DEPLOYMENT_FIXTURE_MIGRATIONS,
       loadProducerReceipt: async () => deploymentEvidenceEnvelope(),
-      loadVerifierChallenge: async () => deploymentEvidenceChallenge(),
       trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
-      consumeReceipt: async () => {
-        consumed += 1;
-      },
+      verifierStore: verifier.store,
       admit: async (received: string[]) => {
         admittedArgs = received;
         return readinessReceipt();
@@ -300,7 +298,11 @@ describe("trusted keyserver release selection", () => {
       },
     });
     expect(admittedArgs).toEqual(args.slice(0, -2));
-    expect(consumed).toBe(1);
+    expect(verifier.casCalls()).toBe(1);
+    expect(verifier.current()?.state).toMatchObject({
+      sequence: 8,
+      pending_challenge: null,
+    });
     expect(selected.selection_admitted).toBe(true);
     expect(selected.post_deploy_evidence_admitted).toBe(true);
     expect(selected.execution_authorized).toBe(false);
