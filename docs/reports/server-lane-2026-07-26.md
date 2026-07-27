@@ -940,6 +940,48 @@ rows whose R2 objects this pass did not handle. Gated on a regression test that
 seeds more than 100 expired rows and is observed failing with `too many SQL
 variables` before the change.
 
+## Second correction: the content TTL does NOT start at completion
+
+The audit's suggested fix said "begin the user-selected content TTL only after
+successful completion." I listed that as layer 2 of the HIGH-1 fix and wrote a
+comment and a test title saying completion is where the TTL starts. **That is not
+what the code does, and it cannot be.**
+
+A delegated lifecycle description caught it by disagreeing with the code
+(`docs/reports/cipher-store-attachment-lifecycle-2026-07-26.md`). The absolute
+expiry instant is computed at *session creation*
+(`attachment.ts:263-277`); completion merely copies it (`:451-458`). It has to
+work that way: the shipping Rust client rejects a completion receipt whose
+`expires_at` differs from the session receipt's, and its response structs are
+`deny_unknown_fields`, so the two receipts must carry the same value and it must
+be fixed before the first one is sent.
+
+**What is actually delivered, precisely:** what defers is the *reclaim deadline*,
+not the content TTL. An incomplete session's `expires_at` holds the short
+15-minute hold, sliding on progress, and completion moves it to the promised
+instant. The security property the audit wanted — a bodyless session cannot park
+capacity for seven days — is fully delivered by the short reclaim deadline. The
+literal instruction is not, and could not be, implemented without breaking every
+deployed client.
+
+**A consequence I had not stated:** because the instant is fixed at creation, a
+slow upload receives *less* ready-state lifetime, not a fresh TTL. A 512 MiB
+upload taking twenty minutes gets twenty minutes less content lifetime than it
+asked for. That is a real, if minor, product behaviour nobody had written down.
+
+I am flagging my own overstatement because "we implemented the audit's fix" and
+"we implemented something that delivers the same security property, and here is
+why the literal fix is impossible" are different claims, and only the second one
+is true.
+
+Two further contradictions from the same review, both being corrected: the
+module header still advertises "bounded streamed parts" when uploads are now
+buffered, and `attachment-limits.ts` claims the aggregate quota is enforced by
+CHECK constraints and an authoritative D1 trigger when migration 0004 creates
+neither — the only enforcement is the Worker's conditional INSERT. That last one
+is the same class of security-relevant false comment as the migration 0002 defect
+this lane already corrected.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not
