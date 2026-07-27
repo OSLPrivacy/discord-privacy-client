@@ -302,6 +302,14 @@ function productionTypeScriptSource(source: string): string {
   return stripComments(source, "typescript");
 }
 
+function isTestSpecFixturePath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  return /(?:^|\/)(?:__)?(?:tests?|specs?|fixtures?)(?:__)?(?:\/|$)/iu.test(normalized)
+    || /(?:^|[._-])(?:test|spec|fixture)s?(?:[._-]|$)/iu.test(
+      normalized.split("/").at(-1) ?? "",
+    );
+}
+
 function tauriCommandBlocks(source: string): Array<{ name: string; block: string }> {
   const commands: Array<{ name: string; block: string }> = [];
   for (const marker of source.matchAll(/#\[tauri::command\]/gu)) {
@@ -368,17 +376,26 @@ function invokeNames(source: string): Set<string> {
       if (invoke) names.add(invoke[1] ?? "invoke");
     }
   }
-  // Synthetic snippets and application globals may use the canonical name
-  // directly; requiring an import is not part of command reachability.
-  if (/\binvoke\b/u.test(source)) names.add("invoke");
+  for (const import_ of source.matchAll(
+    /\bimport\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+["']@tauri-apps\/api\/core["']/gu,
+  )) names.add(`${import_[1]}.invoke`);
   let changed = true;
   while (changed) {
     changed = false;
     for (const alias of source.matchAll(
-      /\b(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;/gu,
+      /\b(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*(?:\.invoke)?)\s*;/gu,
     )) {
       if (names.has(alias[2]) && !names.has(alias[1])) {
         names.add(alias[1]);
+        changed = true;
+      }
+    }
+    for (const destructured of source.matchAll(
+      /\b(?:const|let)\s*\{\s*invoke(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?\s*\}\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;/gu,
+    )) {
+      const localName = destructured[1] ?? "invoke";
+      if (names.has(`${destructured[2]}.invoke`) && !names.has(localName)) {
+        names.add(localName);
         changed = true;
       }
     }
@@ -409,6 +426,7 @@ function commandInvocations(source: string, command: string): Invocation[] {
 type CallableRange = {
   localName: string;
   start: number;
+  bodyStart: number;
   end: number;
   exportedAs: Set<string>;
 };
@@ -426,12 +444,13 @@ function callableRanges(source: string): CallableRange[] {
     ranges.push({
       localName: function_[2],
       start,
+      bodyStart: openBrace + 1,
       end: closeBrace + 1,
       exportedAs: new Set(function_[1] ? [function_[2]] : []),
     });
   }
   for (const constant of source.matchAll(
-    /\b(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gu,
+    /\b(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:(?:\([^;{}]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>|function\b)/gu,
   )) {
     const start = constant.index;
     if (start === undefined) continue;
@@ -451,6 +470,7 @@ function callableRanges(source: string): CallableRange[] {
     ranges.push({
       localName: constant[2],
       start,
+      bodyStart: start + constant[0].length,
       end,
       exportedAs: new Set(constant[1] ? [constant[2]] : []),
     });
@@ -475,22 +495,75 @@ function invokingWrappers(source: string, command: string): CallableRange[] {
   );
 }
 
-function calledOutsideRange(source: string, range: CallableRange): boolean {
-  const call = new RegExp(`\\b${escapeRegExp(range.localName)}\\s*\\(`, "gu");
-  return [...source.matchAll(call)].some(({ index }) =>
-    index !== undefined && (index < range.start || index >= range.end)
-  );
+function containingCallable(
+  ranges: readonly CallableRange[],
+  position: number,
+): CallableRange | undefined {
+  return ranges
+    .filter((range) => position >= range.bodyStart && position < range.end)
+    .sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
 }
 
-function hasDirectCommandCall(source: string, command: string): boolean {
-  const invocations = commandInvocations(source, command);
+function reachableCallables(
+  source: string,
+  ranges: readonly CallableRange[],
+): Set<CallableRange> {
+  const roots = new Set<CallableRange>();
+  const edges = new Map<CallableRange, Set<CallableRange>>();
+  for (const target of ranges) {
+    const call = new RegExp(`\\b${escapeRegExp(target.localName)}\\s*\\(`, "gu");
+    for (const match of source.matchAll(call)) {
+      const position = match.index;
+      if (position === undefined) continue;
+      if (position >= target.start && position < target.bodyStart) continue;
+      const caller = containingCallable(ranges, position);
+      if (!caller) roots.add(target);
+      else if (caller !== target) {
+        const callees = edges.get(caller) ?? new Set<CallableRange>();
+        callees.add(target);
+        edges.set(caller, callees);
+      }
+    }
+  }
+  const reachable = new Set(roots);
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const caller = queue.shift();
+    if (!caller) continue;
+    for (const callee of edges.get(caller) ?? []) {
+      if (reachable.has(callee)) continue;
+      reachable.add(callee);
+      queue.push(callee);
+    }
+  }
+  return reachable;
+}
+
+function positionIsReachable(
+  ranges: readonly CallableRange[],
+  reachable: ReadonlySet<CallableRange>,
+  position: number,
+): boolean {
+  const container = containingCallable(ranges, position);
+  return container === undefined || reachable.has(container);
+}
+
+function hasReachableNamedCall(source: string, name: string): boolean {
   const ranges = callableRanges(source);
-  if (invocations.some(({ start }) =>
-    !ranges.some((range) => start >= range.start && start < range.end)
-  )) return true;
-  return ranges.some((range) =>
-    invocations.some(({ start }) => start >= range.start && start < range.end)
-    && calledOutsideRange(source, range)
+  const reachable = reachableCallables(source, ranges);
+  const call = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "gu");
+  return [...source.matchAll(call)].some(({ index }) => {
+    if (index === undefined) return false;
+    if (ranges.some((range) => index >= range.start && index < range.bodyStart)) return false;
+    return positionIsReachable(ranges, reachable, index);
+  });
+}
+
+function hasReachableDirectCommandCall(source: string, command: string): boolean {
+  const ranges = callableRanges(source);
+  const reachable = reachableCallables(source, ranges);
+  return commandInvocations(source, command).some(({ start }) =>
+    positionIsReachable(ranges, reachable, start)
   );
 }
 
@@ -526,6 +599,49 @@ function importedWrapperCalls(
   return calls;
 }
 
+function moduleStem(path: string): string {
+  return path.replace(/\.(?:[cm]?ts|tsx)$/iu, "");
+}
+
+function resolveUiImport(
+  importer: SourceFile,
+  specifier: string,
+  sources: readonly SourceFile[],
+): SourceFile | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const resolved = new URL(specifier, `file://${importer.path}`).pathname;
+  return sources.find(({ path }) =>
+    moduleStem(path) === moduleStem(resolved)
+    || moduleStem(path) === `${moduleStem(resolved)}/index`
+  );
+}
+
+function uiEntrySource(path: string): boolean {
+  const basename = path.split("/").at(-1) ?? "";
+  return /^(?:main|index|overlay|shield)\.(?:[cm]?ts|tsx)$/iu.test(basename)
+    || /(?:^|[._-])entry(?:[._-]|$)/iu.test(basename);
+}
+
+function reachableUiSources(sources: readonly SourceFile[]): SourceFile[] {
+  const reachable = new Set(
+    sources.filter(({ path }) => uiEntrySource(path)).map(({ path }) => path),
+  );
+  const queue = sources.filter(({ path }) => reachable.has(path));
+  while (queue.length > 0) {
+    const importer = queue.shift();
+    if (!importer) continue;
+    for (const import_ of importer.source.matchAll(
+      /\bimport(?:\s+[^"'()]+?\s+from\s+|\s*)["']([^"']+)["']/gu,
+    )) {
+      const imported = resolveUiImport(importer, import_[1], sources);
+      if (!imported || reachable.has(imported.path)) continue;
+      reachable.add(imported.path);
+      queue.push(imported);
+    }
+  }
+  return sources.filter(({ path }) => reachable.has(path));
+}
+
 function detectProductionPath(
   rustLib: string,
   prototypeSource: string,
@@ -534,13 +650,16 @@ function detectProductionPath(
 ): ProductionPath {
   const productionRustLib = productionRustSource(rustLib);
   const productionPrototype = productionRustSource(prototypeSource);
-  const productionRust = rustSources.map((file) => ({
-    ...file,
-    source: productionRustSource(file.source),
-  }));
-  const productionUi = uiSources
-    .filter(({ path }) => !path.endsWith(".test.ts"))
+  const productionRust = rustSources
+    .filter(({ path }) => !isTestSpecFixturePath(path))
+    .map((file) => ({
+      ...file,
+      source: productionRustSource(file.source),
+    }));
+  const normalizedUi = uiSources
+    .filter(({ path }) => !isTestSpecFixturePath(path))
     .map((file) => ({ ...file, source: productionTypeScriptSource(file.source) }));
+  const productionUi = reachableUiSources(normalizedUi);
   const prototypeTypes = publicPrototypeTypes(productionPrototype);
   expect(prototypeTypes.length, "prototype public-type inventory must be nonempty")
     .toBeGreaterThan(0);
@@ -574,10 +693,10 @@ function detectProductionPath(
     importedWrapperCalls(invokingAdapters, productionUi, name)
   );
   const uiCall = adapterImports.some(({ importer, localName }) =>
-    new RegExp(`\\b${escapeRegExp(localName)}\\s*\\(`, "u").test(importer.source)
+    hasReachableNamedCall(importer.source, localName)
   );
   const uiDirectCall = handlerNames.some((name) =>
-    productionUi.some(({ source }) => hasDirectCommandCall(source, name))
+    productionUi.some(({ source }) => hasReachableDirectCommandCall(source, name))
   );
   const stages = {
     moduleDeclared: /\bpub mod external_overlay\s*;/u.test(productionRustLib),
@@ -653,15 +772,17 @@ function syntheticPath(
 }
 
 const SYNTHETIC_EXTERNAL_OVERLAY = "pub struct ScreenRect;";
+const SYNTHETIC_RUST_MAIN = [
+  "use crate::external_overlay::ScreenRect;",
+  "#[tauri::command]",
+  "fn open_external_overlay(_value: ScreenRect) {}",
+  "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
+].join("\n");
 
 function completeSyntheticPath(
   uiSources: SourceFile[],
-  rustMain = [
-    "use crate::external_overlay::ScreenRect;",
-    "#[tauri::command]",
-    "fn open_external_overlay(_value: ScreenRect) {}",
-    "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
-  ].join("\n"),
+  rustMain = SYNTHETIC_RUST_MAIN,
+  rustMainPath = "/synthetic/main.rs",
 ): ProductionPath {
   const rustLib = "pub mod external_overlay;";
   return detectProductionPath(
@@ -669,7 +790,7 @@ function completeSyntheticPath(
     SYNTHETIC_EXTERNAL_OVERLAY,
     [
       { path: "/synthetic/lib.rs", source: rustLib },
-      { path: "/synthetic/main.rs", source: rustMain },
+      { path: rustMainPath, source: rustMain },
       {
         path: "/synthetic/external_overlay.rs",
         source: SYNTHETIC_EXTERNAL_OVERLAY,
@@ -727,6 +848,38 @@ const DIRECT_INVOKE_FORMS = [
     source: [
       'import { invoke } from "@tauri-apps/api/core";',
       "const callNative = invoke;",
+      'callNative("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "local alias chain",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "const firstAlias = invoke;",
+      "const callNative = firstAlias;",
+      'callNative("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "namespace authority",
+    source: [
+      'import * as tauriCore from "@tauri-apps/api/core";',
+      'tauriCore.invoke("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "namespace-derived alias",
+    source: [
+      'import * as tauriCore from "@tauri-apps/api/core";',
+      "const callNative = tauriCore.invoke;",
+      'callNative("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "namespace-destructured alias",
+    source: [
+      'import * as tauriCore from "@tauri-apps/api/core";',
+      "const { invoke: callNative } = tauriCore;",
       'callNative("open_external_overlay");',
     ].join("\n"),
   },
@@ -817,7 +970,7 @@ describe("generic external overlay production reachability", () => {
   it("accepts every direct invoke spelling and fails when that invoke stage is removed", () => {
     for (const form of DIRECT_INVOKE_FORMS) {
       const positive = completeSyntheticPath([
-        { path: `/synthetic/${form.name}.ts`, source: form.source },
+        { path: "/synthetic/main.ts", source: form.source },
       ]);
       expect(positive.uiInvokePresent, `${form.name} invoke was missed`).toBe(true);
       expect(positive.uiDirectCall, `${form.name} direct call was missed`).toBe(true);
@@ -826,7 +979,7 @@ describe("generic external overlay production reachability", () => {
 
       const removed = completeSyntheticPath([
         {
-          path: `/synthetic/${form.name}.ts`,
+          path: "/synthetic/main.ts",
           source: form.source.replace("open_external_overlay", "unrelated_command"),
         },
       ]);
@@ -956,6 +1109,168 @@ describe("generic external overlay production reachability", () => {
     expect(mixedCfg).toContain("shipping_on_windows");
   });
 
+  it("requires trusted Tauri invoke authority and production source roots", () => {
+    for (const fake of [
+      [
+        "function invoke(_command: string) { return Promise.resolve(); }",
+        'invoke("open_external_overlay");',
+      ].join("\n"),
+      [
+        "const invoke = (_command: string) => Promise.resolve();",
+        "const callNative = invoke;",
+        'callNative("open_external_overlay");',
+      ].join("\n"),
+      [
+        'import { invoke as callNative } from "./fake-tauri";',
+        'callNative("open_external_overlay");',
+      ].join("\n"),
+    ]) {
+      const result = completeSyntheticPath([
+        { path: "/synthetic/main.ts", source: fake },
+      ]);
+      expect(result.uiInvokePresent).toBe(false);
+      expect(result.uiDirectCall).toBe(false);
+      expect(result.productionReachable).toBe(false);
+    }
+
+    const trusted = [
+      'import { invoke as importedInvoke } from "@tauri-apps/api/core";',
+      "const firstAlias = importedInvoke;",
+      "const secondAlias = firstAlias;",
+      'secondAlias("open_external_overlay");',
+    ].join("\n");
+    expect(
+      completeSyntheticPath([{ path: "/synthetic/main.ts", source: trusted }])
+        .productionReachable,
+    ).toBe(true);
+    expect(
+      completeSyntheticPath([{
+        path: "/synthetic/main.ts",
+        source: trusted.replace(
+          'secondAlias("open_external_overlay");',
+          "",
+        ),
+      }]).productionReachable,
+    ).toBe(false);
+
+    const testOnlySource = [
+      'import { invoke } from "@tauri-apps/api/core";',
+      'invoke("open_external_overlay");',
+    ].join("\n");
+    for (const path of [
+      "/synthetic/main.spec.ts",
+      "/synthetic/main.test.ts",
+      "/synthetic/main.fixture.ts",
+      "/synthetic/spec/main.ts",
+      "/synthetic/tests/main.ts",
+      "/synthetic/fixtures/main.ts",
+    ]) {
+      const result = completeSyntheticPath([{ path, source: testOnlySource }]);
+      expect(result.uiInvokePresent, `test-only source was admitted: ${path}`).toBe(false);
+      expect(result.productionReachable).toBe(false);
+    }
+    for (const path of [
+      "/synthetic/main.spec.rs",
+      "/synthetic/main.test.rs",
+      "/synthetic/main.fixture.rs",
+      "/synthetic/spec/main.rs",
+      "/synthetic/tests/main.rs",
+      "/synthetic/fixtures/main.rs",
+    ]) {
+      const result = completeSyntheticPath(
+        [{ path: "/synthetic/main.ts", source: trusted }],
+        SYNTHETIC_RUST_MAIN,
+        path,
+      );
+      expect(result.rustConsumer, `test-only Rust source was admitted: ${path}`).toBe(false);
+      expect(result.productionReachable).toBe(false);
+    }
+
+    const unimported = completeSyntheticPath([{
+      path: "/synthetic/dead-adapter.ts",
+      source: testOnlySource,
+    }]);
+    expect(unimported.uiInvokePresent).toBe(false);
+    expect(unimported.productionReachable).toBe(false);
+  });
+
+  it("requires direct and wrapper containers to be reachable from an entry", () => {
+    const adapter = [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "export function openExternalOverlay() {",
+      '  return invoke("open_external_overlay");',
+      "}",
+    ].join("\n");
+    const deadWrapperCall = [
+      'import { openExternalOverlay as launch } from "./external-overlay-adapter";',
+      "function neverCalled() {",
+      "  launch();",
+      "}",
+    ].join("\n");
+    const reachableWrapperCall = [
+      'import { openExternalOverlay as launch } from "./external-overlay-adapter";',
+      "function startOverlay() {",
+      "  launch();",
+      "}",
+      "function boot() {",
+      "  startOverlay();",
+      "}",
+      "boot();",
+    ].join("\n");
+    const dead = completeSyntheticPath([
+      { path: "/synthetic/external-overlay-adapter.ts", source: adapter },
+      { path: "/synthetic/main.ts", source: deadWrapperCall },
+    ]);
+    expect(dead.uiInvokePresent).toBe(true);
+    expect(dead.uiAdapterImported).toBe(true);
+    expect(dead.uiCall).toBe(false);
+    expect(dead.productionReachable).toBe(false);
+
+    const reachable = completeSyntheticPath([
+      { path: "/synthetic/external-overlay-adapter.ts", source: adapter },
+      { path: "/synthetic/main.ts", source: reachableWrapperCall },
+    ]);
+    expect(reachable.uiCall).toBe(true);
+    expect(reachable.productionReachable).toBe(true);
+
+    const removedEntryCall = completeSyntheticPath([
+      { path: "/synthetic/external-overlay-adapter.ts", source: adapter },
+      {
+        path: "/synthetic/main.ts",
+        source: reachableWrapperCall.replace("boot();", ""),
+      },
+    ]);
+    expect(removedEntryCall.uiCall).toBe(false);
+    expect(removedEntryCall.productionReachable).toBe(false);
+
+    const reachableDirect = completeSyntheticPath([{
+      path: "/synthetic/main.ts",
+      source: [
+        'import { invoke } from "@tauri-apps/api/core";',
+        "function sendFromReachableChild() {",
+        '  invoke("open_external_overlay");',
+        "}",
+        "function boot() { sendFromReachableChild(); }",
+        "boot();",
+      ].join("\n"),
+    }]);
+    expect(reachableDirect.uiDirectCall).toBe(true);
+    expect(reachableDirect.productionReachable).toBe(true);
+
+    const deadDirect = completeSyntheticPath([{
+      path: "/synthetic/main.ts",
+      source: [
+        'import { invoke } from "@tauri-apps/api/core";',
+        "function sendFromDeadChild() {",
+        '  invoke("open_external_overlay");',
+        "}",
+      ].join("\n"),
+    }]);
+    expect(deadDirect.uiInvokePresent).toBe(true);
+    expect(deadDirect.uiDirectCall).toBe(false);
+    expect(deadDirect.productionReachable).toBe(false);
+  });
+
   it("derives the complete prototype surface and rejects every unwired shipping claim", () => {
     const rustLib = readFileSync(new URL("../../osl-hub/src/lib.rs", import.meta.url), "utf8");
     const rustMain = readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
@@ -982,9 +1297,7 @@ describe("generic external overlay production reachability", () => {
     );
     const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
     const rustSources = sourceFiles(new URL("../../osl-hub/src/", import.meta.url), ".rs");
-    const productionUi = sourceFiles(new URL("./", import.meta.url), ".ts").filter(
-      ({ path }) => !path.endsWith(".test.ts"),
-    );
+    const productionUi = sourceFiles(new URL("./", import.meta.url), ".ts");
     const repositoryDocs = [
       { path: "/README.md", source: readme },
       ...sourceFiles(new URL("../../../docs/", import.meta.url), ".md"),

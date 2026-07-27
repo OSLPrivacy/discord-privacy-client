@@ -4,6 +4,19 @@
 **Date of survey:** 2026-07-25. **Tree:** `/home/liamw/discord-privacy-client`, branch `HEAD` (detached), working tree clean.
 **Method:** static read of source and doc comments. Nothing was built, run, or launched. Live-verified facts supplied by the owner are marked *(verified live)*.
 
+> ### Current correction — the 2026-07-25 eye findings are retracted as current claims
+>
+> Sections 4.3–5.4 below are preserved as the historical survey record, not as a
+> description of current production source. The renderer now invokes
+> `rehydrate_native_discord_overlay_history`, and rehydrated rows carry placement
+> geometry to it. The later `2dc9172` mitigation accepts only peer-to-self wires
+> on that history path, but independent review proved this is **directional
+> suppression, not authenticated visible-row attribution**: neither the prose
+> token nor `VisibleMessageRow` binds a Discord poster/message ID to the cover.
+> In particular, the historical statements that both orientations are accepted
+> and that wire orientation proves who posted a visible row must not be quoted as
+> current behavior.
+>
 > ### ⚠ The tree changed while this map was being written
 >
 > `apps/osl-hub/src/native_discord_overlay.rs` grew from **5,696 → 5,816 → 5,991 lines** across this survey — another session is editing it continuously. Citations for that file were re-verified against the 5,816-line version and the headline finding re-confirmed at 5,991; **individual line numbers in that one file may already be off by a few lines. Search by function name, not by line.** Every other file was stable: `native_discord_adapter.rs` 16,860; `main.rs` 4,661; `broker.rs` 6,843; `native_window_host.rs` 9,960 — identical at the start and end of the survey.

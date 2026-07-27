@@ -1594,15 +1594,16 @@ pub struct PreparedNativeDiscordOverlayText {
 pub struct RehydratedNativeDiscordRow {
     pub flagtext: String,
     pub plaintext: Option<String>,
-    /// The only author this history path can safely prove: the verified peer.
-    /// `Some` exactly when `plaintext` is `Some`. See
+    /// The protected wire direction accepted by this history path.
+    /// This does **not** prove who posted the visible Discord row. `Some`
+    /// exactly when `plaintext` is `Some`. See
     /// [`RehydratedRowOrientation`].
     pub orientation: Option<RehydratedRowOrientation>,
     #[serde(skip)]
     pub bounds: Option<[i32; 4]>,
 }
 
-/// The safe author verdict for one rehydrated history row.
+/// The accepted protected-wire direction for one rehydrated history row.
 ///
 /// The prose token authenticates a scope and the protected wire authenticates
 /// its sender, but neither is bound to the Discord row that currently displays
@@ -1612,9 +1613,10 @@ pub struct RehydratedNativeDiscordRow {
 ///
 /// Until the trusted native reader supplies an independently verified row
 /// poster/message binding, this history path accepts only a wire signed by the
-/// verified peer and addressed to this identity. Locally signed history covers
-/// fail closed and Discord's own row remains visible. The separately verified
-/// just-sent carrier path is unaffected.
+/// verified peer and addressed to this identity. That is directional
+/// suppression, not row attribution: the operator can still paste a peer-signed
+/// cover into a row they post. Locally signed history covers fail closed. The
+/// separately verified just-sent carrier path is unaffected.
 ///
 /// There is deliberately no `Unknown` variant. A row whose orientation was not
 /// proven has no `plaintext` either, so it is not rendered at all and Discord's
@@ -1622,7 +1624,8 @@ pub struct RehydratedNativeDiscordRow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RehydratedRowOrientation {
-    /// The protected wire was signed by the verified peer and addressed here.
+    /// The protected wire was signed by the verified peer and addressed here;
+    /// the visible Discord row's poster remains unverified.
     Incoming,
 }
 
@@ -1924,9 +1927,8 @@ fn rehydrated_rows(
 ) -> Vec<RehydratedNativeDiscordRow> {
     rows.into_iter()
         .map(|(flagtext, candidates, bounds)| {
-            // Text and orientation are produced and carried as one answer, so
-            // there is no representable row that has decrypted text and no
-            // proven author.
+            // Text and accepted wire direction are produced and carried as one
+            // answer. Neither field is a trusted visible-row author verdict.
             let (plaintext, orientation) = match decoded(&candidates) {
                 Some((plaintext, orientation)) => (Some(plaintext), Some(orientation)),
                 None => (None, None),
@@ -9673,23 +9675,23 @@ ok i will weekend again with you",
         );
     }
 
-    /// History rehydration must never turn a locally signed cover into row-owner
-    /// proof.
+    /// History rehydration refuses locally signed covers without claiming that
+    /// the remaining wire direction proves the visible row owner.
     ///
     /// A peer can paste an authenticated `SelfToPeer` cover into a new Discord
     /// row. The wire still verifies, but the peer posted the visible row. The
     /// history path has no trusted poster/message binding, so its only safe
     /// answer is to refuse locally signed covers and leave Discord's row visible.
     #[test]
-    fn rehydrated_history_has_no_outgoing_author_verdict_without_row_poster_proof() {
+    fn rehydrated_history_refuses_outgoing_without_claiming_row_poster_proof() {
         let rows = rehydrated_rows(
             [(
                 "Peer 3:16 PM the harbour lights are on".to_owned(),
                 vec!["the harbour lights are on".to_owned()],
                 Some([12, 88, 700, 110]),
             )],
-            // This models the production refusal: a locally signed cover is not
-            // a safe row-author verdict, so the decoder returns no painted row.
+            // This models the production refusal. It does not turn the accepted
+            // peer wire direction into a trusted visible-row author.
             |_: &[String]| None,
         );
         assert_eq!(rows.len(), 1);

@@ -467,8 +467,9 @@ interface RehydratedDiscordRow {
   flagtext: string;
   plaintext: string | null;
   /**
-   * The only author verdict history rehydration can safely return: `incoming`,
-   * after the backend verifies a peer-signed wire addressed to this identity.
+   * The only protected-wire direction history rehydration currently returns:
+   * `incoming`, after the backend verifies a peer-signed wire addressed here.
+   * This is not proof that the peer posted the visible Discord row.
    *
    * A locally signed cover is not proof that the visible Discord row was posted
    * locally: a peer can replay that cover in a new row. Until the trusted native
@@ -526,9 +527,8 @@ function parseRehydratedDiscordRow(value: unknown): RehydratedDiscordRow | null 
   if (typeof record.flagtext !== "string" || utf8Length(record.flagtext) > MAX_ROW_FLAGTEXT_BYTES) return null;
   if (record.plaintext !== null
     && (typeof record.plaintext !== "string" || utf8Length(record.plaintext) > MAX_PROTECTED_DRAFT_BYTES)) return null;
-  // Only a peer-signed inbound wire is a safe history verdict. In particular,
-  // never accept renderer/backend `outgoing` text without a trusted native
-  // row/poster binding: wire orientation alone survives a cross-author replay.
+  // Only a peer-signed inbound wire is accepted. This is a wire-direction
+  // verdict, not a visible-row author verdict: row/poster binding is absent.
   if (record.orientation !== null && record.orientation !== "incoming") return null;
   if ((record.plaintext === null) !== (record.orientation === null)) return null;
   const row = record.row === null ? null : parseDecodedDiscordRowRect(record.row);
@@ -700,9 +700,8 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
   for (const row of rows) {
     // Undecodable, or unplaceable. Either way OSL owns no pixel over it.
     if (row.plaintext === null || row.row === null) continue;
-    // The parser accepts only the backend's peer-signed inbound verdict. A
-    // locally signed cover can be replayed by the peer and therefore cannot
-    // classify this visible row as local without a separate native row proof.
+    // This is only the backend's peer-signed wire direction. It does not
+    // authenticate the poster of this visible row.
     if (row.orientation === null) continue;
     // Positional keys, so a row that is still the nth decodable row keeps its
     // DOM node across reads instead of being destroyed and rebuilt on a scroll.
@@ -712,8 +711,8 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
     decodedRows.push({
       key,
       kind: "text",
-      // Bound to the protected wire's verified peer sender. The renderer never
-      // authors or upgrades ownership.
+      // Presentation follows the protected wire's verified peer sender. This
+      // label is not authenticated visible-row ownership.
       direction: "incoming",
       author: verifiedFriendIdentity,
       timestamp: transcriptTimestamp(),

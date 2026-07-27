@@ -92,6 +92,16 @@ than assuming it:
   only to `hub-local`; not widened.
 
 ### 4. Sender attribution (Task 4)
+
+> **RETRACTED AS A CURRENT CLAIM.** The following Round 1 text is retained as
+> historical lane output. Wire orientation proves the protected wire's
+> sender/recipient pair; it does not prove who posted the visible Discord row.
+> `2dc9172` later removed the outgoing history verdict and refused locally signed
+> covers, but independent replay review still classified that change as
+> directional suppression rather than row attribution because no trusted
+> poster/message binding exists. Nothing in this historical section is evidence
+> that visible-row authorship is authenticated.
+
 `authenticate_oriented_prose_pointer` proved the orientation and then **threw it away**, so every
 opened row reached the renderer unlabelled and `overlay.ts` stamped `direction:"incoming"` and
 `author: verifiedFriendIdentity` on all of them. The operator saw their own sent messages presented
