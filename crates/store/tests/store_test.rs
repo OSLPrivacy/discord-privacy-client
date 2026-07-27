@@ -331,12 +331,12 @@ fn mark_burned_makes_get_return_none() {
         .unwrap()
         .expect("burn must not touch unrelated row");
     assert_eq!(live_after, survivor);
-    let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
+    let after: (Vec<u8>, Vec<u8>, i64) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row(
-            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE burned = 1",
+            "SELECT ciphertext, nonce, burned FROM messages WHERE burned = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap()
     };
@@ -344,8 +344,7 @@ fn mark_burned_makes_get_return_none() {
     assert_ne!(after.1, before.1, "burn must overwrite the AEAD nonce");
     assert!(after.0.iter().all(|byte| *byte == 0));
     assert!(after.1.iter().all(|byte| *byte == 0));
-    assert!(after.2.is_none());
-    assert_eq!(after.3, 1);
+    assert_eq!(after.2, 1);
     let (live_bodies, zeroed_bodies): (usize, usize) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let mut stmt = conn.prepare("SELECT ciphertext FROM messages").unwrap();

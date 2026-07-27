@@ -524,15 +524,11 @@ fn tampered_metadata_ciphertext_is_rejected_not_returned() {
     }
 
     let store = open_a(tmp.path());
-    match store.get("m13") {
-        Err(_) => {}
-        Ok(None) => panic!("defect 5: tampered metadata disappeared instead of failing closed"),
-        Ok(Some(msg)) => panic!(
-            "defect 5: forged metadata accepted — store returned sender_osl_user_id={:?} \
-             for a row whose sealed metadata was edited",
-            msg.sender_osl_user_id
-        ),
-    }
+    assert!(
+        matches!(store.get("m13"), Err(store::StoreError::Corrupted(_))),
+        "tampered metadata must produce Corrupted, not an unrelated error or \
+         a hidden row"
+    );
 }
 
 /// Swapping sealed metadata blobs between two rows must not let an offline
@@ -595,13 +591,10 @@ fn swapped_metadata_blobs_cannot_forge_attribution() {
 
     let store = open_a(tmp.path());
     for id in ["m14a", "m14b"] {
-        match store.get(id) {
-            Err(_) => {}
-            Ok(None) => {}
-            Ok(Some(msg)) => panic!(
-                "defect 5: swapped metadata was served for {id} as sender={:?} channel={:?}",
-                msg.sender_discord_id, msg.channel_id
-            ),
-        }
+        assert!(
+            matches!(store.get(id), Err(store::StoreError::Corrupted(_))),
+            "swapped metadata for {id} must produce Corrupted, not an \
+             unrelated error or a hidden row"
+        );
     }
 }

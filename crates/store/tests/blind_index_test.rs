@@ -1339,6 +1339,7 @@ fn blind_indexes_differ_under_a_different_secret() {
 #[test]
 fn all_equality_lookups_still_work_after_blinding() {
     let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
     let store = open_a(tmp.path());
 
     store
@@ -1378,6 +1379,49 @@ fn all_equality_lookups_still_work_after_blinding() {
         store.get("q2").unwrap().is_some(),
         "wipe hit the wrong sender"
     );
+
+    // A hidden row is not sufficient evidence of destruction: an
+    // implementation could set only `burned` (or clear the legacy
+    // always-NULL `wrapped_key`) and leave a decryptable body on disk. Check
+    // the two selected rows directly. This is deliberately a two-row fixture:
+    // a blanket zeroing implementation must also fail because q2 survives.
+    let (zeroed, live): (usize, usize) = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT ciphertext, nonce, burned FROM messages")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap();
+        let mut zeroed = 0;
+        let mut live = 0;
+        for row in rows {
+            let (ciphertext, nonce, burned) = row.unwrap();
+            if burned == 1
+                && !ciphertext.is_empty()
+                && !nonce.is_empty()
+                && ciphertext.iter().all(|byte| *byte == 0)
+                && nonce.iter().all(|byte| *byte == 0)
+            {
+                zeroed += 1;
+            }
+            if burned == 0
+                && ciphertext.iter().any(|byte| *byte != 0)
+                && nonce.iter().any(|byte| *byte != 0)
+            {
+                live += 1;
+            }
+        }
+        (zeroed, live)
+    };
+    assert_eq!(zeroed, 1, "scope burn must zero the selected sealed body");
+    assert_eq!(live, 1, "scope burn must preserve the other sender's body");
 }
 
 /// Burn must remain terminal through the blinded schema — the defect-1 fix must
@@ -1462,14 +1506,14 @@ fn retargeting_a_rows_channel_selector_is_rejected() {
     }
 
     let store = open_a(tmp.path());
-    match store.list_by_channel("public", 10) {
-        Err(_) => {}
-        Ok(rows) => assert!(
-            rows.iter().all(|m| m.discord_message_id != "secret"),
-            "a row retargeted on disk was served as belonging to the \
-             attacker's channel"
+    assert!(
+        matches!(
+            store.list_by_channel("public", 10),
+            Err(store::StoreError::Corrupted(_))
         ),
-    }
+        "retargeted selector must produce Corrupted, not an unrelated failure \
+         or a hidden row"
+    );
 }
 
 fn assert_attachment_selector_tamper_is_rejected(column: &str) {
@@ -1565,18 +1609,20 @@ fn a_populated_store_with_its_canary_deleted_refuses_to_open() {
         );
     }
 
-    // A secret that never wrote this store must not be accepted.
-    assert!(
-        MessageStore::open(tmp.path(), &[9u8; 32]).is_err(),
-        "a populated store opened under an arbitrary secret after its canary \
-         was deleted"
-    );
-    // And the owner's own secret must not silently re-seal it either.
-    assert!(
-        MessageStore::open(tmp.path(), SECRET_A).is_err(),
-        "a populated store with a deleted canary must refuse rather than \
-         re-seal a fresh one"
-    );
+    // A missing canary on a populated store is a fail-closed `Sealer` refusal,
+    // regardless of which secret is supplied. `is_err()` would let an
+    // unrelated I/O/SQL failure prove this test without exercising the
+    // refusal classification.
+    for secret in [&[9u8; 32], SECRET_A] {
+        assert!(
+            matches!(
+                MessageStore::open(tmp.path(), secret),
+                Err(store::StoreError::Sealer(_))
+            ),
+            "a populated store with a deleted canary must refuse as a canary \
+             failure rather than opening or returning an unrelated error"
+        );
+    }
 }
 
 /// The message body itself must not be readable in the file.
@@ -1695,15 +1741,14 @@ fn attachment_metadata_cannot_be_transplanted_into_a_message_row() {
     }
 
     let store = open_a(tmp.path());
-    match store.list_by_channel("target", 10) {
-        Err(_) => {}
-        Ok(rows) => assert_eq!(
-            rows.len(),
-            1,
-            "an attachment was served as an authenticated message in the \
-             attacker's chosen channel"
+    assert!(
+        matches!(
+            store.list_by_channel("target", 10),
+            Err(store::StoreError::Corrupted(_))
         ),
-    }
+        "attachment metadata transplanted into a message row must produce \
+         Corrupted, not an unrelated error or a hidden row"
+    );
 }
 
 /// Two different (message id, filename) pairs must not collapse to one cached
