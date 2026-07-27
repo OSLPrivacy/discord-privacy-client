@@ -682,6 +682,26 @@ check found both of tonight's other defects; it is now three for three in this l
 structurally unearnable until the engine has a caller.** Truth should judge and apply; this lane has
 deliberately not edited the checklist.
 
+## Gate numbers RE-MEASURED at end of session
+
+Both hub gates were re-run in the tree as it stood at the end of the session, after other lanes had
+committed, rather than left as figures measured earlier:
+
+| Gate | Result |
+|---|---|
+| `--features core` | 685 passed, 0 failed, 1 ignored |
+| `--features core,discord-qa-shell` | 742 passed, 0 failed, 1 ignored |
+
+Unchanged from the earlier run, so the numbers quoted above are current and not inherited. This
+lane spent the session telling other people that an inherited count is not a measurement; that
+applies to its own counts measured an hour earlier in a tree that has since moved.
+
+Both gates are still required. `--features core` omits `qa_selftest_request` — the module deciding
+whether a trigger becomes a status read or the irreversible send. `--features
+core,discord-qa-shell` compiles it but turns header-proof enforcement off by design
+(`header_proof_is_enforced()` is `!cfg!(feature = "discord-qa-shell")`), so a pass under it is not
+evidence that enforcement holds.
+
 ## In flight at end of session — a systematic unreachable-subsystem sweep
 
 The "zero callers" check found something real **three times tonight**, each time by accident:
