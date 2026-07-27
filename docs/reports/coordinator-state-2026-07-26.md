@@ -3,7 +3,41 @@
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
 authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r16**), and the
-scoreboard remains `docs/design/osl-internal-build-checklist.md` (**97 / 303**).
+scoreboard remains `docs/design/osl-internal-build-checklist.md` (**100 / 303**, authoritative
+checklist commit `c52da2efac63a6c2be828d651da365d3b963ad21`).
+
+## 2026-07-27 exact release-truth reconciliation — no new score
+
+This table reconciles point-ready or near-ready exact objects reported after the independently
+accepted H7 checkpoint at 99/303. It uses the row values frozen in `c52da2e`; A8 is already 4/4
+and is not reconsidered here. Older 97/303 arithmetic retained later in this report is historical,
+not the current scoreboard.
+
+Status vocabulary in this table is strict:
+
+- `test-proven-only` means exact committed source plus local static/unit evidence; it is not a
+  named runtime, hosted CI run, deployed Worker, VM result, or release.
+- `implemented-unwired` means relevant source exists but the required production caller or UI
+  event does not.
+- `pending-independent-audit` means only the author-side committed-object report exists.
+- `REJECT` means an independent exact-object audit found a decisive false green or missing
+  boundary; the author-side passing tests do not override it.
+- `runtime-proven` and `verified-live` require named execution or deployed-state evidence. None of
+  the new objects below reaches either tier.
+
+| Exact object | Candidate checklist boundary | Committed file/test evidence | Independent verdict and remaining boundary | Score action |
+|---|---|---|---|---:|
+| Website `d158c88a188a6a006ea21c0a9fc0c630f513e91a`; checklist `c52da2efac63a6c2be828d651da365d3b963ad21` | A8 is already **4/4** | `scripts/check-claims.mjs`; public gate 16/16, self-test 419/419, inherited receiver corpus 38/38. The census binds 18 backends, nine claims and 44 source anchors. | Two exact website audits accepted the source/static object. The owner has frozen `c52da2e` at **100/303**. Runtime, release and A6 remain unverified. | Already accounted; **+0 here** |
+| VM integrity precursor `b1e8c10a13622aa2afea39361ed5c4309e168ca5`, tree `48c75ceb9b9fc241f0ee95fbc6f8dfe028e8e65b` | C4 remains **1/4**; F1 remains **4/6** | Seven VMQA documentation/script/test paths. Exact archive ran Python 39/39 and shell grading 89/89; coherent executable/npm-log replacement, old-seal replay, producer mutation and starved evidence were refused by the applicable graders. | `ACCEPT` for code/fixture integrity only. The producer account and protected seal store were absent, so production creation refused and no Windows/VM runtime occurred. Status `test-proven-only`. | **+0** |
+| VM provisioning `2279be3b789f4aadbcc35db57d6105ab820e3bf6`, tree `a9b9d5027f6123a4a1c4b012641ae2f7f43ec299` | C4 **1/4**; F1 **4/6** | Seven `scripts/vmqa/**` paths, including `vmqa_f1_provisioning_preflight.py`, `vmqa-f1-windows-provisioning-preflight.ps1` and their fixtures. Author gates reported provisioning 12/12, producer 27/27, PowerShell 26/26, inherited VMQA 40/40 and shell 89/89. | `REJECT`. Local-ready omitted Azure CLI/runtime, tenant/subscription/resource-group/VM, interactive session, warm lineage and cloud-build checks; PowerShell-absent positives false-greened, and no full `Invoke-WindowsProvisioningPreflight` positive existed. Two later bounded watches found no committed VMQA successor; current provisioning-plan paths are mutable/unaudited `unknown`, not evidence. No Azure or live VM evidence. | **+0** |
+| Cipher-store lease `25d021b14f920566236d8ac0a21e4c41ba5fbdff`, tree `6998ad79fe6403916fac12a9bba31509a479f2ad` | D2 remains **1/5** | Ten `cipher-store-cf/**` paths, including migration `0008_attachment_sweep_claims.sql`, `src/lib/attachment-sweep-claims.ts`, `src/lib/sweep.ts` and concurrency fixtures. Author gates reported 23/23 pool-worker tests, 9/9 D2 closure tests and typecheck green. | `REJECT`. Completion can enter `completing` without fencing the sweep claim; the sweeper can delete the newly completed R2 object, after which completion can commit `ready` metadata referencing missing ciphertext. No completion-versus-sweep fixture or deployed migration/runtime evidence. | **+0** |
+| Sender-filter successor `ab357f2b3ecde35114dd1ae9d16c1e5b8319154a`, tree `f5178994e4db78900f2b5d7e855f176f07c45aa5` | B5 remains **2/4** | Exactly `crates/keystore/src/sender_filter_rollout.rs`, `keyserver-cf/SENDER_FILTER_ROLLOUT.md`, and the rollout contract/test. Author gates reported 28/28 focused Vitest, TypeScript typecheck and Rust formatting. | `REJECT`, superseding the earlier pending label. Deleting both locally resolved floor records resets to `NeverObserved`; dead-branch and typed-delete-alias mutations false-green the regex closure; trusted producer and verifier-store authority remain public caller inputs. No deployment. | **+0** |
+| Native row attribution `9c8d9caed5d11267054278589876717be1f822bc`, tree `0f183123b9a204126b1b601e63809eaa22431258` | A3 remains **0/5**; C5 remains **3/5** | Exactly `apps/osl-hub/src/native_discord_adapter.rs` and `apps/osl-hub-ui/src/carrier-replay-attribution.test.ts`. Author-side results: attribution Vitest 13/13, native-provider Rust 3/3 and replay/reorder/cross-row/window/poster-substitution Rust 1/1. Source binds native message/poster geometry, scope/generation/order and the production callback. | `pending-independent-audit`; author evidence is source/test only. No Windows or cross-target run proved Discord's required AutomationId/avatar resource/geometry contract. The rejected ancestor `2158d085…` remains only historical context. | **+0 pending** |
+| Release admission `1a045707473a3098648d7c7445a0174401a968f3`, tree `3b5f3bef1b12947fe5f48bf61ea4e43e583cd77e` | I3 remains **1/3**; I4 remains **2/4** | Nine release-owned workflow/policy/candidate/evidence paths. The frozen receipt binds ten Git objects; the verifier admitted 18/18 with floor 18 and three nonempty files. Starved, floor-minus-one, runner-nonzero, zero-floor, malformed/empty output, drift, tampering and duplicate-key controls refused independently. | `ACCEPT +0`, status `test-proven-only`. This proves a fail-closed local measured-suite admission contract, not a GitHub-hosted green Rust/TypeScript/selector/security run, signed candidate, VM promotion, reproducible release or rollback execution. Keyserver floors remain `BLOCKED`. | **+0** |
+| ExplicitExport bridge `075ad3f0cba91b117da4de12ca32a157ee7691f8`, successors `a8bc66093cebc4192fb18503faaeb70906b1c893` and `18a799f01370d3e7529311f956b62bc7507ff9aa` | F2 remains **3/5**; F10 remains **1/3** | `075ad3f` adds `scrub-export-chooser.ts` and its test; `a8bc660` adds an exported `main.ts` dispatch seam; `18a799f` changes `scrub-local.ts` and the chooser test. The terminal object reuses the native-owned import ID, bounds chunks to 256 messages/12 MiB, cancels the exact active import after post-init failures, and checks final encrypted/deletion-disabled/readback counters. | All three exact objects `REJECT`. The live file-input handler still bypasses the dispatch seam; there is no production provider selector or non-mock parser registry, and no five-provider parser-to-native behavioral positive or exact attachment/gap propagation. The cancellation/size sub-boundary improved, but the feature remains `implemented-unwired`. | **+0** |
+
+No independently accepted exact object in this reconciliation crosses a new checklist row. The
+authoritative result therefore remains **100 / 303**; no checklist edit is warranted.
 
 ## Lane roster and exclusive ownership
 
@@ -167,7 +201,8 @@ deployment occurred, and production behavior must not be inferred.
   `4e2256333c53e6b6e17462657260f5d6499ec9ee` is clean and local-gate green. Checkout is disabled;
   the branch is four commits ahead of the local `origin/main`, unpushed and undeployed. Pages
   dashboard/build/live SHA proof and keyserver redemption remain absent/`unknown`; H1 stays 3/4.
-- **Current arithmetic:** D7 `+0`, H1 `+0`; **97 + 0 + 0 = 97 / 303**.
+- **Historical arithmetic at that checkpoint:** D7 `+0`, H1 `+0`;
+  **97 + 0 + 0 = 97 / 303**.
 
 ## Coordination infrastructure built today
 
@@ -220,11 +255,12 @@ Assert non-empty on the positive path so the negative path cannot pass vacuously
 
 ## Resume here
 
-Machine healthy: 10 GB used, 15 GB available, load 9.1, one indexer, watchdog running.
-17 commits today across both trees. Reports on disk: baseline, crypto, server, truth, vmqa
-(scrub's lives in its own worktree; release's is pending).
+Historical machine snapshot: 10 GB used, 15 GB available, load 9.1, one indexer, watchdog running.
+That snapshot counted 17 commits across both trees and reports for baseline, crypto, server, truth
+and VMQA (Scrub's lived in its own worktree). Current release reconciliation is recorded in the
+2026-07-27 exact-object table above.
 
-## Shortest honest next-point map from 97 / 303
+## Shortest honest next-point map from 100 / 303
 
 | Order | Row | Single missing boundary | Owner / artifact contract | External mutation or confirmation |
 |---|---|---|---|---|
