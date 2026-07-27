@@ -103,9 +103,9 @@ The first executable surface is implemented for `.oslmod` command packs: an encr
 
 ## Sharing and collaboration
 
-Free collaboration uses direct encrypted LAN rooms and does not require an account, internet connection, hosted relay, or Pro plan. Invitations are explicit local-network endpoints with a random 256-bit room secret; public/global IP addresses are rejected by the free-LAN parser, frames are authenticated and sequence-bound, and nothing is uploaded automatically. Conflicting offline edits must create a recoverable branch instead of silently applying last-write-wins.
+Direct encrypted LAN-room source exists, but LAN collaboration is not available in the current desktop build. The implemented-but-unwired prototype uses explicit local-network endpoints with a random 256-bit room secret, rejects public/global IP addresses, and authenticates sequence-bound frames; those source properties are not shipping product behavior. Conflict-copy handling remains part of the integration boundary.
 
-Hosted relay, internet sync, and always-available rooms are optional Pro services. The free application must continue to open, edit, export, share by file, and collaborate over LAN without them. Enabling Pro does not opt a workspace into cloud storage; the user must explicitly create or move each hosted room, can return it to LAN/local-only mode, and can export all hosted state into the same portable encrypted formats.
+Hosted relay, internet sync, and always-available rooms are optional Pro services. If LAN collaboration is wired, the free application must continue to open, edit, export, share by file, and collaborate over LAN without them. Enabling Pro does not opt a workspace into cloud storage; the user must explicitly create or move each hosted room, can return it to LAN/local-only mode, and can export all hosted state into the same portable encrypted formats.
 
 ## Research-led feature intake
 

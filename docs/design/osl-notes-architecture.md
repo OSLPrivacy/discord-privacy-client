@@ -4,7 +4,7 @@
 
 OSL Notes is a free, local-first knowledge and creative workspace inside OSL. The default experience is useful without plugins or cloud accounts: fast capture, Markdown editing and preview, documents, spreadsheets, drawings, presentations, folders, tags, favorites, full-text search, wiki links, backlinks, local imports, and recoverable Trash. The larger encrypted media-editor program is specified in `osl-creative-suite.md`.
 
-The current desktop build is deliberately honest. It does not claim OneNote/Obsidian/Office/Adobe parity. It does include encrypted notes and revision history, folders/tags/favorites/Trash, Markdown and wiki links/backlinks, encrypted note attachments, portable typed properties with table/board/calendar views, a bounded knowledge graph, a cross-note task dashboard, templates, local import/export, structured Docs/Sheets/Drawings/Slides editors, encrypted infinite canvases with pointer ink and highlights, encrypted image annotation surfaces, labelled PDF annotation placeholders, an encrypted source-asset vault, bounded creative workspace foundations, pure sandboxed command extensions, and encrypted same-LAN collaboration. OCR, decoded PDF page rendering, property formulas/queries, mobile clients, production media codecs/rendering, richer Office round trips, and hosted collaboration remain delivery tracks below.
+The current desktop build is deliberately honest. It does not claim OneNote/Obsidian/Office/Adobe parity. Its source tree contains encrypted-note, creative-workspace, extension, and collaboration prototypes, but OSL Notes is not exposed by the current production UI. In particular, encrypted same-LAN collaboration is implemented in isolated source modules but is not declared, registered, or reachable in the desktop product. OCR, decoded PDF page rendering, property formulas/queries, mobile clients, production media codecs/rendering, richer Office round trips, and hosted collaboration remain delivery tracks below.
 
 ## Encryption boundary
 
@@ -75,7 +75,7 @@ The encrypted repository is versioned and bounded to 5,000 notes, 256 KiB per bo
 - device keys and explicit device approval; encrypted change replication and attachment chunks;
 - local merge with transparent conflicts, durable deletion tombstones, key rotation, and remote-device revocation;
 - shared notebooks using member-scoped keys, verified identities, granular roles, and auditable membership changes;
-- free direct LAN rooms are implemented with encrypted, sequence-bound frames, private-address enforcement, explicit invitations, and recoverable conflict copies;
+- direct encrypted LAN-room code exists as an implemented-but-unwired prototype; the current desktop build exposes no host, join, sync, or stop path;
 - optional hosted internet rooms remain Pro-only and opt-in. No file is uploaded merely because a user has Pro.
 
 ### Track D — developer platform
