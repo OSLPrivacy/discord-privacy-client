@@ -1,0 +1,5 @@
+[
+  { "id": "S1", "verb": "ping",   "args": {} },
+  { "id": "S2", "verb": "launch", "args": { "timeoutSeconds": 60 } },
+  { "id": "S3", "verb": "shot",   "args": { "name": "selftest" } }
+]
