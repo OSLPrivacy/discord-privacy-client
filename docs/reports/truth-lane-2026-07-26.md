@@ -677,3 +677,123 @@ marker-free page it exits 1 correctly.
 `check-claims` 16 files / 0 failed · `--self-test` 23/23 · `pricing-sync` 18 markers / 0 drift ·
 `build-status --check` clean · `screenshot-matrix` 270 captures / 0 failed / 0 unmeasurable ·
 `check-a11y` 120 combinations, 0 on all four measures. Checklist **96/303**, consistent.
+
+---
+
+## 15 · The app gate, an adversarial audit, and a false claim taken off production
+
+### 15.1 In-app copy is gated now
+
+`scripts/check-app-claims.mjs` scans every string and template literal under
+`apps/osl-hub-ui/src/**` plus `README.md`. First clean run: **28 banned phrases parsed, 7,345 strings
+scanned, 0 violations.** Wired into the `TypeScript Test` workflow.
+
+It **parses §D of the allowlist directly** instead of holding a copy of the ban list — add a §D row
+and the app gate tightens automatically. Floors (≥8 phrases, ≥300 strings, README non-empty) were
+proven by starving the inputs, not by reading the code.
+
+Two precision rules, both learned from its first run rather than designed in:
+
+- **Negation awareness.** README legitimately says burn is *not* cryptographic erasure. A gate that
+  flags an honest denial gets switched off.
+- **Context gating.** Its first run flagged "Selected apps reviewed" and "Every batch is reviewed and
+  confirmed" — the *user* reviewing, not an audit. §D bans "audited"/"reviewed" as security claims,
+  so those single words now fire only near security context. Multi-word bans stay absolute.
+
+A §D sweep of 54 other markdown files found exactly one real violation:
+`docs/phase-7c-manual-tests.md:90`, a manual-test **checkbox** asserting messages "render as
+permanent ciphertext". A tester would have ticked pass for behaviour that cannot happen.
+
+### 15.2 The allowlist was audited adversarially, and 6 of 8 A-rows were wrong
+
+I sent it to an adversarial reviewer precisely because I wrote most of it. It reported only 5 of 27
+rows surviving unchanged. Every finding was re-verified against source before being applied.
+
+**The serious one — a live false claim in production.** `crates/ipc/src/commands.rs:2640-2660`
+(`9-MODE1-RETIRE`) disables Mode 1 template stego in V2 as unviable under the PQ-hybrid wire's
+~1190-byte wrap leg, and **silently coerces** legacy `stego_mode=mode1` to Mode 0. Mode 0 emits a
+visible `DPC0::<base64>` capsule. So the connected service receives an obvious encrypted blob, not a
+harmless cover message — while the promoted site said the opposite and badged `cover-carrier-text`
+as `Beta`.
+
+Confidentiality was never affected: the payload is encrypted and the readable text still never
+reaches the service. **The stealth claim was what was false.** Raised as an incident before touching
+anything, because it was public.
+
+Two further real overstatements, distinct from citation drift:
+
+- **A7 narrowed.** "Nobody can register your Discord identity" is true only for snowflake-shaped ids.
+  `register.ts:110` validates `isProtocolId`; `:114` rejects only `/^[0-9]{17,20}$/`. Any opaque
+  identifier — **a Discord username included** — is still first-come. Most people read "my Discord
+  identity" as their username. This row is `Available`, the worst place to be loose.
+- **A8 corrected.** "Encryption, keys and your plaintext stay on your machine" is *literally false*:
+  the client uploads its X25519, Ed25519 and ML-KEM **public** keys on registration
+  (`crates/keystore/src/client.rs:599`). Necessary and normal, but the sentence does not survive it.
+  The site now tells users their public identity keys are published.
+
+A4 was tense-corrected (the AutoScrub exception was written as though it already exists). A3/A5/A7
+were re-anchored. **A5 turned out stronger than recorded:** `SetWindowDisplayAffinity` is read back
+and required to match exactly (`crates/runtime/src/screenshot.rs:91`, `:97`), with an independent
+re-read in the compositor (`native_discord_overlay.rs:4875`); it stays `Planned` only because
+first-paint ordering is an open critical. A6 is marked owner-attested rather than source-verifiable —
+the `$5` lives behind an external Stripe price id.
+
+### 15.3 Promoted, and verified live
+
+Owner authorised re-promotion. Verified against the live site rather than assumed:
+`harmless cover message` = **0**, the corrected wording present, the public-key disclosure present,
+`/docs/status` returning 200.
+
+Caught mid-promotion: `build.json` and all 16 pages still carried a stamp from three commits earlier,
+so the deployed build identity would not have matched the commit that produced it. Master §8.6 wants
+a deployment to expose its own identity; a stale stamp makes that a lie and makes screenshot evidence
+unattributable. Regenerated and pushed.
+
+### 15.4 The app feature list is latent, not live — checked before judging
+
+`apps/osl-hub/src/core_bridge.rs` labels include **"Group and server encryption"** while group
+protection is switched off. As a user-facing capability line that would be false and would belong
+with the six claims removed from the website.
+
+**It is not live.** `list_core_features` is registered in `generate_handler!` but **no UI code invokes
+it**; `parseCoreFeatures` is referenced only by `core.test.ts`; and `loadCoreIntegrationFromNative`
+invokes only `get_core_readiness` and hardcodes `features: []`. Caller before callee — and the exact
+inverse of the Scrub finding earlier tonight, where commands existed but were registered nowhere so
+detection silently returned zero.
+
+Recorded rather than closed, because **the app-copy gate would not catch it**: the gate reads string
+literals, and these already are string literals that simply never render. A gate that passes because
+copy is unreachable is a cousin of the vacuous-pass problem. Before anyone wires it, the labels need
+§8.2 status vocabulary and `bridge_state` must stop being the honesty channel.
+
+### 15.5 A correction to advice I gave the fleet
+
+Master r8/r10 recorded that the honest Rust gate is `--features core,discord-qa-shell`. That gate
+**turns a security check off** while turning coverage on: `header_proof_is_enforced()` is
+`!cfg!(feature = "discord-qa-shell")` (`apps/osl-hub/src/native_discord_adapter.rs:4529-4531`,
+verified). Neither gate alone is sufficient — one hides a module, the other relaxes an enforcement.
+
+Assessment: **not load-bearing for any claim.** Traced to the actual evidence rather than the nearest
+scary mechanism — no allowlist row depends on header-proof enforcement, attribution is already an
+open finding so nothing rests on it, and A1/A2 are confidentiality rather than header authentication.
+Nothing to retract; the advice was still wrong, and other lanes read it. Corrected in master r11.
+
+### 15.6 Open, and not closed
+
+- **Sol's B and C section verdicts are unreviewed.** Section A alone yielded two real overstatements
+  in rows I wrote, one of them at `Available`. There is no reason to assume B and C are cleaner.
+- **Rust user-facing strings have no gate.** The inventory's honest answer was that no clean
+  mechanical rule separates claim surface from log lines and internal identifiers across ~8,838
+  literals. That surface is manually reviewed, which is to say not reviewed.
+
+## Acceptance rows this earns — none, deliberately
+
+**No points claimed for any of §15.** Removing a false claim does not earn a point; it corrects an
+overclaim that should never have been there. Applying that standard to my own lane is the same
+standard I applied when cutting the release lane's I3 and declining I6.
+
+**H1 stays at 3/4.** Its held point was recorded as "promotion to production **plus** the keyserver
+redemption change". Promotion is now done; redemption is not. Half a condition is not a point.
+
+**The in-app gate earns nothing either.** It closes a gap this lane opened itself, and the H/J rows
+already cover claim tooling.
