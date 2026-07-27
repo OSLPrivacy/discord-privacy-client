@@ -98,6 +98,28 @@ describe("attachment predecessor adoption source closure", () => {
     );
   });
 
+  it("rejects widening the consumed-upload classifier", () => {
+    const value = sources();
+    value.sweep = value.sweep.replace(
+      'return candidate.code === "NoSuchUpload"\n    || candidate.name === "NoSuchUpload";',
+      "return true;",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /classifier is widened/,
+    );
+  });
+
+  it("rejects absence CAS without lease version in the UPDATE", () => {
+    const value = sources();
+    value.claims = value.claims.replace(
+      "        AND lease_version = ?\n        AND lease_expires_at > ?\n        AND EXISTS (",
+      "        AND lease_expires_at > ?\n        AND EXISTS (",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /absence marker UPDATE.*lease-version CAS/,
+    );
+  });
+
   it("rejects removal of the ready lease-version CAS", () => {
     const value = sources();
     value.claims = mutateFunction(

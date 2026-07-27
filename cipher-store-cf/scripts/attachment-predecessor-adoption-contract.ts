@@ -132,7 +132,12 @@ export function validateAttachmentPredecessorAdoption(
     "wrong-size objects do not unconditionally enter the multipart abort fence",
   );
   requirePattern(
-    sources.sweep,
+    compact(sources.sweep),
+    /function isConsumedMultipartUpload\(error: unknown\): boolean \{ if \(typeof error !== "object" \|\| error === null\) return false; const candidate = error as \{ code\?: unknown; name\?: unknown \}; return candidate\.code === "NoSuchUpload" \|\| candidate\.name === "NoSuchUpload"; \}/,
+    "consumed-upload classifier is widened beyond exact terminal signals",
+  );
+  requirePattern(
+    compact(sources.sweep),
     /function isConsumedMultipartUpload\(error: unknown\): boolean[\s\S]*?NoSuchUpload[\s\S]*?abortFailure = isConsumedMultipartUpload\(error\) \? null : error/,
     "retry does not distinguish terminal consumed-upload aborts from unknown failures",
   );
@@ -152,6 +157,11 @@ export function validateAttachmentPredecessorAdoption(
   );
   const absence = compact(
     functionText(sources.claims, "confirmAttachmentObjectAbsent"),
+  );
+  requirePattern(
+    absence,
+    /UPDATE attachment_sweep_claims SET storage_fence_state = 'object_absent_confirmed' WHERE attachment_id = \? AND worker_id = \? AND claim_token = \? AND lease_version = \? AND lease_expires_at > \?/,
+    "absence marker UPDATE is missing exact lease-version CAS",
   );
   requirePattern(
     absence,
