@@ -209,7 +209,7 @@ describe("R2 attachment transport", () => {
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects WHERE id = ?", id)).toBe(0);
   });
 
-  it("removes the R2 object and returns a bounded failure when D1 quota rejects the insert", async () => {
+  it("touches no R2 object and returns a bounded failure when D1 quota rejects the reservation", async () => {
     await insertCapacityRows();
     const real = workerEnv();
     const deletedKeys: string[] = [];
@@ -232,8 +232,8 @@ describe("R2 attachment transport", () => {
     );
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "storage_capacity" });
-    expect(deletedKeys).toHaveLength(1);
-    expect(await real.ATTACHMENTS.head(deletedKeys[0]!)).toBeNull();
+    expect(deletedKeys).toHaveLength(0);
+    expect((await real.ATTACHMENTS.list()).objects).toEqual([]);
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBeGreaterThan(0);
   });
 
