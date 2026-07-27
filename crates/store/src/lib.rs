@@ -426,9 +426,6 @@ fn checkpoint_after_shred(conn: &Connection) -> Result<(), StoreError> {
 /// flag was already set is how a destructive call came to report success over
 /// a secret it never touched.
 ///
-/// `burned_at` is stamped only if it is not already set, so re-burning cannot
-/// make an old destruction look recent in the audit trail.
-///
 /// The caller is responsible for the WAL checkpoint; batching one checkpoint
 /// after several shreds is why it is not done here.
 fn shred_row(conn: &Connection, mid_bi: &[u8]) -> Result<usize, StoreError> {
@@ -438,8 +435,7 @@ fn shred_row(conn: &Connection, mid_bi: &[u8]) -> Result<usize, StoreError> {
                 nonce = zeroblob(length(nonce)),
                 wrapped_key_nonce = NULL,
                 wrapped_key = NULL,
-                burned = 1,
-                burned_at = COALESCE(burned_at, strftime('%s','now'))
+                burned = 1
           WHERE mid_bi = ?1",
         params![mid_bi],
     )?;
@@ -459,8 +455,7 @@ fn shred_attachment_rows(conn: &Connection, mid_bi: &[u8]) -> Result<usize, Stor
                 nonce = zeroblob(length(nonce)),
                 wrapped_key_nonce = NULL,
                 wrapped_key = NULL,
-                burned = 1,
-                burned_at = COALESCE(burned_at, strftime('%s','now'))
+                burned = 1
           WHERE mid_bi = ?1",
         params![mid_bi],
     )?;
@@ -698,10 +693,10 @@ impl MessageStore {
             tx.execute(
                 "INSERT INTO messages \
                     (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
-                     ciphertext, nonce, seq, burned, burned_at, content_version, \
+                     ciphertext, nonce, seq, burned, content_version, \
                      wrapped_key_nonce, wrapped_key) \
                  VALUES (?1, ?2, ?3, ?4, ?5, x'', x'', ?6, 1, \
-                         strftime('%s','now'), ?7, NULL, NULL) \
+                         ?7, NULL, NULL) \
                  ON CONFLICT(mid_bi) DO NOTHING",
                 params![
                     mid_bi,
@@ -1001,8 +996,7 @@ impl MessageStore {
                             nonce = zeroblob(length(nonce)),
                             wrapped_key_nonce = NULL,
                             wrapped_key = NULL,
-                            burned = 1,
-                            burned_at = COALESCE(burned_at, strftime('%s','now'))
+                            burned = 1
                       WHERE mid_bi IN (
                         SELECT mid_bi FROM messages
                          WHERE chan_bi = ?1 AND sender_bi = ?2
@@ -1019,8 +1013,7 @@ impl MessageStore {
                             nonce = zeroblob(length(nonce)),
                             wrapped_key_nonce = NULL,
                             wrapped_key = NULL,
-                            burned = 1,
-                            burned_at = COALESCE(burned_at, strftime('%s','now'))
+                            burned = 1
                       WHERE mid_bi IN (
                         SELECT mid_bi FROM messages WHERE chan_bi = ?1
                       )",
@@ -1036,8 +1029,7 @@ impl MessageStore {
                         SET ciphertext = zeroblob(length(ciphertext)), \
                             nonce = zeroblob(length(nonce)), \
                             wrapped_key_nonce = NULL, wrapped_key = NULL, \
-                            burned = 1, \
-                            burned_at = COALESCE(burned_at, strftime('%s','now')) \
+                            burned = 1 \
                       WHERE chan_bi = ?1 AND sender_bi = ?2",
                     params![chan_bi, sender_bi],
                 )?
@@ -1047,8 +1039,7 @@ impl MessageStore {
                     SET ciphertext = zeroblob(length(ciphertext)), \
                         nonce = zeroblob(length(nonce)), \
                         wrapped_key_nonce = NULL, wrapped_key = NULL, \
-                        burned = 1, \
-                        burned_at = COALESCE(burned_at, strftime('%s','now')) \
+                        burned = 1 \
                   WHERE chan_bi = ?1",
                 params![chan_bi],
             )?,
@@ -1286,8 +1277,8 @@ impl MessageStore {
         tx.execute(
             "INSERT INTO attachments \
                 (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, \
-                 burned, burned_at, content_version, wrapped_key_nonce, wrapped_key) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, NULL, ?9, ?10, ?11) \
+                 burned, content_version, wrapped_key_nonce, wrapped_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11) \
              ON CONFLICT(ck_bi) DO UPDATE SET \
                 mid_bi = excluded.mid_bi, \
                 sender_bi = excluded.sender_bi, \
@@ -1411,8 +1402,7 @@ impl MessageStore {
                             nonce = zeroblob(length(nonce)),
                             wrapped_key_nonce = NULL,
                             wrapped_key = NULL,
-                            burned = 1,
-                            burned_at = COALESCE(burned_at, strftime('%s','now'))
+                            burned = 1
                       WHERE burned = 0 AND mid_bi IN ( \
                         SELECT mid_bi FROM messages \
                          WHERE chan_bi = ?1 AND sender_bi = ?2)",
@@ -1427,8 +1417,7 @@ impl MessageStore {
                         nonce = zeroblob(length(nonce)),
                         wrapped_key_nonce = NULL,
                         wrapped_key = NULL,
-                        burned = 1,
-                        burned_at = COALESCE(burned_at, strftime('%s','now'))
+                        burned = 1
                   WHERE burned = 0 AND mid_bi IN ( \
                     SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
                 params![chan_bi],
@@ -1666,8 +1655,8 @@ impl MessageStore {
     /// ## Semantics
     ///
     /// Same destruction as [`Self::mark_burned`] — zero the ciphertext and
-    /// nonce in place, null the wrapped key, and stamp `burned`/`burned_at` —
-    /// followed by a single WAL truncation for the whole batch.
+    /// nonce in place, null the wrapped key, and stamp `burned` — followed by
+    /// a single WAL truncation for the whole batch.
     ///
     /// Unlike `mark_burned`, an id that is absent or already burned is *not* an
     /// error: a sweeper legitimately names rows this device never cached. It
@@ -1699,16 +1688,14 @@ impl MessageStore {
                 validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
             }
             // `burned = 0` in the predicate keeps this idempotent: a second
-            // sweep over the same id reports zero rather than re-stamping
-            // `burned_at` and making an old destruction look fresh.
+            // sweep over the same id reports zero.
             shredded += tx.execute(
                 "UPDATE messages
                     SET ciphertext = zeroblob(length(ciphertext)),
                         nonce = zeroblob(length(nonce)),
                         wrapped_key_nonce = NULL,
                         wrapped_key = NULL,
-                        burned = 1,
-                        burned_at = strftime('%s','now')
+                        burned = 1
                   WHERE mid_bi = ?1 AND burned = 0",
                 params![mid_bi],
             )?;

@@ -84,7 +84,7 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
   finishes the job on next open. See the migration section for what
   `VACUUM` does and does not do.
 - `messages(mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct,
-  ciphertext, nonce, seq, burned, burned_at, content_version,
+  ciphertext, nonce, seq, burned, content_version,
   wrapped_key_nonce, wrapped_key)` —
   `mid_bi`, `chan_bi` and `sender_bi` are 32-byte keyed blind
   indexes. The real Discord message id, channel id, sender Discord
@@ -95,7 +95,7 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
   ordering counter; it replaces the old plaintext `decrypted_at`
   ordering index.
 - `attachments(ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct,
-  ciphertext, nonce, seq, burned, burned_at, content_version,
+  ciphertext, nonce, seq, burned, content_version,
   wrapped_key_nonce, wrapped_key)` — `ck_bi`, `mid_bi` and `sender_bi` are
   blind indexes. The real cache key, message id, random filename,
   MIME type, byte length, creation timestamp, optional scope fields
@@ -115,6 +115,36 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
   attachments for a message.
 - `idx_attachments_seq` — `seq`, used to trim the oldest attachment
   rows.
+
+Both content tables also retain nullable compatibility columns so the exact
+last v3 reader reaches its explicit newer-schema refusal:
+
+- `messages(discord_message_id, channel_id, sender_discord_id,
+  sender_osl_user_id, decrypted_at, scope_type, scope_id, meta_tag)`.
+- `attachments(cache_key, discord_message_id, random_filename, mime,
+  byte_len, created_at, scope_type, scope_id, sender_discord_id)`.
+
+Every compatibility value is `NULL` on schema-v8 writes and migrations. These
+columns are not selectors or fallback storage.
+
+### Raw SQLite/WAL field census
+
+| Logical field | On-disk representation | Classification |
+|---|---|---|
+| Message body | `messages.ciphertext` + `nonce`, under a per-message DEK | Protection-required; authenticated ciphertext |
+| Attachment bytes | `attachments.ciphertext` + `nonce`, under an independent per-attachment DEK | Protection-required; authenticated ciphertext |
+| Filename, MIME, byte length | Inside attachment `meta_ct` | Protection-required; authenticated ciphertext |
+| Message, channel, sender Discord, sender OSL/service identifiers | Inside message `meta_ct`; keyed `mid_bi`, `chan_bi`, `sender_bi` permit equality lookup | Labels are protection-required; deterministic equality/frequency is intentional queryable leakage |
+| Attachment cache key, owner message, optional scope and sender identifiers | Inside attachment `meta_ct`; keyed `ck_bi`, `mid_bi`, optional `sender_bi` permit lookup/burn | Labels are protection-required; deterministic equality/frequency is intentional queryable leakage |
+| Message `decrypted_at`, attachment `created_at` | Inside the respective `meta_ct` | Protection-required; authenticated ciphertext |
+| Relative insertion/order | Plain `seq` | Intentional queryable leakage needed for listing and cache trimming |
+| Terminal state | Plain `burned` bit | Intentional queryable state needed to make re-put fail closed |
+| Exact burn time | Not stored in schema v8 | Protection-required; removed because no Store query used it |
+| Per-record DEK wrappers | `wrapped_key_nonce` + `wrapped_key` | Protection-required opaque authenticated envelopes; null after burn |
+| Attachment inventory | Manifest body in `ciphertext` + `nonce`; owning `mid_bi`, `complete`, and `generation` remain visible | Inventory entries are protected; owner equality, legacy-coverage state, and update generation remain integrity/structural leakage |
+| Blind indexes | `mid_bi`, `chan_bi`, `sender_bi`, `ck_bi` | Keyed and domain-separated, but intentionally deterministic rather than encrypted |
+| Recovery/version metadata | Plain `_meta.key`; opaque or fixed-format `_meta.value` for `schema_version`, canary nonce/ciphertext, and transient vacuum/checkpoint markers | Operational metadata, not user content; schema/recovery state is visible |
+| Row count, ciphertext length, page/WAL allocation | SQLite structure and blob lengths | Intentional residual leakage; Store does not pad rows or hide database shape |
 
 **No FTS tables, no tokenized plaintext, no other plaintext
 content surface.** Deliberately. (See "Search" below.)
@@ -146,7 +176,10 @@ What remains visible:
   length; for attachments it leaks attachment size even though the
   sealed `byte_len` metadata field is hidden.
 - The relative order of rows via `seq`.
-- Which message rows are burned, and their `burned_at` value when set.
+- Which message and attachment rows are burned.
+- Manifest owner equality, legacy `complete` coverage, and update
+  `generation`.
+- Schema version and whether a vacuum/checkpoint recovery action is pending.
 
 Plainly: the social graph's labels are gone; its shape is not. Do not
 describe the social graph as protected without that qualification.
@@ -199,8 +232,8 @@ time, and the section understated what the code does.
 - Sets `messages.burned = 1` so `get` returns `None` and
   `list_by_channel` filters the row out. The zeroed row remains as
   a burn-acknowledgment stub.
-- Stamps `burned_at`, but only if it was not already set, so
-  re-burning cannot make an old destruction look recent.
+- Retains only the terminal `burned` bit. Schema v8 no longer stores an exact
+  burn timestamp.
 - In the same SQLite transaction, zeroes every associated attachment's
   metadata/body ciphertext and nonce, nulls both attachment wrapper
   columns, and marks the selector-only attachment stubs burned. A burn
@@ -297,7 +330,7 @@ to canonical metadata and exact body ciphertext as described above.
 Selector recomputation after metadata authentication remains
 defence-in-depth and protects selector columns such as `sender_bi`.
 
-## Schema v4, v5, v6 and v7 migrations
+## Schema v4 through v8 migrations
 
 The v3 to v4 migration rewrites every row inside one SQLite
 transaction. It builds v4 tables beside the old tables, computes blind
@@ -326,6 +359,13 @@ v6 attachment before recording it. A failure therefore leaves the complete v6
 database intact, never a partial manifest set. Migrated coverage is always
 `complete = 0`; absence before the migration is not promoted into proof that
 an attachment never existed.
+
+The v7 to v8 migration removes `burned_at` from both content tables and stamps
+the new version in one `BEGIN IMMEDIATE` transaction. It records
+`vacuum_pending` before commit and completes the scrub on the same open; if the
+process stops after commit, the next open retries the vacuum. Message bodies,
+attachment envelopes, manifests, selectors, ordering, and terminal flags are
+otherwise unchanged.
 
 `seq` is assigned in legacy `decrypted_at ASC, rowid ASC` order, so
 newest-first channel listing stays in the same order after migration.

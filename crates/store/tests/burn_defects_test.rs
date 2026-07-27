@@ -293,10 +293,10 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     }
 }
 
-/// Re-burning must remain safe and must not restamp `burned_at`, or an old
-/// destruction starts looking fresh in the audit trail.
+/// Re-burning must remain safe and keep the already-shredded row byte-exact.
+/// Schema v8 deliberately stores no wall-clock burn timestamp.
 #[test]
-fn repeat_mark_burned_is_safe_and_keeps_the_original_burn_time() {
+fn repeat_mark_burned_is_safe_and_keeps_the_terminal_row_exact() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let store = open_a(tmp.path());
@@ -307,27 +307,59 @@ fn repeat_mark_burned_is_safe_and_keeps_the_original_burn_time() {
     assert!(store.get("m5").unwrap().is_some(), "positive path");
     store.mark_burned("m5").unwrap();
 
-    let first_burn_at: Option<i64> = {
+    let first_stub: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, i64) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row("SELECT burned_at FROM messages", [], |r| r.get(0))
-            .unwrap()
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') \
+                  WHERE name='burned_at'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "schema v8 must not retain an exact burn timestamp column"
+        );
+        conn.query_row(
+            "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, burned \
+               FROM messages",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap()
     };
-    assert!(
-        first_burn_at.is_some(),
-        "positive path: burned_at was stamped"
-    );
 
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     store.mark_burned("m5").unwrap();
 
-    let second_burn_at: Option<i64> = {
+    let second_stub: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, i64) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row("SELECT burned_at FROM messages", [], |r| r.get(0))
-            .unwrap()
+        conn.query_row(
+            "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, burned \
+               FROM messages",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap()
     };
     assert_eq!(
-        first_burn_at, second_burn_at,
-        "a second burn restamped burned_at and made an old destruction look fresh"
+        first_stub, second_stub,
+        "a second burn rewrote the already-terminal row"
     );
     assert_all_bodies_shredded(&db_path);
 }

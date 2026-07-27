@@ -1293,6 +1293,11 @@ fn v6_to_v7_mid_manifest_failure_rolls_back_and_reopens_after_repair() {
         corrupted[0] ^= 0x80;
         conn.execute_batch("DROP TABLE attachment_manifests;")
             .unwrap();
+        conn.execute_batch(
+            "ALTER TABLE messages ADD COLUMN burned_at INTEGER;
+             ALTER TABLE attachments ADD COLUMN burned_at INTEGER;",
+        )
+        .unwrap();
         conn.execute(
             "UPDATE _meta SET value=?1 WHERE key='schema_version'",
             params![6u32.to_le_bytes().to_vec()],
@@ -1521,9 +1526,9 @@ fn manifest_refuses_extra_row_reordering_and_cross_message_swap() {
                 conn.execute(
                     "INSERT INTO attachments \
                         (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
-                         seq, burned, burned_at, content_version, wrapped_key_nonce, wrapped_key) \
+                         seq, burned, content_version, wrapped_key_nonce, wrapped_key) \
                      SELECT ?1, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
-                            seq + 100, burned, burned_at, content_version, \
+                            seq + 100, burned, content_version, \
                             wrapped_key_nonce, wrapped_key \
                        FROM attachments WHERE ck_bi = ?2",
                     params![fake, cache_bi("owner-a", "a.png")],

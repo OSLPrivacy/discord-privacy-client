@@ -599,7 +599,7 @@ fn reopen_with_correct_secret_migration_idempotent() {
     let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
     assert_migrated_rows(&store2, &rows);
     let second_open_version = schema_version(tmp.path());
-    assert_eq!(first_open_version, 7);
+    assert_eq!(first_open_version, 8);
     assert_eq!(second_open_version, first_open_version);
     store2
         .put(&sample(
@@ -1078,8 +1078,7 @@ fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
         .unwrap()
         .expect("sweep must not touch unnamed rows");
     assert_eq!(still_live, untouched);
-    // A second sweep reports zero rather than re-stamping burned_at and making
-    // an old destruction look fresh.
+    // A second sweep reports zero and leaves the terminal row alone.
     assert_eq!(
         store
             .shred_expired_messages(&["known".to_string()])

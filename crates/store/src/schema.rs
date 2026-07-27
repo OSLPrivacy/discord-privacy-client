@@ -62,10 +62,14 @@ use rusqlite::{params, Connection};
 ///        New inventories are complete; migrated inventories are explicitly
 ///        marked incomplete because history cannot prove what was never
 ///        cached.
-pub(crate) const SCHEMA_VERSION: u32 = 7;
+///   v8 — Removes plaintext `burned_at` from message and attachment audit
+///        stubs. The terminal `burned` bit remains queryable, but an offline
+///        reader no longer learns the exact time of destructive activity.
+pub(crate) const SCHEMA_VERSION: u32 = 8;
 const PRIVACY_SCHEMA_VERSION: u32 = 4;
 const MESSAGE_ENVELOPE_SCHEMA_VERSION: u32 = 5;
 const ATTACHMENT_ENVELOPE_SCHEMA_VERSION: u32 = 6;
+const ATTACHMENT_MANIFEST_SCHEMA_VERSION: u32 = 7;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -98,7 +102,6 @@ CREATE TABLE IF NOT EXISTS messages (
     nonce BLOB NOT NULL,
     seq INTEGER NOT NULL,
     burned INTEGER NOT NULL DEFAULT 0,
-    burned_at INTEGER,
     content_version INTEGER NOT NULL DEFAULT 1,
     wrapped_key_nonce BLOB,
     wrapped_key BLOB,
@@ -134,7 +137,6 @@ CREATE TABLE IF NOT EXISTS attachments (
     nonce BLOB NOT NULL,
     seq INTEGER NOT NULL,
     burned INTEGER NOT NULL DEFAULT 0,
-    burned_at INTEGER,
     content_version INTEGER NOT NULL DEFAULT 1,
     wrapped_key_nonce BLOB,
     wrapped_key BLOB,
@@ -247,6 +249,7 @@ pub(crate) fn migrate(
             return Ok(());
         }
         Some(v) if v == SCHEMA_VERSION => {
+            refuse_plaintext_burn_time_columns(conn)?;
             // Already current. An earlier privacy-schema build may predate the null
             // downgrade-guard columns, so add those before SCHEMA_CURRENT creates
             // the exact-v3 compatibility indexes that reference them.
@@ -262,16 +265,23 @@ pub(crate) fn migrate(
         Some(MESSAGE_ENVELOPE_SCHEMA_VERSION) => {
             migrate_v5_to_v6(conn, key, index_key)?;
             migrate_v6_to_v7(conn, key)?;
+            migrate_v7_to_v8(conn)?;
             return Ok(());
         }
         Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION) => {
             migrate_v6_to_v7(conn, key)?;
+            migrate_v7_to_v8(conn)?;
+            return Ok(());
+        }
+        Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION) => {
+            migrate_v7_to_v8(conn)?;
             return Ok(());
         }
         Some(PRIVACY_SCHEMA_VERSION) => {
             migrate_v4_to_v5(conn, key)?;
             migrate_v5_to_v6(conn, key, index_key)?;
             migrate_v6_to_v7(conn, key)?;
+            migrate_v7_to_v8(conn)?;
             return Ok(());
         }
         _ => {}
@@ -292,6 +302,7 @@ pub(crate) fn migrate(
     migrate_v4_to_v5(conn, key)?;
     migrate_v5_to_v6(conn, key, index_key)?;
     migrate_v6_to_v7(conn, key)?;
+    migrate_v7_to_v8(conn)?;
     Ok(())
 }
 
@@ -1123,7 +1134,7 @@ CREATE TABLE attachment_manifests (
                 params![mid_bi, nonce, ciphertext],
             )?;
         }
-        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        write_meta_u32(conn, "schema_version", ATTACHMENT_MANIFEST_SCHEMA_VERSION)?;
         conn.execute_batch("COMMIT;")?;
         Ok(())
     })();
@@ -1133,6 +1144,50 @@ CREATE TABLE attachment_manifests (
         return Err(error);
     }
     conn.execute_batch(SCHEMA_CURRENT)?;
+    Ok(())
+}
+
+/// Remove exact burn timestamps from the queryable schema.
+///
+/// `burned_at` was never read by the Store API. It exposed the wall-clock time
+/// of destructive activity to anyone who could inspect SQLite, while the
+/// terminal `burned` bit is sufficient for every Store-owned invariant.
+///
+/// Both tables and the version stamp change inside one transaction. The
+/// committed `vacuum_pending` marker makes removal of the old column bytes
+/// retryable across a crash between COMMIT and VACUUM.
+fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    let result = (|| -> Result<(), StoreError> {
+        conn.execute_batch(
+            "ALTER TABLE messages DROP COLUMN burned_at;
+             ALTER TABLE attachments DROP COLUMN burned_at;",
+        )?;
+        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        write_meta_blob(conn, VACUUM_PENDING_KEY, &[1])?;
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(error);
+    }
+    conn.execute_batch(SCHEMA_CURRENT)?;
+    run_pending_vacuum(conn)?;
+    Ok(())
+}
+
+fn refuse_plaintext_burn_time_columns(conn: &Connection) -> Result<(), StoreError> {
+    for table in ["messages", "attachments"] {
+        if existing_columns(conn, table)?
+            .iter()
+            .any(|column| column == "burned_at")
+        {
+            return Err(StoreError::Schema(format!(
+                "schema v8 {table} table still contains plaintext burned_at"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1196,7 +1251,12 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
     } else {
         None
     };
-    if table_exists(conn, "attachment_manifests")? && on_disk != Some(SCHEMA_VERSION) {
+    if table_exists(conn, "attachment_manifests")?
+        && !matches!(
+            on_disk,
+            Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION) | Some(SCHEMA_VERSION)
+        )
+    {
         return Err(StoreError::Schema(
             "pre-v7 database already contains an attachment_manifests table; \
              refusing ambiguous partial migration state"
@@ -1236,7 +1296,9 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
             && (!complete_envelope
                 || !matches!(
                     on_disk,
-                    Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION) | Some(SCHEMA_VERSION)
+                    Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION)
+                        | Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION)
+                        | Some(SCHEMA_VERSION)
                 ))
         {
             let row_count: i64 =
