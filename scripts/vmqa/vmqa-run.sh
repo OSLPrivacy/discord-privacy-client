@@ -261,6 +261,15 @@ metric_from_step() {
   ' "$file"
 }
 
+step_count() {
+  # How many steps the agent actually EXECUTED. A blocked verdict with an empty steps array is a
+  # precondition failure (torn or invalid request), not a measurement, and must never be mistaken
+  # for one.
+  local file="$1"
+  [ -f "$file" ] || { printf '0\n'; return 0; }
+  jq -r '[.steps[]?] | length' "$file" 2>/dev/null || printf '0\n'
+}
+
 step_status() {
   local file="$1" verb="$2"
   [ -f "$file" ] || { printf 'missing\n'; return 0; }
@@ -309,7 +318,7 @@ cmd_agent_alive() {
 cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
-  local exe_sha="" steps_file="$SELFTEST_STEPS"
+  local exe_sha="" steps_file="$SELFTEST_STEPS" neg_steps neg_ping
   while [ $# -gt 0 ]; do
     case "$1" in
       --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
@@ -345,12 +354,26 @@ cmd_selftest() {
   colors="$(metric_from_step "$pos_file" shot distinctColors)"
   launch_neg="$(step_status "$neg_file" launch)"
   shot_neg="$(step_status "$neg_file" shot)"
+  neg_steps="$(step_count "$neg_file")"
+  neg_ping="$(step_status "$neg_file" ping)"
   result="INVALID"
 
   if [ "$neg" = "pass" ]; then
     echo "SELFTEST INVALID: negative control passed; the harness is confirming whatever it finds" >&2
   elif [ "$neg" = "unmeasurable" ] && [ "$neg_markers" -eq 0 ]; then
     echo "NEGATIVE CONTROL VACUOUS" >&2
+  elif [ "${neg_steps:-0}" -lt 1 ]; then
+    # A blocked verdict with an EMPTY steps array never attempted subject resolution: the request
+    # was torn or invalid and the agent bailed before executing anything. Every per-step status
+    # then reads "missing", and "missing" is not "pass", so the old condition accepted it as a
+    # good negative control. That let a TRANSPORT failure on the negative half validate the
+    # harness. A control that never ran is not a control.
+    echo "NEGATIVE CONTROL VACUOUS: verdict is '$neg' with 0 executed steps; it never attempted subject resolution" >&2
+  elif [ "$neg_ping" != "pass" ]; then
+    # ping is the negative half's own apparatus check. If it did not pass, the negative run cannot
+    # be distinguished from an agent that was broken on that pass, so its blocked result is not
+    # evidence that the identifier was correctly rejected.
+    echo "NEGATIVE CONTROL VACUOUS: negative half's ping is '$neg_ping', so its apparatus is unproven" >&2
   elif [ ! -f "$pos_file" ] || [ ! -f "$neg_file" ]; then
     # Both halves must have produced an actual verdict file. Without this, a negative run that
     # never returned anything is read by overall_or_rc as "blocked" from its exit code alone, and
@@ -365,12 +388,17 @@ cmd_selftest() {
 
   printf 'positive verdict: %s\n' "$pos"
   printf 'negative verdict: %s\n' "$neg"
+  printf 'negativeStepsExecuted: %s\n' "${neg_steps:-0}"
+  printf 'negativePing: %s\n' "$neg_ping"
   printf 'markerWindowsTotal: %s\n' "$markers"
   printf 'distinctColors: %s\n' "$colors"
   printf '%s\n' "$result"
 
   if [ "$result" = "PASS" ]; then return 0; fi
-  if [ "$neg" = "pass" ] || { [ "$neg" = "unmeasurable" ] && [ "$neg_markers" -eq 0 ]; }; then return 9; fi
+  if [ "$neg" = "pass" ] \
+     || { [ "$neg" = "unmeasurable" ] && [ "$neg_markers" -eq 0 ]; } \
+     || [ "${neg_steps:-0}" -lt 1 ] \
+     || [ "$neg_ping" != "pass" ]; then return 9; fi
   return 1
 }
 
