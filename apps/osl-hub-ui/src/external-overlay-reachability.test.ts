@@ -11,6 +11,7 @@ type ProductionPath = {
   uiInvokePresent: boolean;
   uiAdapterImported: boolean;
   uiCall: boolean;
+  uiDirectCall: boolean;
   lifecycleCacheClearEdge: boolean;
   productionReachable: boolean;
 };
@@ -77,20 +78,246 @@ function publicPrototypeTypes(source: string): string[] {
   )].map((match) => match[1]);
 }
 
+function blankExceptNewlines(value: string): string {
+  return value.replace(/[^\n]/gu, " ");
+}
+
+/**
+ * Remove comments without damaging comment markers inside strings.
+ *
+ * Reachability is a source-level truth gate, so commented-out imports, handlers
+ * and invokes must not count. Keeping byte positions stable also lets the
+ * callable-range checks below compare invocation offsets safely.
+ */
+function stripComments(source: string, language: "rust" | "typescript"): string {
+  let output = "";
+  let index = 0;
+  while (index < source.length) {
+    if (language === "rust") {
+      const raw = source.slice(index).match(/^r(#+)?"/u);
+      if (raw) {
+        const hashes = raw[1] ?? "";
+        const delimiter = `"${hashes}`;
+        const end = source.indexOf(delimiter, index + raw[0].length);
+        const next = end < 0 ? source.length : end + delimiter.length;
+        output += source.slice(index, next);
+        index = next;
+        continue;
+      }
+    }
+    const char = source[index];
+    const startsRustChar = language === "rust"
+      && char === "'"
+      && /^'(?:\\.|[^\\'\n])'/u.test(source.slice(index));
+    if (char === '"' || char === "`" || (char === "'" && (language === "typescript" || startsRustChar))) {
+      const quote = char;
+      let next = index + 1;
+      while (next < source.length) {
+        if (source[next] === "\\") {
+          next += 2;
+          continue;
+        }
+        next += 1;
+        if (source[next - 1] === quote) break;
+      }
+      output += source.slice(index, next);
+      index = next;
+      continue;
+    }
+    if (source.startsWith("//", index)) {
+      const end = source.indexOf("\n", index + 2);
+      const next = end < 0 ? source.length : end;
+      output += blankExceptNewlines(source.slice(index, next));
+      index = next;
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      let depth = 1;
+      let next = index + 2;
+      while (next < source.length && depth > 0) {
+        if (source.startsWith("/*", next)) {
+          depth += 1;
+          next += 2;
+        } else if (source.startsWith("*/", next)) {
+          depth -= 1;
+          next += 2;
+        } else {
+          next += 1;
+        }
+      }
+      output += blankExceptNewlines(source.slice(index, next));
+      index = next;
+      continue;
+    }
+    output += char;
+    index += 1;
+  }
+  return output;
+}
+
+function topLevelArguments(value: string): string[] {
+  const arguments_: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "(") depth += 1;
+    else if (value[index] === ")") depth -= 1;
+    else if (value[index] === "," && depth === 0) {
+      arguments_.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  arguments_.push(value.slice(start).trim());
+  return arguments_.filter(Boolean);
+}
+
+/**
+ * Possible truth values for one cfg expression when `test` is false.
+ * Unknown platform/feature predicates may be either value.
+ */
+function cfgValuesWithoutTest(expression: string): Set<boolean> {
+  const value = expression.trim();
+  if (value === "test") return new Set([false]);
+  for (const operation of ["all", "any", "not"] as const) {
+    const prefix = `${operation}(`;
+    if (!value.startsWith(prefix) || !value.endsWith(")")) continue;
+    const arguments_ = topLevelArguments(value.slice(prefix.length, -1))
+      .map(cfgValuesWithoutTest);
+    if (operation === "not") {
+      const argument = arguments_[0] ?? new Set([false, true]);
+      return new Set([...argument].map((candidate) => !candidate));
+    }
+    if (operation === "all") {
+      if (arguments_.length === 0) return new Set([true]);
+      return new Set([
+        ...(arguments_.every((argument) => argument.has(true)) ? [true] : []),
+        ...(arguments_.some((argument) => argument.has(false)) ? [false] : []),
+      ]);
+    }
+    if (arguments_.length === 0) return new Set([false]);
+    return new Set([
+      ...(arguments_.some((argument) => argument.has(true)) ? [true] : []),
+      ...(arguments_.every((argument) => argument.has(false)) ? [false] : []),
+    ]);
+  }
+  return new Set([false, true]);
+}
+
+function matchingDelimiter(
+  source: string,
+  openIndex: number,
+  open: string,
+  close: string,
+): number {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    if (source[index] === open) depth += 1;
+    else if (source[index] === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function rustItemEnd(source: string, attributeEnd: number): number {
+  let cursor = attributeEnd;
+  while (true) {
+    while (/\s/u.test(source[cursor] ?? "")) cursor += 1;
+    if (!source.startsWith("#[", cursor)) break;
+    const close = matchingDelimiter(source, cursor + 1, "[", "]");
+    if (close < 0) return source.length;
+    cursor = close + 1;
+  }
+  let parens = 0;
+  let brackets = 0;
+  for (let index = cursor; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "(") parens += 1;
+    else if (char === ")") parens -= 1;
+    else if (char === "[") brackets += 1;
+    else if (char === "]") brackets -= 1;
+    else if (char === ";" && parens === 0 && brackets === 0) return index + 1;
+    else if (char === "{" && parens === 0 && brackets === 0) {
+      const close = matchingDelimiter(source, index, "{", "}");
+      return close < 0 ? source.length : close + 1;
+    }
+  }
+  return source.length;
+}
+
+function rustAttributeGroupStart(source: string, attributeStart: number): number {
+  let start = attributeStart;
+  while (start > 0) {
+    let cursor = start;
+    while (cursor > 0 && /\s/u.test(source[cursor - 1])) cursor -= 1;
+    if (source[cursor - 1] !== "]") break;
+    let depth = 1;
+    let open = cursor - 2;
+    while (open >= 0 && depth > 0) {
+      if (source[open] === "]") depth += 1;
+      else if (source[open] === "[") depth -= 1;
+      open -= 1;
+    }
+    const bracket = open + 1;
+    if (depth !== 0 || source[bracket - 1] !== "#") break;
+    start = bracket - 1;
+  }
+  return start;
+}
+
+function stripTestOnlyRustItems(source: string): string {
+  let production = source;
+  let searchFrom = 0;
+  while (searchFrom < production.length) {
+    const match = /#\s*\[\s*cfg\s*\(/gu.exec(production.slice(searchFrom));
+    if (!match || match.index === undefined) break;
+    const start = searchFrom + match.index;
+    const openParen = production.indexOf("(", start);
+    const closeParen = matchingDelimiter(production, openParen, "(", ")");
+    const closeBracket = closeParen < 0
+      ? -1
+      : production.indexOf("]", closeParen + 1);
+    if (closeParen < 0 || closeBracket < 0) break;
+    const cfgExpression = production.slice(openParen + 1, closeParen);
+    if (cfgValuesWithoutTest(cfgExpression).has(true)) {
+      searchFrom = closeBracket + 1;
+      continue;
+    }
+    const removalStart = rustAttributeGroupStart(production, start);
+    const end = rustItemEnd(production, closeBracket + 1);
+    production = production.slice(0, removalStart)
+      + blankExceptNewlines(production.slice(removalStart, end))
+      + production.slice(end);
+    searchFrom = removalStart;
+  }
+  return production;
+}
+
 function productionRustSource(source: string): string {
-  return source.split(/\n#\[cfg\(test\)\]/u, 1)[0];
+  return stripTestOnlyRustItems(stripComments(source, "rust"));
+}
+
+function productionTypeScriptSource(source: string): string {
+  return stripComments(source, "typescript");
 }
 
 function tauriCommandBlocks(source: string): Array<{ name: string; block: string }> {
-  return source
-    .split(/(?=#\[tauri::command\])/u)
-    .filter((block) => block.startsWith("#[tauri::command]"))
-    .flatMap((block) => {
-      const name = block.match(
-        /^#\[tauri::command\]\s*(?:#\[[^\]]+\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+([a-z0-9_]+)\s*\(/u,
-      )?.[1];
-      return name === undefined ? [] : [{ name, block }];
-    });
+  const commands: Array<{ name: string; block: string }> = [];
+  for (const marker of source.matchAll(/#\[tauri::command\]/gu)) {
+    const start = marker.index;
+    if (start === undefined) continue;
+    const tail = source.slice(start);
+    const header = tail.match(
+      /^#\[tauri::command\]\s*(?:#\[[^\]]+\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+([a-z0-9_]+)\s*\(/u,
+    );
+    if (!header) continue;
+    const openBrace = source.indexOf("{", start + header[0].length);
+    const closeBrace = matchingDelimiter(source, openBrace, "{", "}");
+    if (openBrace < 0 || closeBrace < 0) continue;
+    commands.push({ name: header[1], block: source.slice(start, closeBrace + 1) });
+  }
+  return commands;
 }
 
 function generatedHandlerBodies(source: string): string[] {
@@ -108,78 +335,259 @@ function hasLifecycleCacheClearEdge(source: string): boolean {
   return namesTheLifecycle && constructsCache && clearsCache;
 }
 
+function externalOverlayNames(source: string, prototypeTypes: readonly string[]): Set<string> {
+  const names = new Set(prototypeTypes);
+  for (const statement of source.matchAll(/\buse\s+([^;]+);/gu)) {
+    if (!/\bexternal_overlay\b/u.test(statement[1])) continue;
+    for (const type of prototypeTypes) {
+      const alias = statement[1].match(
+        new RegExp(`\\b${escapeRegExp(type)}\\s+as\\s+([A-Z][A-Za-z0-9_]*)\\b`, "u"),
+      )?.[1];
+      if (alias) names.add(alias);
+    }
+  }
+  for (const alias of source.matchAll(
+    /\btype\s+([A-Z][A-Za-z0-9_]*)\s*=\s*([^;]+);/gu,
+  )) {
+    if (prototypeTypes.some((type) =>
+      new RegExp(`\\b${escapeRegExp(type)}\\b`, "u").test(alias[2])
+    )) names.add(alias[1]);
+  }
+  return names;
+}
+
+function invokeNames(source: string): Set<string> {
+  const names = new Set<string>();
+  for (const import_ of source.matchAll(
+    /\bimport\s*\{([^}]+)\}\s*from\s*["']@tauri-apps\/api\/core["']/gu,
+  )) {
+    for (const binding of import_[1].split(",")) {
+      const invoke = binding.trim().match(
+        /^invoke(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u,
+      );
+      if (invoke) names.add(invoke[1] ?? "invoke");
+    }
+  }
+  // Synthetic snippets and application globals may use the canonical name
+  // directly; requiring an import is not part of command reachability.
+  if (/\binvoke\b/u.test(source)) names.add("invoke");
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const alias of source.matchAll(
+      /\b(?:export\s+)?(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;/gu,
+    )) {
+      if (names.has(alias[2]) && !names.has(alias[1])) {
+        names.add(alias[1]);
+        changed = true;
+      }
+    }
+  }
+  return names;
+}
+
+type Invocation = { start: number; end: number };
+
+function commandInvocations(source: string, command: string): Invocation[] {
+  const commandName = escapeRegExp(command);
+  const literal = `(?:"${commandName}"|'${commandName}'|\`${commandName}\`)`;
+  const invocations: Invocation[] = [];
+  for (const name of invokeNames(source)) {
+    const call = new RegExp(
+      `\\b${escapeRegExp(name)}\\s*(?:<[^;()]*>\\s*)?\\(\\s*${literal}`,
+      "gu",
+    );
+    for (const match of source.matchAll(call)) {
+      if (match.index !== undefined) {
+        invocations.push({ start: match.index, end: match.index + match[0].length });
+      }
+    }
+  }
+  return invocations;
+}
+
+type CallableRange = {
+  localName: string;
+  start: number;
+  end: number;
+  exportedAs: Set<string>;
+};
+
+function callableRanges(source: string): CallableRange[] {
+  const ranges: CallableRange[] = [];
+  for (const function_ of source.matchAll(
+    /\b(export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gu,
+  )) {
+    const start = function_.index;
+    if (start === undefined) continue;
+    const openBrace = source.indexOf("{", start + function_[0].length);
+    const closeBrace = matchingDelimiter(source, openBrace, "{", "}");
+    if (openBrace < 0 || closeBrace < 0) continue;
+    ranges.push({
+      localName: function_[2],
+      start,
+      end: closeBrace + 1,
+      exportedAs: new Set(function_[1] ? [function_[2]] : []),
+    });
+  }
+  for (const constant of source.matchAll(
+    /\b(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/gu,
+  )) {
+    const start = constant.index;
+    if (start === undefined) continue;
+    let braces = 0;
+    let parens = 0;
+    let end = source.length;
+    for (let index = start + constant[0].length; index < source.length; index += 1) {
+      if (source[index] === "{") braces += 1;
+      else if (source[index] === "}") braces -= 1;
+      else if (source[index] === "(") parens += 1;
+      else if (source[index] === ")") parens -= 1;
+      else if (source[index] === ";" && braces === 0 && parens === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+    ranges.push({
+      localName: constant[2],
+      start,
+      end,
+      exportedAs: new Set(constant[1] ? [constant[2]] : []),
+    });
+  }
+  for (const export_ of source.matchAll(/\bexport\s*\{([^}]+)\}\s*;/gu)) {
+    for (const binding of export_[1].split(",")) {
+      const match = binding.trim().match(
+        /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u,
+      );
+      if (!match) continue;
+      const range = ranges.find(({ localName }) => localName === match[1]);
+      if (range) range.exportedAs.add(match[2] ?? match[1]);
+    }
+  }
+  return ranges;
+}
+
+function invokingWrappers(source: string, command: string): CallableRange[] {
+  const invocations = commandInvocations(source, command);
+  return callableRanges(source).filter((range) =>
+    invocations.some(({ start }) => start >= range.start && start < range.end)
+  );
+}
+
+function calledOutsideRange(source: string, range: CallableRange): boolean {
+  const call = new RegExp(`\\b${escapeRegExp(range.localName)}\\s*\\(`, "gu");
+  return [...source.matchAll(call)].some(({ index }) =>
+    index !== undefined && (index < range.start || index >= range.end)
+  );
+}
+
+function hasDirectCommandCall(source: string, command: string): boolean {
+  const invocations = commandInvocations(source, command);
+  const ranges = callableRanges(source);
+  if (invocations.some(({ start }) =>
+    !ranges.some((range) => start >= range.start && start < range.end)
+  )) return true;
+  return ranges.some((range) =>
+    invocations.some(({ start }) => start >= range.start && start < range.end)
+    && calledOutsideRange(source, range)
+  );
+}
+
+function importedWrapperCalls(
+  adapters: SourceFile[],
+  uiSources: SourceFile[],
+  command: string,
+): Array<{ adapter: SourceFile; importer: SourceFile; localName: string }> {
+  const calls: Array<{ adapter: SourceFile; importer: SourceFile; localName: string }> = [];
+  for (const adapter of adapters) {
+    const stem = adapter.path.split("/").at(-1)?.replace(/\.ts$/u, "");
+    if (!stem) continue;
+    const exports = invokingWrappers(adapter.source, command)
+      .flatMap((wrapper) => [...wrapper.exportedAs]);
+    if (exports.length === 0) continue;
+    for (const importer of uiSources) {
+      if (importer.path === adapter.path) continue;
+      for (const import_ of importer.source.matchAll(
+        /\bimport\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']/gu,
+      )) {
+        const importedStem = import_[2].split("/").at(-1)?.replace(/\.ts$/u, "");
+        if (importedStem !== stem) continue;
+        for (const binding of import_[1].split(",")) {
+          const match = binding.trim().match(
+            /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u,
+          );
+          if (!match || !exports.includes(match[1])) continue;
+          calls.push({ adapter, importer, localName: match[2] ?? match[1] });
+        }
+      }
+    }
+  }
+  return calls;
+}
+
 function detectProductionPath(
   rustLib: string,
   prototypeSource: string,
   rustSources: SourceFile[],
   uiSources: SourceFile[],
 ): ProductionPath {
-  const prototypeTypes = publicPrototypeTypes(prototypeSource);
+  const productionRustLib = productionRustSource(rustLib);
+  const productionPrototype = productionRustSource(prototypeSource);
+  const productionRust = rustSources.map((file) => ({
+    ...file,
+    source: productionRustSource(file.source),
+  }));
+  const productionUi = uiSources
+    .filter(({ path }) => !path.endsWith(".test.ts"))
+    .map((file) => ({ ...file, source: productionTypeScriptSource(file.source) }));
+  const prototypeTypes = publicPrototypeTypes(productionPrototype);
   expect(prototypeTypes.length, "prototype public-type inventory must be nonempty")
     .toBeGreaterThan(0);
-  const typeReference = new RegExp(
-    `\\b(?:${prototypeTypes.map(escapeRegExp).join("|")})\\b`,
-    "u",
-  );
-  const prototypeReference = new RegExp(
-    `(?:\\bexternal_overlay\\s*::|${typeReference.source})`,
-    "u",
-  );
-  const rustConsumers = rustSources.filter(
+  const rustConsumers = productionRust.filter(
     ({ path }) => !path.endsWith("/external_overlay.rs"),
   );
   const rustConsumerFiles = rustConsumers.filter(({ source }) =>
     /\b(?:use\s+[^;\n]*\bexternal_overlay\b|(?:crate|self|super)?(?:::)?external_overlay\s*::)/u
       .test(source)
   );
-  const genericHandlers = rustSources.flatMap(({ path, source }) => {
+  const genericHandlers = productionRust.flatMap(({ path, source }) => {
     const commands = tauriCommandBlocks(source);
     if (path.endsWith("/external_overlay.rs")) return commands;
     if (!rustConsumerFiles.some((consumer) => consumer.path === path)) return [];
+    const references = externalOverlayNames(source, prototypeTypes);
+    const prototypeReference = new RegExp(
+      `(?:\\bexternal_overlay\\s*::|\\b(?:${[...references].map(escapeRegExp).join("|")})\\b)`,
+      "u",
+    );
     return commands.filter(({ block }) => prototypeReference.test(block));
   });
   const handlerNames = genericHandlers.map(({ name }) => name);
-  const handlerBodies = rustSources.flatMap(({ source }) => generatedHandlerBodies(source));
+  const handlerBodies = productionRust.flatMap(({ source }) => generatedHandlerBodies(source));
   const handlerRegistered = handlerNames.some((name) =>
     handlerBodies.some((body) => new RegExp(`\\b${escapeRegExp(name)}\\b`, "u").test(body))
   );
-  const invokingAdapters = uiSources.filter(({ source }) =>
-    handlerNames.some((name) =>
-      new RegExp(
-        `\\binvoke(?:<[^>]+>)?\\s*\\(\\s*["']${escapeRegExp(name)}["']`,
-        "u",
-      ).test(source)
-    )
+  const invokingAdapters = productionUi.filter(({ source }) =>
+    handlerNames.some((name) => commandInvocations(source, name).length > 0)
   );
-  const adapterImports = invokingAdapters.flatMap((adapter) => {
-    const stem = adapter.path.split("/").at(-1)?.replace(/\.ts$/u, "");
-    if (stem === undefined) return [];
-    const importPattern = new RegExp(
-      `\\bfrom\\s+["'][^"']*${escapeRegExp(stem)}["']`,
-      "u",
-    );
-    return uiSources
-      .filter(({ path, source }) => path !== adapter.path && importPattern.test(source))
-      .map((importer) => ({ adapter, importer }));
-  });
-  const importedWrapperNames = adapterImports.flatMap(({ adapter }) =>
-    [...adapter.source.matchAll(
-      /\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gu,
-    )].map((match) => match[1])
+  const adapterImports = handlerNames.flatMap((name) =>
+    importedWrapperCalls(invokingAdapters, productionUi, name)
   );
-  const uiCall = importedWrapperNames.some((name) =>
-    adapterImports.some(({ importer }) =>
-      new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, "u").test(importer.source)
-    )
+  const uiCall = adapterImports.some(({ importer, localName }) =>
+    new RegExp(`\\b${escapeRegExp(localName)}\\s*\\(`, "u").test(importer.source)
+  );
+  const uiDirectCall = handlerNames.some((name) =>
+    productionUi.some(({ source }) => hasDirectCommandCall(source, name))
   );
   const stages = {
-    moduleDeclared: /\bpub mod external_overlay\s*;/u.test(rustLib),
+    moduleDeclared: /\bpub mod external_overlay\s*;/u.test(productionRustLib),
     rustConsumer: rustConsumerFiles.length > 0,
     tauriHandlerDefined: genericHandlers.length > 0,
     handlerRegistered,
     uiInvokePresent: invokingAdapters.length > 0,
     uiAdapterImported: adapterImports.length > 0,
     uiCall,
+    uiDirectCall,
     lifecycleCacheClearEdge: rustConsumers.some(({ source }) =>
       hasLifecycleCacheClearEdge(source)
     ),
@@ -192,8 +600,7 @@ function detectProductionPath(
       && stages.tauriHandlerDefined
       && stages.handlerRegistered
       && stages.uiInvokePresent
-      && stages.uiAdapterImported
-      && stages.uiCall,
+      && (stages.uiDirectCall || (stages.uiAdapterImported && stages.uiCall)),
   };
 }
 
@@ -245,7 +652,310 @@ function syntheticPath(
   );
 }
 
+const SYNTHETIC_EXTERNAL_OVERLAY = "pub struct ScreenRect;";
+
+function completeSyntheticPath(
+  uiSources: SourceFile[],
+  rustMain = [
+    "use crate::external_overlay::ScreenRect;",
+    "#[tauri::command]",
+    "fn open_external_overlay(_value: ScreenRect) {}",
+    "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
+  ].join("\n"),
+): ProductionPath {
+  const rustLib = "pub mod external_overlay;";
+  return detectProductionPath(
+    rustLib,
+    SYNTHETIC_EXTERNAL_OVERLAY,
+    [
+      { path: "/synthetic/lib.rs", source: rustLib },
+      { path: "/synthetic/main.rs", source: rustMain },
+      {
+        path: "/synthetic/external_overlay.rs",
+        source: SYNTHETIC_EXTERNAL_OVERLAY,
+      },
+    ],
+    uiSources,
+  );
+}
+
+const DIRECT_INVOKE_FORMS = [
+  {
+    name: "double-quoted",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      'invoke("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "single-quoted",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "invoke('open_external_overlay');",
+    ].join("\n"),
+  },
+  {
+    name: "template-literal",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "invoke(`open_external_overlay`);",
+    ].join("\n"),
+  },
+  {
+    name: "generic",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      'invoke<Promise<void>>("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "spaced",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      'invoke < Promise<void> > ( "open_external_overlay" );',
+    ].join("\n"),
+  },
+  {
+    name: "import-aliased",
+    source: [
+      'import { invoke as callNative } from "@tauri-apps/api/core";',
+      'callNative("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "locally-aliased",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "const callNative = invoke;",
+      'callNative("open_external_overlay");',
+    ].join("\n"),
+  },
+  {
+    name: "called direct function",
+    source: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "function openDirectly() {",
+      '  return invoke("open_external_overlay");',
+      "}",
+      "openDirectly();",
+    ].join("\n"),
+  },
+] as const;
+
+const WRAPPER_FORMS = [
+  {
+    name: "exported const",
+    adapter: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      'export const openExternalOverlay = () => invoke("open_external_overlay");',
+    ].join("\n"),
+    main: [
+      'import { openExternalOverlay } from "./external-overlay-adapter";',
+      "openExternalOverlay();",
+    ].join("\n"),
+    call: "openExternalOverlay();",
+  },
+  {
+    name: "import-aliased wrapper",
+    adapter: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "export function openExternalOverlay() {",
+      '  return invoke("open_external_overlay");',
+      "}",
+    ].join("\n"),
+    main: [
+      'import { openExternalOverlay as launchOverlay } from "./external-overlay-adapter";',
+      "launchOverlay();",
+    ].join("\n"),
+    call: "launchOverlay();",
+  },
+  {
+    name: "export-aliased const",
+    adapter: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      'const launch = () => invoke("open_external_overlay");',
+      "export { launch as openExternalOverlay };",
+    ].join("\n"),
+    main: [
+      'import { openExternalOverlay } from "./external-overlay-adapter";',
+      "openExternalOverlay();",
+    ].join("\n"),
+    call: "openExternalOverlay();",
+  },
+  {
+    name: "invoke-import alias",
+    adapter: [
+      'import { invoke as callNative } from "@tauri-apps/api/core";',
+      "export function openExternalOverlay() {",
+      '  return callNative("open_external_overlay");',
+      "}",
+    ].join("\n"),
+    main: [
+      'import { openExternalOverlay } from "./external-overlay-adapter";',
+      "openExternalOverlay();",
+    ].join("\n"),
+    call: "openExternalOverlay();",
+  },
+  {
+    name: "invoke-local alias",
+    adapter: [
+      'import { invoke } from "@tauri-apps/api/core";',
+      "const callNative = invoke;",
+      "export function openExternalOverlay() {",
+      '  return callNative("open_external_overlay");',
+      "}",
+    ].join("\n"),
+    main: [
+      'import { openExternalOverlay } from "./external-overlay-adapter";',
+      "openExternalOverlay();",
+    ].join("\n"),
+    call: "openExternalOverlay();",
+  },
+] as const;
+
 describe("generic external overlay production reachability", () => {
+  it("accepts every direct invoke spelling and fails when that invoke stage is removed", () => {
+    for (const form of DIRECT_INVOKE_FORMS) {
+      const positive = completeSyntheticPath([
+        { path: `/synthetic/${form.name}.ts`, source: form.source },
+      ]);
+      expect(positive.uiInvokePresent, `${form.name} invoke was missed`).toBe(true);
+      expect(positive.uiDirectCall, `${form.name} direct call was missed`).toBe(true);
+      expect(positive.uiAdapterImported).toBe(false);
+      expect(positive.productionReachable, `${form.name} path was false-green`).toBe(true);
+
+      const removed = completeSyntheticPath([
+        {
+          path: `/synthetic/${form.name}.ts`,
+          source: form.source.replace("open_external_overlay", "unrelated_command"),
+        },
+      ]);
+      expect(removed.uiInvokePresent, `${form.name} removal did not fail`).toBe(false);
+      expect(removed.uiDirectCall).toBe(false);
+      expect(removed.productionReachable).toBe(false);
+    }
+  });
+
+  it("accepts const/export/import/invoke aliases and fails when their call stage is removed", () => {
+    for (const form of WRAPPER_FORMS) {
+      const sources = [
+        { path: "/synthetic/external-overlay-adapter.ts", source: form.adapter },
+        { path: "/synthetic/main.ts", source: form.main },
+      ];
+      const positive = completeSyntheticPath(sources);
+      expect(positive.uiInvokePresent, `${form.name} invoke was missed`).toBe(true);
+      expect(positive.uiAdapterImported, `${form.name} import was missed`).toBe(true);
+      expect(positive.uiCall, `${form.name} call was missed`).toBe(true);
+      expect(positive.productionReachable, `${form.name} path was false-green`).toBe(true);
+
+      const removed = completeSyntheticPath([
+        sources[0],
+        { ...sources[1], source: sources[1].source.replace(form.call, "") },
+      ]);
+      expect(removed.uiAdapterImported).toBe(true);
+      expect(removed.uiCall, `${form.name} removal did not fail`).toBe(false);
+      expect(removed.productionReachable).toBe(false);
+    }
+  });
+
+  it("recognizes Rust import and type aliases in handlers with removal controls", () => {
+    const directUi = [{
+      path: "/synthetic/main.ts",
+      source: [
+        'import { invoke } from "@tauri-apps/api/core";',
+        'invoke("open_external_overlay");',
+      ].join("\n"),
+    }];
+    const importAlias = [
+      "use crate::external_overlay::ScreenRect as Bounds;",
+      "#[tauri::command]",
+      "fn open_external_overlay(_value: Bounds) {}",
+      "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
+    ].join("\n");
+    const typeAlias = [
+      "use crate::external_overlay::ScreenRect;",
+      "type Bounds = ScreenRect;",
+      "#[tauri::command]",
+      "fn open_external_overlay(_value: Bounds) {}",
+      "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
+    ].join("\n");
+
+    expect(completeSyntheticPath(directUi, importAlias).productionReachable).toBe(true);
+    expect(
+      completeSyntheticPath(
+        directUi,
+        importAlias.replace(
+          "use crate::external_overlay::ScreenRect as Bounds;",
+          "use crate::other::Bounds;",
+        ),
+      ).productionReachable,
+    ).toBe(false);
+    expect(completeSyntheticPath(directUi, typeAlias).productionReachable).toBe(true);
+    expect(
+      completeSyntheticPath(
+        directUi,
+        typeAlias.replace("type Bounds = ScreenRect;", ""),
+      ).productionReachable,
+    ).toBe(false);
+  });
+
+  it("rejects commented and cfg(test)-only production-path decoys", () => {
+    const directUi = [{
+      path: "/synthetic/main.ts",
+      source: [
+        'import { invoke } from "@tauri-apps/api/core";',
+        'invoke("open_external_overlay");',
+      ].join("\n"),
+    }];
+    const rustCommentDecoy = [
+      "// use crate::external_overlay::ScreenRect;",
+      "/*",
+      "#[tauri::command]",
+      "fn open_external_overlay(_value: ScreenRect) {}",
+      "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
+      "*/",
+    ].join("\n");
+    const uiCommentDecoy = [{
+      path: "/synthetic/main.ts",
+      source: [
+        'import { invoke } from "@tauri-apps/api/core";',
+        '// invoke("open_external_overlay");',
+        "/* invoke<unknown>(`open_external_overlay`); */",
+      ].join("\n"),
+    }];
+    const testOnlyRust = [
+      "#[cfg(test)]",
+      "use crate::external_overlay::ScreenRect;",
+      '#[cfg(all(test, feature = "qa"))]',
+      "#[tauri::command]",
+      "fn open_external_overlay(_value: ScreenRect) {}",
+      "#[cfg(any(test))]",
+      "fn run() { builder.invoke_handler(tauri::generate_handler![open_external_overlay]); }",
+    ].join("\n");
+
+    const rustDecoy = completeSyntheticPath(directUi, rustCommentDecoy);
+    expect(rustDecoy.rustConsumer).toBe(false);
+    expect(rustDecoy.tauriHandlerDefined).toBe(false);
+    expect(rustDecoy.productionReachable).toBe(false);
+
+    const uiDecoy = completeSyntheticPath(uiCommentDecoy);
+    expect(uiDecoy.uiInvokePresent).toBe(false);
+    expect(uiDecoy.uiDirectCall).toBe(false);
+    expect(uiDecoy.productionReachable).toBe(false);
+
+    const testDecoy = completeSyntheticPath(directUi, testOnlyRust);
+    expect(testDecoy.rustConsumer).toBe(false);
+    expect(testDecoy.tauriHandlerDefined).toBe(false);
+    expect(testDecoy.handlerRegistered).toBe(false);
+    expect(testDecoy.productionReachable).toBe(false);
+
+    const mixedCfg = productionRustSource([
+      '#[cfg(any(test, target_os = "windows"))]',
+      "fn shipping_on_windows() {}",
+    ].join("\n"));
+    expect(mixedCfg).toContain("shipping_on_windows");
+  });
+
   it("derives the complete prototype surface and rejects every unwired shipping claim", () => {
     const rustLib = readFileSync(new URL("../../osl-hub/src/lib.rs", import.meta.url), "utf8");
     const rustMain = readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
@@ -271,8 +981,7 @@ describe("generic external overlay production reachability", () => {
       "utf8",
     );
     const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
-    const rustSources = sourceFiles(new URL("../../osl-hub/src/", import.meta.url), ".rs")
-      .map((file) => ({ ...file, source: productionRustSource(file.source) }));
+    const rustSources = sourceFiles(new URL("../../osl-hub/src/", import.meta.url), ".rs");
     const productionUi = sourceFiles(new URL("./", import.meta.url), ".ts").filter(
       ({ path }) => !path.endsWith(".test.ts"),
     );
@@ -335,6 +1044,7 @@ describe("generic external overlay production reachability", () => {
     expect(production.uiInvokePresent).toBe(false);
     expect(production.uiAdapterImported).toBe(false);
     expect(production.uiCall).toBe(false);
+    expect(production.uiDirectCall).toBe(false);
     expect(production.lifecycleCacheClearEdge).toBe(false);
     expect(production.productionReachable).toBe(false);
 
@@ -354,7 +1064,9 @@ describe("generic external overlay production reachability", () => {
     expect(imported.uiInvokePresent).toBe(true);
     expect(imported.uiAdapterImported).toBe(true);
     expect(imported.uiCall).toBe(false);
+    expect(imported.uiDirectCall).toBe(false);
     expect(called.uiCall).toBe(true);
+    expect(called.uiDirectCall).toBe(false);
     expect(called.productionReachable).toBe(true);
     for (const type of prototypeTypes) {
       expect(
