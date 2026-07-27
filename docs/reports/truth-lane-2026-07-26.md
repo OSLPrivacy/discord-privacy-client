@@ -1597,3 +1597,141 @@ binding, replay consumption, and schema parity exist.
 ## Acceptance rows this earns
 
 - None. Score remains 97 / 303.
+
+---
+
+## 27 · Exact B5/F1/website correction: chronology preserved, net zero
+
+Only exact committed bytes from
+`5ba5a029445ba0ce500aad2db8de4295cbd605ff`,
+`ae9d5a1efd2b7bf37c70c1da260ac12a815fc14b`, and
+`15fa16c95123e1b524858719b8d097aa434b05a6` were used positively. Later dirty
+product or website bytes were excluded. Arithmetic is deliberately shown rather than narratively
+netted:
+
+```text
+prior verified score                 97 / 303
+B5 broker behavioral boundary        +1
+F1 unsupported UI/runtime award      -1
+H1 local website candidate            0
+new verified score                   97 / 303
+
+A 8 + B 8 + C 18 + D 7 + E 4 + F 17 + G 5 + H 9 + I 6 + J 15 = 97
+```
+
+### B5: `5ba5a02` earns the later, narrow broker-level point
+
+The chronology matters. The earlier award based on `c0279dc` was wrong and remains retracted:
+client-level filter behavior plus a source-text reachability check did not execute a broker drain.
+`aca9dae` later proved the shared helper and four refusals but still did not execute either
+production consumer or retain a stateful blocked inbox. Neither commit crossed the frozen boundary.
+
+Exact `5ba5a029445ba0ce500aad2db8de4295cbd605ff` changes only
+`apps/osl-hub/tests/native_discord_receive_e2e.rs`. Its stateful positive:
+
+- calls `drain_native_discord_overlay_text`, which enters `drain_peer_inbox_text`;
+- calls `list_native_overlay_attachments` and `take_native_overlay_attachment`, which enter
+  `native_overlay_attachment_plans`;
+- drives both through the shared production `fetch_peer_control_inbox` →
+  `KeyServerClient::get_control_inbox_from` boundary;
+- places A's authenticated text and attachment after exactly 64 older foreign row IDs, opens A's
+  byte-identical plaintext and authenticated attachment plan, retains all 64 IDs through A's
+  consumers, then switches active peer and opens B independently;
+- checks that each A request names A and the final request names B.
+
+The relay applies recipient and sender predicates before `.take(64)`, matching the Worker's
+sender-filter-before-`LIMIT 64` semantics and the real 32-row per-pair admission ceiling. Four
+separate tests feed both consumers a missing echo, mismatched echo, matching echo containing a
+different sender, and an unfiltered fallback without an echo. Each refusal preserves the exact
+pending ID set.
+
+The truth lane independently archived the exact commit and ran:
+
+```text
+osl-cargo test --manifest-path apps/osl-hub/Cargo.toml --features core \
+  --test native_discord_receive_e2e -- --nocapture
+```
+
+Its result matches the retained exact-archive report:
+
+```text
+native_discord_receive_e2e: 8 passed; 0 failed
+```
+
+Two independent disposable-archive mutations each replaced only one production consumer's
+`get_control_inbox_from(identity, peer_osl_user_id)` call with unfiltered
+`get_control_inbox(identity)`:
+
+```text
+text mutation:       exit 101 at "exactly A's text opens"       left: 0 right: 1
+attachment mutation: exit 101 at "exactly A's attachment is listed" left: 0 right: 1
+```
+
+The calls are therefore load-bearing for both consumers rather than decorative source shape.
+Status is `test-proven-only`. No live D1 request, deployed-source mapping, host-provider runtime,
+or two-identity exchange ran. B5 moves **1/4 → 2/4** and no D1/B6/provider row moves.
+
+### F1: exact `ae9d5a1` withdraws the unsupported runtime point
+
+The earlier Scrub section proposed F1 4/6 → 5/6 for closing the UI and revocation halves. The final
+continuation in the same exact report explicitly supersedes that statement and classifies:
+
+- native browser-reader default-deny and one-profile scoping as `runtime-proven`, from the ignored
+  Windows Brave test and its `allows() → true` mutation;
+- direct native grant/revoke persistence as `test-proven-only`;
+- renderer picker, Tauri grant/revoke IPC, and persisted UI revocation as
+  `test-proven-only`, because no live Windows UI/IPC walkthrough completed;
+- agent build attestation/five real frames as `unknown`;
+- exact VM detection/revocation capture as `blocked`.
+
+The exact renderer test reinforces the report's correction: it executes the choice parser, then
+uses `readFileSync(main.ts)` plus substring assertions for the import guard and setter call. Exact
+tree search finds no test that executes `loadBrowserProfileChoices()` or
+`setBrowserProfileConsent()` through the renderer/Tauri boundary. Rust persistence tests call the
+native functions directly. Source registration and ACL wiring are real, but do not make the UI
+runtime-proven.
+
+F1 therefore returns **5/6 → 4/6**. Re-award requires one exact-build live Windows workflow:
+picker → grant IPC → nonempty import → revoke IPC → persisted re-read.
+
+### H1: exact `15fa16c` is local tooling, not a production promotion
+
+The website worktree is clean at exact
+`15fa16c95123e1b524858719b8d097aa434b05a6`, on local `main`, three commits
+ahead of the existing local `origin/main` ref. No fetch, push, Pages action, or deployment occurred.
+An exact archive passes:
+
+```text
+test-build-identity             38/38
+test-live-build                 12/12 (local HTTP fixture)
+pricing-sync --check            16 files, 19 markers, 0 rewrites
+build-status --check            manifest match
+check-claims                    16 files, 0 failed
+```
+
+Those results are `test-proven-only`; the candidate is not locally promotion-ready. There is no
+Pages deployment ID/URL/build log or live SHA-bound `/build.json`, and Pages dashboard build
+command/environment remain `unknown`. The keyserver redemption half of H1 is not present.
+
+Independent exact-archive mutation review also prevents overclaiming the local artifact gate:
+false or duplicate HTML metadata is accepted after manifest rehashing, nested HTML under recursive
+assets is copied but not stamped/HTML-verified, changed `_headers` is accepted, and an undeclared
+served file passes verification. A planted ignored asset is correctly excluded from `dist` and its
+bytes cannot contaminate the artifact, but the requested fail-on-presence contract does not fire.
+The pre-existing crypto-checkout test is 9/10 because its `Pay once` expectation disagrees with the
+exact `One month` HTML. These are additional clean-promotion blockers, not acceptance points.
+
+H1 stays **3/4**. Production promotion and rollback remain blocked on: an exact pushed commit;
+known Pages build command and Production/Preview environment variables; a successful Pages build
+whose `/build.json` and HTML markers bind to that commit; live SHA-bound verification; fixed local
+artifact-verifier gaps (including the ignored-file refusal); all required local gates green; and
+the keyserver redemption change.
+Rollback additionally requires the last known-good exact deployment SHA/artifact and a rehearsed
+Pages rollback path. No local commit is evidence that those conditions hold.
+
+## Acceptance rows this earns
+
+- B5 +1: 1/4 → 2/4, `test-proven-only`.
+- F1 −1 correction: 5/6 → 4/6; the previous runtime award is withdrawn.
+- H1 +0: 3/4 remains.
+- Net score: **97 / 303**.

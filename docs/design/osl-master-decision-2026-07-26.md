@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r14`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r15`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,21 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r15` — exact score correction with no hidden point churn: checklist remains **97 / 303** after
+  `+1 −1 +0`. Exact `5ba5a029445ba0ce500aad2db8de4295cbd605ff` crosses the narrow B5
+  broker-receive behavioral boundary (`1/4 → 2/4`, `test-proven-only`) by exercising production
+  text and attachment-notice consumers behind 64 retained foreign rows, keeping B independently
+  drainable, and refusing four widened/unconfirmed responses; it is not live D1, provider, or
+  two-identity proof.
+  Exact `ae9d5a1` supersedes and withdraws the earlier F1 UI/revocation runtime claim
+  (`5/6 → 4/6`): native reader scoping is still `runtime-proven`, while renderer picker, Tauri
+  grant/revoke IPC, and persisted UI revocation remain `test-proven-only` with VM capture blocked.
+  Website candidate `15fa16c95123e1b524858719b8d097aa434b05a6` is a clean local
+  `test-proven-only` candidate with required local promotion gates green, but is unpushed and
+  undeployed; Pages dashboard/build/live SHA evidence remains `unknown`. Independent audit also
+  finds false/duplicate-meta, nested-HTML, `_headers`/`_redirects`, undeclared-served-file and
+  ignored-file-refusal gaps in the local verifier, so it is not locally promotion-ready and H1
+  stays 3/4.
 - `r14` — six exact completed commits adjudicated with no score increase; checklist remains
   **97 / 303**. `c5b516f` makes the F2 identity evidence verifier code-ready but no authorised real
   VM walkthrough exists, so runtime remains blocked. `6cc103b` closes a real VM whole-desktop/marker

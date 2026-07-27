@@ -114,6 +114,34 @@ away, per master §16.3.
   build/process facts, replayed bundles, fake screenshot content, and a source substring whose real
   Send call can be unreachable. No owner Discord send should run against this harness.
 
+**2026-07-27 B5/F1/website exact adjudication (net +0).**
+
+- B5 +1 · exact `5ba5a029445ba0ce500aad2db8de4295cbd605ff` supplies the behavioral
+  broker boundary that `c0279dc` and `aca9dae` did not. Its exact-archive suite passes 8/8. The
+  stateful positive invokes the production text drain and attachment list/take consumers, opens A's
+  authenticated text and attachment notice/open plan behind 64 retained foreign row IDs, then
+  drains B independently.
+  Missing echo, mismatched echo, cross-sender rows under a matching echo, and an unfiltered fallback
+  are refused for both consumers. Independent text-only and attachment-only regressions to the
+  unfiltered client call each exit 101 at the intended nonempty assertion. Status is
+  `test-proven-only`: this is not live D1, provider, or two-identity evidence.
+- F1 −1 · exact `ae9d5a1` supersedes and withdraws the earlier F1 +1 recommendation. The native
+  browser reader's default-deny/one-profile scoping remains `runtime-proven`, and direct native
+  grant/revoke persistence is `test-proven-only`; the renderer picker, Tauri grant/revoke IPC, and
+  persisted **UI** revocation were never exercised in a live Windows workflow. Exact VM capture is
+  `blocked`. F1 returns 5/6 → 4/6.
+- H1 +0 · website candidate `15fa16c95123e1b524858719b8d097aa434b05a6` is a clean local,
+  `test-proven-only` candidate, not a promotion-ready artifact. Build-identity 38/38, live-verifier
+  12/12 local-fixture, pricing, status, and claim gates pass, but the branch is three commits ahead of the local
+  `origin/main` ref and is unpushed/undeployed. Pages dashboard command/environment, a Pages build,
+  live SHA-bound `/build.json`, and the keyserver redemption half remain `unknown` or absent.
+  An independent exact-archive audit also found that false/duplicate HTML meta can satisfy the
+  textual check, nested asset HTML is not stamped, `_headers`/`_redirects` are outside artifact
+  comparison, and undeclared served files pass verification. The required planted ignored-file
+  refusal also does not occur, although the ignored bytes are correctly excluded from the artifact.
+  The pre-existing crypto-checkout gate is 9/10 (`Pay once` versus `One month`). H1 stays 3/4.
+- Arithmetic is explicit: **97 + 1 − 1 + 0 = 97 / 303**.
+
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
 
@@ -230,7 +258,7 @@ timestamped deltas, not keep this number manually forever.
   order and burn timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
   `needs: none` `weight: 4` `earned: 3`
 
-## B · Encryption and two-identity communication — 30 points (7 earned)
+## B · Encryption and two-identity communication — 30 points (8 earned)
 
 - 🟨 **B1 · Current message encryption primitives** — hybrid confidentiality exists **and is
   genuinely live** (ML-KEM-768 in every recipient slot, `crates/ipc/src/wire_v2.rs:731`);
@@ -270,10 +298,15 @@ timestamped deltas, not keep this number manually forever.
   mandatory echo; its actual head-of-line broker test fails before nonempty delivery. Exact later
   `aca9dae` passes two shared-fetch-helper tests and genuinely refuses four unconfirmed/widened
   pages, but it still calls neither actual drain, processes only two-byte type markers, and uses a
-  stateless A-then-B fake rather than retaining 64 foreign blockers. B5 therefore stays below the
-  production-drain behavioural boundary. Authenticated filtered D1 selection remains `unknown`,
-  and no deployed Git commit is inferred from the Worker UUID. Prekeys, wrapped keys and
-  two-identity receive remain unearned. `needs: A2` `weight: 4` `earned: 1`
+  stateless A-then-B fake rather than retaining 64 foreign blockers. **Later exact commit
+  `5ba5a029445ba0ce500aad2db8de4295cbd605ff` crosses that narrow behavioral boundary:** its 8/8
+  exact-archive suite invokes the production text and attachment consumers, opens A behind 64
+  retained foreign IDs, proves B independently drainable, and refuses four missing/wrong/widened
+  filter responses. Independent unfiltered mutations of the text and attachment production calls
+  each fail at their intended nonempty assertion. This point is `test-proven-only`; authenticated
+  live D1 selection, a mapped deployed Git commit, prekeys, wrapped keys, provider runtime, and
+  attachment blob download/decryption, and two-identity receive remain unearned.
+  `needs: A2` `weight: 4` `earned: 2`
 - ⬜ **B6 · Controlled two-identity proof** — handshake, send, receive, offline queue, restart,
   drain, peer attribution. `needs: B3,B4,B5` `weight: 3` `earned: 0`
 - ⬜ **B7 · Independent crypto review** — required before uncontrolled traffic/public superiority
@@ -370,25 +403,18 @@ timestamped deltas, not keep this number manually forever.
 - ⬜ **E7 · Versioned public support matrix** — site/app status matches exact live evidence.
   `needs: E2-E6` `weight: 3` `earned: 0`
 
-## F · Scrub and AutoScrub — 45 points (18 earned)
+## F · Scrub and AutoScrub — 45 points (17 earned)
 
-- 🟨 **F1 · Local all-browser/all-profile detection** — **+1 2026-07-26, claimed by the Scrub lane and
-  approved by the checklist writer.** The row's outstanding scope was "remaining browsers, UI,
-  revocation, exact release proof"; this closes the **UI and revocation** halves at runtime.
-  Root cause it fixes: `set_browser_profile_consent` and `list_browser_profile_choices` were
-  registered in **no** Tauri command, so detection returned zero in any shipped build — which
-  explains the standing "0 accounts detected" blocker. Verified independently by the writer:
-  both are now in `generate_handler!` (`apps/osl-hub/src/main.rs:4192-4193`) with matching ACL in
-  `capabilities/hub.json` (`allow-list-browser-profile-choices`, `allow-set-browser-profile-consent`)
-  and `permissions/hub.toml:474` — no registration/ACL mismatch in either direction. Runtime proof on
-  Windows against a real Brave tree, `seeded_profile_is_read_only_after_consent`
-  (`apps/osl-hub/src/native_apps.rs:6960`): default-deny yields zero, one grant yields findings, and
-  the real `Default` profile was never read. **A negative control was performed** — forcing `allows()`
-  to always grant makes the test fail on the default-deny assertion — which is what makes this proof
-  rather than a green light. *Note: the lane's report calls the second command
-  `list_browser_profile_candidates`; the actual name is `list_browser_profile_choices`.*
-  Remaining point: browsers beyond the Chromium path, the Firefox tier, and exact release proof —
-  explicitly not claimed. `needs: none` `weight: 6` `earned: 5`
+- 🟨 **F1 · Local all-browser/all-profile detection** — **correction 2026-07-27:** exact
+  `ae9d5a1` withdraws the earlier +1 because it rounded source wiring and native tests into a live
+  UI/revocation result. The seeded Windows Brave test still makes native reader default-deny and
+  one-profile scoping `runtime-proven`, including its `allows() → true` negative control. Direct
+  native grant/revoke persistence is `test-proven-only`. The renderer tests parse choices and
+  inspect `main.ts` strings; they do not execute the picker, Tauri grant/revoke handlers, or a
+  persisted UI revoke/re-read. No exact-build live Windows UI/IPC walkthrough exists, and exact VM
+  capture remains `blocked`. Re-award only after picker → grant IPC → nonempty import → revoke IPC
+  → persisted re-read succeeds on the exact build. Browsers beyond the proved Chromium path,
+  Firefox tier, and exact release proof also remain. `needs: none` `weight: 6` `earned: 4`
 - 🟨 **F2 · Detected sites/accounts and ownership** — broader findings and native-app account work
   landed in dirty integration. Exact `c5b516f` makes the strict identity-binding verifier
   code-ready with 24 mutation-sensitive tests, but no authorised real-VM five-frame walkthrough has
@@ -434,6 +460,14 @@ timestamped deltas, not keep this number manually forever.
   one-time compute credits). Canonical production line is GitHub `main`; production serves exactly
   `main` (verified by the `?v=` asset stamp). Single manifest `data/pricing.json` now **drives every surface**: 19 markers across all 15 pages, `pricing-sync --check` reports 0 drift, and `check-claims` reports 0 conflicting price/renewal/entitlement claims on every page. The allowlist A6 limitation ("Nothing renews, and OSL never stores your payment details") now ships on `index.html`, which previously showed two `$5 / month` checkout buttons with no renewal disclosure at all, and is pinned in `required_phrases` so it cannot regress. Build-identity stamp and claim crawler are done on branch `web-pricing-truth-2026-07-26`. **The remaining point is held for actual promotion to production plus the keyserver redemption change** — nothing is deployed. The "your month starts when you enter the code" claim stays
   unpublished until the keyserver redemption change lands.
+  **Exact local candidate `15fa16c95123e1b524858719b8d097aa434b05a6` does not cross that last
+  point:** its required local identity/pricing/status/claim gates are green and it is
+  `test-proven-only`, but it is three commits ahead of the local `origin/main` ref, unpushed and
+  undeployed. Pages dashboard build settings, a Pages build record, and a live SHA-bound
+  `/build.json` remain `unknown`; the keyserver redemption half is also absent. Independent audit
+  still finds false/duplicate-meta, nested-HTML, control-file and undeclared-served-file binding
+  gaps in the local artifact verifier, plus a missing ignored-file refusal and one pre-existing
+  crypto-checkout test failure.**
   `needs: keyserver redemption period (DEC-2026-07-26-PRO-CODES)` `weight: 4` `earned: 3`
 - 🟨 **H2 · Responsive visual fixes from Zhao/Jester screenshots** — preview branches contain newer
   work; exact screenshot mapping and canonical integration remain. `needs: screenshot refs`

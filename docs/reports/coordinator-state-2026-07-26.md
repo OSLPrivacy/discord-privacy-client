@@ -2,7 +2,7 @@
 
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
-authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r13**), and the
+authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r15**), and the
 scoreboard remains `docs/design/osl-internal-build-checklist.md` (**97 / 303**).
 
 ## Lane roster and exclusive ownership
@@ -116,14 +116,17 @@ deployment occurred, and production behavior must not be inferred.
   remains visible. B3 moves 1/5 → 2/5: exact ratchet and dependency-closure archives prove the
   row's structural persistence/replay/reorder/skipped-key/restart boundary with negative controls.
   The ratchet remains `implemented-unwired`; no live traffic or dependent row is earned.
-- **B5 counteradjudication: `a509cb2` +1 retracted; `c0279dc` and `aca9dae` earn +0.** Exact
+- **B5 chronology correction: `a509cb2` was retracted; later `5ba5a02` earns the narrow +1.** Exact
   `c0279dc` proves the keystore client and source call shape, but its source-text broker test
   executes neither drain and its real head-of-line test fails because all three relay fakes omit the
   mandatory echo. Exact later `aca9dae` passes two shared-fetch-helper tests and four refusal cases,
   but still executes neither actual drain, uses two-byte type markers, and preprograms A then B in a
-  stateless fake rather than proving 64 foreign blockers remain untouched. B5 returns 2/4 → 1/4;
-  score returns 98 → 97. The required broker-level text-plus-attachment delivery positive remains
-  `unknown`.
+  stateless fake rather than proving 64 foreign blockers remain untouched. Those commits did not
+  cross the row. Exact `5ba5a029445ba0ce500aad2db8de4295cbd605ff` subsequently passes 8/8 in
+  an exact archive and executes the production text drain plus attachment list/take with A behind
+  64 retained foreign IDs and B independently drainable. Four filter refusals and independent
+  text/attachment unfiltered mutations are load-bearing. B5 is now 2/4, `test-proven-only`; live
+  D1, attachment blob download/decryption, provider, and two-identity behavior are not implied.
 - **`79f12eb`: no A6/D2/D4 point.** The helper refuses a PDF before its synthetic download,
   decrypt, staging and durable write, and an image helper control continues. Removing the helper's
   refusal fails; removing its call from production `open_pending_inner` leaves the test green.
@@ -137,6 +140,21 @@ deployment occurred, and production behavior must not be inferred.
   rejected incoherent exact candidate. `31edb63` passes 17 harness tests but is inadmissible after
   fake executable/screenshot, replay, caller-binding, synthesized-receipt and unreachable-source
   controls. F2 stays 3/5, F5 1/5, C4 1/4; all other rows stay unchanged.
+- **F1 evidence correction: −1.** Exact `ae9d5a1` supersedes its earlier recommendation and
+  explicitly withdraws the F1 +1. The native Brave reader scoping result remains
+  `runtime-proven`, and direct native persistence is `test-proven-only`; no live renderer picker →
+  Tauri grant/revoke → persisted UI re-read workflow ran. Exact VM capture remains blocked. F1 is
+  4/6, not 5/6.
+- **Website candidate `15fa16c`: +0.** The website worktree is clean at the exact local commit,
+  three commits ahead of the local `origin/main` ref. Build-identity 38/38, live-verifier 12/12
+  local-fixture, pricing, status, and claim gates pass. It is unpushed and undeployed; Pages
+  dashboard command/environment, Pages build record, live SHA-bound `/build.json`, and keyserver
+  redemption evidence are absent or `unknown`. Independent exact-archive mutation audit also
+  accepts false/duplicate metadata, an undeclared served file, and a changed `_headers`; nested
+  asset HTML is not stamped, and the required planted ignored-file refusal does not occur even
+  though the bytes are excluded. The pre-existing crypto-checkout gate is 9/10. This is not locally
+  promotion-ready; H1 remains 3/4.
+- **Net arithmetic:** B5 `+1`, F1 `−1`, H1 `+0`; **97 + 1 − 1 + 0 = 97 / 303**.
 
 ## Coordination infrastructure built today
 
@@ -193,14 +211,14 @@ Machine healthy: 10 GB used, 15 GB available, load 9.1, one indexer, watchdog ru
 17 commits today across both trees. Reports on disk: baseline, crypto, server, truth, vmqa
 (scrub's lives in its own worktree; release's is pending).
 
-## Shortest honest +1 map from 97 / 303
+## Shortest honest next-point map from 97 / 303
 
 | Order | Row | Single missing boundary | Owner / artifact contract | External mutation or confirmation |
 |---|---|---|---|---|
-| 1 | B5 `1/4 → 2/4` | One exact behavioral broker test must execute the actual text and attachment drains, deliver A behind 64 retained B blockers, and prove B remains drainable. | Crypto/broker lane; stateful relay fixture, authenticated/decryptable text and attachment notices, four filter refusals, and a one-call unfiltered mutation that fails. | No. Local exact-commit evidence can cross this partial boundary. |
-| 2 | F2 `3/5 → 4/5` | One strict-verifier-green real VM five-frame grant/import/revoke walkthrough on the exact build. | Scrub + VM lanes; `./scripts/qa/vm-run-loop.sh --share <share> --timeout 600 --identity-client 1 --confirm-create-identity --verbs identity-status,create-identity,list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`; five bound PNG/JSON pairs, positive account list and cleanup. | **Yes.** Disposable identity creation needs owner confirmation and mutates the live keyserver; confirmation itself earns nothing. |
+| 1 | F1 `4/6 → 5/6` | One exact-build live Windows picker → grant IPC → nonempty import → revoke IPC → persisted re-read must succeed. | Scrub + VM lanes; retained build identity plus bound UI/IPC verdict and before/granted/revoked frames. | **Yes.** The disposable identity/import walkthrough needs owner confirmation and runtime mutation; approval alone earns nothing. |
+| 2 | F2 `3/5 → 4/5` | One strict-verifier-green real VM five-frame identity-bound grant/import/revoke walkthrough on the exact build. | Scrub + VM lanes; `./scripts/qa/vm-run-loop.sh --share <share> --timeout 600 --identity-client 1 --confirm-create-identity --verbs identity-status,create-identity,list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`; five bound PNG/JSON pairs, positive account list and cleanup. | **Yes.** Disposable identity creation needs owner confirmation and mutates the live keyserver; confirmation itself earns nothing. |
 | 3 | I3 `1/3 → 2/3` | The exact candidate must be pushed and the named public Rust gate must finish green alongside the already-named public gates. | Release lane; remote commit SHA plus GitHub-hosted workflow URL showing the required Rust/TypeScript/selector/security jobs green. | **Yes.** Push and hosted CI mutate the remote; an unpushed local floor is not evidence. |
 
-Next coordination beats: crypto closes the B5 behavioral fixture; VM/Scrub repair the visible-frame
-capture and wait for explicit identity authorization; release resolves the named Rust blocker,
+Next coordination beats: VM/Scrub repair the visible-frame capture and wait for explicit identity
+authorization; release resolves the named Rust blocker,
 pushes, and waits for GitHub-hosted results; truth awards only after each artifact exists.
