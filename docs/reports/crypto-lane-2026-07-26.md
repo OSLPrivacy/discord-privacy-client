@@ -1761,3 +1761,73 @@ Status: `source/test-proven-only`, `+0`.
 None. This is reachable source-claim hardening with a production-path gate;
 it changes no burn behavior and proves no remote deletion or cryptographic
 erasure at runtime.
+
+## Round 18 — keyserver wrapped-key burn client is implemented-unwired
+
+Source/test commit:
+`66b86d74aa3febb47179a5bc383b965d8625b33a` (parent
+`21ccdafdc379cb16ed3aa8e82a6a236f96ab8513`, tree
+`22ea07002fd36bcbe9d1d9a754071eafb011ebc0`). Exact paths:
+
+- `crates/keystore/src/burn.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+The committed-object audit found `KeyServerClient::burn` at
+`crates/keystore/src/client.rs:938-968`, with `sign_burn` called only by that
+method. Its only committed call sites are keystore integration/smoke tests:
+`crates/keystore/tests/burn_e2e_test.rs:196,211,239` and
+`crates/keystore/tests/live_keyserver_smoke.rs:84`. A scoped committed search
+found no `BurnScope`, `sign_burn`, `KeyServerClient::burn`, or `.burn(` caller
+in `apps/osl-hub/src/{security,broker,main}.rs` or `crates/ipc/src/**`.
+
+The separate registered Hub burn remains reachable:
+
+- `main.rs:5018-5042` calls `security::{burn_manual_peer_scope,burn_scope}`
+  and `broker::burn_local_protected_context`;
+- `security.rs:1934-2001` calls `ipc::commands::cmd_osl_apply_burn`;
+- `commands.rs:6511-6555` shreds matching local rows;
+- `security.rs:2055-2068` performs best-effort cipher-store blob deletion; and
+- `broker.rs:6315-6337` prunes the local protected ledger.
+
+It does not invoke the keystore HTTP DELETE client. The corrected
+`burn.rs:1-11,38` documentation therefore preserves the request primitives
+and server wire-format facts while classifying product integration as
+implemented-unwired.
+
+### Nonvacuous gate and focused evidence
+
+`security.test.ts:823-913` requires the `BurnScope`, canonical bytes,
+signature helper, client method, and public re-export to remain present. It
+separately requires the registered local burn chain, asserts zero production
+keyserver-burn callers, detects synthetic `BurnScope`, direct associated
+method, and instance-method callers, rejects comment/`cfg(test)` decoys, and
+fails if the implemented-unwired claim is removed.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "keeps the keyserver
+burn client classified as implemented-unwired" --reporter=dot`
+
+Result: 1 test passed, 0 failed, 8 skipped (9 collected), duration 401 ms.
+`git diff --check -- apps/osl-hub-ui/src/security.test.ts
+crates/keystore/src/burn.rs` produced no output before commit. No Cargo,
+build, install, browser, deployment, network, or runtime action ran.
+
+### Preserved dirty overlap
+
+`crates/keystore/src/client.rs` already had unrelated worktree changes
+(14 insertions, 33 deletions) in peer-capability/bundle verification paths.
+Its broader module comment and `burn` method comment still describe request
+and server filtering behavior at committed lines 9-20 and 938-941. Because
+correcting those comments would overlap and risk committing unrelated work,
+this round did not edit or stage that file. The source gate reads it only as a
+positive implementation control.
+
+Status: `source/test-proven-only`, `+0`. No production keyserver burn,
+server deletion, end-to-end result, or runtime behavior is claimed.
+
+## Acceptance rows this earns
+
+None. This corrects an implemented-unwired source claim and adds a
+failure-capable reachability gate; it does not wire the client or prove a
+server-side wrapped-key deletion.
