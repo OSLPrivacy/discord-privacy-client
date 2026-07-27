@@ -1024,6 +1024,38 @@ fabrication window that guard was written to close, still open.
 **Status of both: `designed-only`.** The logic is proven; the wiring is not. I would rather record
 that plainly than let two green self-tests in a CI log read as enforcement.
 
+## Test-count floors: one was wrong by 100x, and measuring the rest nearly broke CI
+
+Written down because it is my most recent result and it cuts both ways.
+
+**`keyserver-cf`'s floor was 3; the real count is 313.** Its `npm test` runs *two* vitest
+invocations — `Tests 310 passed` then `Tests 3 passed`. I seeded the floor early in the session by
+reading the tail of that output and never saw the first invocation. A collapse from 313 tests to 4
+would have passed the guard whose only job is catching that. Corrected, and verified that 4 is now
+rejected.
+
+**Then the same mistake nearly went the other way.** Re-measuring `webview` gave **2** against a
+floor of **1**, which looked like another understated floor. It was not:
+
+| `webview/dist` present? | count |
+|---|---|
+| yes — a tree I had built earlier | 2 |
+| no — a clean checkout, which is what CI has | **1** |
+
+Vitest collects the compiled `dist/index.test.js` alongside `src/index.test.ts`. **The floor of 1
+was already correct**, and had I "fixed" it to 2 on the strength of my own dirty tree, every clean
+CI run would have failed permanently. Measuring in a dirty tree produced a number twice the truth.
+
+All six floors are now measured on a clean tree and carry their provenance. Five of the six remain
+**wired to nothing** — I did not connect them, because connecting numbers is only safe once they are
+trustworthy, and until an hour ago two of them were not.
+
+Two smaller notes worth keeping: `assert-test-counts.sh` summing multiple `Tests N passed` lines was
+flagged as a retry-inflation risk, and for `keyserver-cf` that summing is exactly the *correct*
+behaviour — same mechanism, right in one place and risky in another. And `webview/dist` is untracked
+but **not** git-ignored, so a stray `git add -A` would commit build output; another reason this lane
+commits with explicit pathspecs only.
+
 ## Acceptance rows this earns
 
 Proposed for the single writer of the build checklist to adjudicate; deliberately conservative.

@@ -10,8 +10,11 @@
 # (rust-test.yml). The rest are declared and NOT wired, so they currently
 # enforce nothing. Do not read them as protection.
 #
-# measured  = observed directly and recorded here
-# UNVERIFIED = seeded from a CI log early in the session, not re-measured
+# MEASURE ON A CLEAN TREE. webview's count is 2 in a working tree that has
+# been built and 1 in a clean checkout, because vitest collects the compiled
+# dist/index.test.js as well as src/index.test.ts. Raising that floor to the
+# dirty-tree number would fail every clean CI run, permanently. All values
+# below were taken with build output absent.
 
 osl-hub-core=237        # measured, Windows CI, --features core (NOT core,discord-qa-shell)
 keyserver-cf=313        # measured 2026-07-27; `npm test` runs TWO vitest invocations,
@@ -19,6 +22,7 @@ keyserver-cf=313        # measured 2026-07-27; `npm test` runs TWO vitest invoca
                         # output and missed the first invocation entirely - off by ~100x,
                         # so a drop from 313 to 4 would have passed.
 cipher-store-cf=18      # measured 2026-07-27, matches
-osl-hub-ui=379          # UNVERIFIED - not re-measured; also not wired
-webview=1               # UNVERIFIED - not re-measured; also not wired
-keyserver-legacy=72     # UNVERIFIED - not re-measured; also not wired
+osl-hub-ui=379          # measured 2026-07-27, matches; not wired
+webview=1               # measured 2026-07-27 on a CLEAN tree. Do NOT raise to 2:
+                        # that is src + the compiled dist copy. Not wired.
+keyserver-legacy=72     # measured 2026-07-27, matches; not wired
