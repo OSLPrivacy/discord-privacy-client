@@ -14,9 +14,16 @@
 //! - SQLite file at `<app_data_dir>/messages.sqlite`.
 //! - `messages` rows store opaque XChaCha20-Poly1305 ciphertext +
 //!   per-row nonce. AAD = `discord_message_id` UTF-8 bytes (binds
-//!   row identity).
-//! - `_meta` holds `schema_version` and a sealed canary for
-//!   wrong-`identity_secret` detection at `open()`.
+//!   row identity). A separate `meta_tag` column authenticates the
+//!   row's other security-relevant metadata, which the body AAD
+//!   does not cover — see `SECURITY.md` § "Row metadata
+//!   authentication".
+//! - `_meta` holds `schema_version`, a sealed canary for
+//!   wrong-`identity_secret` detection at `open()`, and the sealed
+//!   `meta_auth_strict` marker.
+//!
+//! Burn is terminal: a `put` cannot restore a row that
+//! [`MessageStore::mark_burned`] has destroyed.
 //!
 //! Plaintext is never persisted on disk in any form, including
 //! tokenized. See `SECURITY.md` § "Search" for the rationale and
@@ -112,6 +119,12 @@ pub struct StoredMessage {
 pub struct MessageStore {
     conn: Mutex<Connection>,
     key: aead::Key,
+
+    /// True when this database contains no rows predating metadata
+    /// authentication, so an untagged row can be refused outright instead of
+    /// being tolerated as legacy history. Latched at `open`. See
+    /// [`schema::resolve_meta_auth_strict`].
+    meta_auth_strict: bool,
 }
 
 /// Flush destructive updates out of WAL and truncate the WAL file so
@@ -129,6 +142,33 @@ fn checkpoint_after_shred(conn: &Connection) -> Result<(), StoreError> {
         ));
     }
     Ok(())
+}
+
+/// Destroy one row's secret material in place, unconditionally.
+///
+/// Deliberately **not** predicated on `burned = 0`. A row can carry
+/// `burned = 1` and still hold an intact sealed body — every store written by
+/// a build before this fix can contain one — and skipping the shred because a
+/// flag was already set is how a destructive call came to report success over
+/// a secret it never touched.
+///
+/// `burned_at` is stamped only if it is not already set, so re-burning cannot
+/// make an old destruction look recent in the audit trail.
+///
+/// The caller is responsible for the WAL checkpoint; batching one checkpoint
+/// after several shreds is why it is not done here.
+fn shred_row(conn: &Connection, discord_message_id: &str) -> Result<usize, StoreError> {
+    let rows = conn.execute(
+        "UPDATE messages
+            SET ciphertext = zeroblob(length(ciphertext)),
+                nonce = zeroblob(length(nonce)),
+                wrapped_key = NULL,
+                burned = 1,
+                burned_at = COALESCE(burned_at, strftime('%s','now'))
+          WHERE discord_message_id = ?1",
+        params![discord_message_id],
+    )?;
+    Ok(rows)
 }
 
 impl MessageStore {
@@ -171,10 +211,12 @@ impl MessageStore {
 
         let key = cipher::derive_key(identity_secret)?;
         schema::check_canary(&conn, &key)?;
+        let meta_auth_strict = schema::resolve_meta_auth_strict(&conn, &key)?;
 
         Ok(MessageStore {
             conn: Mutex::new(conn),
             key,
+            meta_auth_strict,
         })
     }
 
@@ -185,7 +227,51 @@ impl MessageStore {
     /// `msg.discord_message_id` bytes, with a fresh random
     /// nonce per call. The nonce + ciphertext go into the
     /// `messages` row.
+    /// ## Burn is terminal
+    ///
+    /// A `put` targeting a row that is already burned does **not** restore it.
+    /// The upsert carries `WHERE messages.burned = 0`, so a burned row keeps
+    /// its zeroed body and its burn flag, and the call is a silent no-op.
+    ///
+    /// This matters because it is ordinary behaviour, not an attack: the
+    /// receive observer re-decrypts a channel's history on every re-entry and
+    /// re-`put`s the same snowflakes. Before this predicate existed, one
+    /// re-entry after a burn wrote the sealed body straight back onto disk and
+    /// cleared `burned`, which made `THREAT_MODEL.md`'s "the local cached
+    /// plaintext of those messages is gone" false in normal use.
+    ///
+    /// A caller that hands in `burned: true` gets a **shredded** row: the
+    /// body is never written. Writing a live body under a burned flag was the
+    /// precondition that let `mark_burned` report success over an intact
+    /// secret.
     pub fn put(&self, msg: &StoredMessage) -> Result<(), StoreError> {
+        let meta_tag = self.meta_tag_for(msg)?;
+
+        if msg.burned {
+            let conn = self.conn.lock().expect("store mutex poisoned");
+            // Insert as already-destroyed, and if the row is already present,
+            // destroy it rather than layering a burn flag over a live body.
+            conn.execute(
+                "INSERT INTO messages \
+                    (discord_message_id, channel_id, sender_discord_id, \
+                     sender_osl_user_id, ciphertext, nonce, decrypted_at, \
+                     burned, burned_at, meta_tag) \
+                 VALUES (?1, ?2, ?3, ?4, x'', x'', ?5, 1, strftime('%s','now'), ?6) \
+                 ON CONFLICT(discord_message_id) DO NOTHING",
+                params![
+                    msg.discord_message_id,
+                    msg.channel_id,
+                    msg.sender_discord_id,
+                    msg.sender_osl_user_id,
+                    msg.decrypted_at,
+                    meta_tag,
+                ],
+            )?;
+            shred_row(&conn, &msg.discord_message_id)?;
+            checkpoint_after_shred(&conn)?;
+            return Ok(());
+        }
+
         let aad = msg.discord_message_id.as_bytes();
         let (nonce, ct) = cipher::seal(&self.key, aad, msg.plaintext.as_bytes())?;
 
@@ -193,8 +279,8 @@ impl MessageStore {
         conn.execute(
             "INSERT INTO messages \
                 (discord_message_id, channel_id, sender_discord_id, \
-                 sender_osl_user_id, ciphertext, nonce, decrypted_at, burned) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 sender_osl_user_id, ciphertext, nonce, decrypted_at, burned, meta_tag) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8) \
              ON CONFLICT(discord_message_id) DO UPDATE SET \
                 channel_id = excluded.channel_id, \
                 sender_discord_id = excluded.sender_discord_id, \
@@ -202,7 +288,8 @@ impl MessageStore {
                 ciphertext = excluded.ciphertext, \
                 nonce = excluded.nonce, \
                 decrypted_at = excluded.decrypted_at, \
-                burned = excluded.burned",
+                meta_tag = excluded.meta_tag \
+             WHERE messages.burned = 0",
             params![
                 msg.discord_message_id,
                 msg.channel_id,
@@ -211,10 +298,60 @@ impl MessageStore {
                 ct,
                 nonce,
                 msg.decrypted_at,
-                if msg.burned { 1_i64 } else { 0_i64 },
+                meta_tag,
             ],
         )?;
         Ok(())
+    }
+
+    /// Build the metadata authenticator for a row about to be written.
+    fn meta_tag_for(&self, msg: &StoredMessage) -> Result<Vec<u8>, StoreError> {
+        let aad = cipher::meta_aad(
+            &msg.discord_message_id,
+            &msg.channel_id,
+            &msg.sender_discord_id,
+            &msg.sender_osl_user_id,
+            msg.decrypted_at,
+        );
+        cipher::seal_meta_tag(&self.key, &aad)
+    }
+
+    /// Check a row's metadata against its stored authenticator.
+    ///
+    /// `None` means the row predates metadata authentication. Those rows are
+    /// accepted while any of them remain, because rejecting them would orphan
+    /// an installed user's entire history on upgrade. Once a store contains no
+    /// untagged rows it latches into strict mode (see
+    /// [`schema::meta_auth_is_strict`]) and untagged rows are refused from then
+    /// on, so every store created by this build is strict from birth.
+    #[allow(clippy::too_many_arguments)]
+    fn check_meta(
+        &self,
+        discord_message_id: &str,
+        channel_id: &str,
+        sender_discord_id: &str,
+        sender_osl_user_id: &str,
+        decrypted_at: i64,
+        meta_tag: Option<&[u8]>,
+    ) -> Result<(), StoreError> {
+        match meta_tag {
+            Some(tag) => {
+                let aad = cipher::meta_aad(
+                    discord_message_id,
+                    channel_id,
+                    sender_discord_id,
+                    sender_osl_user_id,
+                    decrypted_at,
+                );
+                cipher::verify_meta_tag(&self.key, &aad, tag)
+            }
+            None if self.meta_auth_strict => Err(StoreError::Corrupted(
+                "row carries no metadata authenticator in a store that has none outstanding \
+                 — it was not written by this store"
+                    .to_string(),
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Look up a single message by its Discord snowflake.
@@ -227,7 +364,7 @@ impl MessageStore {
         let row_opt = conn
             .query_row(
                 "SELECT channel_id, sender_discord_id, sender_osl_user_id, \
-                        ciphertext, nonce, decrypted_at, burned \
+                        ciphertext, nonce, decrypted_at, burned, meta_tag \
                  FROM messages WHERE discord_message_id = ?1 AND burned = 0",
                 params![discord_message_id],
                 row_to_tuple,
@@ -253,7 +390,7 @@ impl MessageStore {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT discord_message_id, channel_id, sender_discord_id, \
-                    sender_osl_user_id, ciphertext, nonce, decrypted_at, burned \
+                    sender_osl_user_id, ciphertext, nonce, decrypted_at, burned, meta_tag \
              FROM messages \
              WHERE channel_id = ?1 AND burned = 0 \
              ORDER BY decrypted_at DESC \
@@ -263,8 +400,7 @@ impl MessageStore {
         let mut out = Vec::new();
         for row in rows {
             let t = row?;
-            let mid = t.0.clone();
-            out.push(materialize_full(&self.key, t, &mid)?);
+            out.push(self.materialize_full(t)?);
         }
         Ok(out)
     }
@@ -276,29 +412,32 @@ impl MessageStore {
     /// Returns [`StoreError::NotFound`] if no row exists for
     /// `discord_message_id`. Callers can distinguish "I burned
     /// it" from "there was nothing to burn."
+    /// ## Why this does not short-circuit on `burned = 1`
+    ///
+    /// It used to return `Ok(())` as soon as the flag was set, on the
+    /// assumption that a burned row had already been shredded. That assumption
+    /// does not hold: a row can carry `burned = 1` over an intact sealed body,
+    /// and every database written by a build before this fix may contain one.
+    /// The call then reported a completed destruction while the secret sat on
+    /// disk. Shredding unconditionally is cheap and removes the assumption
+    /// rather than documenting it.
     pub fn mark_burned(&self, discord_message_id: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let burned_flag: Option<i64> = conn
+        let exists: Option<i64> = conn
             .query_row(
-                "SELECT burned FROM messages WHERE discord_message_id = ?1",
+                "SELECT 1 FROM messages WHERE discord_message_id = ?1",
                 params![discord_message_id],
                 |r| r.get(0),
             )
             .optional()?;
-        let Some(_) = burned_flag else {
+        if exists.is_none() {
             return Err(StoreError::NotFound(discord_message_id.to_string()));
-        };
-        if burned_flag == Some(1) {
-            return Ok(());
         }
+        shred_row(&conn, discord_message_id)?;
+        // The row's cached attachment plaintext is part of the message, so a
+        // burn that left the picture behind would not be a burn.
         conn.execute(
-            "UPDATE messages
-                SET ciphertext = zeroblob(length(ciphertext)),
-                    nonce = zeroblob(length(nonce)),
-                    wrapped_key = NULL,
-                    burned = 1,
-                    burned_at = strftime('%s','now')
-              WHERE discord_message_id = ?1",
+            "DELETE FROM attachments WHERE discord_message_id = ?1",
             params![discord_message_id],
         )?;
         checkpoint_after_shred(&conn)?;
@@ -328,6 +467,28 @@ impl MessageStore {
     /// channel (a server burn used to blank the whole channel). When
     /// `None`, every row in the scope is wiped (full-scope destruction,
     /// e.g. account burn).
+    ///
+    /// ## Why the predicate also matches `channel_id`
+    ///
+    /// Nothing in this repository has ever written `messages.scope_type` or
+    /// `messages.scope_id` — the columns exist and every burn path clears
+    /// `wrapped_key`, but no writer populates any of the three. A scope
+    /// predicate over `scope_type`/`scope_id` alone therefore matched **zero**
+    /// normally-written rows, so this call destroyed nothing and returned 0
+    /// while its caller reported a successful burn.
+    ///
+    /// Matching `channel_id = scope_id` as well makes the destruction real for
+    /// the channel-shaped scopes (`dm`, `gc`, `server_channel`), whose
+    /// `scope_id` *is* the channel snowflake that `put` does write. A
+    /// server-wide `scope_id` matches no `channel_id`, so this cannot
+    /// over-delete: snowflakes are unique, and a scope id that is not a
+    /// channel id equals no row's channel.
+    ///
+    /// This does not make burn cryptographic. It destroys the **local cached
+    /// plaintext**, which is precisely what `THREAT_MODEL.md:160-162` claims
+    /// burn achieves locally and no more. See
+    /// `docs/reports/store-lane-2026-07-26.md` for the per-message
+    /// `wrapped_key` design that would be required for the stronger property.
     pub fn wipe_wrapped_keys_in_scope(
         &self,
         scope_type: &str,
@@ -340,16 +501,19 @@ impl MessageStore {
                 "UPDATE messages \
                     SET ciphertext = zeroblob(length(ciphertext)), \
                         nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
-                        burned = 1, burned_at = strftime('%s','now') \
-                  WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
+                        burned = 1, \
+                        burned_at = COALESCE(burned_at, strftime('%s','now')) \
+                  WHERE ((scope_type = ?1 AND scope_id = ?2) OR channel_id = ?2) \
+                    AND sender_discord_id = ?3",
                 params![scope_type, scope_id, sender],
             )?,
             None => conn.execute(
                 "UPDATE messages \
                     SET ciphertext = zeroblob(length(ciphertext)), \
                         nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
-                        burned = 1, burned_at = strftime('%s','now') \
-                  WHERE scope_type = ?1 AND scope_id = ?2",
+                        burned = 1, \
+                        burned_at = COALESCE(burned_at, strftime('%s','now')) \
+                  WHERE (scope_type = ?1 AND scope_id = ?2) OR channel_id = ?2",
                 params![scope_type, scope_id],
             )?,
         };
@@ -372,6 +536,16 @@ impl MessageStore {
     /// Returns the row count for diagnostic logging.
     pub fn delete_messages_in_channel(&self, channel_id: &str) -> Result<usize, StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
+        // Drop the cached attachment plaintext FIRST, while the message rows
+        // that identify it still exist. Deleting the messages first orphans
+        // those attachment rows: nothing then links them to a channel, so no
+        // later burn predicate can find them and `get_attachment` keeps
+        // serving the decrypted bytes of a message that no longer exists.
+        conn.execute(
+            "DELETE FROM attachments WHERE discord_message_id IN \
+                (SELECT discord_message_id FROM messages WHERE channel_id = ?1)",
+            params![channel_id],
+        )?;
         let rows = conn.execute(
             "DELETE FROM messages WHERE channel_id = ?1",
             params![channel_id],
@@ -445,6 +619,26 @@ impl MessageStore {
     /// — `Some(sender)` wipes only that sender's cached attachments so a
     /// burn doesn't evict everyone's images in the channel; `None`
     /// wipes the whole scope. Returns the row count.
+    ///
+    /// ## Why it also resolves through the message rows
+    ///
+    /// `put_attachment` accepts `None` for scope and sender, and the shipping
+    /// caller passes `None` whenever it cannot resolve the scope. Those rows
+    /// match no scope predicate, so a scope burn used to leave the decrypted
+    /// picture in the cache where `get_attachment` still served it — the text
+    /// was destroyed and the image was not.
+    ///
+    /// The second arm of each predicate therefore reaches the attachment
+    /// through its message: an attachment belongs to the scope if its
+    /// `discord_message_id` names a message in that scope. That covers every
+    /// legacy row whose message is still present, and it keeps the sender
+    /// restriction honest, because the sender is read off the message rather
+    /// than off the attachment's own (possibly NULL) column.
+    ///
+    /// Residue this does not reach: an attachment whose message row was
+    /// already deleted has no remaining link to any scope. Nothing can
+    /// attribute it. [`Self::delete_messages_in_channel`] now deletes
+    /// attachments before their messages so that orphan is no longer created.
     pub fn wipe_attachments_in_scope(
         &self,
         scope_type: &str,
@@ -455,11 +649,19 @@ impl MessageStore {
         let rows = match only_sender_discord_id {
             Some(sender) => conn.execute(
                 "DELETE FROM attachments \
-                  WHERE scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3",
+                  WHERE (scope_type = ?1 AND scope_id = ?2 AND sender_discord_id = ?3) \
+                     OR discord_message_id IN ( \
+                          SELECT discord_message_id FROM messages \
+                           WHERE ((scope_type = ?1 AND scope_id = ?2) OR channel_id = ?2) \
+                             AND sender_discord_id = ?3)",
                 params![scope_type, scope_id, sender],
             )?,
             None => conn.execute(
-                "DELETE FROM attachments WHERE scope_type = ?1 AND scope_id = ?2",
+                "DELETE FROM attachments \
+                  WHERE (scope_type = ?1 AND scope_id = ?2) \
+                     OR discord_message_id IN ( \
+                          SELECT discord_message_id FROM messages \
+                           WHERE (scope_type = ?1 AND scope_id = ?2) OR channel_id = ?2)",
                 params![scope_type, scope_id],
             )?,
         };
@@ -592,7 +794,16 @@ impl MessageStore {
             nonce,
             decrypted_at,
             burned_flag,
+            meta_tag,
         ) = t;
+        self.check_meta(
+            discord_message_id,
+            &channel_id,
+            &sender_discord_id,
+            &sender_osl_user_id,
+            decrypted_at,
+            meta_tag.as_deref(),
+        )?;
         let aad = discord_message_id.as_bytes();
         let pt = cipher::unseal(&self.key, aad, &nonce, &ct)?;
         let plaintext = String::from_utf8(pt).map_err(|_| {
@@ -614,14 +825,33 @@ impl MessageStore {
 /// (used by [`MessageStore::get`]). Columns:
 /// `(channel_id, sender_discord_id, sender_osl_user_id,
 ///   ciphertext, nonce, decrypted_at, burned)`.
-type GetRowTuple = (String, String, String, Vec<u8>, Vec<u8>, i64, i64);
+type GetRowTuple = (
+    String,
+    String,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    Option<Vec<u8>>,
+);
 
 /// Row tuple shape for the eight-column fetch (used by
 /// [`MessageStore::list_by_channel`], which carries the
 /// `discord_message_id` as column 0). Columns:
 /// `(discord_message_id, channel_id, sender_discord_id,
 ///   sender_osl_user_id, ciphertext, nonce, decrypted_at, burned)`.
-type FullRowTuple = (String, String, String, String, Vec<u8>, Vec<u8>, i64, i64);
+type FullRowTuple = (
+    String,
+    String,
+    String,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    Option<Vec<u8>>,
+);
 
 /// Row mapper for the seven-column `messages`-only fetch (used
 /// by `get`).
@@ -634,6 +864,7 @@ fn row_to_tuple(r: &rusqlite::Row<'_>) -> rusqlite::Result<GetRowTuple> {
         r.get::<_, Vec<u8>>(4)?,
         r.get::<_, i64>(5)?,
         r.get::<_, i64>(6)?,
+        r.get::<_, Option<Vec<u8>>>(7)?,
     ))
 }
 
@@ -650,35 +881,45 @@ fn full_row_to_tuple(r: &rusqlite::Row<'_>) -> rusqlite::Result<FullRowTuple> {
         r.get::<_, Vec<u8>>(5)?,
         r.get::<_, i64>(6)?,
         r.get::<_, i64>(7)?,
+        r.get::<_, Option<Vec<u8>>>(8)?,
     ))
 }
 
-/// Materialize the eight-column tuple into a [`StoredMessage`].
-fn materialize_full(
-    key: &aead::Key,
-    t: FullRowTuple,
-    aad_id: &str,
-) -> Result<StoredMessage, StoreError> {
-    let (
-        discord_message_id,
-        channel_id,
-        sender_discord_id,
-        sender_osl_user_id,
-        ct,
-        nonce,
-        decrypted_at,
-        burned_flag,
-    ) = t;
-    let pt = cipher::unseal(key, aad_id.as_bytes(), &nonce, &ct)?;
-    let plaintext = String::from_utf8(pt)
-        .map_err(|_| StoreError::Corrupted("decoded plaintext is not valid UTF-8".to_string()))?;
-    Ok(StoredMessage {
-        discord_message_id,
-        channel_id,
-        sender_discord_id,
-        sender_osl_user_id,
-        plaintext,
-        decrypted_at,
-        burned: burned_flag != 0,
-    })
+/// Materialize the full row tuple into a [`StoredMessage`], verifying the
+/// row's metadata authenticator first.
+impl MessageStore {
+    fn materialize_full(&self, t: FullRowTuple) -> Result<StoredMessage, StoreError> {
+        let (
+            discord_message_id,
+            channel_id,
+            sender_discord_id,
+            sender_osl_user_id,
+            ct,
+            nonce,
+            decrypted_at,
+            burned_flag,
+            meta_tag,
+        ) = t;
+        self.check_meta(
+            &discord_message_id,
+            &channel_id,
+            &sender_discord_id,
+            &sender_osl_user_id,
+            decrypted_at,
+            meta_tag.as_deref(),
+        )?;
+        let pt = cipher::unseal(&self.key, discord_message_id.as_bytes(), &nonce, &ct)?;
+        let plaintext = String::from_utf8(pt).map_err(|_| {
+            StoreError::Corrupted("decoded plaintext is not valid UTF-8".to_string())
+        })?;
+        Ok(StoredMessage {
+            discord_message_id,
+            channel_id,
+            sender_discord_id,
+            sender_osl_user_id,
+            plaintext,
+            decrypted_at,
+            burned: burned_flag != 0,
+        })
+    }
 }

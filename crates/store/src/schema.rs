@@ -142,6 +142,31 @@ const V2_COLUMNS: &[&str] = &[
 /// cached attachments in a scope. Additive + pre-checked like V2; old
 /// rows get NULL (they predate the fix and won't match a scope wipe,
 /// which is acceptable).
+/// Row-metadata authentication (audit finding: security-relevant metadata sat
+/// outside AEAD authentication).
+///
+/// `meta_tag` (BLOB, nullable) holds a 40-byte `nonce || tag` authenticator
+/// over the row's `discord_message_id`, `channel_id`, `sender_discord_id`,
+/// `sender_osl_user_id` and `decrypted_at`. It carries no secret, so it adds
+/// nothing to what the file discloses.
+///
+/// ## Why this is an additive ALTER and does **not** bump `SCHEMA_VERSION`
+///
+/// Bumping the version makes an older binary refuse to open the database
+/// (`migrate` returns `Schema` for any on-disk version it does not know), which
+/// would orphan an installed user's entire history the moment they rolled back
+/// — the same hazard `shred_expired_messages` is documented to avoid. A
+/// nullable column that an older binary simply never selects costs that binary
+/// nothing, so upgrade and downgrade both keep every row readable.
+const META_AUTH_COLUMNS: &[&str] = &["ALTER TABLE messages ADD COLUMN meta_tag BLOB"];
+
+/// `_meta` key holding the sealed marker that latches strict metadata
+/// authentication on.
+const META_AUTH_STRICT_KEY: &str = "meta_auth_strict";
+
+/// AAD for the strict marker, domain-separated from the canary.
+const META_AUTH_STRICT_AAD: &[u8] = b"osl-message-store/meta-auth-strict";
+
 const ATTACHMENT_SCOPE_COLUMNS: &[&str] = &[
     "ALTER TABLE attachments ADD COLUMN scope_type TEXT",
     "ALTER TABLE attachments ADD COLUMN scope_id TEXT",
@@ -169,6 +194,9 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
     // Burn follow-up: scope/sender columns on the attachment cache.
     // Pre-checked additive ALTERs (idempotent), like the v=2 columns.
     apply_attachment_scope_columns(conn)?;
+    // Row-metadata authenticator. Additive and version-neutral on purpose —
+    // see META_AUTH_COLUMNS.
+    apply_columns(conn, "messages", META_AUTH_COLUMNS)?;
     let on_disk: Option<u32> = read_meta_u32(conn, "schema_version")?;
     match on_disk {
         None => {
@@ -239,6 +267,87 @@ fn apply_attachment_scope_columns(conn: &Connection) -> Result<(), StoreError> {
         conn.execute(sql, [])?;
     }
     Ok(())
+}
+
+/// Apply a list of `ALTER TABLE <table> ADD COLUMN <name> <type>` statements,
+/// skipping any column that already exists.
+///
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so idempotence comes from a
+/// `PRAGMA table_info` pre-check. The column name is recovered from the
+/// statement text, which is safe because every statement is a hard-coded
+/// constant in this file.
+fn apply_columns(conn: &Connection, table: &str, statements: &[&str]) -> Result<(), StoreError> {
+    let existing = existing_columns(conn, table)?;
+    let prefix = format!("ALTER TABLE {table} ADD COLUMN ");
+    for sql in statements {
+        let after = sql.strip_prefix(prefix.as_str()).ok_or_else(|| {
+            StoreError::Schema(format!("internal: unexpected column SQL shape: {sql}"))
+        })?;
+        let name = after.split_whitespace().next().ok_or_else(|| {
+            StoreError::Schema(format!("internal: cannot parse column name from {sql}"))
+        })?;
+        if existing.iter().any(|c| c == name) {
+            continue;
+        }
+        conn.execute(sql, [])?;
+    }
+    Ok(())
+}
+
+/// Decide whether this store may refuse rows that carry no metadata
+/// authenticator.
+///
+/// A store that still holds rows written before the authenticator existed must
+/// keep serving them, or upgrading would erase the user's history from their
+/// own client. So the rule latches instead of switching:
+///
+/// - Once the database contains **no** untagged rows, seal a marker.
+/// - While the marker is present, an untagged row is refused as tampering.
+///
+/// A database created by this build is strict from its first open, because an
+/// empty table trivially has no untagged rows. An upgraded database becomes
+/// strict once its legacy rows have been rewritten or burned away.
+///
+/// The marker is sealed under the store key so it cannot be forged by someone
+/// who can write the file but does not hold the key. It can still be *deleted*
+/// by such a writer, which downgrades this store to lenient — `_meta` is no
+/// better protected than the rest of the file. Closing that gap needs a
+/// whole-database MAC anchored outside SQLite; it is written up in
+/// `docs/reports/store-lane-2026-07-26.md` rather than half-built here.
+pub(crate) fn resolve_meta_auth_strict(
+    conn: &Connection,
+    key: &aead::Key,
+) -> Result<bool, StoreError> {
+    if let Some(blob) = read_meta_blob(conn, META_AUTH_STRICT_KEY)? {
+        if blob.len() <= aead::NONCE_SIZE {
+            return Err(StoreError::Schema(
+                "meta_auth_strict marker is truncated".to_string(),
+            ));
+        }
+        let (nonce, ct) = blob.split_at(aead::NONCE_SIZE);
+        cipher::unseal_canary(key, META_AUTH_STRICT_AAD, nonce, ct)?;
+        return Ok(true);
+    }
+
+    // Burned rows are excluded deliberately. A burned row is an audit stub:
+    // its body is zeroed and both read paths filter `burned = 0`, so its
+    // metadata is never authenticated against anything and never materialised.
+    // Counting them would mean a store that ever held legacy history could
+    // never latch strict, because burned stubs persist forever.
+    let untagged: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE meta_tag IS NULL AND burned = 0",
+        [],
+        |r| r.get(0),
+    )?;
+    if untagged > 0 {
+        return Ok(false);
+    }
+
+    let (nonce, ct) = cipher::seal(key, META_AUTH_STRICT_AAD, b"1")?;
+    let mut marker = nonce;
+    marker.extend_from_slice(&ct);
+    write_meta_blob(conn, META_AUTH_STRICT_KEY, &marker)?;
+    Ok(true)
 }
 
 /// Return the set of column names on a given table via

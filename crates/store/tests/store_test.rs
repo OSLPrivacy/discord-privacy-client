@@ -425,7 +425,15 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
         .put(&sample("still-live", "ch", "s", "alice", "kept", 3))
         .unwrap();
     store
-        .put_attachment("expired-1", "pic.png", "image/png", &[7u8; 64], None, None, None)
+        .put_attachment(
+            "expired-1",
+            "pic.png",
+            "image/png",
+            &[7u8; 64],
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     let shredded = store
@@ -435,7 +443,10 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
     assert!(store.get("expired-1").unwrap().is_none());
     assert!(store.get("expired-2").unwrap().is_none());
     assert!(
-        store.get_attachment("expired-1", "pic.png").unwrap().is_none(),
+        store
+            .get_attachment("expired-1", "pic.png")
+            .unwrap()
+            .is_none(),
         "expiry must destroy the decrypted attachment cache too"
     );
     assert!(
@@ -484,7 +495,9 @@ fn shred_expired_messages_tolerates_unknown_ids_and_is_idempotent() {
     // A second sweep reports zero rather than re-stamping burned_at and making
     // an old destruction look fresh.
     assert_eq!(
-        store.shred_expired_messages(&["known".to_string()]).unwrap(),
+        store
+            .shred_expired_messages(&["known".to_string()])
+            .unwrap(),
         0
     );
     assert_eq!(store.shred_expired_messages(&[]).unwrap(), 0);

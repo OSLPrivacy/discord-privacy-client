@@ -83,6 +83,89 @@ pub(crate) fn unseal(
         .map_err(|_| StoreError::Corrupted("AEAD tag failure".to_string()))
 }
 
+/// Domain separator for the row-metadata authenticator. Distinct from
+/// every other AAD in this crate so a `meta_tag` can never be replayed as
+/// a body seal or as the canary.
+const META_AAD_PREFIX: &[u8] = b"osl-message-store/meta-v1";
+
+/// Canonical, unambiguous byte encoding of the security-relevant `messages`
+/// metadata.
+///
+/// Every field is length-prefixed. Concatenating raw fields would let an
+/// attacker move a byte across a field boundary — `("ab","c")` and
+/// `("a","bc")` would authenticate identically — which is exactly the class
+/// of forgery this authenticator exists to stop.
+///
+/// `burned` / `burned_at` are deliberately excluded: they are mutated by the
+/// burn paths, and flipping `burned` cannot expose anything because burn
+/// zeroes the body it would expose.
+pub(crate) fn meta_aad(
+    discord_message_id: &str,
+    channel_id: &str,
+    sender_discord_id: &str,
+    sender_osl_user_id: &str,
+    decrypted_at: i64,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(96);
+    out.extend_from_slice(META_AAD_PREFIX);
+    for field in [
+        discord_message_id,
+        channel_id,
+        sender_discord_id,
+        sender_osl_user_id,
+    ] {
+        out.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        out.extend_from_slice(field.as_bytes());
+    }
+    out.extend_from_slice(&decrypted_at.to_le_bytes());
+    out
+}
+
+/// Authenticate row metadata by sealing an **empty** plaintext with the
+/// metadata as AAD. The result carries no secret — it is a pure
+/// authenticator — so it can sit in its own nullable column without
+/// changing what the database reveals.
+///
+/// Layout: `nonce (24) || tag (16)`, 40 bytes.
+pub(crate) fn seal_meta_tag(key: &aead::Key, aad: &[u8]) -> Result<Vec<u8>, StoreError> {
+    let (nonce, ct) = seal(key, aad, &[])?;
+    let mut out = nonce;
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+/// Verify a `meta_tag` against the metadata actually present in the row.
+///
+/// Returns `Corrupted` when the tag does not match, i.e. when someone with
+/// write access to the file edited a metadata column. A wrong-length blob is
+/// a mismatch, not a panic.
+pub(crate) fn verify_meta_tag(
+    key: &aead::Key,
+    aad: &[u8],
+    meta_tag: &[u8],
+) -> Result<(), StoreError> {
+    if meta_tag.len() != aead::NONCE_SIZE + 16 {
+        return Err(StoreError::Corrupted(format!(
+            "row metadata authenticator has length {} (want {})",
+            meta_tag.len(),
+            aead::NONCE_SIZE + 16
+        )));
+    }
+    let (nonce_bytes, tag) = meta_tag.split_at(aead::NONCE_SIZE);
+    let pt = unseal(key, aad, nonce_bytes, tag).map_err(|_| {
+        StoreError::Corrupted(
+            "row metadata failed authentication — a metadata column was modified on disk"
+                .to_string(),
+        )
+    })?;
+    if !pt.is_empty() {
+        return Err(StoreError::Corrupted(
+            "row metadata authenticator carried unexpected content".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Same wire as [`unseal`] but with a different error category —
 /// used at `open` to validate the canary. AEAD failure here means
 /// the caller-supplied secret does not match the one that originally
