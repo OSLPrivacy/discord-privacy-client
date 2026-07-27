@@ -306,13 +306,14 @@ logged here so they cannot be quietly forgotten or later re-counted as new work.
   **retryable queue, not a dropped notice** — a 404 or absent lane has to be retried, not discarded.
   Related to the already-recorded D6 defect where the drain DELETEs an inbound revocation frame
   without applying it. No point until a bound is implemented and exercised.
-- **Windows duress defect (open).** The duress/auto-lock path is unreachable in production
-  (`crates/keystore/src/duress.rs` has no production caller) and has a known TPM-less Windows
-  failure mode. A7 already sits at 0 for exactly this reason; nothing here changes it.
-- **Cryptographic burn is not implemented** (`crates/store/src/lib.rs`: `put` never populates
-  `wrapped_key`). Owner decision 2026-07-26: **NOT NOW**, revisit after the deadline. The threat
-  model and the public-claim allowlist already ban the phrase, so this is an architectural gap, not
-  a live false claim.
+- **Duress/auto-lock reachability (open).** `crates/keystore/src/duress.rs` still has no production
+  caller, so no user-reachable or runtime evidence exists. A7 already sits at 0 for this reason;
+  nothing here changes it.
+- **Superseded 2026-07-27 — causal record of the former Store gap.** On 2026-07-26 the then-current
+  `MessageStore::put` did not populate `wrapped_key`, so burn nulled an already-null column. Exact
+  `a7a09a7` and `c92ce11` supersede that source fact with test-proven v5 message and v6 attachment
+  content-key envelopes. They do not supersede the A7 blockers recorded in the current row above,
+  and no point is awarded.
 - **In-app copy gate — CLOSED 2026-07-26, no point claimed.** `scripts/check-app-claims.mjs` scans
   `apps/osl-hub-ui/src/**` string and template literals plus `README.md` against allowlist section D,
   which it **parses from the allowlist itself** so there is no second list to drift. Wired into the
@@ -374,14 +375,24 @@ timestamped deltas, not keep this number manually forever.
 - 🟨 **A5 · Friends, safety numbers, scoped trust, held key changes** — foundations exist; full
   ceremony and all call paths need proof. `needs: A2` `weight: 5` `earned: 2`
 - 🛑 **A6 · No protected plaintext at rest** — attachment staging and metadata findings remain.
+  **Evidence note 2026-07-27:** exact Store commits `a7a09a7` (message schema v5) and `c92ce11`
+  (attachment schema v6) test-prove per-record content-key envelopes for Store message and
+  attachment bodies. That narrows one backend; it does not close the authoritative at-rest census,
+  staging, backup/rollback, caller-root, runtime, or physical-media boundaries. No score changes.
   `needs: none` `weight: 5` `earned: 0`
 - 🛑 **A7 · Honest Burn/duress and retry** — failed/skipped wipes, TPM errors, rollback, and key
-  handlers must be fail-closed/retryable. **Recheck 2026-07-26 removed the earned point:** duress
-  has zero production callers (`crates/keystore/src/duress.rs` — only the
-  `crates/keystore/src/lib.rs:58-59` re-export and keystore tests reference the password/duress
-  API), so the 10-attempt auto-burn and 15-minute auto-lock are not user-reachable; and burn is
-  not cryptographic — `MessageStore::put` (`crates/store/src/lib.rs:194-206`) never writes
-  `wrapped_key`, so every `wrapped_key = NULL` on the burn paths nulls an already-null column.
+  handlers must be fail-closed/retryable. **Superseding recheck 2026-07-27:** exact `a7a09a7`
+  test-proves a fresh random DEK and master-wrapped key for each live v5 message; exact `c92ce11`
+  does the same for each live v6 attachment and transactionally shreds the selected message plus
+  its attachment wrappers. The recorded `c92ce11` Store run passed 75 tests. Highest honest tier is
+  `test-proven-only`, not runtime or release proof. A7 remains 0/5: that object has no authoritative
+  attachment manifest, so whole-row absence is not provable; a complete authenticated
+  database/backup rollback remains possible without an external monotonic anchor; caller OS-root,
+  runtime, power-loss, and physical-media evidence is absent; and the independent audit found that
+  trimming a burned attachment stub can permit re-caching while its parent message remains live,
+  with the production deletion caller also discarding the Store result. Separately, duress,
+  10-attempt auto-burn, and 15-minute auto-lock still have zero production caller and therefore no
+  user-reachable/runtime evidence.
   `needs: A1` `weight: 5` `earned: 0`
 - ✅ **A8 · Secret zeroization and metadata minimization** — **+1 awarded 2026-07-26 by the checklist
   writer, which the crypto lane did not claim.** Both halves of the row got real work with evidence
