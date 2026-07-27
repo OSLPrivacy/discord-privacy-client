@@ -1602,3 +1602,79 @@ Status: `source/test-proven-only`, `+0`.
 None. The owned IPC claims and production reachability gate are corrected,
 but the root README remains false and outside both active claim-writing
 lanes; no runtime or checklist row is earned.
+
+## Round 16 — signed burn alerts are implemented-unwired
+
+Source/test commit:
+`1c4bb4d14e150a965d068286be84c3e787938ae2` (parent
+`2e5b53c08ee162a9db3878a31883c238f4fafdd4`, tree
+`5c5287c3020ce1676602193042fa454b3619ae51`). Exact paths:
+
+- `crates/keystore/src/burn_alert.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+The audit used committed object `66412233d10bf257566861c02d1a3b46ca40c3b8`
+(tree `9758a79628126a6e752229b38a696672ca817d55`) because unrelated
+keystore/IPC worktree changes were present. `BurnAlertPayload`,
+`sign_burn_alert`, and `verify_burn_alert` existed only in their definition
+and unit-test module, plus the `crates/keystore/src/lib.rs` re-export. There
+was no caller/import in `security.rs`, `broker.rs`, `main.rs`,
+`crates/ipc/src/**`, or `crates/keystore/src/client.rs`.
+
+The distinct production broker `0x0A` route does not use this signature
+module. It authenticates/decrypts the separate revocation frame and currently
+returns `RevocationRowOutcome::EnforcementUnavailable` without applying,
+acknowledging, or deleting a valid notice.
+
+The owned module documentation nevertheless said the client uploads an alert,
+the recipient retrieves its wrapped blob, and recipients call the verifier.
+Those statements were corrected to the exact current boundary:
+
+- canonical payload and Ed25519 sign/verify helpers exist;
+- no production construct/upload/fetch/decrypt/verify/render path exists;
+- the separate `0x0A` route is not evidence that this prototype is wired; and
+- the intended wrapped-key integration remains future design.
+
+The corrected source is at `burn_alert.rs:1-12,29,77-80`.
+
+### Nonvacuous gate and focused evidence
+
+`security.test.ts:569-653` requires the public struct, both functions, and the
+keystore re-export as implementation positives. It also requires the distinct
+broker `EnforcementUnavailable` branch, then scans the Hub, IPC, and keystore
+client production sources for all three burn-alert symbols.
+
+Failure-capable controls:
+
+- one synthetic production use for each public type/function turns the
+  reachability detector positive;
+- removing the `implemented-unwired` qualifier fails;
+- restoring either former present-tense integration sentence fails; and
+- comment-only and `cfg(test)`-only callers remain negative.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "keeps signed burn
+alerts classified as implemented-unwired" --reporter=dot`
+
+Result: 1 test passed, 0 failed, 6 skipped.
+
+`git diff-tree --check 1c4bb4d^ 1c4bb4d` produced no output. No Cargo, build,
+install, browser, deployment, live peer, or runtime action ran.
+
+Non-owned present-tense design wording was routed to truth ownership:
+
+`/home/liamw/.local/share/ai-context-bus/messages/20260727T184108Z-9886bca9.json`
+
+Truth corrected `docs/design/group-messaging.md`,
+`docs/design/key-server-api.md`, and `docs/design/sender-keys.md` in
+`2e5b53c08ee162a9db3878a31883c238f4fafdd4`, which is the direct parent of
+this source commit.
+
+Status: `source/test-proven-only`, `+0`.
+
+## Acceptance rows this earns
+
+None. The change corrects an implemented-unwired source claim and adds a
+reachability/mutation gate; it does not make signed burn alerts available or
+prove any two-identity runtime behavior.
