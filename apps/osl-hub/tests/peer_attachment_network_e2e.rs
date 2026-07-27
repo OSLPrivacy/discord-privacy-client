@@ -175,6 +175,11 @@ struct RelayState {
     faults: BTreeMap<String, ObjectFault>,
     /// Global knob: every DELETE /v1/attachment/:id answers 500.
     delete_fails: bool,
+    /// Test-boundary witness: once armed, the relay records whether any remote
+    /// delete arrived before the client had durably committed and replay-tested
+    /// the local view-once open.
+    replay_commit_visible: Option<Arc<AtomicBool>>,
+    delete_attempted_before_replay_commit: bool,
     /// part_number the fixture rejects with 400 bad_part_length.
     reject_part: Option<u32>,
     counts: Counts,
@@ -293,6 +298,17 @@ impl RelayServer {
 
     fn set_delete_fails(&self, fails: bool) {
         self.with_state(|state| state.delete_fails = fails);
+    }
+
+    fn observe_replay_commit_before_delete(&self, visible: Arc<AtomicBool>) {
+        self.with_state(|state| {
+            state.replay_commit_visible = Some(visible);
+            state.delete_attempted_before_replay_commit = false;
+        });
+    }
+
+    fn delete_attempted_before_replay_commit(&self) -> bool {
+        self.with_state(|state| state.delete_attempted_before_replay_commit)
     }
 
     fn set_reject_part(&self, part: Option<u32>) {
@@ -943,6 +959,13 @@ fn handle_attachment_delete(
     id: &str,
     now: i64,
 ) -> Vec<u8> {
+    if state
+        .replay_commit_visible
+        .as_ref()
+        .is_some_and(|visible| !visible.load(Ordering::Acquire))
+    {
+        state.delete_attempted_before_replay_commit = true;
+    }
     if state.delete_fails {
         return error_response(500, "internal_error", "server failure");
     }
@@ -2236,6 +2259,9 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
         "the in-memory image path must leave no plaintext on disk"
     );
 
+    let replay_commit_visible = Arc::new(AtomicBool::new(false));
+    relay.observe_replay_commit_before_delete(Arc::clone(&replay_commit_visible));
+
     // --- commit: replay safety is durable before any remote burn ------------
     osl_privacy_hub::broker::commit_osl_chat_attachment_open(
         &bob.core,
@@ -2255,10 +2281,15 @@ fn view_once_open_is_replay_safe_and_a_failed_burn_is_recovered_by_the_deletion_
         .is_err(),
         "a committed view-once attachment must never open a second time"
     );
+    replay_commit_visible.store(true, Ordering::Release);
 
     // --- the burn fails: ciphertext survives -------------------------------
     relay.set_delete_fails(true);
     let burn = client.delete_attachment(&plan.object_id, &token);
+    assert!(
+        !relay.delete_attempted_before_replay_commit(),
+        "the relay observed a remote delete attempt before the durable replay commit and replay check"
+    );
     assert!(burn.is_err(), "the fixture is refusing deletes for this step");
     assert!(
         relay.object_present(&plan.object_id),
