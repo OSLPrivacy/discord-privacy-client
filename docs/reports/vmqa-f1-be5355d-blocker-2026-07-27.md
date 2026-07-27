@@ -99,3 +99,57 @@ Read-only checks found `OSL-Azure-Client-1` already `VM deallocated` and the sub
 leak check reported nothing running. A run-scoped Azure cleanup receipt was deliberately not
 fabricated: without an admissible run and retained build identity there is no honest executable or
 build digest to bind it to.
+
+## Latest VM lane checkpoint — minimal warm reset/retry receipt
+
+The VM-owned successor is:
+
+- commit: `ff117dd12422444b0e41aa45e20dd2c3397226d3`
+- parent: `893251f5c71f82c9c0edf6f92663ed5cd11ab0ee`
+- tree: `45142200f7deed12ea1424c4e1a17793bc851a17`
+- exact scope: `scripts/vmqa/vmqa_fast_cycle_receipt.py` and
+  `scripts/vmqa/test-vmqa-fast-cycle.py`
+- exact two-file archive SHA-256:
+  `480fd55bb406da7ffac643c18fba7003f47113ca5d6ed0a484ac8ac17fef8b7a`
+
+The exact archived focused suite ran 9 tests and passed. The validator is deliberately limited to
+the existing fast path:
+
+1. exact `OSL-Azure-Client-1` WARM-agent snapshot and restored-disk lineage;
+2. fresh interactive session-1 agent heartbeat;
+3. pinned source/tree, build identity and staged executable hash;
+4. one complete non-pass five-step `stage,launch,ping,shot,kill` selftest pair;
+5. reset proving the old PID and exact executable are absent;
+6. a fresh agent heartbeat and distinct passing five-step selftest pair.
+
+Simulation requires the explicit internal fixture switch and remains labelled `simulation` with
+`runtimeProvenByThisValidator: false`. Normal validation rejects simulation. It also rejects every
+caller-authored `live` receipt because
+`scripts/vmqa/vmqa_fast_cycle_receipt.py:34` leaves
+`PINNED_LIVE_RECEIPT_SHA256` unset; the fail-closed check is at lines 491–496.
+
+### Precise live blocker
+
+The only recorded usable VM snapshot is
+`OSL-Azure-Client-1-WARM-bootstrap-202607270252`. The retained lane report records at lines 240–247
+that this snapshot has not earned the WARM-agent name and that Discord is not installed. The
+fast-cycle validator requires `OSL-Azure-Client-1-WARM-agent-<timestamp>` at
+`scripts/vmqa/vmqa_fast_cycle_receipt.py:50–52` and carries a mutation proving WARM-bootstrap
+cannot impersonate WARM-agent.
+
+Therefore the next step is external and currently blocked: the VMQA setup owner must install and
+sign into disposable Discord on `OSL-Azure-Client-1`, deallocate it, take an honest WARM-agent
+snapshot, then explicitly authorize restore/start and the interactive two-attempt cycle. Only
+after the raw receipt is independently audited may a successor pin its exact hash. No Azure
+command was run for `ff117dd`.
+
+## Acceptance rows this earns
+
+| Acceptance condition | Evidence tier | Result |
+|---|---|---|
+| Minimal warm-reset retry receipt has exact target, lineage, build, agent and five-step selftest bindings | source/mutation-tested | accepted |
+| WARM-bootstrap, stale executable, empty/skipped run, ineffective reset and replayed retry refuse | source/mutation-tested | accepted |
+| Simulation cannot cross the normal live boundary | exact-archive focused test | accepted |
+| Authorized WARM-agent restore, interactive run and exact live receipt | live/runtime | blocked |
+
+This earns **zero checklist rows and F1 +0**. It is retained-receipt validation, not a VM run.
