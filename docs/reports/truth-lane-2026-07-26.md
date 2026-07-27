@@ -2326,3 +2326,20 @@ release evidence was produced.
 
 - Ratchet/sender-key mismatch: +0 pending authorized README owner correction.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — at-rest/privacy claim audit after README blocker
+
+A bounded `rg` pass over the website's FAQ, status, privacy, getting-started,
+threat-model, and audit pages found no further at-rest overclaim. Every local
+storage statement is either census-tagged (`data-osl-at-rest-claim` with named
+backends) or explicitly limits itself to reviewed source/focused tests; the
+message examples are scoped to supported or explicitly encrypted flows. No
+website correction was justified.
+
+No browser, build, install, runtime, deployment, or release evidence was
+produced.
+
+## Acceptance rows this earns
+
+- At-rest/privacy claim audit +0; no mismatch found.
+- Checklist remains untouched; authority remains **100 / 303**.
