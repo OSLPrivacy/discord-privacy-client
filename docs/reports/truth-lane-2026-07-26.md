@@ -2106,3 +2106,16 @@ Further exact verdicts consumed without promotion:
 - Release reconciliation `7049749` +0 by independent REJECT.
 - Pricing visual truth correction +0.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+The D2 retry-window implementation `9137d4b702a2b553ac23e9dd90b548f666c9bfde`,
+tree `787317fbcbf18ff161606693149e64d67a50e238`, reports Node adoption/contract
+tests 11/11 and adds exact `NoSuchUpload` terminal handling plus a
+crash-before-absence-CAS fixture. No independent exact-object audit verdict is
+recorded yet; it remains **+0 pending audit**, with unknown production R2
+retry/idempotency behavior.
+
+## Acceptance rows this earns
+
+- D2 retry-window implementation +0 pending independent acceptance.
+- Pricing visual correction +0.
+- No checklist edit; authority remains **100 / 303**.
