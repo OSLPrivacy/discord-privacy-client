@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import { rateLimit } from "../src/lib/rate-limit.js";
-import { migratedD1 } from "./helpers/d1.js";
+import { d1All, workerEnv } from "./helpers/workerd.js";
 
 const secret = "s".repeat(48);
 
@@ -54,17 +54,11 @@ describe("cipher-store rate limiter failure policy", () => {
   });
 
   it("never writes a raw or plain-hashed IP into the atomic counter key", async () => {
-    const db = migratedD1();
-    const env = {
-      DB: db.d1,
-      ATTACHMENTS: {} as R2Bucket,
-      RATE_LIMIT: {} as KVNamespace,
-      RATE_LIMIT_HASH_KEY: secret,
-    } as Env;
+    const env = workerEnv({ RATE_LIMIT_HASH_KEY: secret });
     await rateLimit(env, "203.0.113.77", "upload");
-    const stored = db.raw.prepare("SELECT bucket_key FROM rate_counters").all() as Array<{
+    const stored = await d1All<{
       bucket_key: string;
-    }>;
+    }>("SELECT bucket_key FROM rate_counters");
     expect(stored).toHaveLength(1);
     expect(stored[0]!.bucket_key).not.toContain("203.0.113.77");
     expect(stored[0]!.bucket_key).toMatch(/^rl:upload:\d+:[0-9a-f]{32}$/);

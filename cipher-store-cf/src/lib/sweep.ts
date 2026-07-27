@@ -12,6 +12,20 @@ import {
   MAX_LIVE_ATTACHMENT_ROWS,
 } from "./attachment-limits.js";
 
+/// D1 caps a query at 100 bound parameters. Measured against real D1, not
+/// recalled: 100 succeeds, 101 fails with `D1_ERROR: too many SQL variables`.
+///
+/// This is a PLATFORM limit, not a test artifact. `node:sqlite` allows 999, so
+/// the previous shim-backed tests could never have caught it — and the delete
+/// below used to bind one parameter per row plus `expires_at`, i.e. 101 at a
+/// full batch of `ATTACHMENT_SWEEP_BATCH_SIZE`. The sweep therefore worked
+/// under 100 expired rows and failed *entirely* at 100 or more, swallowed by
+/// the `try/catch` in index.ts, so expired attachments were never reclaimed and
+/// the quota filled permanently with no attacker involved.
+///
+/// 90 leaves headroom for the `expires_at` bind and any future predicate.
+export const ATTACHMENT_D1_DELETE_CHUNK_IDS = 90;
+
 export async function sweepExpired(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   // D1 doesn't expose affected-rows directly; do a SELECT-count
@@ -90,11 +104,15 @@ export async function sweepExpiredAttachments(env: Env): Promise<number> {
     for (const row of rows) {
       if (row.upload_id) await removeAttachmentStorage(env, row);
     }
-    const placeholders = rows.map(() => "?").join(", ");
-    await env.DB.prepare(
-      `DELETE FROM attachment_objects
-       WHERE expires_at < ? AND id IN (${placeholders})`,
-    ).bind(now, ...rows.map((row) => row.id)).run();
+    const ids = rows.map((row) => row.id);
+    for (let offset = 0; offset < ids.length; offset += ATTACHMENT_D1_DELETE_CHUNK_IDS) {
+      const chunk = ids.slice(offset, offset + ATTACHMENT_D1_DELETE_CHUNK_IDS);
+      const placeholders = chunk.map(() => "?").join(", ");
+      await env.DB.prepare(
+        `DELETE FROM attachment_objects
+         WHERE expires_at < ? AND id IN (${placeholders})`,
+      ).bind(now, ...chunk).run();
+    }
     deleted += rows.length;
     if (rows.length < ATTACHMENT_SWEEP_BATCH_SIZE) break;
   }

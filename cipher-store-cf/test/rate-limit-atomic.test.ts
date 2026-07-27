@@ -11,7 +11,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import { handleUpload } from "../src/endpoints/blob.js";
 import { rateLimit } from "../src/lib/rate-limit.js";
-import { memoryR2, migratedD1 } from "./helpers/d1.js";
+import {
+  d1All,
+  d1Run,
+  workerEnv,
+} from "./helpers/workerd.js";
 
 const SECRET = "s".repeat(48);
 /// Mirrors the `delete` budget in `src/lib/rate-limit.ts`.
@@ -19,43 +23,8 @@ const DELETE_BUDGET = 600;
 /// Aggregate ceiling for the generic blob table.
 const MAX_LIVE_BLOB_BYTES = 2 * 1024 * 1024 * 1024;
 
-const macrotask = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-/// Workers KV with the property the production comment already concedes:
-/// writes converge eventually, so a read taken while other writes are in flight
-/// returns a stale value. Modelled as "a `put` becomes visible a few event-loop
-/// turns after it resolves", which is the mechanism behind the finding.
-function racingKv(visibilityDelayTurns = 5) {
-  const visible = new Map<string, string>();
-  return {
-    namespace: {
-      get: vi.fn(async (key: string) => {
-        await macrotask();
-        return visible.get(key) ?? null;
-      }),
-      put: vi.fn(async (key: string, value: string) => {
-        void (async () => {
-          for (let turn = 0; turn < visibilityDelayTurns; turn++) await macrotask();
-          visible.set(key, value);
-        })();
-        await macrotask();
-      }),
-    } as unknown as KVNamespace,
-    store: visible,
-  };
-}
-
 function harness() {
-  const db = migratedD1();
-  const r2 = memoryR2();
-  const kv = racingKv();
-  const env = {
-    DB: db.d1,
-    ATTACHMENTS: r2.bucket,
-    RATE_LIMIT: kv.namespace,
-    RATE_LIMIT_HASH_KEY: SECRET,
-  } as Env;
-  return { db, env, kv };
+  return { env: workerEnv({ RATE_LIMIT_HASH_KEY: SECRET }) };
 }
 
 function blobRequest(bytes: Uint8Array): Request {
@@ -83,7 +52,7 @@ describe("mutation rate limiting is atomic (HIGH-2)", () => {
 
     // Before the fix every one of these is admitted: they all read `used = 0`.
     expect(admitted).toBe(DELETE_BUDGET);
-  });
+  }, 20_000);
 
   it("keeps a separate, much smaller budget for multipart session creation", async () => {
     const { env } = harness();
@@ -131,21 +100,19 @@ describe("mutation rate limiting is atomic (HIGH-2)", () => {
   });
 
   it("never records a raw client address in the limiter's durable state", async () => {
-    const { db, env } = harness();
+    const { env } = harness();
     await rateLimit(env, "203.0.113.77", "upload");
-    const dump = JSON.stringify(
-      db.raw.prepare("SELECT * FROM rate_counters").all(),
-    );
+    const dump = JSON.stringify(await d1All<Record<string, unknown>>("SELECT * FROM rate_counters"));
     expect(dump).not.toContain("203.0.113.77");
   });
 });
 
 describe("generic blob storage has a database-level backstop (HIGH-2)", () => {
   it("refuses new blobs once the aggregate byte budget is reached", async () => {
-    const { db, env } = harness();
+    const { env } = harness();
     const now = Math.floor(Date.now() / 1000);
 
-    db.exec(
+    await d1Run(
       "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)",
       new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
       new Uint8Array([1]),

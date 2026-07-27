@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-
-const config = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+import config from "../wrangler.toml?raw";
 
 describe("cipher-store observability boundary", () => {
   it("explicitly disables retained Worker logs and traces", () => {

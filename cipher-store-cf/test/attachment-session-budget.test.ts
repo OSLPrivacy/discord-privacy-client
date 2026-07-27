@@ -17,7 +17,12 @@ import {
   handleAttachmentSessionCreate,
   handleAttachmentUpload,
 } from "../src/endpoints/attachment.js";
-import { memoryR2, migratedD1 } from "./helpers/d1.js";
+import {
+  d1Count,
+  d1First,
+  d1Run,
+  workerEnv,
+} from "./helpers/workerd.js";
 
 const HALF_GIB = 512 * 1024 * 1024;
 const SEVEN_DAYS = 604800;
@@ -33,15 +38,7 @@ function randomToken(): string {
 }
 
 function harness() {
-  const db = migratedD1();
-  const r2 = memoryR2();
-  const env = {
-    DB: db.d1,
-    ATTACHMENTS: r2.bucket,
-    RATE_LIMIT: {} as KVNamespace,
-    RATE_LIMIT_HASH_KEY: "s".repeat(48),
-  } as Env;
-  return { db, r2, env };
+  return { env: workerEnv() };
 }
 
 function sessionRequest(sizeBytes: number, token = randomToken(), ttl = SEVEN_DAYS): Request {
@@ -70,7 +67,7 @@ function directRequest(bytes: Uint8Array): Request {
 
 describe("attachment session admission (HIGH-1)", () => {
   it("bodyless multipart reservations cannot deny service to real uploads", async () => {
-    const { db, env } = harness();
+    const { env } = harness();
 
     // The audit's exact attack: sixteen POSTs, each declaring 512 MiB and a
     // seven-day TTL, with no part body ever uploaded.
@@ -87,7 +84,7 @@ describe("attachment session admission (HIGH-1)", () => {
     expect(direct.status).toBe(201);
 
     // The reserved bytes must not have swallowed the global budget.
-    const reserved = db.count(
+    const reserved = await d1Count(
       "SELECT COALESCE(SUM(size_bytes), 0) FROM attachment_objects WHERE state <> 'ready'",
     );
     expect(reserved).toBeLessThan(8 * 1024 * 1024 * 1024);
@@ -95,14 +92,14 @@ describe("attachment session admission (HIGH-1)", () => {
   });
 
   it("holds an unfinished reservation for minutes, not for the content TTL", async () => {
-    const { db, env } = harness();
+    const { env } = harness();
 
     const created = await handleAttachmentSessionCreate(sessionRequest(HALF_GIB), env);
     expect(created.status).toBe(201);
 
-    const row = db.raw
-      .prepare("SELECT created_at, expires_at FROM attachment_objects LIMIT 1")
-      .get() as { created_at: number; expires_at: number };
+    const row = await d1First<{ created_at: number; expires_at: number }>(
+      "SELECT created_at, expires_at FROM attachment_objects LIMIT 1",
+    );
 
     // Before the fix this is 604800 — one bodyless request parks half a gigabyte
     // of the global budget for a week.
@@ -110,7 +107,7 @@ describe("attachment session admission (HIGH-1)", () => {
   });
 
   it("starts the caller's content TTL only once the upload completes", async () => {
-    const { db, env } = harness();
+    const { env } = harness();
     const token = randomToken();
     const declared = 1024;
 
@@ -150,9 +147,10 @@ describe("attachment session admission (HIGH-1)", () => {
     // treats the upload as a mismatch and deletes it.
     expect(completed.expires_at).toBe(session.expires_at);
 
-    const row = db.raw
-      .prepare("SELECT created_at, expires_at, state FROM attachment_objects WHERE id = ?")
-      .get(session.id) as { created_at: number; expires_at: number; state: string };
+    const row = await d1First<{ created_at: number; expires_at: number; state: string }>(
+      "SELECT created_at, expires_at, state FROM attachment_objects WHERE id = ?",
+      session.id,
+    );
     expect(row.state).toBe("ready");
     // ...and only now does the row actually hold the seven-day content TTL.
     expect(row.expires_at - row.created_at).toBeGreaterThan(MAX_INCOMPLETE_HOLD_SECONDS);
@@ -160,7 +158,7 @@ describe("attachment session admission (HIGH-1)", () => {
   });
 
   it("reclaims an abandoned reservation without touching completed content", async () => {
-    const { db, env } = harness();
+    const { env } = harness();
     const token = randomToken();
 
     const createdResponse = await handleAttachmentSessionCreate(sessionRequest(HALF_GIB, token), env);
@@ -168,7 +166,7 @@ describe("attachment session admission (HIGH-1)", () => {
     const session = (await createdResponse.json()) as { id: string };
 
     // Fast-forward past the incomplete-session deadline.
-    db.exec(
+    await d1Run(
       "UPDATE attachment_objects SET expires_at = ? WHERE id = ?",
       Math.floor(Date.now() / 1000) - 1,
       session.id,
@@ -177,6 +175,6 @@ describe("attachment session admission (HIGH-1)", () => {
     const { sweepExpiredAttachments } = await import("../src/lib/sweep.js");
     const swept = await sweepExpiredAttachments(env);
     expect(swept).toBe(1);
-    expect(db.count("SELECT COUNT(*) FROM attachment_objects")).toBe(0);
+    expect(await d1Count("SELECT COUNT(*) FROM attachment_objects")).toBe(0);
   });
 });

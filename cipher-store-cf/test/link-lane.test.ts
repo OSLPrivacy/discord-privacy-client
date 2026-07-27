@@ -12,13 +12,20 @@ import {
 } from "../src/endpoints/link.js";
 import { sweepExpiredLinks } from "../src/lib/sweep.js";
 import { rateLimit } from "../src/lib/rate-limit.js";
-import { migratedD1 } from "./helpers/d1.js";
 import { sha256Hex } from "../src/lib/digest.js";
 import {
   GRANT_AUDIENCE,
   GRANT_DOMAIN,
   GRANT_SCHEME,
 } from "../src/lib/link-grant.js";
+import {
+  blobBytes,
+  d1All,
+  d1Count,
+  d1First,
+  d1Run,
+  workerEnv,
+} from "./helpers/workerd.js";
 
 const ORIGIN = "https://links.test";
 
@@ -37,31 +44,17 @@ interface Row {
 }
 
 function linkDb() {
-  const db = migratedD1();
-  const kv = new Map<string, string>();
-  const env = {
-    DB: db.d1,
-    RATE_LIMIT: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, val: string) => void kv.set(k, val),
-    },
-    RATE_LIMIT_HASH_KEY: "k".repeat(48),
-  } as unknown as Env;
-  return { env, db, kv };
+  return { env: workerEnv({ RATE_LIMIT_HASH_KEY: "k".repeat(48) }) };
 }
 
 type LinkDbState = ReturnType<typeof linkDb>;
 
-function rowFor(state: LinkDbState, id: string): Row {
-  const row = state.db.raw
-    .prepare("SELECT * FROM view_once_links WHERE id = ?")
-    .get(id) as Row | undefined;
-  if (!row) throw new Error(`missing link row ${id}`);
-  return row;
+async function rowFor(_state: LinkDbState, id: string): Promise<Row> {
+  return d1First<Row>("SELECT * FROM view_once_links WHERE id = ?", id);
 }
 
-function linkCount(state: LinkDbState): number {
-  return state.db.count("SELECT COUNT(*) AS c FROM view_once_links");
+async function linkCount(_state: LinkDbState): Promise<number> {
+  return d1Count("SELECT COUNT(*) AS c FROM view_once_links");
 }
 
 // ---- Grant issuance (stands in for the keyserver) ---------------------
@@ -177,8 +170,8 @@ describe("view-once link creation", () => {
     );
 
     expect(id).toMatch(/^[0-9a-f]{32}$/);
-    const row = rowFor(state, id);
-    expect(row.data).toEqual(body);
+    const row = await rowFor(state, id);
+    expect(blobBytes(row.data)).toEqual(body);
     expect(expires_at - row.created_at).toBe(LINK_TTL_SECONDS);
     // Neither bearer capability is stored, only its digest.
     const dump = JSON.stringify(row, (_k, v) =>
@@ -222,7 +215,7 @@ describe("view-once link creation", () => {
     // logless, self-deleting file host.
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: "link_creation_unconfigured" });
-    expect(linkCount(state)).toBe(0);
+    expect(await linkCount(state)).toBe(0);
   });
 
   it("accepts only the 1-hour TTL the sender warning promises", async () => {
@@ -246,7 +239,7 @@ describe("view-once link creation", () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ error: "bad_ttl" });
     }
-    expect(linkCount(state)).toBe(0);
+    expect(await linkCount(state)).toBe(0);
   });
 
   it("rejects an oversized or degenerate payload", async () => {
@@ -283,7 +276,7 @@ describe("view-once link creation", () => {
       state.env,
     );
     expect(tiny.status).toBe(400);
-    expect(linkCount(state)).toBe(0);
+    expect(await linkCount(state)).toBe(0);
   });
 
   it("requires the two capabilities to be distinct", async () => {
@@ -321,7 +314,7 @@ describe("a crawler cannot burn a view", () => {
     );
     expect(res.status).toBe(404);
     // Crucially, nothing was consumed: the link is untouched.
-    const row = rowFor(state, id);
+    const row = await rowFor(state, id);
     expect(row.data).not.toBeNull();
     expect(row.reserved_until).toBeNull();
     expect(row.retrieved_at).toBeNull();
@@ -342,7 +335,7 @@ describe("a crawler cannot burn a view", () => {
       );
       expect(res.status).toBe(404);
     }
-    expect(rowFor(state, id).reserved_until).toBeNull();
+    expect((await rowFor(state, id)).reserved_until).toBeNull();
   });
 
   it("does not release ciphertext to a wrong token, and says nothing about why", async () => {
@@ -363,7 +356,7 @@ describe("a crawler cannot burn a view", () => {
     );
     expect(wrong.status).toBe(missing.status);
     expect(await wrong.json()).toEqual(await missing.json());
-    expect(rowFor(state, id).retrieval_count).toBe(0);
+    expect((await rowFor(state, id)).retrieval_count).toBe(0);
   });
 });
 
@@ -380,7 +373,7 @@ describe("the burn is not on fetch", () => {
     expect(new Uint8Array(await first.arrayBuffer())).toEqual(body);
     expect(first.headers.get("cache-control")).toBe("no-store");
 
-    const row = rowFor(state, id);
+    const row = await rowFor(state, id);
     expect(row.retrieved_at).not.toBeNull();
     expect(row.reserved_until).toBe(row.retrieved_at! + RESERVATION_SECONDS);
     expect(row.retrieval_count).toBe(1);
@@ -389,7 +382,7 @@ describe("the burn is not on fetch", () => {
     const second = await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
     expect(second.status).toBe(200);
     expect(new Uint8Array(await second.arrayBuffer())).toEqual(body);
-    expect(rowFor(state, id).retrieval_count).toBe(2);
+    expect((await rowFor(state, id)).retrieval_count).toBe(2);
   });
 
   it("refuses once the reservation window has closed, even before the sweep", async () => {
@@ -400,7 +393,7 @@ describe("the burn is not on fetch", () => {
     await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
 
     // Wind the reservation into the past without running the sweep.
-    state.db.exec(
+    await d1Run(
       "UPDATE view_once_links SET reserved_until = ? WHERE id = ?",
       Math.floor(Date.now() / 1000) - 1,
       id,
@@ -408,8 +401,8 @@ describe("the burn is not on fetch", () => {
     const res = await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
     expect(res.status).toBe(404);
     // Destroyed on sight rather than waiting for the cron.
-    expect(rowFor(state, id).data).toBeNull();
-    expect(rowFor(state, id).burned_at).not.toBeNull();
+    expect((await rowFor(state, id)).data).toBeNull();
+    expect((await rowFor(state, id)).burned_at).not.toBeNull();
   });
 
   it("is destroyed by the sweep regardless of any client confirmation", async () => {
@@ -422,20 +415,20 @@ describe("the burn is not on fetch", () => {
 
     const now = Math.floor(Date.now() / 1000);
     // Reservation closed for one; TTL elapsed for the other.
-    state.db.exec(
+    await d1Run(
       "UPDATE view_once_links SET reserved_until = ? WHERE id = ?",
       now - 1,
       retrieved.id,
     );
-    state.db.exec(
+    await d1Run(
       "UPDATE view_once_links SET expires_at = ? WHERE id = ?",
       now - 1,
       untouched.id,
     );
 
     expect(await sweepExpiredLinks(state.env)).toBe(2);
-    expect(rowFor(state, retrieved.id).data).toBeNull();
-    expect(rowFor(state, untouched.id).data).toBeNull();
+    expect((await rowFor(state, retrieved.id)).data).toBeNull();
+    expect((await rowFor(state, untouched.id)).data).toBeNull();
   });
 
   it("keeps a content-free receipt, then purges it a day after expiry", async () => {
@@ -444,25 +437,25 @@ describe("the burn is not on fetch", () => {
     state.env.LINK_GRANT_PUBKEY_B64 = iss.pubB64;
     const { id } = await createLink(state.env, await grantHeader(iss.pair));
     await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
-    state.db.exec(
+    await d1Run(
       "UPDATE view_once_links SET reserved_until = ? WHERE id = ?",
       Math.floor(Date.now() / 1000) - 1,
       id,
     );
     await sweepExpiredLinks(state.env);
 
-    const receipt = rowFor(state, id);
+    const receipt = await rowFor(state, id);
     expect(receipt.data).toBeNull();
     expect(receipt.size_bytes).toBe(0);
     expect(receipt.retrieved_at).not.toBeNull();
 
-    state.db.exec(
+    await d1Run(
       "UPDATE view_once_links SET expires_at = ? WHERE id = ?",
       Math.floor(Date.now() / 1000) - 25 * 60 * 60,
       id,
     );
     await sweepExpiredLinks(state.env);
-    expect(linkCount(state)).toBe(0);
+    expect(await linkCount(state)).toBe(0);
   });
 
   it("lets the page burn early, and ignores a burn it cannot authenticate", async () => {
@@ -484,7 +477,7 @@ describe("the burn is not on fetch", () => {
 
     const wrong = await handleLinkBurn(burnRequest("e".repeat(32)), state.env, id);
     expect(wrong.status).toBe(204);
-    expect(rowFor(state, id).data).not.toBeNull();
+    expect((await rowFor(state, id)).data).not.toBeNull();
 
     const crossOrigin = await handleLinkBurn(
       burnRequest(FETCH_TOKEN, "https://evil.test"),
@@ -492,11 +485,11 @@ describe("the burn is not on fetch", () => {
       id,
     );
     expect(crossOrigin.status).toBe(204);
-    expect(rowFor(state, id).data).not.toBeNull();
+    expect((await rowFor(state, id)).data).not.toBeNull();
 
     const real = await handleLinkBurn(burnRequest(FETCH_TOKEN), state.env, id);
     expect(real.status).toBe(204);
-    expect(rowFor(state, id).data).toBeNull();
+    expect((await rowFor(state, id)).data).toBeNull();
   });
 });
 
@@ -539,7 +532,7 @@ describe("sender-facing status", () => {
     const iss = await issuer();
     state.env.LINK_GRANT_PUBKEY_B64 = iss.pubB64;
     const { id } = await createLink(state.env, await grantHeader(iss.pair));
-    state.db.exec(
+    await d1Run(
       "UPDATE view_once_links SET expires_at = ? WHERE id = ?",
       Math.floor(Date.now() / 1000) - 1,
       id,
@@ -584,7 +577,7 @@ describe("sender-facing status", () => {
       id,
     );
     expect(revoke.status).toBe(404);
-    expect(rowFor(state, id).data).not.toBeNull();
+    expect((await rowFor(state, id)).data).not.toBeNull();
   });
 
   it("lets the sender revoke before anyone retrieves", async () => {
@@ -602,7 +595,7 @@ describe("sender-facing status", () => {
       id,
     );
     expect(res.status).toBe(204);
-    expect(rowFor(state, id).data).toBeNull();
+    expect((await rowFor(state, id)).data).toBeNull();
     const after = await handleLinkFetch(fetchRequest(id, FETCH_TOKEN), state.env, id);
     expect(after.status).toBe(404);
   });
@@ -612,16 +605,7 @@ describe("link rate-limit buckets", () => {
   /// `link-create` is a mutation bucket, so it is counted atomically in D1;
   /// `link-fetch` stays on KV and fails open. Both stores are provided here.
   function limiterEnv() {
-    const kv = new Map<string, string>();
-    const db = migratedD1();
-    return {
-      DB: db.d1,
-      RATE_LIMIT: {
-        get: async (k: string) => kv.get(k) ?? null,
-        put: async (k: string, v: string) => void kv.set(k, v),
-      },
-      RATE_LIMIT_HASH_KEY: "k".repeat(48),
-    } as unknown as Env;
+    return workerEnv({ RATE_LIMIT_HASH_KEY: "k".repeat(48) });
   }
 
   it("caps link retrieval at 120/hr, far below the 3600/hr blob fetch budget", async () => {
@@ -663,15 +647,13 @@ describe("link rate-limit buckets", () => {
 
   it("never puts a raw IP in a link bucket key, in either store", async () => {
     const keys: string[] = [];
-    const db = migratedD1();
-    const env = {
-      DB: db.d1,
+    const env = workerEnv({
       RATE_LIMIT: {
         get: async () => null,
         put: async (k: string) => void keys.push(k),
-      },
+      } as unknown as KVNamespace,
       RATE_LIMIT_HASH_KEY: "k".repeat(48),
-    } as unknown as Env;
+    });
     await rateLimit(env, "203.0.113.12", "link-fetch");
     await rateLimit(env, "203.0.113.12", "link-create");
 
@@ -680,9 +662,9 @@ describe("link rate-limit buckets", () => {
     expect(keys[0]).toMatch(/^rl:link-fetch:\d+:[0-9a-f]{32}$/);
 
     // link-create is the atomic D1 path and must be equally opaque.
-    const counters = db.raw
-      .prepare("SELECT bucket_key FROM rate_counters")
-      .all() as Array<{ bucket_key: string }>;
+    const counters = await d1All<{ bucket_key: string }>(
+      "SELECT bucket_key FROM rate_counters",
+    );
     expect(counters).toHaveLength(1);
     expect(counters[0]!.bucket_key).not.toContain("203.0.113.12");
     expect(counters[0]!.bucket_key).toMatch(/^rl:link-create:\d+:[0-9a-f]{32}$/);

@@ -7,12 +7,13 @@
 /// whole time — the double could not fail, so it was decoration rather than
 /// evidence.
 ///
-/// The double is now strict. A guard nothing exercises is in exactly the same
-/// position the old double was, so these tests starve it of valid input and
-/// prove it actually fires.
+/// These checks now run against the real pool-workers R2 binding. A guard
+/// nothing exercises is in exactly the same position the old double was, so
+/// these tests starve R2 of valid input and prove the runtime rule actually
+/// fires. The describe title is historical and intentionally preserved.
 
 import { describe, expect, it } from "vitest";
-import { memoryR2 } from "./helpers/d1.js";
+import { env } from "cloudflare:test";
 
 function unknownLengthStream(): ReadableStream<Uint8Array> {
   // A pipeThrough result carries no length — this is the exact shape the
@@ -27,40 +28,36 @@ function unknownLengthStream(): ReadableStream<Uint8Array> {
 
 describe("the R2 double refuses what production refuses", () => {
   it("rejects a put body with no known length", async () => {
-    const r2 = memoryR2();
     await expect(
-      r2.bucket.put("attachments/x", unknownLengthStream() as never),
+      env.ATTACHMENTS.put("attachments/x", unknownLengthStream()),
     ).rejects.toThrow(/must have a known length/);
-    expect(r2.objects.size).toBe(0);
+    expect(await env.ATTACHMENTS.head("attachments/x")).toBeNull();
   });
 
   it("rejects a multipart part with no known length", async () => {
-    const r2 = memoryR2();
-    const upload = await r2.bucket.createMultipartUpload("attachments/y");
+    const upload = await env.ATTACHMENTS.createMultipartUpload("attachments/y");
     await expect(
-      upload.uploadPart(1, unknownLengthStream() as never),
+      upload.uploadPart(1, unknownLengthStream()),
     ).rejects.toThrow(/must have a known length/);
   });
 
   it("still accepts a known-length body, so the guard is not simply refusing everything", async () => {
-    const r2 = memoryR2();
-    const stored = await r2.bucket.put("attachments/z", new Uint8Array([9, 9]));
+    const stored = await env.ATTACHMENTS.put("attachments/z", new Uint8Array([9, 9]));
     expect(stored?.size).toBe(2);
-    expect(r2.objects.get("attachments/z")).toEqual(new Uint8Array([9, 9]));
+    expect(await env.ATTACHMENTS.head("attachments/z")).toMatchObject({ size: 2 });
   });
 
   it("honours onlyIf etagDoesNotMatch instead of silently overwriting", async () => {
-    const r2 = memoryR2();
-    const first = await r2.bucket.put("attachments/dup", new Uint8Array([1]), {
+    const first = await env.ATTACHMENTS.put("attachments/dup", new Uint8Array([1]), {
       onlyIf: { etagDoesNotMatch: "*" },
     });
     expect(first).not.toBeNull();
     // A real conditional put fails the precondition here; the endpoint reads a
     // null result as an id collision rather than a successful overwrite.
-    const second = await r2.bucket.put("attachments/dup", new Uint8Array([2]), {
+    const second = await env.ATTACHMENTS.put("attachments/dup", new Uint8Array([2]), {
       onlyIf: { etagDoesNotMatch: "*" },
     });
     expect(second).toBeNull();
-    expect(r2.objects.get("attachments/dup")).toEqual(new Uint8Array([1]));
+    expect(await env.ATTACHMENTS.head("attachments/dup")).toMatchObject({ size: 1 });
   });
 });

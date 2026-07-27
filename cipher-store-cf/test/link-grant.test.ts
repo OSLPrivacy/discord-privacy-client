@@ -7,6 +7,7 @@ import {
   MAX_GRANT_LIFETIME_SECONDS,
   verifyLinkGrant,
 } from "../src/lib/link-grant.js";
+import { workerEnv } from "./helpers/workerd.js";
 
 function b64u(bytes: Uint8Array): string {
   let s = "";
@@ -50,16 +51,8 @@ async function sign(
   return `${GRANT_SCHEME} ${b64u(payload)}.${b64u(sig)}`;
 }
 
-function testEnv(pubB64?: string): { env: Env; kv: Map<string, string> } {
-  const kv = new Map<string, string>();
-  const env = {
-    RATE_LIMIT: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-    },
-    ...(pubB64 ? { LINK_GRANT_PUBKEY_B64: pubB64 } : {}),
-  } as unknown as Env;
-  return { env, kv };
+function testEnv(pubB64?: string): Env {
+  return workerEnv(pubB64 ? { LINK_GRANT_PUBKEY_B64: pubB64 } : {});
 }
 
 function request(auth?: string): Request {
@@ -74,7 +67,7 @@ const now = () => Math.floor(Date.now() / 1000);
 describe("link-creation grants", () => {
   it("accepts a fresh, correctly signed, anonymous grant", async () => {
     const iss = await issuer();
-    const { env } = testEnv(iss.pubB64);
+    const env = testEnv(iss.pubB64);
     const auth = await sign(iss.pair, {
       aud: GRANT_AUDIENCE,
       exp: now() + 120,
@@ -85,7 +78,7 @@ describe("link-creation grants", () => {
 
   it("carries no identity: the grant claims are aud, exp and jti only", async () => {
     const iss = await issuer();
-    const { env } = testEnv(iss.pubB64);
+    const env = testEnv(iss.pubB64);
     const claims = { aud: GRANT_AUDIENCE, exp: now() + 120, jti: randomJti() };
     // The cipher-store must not learn who created a link. If a future
     // change adds a user id here, this test is where it should hurt.
@@ -96,7 +89,7 @@ describe("link-creation grants", () => {
 
   it("refuses everything when no issuer key is configured", async () => {
     const iss = await issuer();
-    const { env } = testEnv();
+    const env = testEnv();
     const auth = await sign(iss.pair, {
       aud: GRANT_AUDIENCE,
       exp: now() + 120,
@@ -108,7 +101,7 @@ describe("link-creation grants", () => {
 
   it("rejects a missing or malformed authorization header", async () => {
     const iss = await issuer();
-    const { env } = testEnv(iss.pubB64);
+    const env = testEnv(iss.pubB64);
     for (const auth of [
       undefined,
       "Bearer abc",
@@ -124,7 +117,7 @@ describe("link-creation grants", () => {
   it("rejects a grant signed by a different key", async () => {
     const good = await issuer();
     const bad = await issuer();
-    const { env } = testEnv(good.pubB64);
+    const env = testEnv(good.pubB64);
     const auth = await sign(bad.pair, {
       aud: GRANT_AUDIENCE,
       exp: now() + 120,
@@ -138,7 +131,7 @@ describe("link-creation grants", () => {
 
   it("rejects a grant signed under a different domain separator", async () => {
     const iss = await issuer();
-    const { env } = testEnv(iss.pubB64);
+    const env = testEnv(iss.pubB64);
     const auth = await sign(
       iss.pair,
       { aud: GRANT_AUDIENCE, exp: now() + 120, jti: randomJti() },
@@ -152,7 +145,7 @@ describe("link-creation grants", () => {
 
   it("rejects a wrong audience, an expired grant, and an over-long lifetime", async () => {
     const iss = await issuer();
-    const { env } = testEnv(iss.pubB64);
+    const env = testEnv(iss.pubB64);
     const wrongAud = await sign(iss.pair, {
       aud: "something-else",
       exp: now() + 120,
@@ -183,7 +176,7 @@ describe("link-creation grants", () => {
 
   it("is single-use: the same grant cannot mint two links", async () => {
     const iss = await issuer();
-    const { env, kv } = testEnv(iss.pubB64);
+    const env = testEnv(iss.pubB64);
     const auth = await sign(iss.pair, {
       aud: GRANT_AUDIENCE,
       exp: now() + 120,
@@ -194,8 +187,9 @@ describe("link-creation grants", () => {
       code: "grant_replay",
     });
     // The replay record is transient and carries no identity.
-    expect([...kv.keys()]).toHaveLength(1);
-    expect([...kv.keys()][0]).toMatch(/^lg:[0-9a-f]{32}$/);
+    const replayKeys = await env.RATE_LIMIT.list({ prefix: "lg:" });
+    expect(replayKeys.keys).toHaveLength(1);
+    expect(replayKeys.keys[0]!.name).toMatch(/^lg:[0-9a-f]{32}$/);
   });
 
   it("fails closed when the replay store is unavailable", async () => {

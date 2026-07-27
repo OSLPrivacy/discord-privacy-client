@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
 import {
   handleAttachmentComplete,
@@ -10,6 +10,16 @@ import {
   MAX_ATTACHMENT_PART_BYTES,
   MAX_DIRECT_ATTACHMENT_BYTES,
 } from "../src/endpoints/attachment.js";
+import {
+  MAX_LIVE_ATTACHMENT_BYTES,
+  MAX_SEALED_ATTACHMENT_BYTES,
+} from "../src/lib/attachment-limits.js";
+import {
+  d1Count,
+  d1First,
+  d1Run,
+  workerEnv,
+} from "./helpers/workerd.js";
 
 interface Row {
   object_key: string;
@@ -21,61 +31,34 @@ interface Row {
   upload_id: string | null;
 }
 
-function testEnv(options: { insertChanges?: number } = {}) {
-  const rows = new Map<string, Row>();
-  const objects = new Map<string, Uint8Array>();
-  const put = vi.fn(async (key: string, value: ReadableStream) => {
-    const bytes = new Uint8Array(await new Response(value).arrayBuffer());
-    objects.set(key, bytes);
-    return { key, size: bytes.byteLength } as R2Object;
-  });
-  const get = vi.fn(async (key: string) => {
-    const bytes = objects.get(key);
-    if (!bytes) return null;
-    return {
-      key,
-      size: bytes.byteLength,
-      body: new Response(bytes).body!,
-    } as R2ObjectBody;
-  });
-  const head = vi.fn(async (key: string) => {
-    const bytes = objects.get(key);
-    return bytes ? { key, size: bytes.byteLength } as R2Object : null;
-  });
-  const remove = vi.fn(async (key: string | string[]) => {
-    for (const item of Array.isArray(key) ? key : [key]) objects.delete(item);
-  });
-  const prepare = vi.fn((sql: string) => ({
-    bind: (...values: unknown[]) => ({
-      run: async () => {
-        if (sql.startsWith("INSERT INTO attachment_objects")) {
-          if (options.insertChanges !== 0) {
-            const [
-              id, objectKey, size, expiresAt, contentExpiresAt, _createdAt, tokenDigest, state, uploadId,
-            ] = values;
-            rows.set(String(id), {
-              object_key: String(objectKey),
-              size_bytes: Number(size),
-              expires_at: Number(expiresAt),
-              content_expires_at: contentExpiresAt === null ? null : Number(contentExpiresAt),
-              fetch_token_sha256_hex: String(tokenDigest),
-              state: state as Row["state"],
-              upload_id: uploadId === null ? null : String(uploadId),
-            });
-          }
-        } else if (sql.startsWith("DELETE FROM attachment_objects")) {
-          rows.delete(String(values[0]));
-        }
-        return { success: true, meta: { changes: options.insertChanges ?? 1 } };
-      },
-      first: async <T>() => (rows.get(String(values[0])) ?? null) as T | null,
-    }),
-  }));
-  const env = {
-    DB: { prepare },
-    ATTACHMENTS: { put, get, head, delete: remove },
-  } as unknown as Env;
-  return { env, rows, objects, put, get, remove };
+async function attachmentRow(id: string): Promise<Row> {
+  return d1First<Row>(
+    `SELECT object_key, size_bytes, expires_at, content_expires_at,
+            fetch_token_sha256_hex, state, upload_id
+       FROM attachment_objects WHERE id = ? LIMIT 1`,
+    id,
+  );
+}
+
+async function insertCapacityRows(): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const rowSize = MAX_SEALED_ATTACHMENT_BYTES - 1024 * 1024;
+  const rows = Math.ceil(MAX_LIVE_ATTACHMENT_BYTES / rowSize);
+  for (let index = 0; index < rows; index++) {
+    await d1Run(
+      `INSERT INTO attachment_objects
+       (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
+        fetch_token_sha256_hex, state, upload_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', NULL)`,
+      index.toString(16).padStart(32, "0"),
+      `attachments/capacity-${index}`,
+      rowSize,
+      now + 3600,
+      now + 3600,
+      now,
+      "a".repeat(64),
+    );
+  }
 }
 
 const token = "0123456789abcdef0123456789abcdef";
@@ -98,26 +81,30 @@ function uploadRequest(body: BodyInit, contentLength?: number): Request {
 
 describe("R2 attachment transport", () => {
   it("streams upload and fetch while D1 stores only opaque transport metadata", async () => {
-    const state = testEnv();
+    const env = workerEnv();
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const uploaded = await handleAttachmentUpload(
       uploadRequest(bytes, bytes.byteLength),
-      state.env,
+      env,
     );
     expect(uploaded.status).toBe(201);
     const result = await uploaded.json() as { id: string; size_bytes: number };
     expect(result.id).toMatch(/^[0-9a-f]{32}$/);
     expect(result.size_bytes).toBe(bytes.byteLength);
-    expect(state.put).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify([...state.rows.values()])).not.toContain("filename");
-    expect(JSON.stringify([...state.rows.values()])).not.toContain(token);
-    expect([...state.rows.values()][0]?.fetch_token_sha256_hex).toMatch(/^[0-9a-f]{64}$/);
+    const row = await attachmentRow(result.id);
+    expect(row.object_key).toBe(`attachments/${result.id}`);
+    expect(row.size_bytes).toBe(bytes.byteLength);
+    expect(row.state).toBe("ready");
+    expect(JSON.stringify(row)).not.toContain("filename");
+    expect(JSON.stringify(row)).not.toContain(token);
+    expect(row.fetch_token_sha256_hex).toMatch(/^[0-9a-f]{64}$/);
+    expect(await env.ATTACHMENTS.head(row.object_key)).toMatchObject({ size: bytes.byteLength });
 
     const fetched = await handleAttachmentFetch(
       new Request(`https://cipher.test/v1/attachment/${result.id}`, {
         headers: { "x-osl-fetch-token": token },
       }),
-      state.env,
+      env,
       result.id,
     );
     expect(fetched.status).toBe(200);
@@ -130,22 +117,40 @@ describe("R2 attachment transport", () => {
     // result to R2. workerd requires a streamed put/uploadPart body to have a
     // known length and rejects a piped stream with "Provided readable stream
     // must have a known length", so every attachment upload 500'd on the real
-    // runtime — while this suite passed, because the R2 double below accepts
-    // anything. Asserting the *shape* handed to R2 is what a test double can
-    // still meaningfully check; the end-to-end proof is
-    // scripts/post-deploy-probe.mjs against a real workerd.
-    const state = testEnv();
-    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
-    const uploaded = await handleAttachmentUpload(uploadRequest(bytes, bytes.byteLength), state.env);
+    // runtime. This now runs against real R2 in workerd: if the source hands R2
+    // the transformed stream instead of buffered bytes, this request fails.
+    const env = workerEnv();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5]));
+        controller.close();
+      },
+    }).pipeThrough(new TransformStream<Uint8Array, Uint8Array>());
+    const uploaded = await handleAttachmentUpload(uploadRequest(stream), env);
     expect(uploaded.status).toBe(201);
-
-    const body = state.put.mock.calls[0]?.[1];
-    expect(body).toBeInstanceOf(Uint8Array);
-    expect(body).not.toBeInstanceOf(ReadableStream);
+    const result = await uploaded.json() as { id: string; size_bytes: number };
+    const row = await attachmentRow(result.id);
+    expect(result.size_bytes).toBe(5);
+    expect(await env.ATTACHMENTS.head(row.object_key)).toMatchObject({ size: 5 });
   });
 
   it("rejects oversized chunked bodies authoritatively and removes partial R2 state", async () => {
-    const state = testEnv();
+    const real = workerEnv();
+    const touchedKeys: string[] = [];
+    const env = workerEnv({
+      ATTACHMENTS: {
+        put: async (key: string, value: unknown, options?: R2PutOptions) => {
+          touchedKeys.push(key);
+          return real.ATTACHMENTS.put(key, value as never, options);
+        },
+        get: real.ATTACHMENTS.get.bind(real.ATTACHMENTS),
+        head: real.ATTACHMENTS.head.bind(real.ATTACHMENTS),
+        delete: real.ATTACHMENTS.delete.bind(real.ATTACHMENTS),
+        createMultipartUpload: real.ATTACHMENTS.createMultipartUpload.bind(real.ATTACHMENTS),
+        resumeMultipartUpload: real.ATTACHMENTS.resumeMultipartUpload.bind(real.ATTACHMENTS),
+      } as unknown as R2Bucket,
+    });
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new Uint8Array(MAX_DIRECT_ATTACHMENT_BYTES));
@@ -153,22 +158,23 @@ describe("R2 attachment transport", () => {
         controller.close();
       },
     });
-    const response = await handleAttachmentUpload(uploadRequest(stream), state.env);
+    const response = await handleAttachmentUpload(uploadRequest(stream), env);
     expect(response.status).toBe(413);
-    expect(state.objects.size).toBe(0);
-    expect(state.rows.size).toBe(0);
+    expect(touchedKeys).toHaveLength(0);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
   });
 
   it("does not reveal or delete an object with a mismatched capability", async () => {
-    const state = testEnv();
-    const uploaded = await handleAttachmentUpload(uploadRequest(new Uint8Array([9])), state.env);
+    const env = workerEnv();
+    const uploaded = await handleAttachmentUpload(uploadRequest(new Uint8Array([9])), env);
     const { id } = await uploaded.json() as { id: string };
+    const row = await attachmentRow(id);
     const wrong = "ffffffffffffffffffffffffffffffff";
     const fetchResponse = await handleAttachmentFetch(
       new Request(`https://cipher.test/v1/attachment/${id}`, {
         headers: { "x-osl-fetch-token": wrong },
       }),
-      state.env,
+      env,
       id,
     );
     expect(fetchResponse.status).toBe(403);
@@ -177,157 +183,62 @@ describe("R2 attachment transport", () => {
         method: "DELETE",
         headers: { "x-osl-fetch-token": wrong },
       }),
-      state.env,
+      env,
       id,
     );
     expect(deleteResponse.status).toBe(403);
-    expect(state.objects.size).toBe(1);
+    expect(await env.ATTACHMENTS.head(row.object_key)).not.toBeNull();
+    expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects WHERE id = ?", id)).toBe(1);
   });
 
   it("deletes the R2 object before its metadata", async () => {
-    const state = testEnv();
-    const uploaded = await handleAttachmentUpload(uploadRequest(new Uint8Array([7])), state.env);
+    const env = workerEnv();
+    const uploaded = await handleAttachmentUpload(uploadRequest(new Uint8Array([7])), env);
     const { id } = await uploaded.json() as { id: string };
+    const row = await attachmentRow(id);
     const response = await handleAttachmentDelete(
       new Request(`https://cipher.test/v1/attachment/${id}`, {
         method: "DELETE",
         headers: { "x-osl-fetch-token": token },
       }),
-      state.env,
+      env,
       id,
     );
     expect(response.status).toBe(204);
-    expect(state.objects.size).toBe(0);
-    expect(state.rows.size).toBe(0);
+    expect(await env.ATTACHMENTS.head(row.object_key)).toBeNull();
+    expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects WHERE id = ?", id)).toBe(0);
   });
 
   it("removes the R2 object and returns a bounded failure when D1 quota rejects the insert", async () => {
-    const state = testEnv({ insertChanges: 0 });
+    await insertCapacityRows();
+    const real = workerEnv();
+    const deletedKeys: string[] = [];
+    const env = workerEnv({
+      ATTACHMENTS: {
+        put: real.ATTACHMENTS.put.bind(real.ATTACHMENTS),
+        get: real.ATTACHMENTS.get.bind(real.ATTACHMENTS),
+        head: real.ATTACHMENTS.head.bind(real.ATTACHMENTS),
+        delete: async (key: string | string[]) => {
+          deletedKeys.push(...(Array.isArray(key) ? key : [key]));
+          return real.ATTACHMENTS.delete(key);
+        },
+        createMultipartUpload: real.ATTACHMENTS.createMultipartUpload.bind(real.ATTACHMENTS),
+        resumeMultipartUpload: real.ATTACHMENTS.resumeMultipartUpload.bind(real.ATTACHMENTS),
+      } as unknown as R2Bucket,
+    });
     const response = await handleAttachmentUpload(
       uploadRequest(new Uint8Array([4, 5, 6])),
-      state.env,
+      env,
     );
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "storage_capacity" });
-    expect(state.objects.size).toBe(0);
-    expect(state.rows.size).toBe(0);
+    expect(deletedKeys).toHaveLength(1);
+    expect(await real.ATTACHMENTS.head(deletedKeys[0]!)).toBeNull();
+    expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects")).toBeGreaterThan(0);
   });
 
   it("assembles a bounded multipart session and exposes it only after completion", async () => {
-    const parts = new Map<number, { bytes: Uint8Array; etag: string }>();
-    const rows = new Map<string, Row>();
-    const objects = new Map<string, Uint8Array>();
-    let currentId = "";
-    const statements: Array<{ run: () => Promise<unknown> }> = [];
-    const prepare = vi.fn((rawSql: string) => {
-      const sql = rawSql.replace(/\s+/g, " ").trim();
-      return {
-        // Unbound aggregate probe used by the reservation-pool headroom check.
-        // This fake holds a single session, so it is never near the pool cap;
-        // the pool itself is proved against a real database in
-        // test/attachment-session-budget.test.ts.
-        first: async <T>() => ({ rows_used: 0, bytes_used: 0 }) as T,
-        bind: (...values: unknown[]) => {
-          const statement = {
-            first: async <T>() => (rows.get(String(values[0])) ?? null) as T | null,
-            all: async <T>() => ({
-              results: [...parts.entries()].sort(([a], [b]) => a - b).map(([part_number, part]) => ({
-                part_number,
-                size_bytes: part.bytes.byteLength,
-                etag: part.etag,
-              })) as T[],
-            }),
-            run: async () => {
-              let changes = 0;
-              if (sql.startsWith("INSERT INTO attachment_objects")) {
-                const [
-                  id, objectKey, size, expiresAt, contentExpiresAt, _createdAt, digest, state, uploadId,
-                ] = values;
-                currentId = String(id);
-                rows.set(currentId, {
-                  object_key: String(objectKey),
-                  size_bytes: Number(size),
-                  expires_at: Number(expiresAt),
-                  content_expires_at: contentExpiresAt === null ? null : Number(contentExpiresAt),
-                  fetch_token_sha256_hex: String(digest),
-                  state: state as Row["state"],
-                  upload_id: String(uploadId),
-                });
-                changes = 1;
-              } else if (sql.startsWith("INSERT INTO attachment_parts")) {
-                changes = 1;
-              } else if (sql.includes("SET state = 'completing'")) {
-                const row = rows.get(String(values[0]));
-                if (row?.state === "uploading") { row.state = "completing"; changes = 1; }
-              } else if (sql.includes("SET state = 'ready'")) {
-                // Completion now also stamps the content expiry, so the bound
-                // id has moved to the second position.
-                const row = rows.get(String(values[1]));
-                if (row?.state === "completing") {
-                  row.state = "ready";
-                  row.upload_id = null;
-                  row.expires_at = Number(values[0]);
-                  changes = 1;
-                }
-              } else if (sql.includes("SET expires_at = ?")) {
-                // The reclaim deadline sliding forward on accepted progress.
-                const row = rows.get(String(values[1]));
-                if (row?.state === "uploading" && row.expires_at < Number(values[2])) {
-                  row.expires_at = Number(values[0]);
-                  changes = 1;
-                }
-              } else if (sql.startsWith("DELETE FROM attachment_parts")) {
-                parts.clear();
-                changes = 1;
-              }
-              return { success: true, meta: { changes } };
-            },
-          };
-          statements.push(statement);
-          return statement;
-        },
-      };
-    });
-    const multipart = {
-      uploadId: "opaque-upload-id",
-      uploadPart: vi.fn(async (partNumber: number, body: ReadableStream) => {
-        const bytes = new Uint8Array(await new Response(body).arrayBuffer());
-        const etag = `etag-${partNumber}`;
-        parts.set(partNumber, { bytes, etag });
-        return { partNumber, etag };
-      }),
-      complete: vi.fn(async (receipts: R2UploadedPart[]) => {
-        const size = receipts.reduce((sum, receipt) => sum + parts.get(receipt.partNumber)!.bytes.byteLength, 0);
-        const combined = new Uint8Array(size);
-        let offset = 0;
-        for (const receipt of receipts) {
-          const bytes = parts.get(receipt.partNumber)!.bytes;
-          combined.set(bytes, offset);
-          offset += bytes.byteLength;
-        }
-        objects.set(`attachments/${currentId}`, combined);
-        return { key: `attachments/${currentId}`, size } as R2Object;
-      }),
-      abort: vi.fn(async () => undefined),
-    };
-    const env = {
-      DB: {
-        prepare,
-        batch: async (batch: Array<{ run: () => Promise<unknown> }>) => Promise.all(batch.map((item) => item.run())),
-      },
-      ATTACHMENTS: {
-        createMultipartUpload: vi.fn(async () => multipart),
-        resumeMultipartUpload: vi.fn(() => multipart),
-        get: vi.fn(async (key: string) => {
-          const bytes = objects.get(key);
-          return bytes ? { key, size: bytes.byteLength, body: new Response(bytes).body! } as R2ObjectBody : null;
-        }),
-        head: vi.fn(async (key: string) => {
-          const bytes = objects.get(key);
-          return bytes ? { key, size: bytes.byteLength } as R2Object : null;
-        }),
-      },
-    } as unknown as Env;
+    const env = workerEnv();
 
     const session = await handleAttachmentSessionCreate(new Request("https://cipher.test/v1/attachment/session", {
       method: "POST",
@@ -339,7 +250,7 @@ describe("R2 attachment transport", () => {
     }), env);
     expect(session.status).toBe(201);
     const { id } = await session.json() as { id: string };
-    expect(JSON.stringify([...rows.values()])).not.toContain(token);
+    expect(JSON.stringify(await attachmentRow(id))).not.toContain(token);
 
     const beforeComplete = await handleAttachmentFetch(new Request(`https://cipher.test/v1/attachment/${id}`, {
       headers: { "x-osl-fetch-token": token },
@@ -367,9 +278,14 @@ describe("R2 attachment transport", () => {
       { method: "POST", headers: { "x-osl-fetch-token": token } },
     ), env, id);
     expect(completed.status).toBe(201);
+    const row = await attachmentRow(id);
+    expect(row.state).toBe("ready");
+    expect(row.upload_id).toBeNull();
+    expect(await env.ATTACHMENTS.head(row.object_key)).toMatchObject({ size: MAX_ATTACHMENT_PART_BYTES + 2 });
     const fetched = await handleAttachmentFetch(new Request(`https://cipher.test/v1/attachment/${id}`, {
       headers: { "x-osl-fetch-token": token },
     }), env, id);
+    expect(fetched.status).toBe(200);
     const fetchedBytes = new Uint8Array(await fetched.arrayBuffer());
     expect(fetchedBytes).toHaveLength(MAX_ATTACHMENT_PART_BYTES + 2);
     expect(fetchedBytes[0]).toBe(1);

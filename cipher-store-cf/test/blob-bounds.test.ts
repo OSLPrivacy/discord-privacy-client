@@ -5,10 +5,10 @@ import {
   MAX_BLOB_BYTES,
   readBoundedBody,
 } from "../src/endpoints/blob.js";
-import { migratedD1 } from "./helpers/d1.js";
+import { workerEnv } from "./helpers/workerd.js";
 
 function writableEnv(): Env {
-  return { DB: migratedD1().d1 } as unknown as Env;
+  return workerEnv();
 }
 
 describe("cipher upload body bounds", () => {
