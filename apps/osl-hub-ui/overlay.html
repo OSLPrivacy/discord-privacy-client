@@ -38,6 +38,11 @@
           </div>
         </div>
       </section>
+      <!-- Shipping C4 reads this non-live, visually clipped surface. It contains
+           only the bounded native carrier receipt fields already returned to
+           this renderer; never draft text, conversation text, or UI-derived
+           success copy. QA-shell sends do not publish to it. -->
+      <output id="native-carrier-receipt-evidence" class="sr-only" aria-label="Native carrier command receipt evidence" aria-live="off" aria-atomic="true"></output>
       <div class="overlay-runtime-controls" hidden>
         <button id="covertext-mode" type="button" aria-pressed="true" disabled>Covertext</button>
         <button id="burn-protected-chat" type="button" disabled>Burn</button>

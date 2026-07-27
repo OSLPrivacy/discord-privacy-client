@@ -3,7 +3,7 @@ import "./overlay.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
-import { burnNativeDiscordOverlayChat, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode } from "./native-overlay-adapter";
+import { burnNativeDiscordOverlayChat, captureC4NativeReceipt, clearC4NativeReceiptEvidence, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode } from "./native-overlay-adapter";
 import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OPTIONS, overlayExpiryDelayMs, PROTECTED_DRAFT_WARNING_BYTES, type NativeOverlayTtlSeconds, type NativeSurfaceCapture, utf8Length } from "./overlay-state";
 import { OverlaySendGesture, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
@@ -48,6 +48,7 @@ const chooseAttachment = requireElement<HTMLButtonElement>("#choose-attachment")
 const coverText = requireElement<HTMLButtonElement>("#covertext-mode");
 const burnChat = requireElement<HTMLButtonElement>("#burn-protected-chat");
 const status = requireElement<HTMLOutputElement>("#overlay-status");
+const c4NativeReceipt = requireElement<HTMLOutputElement>("#native-carrier-receipt-evidence");
 // Persistent, unlike `status` above: #overlay-status is a shared transient
 // line with 30+ writers (typing feedback, periodic "Verifying protected
 // Discord…" polls, etc.), so a failed-send notice written only there can be
@@ -124,6 +125,7 @@ let receiveBusy = false;
 let sendBusy = false;
 let attachmentBusy = false;
 let draftTooLarge = false;
+let c4NativeReceiptAttempt = 0;
 // Ledger for the honest send-side caution: OSL never learns whether the peer
 // has an OSL identity (no handle -> identity index exists, and the control
 // inbox gives senders no delivery signal by design), but it DOES own the
@@ -1544,6 +1546,13 @@ async function sendDraft(): Promise<void> {
   }
   setBusy(true);
   status.textContent = "Encrypting…";
+  if (!discordQaShell) {
+    // A new shipping send may not inherit evidence from a prior command. The
+    // capture seam below publishes this attempt's `pending` record immediately
+    // before it invokes native; guards that stop earlier leave the surface
+    // empty rather than making an old receipt look current.
+    clearC4NativeReceiptEvidence(c4NativeReceipt);
+  }
   // Clear point 1 of 2 (see the other beside `draft.value = ""` below): a
   // genuine new send attempt (every early-return guard above already passed)
   // is the "user edited the draft and is sending again" signal -- it is
@@ -1608,7 +1617,15 @@ async function sendDraft(): Promise<void> {
       if (result && discordMarkerAvailable && coverTextEnabled) {
         const requestedPlacement: NativeDiscordCarrierMode = placementMode.value === "compatibility" ? "compatibility" : "atomic";
         const charsPerSecond = typingRate.charsPerSecond();
-        const carrier = await sendNativeDiscordOverlayCarrier(requestedPlacement, charsPerSecond, measuredCarrierLayout());
+        const carrier = await captureC4NativeReceipt(
+          c4NativeReceipt,
+          ++c4NativeReceiptAttempt,
+          () => sendNativeDiscordOverlayCarrier(
+            requestedPlacement,
+            charsPerSecond,
+            measuredCarrierLayout(),
+          ),
+        );
         carrierStatusLabel = carrier?.status;
         markerSent = carrier?.status === "sent" && carrier.placed && carrier.enterSent;
       }

@@ -180,6 +180,88 @@ export interface NativeDiscordCarrierReceipt {
   compatibilityDelayMs: number;
 }
 
+export const C4_NATIVE_RECEIPT_SCHEMA = "osl-c4-native-receipt-v1" as const;
+
+export interface C4NativeReceiptSurface {
+  value: string;
+}
+
+export type C4NativeReceiptEvidence =
+  | {
+    schema: typeof C4_NATIVE_RECEIPT_SCHEMA;
+    attempt: number;
+    state: "pending";
+  }
+  | {
+    schema: typeof C4_NATIVE_RECEIPT_SCHEMA;
+    attempt: number;
+    state: "returned";
+    receipt: NativeDiscordCarrierReceipt;
+  };
+
+function requireC4Attempt(attempt: number): void {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new RangeError("C4 native receipt attempt must be a positive safe integer");
+  }
+}
+
+export function serializeC4NativeReceiptEvidence(
+  attempt: number,
+  receipt?: NativeDiscordCarrierReceipt,
+): string {
+  requireC4Attempt(attempt);
+  const evidence: C4NativeReceiptEvidence = receipt === undefined
+    ? {
+      schema: C4_NATIVE_RECEIPT_SCHEMA,
+      attempt,
+      state: "pending",
+    }
+    : {
+      schema: C4_NATIVE_RECEIPT_SCHEMA,
+      attempt,
+      state: "returned",
+      // Copy only the fields in the existing Rust receipt. In particular this
+      // surface must never grow UI-derived status text or fields guessed by the
+      // renderer: native remains the sole authority for this result.
+      receipt: {
+        placed: receipt.placed,
+        enterSent: receipt.enterSent,
+        status: receipt.status,
+        mode: receipt.mode,
+        compatibilityDelayMs: receipt.compatibilityDelayMs,
+      },
+    };
+  return JSON.stringify(evidence);
+}
+
+export function clearC4NativeReceiptEvidence(surface: C4NativeReceiptSurface): void {
+  surface.value = "";
+}
+
+export async function captureC4NativeReceipt(
+  surface: C4NativeReceiptSurface,
+  attempt: number,
+  invokeReceipt: () => Promise<NativeDiscordCarrierReceipt | null>,
+): Promise<NativeDiscordCarrierReceipt | null> {
+  requireC4Attempt(attempt);
+  // Publish before calling the native command. This both removes a prior
+  // success and makes an interrupted/in-flight attempt distinguishable from a
+  // returned native receipt.
+  surface.value = serializeC4NativeReceiptEvidence(attempt);
+  try {
+    const receipt = await invokeReceipt();
+    if (receipt === null) {
+      clearC4NativeReceiptEvidence(surface);
+      return null;
+    }
+    surface.value = serializeC4NativeReceiptEvidence(attempt, receipt);
+    return receipt;
+  } catch (error) {
+    clearC4NativeReceiptEvidence(surface);
+    throw error;
+  }
+}
+
 export interface NativeDiscordCarrierLayout {
   contentWidthPx: number;
   averageGraphemeWidthPx: number;
