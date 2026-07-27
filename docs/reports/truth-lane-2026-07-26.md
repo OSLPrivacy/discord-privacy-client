@@ -1789,3 +1789,79 @@ SHA-bound `/build.json`, or keyserver redemption proof. This is `test-proven-onl
 - D7 +0: 1/4 remains; security status corrected.
 - H1 +0: 3/4 remains.
 - Arithmetic: **97 + 0 + 0 = 97 / 303**.
+
+## 2026-07-27 — immutable verdict reconciliation and Scrub public-truth correction
+
+The accepted checklist authority is now exact commit
+`5aec1fe9d8fb48e5d179e344f480c294b6017a7d`, tree
+`8d7069ce961dcbe31d781a14117c617e2fe72aec`, checklist blob
+`d9435c951b0dcac38040991dd12ae8879485faef`. Its 74 row weights and section
+headers independently sum to **100 / 303**. This report does not modify that
+authority.
+
+The current point-capable immutable receipts do not justify another score edit:
+
+- E1 exact `4747cf861cd605542879508b4104596593a895d8`, tree
+  `e5a11009be69a34aabcabe91f0f571a2429a80a0`, is independently **REJECT +0**.
+  The selector profile has no product-pinned trust anchor, durable monotonic
+  revision store/restart proof, or non-test production caller.
+- D2 exact `4b5b1d30caa45a363382211a020133e64584f6fd`, tree
+  `1dedf24807ba61b51b659c8787ed33419b331b2e`, is independently **REJECT +0**.
+  In the committed object, `cipher-store-cf/src/lib/sweep.ts:149-220` can skip
+  or ignore a failed multipart abort around a wrong-size object, delete the
+  visible object, persist absence, and remove metadata while the old multipart
+  upload can still publish later. Later mutable fixes are not evidence.
+- F1/Scrub exact `1766aaa154c77a179a02227fced2ce5634728890`,
+  tree `face6d5d7e49ac155851cb1ad2cb78f68d3082b4`, is independently
+  **REJECT +0**. `apps/osl-hub-ui/src/scrub-provider-adapters.ts:127-129`
+  falls through from a refused provider parser to generic JSON. That leaves
+  provider identity, archive inventory, media bytes, and completeness
+  unbound. The WhatsApp parser also discards captured year/time fields and
+  stores the author capture as message text. Google, Discord, Meta, X, and
+  WhatsApp are not qualified end to end.
+- Keyserver sender-filter exact
+  `cff1cbb8f10fcfe5f7095fd6cf7edac4dc13cad1`, tree
+  `2e9b77ce4a83225b4fc785a75ac211cb7f4bba8d`, remains
+  **REJECT +0** because fresh shipping genesis cannot establish the production
+  floor state.
+- I3 WebView admission exact
+  `f53dc9c357cb403f6eac363c787b73ef21215f30`, tree
+  `5eae64fb29e8a039cc2d3a898c0f2938b971faf0`, remains
+  **REJECT +0**. Its nonempty corpus exercises an unused scaffolding-version
+  constant rather than the shipping injection surface.
+- VMQA exact `ff117dd12422444b0e41aa45e20dd2c3397226d3` is
+  **ACCEPT +0** at simulation/retained-schema tier. Its focused immutable
+  archive suite passed 9/9, but the live source pin remains `None`; it supplies
+  no runtime or checklist credit.
+
+The highest-impact reachable public mismatch was Scrub discovery. The website
+had described the blocker only as browser import failing to hand results to
+Scrub, which omitted the exact provider-parser and archive-authority failures
+above. Website commit
+`4c937bcd41005496b165a153baa3c6f8adb79bd7`, tree
+`be3594c323d0a31a37401fca4cf959cfa0fb4153`, corrects the public status and
+machine-readable evidence without promoting the capability:
+
+- `data/pricing.json` blob
+  `914580855ec142ee1f7ff1e489c6e72cce7d200e`;
+- `docs/status.html` blob
+  `9e73b83342dfbd477f493da48cc9e690b3cec29c`; and
+- `scripts/check-claims.mjs` blob
+  `3d3cbcf4ca226dccee3025e9c0c5fec7cba6295c`.
+
+The lightweight exact-source gate passed 419/419 semantic negative-control
+fixtures and scanned 16 public files with 0 failures. JSON parsing and
+`git diff --check` also passed. This is `source/static/test-proven-only`: no
+browser, build, deployment, provider archive, or runtime walkthrough ran.
+
+## Acceptance rows this earns
+
+- E1 +0: 3/6 remains.
+- D2 +0: 1/5 remains.
+- F1/Scrub +0: no row movement.
+- Keyserver sender-filter +0.
+- I3 +0.
+- VMQA +0.
+- Website Scrub truth correction +0; no implementation or runtime behavior was
+  awarded.
+- Authoritative arithmetic remains **100 / 303**.
