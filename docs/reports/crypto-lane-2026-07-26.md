@@ -651,12 +651,36 @@ is a failure mode of the author, not of the code.
 |---|---|---|
 | **D6** Bilateral Burn | **Regressed to a confirmed defect** | The outbound lane is wired and every unit gate passes, but the receipt now delivers an authenticated claim of enforcement that has no implementation (Defect 2). Not merely unproven — actively misleading. Needs the admission gate wired, content sequencing, and a burn observed crossing two identities. |
 | **C5** (attribution part) | **Regressed to a confirmed defect** | Orientation is carried end to end and fails closed on unproven rows, but a peer can replay a cover to have their row labelled as the operator's (Defect 1). Needs token-to-poster binding, or the fail-closed mitigation and its product trade-off accepted. |
-| **A7** Honest Burn / duress | Improved, not earned | The TPM tri-state now refuses to report a wipe that did not happen, including the case where a key existed and deletion *failed* but was reported as success. Unlike memory zeroization this **is** observable end to end — a duress wipe on a TPM-less VM, journal cleared — so a unit test is the wrong proof for it. Unknown until that runs. |
+| **A7** Honest Burn / duress | **Cannot be earned by this lane's work at all** | See below — the duress engine has no production caller, so the wipe cannot fire. The TPM tri-state made an unreachable subsystem honest. |
 | **A8** Secret zeroization | Already awarded by the checklist writer | Not claimed here. Recorded only so the +1 is not double-counted. |
 | **B-rows** | Unchanged | Nothing in this lane produced two-identity evidence. |
 
-`unknown` is the honest state for A7 and for every B row this lane touches. Truth should judge and
-apply; this lane has deliberately not edited the checklist.
+### A7 — the duress engine is unreachable, verified
+
+The checklist's A7 note ("duress/auto-lock/10-attempt burn have no production caller") is **correct
+and now verified with a mechanism rather than assumed.** `crates/keystore/src/lib.rs:50` re-exports
+the whole duress surface — `DuressEngine, DuressError, DuressHandlers, DuressJournal, DuressPaths,
+DuressReport, StepOutcome, WipeFn, WipeStep`. Grepping every `*.rs` under `apps/`, `crates/ipc/`
+and `crates/store/`:
+
+```
+DuressEngine: 0   DuressPaths: 0   DuressHandlers: 0   DuressReport: 0   WipeStep: 0
+```
+
+Zero uses outside `crates/keystore`. Nothing in the application can invoke the wipe.
+
+**This corrects a statement this lane made earlier tonight.** I said A7 needed "a duress wipe on a
+TPM-less VM, journal cleared" as its evidence. That is not runnable: you cannot observe a wipe that
+nothing can trigger. The honest next step for A7 is **wiring, not testing** — and wiring a
+destructive subsystem to a production trigger is an owner decision, not a defect fix.
+
+It also right-sizes tonight's TPM tri-state work: it made an unreachable subsystem *honest*, which
+is worth having before it is ever wired, but it moves no acceptance row. The same "zero callers"
+check found both of tonight's other defects; it is now three for three in this lane.
+
+`unknown` is the honest state for every B row this lane touches; **A7 is not unknown but
+structurally unearnable until the engine has a caller.** Truth should judge and apply; this lane has
+deliberately not edited the checklist.
 
 ## Resume here
 
