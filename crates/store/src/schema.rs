@@ -54,8 +54,13 @@ use rusqlite::{params, Connection};
 ///   v5 — Message bodies use a fresh per-record content key. The store master
 ///        key authenticates and wraps that content key; it no longer encrypts
 ///        live message bodies directly.
-pub(crate) const SCHEMA_VERSION: u32 = 5;
+///   v6 — Attachments use independent per-record content keys. Their metadata,
+///        body, wrapper, owning message selector, order, and content version
+///        form one authenticated envelope. Burned attachments remain only as
+///        keyless, zeroed audit stubs.
+pub(crate) const SCHEMA_VERSION: u32 = 6;
 const PRIVACY_SCHEMA_VERSION: u32 = 4;
+const MESSAGE_ENVELOPE_SCHEMA_VERSION: u32 = 5;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -123,6 +128,11 @@ CREATE TABLE IF NOT EXISTS attachments (
     ciphertext BLOB NOT NULL,
     nonce BLOB NOT NULL,
     seq INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
+    content_version INTEGER NOT NULL DEFAULT 1,
+    wrapped_key_nonce BLOB,
+    wrapped_key BLOB,
 
     -- Same exact-v3 downgrade guard as `messages`; permanently NULL.
     cache_key TEXT,
@@ -232,9 +242,13 @@ pub(crate) fn migrate(
             run_pending_vacuum(conn)?;
             return Ok(());
         }
+        Some(MESSAGE_ENVELOPE_SCHEMA_VERSION) => {
+            migrate_v5_to_v6(conn, key, index_key)?;
+            return Ok(());
+        }
         Some(PRIVACY_SCHEMA_VERSION) => {
             migrate_v4_to_v5(conn, key)?;
-            run_pending_vacuum(conn)?;
+            migrate_v5_to_v6(conn, key, index_key)?;
             return Ok(());
         }
         _ => {}
@@ -253,6 +267,7 @@ pub(crate) fn migrate(
     // there is deliberately no stamp here — see `migrate_v3_to_v4`.
     migrate_v3_to_v4(conn, key, index_key)?;
     migrate_v4_to_v5(conn, key)?;
+    migrate_v5_to_v6(conn, key, index_key)?;
     Ok(())
 }
 
@@ -778,7 +793,7 @@ DROP TABLE messages;
 ALTER TABLE messages_v5 RENAME TO messages;
 "#,
         )?;
-        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        write_meta_u32(conn, "schema_version", MESSAGE_ENVELOPE_SCHEMA_VERSION)?;
         // Old v4 pages contain bodies directly encrypted by the master key.
         // Record the post-commit scrub before committing the new shape.
         write_meta_blob(conn, VACUUM_PENDING_KEY, &[1])?;
@@ -796,8 +811,173 @@ ALTER TABLE messages_v5 RENAME TO messages;
     Ok(())
 }
 
+/// Rewrite v5 attachment bodies into independent v6 content-key envelopes.
+///
+/// Every legacy body and its sealed metadata are authenticated before a new
+/// table is substituted. The table replacement, version stamp, and post-commit
+/// scrub marker commit together. Any malformed row, duplicate selector, or
+/// sealing failure rolls the entire transaction back to the byte-compatible v5
+/// logical state; no mixture of direct-master and wrapped attachment rows is
+/// accepted.
+fn migrate_v5_to_v6(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+) -> Result<(), StoreError> {
+    conn.execute_batch(
+        r#"
+BEGIN IMMEDIATE;
+CREATE TABLE attachments_v6 (
+    ck_bi BLOB PRIMARY KEY,
+    mid_bi BLOB NOT NULL,
+    sender_bi BLOB,
+    meta_nonce BLOB NOT NULL,
+    meta_ct BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    seq INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
+    content_version INTEGER NOT NULL,
+    wrapped_key_nonce BLOB,
+    wrapped_key BLOB,
+    cache_key TEXT,
+    discord_message_id TEXT,
+    random_filename TEXT,
+    mime TEXT,
+    byte_len INTEGER,
+    created_at INTEGER,
+    scope_type TEXT,
+    scope_id TEXT,
+    sender_discord_id TEXT
+);
+"#,
+    )?;
+
+    let result = (|| -> Result<(), StoreError> {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            Vec<u8>,
+            Vec<u8>,
+            Option<Vec<u8>>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            i64,
+        )> = {
+            let mut stmt = conn.prepare(
+                "SELECT ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, \
+                        ciphertext, nonce, seq \
+                   FROM attachments ORDER BY seq ASC, rowid ASC",
+            )?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+
+        for (ck_bi, mid_bi, sender_bi, old_meta_nonce, old_meta_ct, old_ct, old_nonce, seq) in rows
+        {
+            let metadata = cipher::unseal(key, &ck_bi, &old_meta_nonce, &old_meta_ct)?;
+            let meta = cipher::decode_attachment_meta(&metadata)?;
+            if meta.cache_key != format!("{}/{}", meta.discord_message_id, meta.random_filename) {
+                return Err(StoreError::Schema(
+                    "v5 attachment cache key is not the canonical owner/filename pair".to_string(),
+                ));
+            }
+            let expected_ck =
+                cipher::blind_index(index_key, cipher::BI_CACHE_KEY, &meta.cache_key)?;
+            let expected_mid =
+                cipher::blind_index(index_key, cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+            let expected_sender = match meta.sender_discord_id.as_deref() {
+                Some(sender) => Some(cipher::blind_index(
+                    index_key,
+                    cipher::BI_SENDER_ID,
+                    sender,
+                )?),
+                None => None,
+            };
+            if ck_bi != expected_ck || mid_bi != expected_mid || sender_bi != expected_sender {
+                return Err(StoreError::Schema(
+                    "v5 attachment selector does not match its sealed metadata".to_string(),
+                ));
+            }
+            let plaintext = cipher::unseal(key, meta.cache_key.as_bytes(), &old_nonce, &old_ct)?;
+            if meta.byte_len < 0 || meta.byte_len as usize != plaintext.len() {
+                return Err(StoreError::Schema(
+                    "v5 attachment byte length does not match its authenticated body".to_string(),
+                ));
+            }
+            let content_version = 1i64;
+            let sealed = cipher::seal_attachment_body(
+                key,
+                &ck_bi,
+                &mid_bi,
+                seq,
+                content_version,
+                &metadata,
+                &plaintext,
+            )?;
+            conn.execute(
+                "INSERT INTO attachments_v6 \
+                    (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
+                     seq, burned, burned_at, content_version, wrapped_key_nonce, wrapped_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, NULL, ?9, ?10, ?11)",
+                params![
+                    ck_bi,
+                    mid_bi,
+                    sender_bi,
+                    sealed.meta_nonce,
+                    sealed.meta_ct,
+                    sealed.ciphertext,
+                    sealed.nonce,
+                    seq,
+                    content_version,
+                    sealed.wrapped_key_nonce,
+                    sealed.wrapped_key,
+                ],
+            )?;
+        }
+
+        conn.execute_batch(
+            r#"
+DROP TABLE attachments;
+ALTER TABLE attachments_v6 RENAME TO attachments;
+"#,
+        )?;
+        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        write_meta_blob(conn, VACUUM_PENDING_KEY, &[1])?;
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(error);
+    }
+
+    conn.execute_batch(SCHEMA_CURRENT)?;
+    run_pending_vacuum(conn)?;
+    Ok(())
+}
+
 /// `_meta` key recording that a post-migration `VACUUM` is owed.
 const VACUUM_PENDING_KEY: &str = "vacuum_pending";
+const SHRED_CHECKPOINT_PENDING_KEY: &str = "shred_checkpoint_pending";
 
 /// Scrub freed pages if a migration committed but did not finish vacuuming.
 ///
@@ -810,6 +990,26 @@ fn run_pending_vacuum(conn: &Connection) -> Result<(), StoreError> {
     conn.execute(
         "DELETE FROM _meta WHERE key = ?1",
         params![VACUUM_PENDING_KEY],
+    )?;
+    Ok(())
+}
+
+/// Record, inside the same transaction as destructive row updates, that a
+/// truncating WAL checkpoint is still owed. A crash after COMMIT but before
+/// the checkpoint therefore cannot silently turn a completed logical burn
+/// into a completed physical-shred claim.
+pub(crate) fn mark_shred_checkpoint_pending(conn: &Connection) -> Result<(), StoreError> {
+    write_meta_blob(conn, SHRED_CHECKPOINT_PENDING_KEY, &[1])
+}
+
+pub(crate) fn shred_checkpoint_pending(conn: &Connection) -> Result<bool, StoreError> {
+    Ok(read_meta_blob(conn, SHRED_CHECKPOINT_PENDING_KEY)?.is_some())
+}
+
+pub(crate) fn clear_shred_checkpoint_pending(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute(
+        "DELETE FROM _meta WHERE key = ?1",
+        params![SHRED_CHECKPOINT_PENDING_KEY],
     )?;
     Ok(())
 }
@@ -830,27 +1030,47 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, StoreError> {
 /// the input file byte-for-byte unchanged. `migrate` calls it again to keep the
 /// migration entry point fail-closed if its call order is ever reused.
 pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), StoreError> {
-    if !table_exists(conn, "messages")? {
-        return Ok(());
+    if table_exists(conn, "messages")? {
+        let columns = existing_columns(conn, "messages")?;
+        if !columns.iter().any(|column| column == "content_version")
+            && columns.iter().any(|column| column == "wrapped_key")
+        {
+            let ambiguous_live_wrappers: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM messages \
+                  WHERE burned = 0 AND wrapped_key IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            if ambiguous_live_wrappers != 0 {
+                return Err(StoreError::Schema(
+                    "live legacy message has an ambiguous non-NULL wrapped_key; \
+                     refusing to guess its format"
+                        .to_string(),
+                ));
+            }
+        }
     }
-    let columns = existing_columns(conn, "messages")?;
-    if columns.iter().any(|column| column == "content_version")
-        || !columns.iter().any(|column| column == "wrapped_key")
-    {
-        return Ok(());
-    }
-    let ambiguous_live_wrappers: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM messages \
-          WHERE burned = 0 AND wrapped_key IS NOT NULL",
-        [],
-        |row| row.get(0),
-    )?;
-    if ambiguous_live_wrappers != 0 {
-        return Err(StoreError::Schema(
-            "live legacy message has an ambiguous non-NULL wrapped_key; \
-             refusing to guess its format"
-                .to_string(),
-        ));
+
+    if table_exists(conn, "attachments")? {
+        let columns = existing_columns(conn, "attachments")?;
+        let has_version = columns.iter().any(|column| column == "content_version");
+        let has_wrapper_nonce = columns.iter().any(|column| column == "wrapped_key_nonce");
+        let has_wrapper = columns.iter().any(|column| column == "wrapped_key");
+        let any_envelope_column = has_version || has_wrapper_nonce || has_wrapper;
+        let complete_envelope = has_version && has_wrapper_nonce && has_wrapper;
+        let on_disk = read_meta_u32(conn, "schema_version")?;
+
+        if any_envelope_column && (!complete_envelope || on_disk != Some(SCHEMA_VERSION)) {
+            let row_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))?;
+            if row_count != 0 {
+                return Err(StoreError::Schema(
+                    "live legacy attachment has ambiguous wrapped-key columns; \
+                     refusing to guess their format"
+                        .to_string(),
+                ));
+            }
+        }
     }
     Ok(())
 }

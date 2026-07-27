@@ -17,15 +17,26 @@ The store master key is HKDF-SHA256 derived from the caller-supplied
 key = HKDF-SHA256(salt = "", ikm = identity_secret, info = "osl-message-store-v1")
 ```
 
-Each live message gets a unique random 32-byte content key. Its body
-is sealed under that key, and the content key is separately sealed
-under the store master key. Body, wrapper and sealed metadata use
-separate AAD domains; each includes the message blind-index selector
-and `content_version`. Moving an envelope across rows or replaying
-only an old envelope/version therefore fails authentication.
+Each live message and each live attachment gets its own unique random
+32-byte content key. Bodies are sealed under those keys; the content
+keys are separately sealed under the store master key. The master key
+does not directly encrypt live message or attachment bodies.
 
-Attachments still use the pre-v5 direct-master-key construction. They
-are an explicit remaining A7 gap, not covered by the message-key claim.
+Message body, wrapper and metadata use separate AAD domains and bind the
+message selector plus `content_version`. Attachment metadata, body and
+wrapper likewise use separate v6 domains and bind the attachment selector,
+owning-message selector, stable `seq`, and `content_version`. The body also
+commits to the canonical metadata (including MIME and byte length), and the
+wrapper commits to both that metadata and the exact body nonce/ciphertext.
+Cross-row, cross-type, owner, order, version, metadata and partial-envelope
+transplants therefore fail authentication before bytes are returned.
+
+The cache API does not receive an authoritative per-message attachment
+manifest or expected attachment count. It can reject a row whose wrapper,
+nonce, metadata or body is missing or mixed, but deletion of an entire
+otherwise valid cache row is indistinguishable from “this attachment was never
+cached” and returns `None`. This is an availability/inventory limit, not a path
+to return forged plaintext.
 
 The blind-index key is a separate HKDF-SHA256 derivation from the
 same `identity_secret`:
@@ -62,7 +73,8 @@ crash cannot leave a half-canary that bricks every later open.
 Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
 
 - `_meta(key, value)` — `schema_version`, `canary_nonce` and
-  `canary_ct`. A transient `vacuum_pending` marker also lives here
+  `canary_ct`. Transient `vacuum_pending` and
+  `shred_checkpoint_pending` markers also live here
   between a committed migration and the `VACUUM` that follows it; it
   is deleted once that completes, and a store that crashed in between
   finishes the job on next open. See the migration section for what
@@ -79,11 +91,15 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
   ordering counter; it replaces the old plaintext `decrypted_at`
   ordering index.
 - `attachments(ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct,
-  ciphertext, nonce, seq)` — `ck_bi`, `mid_bi` and `sender_bi` are
+  ciphertext, nonce, seq, burned, burned_at, content_version,
+  wrapped_key_nonce, wrapped_key)` — `ck_bi`, `mid_bi` and `sender_bi` are
   blind indexes. The real cache key, message id, random filename,
   MIME type, byte length, creation timestamp, optional scope fields
   and optional sender id live in the sealed metadata blob. The
-  attachment bytes live in `ciphertext`.
+  attachment bytes live in `ciphertext` under the per-record content
+  key; its master-key envelope lives in `wrapped_key_nonce` /
+  `wrapped_key`. Burned rows are selector-only audit stubs with zeroed
+  metadata/body nonces and ciphertexts and no wrapper.
 - `idx_messages_chan_seq` — `(chan_bi, seq DESC)`, used by
   `list_by_channel`.
 - `idx_attachments_mid` — `mid_bi`, used to find/delete cached
@@ -176,13 +192,17 @@ time, and the section understated what the code does.
   a burn-acknowledgment stub.
 - Stamps `burned_at`, but only if it was not already set, so
   re-burning cannot make an old destruction look recent.
-- Deletes that message's cached attachments. A burn that destroyed
-  the text and left the decrypted picture on disk would not be a
+- In the same SQLite transaction, zeroes every associated attachment's
+  metadata/body ciphertext and nonce, nulls both attachment wrapper
+  columns, and marks the selector-only attachment stubs burned. A burn
+  that destroyed the text and left a decryptable picture would not be a
   burn.
 - Runs `PRAGMA wal_checkpoint(TRUNCATE)` so the pre-burn page images
   are not left recoverable beside the database, and **fails loudly**
   if a live reader prevents that checkpoint rather than reporting a
-  completed shred.
+  completed physical shred. The transaction writes
+  `shred_checkpoint_pending`; if the process dies after commit but before
+  truncation, reopen retries the checkpoint before normal use.
 
 It shreds unconditionally — including on a row already flagged
 `burned = 1`. It used to return `Ok(())` the moment it saw that flag,
@@ -197,6 +217,8 @@ intact on disk.
 ordinary behaviour — the receive observer re-decrypts a channel's
 history on re-entry — and before that predicate existed, one channel
 re-entry after a burn wrote the sealed body straight back to disk.
+Attachment puts have the same terminal rule because their zeroed stubs
+retain the keyed selector.
 
 ### What burn still does not do
 
@@ -204,6 +226,14 @@ re-entry after a burn wrote the sealed body straight back to disk.
 copies, but this is not a guarantee against physical media
 forensics: SSD wear-levelling and filesystem journaling may retain
 pre-burn pages that SQLite can no longer address.
+
+There is also no external monotonic anchor. Restoring a complete older
+backup of `messages.sqlite` together with its internally consistent rows
+can restore pre-burn wrappers or an older same-row version. The v6 AEAD
+construction rejects partial stale replay and mixed-version transplants,
+not a full authenticated database rollback. Closing that requires state
+outside the rollback domain (for example a hardware-backed or remote
+monotonic floor).
 
 Burn is **local destruction only**. It destroys this device's cached
 plaintext. It does not revoke anyone else's ability to decrypt the
@@ -220,7 +250,8 @@ schema v4. They are obsolete.
 Metadata is hidden and authenticated by the same AEAD operation:
 `meta_nonce` + `meta_ct` seal the canonical, length-prefixed metadata
 blob. For message rows, the metadata AAD is the row's own `mid_bi`.
-For attachment rows, the metadata AAD is the row's own `ck_bi`.
+For v6 attachment rows, metadata AAD binds record type, `ck_bi`,
+`mid_bi`, `seq`, and `content_version`.
 
 That means an offline editor who moves a metadata blob between rows,
 or edits one in place, gets an AEAD tag failure on read.
@@ -242,7 +273,12 @@ authenticated against the row's blind-index selector and content
 version. The v4 to v5 migration therefore re-encrypts live message
 bodies under fresh content keys.
 
-## Schema v4 and v5 migrations
+In schema v6, the analogous attachment envelope additionally commits
+to canonical metadata and exact body ciphertext as described above.
+Selector recomputation after metadata authentication remains
+defence-in-depth and protects selector columns such as `sender_bi`.
+
+## Schema v4, v5 and v6 migrations
 
 The v3 to v4 migration rewrites every row inside one SQLite
 transaction. It builds v4 tables beside the old tables, computes blind
@@ -255,8 +291,15 @@ fresh content key, re-encrypts the body, and stores the authenticated
 wrapper. A live legacy row with a non-NULL wrapper is refused
 byte-for-byte before migration because those bytes have no
 authenticated format marker. Burned rows remain zeroed and wrapperless.
-For attachment rows, `ciphertext` and `nonce` are copied
-byte-for-byte while the metadata is sealed into the new v4 shape.
+The v5 to v6 migration atomically rebuilds `attachments`. It
+authenticates and decrypts every legacy direct-master body, verifies its
+sealed selectors and byte length, gives it a new random content key, and
+stores the v6 envelope. The schema stamp changes only in the same
+transaction as the table replacement. Duplicate selectors or any
+malformed row abort and restore the complete v5 logical state. A
+pre-v6 table carrying non-empty or structurally partial attachment
+wrapper columns is refused before persistent pragmas because those bytes
+have no trustworthy format history.
 
 `seq` is assigned in legacy `decrypted_at ASC, rowid ASC` order, so
 newest-first channel listing stays in the same order after migration.
@@ -283,3 +326,9 @@ thing that removes the identifiers.
 `Mutex`. Concurrent callers serialise at the lock; SQLite WAL
 mode reduces write-lock contention with future readers if we
 add multi-conn pooling later.
+
+An external SQLite reader can retain a pre-burn snapshot until its read
+transaction ends. The burn transaction still presents only the complete
+pre-burn or complete post-burn row set; it never exposes a half-shredded
+message/attachment set. While that reader is active, WAL truncation
+fails by name and leaves the durable recovery marker for retry.

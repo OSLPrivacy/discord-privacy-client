@@ -29,8 +29,9 @@
 use crate::StoreError;
 use crypto::{aead, hkdf, random};
 
-/// HKDF info label for the store master key. It seals metadata and attachments
-/// and wraps v5 message content keys. Hard-coded; never read from disk.
+/// HKDF info label for the store master key. It seals metadata and wraps
+/// per-record message and attachment content keys. Hard-coded; never read from
+/// disk.
 const HKDF_INFO: &[u8] = b"osl-message-store-v1";
 
 /// HKDF info label for the **blind index** key. A separate derivation from the
@@ -53,6 +54,10 @@ pub(crate) const BI_CACHE_KEY: &[u8] = b"osl-store-bi/cache_key-v1";
 const MESSAGE_BODY_AAD_V5: &[u8] = b"osl-store/body/v5/message";
 const MESSAGE_WRAP_AAD_V5: &[u8] = b"osl-store/wrap/v5/message";
 const MESSAGE_META_AAD_V5: &[u8] = b"osl-store/meta/v5/message";
+const ATTACHMENT_BODY_AAD_V6: &[u8] = b"osl-store/body/v6/attachment";
+const ATTACHMENT_WRAP_AAD_V6: &[u8] = b"osl-store/wrap/v6/attachment";
+const ATTACHMENT_META_AAD_V6: &[u8] = b"osl-store/meta/v6/attachment";
+const ATTACHMENT_COMMITMENT_V6: &[u8] = b"osl-store/commitment/v6/attachment";
 
 /// Derive the message-store AEAD key from the caller-supplied
 /// 32-byte identity secret. Returns an opaque
@@ -232,6 +237,189 @@ pub(crate) fn unseal_message_body(
     unseal(
         &content_key,
         &versioned_aad(MESSAGE_BODY_AAD_V5, mid_bi, version),
+        nonce,
+        ciphertext,
+    )
+}
+
+fn push_aad_part(out: &mut Vec<u8>, part: &[u8]) {
+    out.extend_from_slice(&(part.len() as u64).to_le_bytes());
+    out.extend_from_slice(part);
+}
+
+fn attachment_aad(
+    domain: &[u8],
+    ck_bi: &[u8],
+    mid_bi: &[u8],
+    seq: i64,
+    version: i64,
+    metadata_digest: Option<&[u8; 32]>,
+    body_digest: Option<&[u8; 32]>,
+) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(
+        domain.len()
+            + ck_bi.len()
+            + mid_bi.len()
+            + 24
+            + 32 * usize::from(metadata_digest.is_some())
+            + 32 * usize::from(body_digest.is_some()),
+    );
+    push_aad_part(&mut aad, domain);
+    push_aad_part(&mut aad, ck_bi);
+    push_aad_part(&mut aad, mid_bi);
+    aad.extend_from_slice(&seq.to_le_bytes());
+    aad.extend_from_slice(&version.to_le_bytes());
+    if let Some(digest) = metadata_digest {
+        aad.extend_from_slice(digest);
+    }
+    if let Some(digest) = body_digest {
+        aad.extend_from_slice(digest);
+    }
+    aad
+}
+
+fn attachment_commitment(parts: &[&[u8]]) -> [u8; 32] {
+    let mut canonical = Vec::new();
+    for part in parts {
+        canonical.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(part);
+    }
+    // HKDF-SHA256 with a fixed domain and canonical input is used here as a
+    // collision-resistant commitment, matching the crate's existing
+    // blind-index construction and avoiding a second hashing implementation.
+    hkdf::derive_32(&[], &canonical, ATTACHMENT_COMMITMENT_V6)
+        .expect("fixed-size HKDF commitment cannot fail")
+}
+
+pub(crate) fn attachment_meta_aad(ck_bi: &[u8], mid_bi: &[u8], seq: i64, version: i64) -> Vec<u8> {
+    attachment_aad(
+        ATTACHMENT_META_AAD_V6,
+        ck_bi,
+        mid_bi,
+        seq,
+        version,
+        None,
+        None,
+    )
+}
+
+pub(crate) struct SealedAttachmentBody {
+    pub(crate) meta_nonce: Vec<u8>,
+    pub(crate) meta_ct: Vec<u8>,
+    pub(crate) nonce: Vec<u8>,
+    pub(crate) ciphertext: Vec<u8>,
+    pub(crate) wrapped_key_nonce: Vec<u8>,
+    pub(crate) wrapped_key: Vec<u8>,
+}
+
+/// Seal one attachment under a fresh content key.
+///
+/// The metadata AEAD authenticates record type, attachment selector, owning
+/// message selector, ordering position, and content version. The body repeats
+/// that context and commits to the canonical metadata. The master-key wrapper
+/// repeats it again and additionally commits to the exact body nonce and
+/// ciphertext. Moving any subset of those columns across rows or versions
+/// therefore fails before plaintext is released.
+pub(crate) fn seal_attachment_body(
+    master_key: &aead::Key,
+    ck_bi: &[u8],
+    mid_bi: &[u8],
+    seq: i64,
+    version: i64,
+    metadata: &[u8],
+    plaintext: &[u8],
+) -> Result<SealedAttachmentBody, StoreError> {
+    let metadata_digest = attachment_commitment(&[metadata]);
+    let (meta_nonce, meta_ct) = seal(
+        master_key,
+        &attachment_meta_aad(ck_bi, mid_bi, seq, version),
+        metadata,
+    )?;
+    let content_key = random::random_aead_key();
+    let (nonce, ciphertext) = seal(
+        &content_key,
+        &attachment_aad(
+            ATTACHMENT_BODY_AAD_V6,
+            ck_bi,
+            mid_bi,
+            seq,
+            version,
+            Some(&metadata_digest),
+            None,
+        ),
+        plaintext,
+    )?;
+    let body_digest = attachment_commitment(&[&nonce, &ciphertext]);
+    let (wrapped_key_nonce, wrapped_key) = seal(
+        master_key,
+        &attachment_aad(
+            ATTACHMENT_WRAP_AAD_V6,
+            ck_bi,
+            mid_bi,
+            seq,
+            version,
+            Some(&metadata_digest),
+            Some(&body_digest),
+        ),
+        content_key.as_bytes(),
+    )?;
+    Ok(SealedAttachmentBody {
+        meta_nonce,
+        meta_ct,
+        nonce,
+        ciphertext,
+        wrapped_key_nonce,
+        wrapped_key,
+    })
+}
+
+pub(crate) fn unseal_attachment_body(
+    master_key: &aead::Key,
+    ck_bi: &[u8],
+    mid_bi: &[u8],
+    seq: i64,
+    version: i64,
+    metadata: &[u8],
+    wrapped_key_nonce: &[u8],
+    wrapped_key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, StoreError> {
+    let metadata_digest = attachment_commitment(&[metadata]);
+    let body_digest = attachment_commitment(&[nonce, ciphertext]);
+    let key_bytes = unseal(
+        master_key,
+        &attachment_aad(
+            ATTACHMENT_WRAP_AAD_V6,
+            ck_bi,
+            mid_bi,
+            seq,
+            version,
+            Some(&metadata_digest),
+            Some(&body_digest),
+        ),
+        wrapped_key_nonce,
+        wrapped_key,
+    )?;
+    let key_array: [u8; aead::KEY_SIZE] = key_bytes.try_into().map_err(|bytes: Vec<u8>| {
+        StoreError::Corrupted(format!(
+            "wrapped attachment content key has length {} (want {})",
+            bytes.len(),
+            aead::KEY_SIZE
+        ))
+    })?;
+    let content_key = aead::Key::from_bytes(key_array);
+    unseal(
+        &content_key,
+        &attachment_aad(
+            ATTACHMENT_BODY_AAD_V6,
+            ck_bi,
+            mid_bi,
+            seq,
+            version,
+            Some(&metadata_digest),
+            None,
+        ),
         nonce,
         ciphertext,
     )

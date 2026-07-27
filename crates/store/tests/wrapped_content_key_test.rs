@@ -14,6 +14,8 @@ const SECRET: &[u8; 32] = &[1u8; 32];
 const MASTER_INFO: &[u8] = b"osl-message-store-v1";
 const INDEX_INFO: &[u8] = b"osl-message-store-index-v1";
 const BI_MESSAGE_ID: &[u8] = b"osl-store-bi/discord_message_id-v1";
+const BI_CHANNEL_ID: &[u8] = b"osl-store-bi/channel_id-v1";
+const BI_SENDER_ID: &[u8] = b"osl-store-bi/sender_discord_id-v1";
 const MESSAGE_BODY_DOMAIN: &[u8] = b"osl-store/body/v5/message";
 const MESSAGE_WRAP_DOMAIN: &[u8] = b"osl-store/wrap/v5/message";
 
@@ -65,6 +67,34 @@ fn aad(domain: &[u8], selector: &[u8], version: i64) -> Vec<u8> {
     out.extend_from_slice(selector);
     out.extend_from_slice(&version.to_le_bytes());
     out
+}
+
+fn blind_index(domain: &[u8], value: &str) -> Vec<u8> {
+    let index_key = crypto::hkdf::derive_32(&[], SECRET, INDEX_INFO).unwrap();
+    crypto::hkdf::derive_32(&index_key, value.as_bytes(), domain)
+        .unwrap()
+        .to_vec()
+}
+
+fn push_string(out: &mut Vec<u8>, value: &str) {
+    out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn v4_message_metadata(message: &StoredMessage) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_string(&mut out, &message.discord_message_id);
+    push_string(&mut out, &message.channel_id);
+    push_string(&mut out, &message.sender_discord_id);
+    push_string(&mut out, &message.sender_osl_user_id);
+    out.extend_from_slice(&message.decrypted_at.to_le_bytes());
+    out
+}
+
+fn seal_master(aad: &[u8], plaintext: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let nonce = crypto::random::random_nonce();
+    let ciphertext = crypto::aead::seal(&master_key(), &nonce, aad, plaintext).unwrap();
+    (nonce.as_bytes().to_vec(), ciphertext)
 }
 
 fn nonce(bytes: &[u8]) -> aead::Nonce {
@@ -350,5 +380,167 @@ fn selected_burn_destroys_only_its_wrapper_and_preserves_survivor() {
     assert_eq!(
         survivor_after, survivor_before,
         "burn must not rewrite the untouched survivor envelope"
+    );
+}
+
+#[test]
+fn v4_to_v5_mid_row_failure_rolls_back_and_reopens_after_repair() {
+    let tmp = TempDir::new().unwrap();
+    let db = tmp.path().join("messages.sqlite");
+    let first = sample("migration-first", "first migrates", 1);
+    let second = sample("migration-second", "second repaired", 2);
+    let (canary_nonce, canary_ct) =
+        seal_master(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+    let mut repaired_second: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = None;
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE messages (
+                mid_bi BLOB PRIMARY KEY,
+                chan_bi BLOB NOT NULL,
+                sender_bi BLOB NOT NULL,
+                meta_nonce BLOB NOT NULL,
+                meta_ct BLOB NOT NULL,
+                ciphertext BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                seq INTEGER NOT NULL,
+                burned INTEGER NOT NULL DEFAULT 0,
+                burned_at INTEGER,
+                wrapped_key BLOB,
+                discord_message_id TEXT,
+                channel_id TEXT,
+                sender_discord_id TEXT,
+                sender_osl_user_id TEXT,
+                decrypted_at INTEGER,
+                scope_type TEXT,
+                scope_id TEXT,
+                meta_tag BLOB
+             );
+             CREATE TABLE attachments (
+                ck_bi BLOB PRIMARY KEY,
+                mid_bi BLOB NOT NULL,
+                sender_bi BLOB,
+                meta_nonce BLOB NOT NULL,
+                meta_ct BLOB NOT NULL,
+                ciphertext BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                seq INTEGER NOT NULL,
+                cache_key TEXT,
+                discord_message_id TEXT,
+                random_filename TEXT,
+                mime TEXT,
+                byte_len INTEGER,
+                created_at INTEGER,
+                scope_type TEXT,
+                scope_id TEXT,
+                sender_discord_id TEXT
+             );",
+        )
+        .unwrap();
+        for (key, value) in [
+            ("schema_version", 4u32.to_le_bytes().to_vec()),
+            ("canary_nonce", canary_nonce),
+            ("canary_ct", canary_ct),
+        ] {
+            conn.execute(
+                "INSERT INTO _meta(key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        for (index, message) in [&first, &second].into_iter().enumerate() {
+            let mid = blind_index(BI_MESSAGE_ID, &message.discord_message_id);
+            let chan = blind_index(BI_CHANNEL_ID, &message.channel_id);
+            let sender = blind_index(BI_SENDER_ID, &message.sender_discord_id);
+            let (meta_nonce, meta_ct) = seal_master(&mid, &v4_message_metadata(message));
+            let (body_nonce, body_ct) = seal_master(
+                message.discord_message_id.as_bytes(),
+                message.plaintext.as_bytes(),
+            );
+            let stored_ct = if index == 0 {
+                body_ct.clone()
+            } else {
+                let mut corrupted = body_ct.clone();
+                corrupted[0] ^= 0x80;
+                repaired_second = Some((mid.clone(), body_nonce.clone(), body_ct.clone()));
+                corrupted
+            };
+            conn.execute(
+                "INSERT INTO messages
+                    (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce,
+                     seq, burned, burned_at, wrapped_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, NULL, NULL)",
+                params![
+                    mid,
+                    chan,
+                    sender,
+                    meta_nonce,
+                    meta_ct,
+                    stored_ct,
+                    body_nonce,
+                    index as i64 + 1
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    assert!(matches!(
+        MessageStore::open(tmp.path(), SECRET),
+        Err(StoreError::Corrupted(_))
+    ));
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM _meta WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            4u32.to_le_bytes()
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_v5'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "the first converted row must roll back with the second-row failure"
+        );
+        let (mid, nonce, ciphertext) = repaired_second.unwrap();
+        assert_eq!(
+            conn.execute(
+                "UPDATE messages SET nonce=?1, ciphertext=?2 WHERE mid_bi=?3",
+                params![nonce, ciphertext, mid],
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    let reopened = open(tmp.path());
+    assert_eq!(reopened.get("migration-first").unwrap(), Some(first));
+    assert_eq!(reopened.get("migration-second").unwrap(), Some(second));
+    assert_eq!(
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM _meta WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+        6u32.to_le_bytes()
     );
 }

@@ -608,7 +608,7 @@ fn store_persistence_surface_inventory_is_closed() {
         .collect::<Vec<_>>();
     assert_eq!(
         connection_sites,
-        vec![("lib.rs", "let conn = Connection::open(&path)?;".to_string())],
+        vec![("lib.rs", "Ok(Connection::open(path)?)".to_string())],
         "a new SQLite persistence surface was added without an A8 privacy proof"
     );
 
@@ -1007,7 +1007,7 @@ fn assert_legacy_privacy_migration(stamped: bool) {
     );
     drop(store);
 
-    assert_eq!(schema_version(&db_path), 5);
+    assert_eq!(schema_version(&db_path), 6);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let burned_rows: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64)> = {
         let mut stmt = conn
@@ -1141,7 +1141,7 @@ fn ambiguous_live_legacy_wrapper_refuses_before_any_migration_mutation() {
 /// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
 /// to the current schema without losing anything.
 #[test]
-fn v1_database_migrates_all_the_way_to_v5() {
+fn v1_database_migrates_all_the_way_to_v6() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let rows = vec![
@@ -1178,7 +1178,7 @@ fn v1_database_migrates_all_the_way_to_v5() {
         "v1 migration did not preserve newest-first ordering"
     );
 
-    // And it must land on v5, not stall at an intermediate version.
+    // And it must land on v6, not stall at an intermediate version.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let version: Vec<u8> = conn
         .query_row(
@@ -1187,7 +1187,7 @@ fn v1_database_migrates_all_the_way_to_v5() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 5);
+    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 6);
     let (ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version): (
         Vec<u8>,
         Vec<u8>,
@@ -1378,11 +1378,11 @@ fn migration_purges_orphaned_and_burned_attachments_but_keeps_live_ones() {
 /// the migration.
 ///
 /// This test exists because it caught a real data-loss bug during development.
-/// The migration copies attachment `ciphertext` byte-for-byte, and an earlier
-/// draft of v4 sealed attachment bodies under the cache key's *blind index*
-/// instead of the plaintext cache key. Every migrated attachment would have
-/// failed to decrypt, and nothing detected it: the message-only fixture never
-/// exercised an attachment, so the gap was invisible rather than covered.
+/// The v3→v4 step must open metadata under v3's rules, and the v5→v6 step must
+/// open the legacy direct-master body before replacing it with a wrapped DEK.
+/// An earlier draft silently changed the legacy attachment AAD and made every
+/// migrated attachment unreadable. The message-only fixture never exercised an
+/// attachment, so the gap was invisible rather than covered.
 #[test]
 fn old_v3_attachment_still_decrypts_after_migration() {
     let tmp = TempDir::new().unwrap();
@@ -1417,6 +1417,23 @@ fn old_v3_attachment_still_decrypts_after_migration() {
     assert_eq!(
         got.1, b"REAL-PIXELS",
         "migration made the cached attachment undecryptable"
+    );
+    let db_path = tmp.path().join("messages.sqlite");
+    let (version, wrapper_nonce, wrapper, burned): (i64, Option<Vec<u8>>, Option<Vec<u8>>, i64) =
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT content_version, wrapped_key_nonce, wrapped_key, burned \
+               FROM attachments",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+    assert_eq!(version, 1);
+    assert_eq!(burned, 0);
+    assert!(
+        wrapper_nonce.is_some() && wrapper.is_some(),
+        "a no-op v5→v6 migration left the legacy direct-master attachment body in place"
     );
 }
 
@@ -1546,11 +1563,11 @@ fn exact_adff4e45_reader_reaches_explicit_version_refusal() {
     drop(store);
 
     let refusal = adff4e45_schema_reader::open_schema(tmp.path())
-        .expect_err("the exact pre-v4 reader opened schema v5");
+        .expect_err("the exact pre-v4 reader opened schema v6");
     match refusal {
         store::StoreError::Schema(message) => assert_eq!(
             message,
-            "on-disk schema version 5 is newer than this binary supports (3); refusing to open",
+            "on-disk schema version 6 is newer than this binary supports (3); refusing to open",
             "the exact reader refused for a reason other than its version gate"
         ),
         other => panic!("exact pre-v4 reader did not reach its version refusal: {other}"),

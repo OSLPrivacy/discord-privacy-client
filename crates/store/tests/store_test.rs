@@ -599,7 +599,7 @@ fn reopen_with_correct_secret_migration_idempotent() {
     let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
     assert_migrated_rows(&store2, &rows);
     let second_open_version = schema_version(tmp.path());
-    assert_eq!(first_open_version, 5);
+    assert_eq!(first_open_version, 6);
     assert_eq!(second_open_version, first_open_version);
     store2
         .put(&sample(
