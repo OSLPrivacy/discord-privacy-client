@@ -3,7 +3,7 @@
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
 authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r13**), and the
-scoreboard remains `docs/design/osl-internal-build-checklist.md` (**98 / 303**).
+scoreboard remains `docs/design/osl-internal-build-checklist.md` (**97 / 303**).
 
 ## Lane roster and exclusive ownership
 
@@ -106,11 +106,14 @@ discard the whole import.
   remains visible. B3 moves 1/5 → 2/5: exact ratchet and dependency-closure archives prove the
   row's structural persistence/replay/reorder/skipped-key/restart boundary with negative controls.
   The ratchet remains `implemented-unwired`; no live traffic or dependent row is earned.
-- **`c0279dc`: B5 +1 at production-call reachability only.** Both compiled broker drains call the
-  signed per-sender client, and exact client/binding tests plus one-sided mutations prove nonempty
-  positive, missing/wrong echo, cross-sender and unfiltered-fallback behavior. B5 moves 1/4 → 2/4.
-  Status remains `test-proven-only`: exact broker E2E fakes omit the required echo, no authenticated
-  live drain ran, and active Worker version 169 is not mapped to this Git commit.
+- **B5 counteradjudication: `a509cb2` +1 retracted; `c0279dc` and `aca9dae` earn +0.** Exact
+  `c0279dc` proves the keystore client and source call shape, but its source-text broker test
+  executes neither drain and its real head-of-line test fails because all three relay fakes omit the
+  mandatory echo. Exact later `aca9dae` passes two shared-fetch-helper tests and four refusal cases,
+  but still executes neither actual drain, uses two-byte type markers, and preprograms A then B in a
+  stateless fake rather than proving 64 foreign blockers remain untouched. B5 returns 2/4 → 1/4;
+  score returns 98 → 97. The required broker-level text-plus-attachment delivery positive remains
+  `unknown`.
 - **`79f12eb`: no A6/D2/D4 point.** The helper refuses a PDF before its synthetic download,
   decrypt, staging and durable write, and an image helper control continues. Removing the helper's
   refusal fails; removing its call from production `open_pending_inner` leaves the test green.

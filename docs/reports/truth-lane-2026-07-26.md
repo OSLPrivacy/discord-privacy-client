@@ -1302,11 +1302,13 @@ Total: 97 / 303 = 32%
 
 ---
 
-## 24 · Exact commits `c0279dc` and `79f12eb`; live Worker UUIDs
+## 24 · Exact commits `c0279dc` and `79f12eb`; live Worker UUIDs — B5 award retracted
 
-No later dirty source bytes were consumed. Arithmetic is `97 + 1 + 0 = 98 / 303`.
+No later dirty source bytes were consumed. This section originally recorded
+`97 + 1 + 0 = 98 / 303`; §25 retracts that B5 award after a counteraudit proved the passing broker
+gate was source-text-only.
 
-### `c0279dc`: B5 `1/4 → 2/4`, production-call reachability only
+### `c0279dc`: B5 remains `1/4`; source reachability is below the row boundary
 
 Exact archive `c0279dc9434d138234d435935fbb2779095e408e` produced:
 
@@ -1333,14 +1335,14 @@ Fresh one-sided mutations were non-vacuous:
 Production reachability is structural and exact: `drain_peer_inbox_text` and
 `native_overlay_attachment_plans` both compile with
 `get_control_inbox_from(&identity, &manual.peer_osl_user_id)`. Renderer invokes, Tauri registration
-and ACLs reach those drain functions. This closes the production-call reachability sub-boundary
-previously named as B5's smallest client gap.
+and ACLs reach those drain functions. The initial adjudication incorrectly treated this source
+reachability as closing B5's production-drain behavioural sub-boundary.
 
 The ceiling remains explicit. All three exact broker relay fakes omit mandatory
 `filtered_sender_id`, so no nonempty broker-level behavioral positive succeeds on these bytes.
 No authenticated live drain or two-identity receive ran. Prekeys and wrapped-key production paths
-remain incomplete. The new point is therefore `test-proven-only`, not `runtime-proven` or
-`verified-live`.
+remain incomplete. The client evidence is `test-proven-only`; it does not earn a production-drain
+point.
 
 ### `79f12eb`: helper proved, production viewer seam unproved; no A6/D2/D4 point
 
@@ -1385,11 +1387,85 @@ Checklist arithmetic:
 
 ```text
 A: 8 / 40
-B: 8 / 30   (B5 now 2/4)
+B: 7 / 30   (B5 remains 1/4)
 D: 7 / 30
-Total: 98 / 303 = 32%
+Total: 97 / 303 = 32%
 ```
 
 ## Acceptance rows this earns
 
-- B5 +1.
+- None. The original B5 +1 is retracted by §25.
+
+---
+
+## 25 · B5 counteradjudication: `c0279dc` and later `aca9dae`
+
+This correction makes the point movement explicit:
+
+```text
+98 / 303 after a509cb2
+-1 because c0279dc did not cross the frozen broker-drain boundary
++0 for aca9dae, which still stops at the shared fetch helper
+= 97 / 303
+```
+
+### Exact `c0279dc`: client guards pass; actual broker positive fails
+
+An independent clean archive of `c0279dc9434d138234d435935fbb2779095e408e` reproduced the three
+originally cited focused results:
+
+```text
+filtered_control_inbox...                                           2 passed
+unfiltered_or_wrong_filter_echo...                                  1 passed
+text_and_attachment_drains_are_bound_to_the_active_peer_sender      1 passed
+```
+
+The first two execute only `KeyServerClient`. The third, at `broker.rs:6463`, uses
+`include_str!("broker.rs")` and substring assertions; it executes neither
+`drain_peer_inbox_text` nor `native_overlay_attachment_plans`.
+
+All three exact broker relay fakes return `{"items": ...}` without mandatory
+`filtered_sender_id` (`native_discord_receive_e2e.rs:365`,
+`peer_attachment_network_e2e.rs:1157`, `sealed_relay_e2e.rs:274`). The actual text-drain
+characterization test
+`foreign_sender_rows_head_of_line_block_the_drain_at_the_page_boundary` still deletes one of 64
+foreign blockers before expecting delivery. Re-running it on exact `c0279dc` fails earlier:
+
+```text
+the drain still reports success: "OSL could not receive protected messages"
+test result: FAILED. 0 passed; 1 failed; 3 filtered out
+```
+
+There is no corresponding behavioral attachment positive. Therefore `a509cb2` relied on direct
+client behavior plus source reachability, contrary to the frozen B5 production-drain boundary.
+
+### Exact later `aca9dae`: real refusals, but still helper-level
+
+The exact `aca9dae54dd8496b0af780bbe9f7ee96920f0454` archive passes:
+
+```text
+broker::tests::production_receive_boundary...   2 passed; 0 failed; 666 filtered out
+```
+
+The refusal test genuinely rejects missing echo, echo mismatch, an echoed-A page containing a B
+row, and an unfiltered A+B page. The positive genuinely sends signed HTTP requests through
+`KeyServerClient` and returns two nonempty A rows followed by a separately requested B row.
+
+But both tests directly call `fetch_peer_control_inbox` (`broker.rs:6636,6660`), not either actual
+drain. The text and attachment fixtures are two-byte type markers checked only by
+`is_native_overlay_relay_bundle` and `is_attachment_bundle`; they are not authenticated, decrypted,
+or parsed by the production consumers. The fake server has no pending-row collection or deletion
+semantics: it preprograms the A response then the B response, so B cannot be consumed and the test
+does not retain 64 foreign blockers. The text/attachment consumer linkage remains source-text
+inspection.
+
+Changing the shared helper to `get_control_inbox(identity)` makes the helper positive fail, which
+proves the helper's signed-filter dependency. It does not promote the test into production-drain
+behavior.
+
+Status is `test-proven-only` below B5's held boundary. No authenticated live drain, actual
+text-plus-attachment broker delivery with blockers retained, or two-identity receive is proved.
+
+## Acceptance rows this earns
+
+- None. B5 returns from 2/4 to 1/4; total returns from 98/303 to 97/303.

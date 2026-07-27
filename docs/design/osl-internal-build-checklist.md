@@ -35,7 +35,7 @@ they qualify work. Scope additions increase the denominator; regressions remove 
 ## Progress snapshot
 
 ```text
-Provisional verified progress: 98 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
+Provisional verified progress: 97 / 303 points = 32%   (was 85 / 303 = 28%, which understated section H by 2)
 Confidence: low (several dirty concurrent worktrees and exact-build rechecks remain)
 Critical path:
 security identity/attribution → reviewed ratchet → two-identity proof
@@ -78,13 +78,19 @@ away, per master §16.3.
   replay/reorder/skipped-key/eviction/rollback/restart behaviour with non-vacuous negative controls.
   Status remains `test-proven-only` on an `implemented-unwired` path; no runtime row moved.
 
-**2026-07-27 signed per-sender drain adjudication (+1).**
+**2026-07-27 signed per-sender drain counteradjudication (+0).**
 
-- B5 +1 · exact `c0279dc` makes both compiled production receive drains call the signed
-  per-sender client, whose nonempty positive and missing/wrong-echo/cross-sender refusals are
-  mutation-sensitive. This earns only the production-call reachability sub-boundary. The exact
-  broker E2E fakes do not produce a valid echoed nonempty response, and no authenticated live drain
-  ran, so status is `test-proven-only`.
+- B5 +0 · the `a509cb2` award on exact `c0279dc` is retracted. Its two-sender success runs only
+  through the keystore client, while `broker.rs:6463` is source-text inspection. All three broker
+  relay fakes omit mandatory `filtered_sender_id`; the actual head-of-line broker test fails before
+  delivery and still characterizes starvation. Source reachability is not production-drain
+  behaviour.
+- B5 +0 · exact later commit `aca9dae` strengthens the shared fetch helper but still stops below the
+  frozen broker-drain boundary. Its two passing tests call `fetch_peer_control_inbox` directly, not
+  either actual drain; its type-marker rows are not authenticated/decrypted notices; and its
+  stateless fake preprograms A then B, so it does not prove 64 foreign blockers remain untouched.
+  The four missing/mismatched/cross-sender/unfiltered refusals are real `test-proven-only` evidence,
+  but do not supply the required positive.
 - A6/D2/D4 +0 · exact `79f12eb` proves its policy helper, but deleting the helper call from
   `open_pending_inner` leaves the focused test green. Source ordering improved; the real viewer seam
   and image continuation are not behaviorally proved.
@@ -203,7 +209,7 @@ timestamped deltas, not keep this number manually forever.
   order and burn timing, so A6/social-graph secrecy is explicitly unearned. Full marks remain held.
   `needs: none` `weight: 4` `earned: 3`
 
-## B · Encryption and two-identity communication — 30 points (8 earned)
+## B · Encryption and two-identity communication — 30 points (7 earned)
 
 - 🟨 **B1 · Current message encryption primitives** — hybrid confidentiality exists **and is
   genuinely live** (ML-KEM-768 in every recipient slot, `crates/ipc/src/wire_v2.rs:731`);
@@ -238,15 +244,15 @@ timestamped deltas, not keep this number manually forever.
   resolving the old deployment uncertainty. **2026-07-27 no-point adjudication:** commit `284f0a5`
   bounds scheduled control-inbox and request-receipt cleanup to 100 rows per table per tick and is
   `test-proven-only`; local worker tests do not prove the changed Worker is deployed or complete the
-  client production contract. **+1 awarded 2026-07-27 at the production-call reachability
-  sub-boundary:** exact `c0279dc` routes both text and attachment drains through
-  `get_control_inbox_from` for the active peer. Exact focused tests pass a nonempty signed positive
-  for two senders and refuse invalid filters, missing/wrong echoes and cross-sender rows; independent
-  mutations of each refusal and either drain binding fail. This is `test-proven-only`, not a live
-  authenticated drain: the exact broker E2E relay fakes omit the required echo, authenticated
-  filtered D1 selection remains `unknown`, and no deployed Git commit is inferred from the Worker
-  UUID. Prekeys, wrapped keys and two-identity receive remain unearned.
-  `needs: A2` `weight: 4` `earned: 2`
+  client production contract. **2026-07-27 correction:** the `a509cb2` +1 on exact `c0279dc` is
+  retracted because its broker gate is source-text inspection and its exact relay fakes omit the
+  mandatory echo; its actual head-of-line broker test fails before nonempty delivery. Exact later
+  `aca9dae` passes two shared-fetch-helper tests and genuinely refuses four unconfirmed/widened
+  pages, but it still calls neither actual drain, processes only two-byte type markers, and uses a
+  stateless A-then-B fake rather than retaining 64 foreign blockers. B5 therefore stays below the
+  production-drain behavioural boundary. Authenticated filtered D1 selection remains `unknown`,
+  and no deployed Git commit is inferred from the Worker UUID. Prekeys, wrapped keys and
+  two-identity receive remain unearned. `needs: A2` `weight: 4` `earned: 1`
 - ⬜ **B6 · Controlled two-identity proof** — handshake, send, receive, offline queue, restart,
   drain, peer attribution. `needs: B3,B4,B5` `weight: 3` `earned: 0`
 - ⬜ **B7 · Independent crypto review** — required before uncontrolled traffic/public superiority
