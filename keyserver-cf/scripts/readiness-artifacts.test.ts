@@ -5,6 +5,7 @@ import {
   BRIDGE_REQUIRED_TEXT,
   MIGRATION_0031_SURFACES,
   READINESS_MANIFEST_FORMAT,
+  readinessArchiveId,
   sha256,
   validateReadinessSelection,
   verifyReadinessBundle,
@@ -24,16 +25,35 @@ function manifest(
   artifact: "A" | "B",
   bundle: Uint8Array,
 ): Record<string, unknown> {
+  const source = {
+    commit: "a".repeat(40),
+    repository_tree: "b".repeat(40),
+    keyserver_tree: "c".repeat(40),
+    archive_file: "source.tar",
+    archive_sha256: "d".repeat(64),
+    archive_bytes: 1,
+  };
+  const tool = (name: "builder" | "verifier" | "contract") => ({
+    path: {
+      builder: "keyserver-cf/scripts/build-readiness-artifacts.mjs",
+      verifier: "keyserver-cf/scripts/admit-readiness-archive.mjs",
+      contract: "keyserver-cf/scripts/readiness-artifact-contract.mjs",
+    }[name],
+    sha256: "e".repeat(64),
+    bytes: 1,
+  });
+  const toolchain = {
+    builder: tool("builder"),
+    verifier: tool("verifier"),
+    contract: tool("contract"),
+    clean_checkout_required: true,
+  };
   return {
     format: READINESS_MANIFEST_FORMAT,
+    archive_id: readinessArchiveId(source, toolchain),
     artifact,
     role: artifact === "A" ? "pre-0031-bridge" : "0031-aware-final",
-    source: {
-      commit: "a".repeat(40),
-      repository_tree: "b".repeat(40),
-      keyserver_tree: "c".repeat(40),
-      archive_sha256: "d".repeat(64),
-    },
+    source,
     build: {
       entrypoint: "src/index.ts",
       aliases: artifact === "A" ? BRIDGE_ALIASES : {},
@@ -45,10 +65,17 @@ function manifest(
         "--dry-run",
         "--minify",
       ],
+      wrangler_version: "4.110.0",
       bundle_file:
         artifact === "A" ? "artifact-a.bridge.mjs" : "artifact-b.final.mjs",
       bundle_sha256: sha256(bundle),
       bundle_bytes: bundle.byteLength,
+      metafile_file:
+        artifact === "A"
+          ? "artifact-a.bridge.meta.json"
+          : "artifact-b.final.meta.json",
+      metafile_sha256: "f".repeat(64),
+      metafile_bytes: 1,
     },
     policy: {
       requires_0031: artifact === "B",

@@ -20,15 +20,23 @@ function expectedJson(response, status, body) {
 }
 
 async function main() {
-  const [manifestPath, bundlePath] = process.argv.slice(2);
-  if (!manifestPath || !bundlePath || process.argv.length !== 4) {
+  const [manifestPath, bundlePath, metafilePath] = process.argv.slice(2);
+  if (
+    !manifestPath ||
+    !bundlePath ||
+    !metafilePath ||
+    process.argv.length !== 5
+  ) {
     throw new Error(
-      "usage: node scripts/probe-readiness-bridge.mjs <artifact-a.manifest.json> <artifact-a.bridge.mjs>",
+      "usage: node scripts/probe-readiness-bridge.mjs " +
+        "<artifact-a.manifest.json> <artifact-a.bridge.mjs> " +
+        "<artifact-a.bridge.meta.json>",
     );
   }
   const manifest = await readAndVerifyReadinessArtifact(
     manifestPath,
     bundlePath,
+    metafilePath,
   );
   if (manifest.artifact !== "A") {
     throw new Error("bridge probe requires artifact A");

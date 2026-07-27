@@ -15,7 +15,7 @@
     "gen:link-grant-key": "node scripts/gen-link-grant-key.mjs",
     "readiness:build": "node scripts/build-readiness-artifacts.mjs",
     "readiness:probe-bridge": "node scripts/probe-readiness-bridge.mjs",
-    "readiness:select": "node scripts/validate-readiness-selection.mjs"
+    "readiness:admit": "node scripts/admit-readiness-archive.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",
