@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import { ATTACHMENT_SWEEP_BATCH_SIZE } from "./attachment-limits.js";
 
 export const ATTACHMENT_SWEEP_LEASE_SECONDS = 2 * 60;
 export const ATTACHMENT_SWEEP_RETRY_BASE_SECONDS = 5 * 60;
@@ -6,6 +7,17 @@ export const ATTACHMENT_SWEEP_RETRY_MAX_SECONDS = 6 * 60 * 60;
 
 const WORKER_ID_RE = /^[0-9a-f]{32}$/;
 const CLAIM_TOKEN_RE = /^[0-9a-f]{64}$/;
+const PREDECESSOR_ADOPTION_FORMAT =
+  "osl.cipher-store.predecessor-adoption.v1";
+
+export type AttachmentClaimOrigin =
+  | "lineaged"
+  | "sweep"
+  | "completion"
+  | "predecessor_adoption";
+export type AttachmentStorageFenceState =
+  | "pending"
+  | "object_absent_confirmed";
 
 export interface AttachmentSweepClaim {
   attachment_id: string;
@@ -19,6 +31,8 @@ export interface AttachmentSweepClaim {
   lease_version: number;
   lease_expires_at: number;
   attempt_count: number;
+  claim_origin: AttachmentClaimOrigin;
+  storage_fence_state: AttachmentStorageFenceState;
 }
 
 interface ClaimedIdentity {
@@ -28,6 +42,8 @@ interface ClaimedIdentity {
   lease_version: number;
   lease_expires_at: number;
   attempt_count: number;
+  claim_origin: AttachmentClaimOrigin;
+  storage_fence_state: AttachmentStorageFenceState;
 }
 
 export type AttachmentSweepCompletion =
@@ -36,6 +52,10 @@ export type AttachmentSweepCompletion =
   | "stale";
 
 export type AttachmentReadyCompletion = "ready" | "stale";
+export type AttachmentStorageFenceCompletion =
+  | "confirmed"
+  | "already_confirmed"
+  | "stale";
 
 function randomHex(bytes: number): string {
   const value = new Uint8Array(bytes);
@@ -50,15 +70,38 @@ export function newAttachmentSweepWorkerId(): string {
 }
 
 /// Read-only migration-order gate. It names every claim column the Worker
-/// relies on so an absent or partial 0008 schema refuses before legacy expiry
+/// relies on so an absent or partial 0009 schema refuses before legacy expiry
 /// marking, R2 cleanup, or attachment metadata deletion.
 export async function requireAttachmentSweepClaimSchema(env: Env): Promise<void> {
   await env.DB.prepare(
     `SELECT attachment_id, worker_id, claim_token, lease_version,
-            lease_expires_at, retry_not_before, attempt_count, last_claimed_at
+            lease_expires_at, retry_not_before, attempt_count, last_claimed_at,
+            claim_origin, storage_fence_state
        FROM attachment_sweep_claims
       LIMIT 0`,
   ).all();
+  const marker = await env.DB.prepare(
+    `SELECT format, migration_started_at, eligible_created_through,
+            max_claims_per_cycle
+       FROM attachment_predecessor_adoption
+      WHERE singleton = 1
+      LIMIT 1`,
+  ).first<{
+    format: string;
+    migration_started_at: number;
+    eligible_created_through: number;
+    max_claims_per_cycle: number;
+  }>();
+  if (
+    marker?.format !== PREDECESSOR_ADOPTION_FORMAT
+    || !Number.isSafeInteger(marker.migration_started_at)
+    || marker.migration_started_at <= 0
+    || !Number.isSafeInteger(marker.eligible_created_through)
+    || marker.eligible_created_through <= marker.migration_started_at
+    || marker.max_claims_per_cycle !== ATTACHMENT_SWEEP_BATCH_SIZE
+  ) {
+    throw new Error("attachment predecessor adoption marker is invalid");
+  }
 }
 
 function validateWorkerId(workerId: string): void {
@@ -73,6 +116,12 @@ function validateClaim(claim: AttachmentSweepClaim): void {
     || !CLAIM_TOKEN_RE.test(claim.claim_token)
     || !Number.isSafeInteger(claim.lease_version)
     || claim.lease_version <= 0
+    || !["lineaged", "sweep", "completion", "predecessor_adoption"].includes(
+      claim.claim_origin,
+    )
+    || !["pending", "object_absent_confirmed"].includes(
+      claim.storage_fence_state,
+    )
   ) {
     throw new Error("attachment sweep claim identity is invalid");
   }
@@ -99,16 +148,31 @@ export async function claimNextExpiredAttachment(
   const claimed = await env.DB.prepare(
     `INSERT INTO attachment_sweep_claims
        (attachment_id, worker_id, claim_token, lease_version,
-        lease_expires_at, retry_not_before, attempt_count, last_claimed_at)
-     SELECT candidate.id, ?, ?, 1, ?, 0, 1, ?
+        lease_expires_at, retry_not_before, attempt_count, last_claimed_at,
+        claim_origin, storage_fence_state)
+     SELECT candidate.id, ?, ?, 1, ?, 0, 1, ?,
+            CASE
+              WHEN candidate.state = 'completing'
+               AND existing.attachment_id IS NULL
+                THEN 'predecessor_adoption'
+              ELSE 'sweep'
+            END,
+            'pending'
        FROM attachment_objects AS candidate
        LEFT JOIN attachment_sweep_claims AS existing
          ON existing.attachment_id = candidate.id
+       LEFT JOIN attachment_predecessor_adoption AS adoption
+         ON adoption.singleton = 1
       WHERE candidate.expires_at <= ?
         AND candidate.state IN ('uploading', 'completing', 'ready')
         AND (
           candidate.state <> 'completing'
           OR existing.attachment_id IS NOT NULL
+          OR (
+            adoption.format = 'osl.cipher-store.predecessor-adoption.v1'
+            AND adoption.max_claims_per_cycle = 100
+            AND candidate.created_at <= adoption.eligible_created_through
+          )
         )
         AND (
           existing.attachment_id IS NULL
@@ -130,7 +194,8 @@ export async function claimNextExpiredAttachment(
      WHERE attachment_sweep_claims.lease_expires_at <= ?
        AND attachment_sweep_claims.retry_not_before <= ?
      RETURNING attachment_id, worker_id, claim_token, lease_version,
-               lease_expires_at, attempt_count`,
+               lease_expires_at, attempt_count, claim_origin,
+               storage_fence_state`,
   ).bind(
     workerId,
     claimToken,
@@ -155,7 +220,9 @@ export async function claimNextExpiredAttachment(
             claim.claim_token,
             claim.lease_version,
             claim.lease_expires_at,
-            claim.attempt_count
+            claim.attempt_count,
+            claim.claim_origin,
+            claim.storage_fence_state
        FROM attachment_objects AS object_row
        JOIN attachment_sweep_claims AS claim
          ON claim.attachment_id = object_row.id
@@ -196,8 +263,9 @@ export async function acquireAttachmentCompletionClaim(
   const claimed = await env.DB.prepare(
     `INSERT INTO attachment_sweep_claims
        (attachment_id, worker_id, claim_token, lease_version,
-        lease_expires_at, retry_not_before, attempt_count, last_claimed_at)
-     SELECT candidate.id, ?, ?, 1, ?, 0, 1, ?
+        lease_expires_at, retry_not_before, attempt_count, last_claimed_at,
+        claim_origin, storage_fence_state)
+     SELECT candidate.id, ?, ?, 1, ?, 0, 1, ?, 'completion', 'pending'
        FROM attachment_objects AS candidate
        LEFT JOIN attachment_sweep_claims AS existing
          ON existing.attachment_id = candidate.id
@@ -222,7 +290,8 @@ export async function acquireAttachmentCompletionClaim(
      WHERE attachment_sweep_claims.lease_expires_at <= ?
        AND attachment_sweep_claims.retry_not_before <= ?
      RETURNING attachment_id, worker_id, claim_token, lease_version,
-               lease_expires_at, attempt_count`,
+               lease_expires_at, attempt_count, claim_origin,
+               storage_fence_state`,
   ).bind(
     workerId,
     claimToken,
@@ -286,7 +355,9 @@ export async function acquireAttachmentCompletionClaim(
             claim.claim_token,
             claim.lease_version,
             claim.lease_expires_at,
-            claim.attempt_count
+            claim.attempt_count,
+            claim.claim_origin,
+            claim.storage_fence_state
        FROM attachment_objects AS object_row
        JOIN attachment_sweep_claims AS claim
          ON claim.attachment_id = object_row.id
@@ -413,6 +484,71 @@ export async function releaseAttachmentCompletionClaimAfterFailure(
   return "released";
 }
 
+/// Persist the R2-side absence fence for this exact completing claim.
+///
+/// The caller invokes this only after a successful multipart abort followed
+/// by an empty HEAD, or after deleting a mismatched completed object and
+/// re-observing absence. The marker survives failure release and monotonic
+/// lease recovery. Metadata deletion below requires it for every `completing`
+/// row, so a crash retains quota instead of turning an ambiguous R2 result
+/// into a missing attachment row.
+export async function confirmAttachmentObjectAbsent(
+  env: Env,
+  claim: AttachmentSweepClaim,
+  now: number,
+): Promise<AttachmentStorageFenceCompletion> {
+  validateClaim(claim);
+  if (
+    claim.state !== "completing"
+    || !Number.isSafeInteger(now)
+    || now <= 0
+  ) {
+    throw new Error("attachment storage fence input is invalid");
+  }
+  const confirmed = await env.DB.prepare(
+    `UPDATE attachment_sweep_claims
+        SET storage_fence_state = 'object_absent_confirmed'
+      WHERE attachment_id = ?
+        AND worker_id = ?
+        AND claim_token = ?
+        AND lease_version = ?
+        AND lease_expires_at > ?
+        AND EXISTS (
+          SELECT 1 FROM attachment_objects AS object_row
+           WHERE object_row.id = attachment_sweep_claims.attachment_id
+             AND object_row.state = 'completing'
+        )
+      RETURNING attachment_id`,
+  ).bind(
+    claim.attachment_id,
+    claim.worker_id,
+    claim.claim_token,
+    claim.lease_version,
+    now,
+  ).first<{ attachment_id: string }>();
+  if (confirmed?.attachment_id === claim.attachment_id) return "confirmed";
+
+  const current = await env.DB.prepare(
+    `SELECT storage_fence_state
+       FROM attachment_sweep_claims
+      WHERE attachment_id = ?
+        AND worker_id = ?
+        AND claim_token = ?
+        AND lease_version = ?
+        AND lease_expires_at > ?
+      LIMIT 1`,
+  ).bind(
+    claim.attachment_id,
+    claim.worker_id,
+    claim.claim_token,
+    claim.lease_version,
+    now,
+  ).first<{ storage_fence_state: AttachmentStorageFenceState }>();
+  return current?.storage_fence_state === "object_absent_confirmed"
+    ? "already_confirmed"
+    : "stale";
+}
+
 /// Delete metadata only for the exact claim that already completed R2 cleanup.
 ///
 /// Repeating completion after the row was deleted is success. A row that still
@@ -435,6 +571,10 @@ export async function completeAttachmentSweepClaim(
              AND owned.claim_token = ?
              AND owned.lease_version = ?
              AND owned.lease_expires_at > ?
+             AND (
+               attachment_objects.state <> 'completing'
+               OR owned.storage_fence_state = 'object_absent_confirmed'
+             )
         )
      RETURNING id`,
   ).bind(

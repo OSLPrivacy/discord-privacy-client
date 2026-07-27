@@ -50,12 +50,21 @@ afterEach(() => {
 });
 
 describe("multipart completion versus sweep fencing", () => {
-  it("refuses active completion ownership and unlineaged completing state", async () => {
+  it("preserves active lineage while adopting only marker-bounded predecessor state", async () => {
     const database = migratedD1();
     const storage = memoryR2();
     const env = envWith(database.d1, storage.bucket);
     const activeId = "a".repeat(32);
     const unlineagedId = "b".repeat(32);
+    const postCutoffId = "e".repeat(32);
+    database.exec(
+      `UPDATE attachment_predecessor_adoption
+          SET migration_started_at = ?,
+              eligible_created_through = ?
+        WHERE singleton = 1`,
+      START - 100,
+      START + 100,
+    );
     database.exec(
       `INSERT INTO attachment_objects
          (id, object_key, size_bytes, expires_at, content_expires_at,
@@ -98,6 +107,32 @@ describe("multipart completion versus sweep fencing", () => {
     );
     await expect(
       claimNextExpiredAttachment(env, "f".repeat(32), START + 1),
+    ).resolves.toMatchObject({
+      attachment_id: unlineagedId,
+      claim_origin: "predecessor_adoption",
+      lease_version: 1,
+      storage_fence_state: "pending",
+    });
+    database.exec(
+      "DELETE FROM attachment_objects WHERE id IN (?, ?)",
+      activeId,
+      unlineagedId,
+    );
+
+    database.exec(
+      `INSERT INTO attachment_objects
+         (id, object_key, size_bytes, expires_at, content_expires_at,
+          created_at, fetch_token_sha256_hex, state, upload_id)
+       VALUES (?, ?, 1, ?, ?, ?, ?, 'completing', 'upload-post-cutoff')`,
+      postCutoffId,
+      "attachments/post-cutoff-completing",
+      START + 199,
+      START + 3600,
+      START + 101,
+      DIGEST,
+    );
+    await expect(
+      claimNextExpiredAttachment(env, "9".repeat(32), START + 200),
     ).resolves.toBeNull();
   });
 

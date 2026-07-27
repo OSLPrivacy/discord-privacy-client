@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import migration0008 from "../migrations/0008_attachment_sweep_claims.sql?raw";
+import migration0009 from "../migrations/0009_predecessor_completing_adoption.sql?raw";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import {
@@ -117,7 +118,7 @@ afterEach(() => {
 });
 
 describe("transactional attachment sweep claims", () => {
-  it("pins the exact 0004/0006 object boundary and keeps 0008 inert for the old Worker", async () => {
+  it("pins the object boundary and keeps additive 0008/0009 inert for the old Worker", async () => {
     const objectColumns = await d1All<{ name: string }>(
       "PRAGMA table_info(attachment_objects)",
     );
@@ -157,6 +158,8 @@ describe("transactional attachment sweep claims", () => {
       "retry_not_before",
       "attempt_count",
       "last_claimed_at",
+      "claim_origin",
+      "storage_fence_state",
     ]);
     const foreignKeys = await d1All<{ table: string; from: string; to: string }>(
       "PRAGMA foreign_key_list(attachment_sweep_claims)",
@@ -166,6 +169,46 @@ describe("transactional attachment sweep claims", () => {
       from: "attachment_id",
       to: "id",
     }));
+
+    const uncommented0009 = migration0009.replace(/--[^\n]*/g, "");
+    const statements0009 = uncommented0009
+      .split(";")
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    expect(statements0009).toHaveLength(4);
+    expect(statements0009[0]).toMatch(
+      /^ALTER TABLE attachment_sweep_claims[\s\S]+ADD COLUMN claim_origin/,
+    );
+    expect(statements0009[1]).toMatch(
+      /^ALTER TABLE attachment_sweep_claims[\s\S]+ADD COLUMN storage_fence_state/,
+    );
+    expect(statements0009[2]).toMatch(
+      /^CREATE TABLE attachment_predecessor_adoption/,
+    );
+    expect(statements0009[3]).toMatch(
+      /^INSERT INTO attachment_predecessor_adoption/,
+    );
+    expect(uncommented0009).not.toMatch(
+      /\b(?:DROP\s+TABLE|UPDATE\s+\w+|DELETE\s+FROM|CREATE\s+TRIGGER)\b/i,
+    );
+    const marker = await d1First<{
+      format: string;
+      migration_started_at: number;
+      eligible_created_through: number;
+      max_claims_per_cycle: number;
+    }>(
+      `SELECT format, migration_started_at, eligible_created_through,
+              max_claims_per_cycle
+         FROM attachment_predecessor_adoption
+        WHERE singleton = 1`,
+    );
+    expect(marker).toMatchObject({
+      format: "osl.cipher-store.predecessor-adoption.v1",
+      max_claims_per_cycle: 100,
+    });
+    expect(marker.eligible_created_through - marker.migration_started_at).toBe(
+      3600,
+    );
   });
 
   it("allows only one concurrent identity-bound claim for one object", async () => {

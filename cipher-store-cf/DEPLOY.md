@@ -58,6 +58,24 @@ an empty post-abort HEAD permits incomplete metadata removal. The
 presence of this file in a checkout is not evidence that any live D1 database
 has applied it.
 
+Migration `0009_predecessor_completing_adoption.sql` is the additive rolling
+deployment recovery boundary for rows a predecessor Worker left in
+`completing` without a claim. Apply it before its matching Worker. It records
+one immutable one-hour creation cutoff and adds claim origin plus R2 absence
+stage; the 0008 Worker ignores all three. The rollout must replace predecessor
+Workers inside that hour. The matching Worker adopts only expired,
+unlineaged rows created through the cutoff, at the existing 100-row cycle
+bound. It never shortens or recovers an active lineaged lease.
+
+For an adopted row the Worker performs HEAD, multipart abort, and a mandatory
+post-abort HEAD. A correctly sized object is promoted with the exact
+Worker/token/lease-version ready CAS. Empty or mismatched storage is eligible
+for metadata removal only after an exact claim/version CAS records confirmed
+absence. A crash before metadata deletion keeps the attachment row, quota, and
+absence marker; retry rechecks HEAD and completes idempotently. Missing or
+malformed 0009 marker state refuses before any R2 call. The migration and
+source tests are not evidence that production D1 has applied 0009.
+
 ## §3 Provision KV (rate-limit)
 
 ```sh

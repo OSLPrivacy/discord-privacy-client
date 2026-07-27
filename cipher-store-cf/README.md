@@ -130,17 +130,25 @@ The mailbox must exist before the route is enabled.
 - **Cleanup cron** runs every 5 minutes and deletes expired rows. For view-once links it also destroys the ciphertext of any link past its reservation window or its TTL, regardless of client confirmation, and purges the content-free receipt a day after expiry.
 - **View-once links record no IP, user agent, referrer or timing.** The entire retrieval record is `retrieved_at` at second granularity plus a small integer count.
 - Attachment cleanup claims at most 100 expired objects per invocation through
-  migration `0008`'s D1 companion table. Each claim is bound to a random Worker
+  migration `0008`'s D1 companion table. Migration `0009` adds a fixed
+  migration-owned one-hour creation cutoff for adopting expired predecessor
+  `completing` rows that have no claim; rows outside that cutoff cannot use the
+  exception, and an existing lineaged claim still requires lease expiry. Each
+  claim is bound to a random Worker
   identity and token, fenced by a monotonic lease version, and recoverable after
   a two-minute lease. Multipart completion acquires that same exclusive claim
   before R2 assembly and publishes `ready` only if its exact version still
   owns the row. Recovery promotes a correctly sized completed R2 object instead
   of deleting it; an incomplete upload is removed only after abort fences any
-  later completion and a post-abort HEAD remains empty. Only the exact live
-  claim may then delete metadata. A failed object keeps its indexed row,
+  later completion, a post-abort HEAD remains empty, and the exact
+  token/version claim records that absence. This marker survives crash,
+  backoff, and lease recovery. Only the exact live claim may then delete
+  metadata, so quota remains reserved until deletion is durable. A failed
+  object keeps its indexed row,
   receives bounded retry backoff, and does not prevent unrelated claims from
   running. The previous Worker ignores the additive claim table, while the
-  matching Worker refuses before any sweep mutation if the table is absent.
+  matching Worker refuses before any sweep mutation if either the 0009 columns
+  or its singleton adoption marker is absent or malformed.
 
 ## Deploy
 
