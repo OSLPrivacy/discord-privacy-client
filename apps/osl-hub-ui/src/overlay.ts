@@ -30,6 +30,7 @@ import {
 import {
   nativeDiscordAttributionsAreUnique,
   parseNativeDiscordRowAttribution,
+  projectNativeDiscordVisibleRow,
   type NativeDiscordRowAttribution,
   type NativeDiscordRowOrientation,
 } from "./discord-row-attribution";
@@ -705,33 +706,34 @@ function applyDecodedTranscript(rows: readonly RehydratedDiscordRow[]): void {
   decodedRowBindings.clear();
   const presentation = decodedRowPresentation();
   for (const row of rows) {
-    // Undecodable, or unplaceable. Either way OSL owns no pixel over it.
-    if (row.plaintext === null || row.row === null
-      || row.orientation === null || row.attribution === null) continue;
+    const visible = projectNativeDiscordVisibleRow(row);
+    // Undecodable, unplaceable or internally inconsistent. Either way OSL owns
+    // no pixel over it.
+    if (visible === null) continue;
     // Producer-owned row identity, not position or renderer input. A reordered
     // response cannot silently reuse the DOM node for another Discord row.
-    const key = `decoded-${row.attribution.nativeLocatorSha256}`;
-    messagePlaintext.set(key, row.plaintext);
+    const key = visible.key;
+    messagePlaintext.set(key, visible.plaintext);
     decodedRows.push({
       key,
       kind: "text",
-      direction: row.orientation,
-      author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity,
+      direction: visible.direction,
+      author: visible.author === "self" ? localIdentity : verifiedFriendIdentity,
       timestamp: transcriptTimestamp(),
-      plaintext: row.plaintext,
+      plaintext: visible.plaintext,
       // Born in whichever mode the eye is already in, so a read that lands with
       // the eye off never flashes plaintext.
       plaintextHidden: !decryptDisplayEnabled,
     });
     decodedRowBindings.set(key, {
       ...presentation,
-      messageId: row.attribution.discordMessageId,
-      nativeLocatorSha256: row.attribution.nativeLocatorSha256,
-      carrierSha256: row.attribution.carrierSha256,
-      leftPx: row.row.leftPx,
-      topPx: row.row.topPx,
-      widthPx: row.row.widthPx,
-      heightPx: row.row.heightPx,
+      messageId: visible.discordMessageId,
+      nativeLocatorSha256: visible.nativeLocatorSha256,
+      carrierSha256: visible.carrierSha256,
+      leftPx: visible.row.leftPx,
+      topPx: visible.row.topPx,
+      widthPx: visible.row.widthPx,
+      heightPx: visible.row.heightPx,
     });
   }
   syncTranscript();

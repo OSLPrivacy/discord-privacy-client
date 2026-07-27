@@ -1640,6 +1640,77 @@ pub struct RehydratedRowAttribution {
     pub orientation: RehydratedRowOrientation,
 }
 
+/// Exact command-boundary DTO for one rehydrated native Discord row.
+///
+/// Constructed only from the broker result plus a rectangle that `main.rs`
+/// already expressed inside OSL's protected window. Plaintext, direction and
+/// attribution remain all-or-none.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RehydratedNativeDiscordRowDto {
+    flagtext: String,
+    plaintext: Option<String>,
+    orientation: Option<RehydratedRowOrientation>,
+    attribution: Option<RehydratedRowAttribution>,
+    row: Option<NativeDiscordRowRectDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDiscordRowRectDto {
+    left_px: f64,
+    top_px: f64,
+    width_px: f64,
+    height_px: f64,
+}
+
+pub fn rehydrated_native_discord_row_dto(
+    mut row: RehydratedNativeDiscordRow,
+    relative_rect: Option<[f64; 4]>,
+) -> RehydratedNativeDiscordRowDto {
+    let attribution_agrees = match (
+        row.plaintext.as_ref(),
+        row.orientation,
+        row.attribution.as_ref(),
+    ) {
+        (None, None, None) => true,
+        (Some(_), Some(orientation), Some(attribution)) => {
+            attribution.orientation == orientation
+                && matches!(
+                    (attribution.poster, orientation),
+                    (
+                        RehydratedRowPoster::SelfAccount,
+                        RehydratedRowOrientation::Outgoing
+                    ) | (
+                        RehydratedRowPoster::PeerAccount,
+                        RehydratedRowOrientation::Incoming
+                    )
+                )
+        }
+        _ => false,
+    };
+    if !attribution_agrees {
+        row.plaintext = None;
+        row.orientation = None;
+        row.attribution = None;
+    }
+    let row_rect = relative_rect.map(
+        |[left_px, top_px, width_px, height_px]| NativeDiscordRowRectDto {
+            left_px,
+            top_px,
+            width_px,
+            height_px,
+        },
+    );
+    RehydratedNativeDiscordRowDto {
+        flagtext: row.flagtext,
+        plaintext: row.plaintext,
+        orientation: row.orientation,
+        attribution: row.attribution,
+        row: row_rect,
+    }
+}
+
 /// Fixed labels for the decode leg of one transcript rehydration.
 ///
 /// Every one of these is a `&'static str` chosen here and a count derived from
@@ -1977,42 +2048,16 @@ pub fn rehydrate_native_discord_overlay_history(
                 counts.view_once_skipped += 1;
                 return None;
             }
-            let (poster, orientation) = match (evidence.poster, authenticated.orientation) {
-                (
-                    crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount,
-                    PeerWireOrientation::SelfToPeer,
-                ) => (RehydratedRowPoster::SelfAccount, RehydratedRowOrientation::Outgoing),
-                (
-                    crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
-                    PeerWireOrientation::PeerToSelf,
-                ) => (RehydratedRowPoster::PeerAccount, RehydratedRowOrientation::Incoming),
-                _ => {
-                    counts.refused += 1;
-                    return None;
+            match bind_authenticated_native_row(evidence, authenticated) {
+                Some(bound) => {
+                    counts.plaintext += 1;
+                    Some(bound)
                 }
-            };
-            if !canonical_hex(&authenticated.blob_id, 16)
-                || !canonical_hex(&authenticated.ciphertext_sha256, 64)
-                || !bounded_attribution_id(&authenticated.payload.message_id)
-            {
-                counts.refused += 1;
-                return None;
+                None => {
+                    counts.refused += 1;
+                    None
+                }
             }
-            let attribution = RehydratedRowAttribution {
-                discord_message_id: evidence.discord_message_id.clone(),
-                poster_identity_sha256: evidence.poster_identity_sha256.clone(),
-                poster,
-                native_locator_sha256: evidence.native_locator_sha256.clone(),
-                carrier_sha256: evidence.carrier_sha256.clone(),
-                blob_id: authenticated.blob_id,
-                ciphertext_sha256: authenticated.ciphertext_sha256,
-                payload_id: authenticated.payload.message_id.clone(),
-                scope_binding_sha256: evidence.scope_binding_sha256.clone(),
-                window_generation: evidence.window_generation,
-                orientation,
-            };
-            counts.plaintext += 1;
-            Some((authenticated.payload.plaintext, orientation, attribution))
         },
     );
     let mut rows = rows;
@@ -2178,6 +2223,51 @@ struct AuthenticatedProsePointer {
     orientation: PeerWireOrientation,
     blob_id: String,
     ciphertext_sha256: String,
+}
+
+/// Join one native visible-row proof to one already authenticated protected
+/// pointer. This is the only constructor for downstream attribution DTOs.
+fn bind_authenticated_native_row(
+    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
+    authenticated: AuthenticatedProsePointer,
+) -> Option<(String, RehydratedRowOrientation, RehydratedRowAttribution)> {
+    let (poster, orientation) = match (evidence.poster, authenticated.orientation) {
+        (
+            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount,
+            PeerWireOrientation::SelfToPeer,
+        ) => (
+            RehydratedRowPoster::SelfAccount,
+            RehydratedRowOrientation::Outgoing,
+        ),
+        (
+            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+            PeerWireOrientation::PeerToSelf,
+        ) => (
+            RehydratedRowPoster::PeerAccount,
+            RehydratedRowOrientation::Incoming,
+        ),
+        _ => return None,
+    };
+    if !canonical_hex(&authenticated.blob_id, 16)
+        || !canonical_hex(&authenticated.ciphertext_sha256, 64)
+        || !bounded_attribution_id(&authenticated.payload.message_id)
+    {
+        return None;
+    }
+    let attribution = RehydratedRowAttribution {
+        discord_message_id: evidence.discord_message_id.clone(),
+        poster_identity_sha256: evidence.poster_identity_sha256.clone(),
+        poster,
+        native_locator_sha256: evidence.native_locator_sha256.clone(),
+        carrier_sha256: evidence.carrier_sha256.clone(),
+        blob_id: authenticated.blob_id,
+        ciphertext_sha256: authenticated.ciphertext_sha256,
+        payload_id: authenticated.payload.message_id.clone(),
+        scope_binding_sha256: evidence.scope_binding_sha256.clone(),
+        window_generation: evidence.window_generation,
+        orientation,
+    };
+    Some((authenticated.payload.plaintext, orientation, attribution))
 }
 
 fn authenticate_oriented_prose_pointer(
@@ -10036,6 +10126,341 @@ ok i will weekend again with you",
         assert_eq!(rows[0].attribution, None);
         let wire = serde_json::to_string(&rows).expect("rehydrated rows serialise");
         assert!(!wire.contains("\"orientation\":\"outgoing\""));
+    }
+
+    fn matrix_native_observation(
+        message_id: &str,
+        poster_identity: &str,
+        carrier: &str,
+        seed: i32,
+    ) -> crate::native_discord_adapter::NativeDiscordRowProviderObservation {
+        crate::native_discord_adapter::NativeDiscordRowProviderObservation {
+            discord_message_id: message_id.to_owned(),
+            poster_identity: poster_identity.to_owned(),
+            self_identity: "111111111111111111".to_owned(),
+            expected_peer_identity: "222222222222222222".to_owned(),
+            carrier: carrier.to_owned(),
+            row_runtime_id: vec![42, seed],
+            message_content_runtime_id: vec![42, seed + 1],
+            poster_avatar_runtime_id: vec![42, seed + 2],
+            self_avatar_runtime_id: vec![42, 900],
+            self_user_panel_runtime_id: vec![42, 901],
+            self_settings_runtime_id: vec![42, 902],
+            peer_avatar_runtime_id: vec![42, 903],
+            peer_header_runtime_id: vec![42, 904],
+        }
+    }
+
+    fn matrix_authenticated(
+        orientation: PeerWireOrientation,
+        payload_id: &str,
+        plaintext: &str,
+        fill: char,
+    ) -> AuthenticatedProsePointer {
+        AuthenticatedProsePointer {
+            payload: PeerProtectedPayload {
+                version: PEER_PROTECTED_VERSION,
+                message_id: payload_id.to_owned(),
+                created_at: 1,
+                expires_at: 2,
+                service_id: "discord".to_owned(),
+                conversation_binding: "trusted-scope".to_owned(),
+                sender_osl_user_id: "sender".to_owned(),
+                recipient_osl_user_id: "recipient".to_owned(),
+                plaintext: plaintext.to_owned(),
+                view_once: false,
+                require_capture_protection: true,
+                logical_message_id: None,
+                chunk_index: None,
+                chunk_count: None,
+                whole_sha256: None,
+            },
+            orientation,
+            blob_id: fill.to_string().repeat(16),
+            ciphertext_sha256: fill.to_string().repeat(64),
+        }
+    }
+
+    fn matrix_visible_row(
+        evidence: crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
+        carrier: &str,
+        top: i32,
+    ) -> crate::native_discord_adapter::VisibleMessageRow {
+        crate::native_discord_adapter::VisibleMessageRow {
+            locator_sha256: evidence.native_locator_sha256.clone(),
+            line: carrier.to_owned(),
+            decode_candidates: vec![carrier.to_owned()],
+            bounds: Some([10, top, 500, top + 24]),
+            attribution: Some(evidence),
+        }
+    }
+
+    #[test]
+    fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed() {
+        use crate::native_discord_adapter::{
+            native_row_attribution_from_provider, native_row_producer_batch_is_valid,
+            NativeDiscordRowPoster,
+        };
+
+        const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
+        const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
+        let own = native_row_attribution_from_provider(
+            matrix_native_observation(
+                "333333333333333333",
+                "111111111111111111",
+                OWN_CARRIER,
+                10,
+            ),
+            &[OWN_CARRIER.to_owned()],
+            "trusted-scope",
+            7,
+            0,
+        )
+        .expect("native self authority produces own evidence");
+        let peer = native_row_attribution_from_provider(
+            matrix_native_observation(
+                "444444444444444444",
+                "222222222222222222",
+                PEER_CARRIER,
+                20,
+            ),
+            &[PEER_CARRIER.to_owned()],
+            "trusted-scope",
+            7,
+            1,
+        )
+        .expect("native header participant produces peer evidence");
+        assert_eq!(own.poster, NativeDiscordRowPoster::SelfAccount);
+        assert_eq!(peer.poster, NativeDiscordRowPoster::PeerAccount);
+        let rows = vec![
+            matrix_visible_row(own.clone(), OWN_CARRIER, 10),
+            matrix_visible_row(peer.clone(), PEER_CARRIER, 40),
+        ];
+        assert!(native_row_producer_batch_is_valid(
+            &rows,
+            "trusted-scope",
+            7
+        ));
+        assert!(native_row_evidence_batch_is_valid(
+            &rows,
+            "trusted-scope",
+            7
+        ));
+
+        let opened = rehydrated_rows(
+            rows.iter().map(|row| {
+                (
+                    row.line.clone(),
+                    row.decode_candidates.clone(),
+                    row.bounds,
+                    row.attribution.clone(),
+                )
+            }),
+            |_, evidence| {
+                let evidence = evidence.expect("validated native evidence");
+                let authenticated = match evidence.poster {
+                    NativeDiscordRowPoster::SelfAccount => matrix_authenticated(
+                        PeerWireOrientation::SelfToPeer,
+                        "payload-own",
+                        "own plaintext",
+                        'a',
+                    ),
+                    NativeDiscordRowPoster::PeerAccount => matrix_authenticated(
+                        PeerWireOrientation::PeerToSelf,
+                        "payload-peer",
+                        "peer plaintext",
+                        'b',
+                    ),
+                };
+                bind_authenticated_native_row(evidence, authenticated)
+            },
+        );
+        assert!(rehydrated_attribution_ids_are_unique(&opened));
+        assert_eq!(opened[0].orientation, Some(RehydratedRowOrientation::Outgoing));
+        assert_eq!(opened[1].orientation, Some(RehydratedRowOrientation::Incoming));
+        let dto = opened
+            .into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                rehydrated_native_discord_row_dto(
+                    row,
+                    Some([1.0, 2.0 + index as f64 * 30.0, 300.0, 24.0]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let wire = serde_json::to_value(&dto).expect("command DTO serializes");
+        assert_eq!(wire[0]["attribution"]["poster"], "self_account");
+        assert_eq!(wire[0]["orientation"], "outgoing");
+        assert_eq!(wire[1]["attribution"]["poster"], "peer_account");
+        assert_eq!(wire[1]["orientation"], "incoming");
+        assert_eq!(wire[0]["row"]["widthPx"], 300.0);
+
+        let mut missing = rows.clone();
+        missing[0].attribution = None;
+        assert!(!native_row_evidence_batch_is_valid(
+            &missing,
+            "trusted-scope",
+            7
+        ));
+        let mut reordered = rows.clone();
+        reordered.swap(0, 1);
+        assert!(!native_row_producer_batch_is_valid(
+            &reordered,
+            "trusted-scope",
+            7
+        ));
+        assert!(!native_row_evidence_batch_is_valid(
+            &reordered,
+            "trusted-scope",
+            7
+        ));
+        let mut replay = rows.clone();
+        replay[1]
+            .attribution
+            .as_mut()
+            .unwrap()
+            .discord_message_id = own.discord_message_id.clone();
+        assert!(!native_row_evidence_batch_is_valid(
+            &replay,
+            "trusted-scope",
+            7
+        ));
+        let mut cross_row = rows.clone();
+        cross_row[1]
+            .attribution
+            .as_mut()
+            .unwrap()
+            .native_locator_sha256 = own.native_locator_sha256.clone();
+        assert!(!native_row_evidence_batch_is_valid(
+            &cross_row,
+            "trusted-scope",
+            7
+        ));
+        let mut cross_carrier = rows.clone();
+        cross_carrier[1].decode_candidates = vec![OWN_CARRIER.to_owned()];
+        assert!(!native_row_evidence_batch_is_valid(
+            &cross_carrier,
+            "trusted-scope",
+            7
+        ));
+        let mut poster_substitution = rows.clone();
+        poster_substitution[1]
+            .attribution
+            .as_mut()
+            .unwrap()
+            .poster_identity_sha256 = own.poster_identity_sha256.clone();
+        assert!(!native_row_evidence_batch_is_valid(
+            &poster_substitution,
+            "trusted-scope",
+            7
+        ));
+        assert!(!native_row_evidence_batch_is_valid(
+            &rows,
+            "other-scope",
+            7
+        ));
+        assert!(!native_row_evidence_batch_is_valid(
+            &rows,
+            "trusted-scope",
+            8
+        ));
+        let wrong_poster = bind_authenticated_native_row(
+            &peer,
+            matrix_authenticated(
+                PeerWireOrientation::SelfToPeer,
+                "payload-wrong-poster",
+                "must refuse",
+                'c',
+            ),
+        );
+        assert!(wrong_poster.is_none());
+
+        let foreign = matrix_native_observation(
+            "555555555555555555",
+            "999999999999999999",
+            PEER_CARRIER,
+            30,
+        );
+        assert_ne!(foreign.poster_identity, foreign.self_identity);
+        assert_ne!(foreign.poster_identity, foreign.expected_peer_identity);
+        assert!(native_row_attribution_from_provider(
+            foreign,
+            &[PEER_CARRIER.to_owned()],
+            "trusted-scope",
+            7,
+            0,
+        )
+        .is_none());
+
+        let replayed_crypto_attribution =
+            bind_authenticated_native_row(
+                &peer,
+                matrix_authenticated(
+                    PeerWireOrientation::PeerToSelf,
+                    "payload-own",
+                    "replayed plaintext",
+                    'a',
+                ),
+            )
+            .expect("individual proof is structurally valid")
+            .2;
+        let crypto_replay = vec![
+            RehydratedNativeDiscordRow {
+                flagtext: OWN_CARRIER.to_owned(),
+                plaintext: Some("own plaintext".to_owned()),
+                orientation: Some(RehydratedRowOrientation::Outgoing),
+                attribution: Some(
+                    bind_authenticated_native_row(
+                        &own,
+                        matrix_authenticated(
+                            PeerWireOrientation::SelfToPeer,
+                            "payload-own",
+                            "own plaintext",
+                            'a',
+                        ),
+                    )
+                    .unwrap()
+                    .2,
+                ),
+                bounds: Some([10, 10, 500, 34]),
+            },
+            RehydratedNativeDiscordRow {
+                flagtext: PEER_CARRIER.to_owned(),
+                plaintext: Some("replayed plaintext".to_owned()),
+                orientation: Some(RehydratedRowOrientation::Incoming),
+                attribution: Some(replayed_crypto_attribution),
+                bounds: Some([10, 40, 500, 64]),
+            },
+        ];
+        assert!(!rehydrated_attribution_ids_are_unique(&crypto_replay));
+
+        let inconsistent_dto = rehydrated_native_discord_row_dto(
+            RehydratedNativeDiscordRow {
+                flagtext: OWN_CARRIER.to_owned(),
+                plaintext: Some("must not cross the command boundary".to_owned()),
+                orientation: Some(RehydratedRowOrientation::Incoming),
+                attribution: Some(
+                    bind_authenticated_native_row(
+                        &own,
+                        matrix_authenticated(
+                            PeerWireOrientation::SelfToPeer,
+                            "payload-command-substitution",
+                            "must not cross the command boundary",
+                            'd',
+                        ),
+                    )
+                    .unwrap()
+                    .2,
+                ),
+                bounds: Some([10, 10, 500, 34]),
+            },
+            Some([1.0, 2.0, 300.0, 24.0]),
+        );
+        let inconsistent_wire =
+            serde_json::to_value(inconsistent_dto).expect("command DTO serializes");
+        assert!(inconsistent_wire["plaintext"].is_null());
+        assert!(inconsistent_wire["orientation"].is_null());
+        assert!(inconsistent_wire["attribution"].is_null());
     }
 
     #[test]

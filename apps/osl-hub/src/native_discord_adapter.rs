@@ -5878,6 +5878,7 @@ impl RehydrateAdmission {
 ///
 /// PRIVACY: no decrypted text is representable here, and `Debug` is deliberately
 /// not derived so no diagnostic can format the row line.
+#[derive(Clone)]
 pub struct VisibleMessageRow {
     /// The reader's own content-free key for this row.
     pub locator_sha256: String,
@@ -6022,21 +6023,26 @@ fn native_provider_runtime_id_text(runtime_id: &[i32]) -> String {
 /// Raw facts read from Discord's native accessibility provider for one exact
 /// visible row. Private: neither IPC nor renderer input can construct it.
 #[cfg(any(test, target_os = "windows"))]
-struct NativeDiscordRowProviderObservation {
-    discord_message_id: String,
-    poster_identity: String,
-    self_identity: String,
-    carrier: String,
-    row_runtime_id: Vec<i32>,
-    message_content_runtime_id: Vec<i32>,
-    poster_avatar_runtime_id: Vec<i32>,
-    self_avatar_runtime_id: Vec<i32>,
+pub(crate) struct NativeDiscordRowProviderObservation {
+    pub(crate) discord_message_id: String,
+    pub(crate) poster_identity: String,
+    pub(crate) self_identity: String,
+    pub(crate) expected_peer_identity: String,
+    pub(crate) carrier: String,
+    pub(crate) row_runtime_id: Vec<i32>,
+    pub(crate) message_content_runtime_id: Vec<i32>,
+    pub(crate) poster_avatar_runtime_id: Vec<i32>,
+    pub(crate) self_avatar_runtime_id: Vec<i32>,
+    pub(crate) self_user_panel_runtime_id: Vec<i32>,
+    pub(crate) self_settings_runtime_id: Vec<i32>,
+    pub(crate) peer_avatar_runtime_id: Vec<i32>,
+    pub(crate) peer_header_runtime_id: Vec<i32>,
 }
 
 /// Bind the native provider's row/content/poster/self nodes to the frozen
 /// public proof contract. Every substitution changes the locator.
 #[cfg(any(test, target_os = "windows"))]
-fn native_row_attribution_from_provider(
+pub(crate) fn native_row_attribution_from_provider(
     observation: NativeDiscordRowProviderObservation,
     decode_candidates: &[String],
     scope_binding: &str,
@@ -6047,6 +6053,8 @@ fn native_row_attribution_from_provider(
         || !canonical_discord_snowflake(&observation.discord_message_id)
         || !canonical_discord_snowflake(&observation.poster_identity)
         || !canonical_discord_snowflake(&observation.self_identity)
+        || !canonical_discord_snowflake(&observation.expected_peer_identity)
+        || observation.self_identity == observation.expected_peer_identity
         || observation.carrier.is_empty()
         || observation.carrier.chars().any(char::is_control)
         || [
@@ -6054,6 +6062,10 @@ fn native_row_attribution_from_provider(
             observation.message_content_runtime_id.as_slice(),
             observation.poster_avatar_runtime_id.as_slice(),
             observation.self_avatar_runtime_id.as_slice(),
+            observation.self_user_panel_runtime_id.as_slice(),
+            observation.self_settings_runtime_id.as_slice(),
+            observation.peer_avatar_runtime_id.as_slice(),
+            observation.peer_header_runtime_id.as_slice(),
         ]
         .iter()
         .any(|runtime_id| !native_provider_runtime_id_is_valid(runtime_id))
@@ -6068,29 +6080,57 @@ fn native_row_attribution_from_provider(
     {
         return None;
     }
+    let poster = if observation.poster_identity == observation.self_identity {
+        NativeDiscordRowPoster::SelfAccount
+    } else if observation.poster_identity == observation.expected_peer_identity {
+        NativeDiscordRowPoster::PeerAccount
+    } else {
+        // A different non-self account is not "the peer". The expected peer
+        // comes from the conversation header, independently of this row.
+        return None;
+    };
+    let authority_runtime_ids = [
+        observation.self_avatar_runtime_id.as_slice(),
+        observation.self_user_panel_runtime_id.as_slice(),
+        observation.self_settings_runtime_id.as_slice(),
+        observation.peer_avatar_runtime_id.as_slice(),
+        observation.peer_header_runtime_id.as_slice(),
+    ];
+    if authority_runtime_ids
+        .iter()
+        .enumerate()
+        .any(|(index, runtime_id)| {
+            authority_runtime_ids[index + 1..]
+                .iter()
+                .any(|other| runtime_id == other)
+        })
+    {
+        return None;
+    }
     let scope_binding_sha256 = native_row_attribution_scope_sha256(scope_binding);
     let carrier_sha256 = native_row_attribution_carrier_sha256(&observation.carrier);
     let native_binding = format!(
-        "{}\u{1f}{window_generation}\u{1f}{row_index}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        "{}\u{1f}{window_generation}\u{1f}{row_index}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
         scope_binding_sha256,
         observation.discord_message_id,
         observation.poster_identity,
+        observation.expected_peer_identity,
         carrier_sha256,
         native_provider_runtime_id_text(&observation.row_runtime_id),
         native_provider_runtime_id_text(&observation.message_content_runtime_id),
         native_provider_runtime_id_text(&observation.poster_avatar_runtime_id),
         native_provider_runtime_id_text(&observation.self_avatar_runtime_id),
+        native_provider_runtime_id_text(&observation.self_user_panel_runtime_id),
+        native_provider_runtime_id_text(&observation.self_settings_runtime_id),
+        native_provider_runtime_id_text(&observation.peer_avatar_runtime_id),
+        native_provider_runtime_id_text(&observation.peer_header_runtime_id),
     );
     Some(NativeDiscordRowAttributionEvidence {
         discord_message_id: observation.discord_message_id,
         poster_identity_sha256: native_row_attribution_poster_sha256(
             &observation.poster_identity,
         ),
-        poster: if observation.poster_identity == observation.self_identity {
-            NativeDiscordRowPoster::SelfAccount
-        } else {
-            NativeDiscordRowPoster::PeerAccount
-        },
+        poster,
         native_locator_sha256: stable_hash(
             "discord-native-visible-row-provider-binding-v1",
             &native_binding,
@@ -6106,7 +6146,7 @@ fn native_row_attribution_from_provider(
 /// its own boundary, but a partial/ambiguous provider walk never leaves here as
 /// a mixed proof batch.
 #[cfg(any(test, target_os = "windows"))]
-fn native_row_producer_batch_is_valid(
+pub(crate) fn native_row_producer_batch_is_valid(
     rows: &[VisibleMessageRow],
     scope_binding: &str,
     window_generation: u64,
@@ -9215,10 +9255,28 @@ mod windows {
     const NATIVE_IDENTITY_BAND_HEIGHT_PX: i32 = 120;
     const NATIVE_IDENTITY_MAX_NODES: usize = 96;
     const NATIVE_IDENTITY_MAX_DEPTH: usize = 8;
+    const NATIVE_SELF_USER_AREA_NAME: &str = "User area";
+    const NATIVE_SELF_SETTINGS_NAME: &str = "User Settings";
+    const NATIVE_CONVERSATION_HEADER_NAME: &str = "Channel header";
+    const MSAA_ROLE_SYSTEM_PUSHBUTTON: u32 = 43;
 
     struct NativeDiscordSelfProviderIdentity {
         identity: String,
         avatar_runtime_id: Vec<i32>,
+        user_panel_runtime_id: Vec<i32>,
+        settings_runtime_id: Vec<i32>,
+    }
+
+    struct NativeDiscordPeerProviderIdentity {
+        identity: String,
+        avatar_runtime_id: Vec<i32>,
+        header_runtime_id: Vec<i32>,
+    }
+
+    struct NativeDiscordNamedAuthority {
+        object: IAccessible,
+        runtime_id: Vec<i32>,
+        bounds: AccessibilityBounds,
     }
 
     fn native_avatar_identity(node: &MsaaChildRef) -> Option<String> {
@@ -9234,8 +9292,97 @@ mod windows {
             })
     }
 
-    /// Prove the signed-in account from the exact Discord client's lower-left
-    /// native user-panel band. One avatar resource and its runtime id, or refuse.
+    /// Resolve exactly one provider-owned semantic container from the trusted
+    /// Discord tree. Geometry narrows the search; the exact accessible name and
+    /// role provide the authority. A merely avatar-shaped resource cannot create
+    /// this container.
+    fn native_discord_named_authority(
+        automation: &IUIAutomation,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        root: &IAccessible,
+        root_bounds: AccessibilityBounds,
+        process_is_trusted: &dyn Fn(u32) -> bool,
+        expected_name: &'static str,
+        expected_role: u32,
+        bounds_are_authoritative: impl Fn(AccessibilityBounds) -> bool,
+        deadline: Instant,
+    ) -> Option<NativeDiscordNamedAuthority> {
+        let mut stack = msaa_child_refs(root, MSAA_ROW_MAX_LIST_CHILDREN)?
+            .into_iter()
+            .rev()
+            .map(|child| (child, 1usize))
+            .collect::<Vec<_>>();
+        let mut nodes = 0usize;
+        let mut authorities = Vec::new();
+        while let Some((node, depth)) = stack.pop() {
+            nodes = nodes.saturating_add(1);
+            if nodes > NATIVE_IDENTITY_MAX_NODES || Instant::now() >= deadline {
+                return None;
+            }
+            let exact_name = node.name().is_some_and(|name| {
+                let name = Zeroizing::new(name);
+                name.as_str() == expected_name
+            });
+            if exact_name && node.role() == Some(expected_role) {
+                let object = node.object()?;
+                if !msaa_object_belongs_to_target(object, target, process_is_trusted) {
+                    return None;
+                }
+                let element =
+                    exact_msaa_process_element(automation, object, root_bounds, process_is_trusted)?;
+                let bounds = element_bounds(&element)?;
+                if !bounds_are_authoritative(bounds) {
+                    return None;
+                }
+                let runtime_id = runtime_id(&element).ok()?;
+                if !authorities
+                    .iter()
+                    .any(|seen: &NativeDiscordNamedAuthority| seen.runtime_id == runtime_id)
+                {
+                    authorities.push(NativeDiscordNamedAuthority {
+                        object: object.clone(),
+                        runtime_id,
+                        bounds,
+                    });
+                    if authorities.len() > 1 {
+                        return None;
+                    }
+                }
+            }
+            let Some(object) = node.object() else {
+                continue;
+            };
+            if depth >= NATIVE_IDENTITY_MAX_DEPTH {
+                if unsafe { object.accChildCount() }.ok().is_some_and(|count| count > 0) {
+                    return None;
+                }
+                continue;
+            }
+            for child in msaa_child_refs(object, MSAA_ROW_MAX_LIST_CHILDREN)?
+                .into_iter()
+                .rev()
+            {
+                stack.push((child, depth + 1));
+            }
+        }
+        (authorities.len() == 1).then(|| authorities.remove(0))
+    }
+
+    fn native_authority_contains(
+        authority: AccessibilityBounds,
+        candidate: AccessibilityBounds,
+    ) -> bool {
+        authority.valid()
+            && candidate.valid()
+            && candidate.left >= authority.left
+            && candidate.top >= authority.top
+            && candidate.right <= authority.right
+            && candidate.bottom <= authority.bottom
+    }
+
+    /// Prove the signed-in account from Discord's exact native `User area`
+    /// authority. The account avatar and the independent `User Settings`
+    /// pushbutton must both be unique descendants of that same container.
     fn native_discord_self_provider_identity(
         automation: &IUIAutomation,
         target: crate::native_window_host::NativeDiscordAccessibilityTarget,
@@ -9258,13 +9405,25 @@ mod windows {
                 .min(root_bounds.right),
             bottom: root_bounds.bottom,
         };
-        let mut stack = msaa_child_refs(&root, MSAA_ROW_MAX_LIST_CHILDREN)?
+        let user_panel = native_discord_named_authority(
+            automation,
+            target,
+            &root,
+            root_bounds,
+            process_is_trusted,
+            NATIVE_SELF_USER_AREA_NAME,
+            MSAA_ROLE_SYSTEM_GROUPING,
+            |bounds| native_authority_contains(identity_band, bounds),
+            deadline,
+        )?;
+        let mut stack = msaa_child_refs(&user_panel.object, MSAA_ROW_MAX_LIST_CHILDREN)?
             .into_iter()
             .rev()
             .map(|child| (child, 1usize))
             .collect::<Vec<_>>();
         let mut nodes = 0usize;
         let mut identities = Vec::<NativeDiscordSelfProviderIdentity>::new();
+        let mut settings_runtime_ids = Vec::<Vec<i32>>::new();
         while let Some((node, depth)) = stack.pop() {
             nodes = nodes.saturating_add(1);
             if nodes > NATIVE_IDENTITY_MAX_NODES || Instant::now() >= deadline {
@@ -9272,7 +9431,7 @@ mod windows {
             }
             if node
                 .bounds()
-                .is_some_and(|bounds| !accessibility_bounds_intersect(bounds, identity_band))
+                .is_some_and(|bounds| !accessibility_bounds_intersect(bounds, user_panel.bounds))
             {
                 continue;
             }
@@ -9285,7 +9444,7 @@ mod windows {
                 let avatar_bounds = element_bounds(&element)?;
                 let avatar_width = avatar_bounds.right.saturating_sub(avatar_bounds.left);
                 let avatar_height = avatar_bounds.bottom.saturating_sub(avatar_bounds.top);
-                if !accessibility_bounds_intersect(avatar_bounds, identity_band)
+                if !native_authority_contains(user_panel.bounds, avatar_bounds)
                     || !(16..=96).contains(&avatar_width)
                     || !(16..=96).contains(&avatar_height)
                     || avatar_width.abs_diff(avatar_height)
@@ -9303,9 +9462,35 @@ mod windows {
                 identities.push(NativeDiscordSelfProviderIdentity {
                     identity,
                     avatar_runtime_id,
+                    user_panel_runtime_id: user_panel.runtime_id.clone(),
+                    settings_runtime_id: Vec::new(),
                 });
                 if identities.len() > 1 {
                     return None;
+                }
+            }
+            let is_settings = node.role() == Some(MSAA_ROLE_SYSTEM_PUSHBUTTON)
+                && node.name().is_some_and(|name| {
+                    let name = Zeroizing::new(name);
+                    name.as_str() == NATIVE_SELF_SETTINGS_NAME
+                });
+            if is_settings {
+                let object = node.object()?;
+                if !msaa_object_belongs_to_target(object, target, process_is_trusted) {
+                    return None;
+                }
+                let element =
+                    exact_msaa_process_element(automation, object, root_bounds, process_is_trusted)?;
+                let bounds = element_bounds(&element)?;
+                if !native_authority_contains(user_panel.bounds, bounds) {
+                    return None;
+                }
+                let runtime_id = runtime_id(&element).ok()?;
+                if !settings_runtime_ids.iter().any(|seen| *seen == runtime_id) {
+                    settings_runtime_ids.push(runtime_id);
+                    if settings_runtime_ids.len() > 1 {
+                        return None;
+                    }
                 }
             }
             let Some(object) = node.object() else {
@@ -9324,7 +9509,118 @@ mod windows {
                 stack.push((child, depth + 1));
             }
         }
-        (identities.len() == 1).then(|| identities.remove(0))
+        if identities.len() != 1 || settings_runtime_ids.len() != 1 {
+            return None;
+        }
+        let mut identity = identities.remove(0);
+        identity.settings_runtime_id = settings_runtime_ids.remove(0);
+        if identity.avatar_runtime_id == identity.user_panel_runtime_id
+            || identity.avatar_runtime_id == identity.settings_runtime_id
+            || identity.user_panel_runtime_id == identity.settings_runtime_id
+        {
+            return None;
+        }
+        Some(identity)
+    }
+
+    /// Prove the expected one-to-one conversation participant independently of
+    /// every message row. Exactly one avatar identity must be a descendant of
+    /// Discord's exact native `Channel header` authority and must differ from
+    /// the signed-in account.
+    fn native_discord_peer_provider_identity(
+        automation: &IUIAutomation,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        root_bounds: AccessibilityBounds,
+        process_is_trusted: &dyn Fn(u32) -> bool,
+        self_identity: &NativeDiscordSelfProviderIdentity,
+        deadline: Instant,
+    ) -> Option<NativeDiscordPeerProviderIdentity> {
+        let root = msaa_client_from_window(target.window)?;
+        if !msaa_object_belongs_to_target(&root, target, process_is_trusted) {
+            return None;
+        }
+        let header = native_discord_named_authority(
+            automation,
+            target,
+            &root,
+            root_bounds,
+            process_is_trusted,
+            NATIVE_CONVERSATION_HEADER_NAME,
+            MSAA_ROLE_SYSTEM_GROUPING,
+            |bounds| visible_header_bounds(bounds, root_bounds),
+            deadline,
+        )?;
+        let mut stack = msaa_child_refs(&header.object, MSAA_ROW_MAX_LIST_CHILDREN)?
+            .into_iter()
+            .rev()
+            .map(|child| (child, 1usize))
+            .collect::<Vec<_>>();
+        let mut nodes = 0usize;
+        let mut peers = Vec::<NativeDiscordPeerProviderIdentity>::new();
+        while let Some((node, depth)) = stack.pop() {
+            nodes = nodes.saturating_add(1);
+            if nodes > NATIVE_IDENTITY_MAX_NODES || Instant::now() >= deadline {
+                return None;
+            }
+            if let (Some(identity), Some(object)) = (native_avatar_identity(&node), node.object()) {
+                if identity == self_identity.identity
+                    || !msaa_object_belongs_to_target(object, target, process_is_trusted)
+                {
+                    return None;
+                }
+                let element =
+                    exact_msaa_process_element(automation, object, root_bounds, process_is_trusted)?;
+                let avatar_bounds = element_bounds(&element)?;
+                let width = avatar_bounds.right.saturating_sub(avatar_bounds.left);
+                let height = avatar_bounds.bottom.saturating_sub(avatar_bounds.top);
+                if !native_authority_contains(header.bounds, avatar_bounds)
+                    || !(16..=96).contains(&width)
+                    || !(16..=96).contains(&height)
+                    || width.abs_diff(height)
+                        > u32::try_from(width.max(height) / 4).unwrap_or(0)
+                {
+                    return None;
+                }
+                let avatar_runtime_id = runtime_id(&element).ok()?;
+                if !peers.iter().any(|seen| seen.avatar_runtime_id == avatar_runtime_id) {
+                    peers.push(NativeDiscordPeerProviderIdentity {
+                        identity,
+                        avatar_runtime_id,
+                        header_runtime_id: header.runtime_id.clone(),
+                    });
+                    if peers.len() > 1 {
+                        return None;
+                    }
+                }
+            }
+            let Some(object) = node.object() else {
+                continue;
+            };
+            if depth >= NATIVE_IDENTITY_MAX_DEPTH {
+                if unsafe { object.accChildCount() }.ok().is_some_and(|count| count > 0) {
+                    return None;
+                }
+                continue;
+            }
+            for child in msaa_child_refs(object, MSAA_ROW_MAX_LIST_CHILDREN)?
+                .into_iter()
+                .rev()
+            {
+                stack.push((child, depth + 1));
+            }
+        }
+        if peers.len() != 1 {
+            return None;
+        }
+        let peer = peers.remove(0);
+        if peer.avatar_runtime_id == peer.header_runtime_id
+            || peer.avatar_runtime_id == self_identity.avatar_runtime_id
+            || peer.header_runtime_id == self_identity.user_panel_runtime_id
+            || peer.header_runtime_id == self_identity.settings_runtime_id
+        {
+            return None;
+        }
+        Some(peer)
     }
 
     /// Read one exact message-content AutomationId, one avatar resource and one
@@ -9336,6 +9632,7 @@ mod windows {
         root_bounds: AccessibilityBounds,
         row: &IAccessible,
         self_identity: &NativeDiscordSelfProviderIdentity,
+        expected_peer: &NativeDiscordPeerProviderIdentity,
         decode_candidates: &[String],
         deadline: Instant,
     ) -> Option<NativeDiscordRowProviderObservation> {
@@ -9456,11 +9753,16 @@ mod windows {
             discord_message_id,
             poster_identity,
             self_identity: self_identity.identity.clone(),
+            expected_peer_identity: expected_peer.identity.clone(),
             carrier,
             row_runtime_id,
             message_content_runtime_id,
             poster_avatar_runtime_id,
             self_avatar_runtime_id: self_identity.avatar_runtime_id.clone(),
+            self_user_panel_runtime_id: self_identity.user_panel_runtime_id.clone(),
+            self_settings_runtime_id: self_identity.settings_runtime_id.clone(),
+            peer_avatar_runtime_id: expected_peer.avatar_runtime_id.clone(),
+            peer_header_runtime_id: expected_peer.header_runtime_id.clone(),
         })
     }
 
@@ -9647,6 +9949,18 @@ mod windows {
                 deadline,
             )
         });
+        let native_peer_identity = native_provider.as_ref().and_then(|automation| {
+            native_self_identity.as_ref().and_then(|self_identity| {
+                native_discord_peer_provider_identity(
+                    automation,
+                    target,
+                    root_bounds,
+                    process_is_trusted,
+                    self_identity,
+                    deadline,
+                )
+            })
+        });
         let read = rehydrate_collect_rows(
             children,
             scope_binding,
@@ -9682,6 +9996,7 @@ mod windows {
                 attribution_of: &|child: &MsaaChildRef, row_index, decode_candidates| {
                     let automation = native_provider.as_ref()?;
                     let self_identity = native_self_identity.as_ref()?;
+                    let expected_peer = native_peer_identity.as_ref()?;
                     let row = child.object()?;
                     let observation = native_discord_row_provider_observation(
                         automation,
@@ -9690,6 +10005,7 @@ mod windows {
                         root_bounds,
                         row,
                         self_identity,
+                        expected_peer,
                         decode_candidates,
                         deadline,
                     )?;
@@ -23835,11 +24151,16 @@ mod tests {
             discord_message_id: message_id.to_owned(),
             poster_identity: poster_identity.to_owned(),
             self_identity: self_identity.to_owned(),
+            expected_peer_identity: "222222222222222222".to_owned(),
             carrier: carrier.to_owned(),
             row_runtime_id: vec![42, runtime_seed],
             message_content_runtime_id: vec![42, runtime_seed + 1],
             poster_avatar_runtime_id: vec![42, runtime_seed + 2],
             self_avatar_runtime_id: vec![42, 900],
+            self_user_panel_runtime_id: vec![42, 901],
+            self_settings_runtime_id: vec![42, 902],
+            peer_avatar_runtime_id: vec![42, 903],
+            peer_header_runtime_id: vec![42, 904],
         }
     }
 
@@ -23986,9 +24307,52 @@ mod tests {
             0,
         )
         .is_none());
+        let mut missing_peer_anchor = make();
+        missing_peer_anchor.expected_peer_identity.clear();
+        assert!(native_row_attribution_from_provider(
+            missing_peer_anchor,
+            &[CARRIER.to_owned()],
+            "trusted-scope",
+            7,
+            0,
+        )
+        .is_none());
+        let mut aliased_self_authority = make();
+        aliased_self_authority.self_settings_runtime_id =
+            aliased_self_authority.self_avatar_runtime_id.clone();
+        assert!(native_row_attribution_from_provider(
+            aliased_self_authority,
+            &[CARRIER.to_owned()],
+            "trusted-scope",
+            7,
+            0,
+        )
+        .is_none());
         assert!(native_row_attribution_from_provider(
             make(),
             &[CARRIER.to_owned(), CARRIER.to_owned()],
+            "trusted-scope",
+            7,
+            0,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn native_provider_refuses_a_different_non_self_poster_than_the_header_peer() {
+        const SELF: &str = "111111111111111111";
+        const FOREIGN: &str = "999999999999999999";
+        const CARRIER: &str = "the winter garden waits beside the silver morning";
+        let observation =
+            provider_observation("444444444444444444", FOREIGN, SELF, CARRIER, 20);
+        assert_ne!(observation.poster_identity, observation.self_identity);
+        assert_ne!(
+            observation.poster_identity,
+            observation.expected_peer_identity
+        );
+        assert!(native_row_attribution_from_provider(
+            observation,
+            &[CARRIER.to_owned()],
             "trusted-scope",
             7,
             0,

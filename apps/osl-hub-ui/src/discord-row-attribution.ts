@@ -97,3 +97,57 @@ export function nativeDiscordAttributionsAreUnique(
     return new Set(values).size === values.length;
   });
 }
+
+export interface NativeDiscordVisibleRowProjectionInput {
+  plaintext: string | null;
+  orientation: NativeDiscordRowOrientation | null;
+  attribution: NativeDiscordRowAttribution | null;
+  row: {
+    leftPx: number;
+    topPx: number;
+    widthPx: number;
+    heightPx: number;
+  } | null;
+}
+
+export interface NativeDiscordVisibleRowProjection {
+  key: string;
+  plaintext: string;
+  direction: NativeDiscordRowOrientation;
+  author: "self" | "peer";
+  discordMessageId: string;
+  nativeLocatorSha256: string;
+  carrierSha256: string;
+  row: NonNullable<NativeDiscordVisibleRowProjectionInput["row"]>;
+}
+
+/**
+ * Convert one already parsed command DTO into the only row the protected
+ * renderer may paint. Ownership comes solely from the backend's exact
+ * poster/wire agreement; null or internally inconsistent proof paints nothing.
+ */
+export function projectNativeDiscordVisibleRow(
+  input: NativeDiscordVisibleRowProjectionInput,
+): NativeDiscordVisibleRowProjection | null {
+  const { plaintext, orientation, attribution, row } = input;
+  if (plaintext === null || orientation === null || attribution === null || row === null) {
+    return null;
+  }
+  if (attribution.orientation !== orientation) return null;
+  const author = attribution.poster === "self_account" && orientation === "outgoing"
+    ? "self"
+    : attribution.poster === "peer_account" && orientation === "incoming"
+      ? "peer"
+      : null;
+  if (author === null) return null;
+  return {
+    key: `decoded-${attribution.nativeLocatorSha256}`,
+    plaintext,
+    direction: orientation,
+    author,
+    discordMessageId: attribution.discordMessageId,
+    nativeLocatorSha256: attribution.nativeLocatorSha256,
+    carrierSha256: attribution.carrierSha256,
+    row,
+  };
+}

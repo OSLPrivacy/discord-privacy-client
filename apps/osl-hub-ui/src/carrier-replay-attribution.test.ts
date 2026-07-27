@@ -26,6 +26,8 @@ type AttributionGate = {
   productionReachable: boolean;
   nativeContractComplete: boolean;
   nativeProducerUsesProviderOwnedIdentity: boolean;
+  semanticSelfAuthority: boolean;
+  independentPeerAuthority: boolean;
   nativeProducerBindsExactRow: boolean;
   nativeProducerSnapshotFailsClosed: boolean;
   productionCallbackConsumesNativeProof: boolean;
@@ -40,8 +42,10 @@ type AttributionGate = {
   cryptoIdentifiersBound: boolean;
   duplicateCryptoProofRefuses: boolean;
   trustedMainInputsOnly: boolean;
+  commandDtoFailsClosed: boolean;
   uiProofIsExactAndUnique: boolean;
   uiAuthorsOnlyFromBackendAgreement: boolean;
+  behavioralBoundaryMatrix: boolean;
 };
 
 function detectAttributionGate(
@@ -97,7 +101,17 @@ function detectAttributionGate(
   const selfProvider = between(
     adapterSource,
     "    fn native_discord_self_provider_identity(",
+    "\n    /// Prove the expected one-to-one conversation participant",
+  );
+  const peerProvider = between(
+    adapterSource,
+    "    fn native_discord_peer_provider_identity(",
     "\n    /// Read one exact message-content AutomationId",
+  );
+  const namedAuthority = between(
+    adapterSource,
+    "    fn native_discord_named_authority(",
+    "\n    fn native_authority_contains(",
   );
   const avatarExtractor = between(
     adapterSource,
@@ -129,6 +143,16 @@ function detectAttributionGate(
     "pub fn rehydrate_native_discord_overlay_history(",
     "\n}\n\n/// Pair each row",
   );
+  const bindAuthenticated = between(
+    brokerSource,
+    "fn bind_authenticated_native_row(",
+    "\n}\n\nfn authenticate_oriented_prose_pointer(",
+  );
+  const commandDto = between(
+    brokerSource,
+    "pub fn rehydrated_native_discord_row_dto(",
+    "\n}\n\n/// Fixed labels for the decode leg",
+  );
   const tokenReceive = between(
     tokenSource,
     "pub fn prose_token_recv_classified(",
@@ -157,6 +181,11 @@ function detectAttributionGate(
   const proofUnique = between(
     uiProofSource,
     "export function nativeDiscordAttributionsAreUnique(",
+    "\n}",
+  );
+  const proofProjection = between(
+    uiProofSource,
+    "export function projectNativeDiscordVisibleRow(",
     "\n}",
   );
 
@@ -204,12 +233,35 @@ function detectAttributionGate(
       && selfProvider.includes("avatar_runtime_id = runtime_id(&element)")
       && selfProvider.includes("identities.len() > 1")
       && producer.includes("native_discord_self_provider_identity(")
+      && producer.includes("native_discord_peer_provider_identity(")
       && rowProvider.includes("discord_message_id_from_native_automation_id(&automation_id)")
       && rowProvider.includes("native_avatar_identity(&node)")
       && rowProvider.includes("message_content.len() != 1 || posters.len() != 1")
       && !/\b(?:renderer|dataset|data-author-id|querySelector)\b/u.test(
         `${selfProvider}\n${rowProvider}`,
       ),
+    semanticSelfAuthority:
+      namedAuthority.includes("name.as_str() == expected_name")
+      && namedAuthority.includes("node.role() == Some(expected_role)")
+      && selfProvider.includes("NATIVE_SELF_USER_AREA_NAME")
+      && selfProvider.includes("NATIVE_SELF_SETTINGS_NAME")
+      && selfProvider.includes("MSAA_ROLE_SYSTEM_PUSHBUTTON")
+      && selfProvider.includes("native_authority_contains(user_panel.bounds, avatar_bounds)")
+      && selfProvider.includes("settings_runtime_ids.len() != 1")
+      && selfProvider.includes("identity.avatar_runtime_id == identity.settings_runtime_id"),
+    independentPeerAuthority:
+      peerProvider.includes("NATIVE_CONVERSATION_HEADER_NAME")
+      && peerProvider.includes("native_avatar_identity(&node)")
+      && peerProvider.includes("identity == self_identity.identity")
+      && peerProvider.includes("peers.len() != 1")
+      && rowProvider.includes("expected_peer_identity: expected_peer.identity.clone()")
+      && providerBinding.includes(
+        "observation.poster_identity == observation.expected_peer_identity",
+      )
+      && providerBinding.includes(
+        "observation.self_identity == observation.expected_peer_identity",
+      )
+      && producer.includes("let expected_peer = native_peer_identity.as_ref()?;"),
     nativeProducerBindsExactRow:
       providerBinding.includes("scope_binding_sha256")
       && providerBinding.includes("window_generation")
@@ -222,6 +274,10 @@ function detectAttributionGate(
         "native_provider_runtime_id_text(&observation.message_content_runtime_id)",
         "native_provider_runtime_id_text(&observation.poster_avatar_runtime_id)",
         "native_provider_runtime_id_text(&observation.self_avatar_runtime_id)",
+        "native_provider_runtime_id_text(&observation.self_user_panel_runtime_id)",
+        "native_provider_runtime_id_text(&observation.self_settings_runtime_id)",
+        "native_provider_runtime_id_text(&observation.peer_avatar_runtime_id)",
+        "native_provider_runtime_id_text(&observation.peer_header_runtime_id)",
       ].every((binding) => providerBinding.includes(binding))
       && providerBinding.includes(
         '"discord-native-visible-row-provider-binding-v1"',
@@ -257,13 +313,15 @@ function detectAttributionGate(
         "if !producer_proof_is_valid {\n        for row in &mut visible_rows {\n            row.attribution = None;",
       ),
     productionCallbackConsumesNativeProof:
-      publicRead.includes("windows::read_visible_message_rows_detached(")
+      publicRead.includes("Ok(windows::read_visible_message_rows_detached(")
       && detachedRead.includes("Some(read_visible_message_rows(")
       && producer.includes("native_discord_row_provider_observation(")
       && producer.includes("native_row_attribution_from_provider(")
       && producer.includes("finish_native_visible_rows(")
       && command.includes("native_discord_adapter::read_visible_message_rows(")
-      && command.includes("attribution: row.attribution")
+      && command.includes(
+        "broker::rehydrated_native_discord_row_dto(row, relative_rect)",
+      )
       && command.includes("broker::rehydrate_native_discord_overlay_history("),
     nativeReadPreservesFocusAndPlaintextSafety:
       !/\b(?:SetForegroundWindow|SendInput|accSelect|SetFocus|Invoke)\s*\(/u.test(
@@ -327,22 +385,20 @@ function detectAttributionGate(
       rehydrate.includes(
         "&[PeerWireOrientation::PeerToSelf, PeerWireOrientation::SelfToPeer]",
       )
-      && rehydrate.includes(
-        "NativeDiscordRowPoster::SelfAccount,\n                    PeerWireOrientation::SelfToPeer",
-      )
-      && rehydrate.includes(
-        "NativeDiscordRowPoster::PeerAccount,\n                    PeerWireOrientation::PeerToSelf",
-      )
-      && rehydrate.includes("return None;\n                }\n            };"),
+      && /NativeDiscordRowPoster::SelfAccount,\s+PeerWireOrientation::SelfToPeer/u
+        .test(bindAuthenticated)
+      && /NativeDiscordRowPoster::PeerAccount,\s+PeerWireOrientation::PeerToSelf/u
+        .test(bindAuthenticated)
+      && bindAuthenticated.includes("_ => return None,"),
     cryptoIdentifiersBound:
-      rehydrate.includes("blob_id: authenticated.blob_id")
-      && rehydrate.includes(
+      bindAuthenticated.includes("blob_id: authenticated.blob_id")
+      && bindAuthenticated.includes(
         "ciphertext_sha256: authenticated.ciphertext_sha256",
       )
-      && rehydrate.includes(
+      && bindAuthenticated.includes(
         "payload_id: authenticated.payload.message_id.clone()",
       )
-      && rehydrate.includes("carrier_sha256: evidence.carrier_sha256.clone()"),
+      && bindAuthenticated.includes("carrier_sha256: evidence.carrier_sha256.clone()"),
     duplicateCryptoProofRefuses:
       ["discord_message_id", "native_locator_sha256", "carrier_sha256", "blob_id",
         "ciphertext_sha256", "payload_id"].every((field) =>
@@ -351,8 +407,29 @@ function detectAttributionGate(
       && rehydrate.includes("row.attribution = None;"),
     trustedMainInputsOnly:
       command.includes("&scope_binding,\n            host.generation,\n            rows,")
-      && command.includes("attribution: row.attribution")
+      && command.includes(
+        "broker::rehydrated_native_discord_row_dto(row, relative_rect)",
+      )
       && !/\{\s*scope\s*,[^}]*attribution/su.test(overlaySource),
+    commandDtoFailsClosed:
+      commandDto.includes("let attribution_agrees = match (")
+      && commandDto.includes("(None, None, None) => true")
+      && commandDto.includes(
+        "RehydratedRowPoster::SelfAccount,",
+      )
+      && commandDto.includes(
+        "RehydratedRowOrientation::Outgoing",
+      )
+      && commandDto.includes(
+        "RehydratedRowPoster::PeerAccount,",
+      )
+      && commandDto.includes(
+        "RehydratedRowOrientation::Incoming",
+      )
+      && commandDto.includes("if !attribution_agrees")
+      && commandDto.includes("row.plaintext = None;")
+      && commandDto.includes("row.orientation = None;")
+      && commandDto.includes("row.attribution = None;"),
     uiProofIsExactAndUnique:
       proofParser.includes("if (!exactKeys(value, ATTRIBUTION_KEYS)) return null;")
       && proofParser.includes(
@@ -370,16 +447,36 @@ function detectAttributionGate(
       parseRow.includes(
         "(attribution !== null && attribution.orientation !== record.orientation)",
       )
+      && proofProjection.includes("attribution.orientation !== orientation")
+      && proofProjection.includes(
+        'attribution.poster === "self_account" && orientation === "outgoing"',
+      )
+      && proofProjection.includes(
+        'attribution.poster === "peer_account" && orientation === "incoming"',
+      )
+      && applyRows.includes("const visible = projectNativeDiscordVisibleRow(row);")
       && applyRows.includes(
-        'author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity',
+        'author: visible.author === "self" ? localIdentity : verifiedFriendIdentity',
       )
       && applyRows.includes(
-        "const key = `decoded-${row.attribution.nativeLocatorSha256}`",
+        "const key = visible.key",
       )
       && applyRows.includes(
-        "nativeLocatorSha256: row.attribution.nativeLocatorSha256",
+        "nativeLocatorSha256: visible.nativeLocatorSha256",
       )
-      && applyRows.includes("carrierSha256: row.attribution.carrierSha256"),
+      && applyRows.includes("carrierSha256: visible.carrierSha256"),
+    behavioralBoundaryMatrix:
+      brokerSource.includes(
+        "fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed()",
+      )
+      && brokerSource.includes("native_row_attribution_from_provider(")
+      && brokerSource.includes("native_row_producer_batch_is_valid(")
+      && brokerSource.includes("native_row_evidence_batch_is_valid(")
+      && brokerSource.includes("bind_authenticated_native_row(")
+      && brokerSource.includes("rehydrated_native_discord_row_dto(")
+      && brokerSource.includes("assert!(!rehydrated_attribution_ids_are_unique(&crypto_replay))")
+      && proofProjection.includes("return null")
+      && applyRows.includes("projectNativeDiscordVisibleRow(row)"),
   };
 }
 
@@ -428,16 +525,16 @@ describe("native Discord visible-row attribution contract", () => {
 
   it("detects removal of the real public callback or its proof handoff", () => {
     const noNativeCallback = nativeAdapter.replace(
-      "windows::read_visible_message_rows_detached(",
-      "windows::read_visible_message_rows_detached_DISABLED(",
+      "Ok(windows::read_visible_message_rows_detached(",
+      "Ok(windows::read_visible_message_rows_detached_DISABLED(",
     );
     const noProducerCall = nativeAdapter.replace(
       "                    native_row_attribution_from_provider(\n",
       "                    native_row_attribution_from_provider_DISABLED(\n",
     );
     const droppedMainProof = nativeMain.replace(
-      "attribution: row.attribution,",
-      "attribution: None,",
+      "broker::rehydrated_native_discord_row_dto(row, relative_rect)",
+      "broker::rehydrated_native_discord_row_dto_DISABLED(row, relative_rect)",
     );
     expect(noNativeCallback).not.toBe(nativeAdapter);
     expect(noProducerCall).not.toBe(nativeAdapter);
@@ -459,6 +556,22 @@ describe("native Discord visible-row attribution contract", () => {
       "            native_discord_self_provider_identity(\n",
       "            native_discord_self_provider_identity_DISABLED(\n",
     );
+    const noPeerAuthority = nativeAdapter.replace(
+      "                native_discord_peer_provider_identity(\n",
+      "                native_discord_peer_provider_identity_DISABLED(\n",
+    );
+    const noSemanticSelfContainer = nativeAdapter.replace(
+      "            NATIVE_SELF_USER_AREA_NAME,\n",
+      "            \"avatar band\",\n",
+    );
+    const noSettingsAuthority = nativeAdapter.replace(
+      "name.as_str() == NATIVE_SELF_SETTINGS_NAME",
+      "false",
+    );
+    const acceptsForeignNonSelf = nativeAdapter.replace(
+      "observation.poster_identity == observation.expected_peer_identity",
+      "observation.poster_identity != observation.self_identity",
+    );
     const acceptsAmbiguousPoster = nativeAdapter.replace(
       "if message_content.len() != 1 || posters.len() != 1",
       "if message_content.is_empty() || posters.is_empty()",
@@ -473,6 +586,10 @@ describe("native Discord visible-row attribution contract", () => {
     );
     expect(noMessageAuthority).not.toBe(nativeAdapter);
     expect(noSelfAuthority).not.toBe(nativeAdapter);
+    expect(noPeerAuthority).not.toBe(nativeAdapter);
+    expect(noSemanticSelfContainer).not.toBe(nativeAdapter);
+    expect(noSettingsAuthority).not.toBe(nativeAdapter);
+    expect(acceptsForeignNonSelf).not.toBe(nativeAdapter);
     expect(acceptsAmbiguousPoster).not.toBe(nativeAdapter);
     expect(acceptsAuthoredAvatarLink).not.toBe(nativeAdapter);
     expect(acceptsEmbeddedAvatar).not.toBe(nativeAdapter);
@@ -480,6 +597,14 @@ describe("native Discord visible-row attribution contract", () => {
       .nativeProducerUsesProviderOwnedIdentity).toBe(false);
     expect(detect(broker, nativeMain, noSelfAuthority)
       .nativeProducerUsesProviderOwnedIdentity).toBe(false);
+    expect(detect(broker, nativeMain, noPeerAuthority)
+      .nativeProducerUsesProviderOwnedIdentity).toBe(false);
+    expect(detect(broker, nativeMain, noSemanticSelfContainer)
+      .semanticSelfAuthority).toBe(false);
+    expect(detect(broker, nativeMain, noSettingsAuthority)
+      .semanticSelfAuthority).toBe(false);
+    expect(detect(broker, nativeMain, acceptsForeignNonSelf)
+      .independentPeerAuthority).toBe(false);
     expect(detect(broker, nativeMain, acceptsAmbiguousPoster)
       .nativeProducerUsesProviderOwnedIdentity).toBe(false);
     expect(detect(broker, nativeMain, acceptsAuthoredAvatarLink)
@@ -565,8 +690,8 @@ describe("native Discord visible-row attribution contract", () => {
       "&& true",
     );
     const noOrientationAgreement = broker.replace(
-      "NativeDiscordRowPoster::SelfAccount,\n                    PeerWireOrientation::SelfToPeer",
-      "NativeDiscordRowPoster::SelfAccount,\n                    PeerWireOrientation::PeerToSelf",
+      "NativeDiscordRowPoster::SelfAccount,\n            PeerWireOrientation::SelfToPeer",
+      "NativeDiscordRowPoster::SelfAccount,\n            PeerWireOrientation::PeerToSelf",
     );
     expect(noPosterIdentity).not.toBe(broker);
     expect(noOrientationAgreement).not.toBe(broker);
@@ -625,7 +750,7 @@ describe("native Discord visible-row attribution contract", () => {
       'payload_id: "renderer".to_owned(),',
     );
     const rendererOwns = overlay.replace(
-      'author: row.orientation === "outgoing" ? localIdentity : verifiedFriendIdentity,',
+      'author: visible.author === "self" ? localIdentity : verifiedFriendIdentity,',
       "author: localIdentity,",
     );
     expect(noPayloadId).not.toBe(broker);
@@ -633,6 +758,21 @@ describe("native Discord visible-row attribution contract", () => {
     expect(detect(noPayloadId).cryptoIdentifiersBound).toBe(false);
     expect(detect(broker, nativeMain, nativeAdapter, rendererOwns)
       .uiAuthorsOnlyFromBackendAgreement).toBe(false);
+  });
+
+  it("detects a bypassed command DTO refusal or fabricated boundary matrix", () => {
+    const acceptsInconsistentDto = broker.replace(
+      "if !attribution_agrees {",
+      "if false {",
+    );
+    const noBehavioralMatrix = broker.replace(
+      "fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed()",
+      "fn native_producer_broker_and_command_dto_matrix_DISABLED()",
+    );
+    expect(acceptsInconsistentDto).not.toBe(broker);
+    expect(noBehavioralMatrix).not.toBe(broker);
+    expect(detect(acceptsInconsistentDto).commandDtoFailsClosed).toBe(false);
+    expect(detect(noBehavioralMatrix).behavioralBoundaryMatrix).toBe(false);
   });
 
   it("detects a UI parser that stops failing closed", () => {

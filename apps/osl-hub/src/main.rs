@@ -3068,41 +3068,6 @@ fn qa_named_rehydrate_refusal<T>(
     result
 }
 
-/// One rehydrated Discord row as the protected renderer receives it.
-///
-/// `row` is where that Discord row is inside the protected overlay window, in
-/// the renderer's own CSS pixels, and `None` when OSL cannot presently place it
-/// -- the overlay window has not been grown over it yet, or the reader could not
-/// read a rectangle. A row with `plaintext` and no `row` is deliberately NOT
-/// painted anywhere: the eye paints in place or not at all.
-///
-/// PRIVACY: `plaintext` is the one secret here and it goes to the protected
-/// renderer and nowhere else -- never a receipt, label, stage file or artifact.
-/// `Debug` is deliberately not derived so no diagnostic can format it. `row`
-/// carries no screen coordinates, only an offset inside OSL's own window.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RehydratedNativeDiscordRowDto {
-    flagtext: String,
-    plaintext: Option<String>,
-    /// Direction accepted only after the native poster proof and authenticated
-    /// wire agree. `Some` exactly when `plaintext` and `attribution` are `Some`.
-    orientation: Option<broker::RehydratedRowOrientation>,
-    /// Native producer evidence joined to crypto-owned identifiers by the
-    /// broker. This command accepts no renderer-authored attribution fields.
-    attribution: Option<broker::RehydratedRowAttribution>,
-    row: Option<NativeDiscordRowRectDto>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeDiscordRowRectDto {
-    left_px: f64,
-    top_px: f64,
-    width_px: f64,
-    height_px: f64,
-}
-
 /// What one claimed transcript read answers.
 ///
 /// `read` is false exactly when the floor refused this claim, and then
@@ -3116,7 +3081,7 @@ struct NativeDiscordRowRectDto {
 struct RehydratedNativeDiscordTranscriptDto {
     read: bool,
     retry_after_ms: u64,
-    rows: Vec<RehydratedNativeDiscordRowDto>,
+    rows: Vec<broker::RehydratedNativeDiscordRowDto>,
 }
 
 /// Put the conversation back on screen, and keep OSL's decrypted text on the
@@ -3302,38 +3267,35 @@ async fn rehydrate_native_discord_overlay_history(
                 .find(|row| row.plaintext.is_some())
                 .and_then(|row| row.bounds),
         );
-        let rows: Vec<RehydratedNativeDiscordRowDto> = rehydrated
+        let placed = rehydrated
+            .iter()
+            .filter(|row| {
+                row.plaintext.is_some()
+                    && frame
+                        .as_ref()
+                        .zip(row.bounds)
+                        .and_then(|(frame, bounds)| overlay_relative_row_rect(frame, bounds))
+                        .is_some()
+            })
+            .count();
+        let decoded = rehydrated
+            .iter()
+            .filter(|row| row.plaintext.is_some())
+            .count();
+        let unplaceable = decoded.saturating_sub(placed);
+        let rows: Vec<broker::RehydratedNativeDiscordRowDto> = rehydrated
             .into_iter()
-            .map(|row| RehydratedNativeDiscordRowDto {
-                flagtext: row.flagtext,
-                plaintext: row.plaintext,
-                orientation: row.orientation,
-                attribution: row.attribution,
-                row: frame
+            .map(|row| {
+                let relative_rect = frame
                     .as_ref()
                     .zip(row.bounds)
-                    .and_then(|(frame, bounds)| overlay_relative_row_rect(frame, bounds))
-                    .map(
-                        |[left_px, top_px, width_px, height_px]| NativeDiscordRowRectDto {
-                            left_px,
-                            top_px,
-                            width_px,
-                            height_px,
-                        },
-                    ),
+                    .and_then(|(frame, bounds)| overlay_relative_row_rect(frame, bounds));
+                broker::rehydrated_native_discord_row_dto(row, relative_rect)
             })
             .collect();
         // The last two counts before the wire, and the pair that separates
         // "OSL opened nothing" from "OSL opened rows it is not over yet". Only a
         // row with BOTH is ever painted; see `RehydratedNativeDiscordRowDto`.
-        let placed = rows
-            .iter()
-            .filter(|row| row.plaintext.is_some() && row.row.is_some())
-            .count();
-        let unplaceable = rows
-            .iter()
-            .filter(|row| row.plaintext.is_some() && row.row.is_none())
-            .count();
         qa_discord_rehydrate_stage(native_discord_overlay::REHYDRATE_ROWS_PLACED, Some(placed));
         qa_discord_rehydrate_stage(
             native_discord_overlay::REHYDRATE_ROWS_UNPLACEABLE,
