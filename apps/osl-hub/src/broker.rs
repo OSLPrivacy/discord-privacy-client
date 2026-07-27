@@ -748,6 +748,15 @@ pub struct OpenedNativeOverlayTextBatch {
     pub deferred_rows: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ControlInboxDeliveryFacts {
+    deliverable_rows: u64,
+    retained_disabled_rows: u64,
+    retryable_rows: u64,
+    quarantined_untrusted_rows: u64,
+    terminal_rows: u64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingNativeOverlayText {
@@ -2638,8 +2647,35 @@ fn fetch_peer_control_inbox(
     identity: &keystore::Identity,
     client: &keystore::KeyServerClient,
     peer_osl_user_id: &str,
-) -> keystore::Result<Vec<keystore::client::ControlInboxItem>> {
+) -> keystore::Result<keystore::client::FilteredControlInbox> {
     client.get_control_inbox_from(identity, peer_osl_user_id)
+}
+
+fn control_inbox_delivery_facts(
+    disposition: keystore::client::ControlInboxDeliveryDisposition,
+) -> ControlInboxDeliveryFacts {
+    ControlInboxDeliveryFacts {
+        deliverable_rows: disposition.live,
+        retained_disabled_rows: disposition.retained_disabled(),
+        retryable_rows: disposition.retryable,
+        quarantined_untrusted_rows: disposition.quarantined,
+        terminal_rows: disposition.retired,
+    }
+}
+
+fn retained_control_inbox_refusal(facts: ControlInboxDeliveryFacts) -> Option<&'static str> {
+    if facts.deliverable_rows != 0 || facts.retained_disabled_rows == 0 {
+        return None;
+    }
+    if facts.quarantined_untrusted_rows != 0 {
+        Some("OSL retained private rows because the sender identity is untrusted")
+    } else if facts.retryable_rows != 0 {
+        Some("OSL retained private rows while the sender identity is temporarily unavailable")
+    } else if facts.terminal_rows != 0 {
+        Some("OSL retained private rows for a terminal sender identity")
+    } else {
+        Some("OSL retained private rows for a disabled sender identity")
+    }
 }
 
 fn drain_peer_inbox_text(
@@ -2674,8 +2710,13 @@ fn drain_peer_inbox_text(
         manual.scope.clone(),
     )?;
     let (identity, client) = keyserver_transport(core)?;
-    let items = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
+    let page = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
+    let control_inbox_delivery = control_inbox_delivery_facts(page.delivery);
+    if let Some(refusal) = retained_control_inbox_refusal(control_inbox_delivery) {
+        return Err(refusal.to_owned());
+    }
+    let items = page.items;
     let mut messages = Vec::new();
     let mut pending_view_once = Vec::new();
     let mut acknowledgments = Vec::new();
@@ -2684,7 +2725,8 @@ fn drain_peer_inbox_text(
     // Rows left in the inbox because resolving them failed transiently. Counted,
     // never described: the batch reports how many rows a later drain still owes,
     // and nothing about which rows or why.
-    let mut deferred_rows = 0u32;
+    let mut deferred_rows =
+        u32::try_from(control_inbox_delivery.retained_disabled_rows).unwrap_or(u32::MAX);
     for item in items {
         // Unrelated inbox traffic must never consume this bounded display
         // budget. Stop only after 64 messages for this exact friend/scope were
@@ -3622,15 +3664,17 @@ fn native_overlay_attachment_plans(
     let scope_id =
         native_overlay_relay_scope_id(&context.conversation_id).map_err(|_| ERROR.to_owned())?;
     let (identity, client) = keyserver_transport(core)?;
-    let items = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
+    let page = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
         .map_err(|_| ERROR.to_owned())?;
+    let control_inbox_delivery = control_inbox_delivery_facts(page.delivery);
+    let items = page.items;
     let now = ipc::main_password::now_unix_secs_pub();
     let limit = if wanted_id.is_some() {
         1
     } else {
         MAX_NATIVE_OVERLAY_OPEN_BATCH
     };
-    Ok(collect_valid_bounded(items, limit, |item| {
+    let plans = collect_valid_bounded(items, limit, |item| {
         if item.sender_id != manual.peer_osl_user_id || item.scope_id != scope_id {
             return None;
         }
@@ -3697,7 +3741,13 @@ fn native_overlay_attachment_plans(
             view_once: notice.view_once,
             expires_at: notice.expires_at,
         })
-    }))
+    });
+    if plans.is_empty() {
+        if let Some(refusal) = retained_control_inbox_refusal(control_inbox_delivery) {
+            return Err(refusal.to_owned());
+        }
+    }
+    Ok(plans)
 }
 
 fn collect_valid_bounded<T, U>(
@@ -6625,24 +6675,45 @@ mod tests {
             serde_json::json!({
                 "items": [a_text, a_attachment],
                 "filtered_sender_id": sender_a,
+                "filtered_sender_delivery": {
+                    "live": 2,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
             }),
             serde_json::json!({
                 "items": [b_text],
                 "filtered_sender_id": sender_b,
+                "filtered_sender_delivery": {
+                    "live": 1,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
             }),
         ]);
         let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
 
-        let a_rows = fetch_peer_control_inbox(&identity, &client, sender_a)
+        let a_page = fetch_peer_control_inbox(&identity, &client, sender_a)
             .expect("sender A's filtered production fetch succeeds");
-        assert_eq!(a_rows.len(), 2, "A has exactly its text and attachment rows");
+        let a_rows = a_page.items;
+        assert_eq!(
+            a_rows.len(),
+            2,
+            "A has exactly its text and attachment rows"
+        );
         assert!(
             a_rows.iter().all(|row| row.sender_id == sender_a),
             "A's page contains no row from B"
         );
         let a_bundles = a_rows
             .iter()
-            .map(|row| STANDARD.decode(&row.bundle_b64).expect("fixture bundle is base64"))
+            .map(|row| {
+                STANDARD
+                    .decode(&row.bundle_b64)
+                    .expect("fixture bundle is base64")
+            })
             .collect::<Vec<_>>();
         assert!(
             a_bundles
@@ -6657,8 +6728,9 @@ mod tests {
             "A's attachment row reaches the production receive boundary"
         );
 
-        let b_rows = fetch_peer_control_inbox(&identity, &client, sender_b)
+        let b_page = fetch_peer_control_inbox(&identity, &client, sender_b)
             .expect("B remains independently drainable after A");
+        let b_rows = b_page.items;
         assert_eq!(b_rows.len(), 1, "B's row remains untouched by A's fetch");
         assert_eq!(b_rows[0].sender_id, sender_b);
 
@@ -6703,6 +6775,12 @@ mod tests {
                 serde_json::json!({
                     "items": [a_row()],
                     "filtered_sender_id": sender_b,
+                    "filtered_sender_delivery": {
+                        "live": 1,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
                 }),
                 "did not confirm the sender filter",
             ),
@@ -6711,6 +6789,12 @@ mod tests {
                 serde_json::json!({
                     "items": [b_row()],
                     "filtered_sender_id": sender_a,
+                    "filtered_sender_delivery": {
+                        "live": 1,
+                        "retryable": 0,
+                        "quarantined": 0,
+                        "retired": 0,
+                    },
                 }),
                 "outside its sender filter",
             ),
@@ -6718,6 +6802,14 @@ mod tests {
                 "unfiltered fallback without echo",
                 serde_json::json!({ "items": [b_row(), a_row()] }),
                 "did not confirm the sender filter",
+            ),
+            (
+                "missing delivery disposition",
+                serde_json::json!({
+                    "items": [],
+                    "filtered_sender_id": sender_a,
+                }),
+                "did not return its sender delivery disposition",
             ),
         ];
 
@@ -6736,6 +6828,75 @@ mod tests {
             );
             server.join().expect("control-inbox test server exits");
         }
+    }
+
+    #[test]
+    fn control_inbox_delivery_facts_keep_mixed_retained_states_nonempty() {
+        let facts =
+            control_inbox_delivery_facts(keystore::client::ControlInboxDeliveryDisposition {
+                live: 2,
+                retryable: 3,
+                quarantined: 5,
+                retired: 7,
+            });
+        assert_eq!(
+            facts,
+            ControlInboxDeliveryFacts {
+                deliverable_rows: 2,
+                retained_disabled_rows: 15,
+                retryable_rows: 3,
+                quarantined_untrusted_rows: 5,
+                terminal_rows: 7,
+            }
+        );
+        assert_eq!(retained_control_inbox_refusal(facts), None);
+
+        for (disposition, expected) in [
+            (
+                keystore::client::ControlInboxDeliveryDisposition {
+                    live: 0,
+                    retryable: 1,
+                    quarantined: 0,
+                    retired: 0,
+                },
+                "temporarily unavailable",
+            ),
+            (
+                keystore::client::ControlInboxDeliveryDisposition {
+                    live: 0,
+                    retryable: 0,
+                    quarantined: 1,
+                    retired: 0,
+                },
+                "untrusted",
+            ),
+            (
+                keystore::client::ControlInboxDeliveryDisposition {
+                    live: 0,
+                    retryable: 0,
+                    quarantined: 0,
+                    retired: 1,
+                },
+                "terminal",
+            ),
+        ] {
+            let facts = control_inbox_delivery_facts(disposition);
+            assert_eq!(facts.deliverable_rows, 0);
+            assert_eq!(facts.retained_disabled_rows, 1);
+            assert!(retained_control_inbox_refusal(facts)
+                .expect("retained-only page is not an empty inbox")
+                .contains(expected));
+        }
+
+        let empty =
+            control_inbox_delivery_facts(keystore::client::ControlInboxDeliveryDisposition {
+                live: 0,
+                retryable: 0,
+                quarantined: 0,
+                retired: 0,
+            });
+        assert_eq!(empty.retained_disabled_rows, 0);
+        assert_eq!(retained_control_inbox_refusal(empty), None);
     }
 
     fn literal_renderer_invokes(source: &str) -> std::collections::BTreeSet<String> {

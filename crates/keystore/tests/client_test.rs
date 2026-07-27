@@ -815,10 +815,22 @@ fn control_inbox_response(filtered_sender: Option<&str>, senders: &[&str]) -> Ve
             })
         })
         .collect();
-    let mut body = serde_json::json!({ "items": items });
+    let mut body = serde_json::json!({
+        "items": items,
+        "filtered_sender_delivery": {
+            "live": senders.len(),
+            "retryable": 0,
+            "quarantined": 0,
+            "retired": 0,
+        },
+    });
     if let Some(sender) = filtered_sender {
         body["filtered_sender_id"] = serde_json::json!(sender);
     }
+    control_inbox_json_response(body)
+}
+
+fn control_inbox_json_response(body: serde_json::Value) -> Vec<u8> {
     let body = serde_json::to_vec(&body).unwrap();
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
@@ -846,12 +858,18 @@ fn filtered_control_inbox_accepts_positive_rows_from_two_senders_independently()
         let identity = generate_identity("recipient".to_owned());
         let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
 
-        let items = client.get_control_inbox_from(&identity, sender).unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].sender_id, sender);
+        let page = client.get_control_inbox_from(&identity, sender).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].sender_id, sender);
+        assert_eq!(page.delivery.live, 1);
+        assert_eq!(page.delivery.retained_disabled(), 0);
 
         let request = request.recv().unwrap();
         let target = request_target(&request);
+        assert!(
+            target.starts_with(&format!("/v1/control-inbox/{}?", identity.user_id)),
+            "the authenticated identity, not response JSON, fixes the recipient path"
+        );
         assert_eq!(query_value(target, "sender"), sender);
         let timestamp_ms = query_value(target, "ts").parse::<i64>().unwrap();
         let signature = STANDARD.decode(query_value(target, "sig")).unwrap();
@@ -922,4 +940,162 @@ fn unfiltered_or_wrong_filter_echo_cannot_fall_back_to_a_wider_page() {
         Err(Error::Transport(message))
             if message.contains("did not confirm the sender filter")
     ));
+}
+
+#[test]
+fn filtered_control_inbox_requires_exact_typed_disposition_and_recipient_binding() {
+    let identity = generate_identity("recipient-a".to_owned());
+    let sender = "peer-a";
+    let valid = || {
+        serde_json::json!({
+            "items": [],
+            "filtered_sender_id": sender,
+            "filtered_sender_delivery": {
+                "live": 0,
+                "retryable": 1,
+                "quarantined": 0,
+                "retired": 0,
+            },
+        })
+    };
+
+    let mut cases = Vec::new();
+    let mut missing_object = valid();
+    missing_object
+        .as_object_mut()
+        .unwrap()
+        .remove("filtered_sender_delivery");
+    cases.push(("missing disposition object", missing_object));
+
+    let mut missing_member = valid();
+    missing_member["filtered_sender_delivery"]
+        .as_object_mut()
+        .unwrap()
+        .remove("retired");
+    cases.push(("missing disposition member", missing_member));
+
+    let mut unknown_member = valid();
+    unknown_member["filtered_sender_delivery"]["held"] = serde_json::json!(1);
+    cases.push(("unknown disposition member", unknown_member));
+
+    let mut unknown_top_level = valid();
+    unknown_top_level["recipient_id"] = serde_json::json!("recipient-b");
+    cases.push(("spoofed recipient field", unknown_top_level));
+
+    let mut negative_count = valid();
+    negative_count["filtered_sender_delivery"]["retryable"] = serde_json::json!(-1);
+    cases.push(("negative disposition count", negative_count));
+
+    let mut wrong_count_type = valid();
+    wrong_count_type["filtered_sender_delivery"]["retryable"] = serde_json::json!("1");
+    cases.push(("wrong disposition count type", wrong_count_type));
+
+    for (label, body) in cases {
+        let (port, _) = one_shot_server(control_inbox_json_response(body));
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+        assert!(
+            client.get_control_inbox_from(&identity, sender).is_err(),
+            "{label} must be refused"
+        );
+    }
+
+    let unreachable = KeyServerClient::new("http://127.0.0.1:9").unwrap();
+    let invalid_recipient = generate_identity("bad\nrecipient".to_owned());
+    assert!(matches!(
+        unreachable.get_control_inbox_from(&invalid_recipient, sender),
+        Err(Error::Transport(message))
+            if message == "control-inbox recipient identity is invalid"
+    ));
+}
+
+#[test]
+fn filtered_control_inbox_retention_cleanup_boundary_is_not_an_empty_inbox() {
+    let identity = generate_identity("recipient".to_owned());
+    let sender = "peer-a";
+    let response = |retryable| {
+        control_inbox_json_response(serde_json::json!({
+            "items": [],
+            "filtered_sender_id": sender,
+            "filtered_sender_delivery": {
+                "live": 0,
+                "retryable": retryable,
+                "quarantined": 0,
+                "retired": 0,
+            },
+        }))
+    };
+
+    // The Worker reports non-live rows until its bounded cleanup actually
+    // removes them. The client receives no timestamp, so this test pins the two
+    // observable sides of that server-owned cleanup boundary: retained before
+    // removal, genuinely empty afterward.
+    let (port, _) = one_shot_server(response(1));
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let at_boundary = client.get_control_inbox_from(&identity, sender).unwrap();
+    assert!(at_boundary.items.is_empty());
+    assert_eq!(at_boundary.delivery.retryable, 1);
+    assert_eq!(at_boundary.delivery.retained_disabled(), 1);
+
+    let (port, _) = one_shot_server(response(0));
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let after_boundary = client.get_control_inbox_from(&identity, sender).unwrap();
+    assert!(after_boundary.items.is_empty());
+    assert_eq!(after_boundary.delivery.retained_disabled(), 0);
+}
+
+#[test]
+fn retained_or_spoofed_rows_cannot_be_relabelled_as_live_delete_candidates() {
+    let identity = generate_identity("recipient".to_owned());
+    let sender = "peer-a";
+    let item = serde_json::json!({
+        "id": "inbox-retained",
+        "sender_id": sender,
+        "scope_id": "scope-a",
+        "bundle_b64": "AQ==",
+        "created_at": 1_700_000_000,
+        "kind": "",
+    });
+
+    for (label, body) in [
+        (
+            "retained payload exposed as an item",
+            serde_json::json!({
+                "items": [item.clone()],
+                "filtered_sender_id": sender,
+                "filtered_sender_delivery": {
+                    "live": 0,
+                    "retryable": 1,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
+            }),
+        ),
+        (
+            "spoofed sender row",
+            serde_json::json!({
+                "items": [{
+                    "id": "inbox-spoofed",
+                    "sender_id": "peer-b",
+                    "scope_id": "scope-a",
+                    "bundle_b64": "AQ==",
+                    "created_at": 1_700_000_000,
+                    "kind": "",
+                }],
+                "filtered_sender_id": sender,
+                "filtered_sender_delivery": {
+                    "live": 1,
+                    "retryable": 0,
+                    "quarantined": 0,
+                    "retired": 0,
+                },
+            }),
+        ),
+    ] {
+        let (port, _) = one_shot_server(control_inbox_json_response(body));
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+        assert!(
+            client.get_control_inbox_from(&identity, sender).is_err(),
+            "{label} must not reach the broker"
+        );
+    }
 }

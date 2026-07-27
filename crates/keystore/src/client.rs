@@ -1192,7 +1192,12 @@ impl KeyServerClient {
         &self,
         identity: &Identity,
         sender_id: &str,
-    ) -> Result<Vec<ControlInboxItem>> {
+    ) -> Result<FilteredControlInbox> {
+        if !valid_control_inbox_sender_id(&identity.user_id) {
+            return Err(Error::Transport(
+                "control-inbox recipient identity is invalid".into(),
+            ));
+        }
         if !valid_control_inbox_sender_id(sender_id) {
             return Err(Error::Transport(
                 "control-inbox sender filter is invalid".into(),
@@ -1210,7 +1215,7 @@ impl KeyServerClient {
         );
         let resp = self.send_request("GET", &path, None)?;
         check_2xx(&resp)?;
-        let parsed: ControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
+        let parsed: FilteredControlInboxGetResponse = serde_json::from_slice(&resp.body)?;
         // The server must confirm which filter it applied. Absent or
         // different means we are looking at a page we did not ask for.
         match parsed.filtered_sender_id.as_deref() {
@@ -1236,7 +1241,24 @@ impl KeyServerClient {
                 "control-inbox drain returned a row outside its sender filter".into(),
             ));
         }
-        Ok(parsed.items)
+        let delivery = parsed.filtered_sender_delivery.ok_or_else(|| {
+            Error::Transport(
+                "control-inbox drain did not return its sender delivery disposition".into(),
+            )
+        })?;
+        delivery.validate()?;
+        let live_rows = usize::try_from(delivery.live).map_err(|_| {
+            Error::Transport("control-inbox live disposition count is invalid".into())
+        })?;
+        if live_rows != parsed.items.len() {
+            return Err(Error::Transport(
+                "control-inbox live disposition does not match its deliverable rows".into(),
+            ));
+        }
+        Ok(FilteredControlInbox {
+            items: parsed.items,
+            delivery,
+        })
     }
 
     /// Phase 6.4: delete a specific inbox row after the caller has
@@ -1458,8 +1480,64 @@ pub struct ControlInboxItem {
     pub kind: String,
 }
 
+/// Aggregate disposition for one authenticated recipient/sender pair.
+///
+/// These counts are deliberately nonexclusive: a filtered response may carry
+/// deliverable rows while older rows from the same sender are retained for a
+/// disabled identity. The values are server status, not payload
+/// authentication; every returned live row still goes through the broker's
+/// authenticated envelope checks before it can be applied or deleted.
+#[derive(Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ControlInboxDeliveryDisposition {
+    pub live: u64,
+    pub retryable: u64,
+    pub quarantined: u64,
+    pub retired: u64,
+}
+
+impl ControlInboxDeliveryDisposition {
+    const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+    fn validate(self) -> Result<()> {
+        let counts = [self.live, self.retryable, self.quarantined, self.retired];
+        if counts
+            .iter()
+            .any(|count| *count > Self::MAX_JSON_SAFE_INTEGER)
+            || counts
+                .into_iter()
+                .try_fold(0u64, u64::checked_add)
+                .is_none()
+        {
+            return Err(Error::Transport(
+                "control-inbox sender delivery disposition is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn retained_disabled(self) -> u64 {
+        self.retryable
+            .saturating_add(self.quarantined)
+            .saturating_add(self.retired)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FilteredControlInbox {
+    pub items: Vec<ControlInboxItem>,
+    pub delivery: ControlInboxDeliveryDisposition,
+}
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ControlInboxGetResponse {
+    items: Vec<ControlInboxItem>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilteredControlInboxGetResponse {
     items: Vec<ControlInboxItem>,
     /// Echo of the `?sender=` filter the server applied. Absent on an
     /// unfiltered drain, and absent from a worker that does not
@@ -1467,6 +1545,11 @@ struct ControlInboxGetResponse {
     /// `get_control_inbox_from` treats a missing echo as an error.
     #[serde(default)]
     filtered_sender_id: Option<String>,
+    /// Required for filtered drains served by the 0031 status-aware Worker.
+    /// A missing object is not legacy-compatible: it would make retained rows
+    /// indistinguishable from an actually empty sender inbox.
+    #[serde(default)]
+    filtered_sender_delivery: Option<ControlInboxDeliveryDisposition>,
 }
 
 #[derive(Serialize)]
