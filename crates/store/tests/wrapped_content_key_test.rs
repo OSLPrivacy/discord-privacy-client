@@ -541,6 +541,6 @@ fn v4_to_v5_mid_row_failure_rolls_back_and_reopens_after_repair() {
                 |row| row.get::<_, Vec<u8>>(0)
             )
             .unwrap(),
-        6u32.to_le_bytes()
+        7u32.to_le_bytes()
     );
 }

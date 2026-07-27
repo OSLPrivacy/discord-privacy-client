@@ -58,9 +58,14 @@ use rusqlite::{params, Connection};
 ///        body, wrapper, owning message selector, order, and content version
 ///        form one authenticated envelope. Burned attachments remain only as
 ///        keyless, zeroed audit stubs.
-pub(crate) const SCHEMA_VERSION: u32 = 6;
+///   v7 — Adds an encrypted, authenticated attachment inventory per message.
+///        New inventories are complete; migrated inventories are explicitly
+///        marked incomplete because history cannot prove what was never
+///        cached.
+pub(crate) const SCHEMA_VERSION: u32 = 7;
 const PRIVACY_SCHEMA_VERSION: u32 = 4;
 const MESSAGE_ENVELOPE_SCHEMA_VERSION: u32 = 5;
+const ATTACHMENT_ENVELOPE_SCHEMA_VERSION: u32 = 6;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -157,6 +162,16 @@ CREATE INDEX IF NOT EXISTS idx_attachments_created
     ON attachments(created_at);
 "#;
 
+const SCHEMA_ATTACHMENT_MANIFESTS: &str = r#"
+CREATE TABLE IF NOT EXISTS attachment_manifests (
+    mid_bi BLOB PRIMARY KEY,
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    nonce BLOB NOT NULL,
+    ciphertext BLOB NOT NULL
+);
+"#;
+
 /// Additive form of the exact-v3 downgrade guards for databases created by an
 /// earlier v4 build. Fresh and newly migrated databases get the same columns
 /// directly from their CREATE TABLE statements above.
@@ -221,6 +236,7 @@ pub(crate) fn migrate(
             conn.execute_batch("BEGIN IMMEDIATE;")?;
             let created = (|| -> Result<(), StoreError> {
                 conn.execute_batch(SCHEMA_CURRENT)?;
+                conn.execute_batch(SCHEMA_ATTACHMENT_MANIFESTS)?;
                 write_meta_u32(conn, "schema_version", SCHEMA_VERSION)
             })();
             if let Err(e) = created {
@@ -238,17 +254,24 @@ pub(crate) fn migrate(
             apply_columns(conn, "attachments", V4_ATTACHMENT_DOWNGRADE_COLUMNS)?;
             // CREATE IF NOT EXISTS keeps this idempotent.
             conn.execute_batch(SCHEMA_CURRENT)?;
+            conn.execute_batch(SCHEMA_ATTACHMENT_MANIFESTS)?;
             // Finish a scrub a previous run committed but did not complete.
             run_pending_vacuum(conn)?;
             return Ok(());
         }
         Some(MESSAGE_ENVELOPE_SCHEMA_VERSION) => {
             migrate_v5_to_v6(conn, key, index_key)?;
+            migrate_v6_to_v7(conn, key)?;
+            return Ok(());
+        }
+        Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION) => {
+            migrate_v6_to_v7(conn, key)?;
             return Ok(());
         }
         Some(PRIVACY_SCHEMA_VERSION) => {
             migrate_v4_to_v5(conn, key)?;
             migrate_v5_to_v6(conn, key, index_key)?;
+            migrate_v6_to_v7(conn, key)?;
             return Ok(());
         }
         _ => {}
@@ -268,6 +291,7 @@ pub(crate) fn migrate(
     migrate_v3_to_v4(conn, key, index_key)?;
     migrate_v4_to_v5(conn, key)?;
     migrate_v5_to_v6(conn, key, index_key)?;
+    migrate_v6_to_v7(conn, key)?;
     Ok(())
 }
 
@@ -959,7 +983,7 @@ DROP TABLE attachments;
 ALTER TABLE attachments_v6 RENAME TO attachments;
 "#,
         )?;
-        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        write_meta_u32(conn, "schema_version", ATTACHMENT_ENVELOPE_SCHEMA_VERSION)?;
         write_meta_blob(conn, VACUUM_PENDING_KEY, &[1])?;
         conn.execute_batch("COMMIT;")?;
         Ok(())
@@ -972,6 +996,143 @@ ALTER TABLE attachments_v6 RENAME TO attachments;
 
     conn.execute_batch(SCHEMA_CURRENT)?;
     run_pending_vacuum(conn)?;
+    Ok(())
+}
+
+/// Add the v7 encrypted attachment inventory without pretending that a
+/// historical cache is authoritative.
+///
+/// Every live attachment present at migration is authenticated and recorded.
+/// `complete = 0` is deliberate: the old schema had no inventory, so an empty
+/// historical set cannot distinguish "never cached" from "row was deleted
+/// before migration". The transaction either creates every observed manifest
+/// and stamps v7, or leaves the whole v6 database unchanged.
+fn migrate_v6_to_v7(conn: &Connection, key: &aead::Key) -> Result<(), StoreError> {
+    conn.execute_batch(
+        r#"
+BEGIN IMMEDIATE;
+CREATE TABLE attachment_manifests (
+    mid_bi BLOB PRIMARY KEY,
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    nonce BLOB NOT NULL,
+    ciphertext BLOB NOT NULL
+);
+"#,
+    )?;
+
+    let result = (|| -> Result<(), StoreError> {
+        let mids: Vec<Vec<u8>> = {
+            let mut stmt = conn.prepare(
+                "SELECT mid_bi FROM messages WHERE burned = 0 \
+                 UNION SELECT mid_bi FROM attachments WHERE burned = 0 \
+                 ORDER BY mid_bi",
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            out
+        };
+
+        for mid_bi in mids {
+            let mut entries = Vec::new();
+            let mut stmt = conn.prepare(
+                "SELECT ck_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, \
+                        content_version, wrapped_key_nonce, wrapped_key \
+                   FROM attachments \
+                  WHERE mid_bi = ?1 AND burned = 0 \
+                  ORDER BY seq ASC, ck_bi ASC",
+            )?;
+            let rows = stmt.query_map(params![&mid_bi], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<Vec<u8>>>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                ))
+            })?;
+            for row in rows {
+                let (
+                    ck_bi,
+                    meta_nonce,
+                    meta_ct,
+                    ciphertext,
+                    nonce,
+                    seq,
+                    content_version,
+                    wrapped_key_nonce,
+                    wrapped_key,
+                ) = row?;
+                if content_version < 1 {
+                    return Err(StoreError::Schema(
+                        "v6 attachment content version must be positive".to_string(),
+                    ));
+                }
+                let metadata = cipher::unseal(
+                    key,
+                    &cipher::attachment_meta_aad(&ck_bi, &mid_bi, seq, content_version),
+                    &meta_nonce,
+                    &meta_ct,
+                )?;
+                let wrapper_nonce = wrapped_key_nonce.as_deref().ok_or_else(|| {
+                    StoreError::Schema("v6 live attachment has no wrapped-key nonce".to_string())
+                })?;
+                let wrapper = wrapped_key.as_deref().ok_or_else(|| {
+                    StoreError::Schema("v6 live attachment has no wrapped key".to_string())
+                })?;
+                cipher::unseal_attachment_body(
+                    key,
+                    &ck_bi,
+                    &mid_bi,
+                    seq,
+                    content_version,
+                    &metadata,
+                    wrapper_nonce,
+                    wrapper,
+                    &nonce,
+                    &ciphertext,
+                )?;
+                entries.push(cipher::attachment_manifest_entry(
+                    ck_bi,
+                    seq,
+                    content_version,
+                    &metadata,
+                    &nonce,
+                    &ciphertext,
+                    wrapper_nonce,
+                    wrapper,
+                ));
+            }
+            let manifest = cipher::AttachmentManifest {
+                complete: false,
+                generation: 1,
+                entries,
+            };
+            let (nonce, ciphertext) = cipher::seal_attachment_manifest(key, &mid_bi, &manifest)?;
+            conn.execute(
+                "INSERT INTO attachment_manifests \
+                    (mid_bi, complete, generation, nonce, ciphertext) \
+                 VALUES (?1, 0, 1, ?2, ?3)",
+                params![mid_bi, nonce, ciphertext],
+            )?;
+        }
+        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(error);
+    }
+    conn.execute_batch(SCHEMA_CURRENT)?;
     Ok(())
 }
 
@@ -1030,6 +1191,19 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, StoreError> {
 /// the input file byte-for-byte unchanged. `migrate` calls it again to keep the
 /// migration entry point fail-closed if its call order is ever reused.
 pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), StoreError> {
+    let on_disk = if table_exists(conn, "_meta")? {
+        read_meta_u32(conn, "schema_version")?
+    } else {
+        None
+    };
+    if table_exists(conn, "attachment_manifests")? && on_disk != Some(SCHEMA_VERSION) {
+        return Err(StoreError::Schema(
+            "pre-v7 database already contains an attachment_manifests table; \
+             refusing ambiguous partial migration state"
+                .to_string(),
+        ));
+    }
+
     if table_exists(conn, "messages")? {
         let columns = existing_columns(conn, "messages")?;
         if !columns.iter().any(|column| column == "content_version")
@@ -1058,9 +1232,13 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
         let has_wrapper = columns.iter().any(|column| column == "wrapped_key");
         let any_envelope_column = has_version || has_wrapper_nonce || has_wrapper;
         let complete_envelope = has_version && has_wrapper_nonce && has_wrapper;
-        let on_disk = read_meta_u32(conn, "schema_version")?;
-
-        if any_envelope_column && (!complete_envelope || on_disk != Some(SCHEMA_VERSION)) {
+        if any_envelope_column
+            && (!complete_envelope
+                || !matches!(
+                    on_disk,
+                    Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION) | Some(SCHEMA_VERSION)
+                ))
+        {
             let row_count: i64 =
                 conn.query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))?;
             if row_count != 0 {

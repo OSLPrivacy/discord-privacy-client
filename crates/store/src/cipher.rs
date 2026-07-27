@@ -58,6 +58,8 @@ const ATTACHMENT_BODY_AAD_V6: &[u8] = b"osl-store/body/v6/attachment";
 const ATTACHMENT_WRAP_AAD_V6: &[u8] = b"osl-store/wrap/v6/attachment";
 const ATTACHMENT_META_AAD_V6: &[u8] = b"osl-store/meta/v6/attachment";
 const ATTACHMENT_COMMITMENT_V6: &[u8] = b"osl-store/commitment/v6/attachment";
+const ATTACHMENT_MANIFEST_AAD_V7: &[u8] = b"osl-store/manifest/v7/attachment";
+const ATTACHMENT_MANIFEST_FORMAT_V7: u32 = 1;
 
 /// Derive the message-store AEAD key from the caller-supplied
 /// 32-byte identity secret. Returns an opaque
@@ -278,7 +280,7 @@ fn attachment_aad(
     aad
 }
 
-fn attachment_commitment(parts: &[&[u8]]) -> [u8; 32] {
+pub(crate) fn attachment_commitment(parts: &[&[u8]]) -> [u8; 32] {
     let mut canonical = Vec::new();
     for part in parts {
         canonical.extend_from_slice(&(part.len() as u64).to_le_bytes());
@@ -289,6 +291,100 @@ fn attachment_commitment(parts: &[&[u8]]) -> [u8; 32] {
     // blind-index construction and avoiding a second hashing implementation.
     hkdf::derive_32(&[], &canonical, ATTACHMENT_COMMITMENT_V6)
         .expect("fixed-size HKDF commitment cannot fail")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AttachmentManifestEntry {
+    pub(crate) ck_bi: Vec<u8>,
+    pub(crate) seq: i64,
+    pub(crate) content_version: i64,
+    pub(crate) metadata_commitment: [u8; 32],
+    pub(crate) body_commitment: [u8; 32],
+    pub(crate) wrapper_commitment: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AttachmentManifest {
+    /// `false` means the inventory was observed during migration and cannot
+    /// prove that an attachment absent before migration was never cached.
+    /// It still authenticates every row observed at migration time.
+    pub(crate) complete: bool,
+    pub(crate) generation: i64,
+    pub(crate) entries: Vec<AttachmentManifestEntry>,
+}
+
+fn attachment_manifest_aad(mid_bi: &[u8], complete: bool, generation: i64) -> Vec<u8> {
+    let mut aad = Vec::new();
+    push_aad_part(&mut aad, ATTACHMENT_MANIFEST_AAD_V7);
+    push_aad_part(&mut aad, mid_bi);
+    aad.push(u8::from(complete));
+    aad.extend_from_slice(&generation.to_le_bytes());
+    aad
+}
+
+pub(crate) fn attachment_manifest_entry(
+    ck_bi: Vec<u8>,
+    seq: i64,
+    content_version: i64,
+    metadata: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    wrapped_key_nonce: &[u8],
+    wrapped_key: &[u8],
+) -> AttachmentManifestEntry {
+    AttachmentManifestEntry {
+        ck_bi,
+        seq,
+        content_version,
+        metadata_commitment: attachment_commitment(&[metadata]),
+        body_commitment: attachment_commitment(&[nonce, ciphertext]),
+        wrapper_commitment: attachment_commitment(&[wrapped_key_nonce, wrapped_key]),
+    }
+}
+
+pub(crate) fn seal_attachment_manifest(
+    master_key: &aead::Key,
+    mid_bi: &[u8],
+    manifest: &AttachmentManifest,
+) -> Result<(Vec<u8>, Vec<u8>), StoreError> {
+    if manifest.generation < 1 {
+        return Err(StoreError::Corrupted(
+            "attachment manifest generation must be positive".to_string(),
+        ));
+    }
+    seal(
+        master_key,
+        &attachment_manifest_aad(mid_bi, manifest.complete, manifest.generation),
+        &encode_attachment_manifest(manifest),
+    )
+}
+
+pub(crate) fn unseal_attachment_manifest(
+    master_key: &aead::Key,
+    mid_bi: &[u8],
+    complete: bool,
+    generation: i64,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<AttachmentManifest, StoreError> {
+    if generation < 1 {
+        return Err(StoreError::Corrupted(
+            "attachment manifest generation must be positive".to_string(),
+        ));
+    }
+    let plaintext = unseal(
+        master_key,
+        &attachment_manifest_aad(mid_bi, complete, generation),
+        nonce,
+        ciphertext,
+    )?;
+    let manifest = decode_attachment_manifest(&plaintext)?;
+    if manifest.complete != complete || manifest.generation != generation {
+        return Err(StoreError::Corrupted(
+            "attachment manifest columns do not match authenticated contents".to_string(),
+        ));
+    }
+    Ok(manifest)
 }
 
 pub(crate) fn attachment_meta_aad(ck_bi: &[u8], mid_bi: &[u8], seq: i64, version: i64) -> Vec<u8> {
@@ -520,6 +616,110 @@ impl<'a> Reader<'a> {
         n.copy_from_slice(raw);
         Ok(i64::from_le_bytes(n))
     }
+
+    fn u32(&mut self) -> Result<u32, StoreError> {
+        let raw = self.take(4)?;
+        let mut n = [0u8; 4];
+        n.copy_from_slice(raw);
+        Ok(u32::from_le_bytes(n))
+    }
+
+    fn bytes(&mut self) -> Result<Vec<u8>, StoreError> {
+        let raw = self.take(8)?;
+        let mut n = [0u8; 8];
+        n.copy_from_slice(raw);
+        let len = usize::try_from(u64::from_le_bytes(n)).map_err(|_| {
+            StoreError::Corrupted("sealed manifest length does not fit memory".to_string())
+        })?;
+        Ok(self.take(len)?.to_vec())
+    }
+}
+
+fn push_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    out.extend_from_slice(value);
+}
+
+pub(crate) fn encode_attachment_manifest(manifest: &AttachmentManifest) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32 + manifest.entries.len() * 160);
+    out.extend_from_slice(&ATTACHMENT_MANIFEST_FORMAT_V7.to_le_bytes());
+    out.push(u8::from(manifest.complete));
+    out.extend_from_slice(&manifest.generation.to_le_bytes());
+    out.extend_from_slice(&(manifest.entries.len() as u64).to_le_bytes());
+    for entry in &manifest.entries {
+        push_bytes(&mut out, &entry.ck_bi);
+        out.extend_from_slice(&entry.seq.to_le_bytes());
+        out.extend_from_slice(&entry.content_version.to_le_bytes());
+        out.extend_from_slice(&entry.metadata_commitment);
+        out.extend_from_slice(&entry.body_commitment);
+        out.extend_from_slice(&entry.wrapper_commitment);
+    }
+    out
+}
+
+pub(crate) fn decode_attachment_manifest(
+    plaintext: &[u8],
+) -> Result<AttachmentManifest, StoreError> {
+    let mut reader = Reader::new(plaintext);
+    if reader.u32()? != ATTACHMENT_MANIFEST_FORMAT_V7 {
+        return Err(StoreError::Corrupted(
+            "unsupported attachment manifest format".to_string(),
+        ));
+    }
+    let complete = match reader.take(1)?[0] {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(StoreError::Corrupted(
+                "attachment manifest has invalid coverage marker".to_string(),
+            ))
+        }
+    };
+    let generation = reader.i64()?;
+    let raw_count = reader.take(8)?;
+    let mut count_bytes = [0u8; 8];
+    count_bytes.copy_from_slice(raw_count);
+    let count = usize::try_from(u64::from_le_bytes(count_bytes)).map_err(|_| {
+        StoreError::Corrupted("attachment manifest count does not fit memory".to_string())
+    })?;
+    // A manifest cannot legitimately contain more entries than bytes left;
+    // bounding before allocation keeps a forged count from becoming an OOM.
+    if count > reader.buf.len().saturating_sub(reader.at) / 152 {
+        return Err(StoreError::Corrupted(
+            "attachment manifest count exceeds encoded entries".to_string(),
+        ));
+    }
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let ck_bi = reader.bytes()?;
+        if ck_bi.len() != 32 {
+            return Err(StoreError::Corrupted(
+                "attachment manifest selector has wrong length".to_string(),
+            ));
+        }
+        let seq = reader.i64()?;
+        let content_version = reader.i64()?;
+        let mut metadata_commitment = [0u8; 32];
+        metadata_commitment.copy_from_slice(reader.take(32)?);
+        let mut body_commitment = [0u8; 32];
+        body_commitment.copy_from_slice(reader.take(32)?);
+        let mut wrapper_commitment = [0u8; 32];
+        wrapper_commitment.copy_from_slice(reader.take(32)?);
+        entries.push(AttachmentManifestEntry {
+            ck_bi,
+            seq,
+            content_version,
+            metadata_commitment,
+            body_commitment,
+            wrapper_commitment,
+        });
+    }
+    reader.end()?;
+    Ok(AttachmentManifest {
+        complete,
+        generation,
+        entries,
+    })
 }
 
 /// Plaintext metadata of one `messages` row, held only in memory.

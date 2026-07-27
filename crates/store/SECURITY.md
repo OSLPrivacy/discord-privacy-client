@@ -31,12 +31,16 @@ wrapper commits to both that metadata and the exact body nonce/ciphertext.
 Cross-row, cross-type, owner, order, version, metadata and partial-envelope
 transplants therefore fail authentication before bytes are returned.
 
-The cache API does not receive an authoritative per-message attachment
-manifest or expected attachment count. It can reject a row whose wrapper,
-nonce, metadata or body is missing or mixed, but deletion of an entire
-otherwise valid cache row is indistinguishable from “this attachment was never
-cached” and returns `None`. This is an availability/inventory limit, not a path
-to return forged plaintext.
+Schema v7 keeps a separately encrypted and authenticated per-message
+attachment manifest. It commits to the ordered attachment selectors, count,
+content versions, metadata, body ciphertext and wrappers. For writes made by
+v7, deletion of a whole expected row is corruption rather than a cache miss.
+The manifest describes this local cache only; it is not an authoritative list
+of attachments at Discord or another provider. Inventories created while
+migrating older stores are explicitly marked incomplete because the old schema
+cannot prove whether an already-absent row was never cached or deleted before
+migration. It is honest from the observed migration snapshot forward, not
+retroactively complete.
 
 The blind-index key is a separate HKDF-SHA256 derivation from the
 same `identity_secret`:
@@ -100,6 +104,11 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
   key; its master-key envelope lives in `wrapped_key_nonce` /
   `wrapped_key`. Burned rows are selector-only audit stubs with zeroed
   metadata/body nonces and ciphertexts and no wrapper.
+- `attachment_manifests(mid_bi, complete, generation, nonce, ciphertext)` —
+  one sealed local-cache inventory per live message or attachment owner.
+  `complete = 1` is used for future writes; migrated inventories use
+  `complete = 0`. The encrypted contents bind count, canonical order,
+  selectors, versions and commitments to each live attachment envelope.
 - `idx_messages_chan_seq` — `(chan_bi, seq DESC)`, used by
   `list_by_channel`.
 - `idx_attachments_mid` — `mid_bi`, used to find/delete cached
@@ -197,6 +206,8 @@ time, and the section understated what the code does.
   columns, and marks the selector-only attachment stubs burned. A burn
   that destroyed the text and left a decryptable picture would not be a
   burn.
+- Deletes the selected attachment manifest in that same transaction. An
+  unrelated message's manifest and attachment rows are not rewritten.
 - Runs `PRAGMA wal_checkpoint(TRUNCATE)` so the pre-burn page images
   are not left recoverable beside the database, and **fails loudly**
   if a live reader prevents that checkpoint rather than reporting a
@@ -229,11 +240,19 @@ pre-burn pages that SQLite can no longer address.
 
 There is also no external monotonic anchor. Restoring a complete older
 backup of `messages.sqlite` together with its internally consistent rows
-can restore pre-burn wrappers or an older same-row version. The v6 AEAD
-construction rejects partial stale replay and mixed-version transplants,
+can restore pre-burn wrappers, manifests, or an older same-row version. The
+v6/v7 AEAD constructions reject partial stale replay and mixed-version
+transplants,
 not a full authenticated database rollback. Closing that requires state
 outside the rollback domain (for example a hardware-backed or remote
 monotonic floor).
+
+The same limit applies to a coherent saved copy of one message's manifest
+together with every attachment row that manifest authenticates: without an
+external generation floor, the store cannot distinguish that internally valid
+older set from the set that was current before the files were edited. Tests
+therefore prove partial row/manifest replay refusal; they do not claim
+store-only rollback resistance.
 
 Burn is **local destruction only**. It destroys this device's cached
 plaintext. It does not revoke anyone else's ability to decrypt the
@@ -278,7 +297,7 @@ to canonical metadata and exact body ciphertext as described above.
 Selector recomputation after metadata authentication remains
 defence-in-depth and protects selector columns such as `sender_bi`.
 
-## Schema v4, v5 and v6 migrations
+## Schema v4, v5, v6 and v7 migrations
 
 The v3 to v4 migration rewrites every row inside one SQLite
 transaction. It builds v4 tables beside the old tables, computes blind
@@ -300,6 +319,13 @@ malformed row abort and restore the complete v5 logical state. A
 pre-v6 table carrying non-empty or structurally partial attachment
 wrapper columns is refused before persistent pragmas because those bytes
 have no trustworthy format history.
+
+The v6 to v7 migration creates all observed attachment manifests and stamps
+the schema in one `BEGIN IMMEDIATE` transaction. It authenticates every live
+v6 attachment before recording it. A failure therefore leaves the complete v6
+database intact, never a partial manifest set. Migrated coverage is always
+`complete = 0`; absence before the migration is not promoted into proof that
+an attachment never existed.
 
 `seq` is assigned in legacy `decrypted_at ASC, rowid ASC` order, so
 newest-first channel listing stays in the same order after migration.

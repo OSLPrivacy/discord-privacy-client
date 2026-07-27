@@ -54,6 +54,7 @@ pub use error::StoreError;
 use cipher::{AttachmentMeta, MessageMeta};
 use crypto::aead;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -146,6 +147,243 @@ struct AttachmentRow {
     content_version: i64,
     wrapped_key_nonce: Option<Vec<u8>>,
     wrapped_key: Option<Vec<u8>>,
+}
+
+fn read_attachment_manifest(
+    conn: &Connection,
+    key: &aead::Key,
+    mid_bi: &[u8],
+) -> Result<Option<cipher::AttachmentManifest>, StoreError> {
+    let row: Option<(i64, i64, Vec<u8>, Vec<u8>)> = conn
+        .query_row(
+            "SELECT complete, generation, nonce, ciphertext \
+               FROM attachment_manifests WHERE mid_bi = ?1",
+            params![mid_bi],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    row.map(|(complete, generation, nonce, ciphertext)| {
+        let complete = match complete {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(StoreError::Corrupted(
+                    "attachment manifest has invalid coverage column".to_string(),
+                ))
+            }
+        };
+        cipher::unseal_attachment_manifest(key, mid_bi, complete, generation, &nonce, &ciphertext)
+    })
+    .transpose()
+}
+
+fn write_attachment_manifest(
+    conn: &Connection,
+    key: &aead::Key,
+    mid_bi: &[u8],
+    manifest: &cipher::AttachmentManifest,
+) -> Result<(), StoreError> {
+    let (nonce, ciphertext) = cipher::seal_attachment_manifest(key, mid_bi, manifest)?;
+    conn.execute(
+        "INSERT INTO attachment_manifests \
+            (mid_bi, complete, generation, nonce, ciphertext) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(mid_bi) DO UPDATE SET \
+            complete = excluded.complete, generation = excluded.generation, \
+            nonce = excluded.nonce, ciphertext = excluded.ciphertext",
+        params![
+            mid_bi,
+            if manifest.complete { 1i64 } else { 0i64 },
+            manifest.generation,
+            nonce,
+            ciphertext
+        ],
+    )?;
+    Ok(())
+}
+
+fn validate_attachment_manifest(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+    mid_bi: &[u8],
+) -> Result<cipher::AttachmentManifest, StoreError> {
+    let manifest = read_attachment_manifest(conn, key, mid_bi)?.ok_or_else(|| {
+        StoreError::Corrupted("live message or attachment set has no manifest".to_string())
+    })?;
+    let rows: Vec<(Vec<u8>, AttachmentRow)> = {
+        let mut stmt = conn.prepare(
+            "SELECT ck_bi, meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
+                    seq, content_version, wrapped_key_nonce, wrapped_key \
+               FROM attachments WHERE mid_bi = ?1 AND burned = 0 \
+              ORDER BY seq ASC, ck_bi ASC",
+        )?;
+        let mapped = stmt.query_map(params![mid_bi], |row| {
+            Ok((
+                row.get(0)?,
+                AttachmentRow {
+                    meta_nonce: row.get(1)?,
+                    meta_ct: row.get(2)?,
+                    ciphertext: row.get(3)?,
+                    nonce: row.get(4)?,
+                    mid_bi: row.get(5)?,
+                    sender_bi: row.get(6)?,
+                    seq: row.get(7)?,
+                    content_version: row.get(8)?,
+                    wrapped_key_nonce: row.get(9)?,
+                    wrapped_key: row.get(10)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in mapped {
+            out.push(row?);
+        }
+        out
+    };
+    if rows.len() != manifest.entries.len() {
+        return Err(StoreError::Corrupted(
+            "attachment rows do not match authenticated manifest count".to_string(),
+        ));
+    }
+    let mut previous: Option<(&[u8], i64)> = None;
+    for ((ck_bi, row), expected) in rows.iter().zip(&manifest.entries) {
+        if let Some((previous_ck, previous_seq)) = previous {
+            if row.seq < previous_seq
+                || (row.seq == previous_seq && ck_bi.as_slice() <= previous_ck)
+            {
+                return Err(StoreError::Corrupted(
+                    "attachment manifest order is not canonical".to_string(),
+                ));
+            }
+        }
+        previous = Some((ck_bi, row.seq));
+        if row.content_version < 1 {
+            return Err(StoreError::Corrupted(
+                "attachment content version must be positive".to_string(),
+            ));
+        }
+        let metadata = cipher::unseal(
+            key,
+            &cipher::attachment_meta_aad(ck_bi, &row.mid_bi, row.seq, row.content_version),
+            &row.meta_nonce,
+            &row.meta_ct,
+        )?;
+        let meta = cipher::decode_attachment_meta(&metadata)?;
+        let expected_ck = cipher::blind_index(index_key, cipher::BI_CACHE_KEY, &meta.cache_key)?;
+        let expected_mid =
+            cipher::blind_index(index_key, cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+        let expected_sender = match meta.sender_discord_id.as_deref() {
+            Some(sender) => Some(cipher::blind_index(
+                index_key,
+                cipher::BI_SENDER_ID,
+                sender,
+            )?),
+            None => None,
+        };
+        if expected_ck != *ck_bi || expected_mid != row.mid_bi || expected_sender != row.sender_bi {
+            return Err(StoreError::Corrupted(
+                "attachment selectors do not match authenticated metadata".to_string(),
+            ));
+        }
+        let wrapper_nonce = row.wrapped_key_nonce.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live attachment row has no wrapped-key nonce".to_string())
+        })?;
+        let wrapper = row.wrapped_key.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live attachment row has no wrapped content key".to_string())
+        })?;
+        cipher::unseal_attachment_body(
+            key,
+            ck_bi,
+            &row.mid_bi,
+            row.seq,
+            row.content_version,
+            &metadata,
+            wrapper_nonce,
+            wrapper,
+            &row.nonce,
+            &row.ciphertext,
+        )?;
+        let actual = cipher::attachment_manifest_entry(
+            ck_bi.clone(),
+            row.seq,
+            row.content_version,
+            &metadata,
+            &row.nonce,
+            &row.ciphertext,
+            wrapper_nonce,
+            wrapper,
+        );
+        if &actual != expected {
+            return Err(StoreError::Corrupted(
+                "attachment row does not match authenticated manifest".to_string(),
+            ));
+        }
+    }
+    Ok(manifest)
+}
+
+fn validate_all_attachment_manifests(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+) -> Result<(), StoreError> {
+    let mids: Vec<Vec<u8>> = {
+        let mut stmt = conn.prepare(
+            "SELECT mid_bi FROM messages WHERE burned = 0 \
+             UNION SELECT mid_bi FROM attachments WHERE burned = 0 \
+             UNION SELECT mid_bi FROM attachment_manifests \
+             ORDER BY mid_bi",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        out
+    };
+    for mid_bi in mids {
+        let owner_count: i64 = conn.query_row(
+            "SELECT \
+                (SELECT COUNT(*) FROM messages WHERE mid_bi = ?1 AND burned = 0) + \
+                (SELECT COUNT(*) FROM attachments WHERE mid_bi = ?1 AND burned = 0)",
+            params![&mid_bi],
+            |row| row.get(0),
+        )?;
+        if owner_count == 0 {
+            let burned_owner: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE mid_bi = ?1 AND burned != 0",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if burned_owner != 0 {
+                // Older builds could set only the flag and leave the live
+                // envelope behind. Opening must preserve the repair path:
+                // `mark_burned` unconditionally shreds it and removes this
+                // stale manifest. No read API exposes a burned message.
+                continue;
+            }
+            return Err(StoreError::Corrupted(
+                "attachment manifest has no live owner or attachment rows".to_string(),
+            ));
+        }
+        validate_attachment_manifest(conn, key, index_key, &mid_bi)?;
+    }
+    Ok(())
+}
+
+fn transition_manifest_to_empty(
+    conn: &Connection,
+    key: &aead::Key,
+    index_key: &[u8; 32],
+    mid_bi: &[u8],
+) -> Result<(), StoreError> {
+    let mut manifest = validate_attachment_manifest(conn, key, index_key, mid_bi)?;
+    manifest.entries.clear();
+    manifest.generation = manifest.generation.checked_add(1).ok_or_else(|| {
+        StoreError::Corrupted("attachment manifest generation overflow".to_string())
+    })?;
+    write_attachment_manifest(conn, key, mid_bi, &manifest)
 }
 
 /// Flush destructive updates out of WAL and truncate the WAL file so
@@ -352,7 +590,7 @@ impl MessageStore {
         if schema::shred_checkpoint_pending(&conn)? {
             checkpoint_after_shred(&conn)?;
         }
-
+        validate_all_attachment_manifests(&conn, &key, &index_key)?;
         Ok(MessageStore {
             conn: Mutex::new(conn),
             key,
@@ -406,9 +644,10 @@ impl MessageStore {
             sender_osl_user_id: msg.sender_osl_user_id.clone(),
             decrypted_at: msg.decrypted_at,
         };
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let seq = next_seq(&conn, "messages")?;
-        let existing: Option<(Vec<u8>, Vec<u8>, i64, i64)> = conn
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let seq = next_seq(&tx, "messages")?;
+        let existing: Option<(Vec<u8>, Vec<u8>, i64, i64)> = tx
             .query_row(
                 "SELECT meta_nonce, meta_ct, burned, content_version \
                    FROM messages WHERE mid_bi = ?1",
@@ -417,8 +656,11 @@ impl MessageStore {
             )
             .optional()?;
 
-        if matches!(existing, Some((_, _, burned, _)) if burned != 0) {
+        if matches!(&existing, Some((_, _, burned, _)) if *burned != 0) {
             return Ok(());
+        }
+        if existing.is_some() {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
         }
 
         let content_version = match existing {
@@ -453,7 +695,7 @@ impl MessageStore {
                 &cipher::message_meta_aad(&mid_bi, content_version),
                 &cipher::encode_message_meta(&meta),
             )?;
-            conn.execute(
+            tx.execute(
                 "INSERT INTO messages \
                     (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
                      ciphertext, nonce, seq, burned, burned_at, content_version, \
@@ -471,7 +713,13 @@ impl MessageStore {
                     content_version
                 ],
             )?;
-            shred_row(&conn, &mid_bi)?;
+            shred_row(&tx, &mid_bi)?;
+            tx.execute(
+                "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                params![&mid_bi],
+            )?;
+            schema::mark_shred_checkpoint_pending(&tx)?;
+            tx.commit()?;
             checkpoint_after_shred(&conn)?;
             return Ok(());
         }
@@ -487,7 +735,7 @@ impl MessageStore {
             content_version,
             msg.plaintext.as_bytes(),
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO messages \
                 (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
                  ciphertext, nonce, seq, burned, content_version, \
@@ -518,6 +766,19 @@ impl MessageStore {
                 sealed.wrapped_key
             ],
         )?;
+        if read_attachment_manifest(&tx, &self.key, &mid_bi)?.is_none() {
+            write_attachment_manifest(
+                &tx,
+                &self.key,
+                &mid_bi,
+                &cipher::AttachmentManifest {
+                    complete: true,
+                    generation: 1,
+                    entries: Vec::new(),
+                },
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -553,6 +814,7 @@ impl MessageStore {
             )
             .optional()?;
         let Some(row) = row_opt else { return Ok(None) };
+        validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
         Ok(Some(self.materialize(&mid_bi, row)?))
     }
 
@@ -599,6 +861,7 @@ impl MessageStore {
         let mut out = Vec::new();
         for row in rows {
             let (mid_bi, row) = row?;
+            validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
             out.push(self.materialize(&mid_bi, row)?);
         }
         Ok(out)
@@ -624,18 +887,25 @@ impl MessageStore {
         let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let exists: Option<i64> = tx
+        let burned: Option<i64> = tx
             .query_row(
-                "SELECT 1 FROM messages WHERE mid_bi = ?1",
+                "SELECT burned FROM messages WHERE mid_bi = ?1",
                 params![&mid_bi],
                 |r| r.get(0),
             )
             .optional()?;
-        if exists.is_none() {
+        if burned.is_none() {
             return Err(StoreError::NotFound(discord_message_id.to_string()));
+        }
+        if burned == Some(0) {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
         }
         shred_row(&tx, &mid_bi)?;
         shred_attachment_rows(&tx, &mid_bi)?;
+        tx.execute(
+            "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+            params![&mid_bi],
+        )?;
         schema::mark_shred_checkpoint_pending(&tx)?;
         tx.commit()?;
         checkpoint_after_shred(&conn)?;
@@ -680,6 +950,47 @@ impl MessageStore {
         let sender_bi = only_sender_discord_id
             .map(|sender| self.bi(cipher::BI_SENDER_ID, sender))
             .transpose()?;
+        let target_mids: Vec<Vec<u8>> = {
+            let sql = if sender_bi.is_some() {
+                "SELECT mid_bi FROM messages \
+                  WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0"
+            } else {
+                "SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0"
+            };
+            let mut out = Vec::new();
+            let mut stmt = tx.prepare(sql)?;
+            if let Some(sender_bi) = sender_bi.as_deref() {
+                let mapped = stmt.query_map(params![&chan_bi, sender_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            } else {
+                let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            }
+            out
+        };
+        for mid_bi in &target_mids {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+        }
+        match sender_bi.as_deref() {
+            Some(sender_bi) => {
+                tx.execute(
+                    "DELETE FROM attachment_manifests WHERE mid_bi IN ( \
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND sender_bi = ?2)",
+                    params![&chan_bi, sender_bi],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "DELETE FROM attachment_manifests WHERE mid_bi IN ( \
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+                    params![&chan_bi],
+                )?;
+            }
+        }
         match sender_bi.as_deref() {
             Some(sender_bi) => {
                 tx.execute(
@@ -759,6 +1070,19 @@ impl MessageStore {
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        let target_mids: Vec<Vec<u8>> = {
+            let mut stmt =
+                tx.prepare("SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0")?;
+            let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+        for mid_bi in &target_mids {
+            validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+        }
         // Drop the cached attachment plaintext FIRST, while the message rows
         // that identify it still exist. Deleting the messages first orphans
         // those attachment rows: nothing then links them to a channel, so no
@@ -767,7 +1091,12 @@ impl MessageStore {
         tx.execute(
             "DELETE FROM attachments WHERE mid_bi IN \
                 (SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
-            params![chan_bi],
+            params![&chan_bi],
+        )?;
+        tx.execute(
+            "DELETE FROM attachment_manifests WHERE mid_bi IN \
+                (SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+            params![&chan_bi],
         )?;
         let rows = tx.execute("DELETE FROM messages WHERE chan_bi = ?1", params![chan_bi])?;
         schema::mark_shred_checkpoint_pending(&tx)?;
@@ -811,8 +1140,9 @@ impl MessageStore {
             Some(s) => Some(self.bi(cipher::BI_SENDER_ID, s)?),
             None => None,
         };
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let parent_burned: Option<i64> = conn
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let parent_burned: Option<i64> = tx
             .query_row(
                 "SELECT burned FROM messages WHERE mid_bi = ?1",
                 params![&mid_bi],
@@ -822,7 +1152,16 @@ impl MessageStore {
         if matches!(parent_burned, Some(burned) if burned != 0) {
             return Ok(());
         }
-        let existing: Option<(AttachmentRow, i64)> = conn
+        let existing_manifest = read_attachment_manifest(&tx, &self.key, &mid_bi)?;
+        let mut manifest = match existing_manifest {
+            Some(_) => validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?,
+            None => cipher::AttachmentManifest {
+                complete: true,
+                generation: 0,
+                entries: Vec::new(),
+            },
+        };
+        let existing: Option<(AttachmentRow, i64)> = tx
             .query_row(
                 "SELECT meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
                         seq, content_version, wrapped_key_nonce, wrapped_key, burned \
@@ -847,8 +1186,13 @@ impl MessageStore {
                 },
             )
             .optional()?;
-        if matches!(existing, Some((_, burned)) if burned != 0) {
+        if matches!(&existing, Some((_, burned)) if *burned != 0) {
             return Ok(());
+        }
+        if existing.is_some() && manifest.generation == 0 {
+            return Err(StoreError::Corrupted(
+                "live attachment row has no authenticated manifest".to_string(),
+            ));
         }
 
         let (seq, content_version) = match existing {
@@ -912,7 +1256,7 @@ impl MessageStore {
                     })?,
                 )
             }
-            None => (next_seq(&conn, "attachments")?, 1),
+            None => (next_seq(&tx, "attachments")?, 1),
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -939,7 +1283,7 @@ impl MessageStore {
             &metadata,
             plaintext,
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO attachments \
                 (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, \
                  burned, burned_at, content_version, wrapped_key_nonce, wrapped_key) \
@@ -969,6 +1313,33 @@ impl MessageStore {
                 sealed.wrapped_key,
             ],
         )?;
+        let entry = cipher::attachment_manifest_entry(
+            ck_bi.clone(),
+            seq,
+            content_version,
+            &metadata,
+            &sealed.nonce,
+            &sealed.ciphertext,
+            &sealed.wrapped_key_nonce,
+            &sealed.wrapped_key,
+        );
+        if let Some(position) = manifest
+            .entries
+            .iter()
+            .position(|existing| existing.ck_bi == ck_bi)
+        {
+            manifest.entries[position] = entry;
+        } else {
+            manifest.entries.push(entry);
+        }
+        manifest
+            .entries
+            .sort_by(|a, b| a.seq.cmp(&b.seq).then_with(|| a.ck_bi.cmp(&b.ck_bi)));
+        manifest.generation = manifest.generation.checked_add(1).ok_or_else(|| {
+            StoreError::Corrupted("attachment manifest generation overflow".to_string())
+        })?;
+        write_attachment_manifest(&tx, &self.key, &mid_bi, &manifest)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1001,6 +1372,34 @@ impl MessageStore {
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, scope_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        let target_mids: Vec<Vec<u8>> = {
+            let sql = if only_sender_discord_id.is_some() {
+                "SELECT mid_bi FROM messages \
+                  WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0"
+            } else {
+                "SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0"
+            };
+            let sender_bi = only_sender_discord_id
+                .map(|sender| self.bi(cipher::BI_SENDER_ID, sender))
+                .transpose()?;
+            let mut out = Vec::new();
+            let mut stmt = tx.prepare(sql)?;
+            if let Some(sender_bi) = sender_bi.as_deref() {
+                let mapped = stmt.query_map(params![&chan_bi, sender_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            } else {
+                let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+                for row in mapped {
+                    out.push(row?);
+                }
+            }
+            out
+        };
+        for mid_bi in &target_mids {
+            transition_manifest_to_empty(&tx, &self.key, &self.index_key, mid_bi)?;
+        }
         let rows = match only_sender_discord_id {
             Some(sender) => {
                 let sender_bi = self.bi(cipher::BI_SENDER_ID, sender)?;
@@ -1054,7 +1453,25 @@ impl MessageStore {
         check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
         let ck_bi = self.bi(cipher::BI_CACHE_KEY, &cache_key)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
+        let has_manifest = read_attachment_manifest(&conn, &self.key, &mid_bi)?.is_some();
+        if has_manifest {
+            validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
+        } else {
+            let owner_count: i64 = conn.query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM messages WHERE mid_bi=?1 AND burned=0) + \
+                    (SELECT COUNT(*) FROM attachments WHERE mid_bi=?1 AND burned=0)",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if owner_count != 0 {
+                return Err(StoreError::Corrupted(
+                    "live message or attachment set has no manifest".to_string(),
+                ));
+            }
+        }
         let row_opt: Option<AttachmentRow> = conn
             .query_row(
                 "SELECT meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
@@ -1081,6 +1498,11 @@ impl MessageStore {
         let Some(row) = row_opt else {
             return Ok(None);
         };
+        if !has_manifest {
+            return Err(StoreError::Corrupted(
+                "live attachment row has no authenticated manifest".to_string(),
+            ));
+        }
         if row.content_version < 1 {
             return Err(StoreError::Corrupted(
                 "attachment content version must be positive".to_string(),
@@ -1150,12 +1572,49 @@ impl MessageStore {
     /// beyond `keep`. Best-effort; called occasionally by the caller. Returns
     /// rows deleted.
     pub fn trim_attachments(&self, keep: u32) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let rows = conn.execute(
-            "DELETE FROM attachments WHERE ck_bi NOT IN \
-                (SELECT ck_bi FROM attachments ORDER BY seq DESC, ck_bi DESC LIMIT ?1)",
-            params![keep],
-        )?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let victims: Vec<(Vec<u8>, Vec<u8>, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT ck_bi, mid_bi, burned FROM attachments \
+                  WHERE burned = 0 AND ck_bi NOT IN \
+                    (SELECT ck_bi FROM attachments WHERE burned = 0 \
+                      ORDER BY seq DESC, ck_bi DESC LIMIT ?1)",
+            )?;
+            let mapped = stmt.query_map(params![keep], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+        let mut by_mid: BTreeMap<Vec<u8>, Vec<Vec<u8>>> = BTreeMap::new();
+        for (ck_bi, mid_bi, burned) in &victims {
+            if *burned == 0 {
+                by_mid
+                    .entry(mid_bi.clone())
+                    .or_default()
+                    .push(ck_bi.clone());
+            }
+        }
+        for (mid_bi, selectors) in &by_mid {
+            let mut manifest =
+                validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+            manifest
+                .entries
+                .retain(|entry| !selectors.iter().any(|selector| selector == &entry.ck_bi));
+            manifest.generation = manifest.generation.checked_add(1).ok_or_else(|| {
+                StoreError::Corrupted("attachment manifest generation overflow".to_string())
+            })?;
+            write_attachment_manifest(&tx, &self.key, mid_bi, &manifest)?;
+        }
+        let mut rows = 0usize;
+        for (ck_bi, _, _) in &victims {
+            rows += tx.execute("DELETE FROM attachments WHERE ck_bi = ?1", params![ck_bi])?;
+        }
+        tx.commit()?;
         Ok(rows)
     }
 
@@ -1168,6 +1627,24 @@ impl MessageStore {
         let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        if read_attachment_manifest(&tx, &self.key, &mid_bi)?.is_some() {
+            transition_manifest_to_empty(&tx, &self.key, &self.index_key, &mid_bi)?;
+        } else {
+            let owner_count: i64 = tx.query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM messages WHERE mid_bi=?1 AND burned=0) + \
+                    (SELECT COUNT(*) FROM attachments WHERE mid_bi=?1 AND burned=0)",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if owner_count != 0 {
+                return Err(StoreError::Corrupted(
+                    "live message or attachment set has no manifest".to_string(),
+                ));
+            }
+            tx.commit()?;
+            return Ok(0);
+        }
         let rows = shred_attachment_rows(&tx, &mid_bi)?;
         if rows != 0 {
             schema::mark_shred_checkpoint_pending(&tx)?;
@@ -1211,6 +1688,16 @@ impl MessageStore {
         let tx = conn.transaction()?;
         let mut shredded = 0usize;
         for mid_bi in &blinded {
+            let burned: Option<i64> = tx
+                .query_row(
+                    "SELECT burned FROM messages WHERE mid_bi = ?1",
+                    params![mid_bi],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if burned == Some(0) {
+                validate_attachment_manifest(&tx, &self.key, &self.index_key, mid_bi)?;
+            }
             // `burned = 0` in the predicate keeps this idempotent: a second
             // sweep over the same id reports zero rather than re-stamping
             // `burned_at` and making an old destruction look fresh.
@@ -1228,6 +1715,10 @@ impl MessageStore {
             // Expiry destroys local plaintext caches, and a decrypted
             // attachment is one.
             shred_attachment_rows(&tx, mid_bi)?;
+            tx.execute(
+                "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                params![mid_bi],
+            )?;
         }
         schema::mark_shred_checkpoint_pending(&tx)?;
         tx.commit()?;

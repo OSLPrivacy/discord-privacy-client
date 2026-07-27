@@ -15,6 +15,8 @@ const MASTER_INFO: &[u8] = b"osl-message-store-v1";
 const INDEX_INFO: &[u8] = b"osl-message-store-index-v1";
 const BI_CACHE_KEY: &[u8] = b"osl-store-bi/cache_key-v1";
 const BI_MESSAGE_ID: &[u8] = b"osl-store-bi/discord_message_id-v1";
+const BI_CHANNEL_ID: &[u8] = b"osl-store-bi/channel_id-v1";
+const BI_SENDER_ID: &[u8] = b"osl-store-bi/sender_discord_id-v1";
 const ATTACHMENT_BODY_DOMAIN: &[u8] = b"osl-store/body/v6/attachment";
 const ATTACHMENT_WRAP_DOMAIN: &[u8] = b"osl-store/wrap/v6/attachment";
 
@@ -32,6 +34,15 @@ struct RawAttachment {
     wrapped_key_nonce: Option<Vec<u8>>,
     wrapped_key: Option<Vec<u8>>,
     burned: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawManifest {
+    mid_bi: Vec<u8>,
+    complete: i64,
+    generation: i64,
+    nonce: Vec<u8>,
+    ciphertext: Vec<u8>,
 }
 
 fn message(id: &str, channel: &str, body: &str) -> StoredMessage {
@@ -70,6 +81,13 @@ fn message_bi(message_id: &str) -> Vec<u8> {
         .to_vec()
 }
 
+fn field_bi(domain: &[u8], value: &str) -> Vec<u8> {
+    let index_key = crypto::hkdf::derive_32(&[], SECRET, INDEX_INFO).unwrap();
+    crypto::hkdf::derive_32(&index_key, value.as_bytes(), domain)
+        .unwrap()
+        .to_vec()
+}
+
 fn seal_master(aad: &[u8], plaintext: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let nonce = crypto::random::random_nonce();
     let ciphertext = crypto::aead::seal(&master_key(), &nonce, aad, plaintext).unwrap();
@@ -90,6 +108,20 @@ fn v5_attachment_metadata(message_id: &str, filename: &str, mime: &str, len: usi
     out.extend_from_slice(&(len as i64).to_le_bytes());
     out.extend_from_slice(&1i64.to_le_bytes());
     out.extend_from_slice(&[0, 0, 0]);
+    out
+}
+
+fn v4_message_metadata(value: &StoredMessage) -> Vec<u8> {
+    let mut out = Vec::new();
+    for field in [
+        value.discord_message_id.as_str(),
+        value.channel_id.as_str(),
+        value.sender_discord_id.as_str(),
+        value.sender_osl_user_id.as_str(),
+    ] {
+        push_string(&mut out, field);
+    }
+    out.extend_from_slice(&value.decrypted_at.to_le_bytes());
     out
 }
 
@@ -177,6 +209,67 @@ fn raw_attachment(dir: &Path, message_id: &str, filename: &str) -> RawAttachment
     .unwrap()
 }
 
+fn raw_manifest(dir: &Path, message_id: &str) -> RawManifest {
+    let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
+    conn.query_row(
+        "SELECT mid_bi, complete, generation, nonce, ciphertext \
+           FROM attachment_manifests WHERE mid_bi = ?1",
+        params![message_bi(message_id)],
+        |row| {
+            Ok(RawManifest {
+                mid_bi: row.get(0)?,
+                complete: row.get(1)?,
+                generation: row.get(2)?,
+                nonce: row.get(3)?,
+                ciphertext: row.get(4)?,
+            })
+        },
+    )
+    .unwrap_or_else(|error| {
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let schema: Vec<u8> = conn
+            .query_row(
+                "SELECT value FROM _meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        panic!("manifest query failed: {error}; tables={tables:?}; schema={schema:?}")
+    })
+}
+
+fn restore_manifest(conn: &rusqlite::Connection, manifest: &RawManifest) {
+    conn.execute(
+        "UPDATE attachment_manifests \
+            SET complete = ?2, generation = ?3, nonce = ?4, ciphertext = ?5 \
+          WHERE mid_bi = ?1",
+        params![
+            &manifest.mid_bi,
+            manifest.complete,
+            manifest.generation,
+            &manifest.nonce,
+            &manifest.ciphertext
+        ],
+    )
+    .unwrap();
+}
+
+fn assert_reopen_corrupted(dir: &Path, label: &str) {
+    assert!(
+        matches!(
+            MessageStore::open(dir, SECRET),
+            Err(StoreError::Corrupted(_))
+        ),
+        "{label}"
+    );
+}
+
 fn attachment_metadata(raw: &RawAttachment) -> Vec<u8> {
     let mut aad = Vec::new();
     for part in [
@@ -256,6 +349,8 @@ fn live_attachments_use_distinct_wrapped_deks_and_restart() {
 
     let raw_a = raw_attachment(tmp.path(), "attachment-a", "a.png");
     let raw_b = raw_attachment(tmp.path(), "attachment-b", "b.png");
+    assert_eq!(raw_manifest(tmp.path(), "attachment-a").complete, 1);
+    assert_eq!(raw_manifest(tmp.path(), "attachment-b").complete, 1);
     let metadata_a = attachment_metadata(&raw_a);
     let metadata_b = attachment_metadata(&raw_b);
 
@@ -1032,6 +1127,237 @@ fn duplicate_v5_attachment_selector_aborts_migration_without_partial_v6_state() 
 }
 
 #[test]
+fn v4_to_v5_success_then_v5_to_v6_failure_leaves_retryable_v5_state() {
+    let tmp = TempDir::new().unwrap();
+    let db = tmp.path().join("messages.sqlite");
+    let stored = message("combined-owner", "combined-channel", "combined body");
+    let filename = "combined.bin";
+    let mime = "application/octet-stream";
+    let body = b"combined attachment";
+    let cache_key = format!("{}/{}", stored.discord_message_id, filename);
+    let mid_bi = message_bi(&stored.discord_message_id);
+    let ck_bi = cache_bi(&stored.discord_message_id, filename);
+    let (message_meta_nonce, message_meta_ct) = seal_master(&mid_bi, &v4_message_metadata(&stored));
+    let (message_nonce, message_ct) = seal_master(
+        stored.discord_message_id.as_bytes(),
+        stored.plaintext.as_bytes(),
+    );
+    let attachment_meta =
+        v5_attachment_metadata(&stored.discord_message_id, filename, mime, body.len());
+    let (attachment_meta_nonce, attachment_meta_ct) = seal_master(&ck_bi, &attachment_meta);
+    let (attachment_nonce, attachment_ct) = seal_master(cache_key.as_bytes(), body);
+    let (canary_nonce, canary_ct) =
+        seal_master(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE messages (
+                mid_bi BLOB PRIMARY KEY, chan_bi BLOB NOT NULL, sender_bi BLOB NOT NULL,
+                meta_nonce BLOB NOT NULL, meta_ct BLOB NOT NULL, ciphertext BLOB NOT NULL,
+                nonce BLOB NOT NULL, seq INTEGER NOT NULL, burned INTEGER NOT NULL DEFAULT 0,
+                burned_at INTEGER, wrapped_key BLOB
+             );
+             CREATE TABLE attachments (
+                ck_bi BLOB, mid_bi BLOB NOT NULL, sender_bi BLOB,
+                meta_nonce BLOB NOT NULL, meta_ct BLOB NOT NULL, ciphertext BLOB NOT NULL,
+                nonce BLOB NOT NULL, seq INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        for (key, value) in [
+            ("schema_version", 4u32.to_le_bytes().to_vec()),
+            ("canary_nonce", canary_nonce),
+            ("canary_ct", canary_ct),
+        ] {
+            conn.execute(
+                "INSERT INTO _meta(key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO messages \
+                (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
+                 seq, burned, burned_at, wrapped_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 0, NULL, NULL)",
+            params![
+                &mid_bi,
+                field_bi(BI_CHANNEL_ID, &stored.channel_id),
+                field_bi(BI_SENDER_ID, &stored.sender_discord_id),
+                message_meta_nonce,
+                message_meta_ct,
+                message_ct,
+                message_nonce
+            ],
+        )
+        .unwrap();
+        for seq in [1i64, 2] {
+            conn.execute(
+                "INSERT INTO attachments \
+                    (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq) \
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    &ck_bi,
+                    &mid_bi,
+                    &attachment_meta_nonce,
+                    &attachment_meta_ct,
+                    &attachment_ct,
+                    &attachment_nonce,
+                    seq
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    assert!(matches!(
+        MessageStore::open(tmp.path(), SECRET),
+        Err(StoreError::Sqlite(_))
+    ));
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM _meta WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            5u32.to_le_bytes(),
+            "the successful v4→v5 stage must remain coherent and retryable"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages \
+                  WHERE content_version=1 AND wrapped_key_nonce IS NOT NULL \
+                    AND wrapped_key IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the first stage must be real, not a no-op version stamp"
+        );
+        conn.execute(
+            "DELETE FROM attachments WHERE rowid = \
+                (SELECT MAX(rowid) FROM attachments)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let reopened = open(tmp.path());
+    assert_eq!(reopened.get("combined-owner").unwrap(), Some(stored));
+    assert_eq!(
+        reopened
+            .get_attachment("combined-owner", filename)
+            .unwrap()
+            .unwrap()
+            .1,
+        body
+    );
+    assert_eq!(raw_manifest(tmp.path(), "combined-owner").complete, 0);
+}
+
+#[test]
+fn v6_to_v7_mid_manifest_failure_rolls_back_and_reopens_after_repair() {
+    let tmp = TempDir::new().unwrap();
+    let store = open(tmp.path());
+    for owner in ["migration-a", "migration-b"] {
+        store.put(&message(owner, owner, owner)).unwrap();
+        store
+            .put_attachment(
+                owner,
+                "asset.bin",
+                "application/octet-stream",
+                owner.as_bytes(),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    drop(store);
+    let broken_ck = cache_bi("migration-b", "asset.bin");
+    let valid_wrapper = {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        let wrapper: Vec<u8> = conn
+            .query_row(
+                "SELECT wrapped_key FROM attachments WHERE ck_bi=?1",
+                params![&broken_ck],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut corrupted = wrapper.clone();
+        corrupted[0] ^= 0x80;
+        conn.execute_batch("DROP TABLE attachment_manifests;")
+            .unwrap();
+        conn.execute(
+            "UPDATE _meta SET value=?1 WHERE key='schema_version'",
+            params![6u32.to_le_bytes().to_vec()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE attachments SET wrapped_key=?1 WHERE ck_bi=?2",
+            params![corrupted, &broken_ck],
+        )
+        .unwrap();
+        wrapper
+    };
+
+    assert!(matches!(
+        MessageStore::open(tmp.path(), SECRET),
+        Err(StoreError::Corrupted(_))
+    ));
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM _meta WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            6u32.to_le_bytes()
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                  WHERE type='table' AND name='attachment_manifests'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "a later-row failure must roll back earlier manifest inserts and table creation"
+        );
+        conn.execute(
+            "UPDATE attachments SET wrapped_key=?1 WHERE ck_bi=?2",
+            params![valid_wrapper, &broken_ck],
+        )
+        .unwrap();
+    }
+    let reopened = open(tmp.path());
+    assert_eq!(
+        reopened
+            .get_attachment("migration-a", "asset.bin")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"migration-a"
+    );
+    assert_eq!(
+        reopened
+            .get_attachment("migration-b", "asset.bin")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"migration-b"
+    );
+}
+
+#[test]
 fn pending_vacuum_marker_is_recovered_before_normal_use() {
     let tmp = TempDir::new().unwrap();
     {
@@ -1102,4 +1428,387 @@ fn pending_vacuum_marker_is_recovered_before_normal_use() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn future_manifest_refuses_whole_row_deletion_and_row_plus_manifest_deletion() {
+    enum ManifestMutation {
+        None,
+        Truncate,
+        Delete,
+    }
+    for manifest_mutation in [
+        ManifestMutation::None,
+        ManifestMutation::Truncate,
+        ManifestMutation::Delete,
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let store = open(tmp.path());
+        store
+            .put(&message("manifest-owner", "manifest-channel", "body"))
+            .unwrap();
+        store
+            .put_attachment(
+                "manifest-owner",
+                "one.png",
+                "image/png",
+                b"one",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        drop(store);
+
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.execute(
+            "DELETE FROM attachments WHERE ck_bi = ?1",
+            params![cache_bi("manifest-owner", "one.png")],
+        )
+        .unwrap();
+        match manifest_mutation {
+            ManifestMutation::None => {}
+            ManifestMutation::Truncate => {
+                conn.execute(
+                    "UPDATE attachment_manifests \
+                        SET ciphertext=substr(ciphertext, 1, length(ciphertext)-1) \
+                      WHERE mid_bi=?1",
+                    params![message_bi("manifest-owner")],
+                )
+                .unwrap();
+            }
+            ManifestMutation::Delete => {
+                conn.execute(
+                    "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                    params![message_bi("manifest-owner")],
+                )
+                .unwrap();
+            }
+        }
+        drop(conn);
+        assert_reopen_corrupted(
+            tmp.path(),
+            "removing an expected row must not become a cache miss",
+        );
+    }
+}
+
+#[test]
+fn manifest_refuses_extra_row_reordering_and_cross_message_swap() {
+    enum Mutation {
+        Extra,
+        Reorder,
+        SwapManifest,
+    }
+    for mutation in [Mutation::Extra, Mutation::Reorder, Mutation::SwapManifest] {
+        let tmp = TempDir::new().unwrap();
+        let store = open(tmp.path());
+        store.put(&message("owner-a", "chan-a", "a")).unwrap();
+        store.put(&message("owner-b", "chan-b", "b")).unwrap();
+        for (owner, filename, body) in [
+            ("owner-a", "a.png", b"a".as_slice()),
+            ("owner-b", "b.png", b"b".as_slice()),
+        ] {
+            store
+                .put_attachment(owner, filename, "image/png", body, None, None, None)
+                .unwrap();
+        }
+        drop(store);
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        match mutation {
+            Mutation::Extra => {
+                let fake = vec![0xA5u8; 32];
+                conn.execute(
+                    "INSERT INTO attachments \
+                        (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
+                         seq, burned, burned_at, content_version, wrapped_key_nonce, wrapped_key) \
+                     SELECT ?1, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
+                            seq + 100, burned, burned_at, content_version, \
+                            wrapped_key_nonce, wrapped_key \
+                       FROM attachments WHERE ck_bi = ?2",
+                    params![fake, cache_bi("owner-a", "a.png")],
+                )
+                .unwrap();
+            }
+            Mutation::Reorder => {
+                conn.execute(
+                    "UPDATE attachments SET seq = seq + 7 WHERE ck_bi = ?1",
+                    params![cache_bi("owner-a", "a.png")],
+                )
+                .unwrap();
+            }
+            Mutation::SwapManifest => {
+                let a = raw_manifest(tmp.path(), "owner-a");
+                let b = raw_manifest(tmp.path(), "owner-b");
+                conn.execute(
+                    "UPDATE attachment_manifests \
+                        SET complete = ?2, generation = ?3, nonce = ?4, ciphertext = ?5 \
+                      WHERE mid_bi = ?1",
+                    params![a.mid_bi, b.complete, b.generation, b.nonce, b.ciphertext],
+                )
+                .unwrap();
+            }
+        }
+        drop(conn);
+        assert_reopen_corrupted(
+            tmp.path(),
+            "extra, reordered, or cross-owner manifest state must fail closed",
+        );
+    }
+}
+
+#[test]
+fn stale_manifest_replay_after_attachment_update_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let store = open(tmp.path());
+    store.put(&message("replay-owner", "chan", "body")).unwrap();
+    store
+        .put_attachment(
+            "replay-owner",
+            "asset.png",
+            "image/png",
+            b"version one",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let stale = raw_manifest(tmp.path(), "replay-owner");
+    store
+        .put_attachment(
+            "replay-owner",
+            "asset.png",
+            "image/png",
+            b"version two",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    drop(store);
+    let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+    restore_manifest(&conn, &stale);
+    drop(conn);
+    assert_reopen_corrupted(
+        tmp.path(),
+        "a stale authenticated inventory must not authorize a newer row",
+    );
+}
+
+#[test]
+fn attachment_and_manifest_update_roll_back_together_on_failure() {
+    let tmp = TempDir::new().unwrap();
+    let store = open(tmp.path());
+    store.put(&message("atomic-owner", "chan", "body")).unwrap();
+    store
+        .put_attachment(
+            "atomic-owner",
+            "asset.png",
+            "image/png",
+            b"before",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let row_before = raw_attachment(tmp.path(), "atomic-owner", "asset.png");
+    let manifest_before = raw_manifest(tmp.path(), "atomic-owner");
+
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_manifest_update \
+             BEFORE UPDATE ON attachment_manifests \
+             BEGIN SELECT RAISE(ABORT, 'forced manifest failure'); END;",
+        )
+        .unwrap();
+    }
+    assert!(
+        store
+            .put_attachment(
+                "atomic-owner",
+                "asset.png",
+                "image/png",
+                b"must roll back",
+                None,
+                None,
+                None,
+            )
+            .is_err(),
+        "the injected manifest failure must reach the production transaction"
+    );
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.execute_batch("DROP TRIGGER fail_manifest_update;")
+            .unwrap();
+    }
+    assert_eq!(
+        raw_attachment(tmp.path(), "atomic-owner", "asset.png"),
+        row_before
+    );
+    assert_eq!(raw_manifest(tmp.path(), "atomic-owner"), manifest_before);
+    assert_eq!(
+        store
+            .get_attachment("atomic-owner", "asset.png")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"before"
+    );
+    drop(store);
+    assert_eq!(
+        open(tmp.path())
+            .get_attachment("atomic-owner", "asset.png")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"before"
+    );
+}
+
+#[test]
+fn burn_removes_selected_manifest_and_preserves_survivor_manifest_exactly() {
+    let tmp = TempDir::new().unwrap();
+    let store = open(tmp.path());
+    for owner in ["burn-manifest", "safe-manifest"] {
+        store.put(&message(owner, owner, owner)).unwrap();
+        store
+            .put_attachment(
+                owner,
+                "asset.png",
+                "image/png",
+                owner.as_bytes(),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let survivor_before = raw_manifest(tmp.path(), "safe-manifest");
+    store.mark_burned("burn-manifest").unwrap();
+    let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+    let burned_manifest_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM attachment_manifests WHERE mid_bi = ?1",
+            params![message_bi("burn-manifest")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(burned_manifest_count, 0);
+    drop(conn);
+    assert_eq!(raw_manifest(tmp.path(), "safe-manifest"), survivor_before);
+    drop(store);
+    let reopened = open(tmp.path());
+    assert!(reopened.get("burn-manifest").unwrap().is_none());
+    assert_eq!(
+        reopened
+            .get_attachment("safe-manifest", "asset.png")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"safe-manifest"
+    );
+}
+
+#[test]
+fn manifest_delete_failure_rolls_back_message_and_attachment_shred() {
+    let tmp = TempDir::new().unwrap();
+    let store = open(tmp.path());
+    store
+        .put(&message("burn-rollback", "chan", "body"))
+        .unwrap();
+    store
+        .put_attachment(
+            "burn-rollback",
+            "asset.png",
+            "image/png",
+            b"still readable",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let row_before = raw_attachment(tmp.path(), "burn-rollback", "asset.png");
+    let manifest_before = raw_manifest(tmp.path(), "burn-rollback");
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_manifest_delete \
+             BEFORE DELETE ON attachment_manifests \
+             BEGIN SELECT RAISE(ABORT, 'forced manifest delete failure'); END;",
+        )
+        .unwrap();
+    }
+    assert!(
+        store.mark_burned("burn-rollback").is_err(),
+        "the trigger must prove the production burn reaches manifest deletion"
+    );
+    {
+        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        conn.execute_batch("DROP TRIGGER fail_manifest_delete;")
+            .unwrap();
+    }
+    assert_eq!(
+        raw_attachment(tmp.path(), "burn-rollback", "asset.png"),
+        row_before
+    );
+    assert_eq!(raw_manifest(tmp.path(), "burn-rollback"), manifest_before);
+    assert_eq!(
+        store
+            .get_attachment("burn-rollback", "asset.png")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"still readable"
+    );
+    assert_eq!(
+        store.get("burn-rollback").unwrap().unwrap().plaintext,
+        "body"
+    );
+}
+
+#[test]
+fn attachment_stub_itself_remains_terminal_across_trim_without_a_parent_burn() {
+    let tmp = TempDir::new().unwrap();
+    let store = open(tmp.path());
+    store
+        .put_attachment(
+            "live-parent-not-required",
+            "terminal.png",
+            "image/png",
+            b"first",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .delete_attachments_for_message("live-parent-not-required")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.trim_attachments(0).unwrap(),
+        0,
+        "trim must not erase the selector tombstone that makes attachment burn terminal"
+    );
+    store
+        .put_attachment(
+            "live-parent-not-required",
+            "terminal.png",
+            "image/png",
+            b"history replay",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(store
+        .get_attachment("live-parent-not-required", "terminal.png")
+        .unwrap()
+        .is_none());
+    let raw = raw_attachment(tmp.path(), "live-parent-not-required", "terminal.png");
+    assert_eq!(raw.burned, 1);
+    assert!(raw.wrapped_key.is_none());
 }

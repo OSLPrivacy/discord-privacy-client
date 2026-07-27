@@ -1007,7 +1007,7 @@ fn assert_legacy_privacy_migration(stamped: bool) {
     );
     drop(store);
 
-    assert_eq!(schema_version(&db_path), 6);
+    assert_eq!(schema_version(&db_path), 7);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let burned_rows: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64)> = {
         let mut stmt = conn
@@ -1141,7 +1141,7 @@ fn ambiguous_live_legacy_wrapper_refuses_before_any_migration_mutation() {
 /// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
 /// to the current schema without losing anything.
 #[test]
-fn v1_database_migrates_all_the_way_to_v6() {
+fn v1_database_migrates_all_the_way_to_v7() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let rows = vec![
@@ -1178,7 +1178,7 @@ fn v1_database_migrates_all_the_way_to_v6() {
         "v1 migration did not preserve newest-first ordering"
     );
 
-    // And it must land on v6, not stall at an intermediate version.
+    // And it must land on v7, not stall at an intermediate version.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let version: Vec<u8> = conn
         .query_row(
@@ -1187,7 +1187,7 @@ fn v1_database_migrates_all_the_way_to_v6() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 6);
+    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 7);
     let (ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version): (
         Vec<u8>,
         Vec<u8>,
@@ -1478,6 +1478,19 @@ fn old_v3_database_migrates_and_stays_fully_readable() {
     );
 
     assert_eq!(store.list_by_channel("chan-b", 10).unwrap().len(), 1);
+    drop(store);
+
+    let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+    let coverage: Vec<i64> = conn
+        .prepare("SELECT complete FROM attachment_manifests ORDER BY mid_bi")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(coverage, vec![0, 0, 0]);
+    // This kills an implementation that infers historical emptiness as a
+    // complete authoritative inventory during v6→v7 migration.
 }
 
 /// The migration must also scrub what it migrated: a v3 file full of plaintext
@@ -1563,11 +1576,11 @@ fn exact_adff4e45_reader_reaches_explicit_version_refusal() {
     drop(store);
 
     let refusal = adff4e45_schema_reader::open_schema(tmp.path())
-        .expect_err("the exact pre-v4 reader opened schema v6");
+        .expect_err("the exact pre-v4 reader opened schema v7");
     match refusal {
         store::StoreError::Schema(message) => assert_eq!(
             message,
-            "on-disk schema version 6 is newer than this binary supports (3); refusing to open",
+            "on-disk schema version 7 is newer than this binary supports (3); refusing to open",
             "the exact reader refused for a reason other than its version gate"
         ),
         other => panic!("exact pre-v4 reader did not reach its version refusal: {other}"),
@@ -1927,14 +1940,17 @@ fn assert_attachment_selector_tamper_is_rejected(column: &str) {
     assert_eq!(conn.execute(&sql, []).unwrap(), 1);
     drop(conn);
 
-    let store = open_a(tmp.path());
-    assert!(
-        matches!(
-            store.get_attachment("attachment-parent", "private.png"),
-            Err(store::StoreError::Corrupted(_))
+    match MessageStore::open(tmp.path(), SECRET_A) {
+        Err(store::StoreError::Corrupted(_)) => {}
+        Ok(store) => assert!(
+            matches!(
+                store.get_attachment("attachment-parent", "private.png"),
+                Err(store::StoreError::Corrupted(_))
+            ),
+            "attachment {column} was not cross-checked against sealed metadata"
         ),
-        "attachment {column} was not cross-checked against sealed metadata"
-    );
+        Err(other) => panic!("selector tamper returned unrelated error: {other}"),
+    }
 }
 
 /// Every attachment selector that drives a read or a later destruction is
@@ -2163,15 +2179,18 @@ fn attachment_metadata_cannot_be_transplanted_into_a_message_row() {
         );
     }
 
-    let store = open_a(tmp.path());
-    assert!(
-        matches!(
-            store.list_by_channel("target", 10),
-            Err(store::StoreError::Corrupted(_))
+    match MessageStore::open(tmp.path(), SECRET_A) {
+        Err(store::StoreError::Corrupted(_)) => {}
+        Ok(store) => assert!(
+            matches!(
+                store.list_by_channel("target", 10),
+                Err(store::StoreError::Corrupted(_))
+            ),
+            "attachment metadata transplanted into a message row must produce \
+             Corrupted, not an unrelated error or a hidden row"
         ),
-        "attachment metadata transplanted into a message row must produce \
-         Corrupted, not an unrelated error or a hidden row"
-    );
+        Err(other) => panic!("type transplant returned unrelated error: {other}"),
+    }
 }
 
 /// Two different (message id, filename) pairs must not collapse to one cached
