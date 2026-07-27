@@ -478,6 +478,59 @@ to restore its mutations. B's restore was verified clean before this edit was ma
 
 ---
 
+## 8. Three pre-existing tests are decoration (job H)
+
+Four tests in `wire_rn.rs` were mutation-proven tonight. The ~18 that predate tonight's
+discipline were not, so they were audited by breaking each one's stated property deliberately.
+**Three stayed green.** Per instruction none was fixed or renamed — the finding is the
+deliverable, and fixing them silently would destroy the evidence of what they missed.
+
+| Test | Mutation it survived | What it actually proves |
+| --- | --- | --- |
+| `the_sealed_file_contains_no_recognisable_state` | file written with the **base64-encoded session export** instead of sealer output | Only that raw plaintext bytes are absent. It cannot distinguish *encrypted* from merely *encoded*. |
+| `an_oversized_session_file_is_refused_without_being_read` | pre-read size check removed | Refusal happens. **Not** that it happens without reading — the "without being read" half of the name is unproven. |
+| `a_v3_blob_is_reported_as_a_version_mismatch` | the "v3" constant changed to `0x04` | Nothing about v3 specifically. The fixture is built from the same constant it asserts against, so it can only confirm the code agrees with itself. |
+
+The first is the one that matters. It backs the **at-rest sealing** guarantee — the property that
+matters if a device is seized — and it would pass against a sealer that encoded rather than
+encrypted. This does **not** mean sealing is broken: `a_plaintext_sealer_is_refused` is real (it
+was mutated and observed failing), and that is the gate which rejects a non-encrypting sealer. But
+the guarantee rests on one proven gate, not the two it appears to have.
+
+The third is structurally identical to the fixture-coupling false green found by the store lane
+and to the R2 test double: a check built through the thing it is checking.
+
+## 9. Pin raised only on an authenticated advertisement (owner decision)
+
+Owner ruling, 2026-07-26: **pin early**, on the first authenticated capability advertisement, and
+keep un-pinning impossible. Rationale recorded as given: a silent downgrade caused by a stripped
+capability bitmap is invisible and is the exact failure this product exists to prevent, whereas an
+unreachable peer is a visible, recoverable support problem.
+
+Note this is *stricter* than the previous behaviour, not merely different. `initiate_and_persist`
+pinned unconditionally on **our own local action**, which is not an authenticated advertisement at
+all. Now:
+
+```rust
+store.save_session(&peer_id, &session, sealer)?;
+if caps.supports_rn() {
+    store.raise_pin_to_rn(&peer_id)?;
+}
+```
+
+`supports_rn()` is false for both `Absent` and `Unverified`, so only a signature-verified
+advertisement pins. No lowering operation was added; un-pinning remains structurally impossible.
+
+**Evidence status of these four tests is WEAKER than everything else in this report, and they are
+labelled so deliberately.** The job writing them was killed mid-run to resolve a file collision,
+so it never performed the break-then-restore step. The four tests pass and the logic was verified
+by inspection, but unlike the tests from jobs A, B, D and F, **they were never observed failing**.
+They are therefore evidence that the code does what is intended, not proof that the tests would
+notice if it stopped. Treating them as equivalent would reintroduce the false-green pattern
+through bookkeeping rather than through code.
+
+---
+
 ## Acceptance rows this earns
 
 Truth applies points; this lane never edits the checklist. Stated as claims with their evidence,
@@ -497,6 +550,27 @@ was carried, and no encryption row depending on that proof is claimed here.
 **overstated** by adversarial review and had to be corrected before hand-off. Both were nearly
 submitted as gating claims in their overstated form. The corrected versions are narrower and are
 what the table above rests on.
+
+**Which build gate produced these numbers.** A test count means nothing without the gate that
+produced it — `--features core` hides `qa_selftest_request`, while `core,discord-qa-shell` turns
+coverage on but relaxes header-proof enforcement (`header_proof_is_enforced()` is
+`!cfg!(feature = "discord-qa-shell")`). That hazard **does not reach this lane's claims**, and
+this was verified rather than assumed: `crates/ipc` and `crates/osl-ratchet-next` have **no
+`[features]` section at all**, there is not one `cfg(feature)` in `wire_rn.rs` or anywhere under
+`osl-ratchet-next/src/`, and neither `header_proof_is_enforced` nor `qa_selftest_request` appears
+in either path. `--features core` is not even a valid flag for `-p ipc`. Every number in this
+report therefore comes from the single possible configuration:
+
+- `osl-cargo test -p ipc` — **584 passed, 0 failed**, across 54 binaries. This is the run that
+  proves the `select_wire_version` signature change broke nothing else in the crate.
+- `osl-cargo test -p ipc --lib wire_rn` — **31 passed**.
+- `osl-cargo test -p osl-ratchet-next --test interleaving` — **9 passed**.
+
+**One near-miss worth recording against this lane.** The first attempt at the full `ipc` run was
+piped through `| tail -30`, so the captured output held only the last three test binaries and
+reported 11 tests. That would have been filed as a passing suite. It was caught because 11 was
+implausibly small, not because the pipe was noticed — the same shape as every false green found
+today: output that resembles proof without being it.
 
 **Verification standard used throughout:** no delegate's pasted output was accepted as a test
 run. Every `test result:` line cited here was produced by this lane re-running the command

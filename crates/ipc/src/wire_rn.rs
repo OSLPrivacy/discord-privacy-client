@@ -636,8 +636,10 @@ impl RnSessionStore {
 
 /// Start an OSL-RN session towards a peer and persist it.
 ///
-/// Raises the peer's pin on success: from this point on, a v=3 send to
-/// this peer is refused by [`select_wire_version`].
+/// Raises the peer's pin only when the caller provides authenticated
+/// capabilities that support OSL-RN. Absent or unverified capabilities
+/// are not irreversible evidence, so they must not self-inflict a
+/// permanent downgrade refusal.
 #[allow(clippy::too_many_arguments)]
 pub fn initiate_and_persist(
     store: &RnSessionStore,
@@ -645,6 +647,7 @@ pub fn initiate_and_persist(
     own_identity_secret: &osl_ratchet_next::XSecret,
     own_identity_public: &[u8; 32],
     peer: &PeerBundle,
+    caps: keystore::client::PeerCapabilities,
     peer_mlkem768_ek: &[u8],
     context: &[u8],
     params: SessionParams,
@@ -659,7 +662,9 @@ pub fn initiate_and_persist(
         .map_err(RnError::from)?;
     let peer_id = *peer.identity.as_bytes();
     store.save_session(&peer_id, &session, sealer)?;
-    store.raise_pin_to_rn(&peer_id)?;
+    if caps.supports_rn() {
+        store.raise_pin_to_rn(&peer_id)?;
+    }
     Ok(session)
 }
 
@@ -1590,6 +1595,154 @@ mod tests {
         );
     }
 
+    #[test]
+    fn initiating_with_absent_capabilities_does_not_pin_or_refuse_legacy() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(34);
+        let (_bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let peer = *bob_bundle.identity.as_bytes();
+
+        initiate_and_persist(
+            &store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Absent,
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+
+        let pin = store.load_pin(&peer).expect("load pin");
+        assert_eq!(
+            pin,
+            RnPeerPin::UNKNOWN,
+            "Absent capabilities must not pin on local initiation"
+        );
+        assert_eq!(
+            select_wire_version(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic)
+                .expect("select legacy"),
+            SelectedVersion::LegacyV3,
+            "a later opportunistic legacy send must remain permitted"
+        );
+    }
+
+    #[test]
+    fn initiating_with_unverified_capabilities_does_not_pin_or_refuse_legacy() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(35);
+        let (_bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let peer = *bob_bundle.identity.as_bytes();
+
+        initiate_and_persist(
+            &store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Unverified,
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+
+        let pin = store.load_pin(&peer).expect("load pin");
+        assert_eq!(
+            pin,
+            RnPeerPin::UNKNOWN,
+            "Unverified capabilities must not pin on local initiation"
+        );
+        assert_eq!(
+            select_wire_version(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic)
+                .expect("select legacy"),
+            SelectedVersion::LegacyV3,
+            "a later opportunistic legacy send must remain permitted"
+        );
+    }
+
+    #[test]
+    fn initiating_with_verified_rn_capabilities_pins_and_blocks_downgrade() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(36);
+        let (_bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let peer = *bob_bundle.identity.as_bytes();
+
+        initiate_and_persist(
+            &store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+
+        let pin = store.load_pin(&peer).expect("load pin");
+        assert!(
+            pin.is_pinned_to_rn(),
+            "Verified RN capabilities must pin on initiation"
+        );
+        assert!(
+            matches!(
+                select_wire_version(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic),
+                Err(RnError::PinnedToRn)
+            ),
+            "a pinned peer must not downgrade after capability stripping"
+        );
+    }
+
+    #[test]
+    fn verified_initiation_pin_survives_session_state_loss() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(37);
+        let (_bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
+        let (alice_ik, alice_ik_pub) = x25519_keypair(&mut rng);
+        let bob_ek = bob_bundle.pq_prekey.to_bytes();
+        let peer = *bob_bundle.identity.as_bytes();
+
+        initiate_and_persist(
+            &store,
+            &sealer,
+            &alice_ik,
+            alice_ik_pub.as_bytes(),
+            &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            &bob_ek,
+            CTX,
+            SessionParams::default(),
+        )
+        .expect("initiate");
+        store.delete_session(&peer).expect("delete session");
+
+        assert!(
+            store.load_session(&peer, &sealer).expect("load session").is_none(),
+            "session deletion must leave no persisted session"
+        );
+        assert!(
+            store
+                .load_pin(&peer)
+                .expect("load pin")
+                .is_pinned_to_rn(),
+            "verified initiation pin must survive session deletion"
+        );
+    }
+
     // ---- bound end-to-end through this module ----
 
     #[test]
@@ -1607,6 +1760,7 @@ mod tests {
             &alice_ik,
             alice_ik_pub.as_bytes(),
             &bob_bundle,
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
             &bob_ek,
             CTX,
             SessionParams::default(),
