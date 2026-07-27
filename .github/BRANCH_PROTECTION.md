@@ -22,15 +22,36 @@ Do **not** enrol the individual jobs (`lint`, `osl-hub core tests`,
 `osl-hub-ui`, …). They are already required transitively through the two gate
 jobs, and enrolling them directly reintroduces the rename problem.
 
-## Applying it with the CLI
+## Applying it with the CLI — in two phases, on purpose
+
+Requiring `Rust gate` today would freeze every merge, because `Rust gate` is
+genuinely red on defects in `crates/keystore`, `src-tauri` and `apps/osl-hub`
+that this lane does not own. Locking the repository during a deadline week to
+enforce a gate nobody can currently pass is worse than the problem. So the
+protection is applied in two phases.
+
+**Phase 1 — applied 2026-07-26.** Protects against the unrecoverable, blocks
+nothing routine:
+
+```bash
+gh api -X PUT repos/OSLPrivacy/discord-privacy-client/branches/main/protection \
+  --input .github/branch-protection-phase1.json
+```
+
+This requires only the checks that actually pass (`TypeScript gate`, `audit`)
+and, most importantly, sets `allow_force_pushes: false` and
+`allow_deletions: false`. It deliberately does **not** require reviews or
+`enforce_admins`, so no in-flight work is blocked.
+
+**Phase 2 — apply once `Rust gate` is green.** The full payload:
 
 ```bash
 gh api -X PUT repos/OSLPrivacy/discord-privacy-client/branches/main/protection \
   --input .github/branch-protection.json
 ```
 
-The exact payload lives in `.github/branch-protection.json` so the configuration
-is reviewable in a diff rather than existing only inside the GitHub UI.
+Both payloads live in the repository so the configuration is reviewable in a
+diff rather than existing only inside the GitHub UI.
 
 Verify with:
 

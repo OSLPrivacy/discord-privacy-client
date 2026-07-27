@@ -85,6 +85,8 @@ versus deterministic failure on `windows-latest`.
 | `.github/BRANCH_PROTECTION.md` | rewritten against the real (absent) configuration |
 | `.github/branch-protection.json` | **new** — the protection payload, reviewable in a diff |
 | `scripts/ci/node-suite.sh` | **new** — per-package Node gate with explicit required steps |
+| `scripts/ci/hub-core-tests.sh` | **new** — osl-hub core suite with an expiring, documented quarantine |
+| `.github/branch-protection-phase1.json` | **new** — the payload actually applied today |
 | `scripts/release/prove-promotion-gate.sh` | **new** — 20-case negative-control battery |
 | `scripts/release/rollback-guard.sh` | **new** — pure rollback decision logic |
 | `scripts/release/prove-rollback-guards.sh` | **new** — 9-case negative-control battery |
@@ -134,7 +136,79 @@ This is the **first green TypeScript Test run since 2026-07-19**.
 
 ## Rust CI outcome
 
-<!-- RUST-CI-RESULT -->
+### Final Rust run — 30227517355 @ `373dc53`
+
+| Job | Result | Detail |
+|---|---|---|
+| `osl-hub desktop binary compiles` | **success** | **New guarantee.** `main.rs` is gated behind `required-features = ["desktop"]`, so `--features core` never compiled it; until now the shipped binary was first type-checked at *tag* time. |
+| `quality checks` | **success** | boot.js parse, capability audit, actionlint, shellcheck, verifier self-test, **both gate proofs** |
+| `lint` | failure | `cargo fmt` clean. Clippy cleared `crates/ipc` — the style downgrade worked. Now blocked on 2 **rustc `dead_code`** errors, see below. |
+| `workspace build and test` | failure | Every test binary green **except one**: `crates/keystore/tests/duress_test.rs`, 7 passed / **6 failed** |
+| `osl-hub core tests` | failure | **237 passed, 1 failed, 2 filtered** — quarantine working exactly as designed |
+| `Rust gate` | failure | aggregate of the above |
+
+Each fix uncovered the next layer, because for a week nothing got past the first
+one. In order: style lint → missing `webview/dist` → dead code; and separately,
+suites that had never executed at all.
+
+### `cargo test --workspace` — first execution since at least 2026-07-19
+
+Roughly 70 test binaries and several hundred tests pass. Exactly one binary fails:
+
+```
+crates/keystore/tests/duress_test.rs
+test result: FAILED. 7 passed; 6 failed
+```
+
+**Verified platform-specific.** Run locally on Linux at the same commit:
+
+```
+$ cargo test -p keystore --test duress_test
+test result: ok. 13 passed; 0 failed
+```
+
+13/13 on Linux, 7/13 on Windows. The six failures are Windows-only.
+
+Root cause (diagnosis delegated to Codex, then verified here): the
+`TpmEvict` step is `#[cfg(windows)]` and calls `evict_tpm_key()`. A hosted
+Windows runner has no usable TPM provider, so eviction returns `Err`, which
+`duress.rs:313` maps to `StepOutcome::Failed`. That single failure then
+cascades: `failed_steps()` is non-empty (`duress.rs:229`), so
+`remove_journal_if_present()` never runs (`duress.rs:287`), so the journal
+survives, so the second `execute` reports `Wiped` where `AlreadyClean` was
+expected (`duress.rs:406`). One platform failure explains all six.
+
+**This matters well beyond CI.** Duress wipe is a coercion-resistance feature.
+On any Windows machine without a usable TPM, a duress wipe currently records a
+failure and **retains the journal, so the next launch believes duress is still
+in progress**. Clean QA VMs typically have no TPM — meaning this would fire
+during the two-clean-VM release gate itself.
+
+**I disagree with the proposed patch.** Codex suggested making Windows
+`evict_tpm_key()` `return Ok(())` when the storage provider cannot be opened.
+Do not do that. Duress is a destroy-the-keys-under-coercion path, and reporting
+success when key destruction did not happen turns a safety failure into a false
+all-clear — precisely what master §2.1 rule 4 forbids. The distinction that
+needs encoding is *"this machine has no TPM-held key, so there is nothing to
+evict"* (legitimately `AlreadyClean`) versus *"a TPM exists and eviction
+failed"* (must stay `Failed`). A bare `Ok(())` collapses both. This is a crypto
+lane decision, not a release lane one.
+
+### `lint` — two dead-code errors, worth more than a lint fix
+
+```
+error: function `run_autostart_local` is never used
+  --> src-tauri/src/bootstrap.rs:102:8
+error: function `register_after_local_bootstrap` is never used
+  --> src-tauri/src/bootstrap.rs:357:8
+```
+
+Both are `pub fn` in `bootstrap.rs`. I kept rustc's `dead_code` **blocking**
+rather than downgrading it with `clippy::style`. Two public bootstrap functions
+named "autostart" and "register after local bootstrap" that nothing calls read
+like the `implemented-unwired` class this project already worries about, not
+like tidy-up. Confirm they are genuinely obsolete before deleting or
+`#[allow]`-ing them.
 
 ## Negative controls / failure injection
 
@@ -197,14 +271,47 @@ These are real and are **not** fixed by this lane, which does not own the files.
 5. **No release has ever been produced**, so the signed-candidate path and a live rollback are
    both unexercised. Cutting the first candidate is a production action and was not taken here.
 
-6. **Unknown until the Rust jobs finish:** whether `cargo test --workspace` passes at all. It
-   has not executed on `main` since at least 2026-07-19.
+6. **`crates/keystore` duress wipe fails on Windows** — owner: crypto/keystore lane. Six tests
+   in `crates/keystore/tests/duress_test.rs` fail on Windows and pass 13/13 on Linux. Root cause
+   and the reason **not** to apply the obvious patch are in *Rust CI outcome* above. This is the
+   highest-severity finding in this report: it is a coercion-resistance path, and it would fire
+   inside the two-clean-VM release gate, because clean QA VMs typically have no TPM.
+
+7. **`src-tauri/src/bootstrap.rs:102` and `:357`** — owner: the `src-tauri` owner. Two `pub fn`
+   that nothing calls (`run_autostart_local`, `register_after_local_bootstrap`). Treat as a
+   possible wiring defect, not a lint cleanup, before deleting or `#[allow]`-ing.
+
+8. **`apps/osl-hub/src/services.rs:682`** — owner: `apps/osl-hub`.
+   `failed_create_never_leaves_a_phantom_in_memory_account` builds a path under a regular file
+   and asserts both `create_for_owner` and `list_for_owner` error. On Windows `create` errors but
+   `list` returns `Ok`, so the POSIX `ENOTDIR` assumption does not hold on the shipping platform.
+   Deliberately **not** quarantined.
+
+9. **Two `apps/osl-hub` tests are quarantined until 2026-08-09**, in
+   `scripts/ci/hub-core-tests.sh`, because they assert facts about the operator's machine
+   (WhatsApp installed as an AppX package; an installer call returning `Err`) and can never pass
+   on a hosted runner. The quarantine **expires and fails CI on that date**. The second one also
+   means a unit test can attempt a real software installation — worth fixing on its own merits.
 
 ## Repository governance (I6) — findings
 
-- `main`: **unprotected**, no rulesets, public. Payload prepared at
-  `.github/branch-protection.json`; applying it is sequenced *after* this PR merges, because the
-  payload requires one approving review and would otherwise block its own landing.
+- `main` was **unprotected**, with no rulesets, on a public repository.
+  **Phase 1 protection is now applied and verified** (`.github/branch-protection-phase1.json`):
+
+  ```
+  {"admins":false,"checks":["TypeScript gate","audit"],
+   "deletions":false,"force_push":false,"strict":false}
+  ```
+
+  Force-push and branch deletion on `main` are now refused by the server. That was the urgent
+  part: roughly twenty worktrees hold unique uncommitted work whose only reachable base is a
+  branch here, and a force-push would be unrecoverable.
+
+  Phase 1 deliberately requires **only the checks that currently pass** and does not require
+  reviews or `enforce_admins`. Requiring `Rust gate` today would freeze every merge in the
+  repository during a deadline week over defects three other lanes own. The full payload
+  (`.github/branch-protection.json`, adding `Rust gate`, `strict`, reviews and `enforce_admins`)
+  is ready to apply the moment `Rust gate` goes green.
 - Environments: `hub-release` has `required_reviewers` + `branch_policy` (good).
   `hub-vm-qa` **missing** (see above). Two unrelated environments exist,
   `OSLDC / production` and `zooming-prosperity / production`, both with **no** protection rules —
@@ -258,6 +365,9 @@ green CI **and** no new capability drift (the 115→118 permission drift recorde
 - The brief describes the failing TypeScript test as being under `webview/`. It is
   `apps/osl-hub-ui/src/latest.test.ts`; `webview/src/latest.test.ts` does not exist.
 - The brief implies `scripts/ci/**` and `scripts/release/**` may already exist. Neither did.
+- Worth recording as a working negative control: `audit_public_release.py` **caught this very
+  report** leaking personal WSL paths into a public repository and failed the run. The public
+  boundary check demonstrably works; the paths were replaced with `<workspace>`.
 
 ## Integration and rollback for *this* change
 
@@ -270,19 +380,24 @@ green CI **and** no new capability drift (the 115→118 permission drift recorde
 
 ## Resume here
 
-- **Current verified state:** TypeScript CI green on real runners for the first time since
-  2026-07-19; both release gates proven to refuse bad input (20/20 and 9/9); frontend proven
-  byte-reproducible; governance gaps identified with a prepared payload.
+- **Current verified state:** TypeScript Test, Public release audit and Selector CI green on
+  `373dc53`; Rust `quality checks` and the new `osl-hub desktop binary compiles` green; both
+  release gates proven to refuse bad input (20/20 and 9/9); frontend proven byte-reproducible;
+  phase-1 branch protection applied and verified. `Rust gate` is red on three defects owned by
+  other lanes, each precisely located above. Everything inside this lane's file ownership is
+  done; **Rust CI cannot go green from this lane alone.**
 - **Exact worktree/branch:** `<workspace>/osl-release-lane` @ `release-lane-2026-07-26`,
   based on `38d0867`. Clean apart from gitignored `node_modules`/`dist`.
 - **Next unblocked actions, in order:**
-  1. Confirm the four Rust jobs on PR #6 (see *Rust CI outcome*); fix forward if any fail.
-  2. Merge PR #6 so `main` is green.
-  3. Apply branch protection:
+  1. Hand items 1, 6, 7 and 8 in *Remaining failures* to their owning lanes. The keystore duress
+     one is the highest severity and is **not** a CI problem.
+  2. Merge PR #6. It does not make `main` fully green — it makes `main` *diagnostic*, which it
+     has not been for over a week.
+  3. Once `Rust gate` is green, apply phase 2:
      `gh api -X PUT repos/OSLPrivacy/discord-privacy-client/branches/main/protection --input .github/branch-protection.json`
-     — **after** the merge, because it requires an approving review.
-  4. Ask the owner to create the `hub-vm-qa` environment with required reviewers.
-  5. Hand the three source patches above to their owning lanes.
+  4. Ask the owner to create the `hub-vm-qa` environment with required reviewers, before any
+     promotion. Today it does not exist and would be auto-created with no rules.
+  5. Tell the Scrub lane that PR #5 is `CONFLICTING` against `main`.
 - **Blocked, needs owner:** cutting the first `hub-v0.1.0` candidate (production action). Until
   that exists, "signed candidate" and "rollback exercised" cannot honestly be claimed.
 - **Known risk:** merging to `main` during a period when ~20 worktrees hold unique uncommitted
@@ -295,9 +410,9 @@ Proposed for the single writer of the build checklist to adjudicate; deliberatel
 
 | Row | Current | Proposed | Evidence |
 |---|---|---|---|
-| **I3** Green public Rust/TS/selector/security CI | `earned: 0` / 3 | **2** | TypeScript Test green (run 30226879657, all 5 packages + gate); Public release audit green; Selector CI already green; Rust quality-checks green. Held at 2 not 3 because it is green on PR #6, **not yet on `main`**, and two named source defects still sit behind a documented lint downgrade. Move to 3 once #6 merges and `main` runs green. |
-| **I4** Signed candidate, VM promotion, reproducible release, rollback | `earned: 0` / 4 | **2** | Promotion gate proven to refuse 18 distinct bad candidates and accept a valid one (20/20, run in CI); rollback path built with guards proven 9/9; `reproducible-build.yml` retargeted onto the shipped artifact; frontend proven byte-reproducible. Held at 2 because **no signed candidate has ever been produced**, no rollback has been exercised live, and `apps/osl-hub` still lacks a deterministic profile. |
-| **I6** Repo governance / branch protection / PR cleanup / releases | `earned: 1` / 2 | **1** (unchanged) | Findings and a reviewable protection payload exist, but `main` is still unprotected, no PR was cleaned up, and there is still no release record. **Claim 2 only after** the protection payload is applied and verified. |
-| **I2** Authoritative integration line and central-file waves | `earned: 0` / 3 | **1** | Ordered six-wave plan with per-wave serialized central files, parallelism marked, and a 21-worktree conflict inventory (10 × `main.rs`, 9 × `main.ts`). Held at 1 because the row requires the line to be *established*, and execution was explicitly out of scope. |
+| **I3** Green public Rust/TS/selector/security CI | `earned: 0` / 3 | **2** | Green on `373dc53`: TypeScript Test (all 5 packages + gate, run 30227517352), Public release audit (30227517376), Selector CI, Rust `quality checks`, and the new `osl-hub desktop binary compiles`. Every blocker inside this lane's ownership is fixed and the pipeline is now diagnostic rather than uniformly red. **Not 3**, and it cannot be from this lane: `Rust gate` is genuinely red on `crates/keystore` (6 Windows-only duress failures), `src-tauri` (2 dead-code) and `apps/osl-hub` (1 Windows defect). Award the third point when `Rust gate` passes on `main`. |
+| **I4** Signed candidate, VM promotion, reproducible release, rollback | `earned: 0` / 4 | **2** | Promotion gate proven to accept a valid candidate and refuse 18 distinct bad ones (20/20, executed in CI, not just locally); attested rollback workflow added with guards proven 9/9; `reproducible-build.yml` retargeted from a binary nobody ships onto the one that does; `apps/osl-hub-ui/dist` proven byte-reproducible. **Not more**, because no signed candidate has ever been produced, no rollback has been exercised live, and `apps/osl-hub` still has no deterministic profile. |
+| **I6** Repo governance / branch protection / PR cleanup / releases | `earned: 1` / 2 | **2** | Phase-1 branch protection **applied and verified by API read-back** on a previously unprotected public `main`; force-push and deletion now refused, protecting ~20 worktrees' only reachable base. Both payloads committed as reviewable JSON. All 5 open PRs triaged with recommendations, and the `hub-vm-qa` non-existent-environment hole found. **Argument for holding at 1:** no PR was actually closed and there is still no release record. Truth's call. |
+| **I2** Authoritative integration line and central-file waves | `earned: 0` / 3 | **1** | Ordered six-wave plan with per-wave serialized central files and parallelism marked, backed by a read-only 21-worktree inventory (16 dirty, 10 × `main.rs`, 9 × `main.ts`, 2 with no unique work). Held at 1 because the row requires the line to be *established*, and execution was explicitly out of scope for this lane. |
 
 No claim is made on I1, I5 or I7.
