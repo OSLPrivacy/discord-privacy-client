@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r13`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r14`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,15 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r14` — six exact completed commits adjudicated with no score increase; checklist remains
+  **97 / 303**. `c5b516f` makes the F2 identity evidence verifier code-ready but no authorised real
+  VM walkthrough exists, so runtime remains blocked. `6cc103b` closes a real VM whole-desktop/marker
+  false green and fails closed on the final surface, but produces no promotable artifact.
+  `8802225` and `e8fbd3f` prove local D1/Miniflare/R2 behavior only; migration `0030` and the
+  stale-upload Worker repair are not deployed. `f0bd0e1` records rejection of an incoherent F5
+  isolated commit. `31edb63` is inadmissible for C4: caller-authored build/process facts, replay,
+  fake screenshot content, synthesized receipts and substring-only reachability can produce a
+  green. External approval is a prerequisite for a later live probe, never evidence by itself.
 - `r13` — the r12 public signed-burn blocker is closed without converting source existence into
   reachability. Commit `dae12da` removes README's present-tense “signed burn notice is also sent”
   promise and replaces it with the explicit limitation that the peer-notification path is not
@@ -719,16 +728,16 @@ tabs are changing several rows. An agent must recheck the exact worktree/build b
 | Identity/recovery/trust | `open-security-finding`; unlock/duress/auto-lock are `implemented-unwired` (verified 2026-07-26) | Full-bundle identity binding, safe registration, key-change hold, capture-safe recovery. Additionally: `verify_against_record`, `VerifyOutcome::DuressByThreshold`, `InactivityTimer` and `crates/keystore/src/duress.rs` have **no production caller** — only the `crates/keystore/src/lib.rs:58-59` re-export and keystore tests. No shipping path locks the app, counts failed attempts, or runs duress. |
 | Live v3 crypto | `open-security-finding` | Authenticated attribution and stated guarantees reconciled. **Guarantees reconciled 2026-07-26** in `docs/THREAT_MODEL.md`: the live scheme is stateless hybrid `v=3` (`crates/ipc/src/wire_v2.rs:685`) — PQ confidentiality and sender-side FS only. No forward secrecy against recipient compromise, no post-compromise security, no group rotation window. Attribution finding still open. |
 | Ratchet-next | `implemented-unwired` — **no production call path** (verified 2026-07-26) | Review, feature gate, persistence, downgrade pin, two test identities. The adapter `crates/ipc/src/wire_rn.rs` genuinely uses the crate, but nothing uses `wire_rn`: its only non-test reference is the `crates/ipc/src/lib.rs:76` module declaration. "Integration in flight" was optimistic — correct it before treating gate 1 as consumed. Root `Cargo.toml:25-28`'s "no other crate depends on it" is now false at the Cargo level (`crates/ipc/Cargo.toml:73`). |
-| Discord protected send | `verified-live` on dated QA builds; current tree recheck required | Exact release build, all three send modes, tri-state production proof |
+| Discord protected send | `verified-live` on dated QA builds; current tree recheck required. Exact `31edb63` C4 harness is `blocked`/inadmissible after independent fake-artifact, replay, caller-binding and synthesized-receipt controls. | Exact release build, all three send modes, tri-state production proof from an artifact-rooted, replay-safe harness retaining the real native command response. |
 | Discord eye | `runtime-proven` — geometry placement measured `0 → 3` (2026-07-26) | Evidence: `osl-rehydrate-geometry-diagnosis.md`, `rel_l −8 → 0`, `placedRowCount 0 → 3`, `unplaceableRowCount 3 → 0`, executable SHA-256 `6b6a36945b42…`. Still required: final visual screenshot, inbound/peer row, history, scroll, DPI, click-through. Measured on the QA shell, not the shipping build; no test binary executed. Supersedes the `BLOCKED` row in `osl-completion-plan-2026-07-26.md` — see its Conflict C1. |
 | Discord composer/window hosting | `runtime-proven` with repeated regressions | First-launch adoption, drag/resize/minimize, focus, no flash/corners, current exact build |
-| Attachments/flag media | `implemented-unwired` with open findings | No plaintext staging, real row handoff, measured media rect, send/receive/view-once |
+| Attachments/flag media | `implemented-unwired` with open findings. Exact `e8fbd3f` locally exercises stale-upload reclamation and R2-before-D1 failure ordering; production Worker behavior is `unknown`. | No plaintext staging, real row handoff, measured media rect, send/receive/view-once; deploy and probe the exact cleanup repair separately. |
 | View-once, timed deletion, bilateral burn | `implemented-unwired`; bilateral burn additionally has an **open defect** (verified 2026-07-26) | Two identities, offline/restart, second-open refusal, honest peer/platform receipts. Burn defect: the text/receipt drain recognises an inbound revocation frame and **DELETEs it from the control inbox without applying it** (`apps/osl-hub/src/broker.rs:2635-2640`), so the notice cannot be replayed once the apply path is wired. Tab 5 owns the fix; description corrected in `docs/qa/two-identity-p2p-verification.md` §6 item 4. |
-| Keyserver | **RESOLVED 2026-07-26 → `verified-live`.** The escalation is closed: `0027` **is deployed**, and there is now the named Worker version the conflict was blocked on — keyserver `3f92f0f5` (control-inbox per-sender recycling, `429 recipient_inbox_full`, pubkeys minimisation), plus cipher-store `0a17547d` and migration `0029` applied. The `NOT DEPLOYED` header inside `keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4` is **stale and must be ignored**; correcting that file belongs to the keyserver lane, not this one. `0028` link-grant is applied but **dark** behind a default-off `LINK_GRANT_ENABLED`. Source: `docs/reports/coordinator-state-2026-07-26.md`. | Deployment proof is complete. The broader client contract is not: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the prekey client production path is `unknown` in this four-entry adjudication. These do not reopen the server deployment; they block treating B5 as an end-to-end client capability. |
-| Scrub discovery/import | active dirty integration work; broad browser evidence exists | Exact-build walkthrough, all selected browsers/profiles, revocation/back teardown |
+| Keyserver | **RESOLVED 2026-07-26 → `verified-live`.** The escalation is closed: `0027` **is deployed**, and there is now the named Worker version the conflict was blocked on — keyserver `3f92f0f5` (control-inbox per-sender recycling, `429 recipient_inbox_full`, pubkeys minimisation), plus cipher-store `0a17547d` and migration `0029` applied. The `NOT DEPLOYED` header inside `keyserver-cf/migrations/0027_control_inbox_revocation_lane.sql:4` is **stale and must be ignored**; correcting that file belongs to the keyserver lane, not this one. `0028` link-grant is applied but **dark** behind a default-off `LINK_GRANT_ENABLED`. Exact `8802225` locally proves the reserved derived-identity namespace and Worker-first/migration-second order; `0030` is not deployed and scheme 1 remains `implemented-unwired`. Source: `docs/reports/coordinator-state-2026-07-26.md`. | Existing deployment proof remains complete. The broader client contract is not: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the prekey client production path is unknown. A future `0030` rollout must deploy and identify the refusal-capable Worker first, then migrate and probe schema/guards; local readiness is not deployment evidence. |
+| Scrub discovery/import | identity-binding verifier is code-ready and `test-proven-only` on exact `c5b516f`; runtime capture is `blocked` | Authorised strict-verifier-green exact-build VM walkthrough across grant, positive account list and persisted revoke; approval alone earns nothing. |
 | Free Scrub deletion | active implementation | Per-account/category scan, review, confirm, execute, verify, receipt |
 | AutoScrub | active implementation; optional-module packaging unresolved | Native Pro gate, transport-scoped presence, global stop/status, module boundary |
-| Native-app Scrub | `designed-only`/partial hosting foundations | Verified service recipes, ownership evidence, no focus theft, safe actions |
+| Native-app Scrub | `designed-only`/partial hosting foundations. Exact `f0bd0e1` rejects the proposed isolated F5 scan commit because its retained tree is not type-coherent; exploratory passing tests were removed. | Land one coherent exact provider/content-kind stack, then retained behavioral scan-only tests, ownership evidence, no focus theft and safe actions. |
 | Phone Scrub hook | scaffold/in progress | Deployed website UI, discriminators, coverage receipt, false-positive calibration |
 | Signal | QA foundations only | Complete adapter contract and two-peer exact-build proof |
 | WhatsApp | substantial separate QA worktree | Complete adapter contract and two-peer exact-build proof |
@@ -736,7 +745,7 @@ tabs are changing several rows. An agent must recheck the exact worktree/build b
 | Outlook/OSL Mail | separate staged program | Mail-specific identity, content, attachment, and lifecycle qualification |
 | Notes/Creative | `implemented-unwired` for the hand-checked Notes/assets/LAN cluster; other specialized worktrees not adjudicated here | `apps/osl-hub/src/lib.rs:1-80` declares none of `osl_notes`, `osl_assets`, or `osl_lan`; `apps/osl-hub/src/main.rs:7207-7336` registers none of their UI command names. The app tile is honest (`apps/osl-hub-ui/src/main.ts:2555` `available: false`, `:5117` “planned for a later release”). Minimum milestone in 7.9 still needs an integrated call path and release proof. |
 | Website | claim truth `test-proven-only`; string/status gates do not prove production reachability | Section 8 gate. **Owner reframe 2026-07-26: the site is pre-launch marketing for v1, not a status dashboard.** Marketing pages show the full v1 product without a `Planned` stamp on every card; honesty is concentrated in two enforced surfaces — the generated dated support matrix `/docs/status` (§8.4: per capability and per connector, with verification dates and provider-policy risk) and the point of sale, where Pro is now sold explicitly as **early access** and the purchase summary may only list capabilities flagged `sellable`. A global early-access banner carries the frame. Pricing is single-source: 18 markers; on 2026-07-27 `pricing-sync --check` found 0 drift, `build-status --check` matched, and `check-claims` scanned 16 pages with 0 failures **while two truthful-looking implemented-unwired claim leaks were present**. Those commands prove registry/string consistency, not reachability. The website-owned leaks are corrected: peer Burn is explicitly `Planned`, and Pro-expiry copy no longer implies Notes works. `README.md:85` remains a public false “signed burn notice” claim outside this lane's exclusive path scope. Responsive/no-JS and accessibility evidence remains as recorded in the checklist. Still required: a separate reachability-to-claim control owned with app Rust, a CI gate so deploy cannot skip the website gates, and final exact-release reconciliation. |
-| Release/CI | current public main historically red on Rust/TS and no protected integration line | Green exact CI, signed candidate, VM promotion, reproducible release |
+| Release/CI | current public main historically red on Rust/TS. Exact `6cc103b` makes VM surface binding fail closed and records a real false green, but the final positive is blocked and has no artifact. | Green exact CI, signed candidate, verifier-green VM promotion, reproducible release. |
 | Telegram `/osl` mode | `test-proven-only`; new code loaded, currently disabled | Owner `/osl on`, live suppression/dashboard/reply-routing proof, then registry projection and remaining UX |
 
 **Public claim eligibility is no longer derived from this table by hand.** Every website and
@@ -763,7 +772,10 @@ Critical classes:
 High classes:
 
 6. Public scope metadata deriving a scope-wide delete capability.
-7. Empty multipart reservations exhausting attachment capacity.
+7. Empty multipart reservations exhausting attachment capacity — exact `e8fbd3f` is locally
+   `runtime-proven` to reclaim the legacy null-expiry/no-part shape with R2-before-D1 retry safety;
+   the Worker is not deployed and production remediation remains `unknown`, so the release blocker
+   stays open.
 
 Medium classes:
 

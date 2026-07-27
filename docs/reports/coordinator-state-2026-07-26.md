@@ -38,6 +38,10 @@ discard the whole import.
 | `0027` | deployed. The "NOT DEPLOYED" header in that migration file is stale — ignore it |
 | Backups | D1 pre-`0029` dump + tree snapshots under `/home/liamw/osl-backups/` |
 
+**Not live:** exact `8802225` migration `0030`/reserved-namespace refusal and exact `e8fbd3f`
+stale-upload reclamation are local-only. Neither commit is mapped to the active Worker UUIDs, no
+deployment occurred, and production behavior must not be inferred.
+
 ## Owner decisions made — do not re-litigate
 
 - **Pricing:** Pro is $5/month; compute credits are separate one-time purchases.
@@ -60,8 +64,10 @@ discard the whole import.
 
 ## Open blockers
 
-1. **Aug 2 Scrub demo.** Critical path: VM agent verbs (crypto) → loop verified → re-snapshot →
-   film. Capability risk retired; capture is what remains.
+1. **Aug 2 Scrub demo.** F2 harness is code-ready at exact `c5b516f`, but runtime capture is
+   blocked. The strict-verifier-green real VM grant/import/revoke sequence still needs explicit
+   owner authorization for disposable identity creation, then actual execution; authorization
+   alone is not evidence.
 2. **Two-identity proof (B6, 0/3).** Gates B7, C5, D3–D7. Needs the VM rig.
 3. **Rust CI red.** Three defects release cannot fix. Branch protection requires only
    `["TypeScript gate","audit"]` — Rust is *not* required and `enforce_admins` is **false**, so main
@@ -71,6 +77,10 @@ discard the whole import.
    separate **cold** lineage — two lineages, never one.
 5. **`NCryptDeleteKey` result discarded** on machines that *do* have a TPM — a failed delete was
    reported as a successful wipe. Already shipping. Crypto owns.
+6. **C4 harness inadmissible.** Do not run the owner Discord send using exact `31edb63`.
+   Artifact-rooted feature/process attestation, retained native command/readback authority,
+   semantic screenshot binding, replay consumption, and collector/verifier schema parity must land
+   first.
 
 ## Closed evidence since r12 — no acceptance points
 
@@ -118,6 +128,15 @@ discard the whole import.
   decrypt, staging and durable write, and an image helper control continues. Removing the helper's
   refusal fails; removing its call from production `open_pending_inner` leaves the test green.
   Source ordering improved, but the protected-viewer production seam is not behaviorally proved.
+- **Six exact completed commits, +0.** `c5b516f` makes F2 identity evidence binding
+  mutation-sensitive (24/24) but performs no real VM take; F2 is code-ready/runtime-blocked.
+  `6cc103b` passes 15/15 host regressions and closes a real whole-desktop/6×6-marker false green,
+  but its final VM positive refuses the surface and emits no artifact. `8802225` proves local
+  Worker-first/migration-second namespace safety; `0030` is undeployed. `e8fbd3f` proves local
+  D1/R2 stale-upload reclamation and retry ordering; it is undeployed. `f0bd0e1` records F5's
+  rejected incoherent exact candidate. `31edb63` passes 17 harness tests but is inadmissible after
+  fake executable/screenshot, replay, caller-binding, synthesized-receipt and unreachable-source
+  controls. F2 stays 3/5, F5 1/5, C4 1/4; all other rows stay unchanged.
 
 ## Coordination infrastructure built today
 
@@ -174,6 +193,14 @@ Machine healthy: 10 GB used, 15 GB available, load 9.1, one indexer, watchdog ru
 17 commits today across both trees. Reports on disk: baseline, crypto, server, truth, vmqa
 (scrub's lives in its own worktree; release's is pending).
 
-Next coordination beats, in order: crypto dispatches the VM verbs and dead-letter → vm builds the
-share and agent → scrub verifies the loop and films → release creates the cold lineage → truth keeps
-applying points. Nothing is waiting on the owner except promoting the website branch.
+## Shortest honest +1 map from 97 / 303
+
+| Order | Row | Single missing boundary | Owner / artifact contract | External mutation or confirmation |
+|---|---|---|---|---|
+| 1 | B5 `1/4 → 2/4` | One exact behavioral broker test must execute the actual text and attachment drains, deliver A behind 64 retained B blockers, and prove B remains drainable. | Crypto/broker lane; stateful relay fixture, authenticated/decryptable text and attachment notices, four filter refusals, and a one-call unfiltered mutation that fails. | No. Local exact-commit evidence can cross this partial boundary. |
+| 2 | F2 `3/5 → 4/5` | One strict-verifier-green real VM five-frame grant/import/revoke walkthrough on the exact build. | Scrub + VM lanes; `./scripts/qa/vm-run-loop.sh --share <share> --timeout 600 --identity-client 1 --confirm-create-identity --verbs identity-status,create-identity,list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`; five bound PNG/JSON pairs, positive account list and cleanup. | **Yes.** Disposable identity creation needs owner confirmation and mutates the live keyserver; confirmation itself earns nothing. |
+| 3 | I3 `1/3 → 2/3` | The exact candidate must be pushed and the named public Rust gate must finish green alongside the already-named public gates. | Release lane; remote commit SHA plus GitHub-hosted workflow URL showing the required Rust/TypeScript/selector/security jobs green. | **Yes.** Push and hosted CI mutate the remote; an unpushed local floor is not evidence. |
+
+Next coordination beats: crypto closes the B5 behavioral fixture; VM/Scrub repair the visible-frame
+capture and wait for explicit identity authorization; release resolves the named Rust blocker,
+pushes, and waits for GitHub-hosted results; truth awards only after each artifact exists.

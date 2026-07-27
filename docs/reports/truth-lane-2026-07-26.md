@@ -1469,3 +1469,131 @@ text-plus-attachment broker delivery with blockers retained, or two-identity rec
 ## Acceptance rows this earns
 
 - None. B5 returns from 2/4 to 1/4; total returns from 98/303 to 97/303.
+
+---
+
+## 26 · Six exact commits: Scrub, VM, server repair, F5 rejection, and C4 block
+
+Only exact committed bytes from `c5b516f`, `6cc103b`, `8802225`, `e8fbd3f`, `f0bd0e1`, and
+`31edb63` were consumed. Later dirty follow-up bytes were used only as an independent C4 block
+finding, never as positive evidence. Arithmetic is:
+
+```text
+97 + 0 + 0 + 0 + 0 + 0 + 0 = 97 / 303
+```
+
+### `c5b516f`: F2 verifier code-ready, runtime blocked
+
+The host independently supplies the selected client; the verifier derives
+`qa-client-{client}:run-{run}:state-{absent|locked|ready}` and checks create
+`absent → ready`, unlock `locked → ready`, and status-only `ready`. Four one-field binding
+mutations and a missing-independent-client control are retained.
+
+Exact archive results:
+
+```text
+python3 scripts/test_verify_scrub_capture_evidence.py -v   24 tests, OK
+scripts/qa/vm-run-loop.sh --self-test --share <temp>       6/6 negatives, 1/1 positive
+bash -n scripts/qa/vm-run-loop.sh                          exit 0
+```
+
+No Azure, Key Vault, OSL identity, provider, or real five-frame VM take ran. Status is
+`test-proven-only`; F2 is code-ready but runtime capture is `blocked`. Owner approval for later
+disposable identity creation is a prerequisite, not evidence.
+
+### `6cc103b`: exact-surface VM gate fails closed; no positive artifact
+
+The exact staged executable path, launched PID, visible non-marker surface, foreground ownership,
+sample-grid ownership, z-order and stable rectangle are now bound before and after capture
+(`vmqa-agent.ps1:721-818`, `vmqa-win32.ps1:348-467`, `vmqa-run.sh:348-414`).
+
+Exact host regression:
+
+```text
+./scripts/vmqa/test-selftest-grading.sh   passed=15 failed=0
+```
+
+The retained live VM evidence first catches a false green: a 6×6 marker HWND was bound while
+Firefox supplied the whole-desktop pixels. The final exact run then refuses
+`VMQA_VISIBLE_SURFACE_OFFSCREEN: rect=0,0 1044x788` and emits no artifact. This is a genuine
+fail-closed improvement with `runtime-proven` false-green/refusal evidence, not a verifier-green
+F2 walkthrough or I4 promotion.
+
+### `8802225`: local namespace refusal and safe rollout order; `0030` undeployed
+
+Exact Node 24 archive results:
+
+```text
+scripts/migration-0030.test.ts                 1 file, 6 tests passed
+register.test.ts + pubkeys.test.ts             2 files, 22 tests passed
+npm run typecheck                              passed
+```
+
+Real local Miniflare D1 proves scheme-0 compatibility, reserved `osl1_...` refusal before D1,
+zero-row insertion for that refusal, and INSERT/UPDATE triggers that permit only
+`(identity_scheme=0, ik_root_ed25519_pub=NULL)`. Mutations of the Worker refusal, update trigger,
+insert trigger, and default each fail. The safe order is Worker refusal first, then migration
+`0030`, then schema/trigger verification; migration-first leaves a namespace-squatting window.
+
+Status is local `runtime-proven`/`test-proven-only` deploy readiness. No Cloudflare command ran,
+`0030` remains pending, and scheme 1 has no client field, canonical root proof, verifier, or
+response: `implemented-unwired`. A2, B5, and release rows earn nothing.
+
+### `e8fbd3f`: local stale-upload repair; production unknown
+
+Exact archive results:
+
+```text
+test/attachment-sweep.test.ts                  1 file, 8 tests passed
+npm test                                       12 files, 104 tests passed
+npm run typecheck                              passed
+```
+
+The real local D1/R2 fixture proves that a stale legacy `uploading` row with null content expiry and
+no part receipt is boundedly marked, its multipart upload is aborted before conditional metadata
+deletion, and an abort failure retains retryable expired metadata. Fresh, current-schema, and
+part-receipted controls remain untouched; five semantic mutations fail.
+
+The sweep function is local `runtime-proven`; `scheduled()` is only source-connected. No deploy or
+post-deploy probe occurred. The older live cipher-store UUID has no Git annotation and must not be
+mapped to this later commit. Production remediation remains `unknown`; D2 earns nothing.
+
+### `f0bd0e1`: F5 isolated candidate rejected
+
+This commit changes only the Scrub report. Its exploratory mocked scan test passed in a temporary
+staged tree, but the exact candidate failed `npm run typecheck` across the unfinished
+content-kind/provider stack. The exploratory test and native seams were removed; untracked hosted
+bytes were excluded. F5 therefore remains `blocked` at 1/5, with no retained `test-proven-only`
+candidate.
+
+### `31edb63`: C4 harness inadmissible
+
+The exact harness reports 17/17 tests, and the PowerShell does populate `protected-draft` and invoke
+`prepare-protected`. Those facts do not make its evidence authoritative:
+
+- its accepted positive uses marker-free text named `.exe`, a fabricated PID/receipt, and a
+  signature-only PNG;
+- the identical fresh bundle verifies twice; there is no one-time challenge or consumption ledger;
+- executable, PID, start, path and hash are caller-authored consistency fields, not OS/build
+  attestation;
+- the source contract still passes when the real Send invocation is placed inside `if ($false)`;
+- `status`, `placed`, `enterSent`, and “native” readback are synthesized after renderer/UIA
+  observation instead of retained from the production command response.
+
+The independent follow-up rejects some malformed fields but still accepts coherent fake image and
+process evidence and replay; it also exposed collector/verifier schema mismatch. Those dirty bytes
+earn nothing. C4 is `blocked` and the owner Discord send must not run until artifact-rooted feature
+attestation, live process binding, retained native command/readback authority, semantic screenshot
+binding, replay consumption, and schema parity exist.
+
+### Shortest honest +1 map from 97 / 303
+
+| Order | Exact checklist row | Why current evidence stops short | Single missing real boundary/probe | Owner lane | Executable command or artifact contract | External mutation / owner confirmation |
+|---|---|---|---|---|---|---|
+| 1 | B5 `1/4 → 2/4` | `c0279dc` is client/source-only; `aca9dae` calls only the shared helper with a stateless A-then-B fake. | One exact behavioral test must execute the actual text and attachment drains, deliver A behind 64 retained B blockers, then prove B remains drainable. | Crypto/broker | Stateful relay; authenticated/decryptable text and attachment notices; four filter refusals; unfiltered one-call mutation must fail. | No. Local exact-commit evidence can cross this partial boundary. |
+| 2 | F2 `3/5 → 4/5` | `c5b516f` is code-ready, but no strict-verifier-green real VM take exists; `6cc103b` final capture is blocked. | One exact-build five-frame VM grant/import/revoke walkthrough with a positive account list and persisted revoke. | Scrub + VM | `./scripts/qa/vm-run-loop.sh --share <share> --timeout 600 --identity-client 1 --confirm-create-identity --verbs identity-status,create-identity,list-browser-profiles,grant-browser-profile,run-browser-import,revoke-browser-profile`; five bound PNG/JSON pairs and cleanup. | **Yes.** Disposable identity creation needs explicit owner confirmation and mutates the live keyserver. Confirmation alone earns nothing. |
+| 3 | I3 `1/3 → 2/3` | Local workflow floors and focused tests are unpushed; public Rust CI is not green. | Push one exact candidate and obtain a GitHub-hosted green Rust gate alongside the named public gates. | Release | Remote commit SHA and workflow URL with required Rust/TypeScript/selector/security jobs green. | **Yes.** Push/hosted CI mutate the remote. A local green or approval earns nothing. |
+
+## Acceptance rows this earns
+
+- None. Score remains 97 / 303.

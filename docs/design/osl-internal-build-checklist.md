@@ -95,6 +95,25 @@ away, per master §16.3.
   `open_pending_inner` leaves the focused test green. Source ordering improved; the real viewer seam
   and image continuation are not behaviorally proved.
 
+**2026-07-27 six-commit exact adjudication (+0).**
+
+- F2 +0 · exact `c5b516f` binds all four identity evidence objects to client, run, and semantic
+  state with mutation-sensitive tests. It is `test-proven-only`; no authorised strict-verifier-green
+  real VM walkthrough exists. F2 is code-ready but runtime capture remains `blocked`.
+- I4 +0 · exact `6cc103b` closes a real whole-desktop/6×6-marker false green and passes 15 host
+  regressions, but its final exact VM positive refuses an off-screen `GetWindowRect` surface and
+  produces no artifact. Fail-closed VM binding is not a promoted candidate.
+- A2/B5 +0 · exact `8802225` proves local Miniflare/D1 namespace refusal and requires Worker-first,
+  migration-second rollout. Migration `0030` and this Worker are not deployed; scheme 1 remains
+  `implemented-unwired`.
+- D2 +0 · exact `e8fbd3f` proves local D1/R2 stale-upload reclamation, R2-before-D1 ordering, and
+  retry on abort failure. The repair is local-only and production cleanup remains `unknown`.
+- F5 +0 · exact `f0bd0e1` records rejection of the proposed isolated scan-only commit: the retained
+  exact tree is not type-coherent and the passing exploratory tests were removed.
+- C4 +0 · exact `31edb63` is inadmissible as shipping evidence. Its verifier accepts caller-authored
+  build/process facts, replayed bundles, fake screenshot content, and a source substring whose real
+  Send call can be unreachable. No owner Discord send should run against this harness.
+
 **2026-07-26 — recorded, deliberately NOT awarded.** Open defects earn nothing; they are
 logged here so they cannot be quietly forgotten or later re-counted as new work.
 
@@ -160,7 +179,9 @@ timestamped deltas, not keep this number manually forever.
 - 🟨 **A1 · Local OSL identity and recovery** — create/import/unlock exists; recovery/capture and
   password-at-rest claims need reconciliation. `needs: none` `weight: 6` `earned: 3`
 - 🛑 **A2 · Full-bundle identity binding** — identity must authenticate Ed25519, X25519, ML-KEM and
-  capability bundle; no keyserver substitution. `needs: A1` `weight: 6` `earned: 0`
+  capability bundle; no keyserver substitution. Exact `8802225` reserves and locally refusal-tests
+  the future derived-identity namespace, but migration `0030` is undeployed and no scheme-1
+  canonical proof, verifier, client field, or response exists. `needs: A1` `weight: 6` `earned: 0`
 - 🛑 **A3 · Sender authentication equals displayed attribution** — no caller-supplied identity can
   relabel authenticated plaintext. `needs: A2` `weight: 5` `earned: 0`
 - 🛑 **A4 · Proven platform-account registration** — nobody can pre-register another owner's public
@@ -268,8 +289,11 @@ timestamped deltas, not keep this number manually forever.
   clipboard/default, double-Enter, and single-Enter product contract. `needs: C2` `weight: 4`
   `earned: 1`
 - 🟨 **C4 · Production tri-state sent proof** — sends have landed while receipts said failure;
-  duplicate-safe production proof needs exact-build verification. `needs: C3` `weight: 4`
-  `earned: 1`
+  duplicate-safe production proof needs exact-build verification. Exact `31edb63` does not qualify:
+  an independent audit accepts a marker-free fake executable with caller-authored shipping facts,
+  identical fresh-bundle replay, fake PNG content, and an unreachable Send call preserved as a
+  source substring. The collector also synthesizes native authority instead of retaining the
+  production command response. C4 remains `blocked`. `needs: C3` `weight: 4` `earned: 1`
 - 🟨 **C5 · Eye decrypt and place every authenticated row** — `runtime-proven`: `placedRowCount`
   `0 → 3`, `unplaceableRowCount` `3 → 0`, `rel_l −8 → 0` on QA executable SHA-256
   `6b6a36945b42…` (`osl-rehydrate-geometry-diagnosis.md`). This supersedes the `BLOCKED` row in
@@ -308,7 +332,9 @@ timestamped deltas, not keep this number manually forever.
   over-correction. But 🧪 "test-proven" was an untrue label for a path that could not execute, so
   the marker is corrected. **Treat any "attachment sent successfully" reported anywhere before
   2026-07-26 as unproven.** Pending cover handoff, media measurement, cleanup, and
-  no-plaintext-at-rest all remain. `needs: A6,D1` `weight: 5` `earned: 1`
+  no-plaintext-at-rest all remain. Exact `e8fbd3f` locally proves stale legacy upload reclamation,
+  R2-before-D1 ordering and retryable abort failure, but it is not deployed and production cleanup
+  remains `unknown`. `needs: A6,D1` `weight: 5` `earned: 1`
 - 🧪 **D3 · View-once text** — mechanisms exist; two-identity second-open refusal unproved.
   `needs: B6` `weight: 4` `earned: 1`
 - 🧪 **D4 · View-once image/protected viewer** — viewer/link foundations exist; first-paint
@@ -364,13 +390,19 @@ timestamped deltas, not keep this number manually forever.
   Remaining point: browsers beyond the Chromium path, the Firefox tier, and exact release proof —
   explicitly not claimed. `needs: none` `weight: 6` `earned: 5`
 - 🟨 **F2 · Detected sites/accounts and ownership** — broader findings and native-app account work
-  landed in dirty integration; exact walkthrough needed. `needs: F1` `weight: 5` `earned: 3`
+  landed in dirty integration. Exact `c5b516f` makes the strict identity-binding verifier
+  code-ready with 24 mutation-sensitive tests, but no authorised real-VM five-frame walkthrough has
+  passed. Runtime evidence remains `blocked`; exact walkthrough still needed.
+  `needs: F1` `weight: 5` `earned: 3`
 - 🟨 **F3 · Free Scrub account/category/scan/review flow** — substantial contracts/UI; exact
   end-to-end proof remains. `needs: F2` `weight: 5` `earned: 3`
 - 🟨 **F4 · Attended per-target deletion and verification** — coverage expanded; live provider
   execution/receipts need qualification. `needs: F3` `weight: 5` `earned: 2`
 - 🧪 **F5 · Native-app/hosted-session Scrub port** — architecture/hosting foundations; adapters and
-  safe execution incomplete. `needs: F2,F3` `weight: 5` `earned: 1`
+  safe execution incomplete. Exact `f0bd0e1` rejects, rather than lands, the proposed isolated
+  scan-only commit: its exact tree fails typecheck and the passing exploratory tests were removed.
+  Status remains `blocked`, not `test-proven-only` for that candidate.
+  `needs: F2,F3` `weight: 5` `earned: 1`
 - 🟨 **F6 · Pro AutoScrub native authority** — consent/tier/manifest/rails active in separate tree;
   transport-scoped background behavior and global stop/status need proof. `needs: F3,F4` `weight: 6`
   `earned: 2`
@@ -481,7 +513,10 @@ timestamped deltas, not keep this number manually forever.
   correctly different for two feeds, verified by the writer. What is still missing is a signed
   release artifact demonstrated on a real candidate, and `required_signatures` is `false` on the
   protected branch — and the reproducible build has not been
-  shown to actually reproduce. `needs: I2,I3` `weight: 4` `earned: 2`
+  shown to actually reproduce. Exact `6cc103b` makes VM surface binding fail closed and catches a
+  real whole-desktop/6×6-marker false green, but its final positive is blocked by invisible resize
+  borders and yields no capture artifact; it is not promotion evidence.
+  `needs: I2,I3` `weight: 4` `earned: 2`
 - ⬜ **I5 · Public docs/site truth reconciliation** — claims match exact binary.
   `needs: all release features,H` `weight: 2` `earned: 0`
 - 🟨 **I6 · Repo governance/branch protection/PR cleanup/releases** — **held at 1; the lane proposed
