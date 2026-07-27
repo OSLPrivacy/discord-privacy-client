@@ -221,3 +221,61 @@ hash.
 | Authorized WARM-agent cycle and independently pinned live receipt | live/runtime | blocked |
 
 This earns **zero checklist rows and F1 +0**. Simulation is explicitly separate from live proof.
+
+## Exact-audit correction and accepted operator successor
+
+Independent exact-object audit rejected `fae029b16e12c7468412497ac06016aed1a97d70`
+at +0. It required a fresh current timestamped heartbeat to byte-match the historic heartbeat in a
+source-pinned receipt. Committing and auditing that pin necessarily makes the historic heartbeat
+older than 60 seconds, while a newly fresh heartbeat has different timestamped bytes. Its tests
+masked the contradiction by patching the source pin and age together.
+
+The corrected, independently accepted source/test object is:
+
+- commit: `734864c5ff33140cb2e1447a0b4a9508564cd677`
+- parent: `8a5e21579cceef3a91ee2c43ea9a4b71d4a8c282`
+- tree: `a73835da6c11bffa7e3f29a28e26b0c9ab2f1ae1`
+- operator blob: `d3cc261ee6004dac96c7ddcb5b98c408e53d7a67`
+- test blob: `1eea3b161271a5982d352507c4081f396fa9f972`
+- exact two-file archive SHA-256:
+  `e4217d4d909a15b56a84147f0d5a2f51a9631affda84e666e0e7c5ff76e4100e`
+
+The corrected bounded command is:
+
+```bash
+scripts/vmqa/vmqa-fast-cycle-operator.py \
+  --receipt /absolute/path/to/live-fast-cycle-receipt.json \
+  --bundle /absolute/path/to/producer-build-bundle \
+  --post-reset-heartbeat /absolute/path/to/retained-post-reset-heartbeat.json
+```
+
+The required retained heartbeat file must exactly match the historic hash, size, schema, session,
+and module identities in the source-pinned receipt. The separately fetched current heartbeat must
+be fresh and must match the fixed VM, interactive session 1, agent hash, and Win32 module hash, but
+its changing timestamped bytes need not equal the historic file. This makes later independent
+source pinning feasible without weakening either historic receipt integrity or present liveness.
+
+Focused evidence on the corrected object:
+
+- operator controls: 8/8 passed;
+- inherited fast-cycle receipt controls: 9/9 passed;
+- Python compilation and `git diff --check`: passed;
+- independent exact-object extraction: 8/8 passed;
+- independent verdict: **ACCEPT source/test tier, +0**.
+
+The added controls prove distinct historic/current heartbeat bytes can pass, while changed historic
+bytes, fresh agent-identity substitution, stale current heartbeat, coherent wrong-subscription
+lineage, wrong VM resource identity, changed executable bytes, and production simulation all
+refuse. The command still contains only read-only account/VM queries and share `get`.
+
+## Acceptance rows this earns
+
+| Acceptance condition | Evidence tier | Result |
+|---|---|---|
+| Historic post-reset heartbeat is exact and independently retainable | source/mutation-tested and independent audit | accepted |
+| Current heartbeat independently proves fresh matching agent/session identity | source/mutation-tested and independent audit | accepted |
+| Exact account/VM, production bundle, staged executable and five-step reset/retry receipt remain bound | source/mutation-tested and independent audit | accepted |
+| Production simulation and stale/substituted evidence refuse | source/mutation-tested and independent audit | accepted |
+| Authorized WARM-agent cycle and source-pinned live receipt | live/runtime | blocked |
+
+This earns **zero checklist rows and F1 +0**. No live product run or Azure mutation occurred.
