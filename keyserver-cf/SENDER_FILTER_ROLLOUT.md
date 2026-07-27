@@ -1,7 +1,9 @@
 # Sender-filter rollout compatibility contract
 
-Status: shipping source closure plus authenticated, nonauthorizing admission
-receipt derivation. The
+Status: shipping source closure plus fail-closed, internally bound
+nonauthorizing admission receipt derivation. Production floor genesis,
+producer trust, and transactional verifier storage are deliberately
+unprovisioned, so this is test-proven-only `+0`. The
 Rust client/broker boundary performs the ordinary read-only health and inbox
 GETs described below. This document and
 `scripts/sender-filter-rollout-contract.mjs` perform no HTTP, D1, migration,
@@ -42,13 +44,16 @@ schema × Worker × client rows and requires a nonempty continuity fixture.
   the legacy request only for the exact historical `{ok:true}` response while
   capability 1 has never been observed. Artifact A, a 503/0 bridge, malformed
   health, and wrong capability versions refuse.
-- Before the first filtered GET, the client atomically writes matching
-  identity-signed capability-floor records to the active account and the
-  shared-base identity-monotonic directory, syncing each file and its parent
-  directory. A fresh client requires both records. Once capability 1 is
-  observed, deleting either record, changing either record, or making the pair
-  disagree is a downgrade refusal; the broker has no boolean, probe, path,
-  reset, or fallback parameter.
+- A fresh client requires both matching identity-signed capability-floor
+  records. Missing both is not genesis, and even a mutually matching signed
+  floor-zero pair is not production authority. Until an independently
+  administered genesis boundary is provisioned, `NeverObserved` is
+  unavailable and the client refuses. An already-authoritative version-1 pair
+  is reloaded after the measured floor write before the first filtered GET.
+  Deleting either or both records, changing either record, replaying a local
+  floor-zero pair, or making the pair disagree is a downgrade refusal across
+  restart; the broker has no boolean, probe, path, reset, or fallback
+  parameter.
 - A filtered response is accepted only with the exact echo and no foreign
   sender. An empty authenticated filtered response is not mislabeled
   starvation: a real client has no omniscient view of undisclosed server rows.
@@ -88,9 +93,13 @@ refusals.
 ## Phase receipts and source closure
 
 The planner accepts no caller-authored phase value and has no phase-receipt
-constructor. It verifies the independently trusted producer's Ed25519
-deployment-evidence envelope, then requires that exact receipt to be the
-consumed head of the independently administered transactional verifier store.
+constructor. Its API rejects caller-supplied trust registries and verifier
+stores. It uses only the module-owned production producer registry and
+transactional verifier binding; both are currently empty/unprovisioned, so
+receipt derivation refuses. Once independently provisioned, it verifies the
+trusted producer's Ed25519 deployment-evidence envelope, then requires that
+exact receipt to be the consumed head of that independently administered
+transactional verifier store.
 The phase is derived from the authenticated Artifact A/B observation rather
 than supplied by the caller. The derived view binds commit/archive, migration
 0031, D1 identity/environment/schema fingerprint, Worker version/deployment,
@@ -105,7 +114,8 @@ functions, Artifact A refusals, the Rust capability probe and signed durable
 floor, and `broker.rs::fetch_peer_control_inbox`. The gate parses Rust function
 boundaries and call reachability, binds the capability probe result to the
 compatibility match branches, requires the broker boundary's sole tail call,
-resolves aliased filesystem-lowering calls, and parses executable SQL
+resolves direct, transitive, and typed filesystem-lowering aliases, rejects a
+missing or false-branch floor write/reload, and parses executable SQL
 statements while excluding both line and block comments. The derived receipts
 remain source/test-only and can never authorize a production action; the
 production trust registry and verifier binding remain deliberately

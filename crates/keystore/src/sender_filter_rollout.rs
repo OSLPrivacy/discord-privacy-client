@@ -3,10 +3,10 @@
 //! The caller never supplies a capability bit, a state path, or a prior-state
 //! boolean. The client probes the Worker itself and this module resolves one
 //! fixed file inside the active account directory and a second identity-bound
-//! monotonic record in the shared OSL base. Once capability version 1 has been
-//! observed, both identity-signed records must remain present and equal. A
-//! deleted account-local record therefore cannot reset the floor to
-//! `NeverObserved`; one-sided absence is a fail-closed downgrade.
+//! monotonic record in the shared OSL base. Both records are mandatory: their
+//! absence is never interpreted as genesis. Until an independently anchored
+//! floor-zero pair is provisioned, the shipping client therefore refuses
+//! rather than reopening `NeverObserved` after local deletion.
 
 use crate::identity::Identity;
 use crate::recipients::{osl_base_dir, osl_config_dir};
@@ -137,7 +137,7 @@ fn load_receipt(path: &Path, identity: &Identity) -> Result<Option<CapabilityFlo
     if receipt.format != FLOOR_FORMAT
         || receipt.recipient_user_id != identity.user_id
         || receipt.identity_anchor_sha256 != identity_anchor_sha256(identity)
-        || receipt.capability_version != SENDER_FILTER_CAPABILITY_VERSION
+        || receipt.capability_version > SENDER_FILTER_CAPABILITY_VERSION
         || receipt.first_observed_at_ms <= 0
     {
         return Err(Error::Transport(
@@ -173,14 +173,23 @@ fn load_from_paths(
     let local = load_receipt(local_path, identity)?;
     let anchor = load_receipt(identity_anchor_path, identity)?;
     match (local, anchor) {
-        (None, None) => Ok(SenderFilterCapabilityFloor::NeverObserved),
+        (None, None) => Err(Error::Transport(
+            "sender-filter capability floor genesis is not provisioned".into(),
+        )),
         (Some(local), Some(anchor))
             if local.identity_anchor_sha256 == anchor.identity_anchor_sha256
                 && local.capability_version == anchor.capability_version
                 && local.first_observed_at_ms == anchor.first_observed_at_ms
                 && local.signature_b64 == anchor.signature_b64 =>
         {
-            Ok(SenderFilterCapabilityFloor::Version1)
+            if local.capability_version == SENDER_FILTER_CAPABILITY_VERSION {
+                Ok(SenderFilterCapabilityFloor::Version1)
+            } else {
+                Err(Error::Transport(
+                    "sender-filter capability floor genesis is not independently provisioned"
+                        .into(),
+                ))
+            }
         }
         (Some(_), Some(_)) => Err(Error::Transport(
             "sender-filter capability floor and identity anchor disagree".into(),
@@ -327,21 +336,18 @@ mod tests {
         )
     }
 
-    fn record_at_paths(
+    fn write_signed_pair(
         local_path: &Path,
         anchor_path: &Path,
         identity: &Identity,
+        capability_version: u32,
         observed_at_ms: i64,
     ) -> Result<()> {
-        match load_from_paths(local_path, anchor_path, identity)? {
-            SenderFilterCapabilityFloor::Version1 => return Ok(()),
-            SenderFilterCapabilityFloor::NeverObserved => {}
-        }
         let identity_anchor = identity_anchor_sha256(identity);
         let message = canonical_floor_bytes(
             &identity.user_id,
             &identity_anchor,
-            SENDER_FILTER_CAPABILITY_VERSION,
+            capability_version,
             observed_at_ms,
         );
         let signature = crypto::ed25519::sign(&identity.ed25519_secret, &message);
@@ -349,29 +355,56 @@ mod tests {
             format: FLOOR_FORMAT.to_owned(),
             recipient_user_id: identity.user_id.clone(),
             identity_anchor_sha256: identity_anchor,
-            capability_version: SENDER_FILTER_CAPABILITY_VERSION,
+            capability_version,
             first_observed_at_ms: observed_at_ms,
             signature_b64: STANDARD.encode(signature.as_bytes()),
         };
         let bytes = serde_json::to_vec(&receipt)?;
         write_receipt_atomically(anchor_path, &bytes)?;
         write_receipt_atomically(local_path, &bytes)?;
-        match load_from_paths(local_path, anchor_path, identity)? {
-            SenderFilterCapabilityFloor::Version1 => Ok(()),
-            SenderFilterCapabilityFloor::NeverObserved => {
-                Err(Error::Transport("test floor did not persist".into()))
-            }
+        Ok(())
+    }
+
+    fn provision_test_genesis(
+        local_path: &Path,
+        anchor_path: &Path,
+        identity: &Identity,
+    ) -> Result<()> {
+        write_signed_pair(local_path, anchor_path, identity, 0, 1)
+    }
+
+    fn record_at_paths(
+        local_path: &Path,
+        anchor_path: &Path,
+        identity: &Identity,
+        observed_at_ms: i64,
+    ) -> Result<()> {
+        if matches!(
+            load_from_paths(local_path, anchor_path, identity),
+            Ok(SenderFilterCapabilityFloor::Version1)
+        ) {
+            return Ok(());
         }
+        write_signed_pair(
+            local_path,
+            anchor_path,
+            identity,
+            SENDER_FILTER_CAPABILITY_VERSION,
+            observed_at_ms,
+        )?;
+        if load_from_paths(local_path, anchor_path, identity)?
+            != SenderFilterCapabilityFloor::Version1
+        {
+            return Err(Error::Transport("test floor did not persist".into()));
+        }
+        Ok(())
     }
 
     #[test]
     fn signed_floor_is_write_once_and_survives_a_fresh_load() {
         let (local, anchor) = test_paths("positive");
         let identity = crate::generate_identity("recipient-positive".into());
-        assert_eq!(
-            load_from_paths(&local, &anchor, &identity).unwrap(),
-            SenderFilterCapabilityFloor::NeverObserved
-        );
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
         record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
         assert_eq!(
             load_from_paths(&local, &anchor, &identity).unwrap(),
@@ -387,6 +420,7 @@ mod tests {
     fn deleted_local_floor_cannot_reset_the_external_identity_anchor() {
         let (local, anchor) = test_paths("deleted-local");
         let identity = crate::generate_identity("recipient-positive".into());
+        provision_test_genesis(&local, &anchor, &identity).unwrap();
         record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
         fs::remove_file(&local).unwrap();
         assert!(load_from_paths(&local, &anchor, &identity).is_err());
@@ -398,6 +432,7 @@ mod tests {
         let (local, anchor) = test_paths("negative");
         let identity = crate::generate_identity("recipient-positive".into());
         let other = crate::generate_identity("recipient-other".into());
+        provision_test_genesis(&local, &anchor, &identity).unwrap();
         record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
         assert!(load_from_paths(&local, &anchor, &other).is_err());
 
@@ -405,6 +440,35 @@ mod tests {
             serde_json::from_slice(&fs::read(&local).unwrap()).unwrap();
         value["capability_version"] = serde_json::json!(2);
         fs::write(&local, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
+        let _ = fs::remove_dir_all(local.parent().unwrap());
+    }
+
+    #[test]
+    fn deleting_both_records_cannot_reopen_never_observed_after_restart() {
+        let (local, anchor) = test_paths("deleted-both");
+        let identity = crate::generate_identity("recipient-restart".into());
+        record_at_paths(&local, &anchor, &identity, 1_700_000_000_000).unwrap();
+
+        fs::remove_file(&local).unwrap();
+        fs::remove_file(&anchor).unwrap();
+
+        // A fresh load models a restarted process: there is no in-memory bit
+        // that can turn missing durable authority back into NeverObserved.
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
+        let _ = fs::remove_dir_all(local.parent().unwrap());
+    }
+
+    #[test]
+    fn replayed_signed_floor_zero_cannot_reopen_never_observed() {
+        let (local, anchor) = test_paths("replayed-genesis");
+        let identity = crate::generate_identity("recipient-replay".into());
+        provision_test_genesis(&local, &anchor, &identity).unwrap();
+
+        // Even an internally signed, mutually matching old floor-zero pair is
+        // not production authority. It remains a refusal across fresh loads.
+        assert!(load_from_paths(&local, &anchor, &identity).is_err());
         assert!(load_from_paths(&local, &anchor, &identity).is_err());
         let _ = fs::remove_dir_all(local.parent().unwrap());
     }

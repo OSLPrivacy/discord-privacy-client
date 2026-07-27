@@ -15,12 +15,6 @@ import {
   workerHealth,
 } from "./sender-filter-rollout-contract.mjs";
 import {
-  verifyDeploymentEvidenceReceipt,
-} from "./deployment-evidence-receipt-contract.mjs";
-import {
-  consumeDeploymentEvidenceOnce,
-} from "./deployment-evidence-receipt-io.mjs";
-import {
   DEPLOYMENT_FIXTURE_NOW,
   TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
   createDeploymentEvidenceVerifierStoreFixture,
@@ -62,7 +56,7 @@ async function sourceFiles() {
   );
 }
 
-async function authenticatedDeployment(
+function deploymentFixture(
   artifact: "A" | "B",
   closure: ReturnType<typeof validateRolloutSourceClosure>,
 ) {
@@ -78,17 +72,6 @@ async function authenticatedDeployment(
   if (artifact === "B") payload.migrations[1].sha256 = migrationDigest;
   const producerReceipt = signDeploymentEvidencePayload(payload);
   const verifier = createDeploymentEvidenceVerifierStoreFixture(artifact);
-  const verified = verifyDeploymentEvidenceReceipt(
-    producerReceipt,
-    expectation,
-    {
-      trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
-      nowMs: DEPLOYMENT_FIXTURE_NOW,
-    },
-  );
-  await consumeDeploymentEvidenceOnce(verified, {
-    verifierStore: verifier.store,
-  });
   return { expectation, producerReceipt, verifier };
 }
 
@@ -262,12 +245,33 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
     ignoredProbe["crates/keystore/src/client.rs"] = ignoredProbe[
       "crates/keystore/src/client.rs"
     ].replace(
-      "match (self.probe_control_inbox_sender_filter_capability()?, floor) {",
-      "let _ignored = self.probe_control_inbox_sender_filter_capability()?;\n        match (ControlInboxSenderFilterCapability::Version1, floor) {",
+      "let capability = self.probe_control_inbox_sender_filter_capability()?;",
+      "let _ignored = self.probe_control_inbox_sender_filter_capability()?;\n        let capability = ControlInboxSenderFilterCapability::Version1;",
     );
     expect(() => validateRolloutSourceClosure(ignoredProbe)).toThrow(
-      /ignores or bypasses capability probe dataflow/,
+      /ignores, falsifies, or bypasses measured capability-floor dataflow/,
     );
+
+    const falseFloorRaise = structuredClone(files);
+    falseFloorRaise["crates/keystore/src/client.rs"] = falseFloorRaise[
+      "crates/keystore/src/client.rs"
+    ].replace(
+      "record_sender_filter_capability_floor(identity, unix_timestamp_ms())?;",
+      "if false {\n                    record_sender_filter_capability_floor(identity, unix_timestamp_ms())?;\n                }",
+    );
+    expect(() => validateRolloutSourceClosure(falseFloorRaise)).toThrow(
+      /falsifies/,
+    );
+
+    const missingMeasuredReload = structuredClone(files);
+    missingMeasuredReload["crates/keystore/src/client.rs"] =
+      missingMeasuredReload["crates/keystore/src/client.rs"].replace(
+        "load_sender_filter_capability_floor(identity)?\n            }",
+        "initial_floor\n            }",
+      );
+    expect(() =>
+      validateRolloutSourceClosure(missingMeasuredReload),
+    ).toThrow(/measured capability-floor dataflow/);
 
     const brokerBypass = structuredClone(files);
     brokerBypass["apps/osl-hub/src/broker.rs"] = brokerBypass[
@@ -290,6 +294,30 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
       /one-sided identity-anchor absence/,
     );
 
+    const bothDeletedReset = structuredClone(files);
+    bothDeletedReset["crates/keystore/src/sender_filter_rollout.rs"] =
+      bothDeletedReset[
+        "crates/keystore/src/sender_filter_rollout.rs"
+      ].replace(
+        '(None, None) => Err(Error::Transport(\n            "sender-filter capability floor genesis is not provisioned".into(),\n        )),',
+        "(None, None) => Ok(SenderFilterCapabilityFloor::NeverObserved),",
+      );
+    expect(() => validateRolloutSourceClosure(bothDeletedReset)).toThrow(
+      /one-sided identity-anchor absence/,
+    );
+
+    const replayedFloorZero = structuredClone(files);
+    replayedFloorZero["crates/keystore/src/sender_filter_rollout.rs"] =
+      replayedFloorZero[
+        "crates/keystore/src/sender_filter_rollout.rs"
+      ].replace(
+        'Err(Error::Transport(\n                    "sender-filter capability floor genesis is not independently provisioned"\n                        .into(),\n                ))',
+        "Ok(SenderFilterCapabilityFloor::NeverObserved)",
+      );
+    expect(() => validateRolloutSourceClosure(replayedFloorZero)).toThrow(
+      /one-sided identity-anchor absence/,
+    );
+
     const missingParentFsync = structuredClone(files);
     missingParentFsync["crates/keystore/src/sender_filter_rollout.rs"] =
       missingParentFsync[
@@ -306,6 +334,18 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
         "use std::fs::remove_file as erase_floor;\nfn reset_floor(path: &Path) { let erase_again = erase_floor; let _ = erase_again(path); }\n\n#[cfg(test)]",
       );
     expect(() => validateRolloutSourceClosure(loweringAlias)).toThrow(
+      /aliased lowering path/,
+    );
+
+    const typedLoweringAlias = structuredClone(files);
+    typedLoweringAlias["crates/keystore/src/sender_filter_rollout.rs"] =
+      typedLoweringAlias[
+        "crates/keystore/src/sender_filter_rollout.rs"
+      ].replace(
+        "#[cfg(test)]",
+        "fn typed_reset(path: &Path) { let erase: fn(&Path) -> std::io::Result<()> = std::fs::remove_file; let _ = erase(path); }\n\n#[cfg(test)]",
+      );
+    expect(() => validateRolloutSourceClosure(typedLoweringAlias)).toThrow(
       /aliased lowering path/,
     );
 
@@ -331,139 +371,40 @@ describe("shipping sender-filter Worker/client rollout closure", () => {
     );
   });
 
-  it("derives nonempty A/B phases only from signed, consumed producer lineage", async () => {
+  it("keeps producer trust and verifier storage internal and unprovisioned", async () => {
     const files = await sourceFiles();
     const closure = validateRolloutSourceClosure(files);
     for (const artifact of ["A", "B"] as const) {
-      const authenticated = await authenticatedDeployment(artifact, closure);
-      const receipt = await deriveAuthenticatedSenderFilterPhaseReceipt({
-        producerReceipt: authenticated.producerReceipt,
-        deploymentExpectation: authenticated.expectation,
-        trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
-        verifierStore: authenticated.verifier.store,
+      const fixture = deploymentFixture(artifact, closure);
+      const base = {
+        producerReceipt: fixture.producerReceipt,
+        deploymentExpectation: fixture.expectation,
         sourceFiles: files,
         nowMs: DEPLOYMENT_FIXTURE_NOW,
-      });
-      expect(receipt).toMatchObject({
-        artifact,
-        phase:
-          artifact === "B"
-            ? "artifact-b-0031"
-            : "artifact-a-pre-0031",
-        database_environment: "production",
-      });
-      expect(receipt.producer_receipt_sha256).toMatch(
-        /^(?!0{64}$)[0-9a-f]{64}$/,
-      );
+      };
+      await expect(
+        deriveAuthenticatedSenderFilterPhaseReceipt(base),
+      ).rejects.toThrow(/not independently trusted/);
+      await expect(
+        deriveAuthenticatedSenderFilterPhaseReceipt({
+          ...base,
+          trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+        }),
+      ).rejects.toThrow(/fields are not exact/);
+      await expect(
+        deriveAuthenticatedSenderFilterPhaseReceipt({
+          ...base,
+          verifierStore: fixture.verifier.store,
+        }),
+      ).rejects.toThrow(/fields are not exact/);
+      await expect(
+        admitSenderFilterRolloutPlan({
+          ...base,
+          trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+          verifierStore: fixture.verifier.store,
+        }),
+      ).rejects.toThrow(/fields are not exact/);
     }
-  });
-
-  it("refuses caller-authored, unsigned, unconsumed, stale, and superseded phases", async () => {
-    const files = await sourceFiles();
-    const closure = validateRolloutSourceClosure(files);
-    const authenticated = await authenticatedDeployment("B", closure);
-    const base = {
-      producerReceipt: authenticated.producerReceipt,
-      deploymentExpectation: authenticated.expectation,
-      trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
-      verifierStore: authenticated.verifier.store,
-      sourceFiles: files,
-      nowMs: DEPLOYMENT_FIXTURE_NOW,
-    };
-
-    await expect(
-      deriveAuthenticatedSenderFilterPhaseReceipt({
-        ...base,
-        producerReceipt: {
-          format: "caller-authored",
-          payload: { artifact: "B", phase: "artifact-b-0031" },
-          payload_sha256: "f".repeat(64),
-          producer_key_id: "caller",
-          signature_b64: Buffer.alloc(64).toString("base64"),
-        },
-      }),
-    ).rejects.toThrow(/envelope|trusted/);
-
-    const unsigned = structuredClone(authenticated.producerReceipt);
-    unsigned.payload.worker.sender_filter_route.response.items[0].sender_id =
-      "forged";
-    await expect(
-      deriveAuthenticatedSenderFilterPhaseReceipt({
-        ...base,
-        producerReceipt: unsigned,
-      }),
-    ).rejects.toThrow(/payload digest|signature/);
-
-    const unconsumed =
-      createDeploymentEvidenceVerifierStoreFixture("B");
-    await expect(
-      deriveAuthenticatedSenderFilterPhaseReceipt({
-        ...base,
-        verifierStore: unconsumed.store,
-      }),
-    ).rejects.toThrow(/consumed head/);
-
-    await expect(
-      deriveAuthenticatedSenderFilterPhaseReceipt({
-        ...base,
-        nowMs: DEPLOYMENT_FIXTURE_NOW + 10 * 60_000,
-      }),
-    ).rejects.toThrow(/stale or future-dated/);
-
-    const current = authenticated.verifier.current()!;
-    await authenticated.verifier.store.compareAndSwap({
-      expected_monotonic_version: current.monotonic_version,
-      next_monotonic_version: current.monotonic_version + 1,
-      next_state: {
-        ...current.state,
-        state_epoch: current.monotonic_version + 1,
-        sequence: current.state.sequence + 1,
-        receipt_sha256: "e".repeat(64),
-      },
-      producer_key_id: current.state.producer_key_id,
-    });
-    await expect(
-      deriveAuthenticatedSenderFilterPhaseReceipt(base),
-    ).rejects.toThrow(/consumed head/);
-  });
-
-  it("admits only authenticated stable B planning and never direct deployment", async () => {
-    const files = await sourceFiles();
-    const closure = validateRolloutSourceClosure(files);
-    const artifactA = await authenticatedDeployment("A", closure);
-    const aPlan = await admitSenderFilterRolloutPlan({
-      producerReceipt: artifactA.producerReceipt,
-      deploymentExpectation: artifactA.expectation,
-      trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
-      verifierStore: artifactA.verifier.store,
-      sourceFiles: files,
-      nowMs: DEPLOYMENT_FIXTURE_NOW,
-    });
-    expect(aPlan).toMatchObject({
-      plan_admitted: false,
-      next_selection: "none",
-      direct_deploy_permitted: false,
-      execution_authorized: false,
-    });
-    expect(aPlan.reasons).toContain(
-      "artifact-a-traffic-quiescence-is-not-authenticated",
-    );
-
-    const artifactB = await authenticatedDeployment("B", closure);
-    const bPlan = await admitSenderFilterRolloutPlan({
-      producerReceipt: artifactB.producerReceipt,
-      deploymentExpectation: artifactB.expectation,
-      trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
-      verifierStore: artifactB.verifier.store,
-      sourceFiles: files,
-      nowMs: DEPLOYMENT_FIXTURE_NOW,
-    });
-    expect(bPlan).toMatchObject({
-      plan_admitted: true,
-      next_selection: "stable-compatible",
-      direct_deploy_permitted: false,
-      execution_authorized: false,
-    });
   });
 
   it("keeps package entrypoints non-deploying", async () => {

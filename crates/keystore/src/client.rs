@@ -1187,22 +1187,29 @@ impl KeyServerClient {
                 "control-inbox sender filter is invalid".into(),
             ));
         }
-        let floor = load_sender_filter_capability_floor(identity)?;
-        match (self.probe_control_inbox_sender_filter_capability()?, floor) {
+        let capability = self.probe_control_inbox_sender_filter_capability()?;
+        let initial_floor = load_sender_filter_capability_floor(identity)?;
+        let measured_floor = match (capability, initial_floor) {
             (
                 ControlInboxSenderFilterCapability::Version1,
                 SenderFilterCapabilityFloor::NeverObserved,
             ) => {
-                record_sender_filter_capability_floor(
-                    identity,
-                    unix_timestamp_ms(),
-                )?;
-                self.get_control_inbox_from(identity, sender_id)
+                record_sender_filter_capability_floor(identity, unix_timestamp_ms())?;
+                load_sender_filter_capability_floor(identity)?
             }
+            (_, floor) => floor,
+        };
+        match (capability, measured_floor) {
             (
                 ControlInboxSenderFilterCapability::Version1,
                 SenderFilterCapabilityFloor::Version1,
             ) => self.get_control_inbox_from(identity, sender_id),
+            (
+                ControlInboxSenderFilterCapability::Version1,
+                SenderFilterCapabilityFloor::NeverObserved,
+            ) => Err(Error::Transport(
+                "control-inbox sender-filter capability floor was not measured".into(),
+            )),
             (
                 ControlInboxSenderFilterCapability::Legacy,
                 SenderFilterCapabilityFloor::NeverObserved,
@@ -1222,13 +1229,11 @@ impl KeyServerClient {
                     items,
                 })
             }
-            (
-                ControlInboxSenderFilterCapability::Legacy,
-                SenderFilterCapabilityFloor::Version1,
-            ) => Err(Error::Transport(
-                "control-inbox sender-filter capability downgrade refused"
-                    .into(),
-            )),
+            (ControlInboxSenderFilterCapability::Legacy, SenderFilterCapabilityFloor::Version1) => {
+                Err(Error::Transport(
+                    "control-inbox sender-filter capability downgrade refused".into(),
+                ))
+            }
         }
     }
 

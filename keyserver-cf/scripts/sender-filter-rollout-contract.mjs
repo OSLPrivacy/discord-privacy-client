@@ -3,9 +3,11 @@ import {
   sha256,
 } from "./readiness-artifact-contract.mjs";
 import {
+  TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS,
   verifyDeploymentEvidenceReceipt,
 } from "./deployment-evidence-receipt-contract.mjs";
 import {
+  UNPROVISIONED_DEPLOYMENT_EVIDENCE_VERIFIER_STORE,
   requireProvisionedDeploymentEvidenceVerifierStore,
   validateDeploymentEvidenceVerifierSnapshot,
 } from "./deployment-evidence-verifier-store.mjs";
@@ -660,23 +662,41 @@ function validateDerivedPhaseReceipt(receiptValue) {
   return Object.freeze(structuredClone(receipt));
 }
 
-export async function deriveAuthenticatedSenderFilterPhaseReceipt({
-  producerReceipt,
-  deploymentExpectation,
-  trustedProducers,
-  verifierStore,
-  sourceFiles,
-  nowMs = Date.now(),
-}) {
+export async function deriveAuthenticatedSenderFilterPhaseReceipt(
+  optionsValue,
+) {
+  const options = requireObject(
+    optionsValue,
+    "sender-filter phase derivation",
+  );
+  requireExactKeys(
+    options,
+    [
+      "deploymentExpectation",
+      "nowMs",
+      "producerReceipt",
+      "sourceFiles",
+    ],
+    "sender-filter phase derivation",
+  );
+  const {
+    producerReceipt,
+    deploymentExpectation,
+    sourceFiles,
+    nowMs,
+  } = options;
   const sourceClosure = validateRolloutSourceClosure(sourceFiles);
   const verified = verifyDeploymentEvidenceReceipt(
     producerReceipt,
     deploymentExpectation,
-    { trustedProducers, nowMs },
+    {
+      trustedProducers: TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS,
+      nowMs,
+    },
   );
   const { snapshot, store } = await requireConsumedVerifierState(
     verified,
-    verifierStore,
+    UNPROVISIONED_DEPLOYMENT_EVIDENCE_VERIFIER_STORE,
   );
   const payload = verified.payload;
   const migration0031 = deploymentExpectation.expectedMigrations.find(
@@ -726,21 +746,26 @@ export async function deriveAuthenticatedSenderFilterPhaseReceipt({
   });
 }
 
-export async function admitSenderFilterRolloutPlan({
-  producerReceipt,
-  deploymentExpectation,
-  trustedProducers,
-  verifierStore,
-  sourceFiles,
-  nowMs,
-}) {
+export async function admitSenderFilterRolloutPlan(optionsValue) {
+  const options = requireObject(
+    optionsValue,
+    "sender-filter rollout admission",
+  );
+  requireExactKeys(
+    options,
+    [
+      "deploymentExpectation",
+      "nowMs",
+      "producerReceipt",
+      "sourceFiles",
+    ],
+    "sender-filter rollout admission",
+  );
   const receipt = await deriveAuthenticatedSenderFilterPhaseReceipt({
-    producerReceipt,
-    deploymentExpectation,
-    trustedProducers,
-    verifierStore,
-    sourceFiles,
-    nowMs,
+    producerReceipt: options.producerReceipt,
+    deploymentExpectation: options.deploymentExpectation,
+    sourceFiles: options.sourceFiles,
+    nowMs: options.nowMs,
   });
   const phase = PHASES[receipt.phase];
   const reasons = [];
@@ -1057,19 +1082,25 @@ function requireShippingClientDataflow(source) {
   const code = boundary.body.replace(/\s+/g, " ");
   const probeCalls =
     code.match(/\bprobe_control_inbox_sender_filter_capability\s*\(/g) ?? [];
+  const floorLoads =
+    code.match(/\bload_sender_filter_capability_floor\s*\(/g) ?? [];
+  const floorRecords =
+    code.match(/\brecord_sender_filter_capability_floor\s*\(/g) ?? [];
   if (
     probeCalls.length !== 1 ||
-    !/let\s+floor\s*=\s*load_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*;\s*match\s*\(\s*self\s*\.\s*probe_control_inbox_sender_filter_capability\s*\(\s*\)\s*\?\s*,\s*floor\s*\)\s*\{/.test(
+    floorLoads.length !== 2 ||
+    floorRecords.length !== 1 ||
+    !/let\s+capability\s*=\s*self\s*\.\s*probe_control_inbox_sender_filter_capability\s*\(\s*\)\s*\?\s*;\s*let\s+initial_floor\s*=\s*load_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*;\s*let\s+measured_floor\s*=\s*match\s*\(\s*capability\s*,\s*initial_floor\s*\)\s*\{\s*\(\s*ControlInboxSenderFilterCapability\s*::\s*Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved\s*,?\s*\)\s*=>\s*\{\s*record_sender_filter_capability_floor\s*\(\s*identity\s*,\s*unix_timestamp_ms\s*\(\s*\)\s*,?\s*\)\s*\?\s*;\s*load_sender_filter_capability_floor\s*\(\s*identity\s*\)\s*\?\s*\}\s*,?\s*\(\s*_\s*,\s*floor\s*\)\s*=>\s*floor\s*,?\s*\}\s*;\s*match\s*\(\s*capability\s*,\s*measured_floor\s*\)\s*\{/.test(
       code,
     )
   ) {
     throw new Error(
-      "shipping client ignores or bypasses capability probe dataflow",
+      "shipping client ignores, falsifies, or bypasses measured capability-floor dataflow",
     );
   }
   for (const branch of [
-    /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*record_sender_filter_capability_floor[\s\S]*get_control_inbox_from/,
     /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1[\s\S]*get_control_inbox_from/,
+    /Version1\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*Err\s*\(/,
     /Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved[\s\S]*get_control_inbox\s*\(/,
     /Legacy\s*,\s*SenderFilterCapabilityFloor\s*::\s*Version1[\s\S]*Err\s*\(/,
   ]) {
@@ -1126,7 +1157,8 @@ function requireNonLowerableFloor(source) {
   }
   const load = functions.get("load_from_paths").body.replace(/\s+/g, " ");
   if (
-    !/\(\s*None\s*,\s*None\s*\)\s*=>\s*Ok\s*\(\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved\s*\)/.test(
+    !/\(\s*None\s*,\s*None\s*\)\s*=>\s*Err\s*\(/.test(load) ||
+    /Ok\s*\(\s*SenderFilterCapabilityFloor\s*::\s*NeverObserved\s*\)/.test(
       load,
     ) ||
     !/\(\s*Some\s*\([^)]*\)\s*,\s*Some\s*\([^)]*\)\s*\)[\s\S]*Version1/.test(
@@ -1175,7 +1207,15 @@ function requireNonLowerableFloor(source) {
   while (changed) {
     changed = false;
     for (const match of code.matchAll(
-      /\b(?:use|let)\s+([A-Za-z_]\w*)\s*=\s*(?:std\s*::\s*)?(?:fs\s*::\s*)?([A-Za-z_]\w*)/g,
+      /\buse\s+(?:std\s*::\s*)?(?:fs\s*::\s*)?([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)/g,
+    )) {
+      if (aliases.has(match[1]) && !aliases.has(match[2])) {
+        aliases.add(match[2]);
+        changed = true;
+      }
+    }
+    for (const match of code.matchAll(
+      /\blet\s+([A-Za-z_]\w*)(?:\s*:[^=;]+)?\s*=\s*(?:std\s*::\s*)?(?:fs\s*::\s*)?([A-Za-z_]\w*)\s*;/g,
     )) {
       if (aliases.has(match[2]) && !aliases.has(match[1])) {
         aliases.add(match[1]);
