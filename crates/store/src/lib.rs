@@ -120,8 +120,9 @@ pub struct MessageStore {
 /// Columns a `get` fetches: `(meta_nonce, meta_ct, ciphertext, nonce, burned)`.
 type MessageRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>);
 
-/// Columns an attachment fetch returns: `(meta_nonce, meta_ct, ciphertext, nonce)`.
-type AttachmentRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+/// Columns an attachment fetch returns:
+/// `(meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi)`.
+type AttachmentRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>);
 
 /// Flush destructive updates out of WAL and truncate the WAL file so
 /// pre-burn page images are not left recoverable beside the database.
@@ -656,17 +657,49 @@ impl MessageStore {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let row_opt: Option<AttachmentRow> = conn
             .query_row(
-                "SELECT meta_nonce, meta_ct, ciphertext, nonce FROM attachments \
+                "SELECT meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi \
+                   FROM attachments \
                  WHERE ck_bi = ?1",
                 params![ck_bi],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((meta_nonce, meta_ct, ct, nonce)) = row_opt else {
+        let Some((meta_nonce, meta_ct, ct, nonce, mid_bi, sender_bi)) = row_opt else {
             return Ok(None);
         };
         let meta_bytes = cipher::unseal(&self.key, &ck_bi, &meta_nonce, &meta_ct)?;
         let meta = cipher::decode_attachment_meta(&meta_bytes)?;
+
+        let expect_ck = self.bi(cipher::BI_CACHE_KEY, &meta.cache_key)?;
+        if expect_ck != ck_bi || meta.cache_key != cache_key {
+            return Err(StoreError::Corrupted(
+                "attachment cache selector does not match its sealed metadata".to_string(),
+            ));
+        }
+        let expect_mid = self.bi(cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+        if expect_mid != mid_bi {
+            return Err(StoreError::Corrupted(
+                "attachment message selector does not match its sealed metadata".to_string(),
+            ));
+        }
+        let expect_sender = match meta.sender_discord_id.as_deref() {
+            Some(sender) => Some(self.bi(cipher::BI_SENDER_ID, sender)?),
+            None => None,
+        };
+        if expect_sender != sender_bi {
+            return Err(StoreError::Corrupted(
+                "attachment sender selector does not match its sealed metadata".to_string(),
+            ));
+        }
         // Body AAD is the plaintext cache key — see `put_attachment`.
         let pt = cipher::unseal(&self.key, cache_key.as_bytes(), &nonce, &ct)?;
         Ok(Some((meta.mime, pt)))
@@ -779,6 +812,14 @@ impl MessageStore {
         // No format change is needed to close this: after unsealing we hold
         // both the plaintext identifiers and the index key, so the honest
         // values are recomputable and a mismatch is proof of tampering.
+        let expect_mid = self.bi(cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+        if expect_mid != mid_bi {
+            return Err(StoreError::Corrupted(
+                "row message selector does not match its sealed metadata — \
+                 the row was retargeted on disk"
+                    .to_string(),
+            ));
+        }
         let expect_chan = self.bi(cipher::BI_CHANNEL_ID, &meta.channel_id)?;
         if expect_chan != chan_bi {
             return Err(StoreError::Corrupted(

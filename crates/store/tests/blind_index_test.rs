@@ -34,9 +34,12 @@
 //! fails — which is the entire reason it exists.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
+
+#[path = "fixtures/adff4e45_schema_reader.rs"]
+mod adff4e45_schema_reader;
 
 const SECRET_A: &[u8; 32] = &[1u8; 32];
 
@@ -122,19 +125,52 @@ fn all_stored_bytes(db_path: &Path) -> Vec<(String, String, Vec<u8>)> {
 /// pages are still recoverable in the file's free space. Reading the bytes is
 /// the only way to see either — the SQL layer will not show you a page it has
 /// stopped pointing at.
+fn raw_store_artifacts(db_path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let parent = db_path.parent().expect("database has a parent");
+    let prefix = db_path
+        .file_name()
+        .expect("database has a filename")
+        .to_string_lossy();
+    let mut artifacts = std::fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().starts_with(prefix.as_ref()))
+                .unwrap_or(false)
+        })
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.0.cmp(&right.0));
+    artifacts
+}
+
 fn raw_file_bytes(db_path: &Path) -> Vec<u8> {
-    let mut blob = std::fs::read(db_path).unwrap_or_default();
-    for ext in ["sqlite-wal", "sqlite-shm", "sqlite-journal"] {
-        let side = db_path.with_extension(ext);
-        if side.exists() {
-            blob.extend_from_slice(&std::fs::read(side).unwrap());
-        }
-    }
-    blob
+    raw_store_artifacts(db_path)
+        .into_iter()
+        .flat_map(|(_, bytes)| bytes)
+        .collect()
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn assert_artifacts_exclude(artifacts: &[(PathBuf, Vec<u8>)], needles: &[(&str, &[u8])]) {
+    assert!(!artifacts.is_empty(), "store artifacts must exist");
+    for (path, bytes) in artifacts {
+        for (label, needle) in needles {
+            assert!(
+                !contains(bytes, needle),
+                "{label} survived in {}",
+                path.display()
+            );
+        }
+    }
 }
 
 // ---- The owner's second requirement ----
@@ -251,27 +287,137 @@ fn no_plaintext_identifier_survives_in_the_raw_file_bytes() {
     // Positive path: everything must be readable before we claim it is hidden.
     assert!(store.get(msg_id).unwrap().is_some());
     assert!(store.get_attachment(msg_id, filename).unwrap().is_some());
-    drop(store);
 
-    let blob = raw_file_bytes(&db_path);
-    assert!(
-        !blob.is_empty(),
-        "positive path: the file sweep must have bytes to inspect"
-    );
-
-    for (label, needle) in [
+    let needles = [
         ("channel id", channel_id.as_bytes()),
         ("OSL user id", sender_osl.as_bytes()),
         ("message id", msg_id.as_bytes()),
         ("sender Discord id", sender_did.as_bytes()),
         ("attachment filename", filename.as_bytes()),
         ("attachment MIME", mime.as_bytes()),
+    ];
+
+    // Keep the connection open for the first sweep. WAL and SHM are live
+    // persistence surfaces, and dropping the last connection commonly removes
+    // them. A post-close-only test can therefore report success without ever
+    // inspecting either file.
+    let synthetic_sidecar = tmp.path().join("messages.sqlite-a8-inventory-control");
+    std::fs::write(&synthetic_sidecar, b"audited arbitrary sidecar").unwrap();
+    let active_artifacts = raw_store_artifacts(&db_path);
+    let active_names = active_artifacts
+        .iter()
+        .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect::<HashSet<_>>();
+    for required in [
+        "messages.sqlite",
+        "messages.sqlite-wal",
+        "messages.sqlite-shm",
+        "messages.sqlite-a8-inventory-control",
     ] {
         assert!(
-            !contains(&blob, needle),
-            "plaintext {label} is recoverable from the raw database file"
+            active_names.contains(required),
+            "active artifact inventory missed {required}"
         );
     }
+    assert_artifacts_exclude(&active_artifacts, &needles);
+
+    drop(store);
+    assert_artifacts_exclude(&raw_store_artifacts(&db_path), &needles);
+}
+
+/// `crates/store` has one local persistence authority: SQLite writing
+/// `messages.sqlite`. SQLite may create any same-prefix sidecar; the raw-byte
+/// tests sweep all of them, not a hand-maintained extension list.
+///
+/// This inventory is intentionally store-local. Other product crates own
+/// additional persistence surfaces and require their own at-rest proofs; this
+/// test must not imply that merely naming those files audits their call sites.
+#[test]
+fn store_persistence_surface_inventory_is_closed() {
+    let mut production_files = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    production_files.sort();
+    assert_eq!(
+        production_files,
+        ["cipher.rs", "error.rs", "lib.rs", "schema.rs"],
+        "the production source inventory changed; audit the new file for persistence"
+    );
+
+    let sources = [
+        ("lib.rs", include_str!("../src/lib.rs")),
+        ("schema.rs", include_str!("../src/schema.rs")),
+        ("cipher.rs", include_str!("../src/cipher.rs")),
+        ("error.rs", include_str!("../src/error.rs")),
+    ];
+    let connection_sites = sources
+        .iter()
+        .flat_map(|(name, source)| {
+            source
+                .lines()
+                .filter(|line| line.contains("Connection::open"))
+                .map(|text| (*name, text.trim().to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        connection_sites,
+        vec![("lib.rs", "let conn = Connection::open(&path)?;".to_string())],
+        "a new SQLite persistence surface was added without an A8 privacy proof"
+    );
+
+    let filesystem_sites = sources
+        .iter()
+        .flat_map(|(name, source)| {
+            source
+                .lines()
+                .filter(|line| line.contains("std::fs::"))
+                .map(|text| (*name, text.trim().to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        filesystem_sites,
+        vec![(
+            "lib.rs",
+            "std::fs::create_dir_all(app_data_dir)?;".to_string()
+        )],
+        "a new direct filesystem surface was added without an A8 privacy proof"
+    );
+
+    let writable_file_apis = [
+        "File::create",
+        "File::options",
+        "OpenOptions",
+        "std::fs::write",
+        "std::fs::copy",
+        "std::io::copy",
+        "io::copy",
+        ".create_new(",
+        ".append(",
+        ".write(",
+        ".write_all(",
+        ".write_vectored(",
+        "BufWriter",
+        "serde_json::to_writer",
+        "serde_cbor::to_writer",
+        "ATTACH DATABASE",
+        "VACUUM INTO",
+    ];
+    for (name, source) in sources {
+        for api in writable_file_apis {
+            assert!(
+                !source.contains(api),
+                "{name} added persistence through {api}; inventory and prove that surface"
+            );
+        }
+    }
+    assert!(
+        include_str!("../src/lib.rs")
+            .contains("let path = app_data_dir.join(\"messages.sqlite\");"),
+        "the inventoried database path disappeared"
+    );
 }
 
 // ---- The owner's first requirement: forward migration ----
@@ -475,6 +621,209 @@ CREATE INDEX idx_messages_channel ON messages(channel_id, decrypted_at DESC);
     }
 }
 
+/// Build the v2-era message table, either with its version stamp or as an
+/// installed unstamped legacy database. Both shapes existed before attachments
+/// were introduced, and both must take the conservative legacy migration.
+fn build_v2_shape_fixture(dir: &Path, rows: &[StoredMessage], stamp: Option<u32>) {
+    let (canary_nonce, canary_ct) =
+        v3_seal(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+    let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
+    conn.execute_batch(
+        r#"
+CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+CREATE TABLE messages (
+    discord_message_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    sender_discord_id TEXT NOT NULL,
+    sender_osl_user_id TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    decrypted_at INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
+    wrapped_key BLOB,
+    scope_type TEXT,
+    scope_id TEXT
+);
+CREATE INDEX idx_messages_channel ON messages(channel_id, decrypted_at DESC);
+"#,
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('canary_nonce', ?1)",
+        rusqlite::params![canary_nonce],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('canary_ct', ?1)",
+        rusqlite::params![canary_ct],
+    )
+    .unwrap();
+    if let Some(version) = stamp {
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES('schema_version', ?1)",
+            rusqlite::params![version.to_le_bytes().to_vec()],
+        )
+        .unwrap();
+    }
+    for row in rows {
+        let (nonce, ct) = v3_seal(row.discord_message_id.as_bytes(), row.plaintext.as_bytes());
+        conn.execute(
+            "INSERT INTO messages (discord_message_id, channel_id, sender_discord_id, \
+                sender_osl_user_id, ciphertext, nonce, decrypted_at, burned, wrapped_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+            rusqlite::params![
+                row.discord_message_id,
+                row.channel_id,
+                row.sender_discord_id,
+                row.sender_osl_user_id,
+                ct,
+                nonce,
+                row.decrypted_at,
+                vec![0x5au8; 32],
+            ],
+        )
+        .unwrap();
+    }
+}
+
+fn mark_legacy_row_burned_with_body(dir: &Path, id: &str, burned_body: &[u8]) {
+    let conn = rusqlite::Connection::open(dir.join("messages.sqlite")).unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE messages \
+                SET burned = 1, burned_at = 123456789, ciphertext = ?1, \
+                    nonce = ?2, wrapped_key = ?3 \
+              WHERE discord_message_id = ?4",
+            rusqlite::params![
+                burned_body,
+                vec![0x6eu8; crypto::aead::NONCE_SIZE],
+                vec![0x77u8; 32],
+                id,
+            ],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "burned fixture row must exist");
+}
+
+fn schema_version(db_path: &Path) -> u32 {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let raw: Vec<u8> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    u32::from_le_bytes(raw.try_into().unwrap())
+}
+
+fn assert_legacy_privacy_migration(stamped: bool) {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let live = sample(
+        "legacy-live-message-998877",
+        "legacy-live-channel-776655",
+        "legacy-live-sender-554433",
+        "legacy-live-osl-user",
+        "live body survives",
+        10,
+    );
+    let burned = sample(
+        "legacy-burned-message-112233",
+        "legacy-burned-channel-223344",
+        "legacy-burned-sender-334455",
+        "legacy-burned-osl-user",
+        "this API body is replaced below",
+        20,
+    );
+    let burned_body = b"BURNED-PLAINTEXT-MUST-NOT-SURVIVE-778899";
+    build_v2_shape_fixture(
+        tmp.path(),
+        &[live.clone(), burned.clone()],
+        stamped.then_some(2),
+    );
+    mark_legacy_row_burned_with_body(tmp.path(), &burned.discord_message_id, burned_body);
+
+    let before = raw_file_bytes(&db_path);
+    assert!(contains(&before, live.channel_id.as_bytes()));
+    assert!(contains(&before, burned.discord_message_id.as_bytes()));
+    assert!(contains(&before, burned_body));
+
+    let store = open_a(tmp.path());
+    assert_eq!(
+        store.get(&live.discord_message_id).unwrap().unwrap(),
+        live,
+        "live legacy row must survive the privacy migration"
+    );
+    assert!(
+        store.get(&burned.discord_message_id).unwrap().is_none(),
+        "burned legacy row must remain terminal"
+    );
+    drop(store);
+
+    assert_eq!(schema_version(&db_path), 4);
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let burned_rows: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE burned = 1")
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+    };
+    assert_eq!(burned_rows.len(), 1, "one burned audit stub must remain");
+    let (ct, nonce, wrapped_key, burned_flag) = &burned_rows[0];
+    assert_eq!(*burned_flag, 1);
+    assert!(
+        !ct.is_empty(),
+        "positive path: zeroed body retains its length"
+    );
+    assert!(ct.iter().all(|byte| *byte == 0));
+    assert!(
+        !nonce.is_empty(),
+        "positive path: zeroed nonce retains its length"
+    );
+    assert!(nonce.iter().all(|byte| *byte == 0));
+    assert!(wrapped_key.is_none());
+    drop(conn);
+
+    let artifacts = raw_store_artifacts(&db_path);
+    assert!(!artifacts.is_empty(), "store artifacts must exist");
+    for (path, bytes) in artifacts {
+        for (label, needle) in [
+            ("live message id", live.discord_message_id.as_bytes()),
+            ("live channel id", live.channel_id.as_bytes()),
+            ("live sender id", live.sender_discord_id.as_bytes()),
+            ("live OSL id", live.sender_osl_user_id.as_bytes()),
+            ("burned message id", burned.discord_message_id.as_bytes()),
+            ("burned channel id", burned.channel_id.as_bytes()),
+            ("burned sender id", burned.sender_discord_id.as_bytes()),
+            ("burned OSL id", burned.sender_osl_user_id.as_bytes()),
+            ("burned body", burned_body.as_slice()),
+        ] {
+            assert!(
+                !contains(&bytes, needle),
+                "{label} survived in {}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn v2_database_migrates_without_identifiers_or_burned_bodies() {
+    assert_legacy_privacy_migration(true);
+}
+
+#[test]
+fn unstamped_legacy_database_migrates_without_identifiers_or_burned_bodies() {
+    assert_legacy_privacy_migration(false);
+}
+
 /// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
 /// to v4 without losing anything.
 #[test]
@@ -482,22 +831,36 @@ fn v1_database_migrates_all_the_way_to_v4() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let rows = vec![
-        sample("v1-a", "chan", "sender-1", "alice", "ancient history", 10),
-        sample("v1-b", "chan", "sender-2", "bob", "also ancient", 20),
+        sample(
+            "v1-message-998877",
+            "v1-channel-776655",
+            "v1-sender-554433",
+            "v1-osl-alice-332211",
+            "ancient history",
+            10,
+        ),
+        sample(
+            "v1-message-887766",
+            "v1-channel-776655",
+            "v1-sender-443322",
+            "v1-osl-bob-221100",
+            "also ancient",
+            20,
+        ),
     ];
     build_v1_fixture(tmp.path(), &rows);
 
     let store = open_a(tmp.path());
 
     assert_eq!(
-        store.get("v1-a").unwrap().unwrap().plaintext,
+        store.get("v1-message-998877").unwrap().unwrap().plaintext,
         "ancient history",
         "a v1 row did not survive the migration"
     );
-    let listed = store.list_by_channel("chan", 10).unwrap();
+    let listed = store.list_by_channel("v1-channel-776655", 10).unwrap();
     assert_eq!(listed.len(), 2, "v1 channel membership was lost");
     assert_eq!(
-        listed[0].discord_message_id, "v1-b",
+        listed[0].discord_message_id, "v1-message-887766",
         "v1 migration did not preserve newest-first ordering"
     );
 
@@ -515,35 +878,56 @@ fn v1_database_migrates_all_the_way_to_v4() {
     // The store must be usable afterwards, not merely readable.
     store
         .put(&sample(
-            "v1-c",
-            "chan",
-            "sender-1",
-            "alice",
+            "v1-message-current-665544",
+            "v1-channel-776655",
+            "v1-sender-554433",
+            "v1-osl-alice-332211",
             "new message",
             30,
         ))
         .unwrap();
-    assert!(store.get("v1-c").unwrap().is_some());
+    assert!(store.get("v1-message-current-665544").unwrap().is_some());
+    drop(conn);
+    drop(store);
+
+    for (path, bytes) in raw_store_artifacts(&db_path) {
+        for (label, needle) in [
+            ("v1 message id", b"v1-message-998877".as_slice()),
+            ("v1 channel id", b"v1-channel-776655".as_slice()),
+            ("v1 sender id", b"v1-sender-554433".as_slice()),
+            ("v1 OSL id", b"v1-osl-alice-332211".as_slice()),
+        ] {
+            assert!(
+                !contains(&bytes, needle),
+                "{label} survived in {}",
+                path.display()
+            );
+        }
+    }
 }
 
-/// Migration purges cached attachments whose message row is already gone —
-/// residue the pre-fix `delete_messages_in_channel` left behind, which no burn
-/// predicate could ever reach again.
+/// Migration purges cached attachments whose live message row is gone —
+/// residue the pre-fix `delete_messages_in_channel` left behind, plus cached
+/// bodies belonging to terminal burned audit stubs.
 ///
-/// The negative control is the point: an attachment whose message still exists
-/// must survive. A purge that simply emptied the table would pass the first
-/// assertion alone.
+/// The negative control is the point: an attachment whose live message still
+/// exists must survive. A purge that simply emptied the table would pass the
+/// destruction assertions alone.
 #[test]
-fn migration_purges_orphaned_attachments_but_keeps_linked_ones() {
+fn migration_purges_orphaned_and_burned_attachments_but_keeps_live_ones() {
     let tmp = TempDir::new().unwrap();
-    let rows = vec![sample(
-        "kept-msg",
-        "chan-a",
-        "sender-1",
-        "alice",
-        "still here",
-        100,
-    )];
+    let db_path = tmp.path().join("messages.sqlite");
+    let rows = vec![
+        sample("kept-msg", "chan-a", "sender-1", "alice", "still here", 100),
+        sample(
+            "burned-msg-887766554433",
+            "burned-channel-776655443322",
+            "burned-sender-665544332211",
+            "burned-osl-user-554433221100",
+            "replaced below",
+            200,
+        ),
+    ];
     build_v3_fixture(tmp.path(), &rows);
     add_v3_attachment(tmp.path(), "kept-msg", "kept.png", "image/png", b"KEEP-ME");
     // An orphan: no `messages` row named `gone-msg` exists.
@@ -554,16 +938,36 @@ fn migration_purges_orphaned_attachments_but_keeps_linked_ones() {
         "image/png",
         b"ORPHANED",
     );
+    add_v3_attachment(
+        tmp.path(),
+        "burned-msg-887766554433",
+        "burned-cache-body-443322110099.png",
+        "image/burned-cache-332211009988",
+        b"BURNED-CACHED-PLAINTEXT-221100998877",
+    );
+    let burned_body = b"BURNED-MESSAGE-BODY-110099887766";
+    mark_legacy_row_burned_with_body(tmp.path(), "burned-msg-887766554433", burned_body);
 
-    // Positive path: both are really in the v3 file before the migration runs.
+    let burned_attachment_ct: Vec<u8> = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row(
+            "SELECT ciphertext FROM attachments \
+              WHERE discord_message_id = 'burned-msg-887766554433'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+
+    // Positive path: all three are really in the v3 file before migration.
     {
-        let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            n, 2,
-            "positive path: the fixture must hold both attachments"
+            n, 3,
+            "positive path: the fixture must hold all three attachments"
         );
     }
 
@@ -583,6 +987,37 @@ fn migration_purges_orphaned_attachments_but_keeps_linked_ones() {
             .is_none(),
         "migration kept a cached picture whose message was already deleted — \
          residue no burn can reach"
+    );
+    assert!(
+        store
+            .get_attachment(
+                "burned-msg-887766554433",
+                "burned-cache-body-443322110099.png",
+            )
+            .unwrap()
+            .is_none(),
+        "migration retained a decrypted attachment body for a burned message"
+    );
+    drop(store);
+
+    assert_artifacts_exclude(
+        &raw_store_artifacts(&db_path),
+        &[
+            ("burned message identifier", b"burned-msg-887766554433"),
+            ("burned channel identifier", b"burned-channel-776655443322"),
+            ("burned sender identifier", b"burned-sender-665544332211"),
+            ("burned OSL identifier", b"burned-osl-user-554433221100"),
+            ("burned message body", burned_body),
+            (
+                "burned attachment filename",
+                b"burned-cache-body-443322110099.png",
+            ),
+            ("burned attachment MIME", b"image/burned-cache-332211009988"),
+            (
+                "burned attachment sealed body",
+                burned_attachment_ct.as_slice(),
+            ),
+        ],
     );
 }
 
@@ -723,32 +1158,93 @@ fn migrating_a_v3_database_removes_its_plaintext_identifiers() {
     }
 }
 
-/// Defined downgrade: after migration the on-disk version is 4, and an older
-/// binary — which recognises at most 3 — refuses to open rather than reading a
-/// schema it does not understand.
+/// Defined downgrade against the exact pre-v4 source from revision adff4e45.
+///
+/// That reader executes its legacy CREATE INDEX / additive ALTER statements
+/// before it reads `schema_version`. The null v4 downgrade-guard columns make
+/// those exact old statements idempotent, so the unchanged reader reaches its
+/// own explicit newer-version refusal. A handwritten gate that checked the
+/// stamp first would miss the real ordering and is deliberately not used.
 #[test]
-fn migration_bumps_schema_version_so_older_binaries_refuse_cleanly() {
+fn exact_adff4e45_reader_reaches_explicit_version_refusal() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
+    build_v3_fixture(
+        tmp.path(),
+        &[sample(
+            "downgrade-message-998877",
+            "downgrade-channel-887766",
+            "downgrade-sender-776655",
+            "downgrade-osl-665544",
+            "body",
+            1,
+        )],
+    );
+    assert!(
+        adff4e45_schema_reader::open_schema(tmp.path()).is_ok(),
+        "positive path: the exact pre-v4 schema-open path must accept v3"
+    );
+
     let store = open_a(tmp.path());
-    store
-        .put(&sample("v", "chan", "sender", "alice", "body", 1))
-        .unwrap();
+    assert!(
+        store.get("downgrade-message-998877").unwrap().is_some(),
+        "current migration must preserve the v3 row"
+    );
     drop(store);
 
+    let refusal = adff4e45_schema_reader::open_schema(tmp.path())
+        .expect_err("the exact pre-v4 reader opened schema v4");
+    match refusal {
+        store::StoreError::Schema(message) => assert_eq!(
+            message,
+            "on-disk schema version 4 is newer than this binary supports (3); refusing to open",
+            "the exact reader refused for a reason other than its version gate"
+        ),
+        other => panic!("exact pre-v4 reader did not reach its version refusal: {other}"),
+    }
+
     let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let version: Vec<u8> = conn
+    let non_null_legacy_message_values: i64 = conn
         .query_row(
-            "SELECT value FROM _meta WHERE key = 'schema_version'",
+            "SELECT COUNT(*) FROM messages WHERE \
+                discord_message_id IS NOT NULL OR channel_id IS NOT NULL OR \
+                sender_discord_id IS NOT NULL OR sender_osl_user_id IS NOT NULL OR \
+                decrypted_at IS NOT NULL OR scope_type IS NOT NULL OR \
+                scope_id IS NOT NULL OR meta_tag IS NOT NULL",
             [],
-            |r| r.get(0),
+            |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
-        u32::from_le_bytes(version.try_into().unwrap()),
-        4,
-        "the blind-index migration must bump the schema version, so an older \
-         binary refuses the file instead of misreading it"
+        non_null_legacy_message_values, 0,
+        "downgrade guards must never hold plaintext message metadata"
+    );
+    let non_null_legacy_attachment_values: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM attachments WHERE \
+                cache_key IS NOT NULL OR discord_message_id IS NOT NULL OR \
+                random_filename IS NOT NULL OR mime IS NOT NULL OR \
+                byte_len IS NOT NULL OR created_at IS NOT NULL OR \
+                scope_type IS NOT NULL OR scope_id IS NOT NULL OR \
+                sender_discord_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        non_null_legacy_attachment_values, 0,
+        "downgrade guards must never hold plaintext attachment metadata"
+    );
+    drop(conn);
+
+    assert_artifacts_exclude(
+        &raw_store_artifacts(&db_path),
+        &[
+            ("downgrade message id", b"downgrade-message-998877"),
+            ("downgrade channel id", b"downgrade-channel-887766"),
+            ("downgrade sender id", b"downgrade-sender-776655"),
+            ("downgrade OSL id", b"downgrade-osl-665544"),
+        ],
     );
 }
 
@@ -974,6 +1470,65 @@ fn retargeting_a_rows_channel_selector_is_rejected() {
              attacker's channel"
         ),
     }
+}
+
+fn assert_attachment_selector_tamper_is_rejected(column: &str) {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+    store
+        .put(&sample(
+            "attachment-parent",
+            "private-channel",
+            "sender-one",
+            "alice",
+            "body",
+            1,
+        ))
+        .unwrap();
+    store
+        .put_attachment(
+            "attachment-parent",
+            "private.png",
+            "image/png",
+            b"PRIVATE-PIXELS",
+            Some("dm"),
+            Some("private-channel"),
+            Some("sender-one"),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .get_attachment("attachment-parent", "private.png")
+            .unwrap()
+            .unwrap()
+            .1,
+        b"PRIVATE-PIXELS",
+        "positive path: honest selectors must read"
+    );
+    drop(store);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let sql = format!("UPDATE attachments SET {column} = zeroblob(length({column}))");
+    assert_eq!(conn.execute(&sql, []).unwrap(), 1);
+    drop(conn);
+
+    let store = open_a(tmp.path());
+    assert!(
+        matches!(
+            store.get_attachment("attachment-parent", "private.png"),
+            Err(store::StoreError::Corrupted(_))
+        ),
+        "attachment {column} was not cross-checked against sealed metadata"
+    );
+}
+
+/// Every attachment selector that drives a read or a later destruction is
+/// recomputed from the authenticated metadata before bytes are returned.
+#[test]
+fn attachment_blind_selectors_match_decrypted_selected_row_metadata() {
+    assert_attachment_selector_tamper_is_rejected("mid_bi");
+    assert_attachment_selector_tamper_is_rejected("sender_bi");
 }
 
 /// Deleting the canary must not turn a populated store into one that opens

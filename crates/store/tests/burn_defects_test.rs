@@ -24,7 +24,7 @@
 //! indistinguishable from "nothing was ever stored" and the test passes
 //! vacuously.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
@@ -91,6 +91,37 @@ fn count_live_bodies(db_path: &Path) -> usize {
     rows.map(|row| row.unwrap())
         .filter(|ct| ct.iter().any(|b| *b != 0))
         .count()
+}
+
+fn raw_store_artifacts(db_path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let parent = db_path.parent().expect("database has a parent");
+    let prefix = db_path
+        .file_name()
+        .expect("database has a filename")
+        .to_string_lossy();
+    let mut artifacts = std::fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().starts_with(prefix.as_ref()))
+                .unwrap_or(false)
+        })
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.0.cmp(&right.0));
+    artifacts
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 // ---- Defect 1: burn must be terminal ----
@@ -225,16 +256,41 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     );
     drop(store);
 
-    // Reproduce the pre-fix state: flag set, body untouched.
-    {
+    // Reproduce the pre-fix state: flag set, body untouched. Retain the exact
+    // old body bytes so the final assertion can inspect the database, active
+    // WAL/SHM, and every other same-prefix sidecar rather than trusting only
+    // the logical row returned by SQLite.
+    let (old_ciphertext, old_nonce): (Vec<u8>, Vec<u8>) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let old = conn
+            .query_row("SELECT ciphertext, nonce FROM messages", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
         conn.execute("UPDATE messages SET burned = 1", []).unwrap();
-    }
+        old
+    };
+    assert!(old_ciphertext.iter().any(|byte| *byte != 0));
+    assert!(old_nonce.iter().any(|byte| *byte != 0));
 
     let store = open_a(tmp.path());
     store.mark_burned("m4b").unwrap();
 
     assert_all_bodies_shredded(&db_path);
+    let artifacts = raw_store_artifacts(&db_path);
+    assert!(!artifacts.is_empty(), "store artifacts must exist");
+    for (path, bytes) in &artifacts {
+        assert!(
+            !contains(bytes, &old_ciphertext),
+            "burned sealed body survives in {}",
+            path.display()
+        );
+        assert!(
+            !contains(bytes, &old_nonce),
+            "burned body nonce survives in {}",
+            path.display()
+        );
+    }
 }
 
 /// Re-burning must remain safe and must not restamp `burned_at`, or an old

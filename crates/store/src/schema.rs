@@ -85,11 +85,28 @@ CREATE TABLE IF NOT EXISTS messages (
     seq INTEGER NOT NULL,
     burned INTEGER NOT NULL DEFAULT 0,
     burned_at INTEGER,
-    wrapped_key BLOB
+    wrapped_key BLOB,
+
+    -- Null downgrade-guard columns. The exact final v3 reader (adff4e45)
+    -- creates its legacy indexes before checking schema_version. Keeping the
+    -- columns present but permanently NULL lets that unchanged reader reach
+    -- and return its explicit "newer than supported" refusal instead of
+    -- failing early with "no such column". They are never selectors or data
+    -- storage in v4.
+    discord_message_id TEXT,
+    channel_id TEXT,
+    sender_discord_id TEXT,
+    sender_osl_user_id TEXT,
+    decrypted_at INTEGER,
+    scope_type TEXT,
+    scope_id TEXT,
+    meta_tag BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_chan_seq
     ON messages(chan_bi, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_channel
+    ON messages(channel_id, decrypted_at DESC);
 
 CREATE TABLE IF NOT EXISTS attachments (
     ck_bi BLOB PRIMARY KEY,
@@ -99,7 +116,18 @@ CREATE TABLE IF NOT EXISTS attachments (
     meta_ct BLOB NOT NULL,
     ciphertext BLOB NOT NULL,
     nonce BLOB NOT NULL,
-    seq INTEGER NOT NULL
+    seq INTEGER NOT NULL,
+
+    -- Same exact-v3 downgrade guard as `messages`; permanently NULL.
+    cache_key TEXT,
+    discord_message_id TEXT,
+    random_filename TEXT,
+    mime TEXT,
+    byte_len INTEGER,
+    created_at INTEGER,
+    scope_type TEXT,
+    scope_id TEXT,
+    sender_discord_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_mid
@@ -107,7 +135,37 @@ CREATE INDEX IF NOT EXISTS idx_attachments_mid
 
 CREATE INDEX IF NOT EXISTS idx_attachments_seq
     ON attachments(seq);
+CREATE INDEX IF NOT EXISTS idx_attachments_msg
+    ON attachments(discord_message_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_created
+    ON attachments(created_at);
 "#;
+
+/// Additive form of the exact-v3 downgrade guards for databases created by an
+/// earlier v4 build. Fresh and newly migrated databases get the same columns
+/// directly from their CREATE TABLE statements above.
+const V4_MESSAGE_DOWNGRADE_COLUMNS: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN discord_message_id TEXT",
+    "ALTER TABLE messages ADD COLUMN channel_id TEXT",
+    "ALTER TABLE messages ADD COLUMN sender_discord_id TEXT",
+    "ALTER TABLE messages ADD COLUMN sender_osl_user_id TEXT",
+    "ALTER TABLE messages ADD COLUMN decrypted_at INTEGER",
+    "ALTER TABLE messages ADD COLUMN scope_type TEXT",
+    "ALTER TABLE messages ADD COLUMN scope_id TEXT",
+    "ALTER TABLE messages ADD COLUMN meta_tag BLOB",
+];
+
+const V4_ATTACHMENT_DOWNGRADE_COLUMNS: &[&str] = &[
+    "ALTER TABLE attachments ADD COLUMN cache_key TEXT",
+    "ALTER TABLE attachments ADD COLUMN discord_message_id TEXT",
+    "ALTER TABLE attachments ADD COLUMN random_filename TEXT",
+    "ALTER TABLE attachments ADD COLUMN mime TEXT",
+    "ALTER TABLE attachments ADD COLUMN byte_len INTEGER",
+    "ALTER TABLE attachments ADD COLUMN created_at INTEGER",
+    "ALTER TABLE attachments ADD COLUMN scope_type TEXT",
+    "ALTER TABLE attachments ADD COLUMN scope_id TEXT",
+    "ALTER TABLE attachments ADD COLUMN sender_discord_id TEXT",
+];
 
 /// Create `_meta` only. Split out from [`migrate`] so `open` can verify the
 /// canary first.
@@ -157,7 +215,12 @@ pub(crate) fn migrate(
             return Ok(());
         }
         Some(v) if v == SCHEMA_VERSION => {
-            // Already current. CREATE IF NOT EXISTS keeps this idempotent.
+            // Already current. An earlier v4 build may predate the null
+            // downgrade-guard columns, so add those before SCHEMA_V4 creates
+            // the exact-v3 compatibility indexes that reference them.
+            apply_columns(conn, "messages", V4_MESSAGE_DOWNGRADE_COLUMNS)?;
+            apply_columns(conn, "attachments", V4_ATTACHMENT_DOWNGRADE_COLUMNS)?;
+            // CREATE IF NOT EXISTS keeps this idempotent.
             conn.execute_batch(SCHEMA_V4)?;
             // Finish a scrub a previous run committed but did not complete.
             run_pending_vacuum(conn)?;
@@ -216,10 +279,16 @@ fn apply_legacy_columns(conn: &Connection) -> Result<(), StoreError> {
 ///
 /// ## What is preserved byte-for-byte
 ///
-/// `ciphertext`, `nonce`, `burned`, `burned_at` and `wrapped_key` are copied
-/// verbatim. The body AAD is still `discord_message_id`, so **no message body
-/// is ever re-encrypted** — the migration cannot corrupt content it does not
-/// touch, and a body sealed by any earlier build stays openable.
+/// Live rows keep `ciphertext`, `nonce` and `wrapped_key` byte-for-byte. The
+/// body AAD is still `discord_message_id`, so **no live message body is ever
+/// re-encrypted** — the migration cannot corrupt content it does not touch, and
+/// a body sealed by any earlier build stays openable.
+///
+/// Burned rows are different. Older builds could set `burned = 1` while
+/// leaving an intact sealed body and wrapped key behind. Copying those bytes
+/// into the privacy schema would preserve a secret the row says was destroyed.
+/// Migration therefore keeps the terminal flag and audit timestamp but writes
+/// zeroed body/nonce blobs and no wrapped key.
 ///
 /// ## Ordering
 ///
@@ -251,7 +320,15 @@ CREATE TABLE messages_v4 (
     seq INTEGER NOT NULL,
     burned INTEGER NOT NULL DEFAULT 0,
     burned_at INTEGER,
-    wrapped_key BLOB
+    wrapped_key BLOB,
+    discord_message_id TEXT,
+    channel_id TEXT,
+    sender_discord_id TEXT,
+    sender_osl_user_id TEXT,
+    decrypted_at INTEGER,
+    scope_type TEXT,
+    scope_id TEXT,
+    meta_tag BLOB
 );
 CREATE TABLE attachments_v4 (
     ck_bi BLOB PRIMARY KEY,
@@ -261,7 +338,16 @@ CREATE TABLE attachments_v4 (
     meta_ct BLOB NOT NULL,
     ciphertext BLOB NOT NULL,
     nonce BLOB NOT NULL,
-    seq INTEGER NOT NULL
+    seq INTEGER NOT NULL,
+    cache_key TEXT,
+    discord_message_id TEXT,
+    random_filename TEXT,
+    mime TEXT,
+    byte_len INTEGER,
+    created_at INTEGER,
+    scope_type TEXT,
+    scope_id TEXT,
+    sender_discord_id TEXT
 );
 "#,
     )?;
@@ -310,6 +396,11 @@ CREATE TABLE attachments_v4 (
 
             for (seq, row) in rows.into_iter().enumerate() {
                 let (mid, chan, sender, osl, ct, nonce, decrypted_at, burned, burned_at, wk) = row;
+                let (ct, nonce, wk) = if burned != 0 {
+                    (vec![0; ct.len()], vec![0; nonce.len()], None)
+                } else {
+                    (ct, nonce, wk)
+                };
                 let meta = MessageMeta {
                     discord_message_id: mid.clone(),
                     channel_id: chan.clone(),
@@ -437,13 +528,19 @@ CREATE TABLE attachments_v4 (
                 )?;
             }
         }
-        // Purge attachments whose message row is gone.
+        // Purge attachments whose live message row is gone.
         //
         // Pre-fix builds created these: `delete_messages_in_channel` removed
         // message rows and left the cached pictures behind, after which nothing
         // linked them to a channel and no burn predicate could ever reach them.
         // A burned conversation's images could therefore outlive it
         // indefinitely.
+        //
+        // A burned audit stub is not a live parent. Legacy builds could leave
+        // `burned = 1` over an intact message body and attachment cache. The
+        // message copy above shreds that body; retaining its attachment here
+        // would preserve another decrypted body belonging to the same terminal
+        // message.
         //
         // Doing this at migration only, and not as an ongoing sweep, is
         // deliberate. `cmd_osl_attachment_cache_put` writes an attachment
@@ -455,7 +552,9 @@ CREATE TABLE attachments_v4 (
         // re-decrypted on next view.
         conn.execute(
             "DELETE FROM attachments_v4 \
-              WHERE mid_bi NOT IN (SELECT mid_bi FROM messages_v4)",
+              WHERE mid_bi NOT IN ( \
+                    SELECT mid_bi FROM messages_v4 WHERE burned = 0 \
+              )",
             [],
         )?;
         Ok(())
