@@ -98,6 +98,16 @@ function Get-Sha256Text {
     }
 }
 
+function Get-Sha256Bytes {
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Clear-StorageToken {
     $script:StorageToken = $null
     $script:StorageTokenExpiresUtc = [datetime]::MinValue
@@ -313,13 +323,21 @@ function Put-BlobText {
     [void](Invoke-BlobRequest -Method PUT -Name $Name -Body $bytes -ContentType 'text/plain; charset=utf-8' -AdditionalHeaders @{ 'x-ms-blob-type' = 'BlockBlob' })
 }
 
+function Put-BlobBytes {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][byte[]]$Bytes
+    )
+    [void](Invoke-BlobRequest -Method PUT -Name $Name -Body $Bytes -ContentType 'application/octet-stream' -AdditionalHeaders @{ 'x-ms-blob-type' = 'BlockBlob' })
+}
+
 function Put-BlobFile {
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Path
     )
     $bytes = [IO.File]::ReadAllBytes($Path)
-    [void](Invoke-BlobRequest -Method PUT -Name $Name -Body $bytes -ContentType 'application/octet-stream' -AdditionalHeaders @{ 'x-ms-blob-type' = 'BlockBlob' })
+    Put-BlobBytes -Name $Name -Bytes $bytes
 }
 
 function Get-BlobList {
@@ -520,7 +538,11 @@ function Get-CanonicalFilePath {
 
 function Copy-And-VerifyBuild {
     param(
-        [Parameter(Mandatory)][string]$ExeSha256
+        [Parameter(Mandatory)][string]$ExeSha256,
+        # Carry the real step id in. Passing -Id '' to New-StepResult fails to bind, because that
+        # parameter is Mandatory and Mandatory rejects an empty string - so `stage` threw before it
+        # could report anything, and the caller's later $result['id'] = $stepId never ran.
+        [Parameter(Mandatory)][string]$StepId
     )
     $sha = $ExeSha256.ToLowerInvariant()
     $sourceExe = "builds/$sha/osl-privacy-hub.exe"
@@ -531,20 +553,20 @@ function Copy-And-VerifyBuild {
 
     New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     if (-not (Get-BlobFile -Name $sourceExe -Path $destExe)) {
-        return New-StepResult -Id '' -Verb 'stage' -Status 'fail' -Detail "missing source exe: $sourceExe"
+        return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' -Detail "missing source exe: $sourceExe"
     }
     # WebView2Loader.dll must live beside the exe; without it the process hangs before main with no
     # trace file, which is indistinguishable from a corrupt build at the harness layer.
     if (-not (Get-BlobFile -Name $sourceDll -Path $destDll)) {
-        return New-StepResult -Id '' -Verb 'stage' -Status 'fail' -Detail "missing source WebView2Loader.dll: $sourceDll"
+        return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' -Detail "missing source WebView2Loader.dll: $sourceDll"
     }
 
     $destExeHash = Get-Sha256 -Path $destExe
     $destDllHash = Get-Sha256 -Path $destDll
     if ($destExeHash -cne $sha) {
-        return New-StepResult -Id '' -Verb 'stage' -Status 'fail' -Detail "staged exe sha mismatch expected=$sha actual=$destExeHash"
+        return New-StepResult -Id $StepId -Verb 'stage' -Status 'fail' -Detail "staged exe sha mismatch expected=$sha actual=$destExeHash"
     }
-    return New-StepResult -Id '' -Verb 'stage' -Status 'pass' -Detail "staged=$destDir exeSha=$destExeHash webview2Sha=$destDllHash"
+    return New-StepResult -Id $StepId -Verb 'stage' -Status 'pass' -Detail "staged=$destDir exeSha=$destExeHash webview2Sha=$destDllHash"
 }
 
 function Invoke-FullDesktopShot {
@@ -619,9 +641,7 @@ function Invoke-Step {
         }
         'stage' {
             $exeSha = [string](Get-PropertyValue -Object $stepArgs -Name 'exeSha256' -Required)
-            $result = Copy-And-VerifyBuild -ExeSha256 $exeSha
-            $result['id'] = $stepId
-            return $result
+            return Copy-And-VerifyBuild -ExeSha256 $exeSha -StepId $stepId
         }
         'launch' {
             $exeSha = ([string](Get-PropertyValue -Object $stepArgs -Name 'exeSha256' -Required)).ToLowerInvariant()
@@ -675,11 +695,15 @@ function Invoke-Step {
             if (-not $fresh['fresh']) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail $fresh['detail'] -Artifacts @($artifactRel)
             }
-            Put-BlobFile -Name "$RunBlobPrefix/$artifactRel" -Path $artifactPath
+            # The verdict is only meaningful if the uploaded bytes are the same bytes named by the
+            # measurement; a path re-read can race another agent or retry.
+            $pngBytes = [IO.File]::ReadAllBytes($artifactPath)
+            $pngSha256 = Get-Sha256Bytes -Bytes $pngBytes
+            Put-BlobBytes -Name "$RunBlobPrefix/$artifactRel" -Bytes $pngBytes
             # Report the subject alongside the pixels, so a reader can tell WHICH window this
             # frame is evidence about rather than inferring it from the filename.
-            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; subjectPid={4}; subjectRect={5},{6} {7}x{8}' -f `
-                $artifactRel, $shot['width'], $shot['height'], $shot['distinctColors'], `
+            $detail = 'path={0}; width={1}; height={2}; distinctColors={3}; pngSha256={4}; subjectPid={5}; subjectRect={6},{7} {8}x{9}' -f `
+                $artifactRel, $shot['width'], $shot['height'], $shot['distinctColors'], $pngSha256, `
                 $shotSubject['subject'].Pid, $shotRect.Left, $shotRect.Top, $shotRect.Width, $shotRect.Height
             if ([int]$shot['distinctColors'] -lt 16) {
                 return New-StepResult -Id $stepId -Verb $verb -Status 'unmeasurable' -Detail $detail -Artifacts @($artifactRel)

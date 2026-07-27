@@ -23,7 +23,7 @@ vmqa-run.sh - host-side VM QA driver
   push [--exe <path>] [--loader <path>]
   run [--vm <vm>] [--identifier <id>] --steps <steps.json> [--run-id <id>] [--timeout <sec>]
   agent-alive [--vm <vm>]
-  selftest [--vm <vm>] [--identifier <id>] [--timeout <sec>]
+  selftest [--vm <vm>] [--identifier <id>] [--timeout <sec>] [--exe-sha <sha256>]
 USAGE
 }
 
@@ -200,7 +200,18 @@ cmd_run() {
     fi
     return "$wait_rc"
   fi
+  # Capture get-atomic's status instead of letting set -e abort here. A silent abort produced no
+  # local verdict file while the verdict sat complete on blob, and the caller then read the bare
+  # exit code as a legitimate 'blocked' - a transport failure wearing a product verdict's clothes.
+  set +e
   "$SHARE" get-atomic "$remote_prefix/verdict.json" "$verdict_tmp"
+  local fetch_rc=$?
+  set -e
+  if [ "$fetch_rc" -ne 0 ]; then
+    echo "FETCH FAILED for $remote_prefix/verdict.json (get-atomic exit $fetch_rc); the verdict exists on blob but could not be retrieved intact" >&2
+    rm -f -- "$request_tmp" "$verdict_tmp"
+    return 5
+  fi
 
   report_dir="$REPO_ROOT/docs/reports/vmqa/$run_id"
   mkdir -p -- "$report_dir"
@@ -298,20 +309,34 @@ cmd_agent_alive() {
 cmd_selftest() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" timeout="$DEFAULT_TIMEOUT"
   local pos_id neg_id pos_file neg_file pos_rc neg_rc pos neg markers neg_markers colors launch_neg shot_neg result
+  local exe_sha="" steps_file="$SELFTEST_STEPS"
   while [ $# -gt 0 ]; do
     case "$1" in
       --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
       --identifier) [ $# -ge 2 ] || die_usage "--identifier needs a value"; identifier="$2"; shift 2 ;;
       --timeout) [ $# -ge 2 ] || die_usage "--timeout needs seconds"; timeout="$2"; shift 2 ;;
+      --exe-sha) [ $# -ge 2 ] || die_usage "--exe-sha needs a sha256"; exe_sha="$2"; shift 2 ;;
       *) die_usage "unknown selftest argument: $1" ;;
     esac
   done
   [[ "$timeout" =~ ^[0-9]+$ ]] || die_usage "--timeout must be an integer"
+  # Inject the staged build's sha into the step file. The `launch` verb addresses the binary by
+  # content hash, which changes per build, so it cannot be baked into a checked-in step file.
+  # Both halves derive from the SAME generated file, so they still differ only in the identifier -
+  # generating one per half would let them drift, which is the property the single file protects.
+  if [ -n "$exe_sha" ]; then
+    need_cmd jq
+    [[ "$exe_sha" =~ ^[0-9a-f]{64}$ ]] || die_usage "--exe-sha must be a 64-char lowercase sha256"
+    steps_file="$(mktemp)"
+    jq --arg sha "$exe_sha" \
+      '[{id:"S0",verb:"stage",args:{exeSha256:$sha}}] + [.[] | if .verb=="launch" then (.args.exeSha256=$sha) else . end]' \
+      "$SELFTEST_STEPS" >"$steps_file"
+  fi
   pos_id="$(date -u +%Y%m%dT%H%M%SZ)-pos-$RANDOM"
   neg_id="$(date -u +%Y%m%dT%H%M%SZ)-neg-$RANDOM"
   set +e
-  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$SELFTEST_STEPS" "$timeout" "$pos_id")"; pos_rc=$?
-  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$SELFTEST_STEPS" "$timeout" "$neg_id")"; neg_rc=$?
+  pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$timeout" "$pos_id")"; pos_rc=$?
+  neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$timeout" "$neg_id")"; neg_rc=$?
   set -e
   pos="$(overall_or_rc "$pos_file" "$pos_rc")"
   neg="$(overall_or_rc "$neg_file" "$neg_rc")"

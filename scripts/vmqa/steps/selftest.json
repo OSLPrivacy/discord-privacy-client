@@ -1,5 +1,6 @@
 [
-  { "id": "S1", "verb": "ping",   "args": {} },
-  { "id": "S2", "verb": "launch", "args": { "timeoutSeconds": 60 } },
-  { "id": "S3", "verb": "shot",   "args": { "name": "selftest" } }
+  { "id": "S1", "verb": "launch", "args": { "timeoutSeconds": 45 } },
+  { "id": "S2", "verb": "ping",   "args": {} },
+  { "id": "S3", "verb": "shot",   "args": { "name": "selftest" } },
+  { "id": "S4", "verb": "kill",   "args": {} }
 ]

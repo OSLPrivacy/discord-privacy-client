@@ -103,6 +103,23 @@ put_file() {
     -o none
 }
 
+blob_content_md5() {
+  local remote
+  remote="$(require_blob_name "$1")"
+  az_storage blob show \
+    --container-name "$CONTAINER" \
+    --name "$remote" \
+    --query 'properties.contentSettings.contentMd5' \
+    -o tsv
+}
+
+file_md5_base64() {
+  local local_path="$1"
+  command -v openssl >/dev/null 2>&1 || return 3
+  command -v base64 >/dev/null 2>&1 || return 3
+  openssl dgst -md5 -binary "$local_path" | base64 | tr -d '\r\n'
+}
+
 get_file() {
   local remote="$1" local_path="$2"
   remote="$(require_blob_name "$remote")"
@@ -114,6 +131,56 @@ get_file() {
     --file "$local_path" \
     --no-progress \
     -o none
+}
+
+loader_blob_matches() {
+  local local_path="$1" remote="$2" expected_sha="$3" remote_md5 local_md5 tmp actual_sha rc
+  remote="$(require_blob_name "$remote")"
+  if storage_blob_exists "$remote"; then
+    :
+  else
+    rc=$?
+    [ "$rc" -eq 3 ] || return "$rc"
+    return 3
+  fi
+
+  remote_md5="$(blob_content_md5 "$remote" 2>/dev/null || true)"
+  case "$remote_md5" in
+    ""|"None"|"null") ;;
+    *)
+      local_md5="$(file_md5_base64 "$local_path" || true)"
+      if [ -n "$local_md5" ] && [ "$remote_md5" != "$local_md5" ]; then
+        return 3
+      fi
+      ;;
+  esac
+
+  # A matching or absent MD5 is not enough to bind the loader pair; SHA-256 is the
+  # content identity the harness must not falsely green.
+  tmp="$(mktemp)"
+  if get_file "$remote" "$tmp" >/dev/null; then
+    actual_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+    rm -f -- "$tmp"
+  else
+    rc=$?
+    rm -f -- "$tmp"
+    return "$rc"
+  fi
+  [ "$actual_sha" = "$expected_sha" ] || return 3
+}
+
+write_build_manifest() {
+  local exe_hash="$1" loader_hash="$2" remote="$3" tmp utc rc
+  tmp="$(mktemp)"
+  utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"schemaVersion":1,"exeSha256":"%s","loaderSha256":"%s","utc":"%s"}\n' "$exe_hash" "$loader_hash" "$utc" >"$tmp"
+  if put_file "$tmp" "$remote" >/dev/null; then
+    rm -f -- "$tmp"
+  else
+    rc=$?
+    rm -f -- "$tmp"
+    return "$rc"
+  fi
 }
 
 cmd_ensure_share() {
@@ -171,20 +238,39 @@ cmd_wait_for() {
 }
 
 cmd_put_build() {
-  local exe="${1:-}" loader="${2:-}" hash exe_remote loader_remote exists_rc
+  local exe="${1:-}" loader="${2:-}" hash loader_hash exe_remote loader_remote manifest_remote exists_rc loader_changed
   [ $# -eq 2 ] || { echo "put-build needs <local-exe> <local-loader>" >&2; return 64; }
   [ -f "$exe" ] || { echo "local exe not found: $exe" >&2; return 66; }
   [ -f "$loader" ] || { echo "local loader not found: $loader" >&2; return 66; }
   hash="$(sha256sum "$exe" | awk '{print $1}')"
+  loader_hash="$(sha256sum "$loader" | awk '{print $1}')"
   exe_remote="builds/$hash/osl-privacy-hub.exe"
   loader_remote="builds/$hash/WebView2Loader.dll"
+  manifest_remote="builds/$hash/build.json"
   if storage_blob_exists "$exe_remote"; then
     :
   else
     exists_rc=$?
     [ "$exists_rc" -eq 3 ] || return "$exists_rc"
     put_file "$exe" "$exe_remote" >/dev/null
+  fi
+  loader_changed=0
+  if loader_blob_matches "$loader" "$loader_remote" "$loader_hash"; then
+    :
+  else
+    exists_rc=$?
+    [ "$exists_rc" -eq 3 ] || return "$exists_rc"
     put_file "$loader" "$loader_remote" >/dev/null
+    loader_changed=1
+  fi
+  if [ "$loader_changed" -eq 1 ]; then
+    write_build_manifest "$hash" "$loader_hash" "$manifest_remote"
+  elif storage_blob_exists "$manifest_remote"; then
+    :
+  else
+    exists_rc=$?
+    [ "$exists_rc" -eq 3 ] || return "$exists_rc"
+    write_build_manifest "$hash" "$loader_hash" "$manifest_remote"
   fi
   printf '%s\n' "$hash"
 }
