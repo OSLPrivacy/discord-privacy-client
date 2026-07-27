@@ -746,6 +746,11 @@ class CleanupContractTests(unittest.TestCase):
             seal["identitySha256"],
             self._file_sha(self.bundle / "build-identity.json"),
         )
+        self.assertEqual(seal["generation"], 1)
+        self.assertEqual(
+            seal["previousSealSha256"], evidence_module.EMPTY_SHA256
+        )
+        self.assertEqual(seal["transition"], "initial")
         self.assertEqual(self.exe.read_bytes(), EXE_BYTES)
         self.assertEqual(hashlib.sha256(self.exe.read_bytes()).hexdigest(), EXE_SHA)
         self.assertEqual(build_log["artifact"]["sha256"], EXE_SHA)
@@ -797,6 +802,97 @@ class CleanupContractTests(unittest.TestCase):
         self.assertEqual(
             tool_names, {"git", "npm", "node", "osl-cargo", "rustc", "cargo"}
         )
+
+    def test_production_seals_advance_and_old_generation_is_not_current(
+        self,
+    ) -> None:
+        store = self.root / "producer-seal-store"
+        store.mkdir(mode=0o755)
+        first_identity = self.root / "first-identity.json"
+        second_identity = self.root / "second-identity.json"
+        first_identity.write_text('{"identity":1}\n')
+        second_identity.write_text('{"identity":2}\n')
+        state_path = store / ".seal-chain-state.json"
+        lock_path = store / ".seal-chain.lock"
+        patches = (
+            mock.patch.object(
+                evidence_module, "PRODUCTION_SEAL_DIRECTORY", store
+            ),
+            mock.patch.object(
+                evidence_module, "PRODUCTION_SEAL_STATE", state_path
+            ),
+            mock.patch.object(
+                evidence_module, "PRODUCTION_SEAL_LOCK", lock_path
+            ),
+            mock.patch.object(
+                evidence_module,
+                "production_seal_owner",
+                return_value=os.geteuid(),
+            ),
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            first_seal, _ = evidence_module.publish_producer_seal(
+                first_identity, self.root, fixture=False
+            )
+            first_bytes = first_seal.read_bytes()
+            first = json.loads(first_bytes)
+            second_seal, _ = evidence_module.publish_producer_seal(
+                second_identity, self.root, fixture=False
+            )
+            second = json.loads(second_seal.read_bytes())
+            self.assertEqual(first["generation"], 1)
+            self.assertEqual(first["transition"], "initial")
+            self.assertEqual(second["generation"], 2)
+            self.assertEqual(second["transition"], "successor")
+            self.assertEqual(
+                second["previousSealSha256"],
+                hashlib.sha256(first_bytes).hexdigest(),
+            )
+            self.assertEqual(
+                evidence_module.verify_producer_seal(
+                    second_identity, mode="production"
+                ),
+                second_seal,
+            )
+            with self.assertRaisesRegex(
+                evidence_module.EvidenceError,
+                "not the current monotonic generation",
+            ):
+                evidence_module.verify_producer_seal(
+                    first_identity, mode="production"
+                )
+            bad_second = dict(second)
+            bad_second["previousSealSha256"] = "f" * 64
+            second_bytes = (
+                json.dumps(
+                    bad_second, sort_keys=True, separators=(",", ":")
+                )
+                + "\n"
+            ).encode()
+            second_seal.chmod(0o644)
+            second_seal.write_bytes(second_bytes)
+            second_seal.chmod(0o444)
+            bad_state = evidence_module.seal_state_record(
+                2,
+                self._file_sha(second_identity),
+                hashlib.sha256(second_bytes).hexdigest(),
+            )
+            state_path.write_text(
+                json.dumps(
+                    bad_state, sort_keys=True, separators=(",", ":")
+                )
+                + "\n"
+            )
+            state_path.chmod(0o600)
+            with self.assertRaisesRegex(
+                evidence_module.EvidenceError,
+                "predecessor is missing",
+            ):
+                evidence_module.verify_producer_seal(
+                    second_identity, mode="production"
+                )
+            self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(lock_path.stat().st_mode & 0o777, 0o600)
 
     def test_final_bundle_rejects_published_executable_mutation(self) -> None:
         self.exe.write_bytes(Path("/bin/true").read_bytes())

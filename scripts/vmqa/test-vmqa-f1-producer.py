@@ -147,6 +147,109 @@ class F1ProducerTests(unittest.TestCase):
             producer_module.sha256_file(Path(result["loader"]["path"])),
             result["loader"]["sha256"],
         )
+        terminal = result["terminalSnapshot"]
+        self.assertEqual(
+            result["terminalSnapshotSha256"],
+            producer_module.sha256_bytes(
+                producer_module.canonical_json(terminal)
+            ),
+        )
+        for name in ("identity", "executable", "loader", "producerSeal"):
+            path = Path(terminal[name]["path"])
+            value = path.stat()
+            self.assertEqual(
+                (value.st_dev, value.st_ino),
+                (terminal[name]["device"], terminal[name]["inode"]),
+            )
+            self.assertEqual(
+                producer_module.sha256_file(path), terminal[name]["sha256"]
+            )
+            self.assertEqual(value.st_size, terminal[name]["sizeBytes"])
+
+    def test_terminal_executable_mismatch_after_old_last_check_refuses(
+        self,
+    ) -> None:
+        admitted = producer_module.inspect_admitted_bundle(
+            self.fixture_bundle,
+            internal_fixture_seal=self.fixture_seal,
+        )
+        destination = producer_module.staging_destination(
+            self.layout, admitted
+        )
+        executable = (
+            destination
+            / "bundle"
+            / producer_module.build_evidence.FINAL_EXE
+        )
+        original_read_key = producer_module.read_witness_key
+        mutated = False
+
+        def mutate_after_key_check(
+            path: Path, producer_uid: int
+        ) -> tuple[bytes, str]:
+            nonlocal mutated
+            result = original_read_key(path, producer_uid)
+            if executable.is_file() and not mutated:
+                with executable.open("ab") as handle:
+                    handle.write(b"terminal mismatch\n")
+                mutated = True
+            return result
+
+        with mock.patch.object(
+            producer_module,
+            "read_witness_key",
+            side_effect=mutate_after_key_check,
+        ):
+            with self.assertRaisesRegex(
+                producer_module.ProducerError,
+                "terminal executable hash",
+            ):
+                producer_module.stage(
+                    self.fixture_bundle,
+                    layout=self.layout,
+                    producer=self.identity,
+                    effective_uid=self.identity.uid,
+                    internal_fixture_seal=self.fixture_seal,
+                )
+        self.assertTrue(mutated)
+        self.assertFalse(destination.exists())
+
+    def test_old_seal_replay_refuses_after_newer_generation(self) -> None:
+        identity_sha = producer_module.sha256_file(
+            self.fixture_bundle / "build-identity.json"
+        )
+        first_bytes = self.fixture_seal.read_bytes()
+        successor = producer_module.build_evidence.producer_seal_record(
+            identity_sha,
+            "fixture",
+            generation=2,
+            previous_seal_sha256=producer_module.sha256_bytes(first_bytes),
+        )
+        successor_seal = self.root / "generation-2.producer-seal.json"
+        successor_seal.write_bytes(
+            producer_module.canonical_json(successor)
+        )
+        successor_seal.chmod(0o444)
+
+        result = producer_module.stage(
+            self.fixture_bundle,
+            layout=self.layout,
+            producer=self.identity,
+            effective_uid=self.identity.uid,
+            internal_fixture_seal=successor_seal,
+        )
+        self.assertEqual(result["producerSeal"]["generation"], 2)
+        # The old seal is still valid for fixture bundle inspection. Refusal
+        # must come from the protected staging generation, not corruption.
+        producer_module.build_evidence.verify_bundle(
+            self.fixture_bundle,
+            allow_fixture=True,
+            fixture_seal=self.fixture_seal,
+        )
+        with self.assertRaisesRegex(
+            producer_module.ProducerError, "seal replay refused"
+        ):
+            self.preflight()
 
     def test_missing_key_refuses_before_bundle_admission(self) -> None:
         self.key.unlink()

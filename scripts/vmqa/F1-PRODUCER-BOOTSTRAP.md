@@ -78,9 +78,20 @@ sudo -u osl-vmqa-producer \
 
 The destination is derived from the independently sealed executable SHA-256.
 An existing file, directory, or symlink at that destination is a replay and
-is refused. The retained staging receipt binds commit, tree, build identity,
-producer seal, executable, loader, key identifier, sizes, hashes, and final
-paths. It contains no key bytes.
+is refused. Producer seals carry a protected monotonically increasing
+generation, the preceding seal hash, and an exact initial/successor
+transition. The global seal state is advanced under a producer-owned lock.
+The staging store separately records the last accepted generation and accepts
+only a strictly newer producer seal, so restoring an older otherwise-valid
+bundle cannot reopen admission.
+
+The retained staging receipt binds commit, tree, build identity, producer
+seal generation and predecessor, executable, loader, key identifier, sizes,
+hashes, and final paths. It also records the device, inode, mode, link count,
+size, and SHA-256 of the final identity, executable, loader, and retained seal.
+Immediately before returning, staging reopens and rehashes that complete
+destination snapshot and requires exact equality with the receipt. It
+contains no key bytes.
 
 ## Remaining live step
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -19,7 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+ADMISSION_STATE_SCHEMA_VERSION = 1
 PINNED_COMMIT = "1f745c85bb23cf79a956aa87d623905e20f83cf1"
 PINNED_TREE = "1b9bbbcaf52fdac66d671d06a5a4ac585ec3167a"
 PRODUCER_USER = "osl-vmqa-producer"
@@ -34,6 +36,8 @@ AUTHORITY_ROOT = Path("/var/lib/osl-qa")
 KEY_DIRECTORY = AUTHORITY_ROOT / "private"
 KEY_PATH = KEY_DIRECTORY / "f1-native-witness.key"
 STAGING_ROOT = AUTHORITY_ROOT / "f1-staging"
+ADMISSION_STATE_NAME = ".f1-admission-state.json"
+ADMISSION_LOCK_NAME = ".f1-admission.lock"
 KEY_RE = re.compile(rb"[0-9a-f]{64}\n?")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -118,6 +122,9 @@ class AdmittedBuild:
     producer_seal: Path
     producer_seal_bytes: bytes
     producer_seal_sha256: str
+    seal_generation: int
+    previous_seal_sha256: str
+    seal_transition: str
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -325,6 +332,308 @@ def read_witness_key(path: Path, producer_uid: int) -> tuple[bytes, str]:
     return key, sha256_bytes(key)
 
 
+def descriptor_snapshot(
+    path: Path,
+    *,
+    reported_path: Path,
+    owner_uid: int,
+    directory: bool,
+    label: str,
+) -> dict[str, Any]:
+    flags = os.O_RDONLY
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        before = os.lstat(path)
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ProducerError(f"{label} is missing or unsafe") from exc
+    try:
+        opened = os.fstat(descriptor)
+        expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+        if (
+            not expected_type(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or not expected_type(opened.st_mode)
+            or before.st_uid != owner_uid
+            or opened.st_uid != owner_uid
+            or (before.st_dev, before.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
+            raise ProducerError(f"{label} descriptor identity is unsafe")
+        record: dict[str, Any] = {
+            "path": reported_path.as_posix(),
+            "type": "directory" if directory else "file",
+            "device": opened.st_dev,
+            "inode": opened.st_ino,
+            "mode": stat.S_IMODE(opened.st_mode),
+            "linkCount": opened.st_nlink,
+        }
+        if not directory:
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+                size += len(block)
+            if size != opened.st_size:
+                raise ProducerError(f"{label} size changed while hashing")
+            record.update(
+                {"sizeBytes": size, "sha256": digest.hexdigest()}
+            )
+        after = os.lstat(path)
+        if (
+            (after.st_dev, after.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or after.st_mode != opened.st_mode
+            or after.st_nlink != opened.st_nlink
+        ):
+            raise ProducerError(f"{label} changed during terminal snapshot")
+        return record
+    finally:
+        os.close(descriptor)
+
+
+def terminal_destination_snapshot(
+    actual_root: Path,
+    *,
+    reported_root: Path,
+    producer_uid: int,
+) -> dict[str, Any]:
+    paths = {
+        "stageDirectory": (Path("."), True),
+        "bundleDirectory": (Path("bundle"), True),
+        "identity": (Path("bundle/build-identity.json"), False),
+        "executable": (
+            Path("bundle") / build_evidence.FINAL_EXE,
+            False,
+        ),
+        "loader": (
+            Path("bundle") / build_evidence.FINAL_LOADER,
+            False,
+        ),
+        "producerSeal": (Path("producer-seal.json"), False),
+    }
+    snapshot: dict[str, Any] = {}
+    for name, (relative, directory) in paths.items():
+        actual = actual_root if relative == Path(".") else actual_root / relative
+        reported = (
+            reported_root
+            if relative == Path(".")
+            else reported_root / relative
+        )
+        snapshot[name] = descriptor_snapshot(
+            actual,
+            reported_path=reported,
+            owner_uid=producer_uid,
+            directory=directory,
+            label=f"terminal {name}",
+        )
+    return snapshot
+
+
+def validate_terminal_snapshot(
+    snapshot: dict[str, Any], admitted: AdmittedBuild
+) -> None:
+    expected = {
+        "identity": (admitted.identity_sha256, None),
+        "executable": (
+            admitted.executable_sha256,
+            admitted.executable_size,
+        ),
+        "loader": (admitted.loader_sha256, admitted.loader_size),
+        "producerSeal": (
+            admitted.producer_seal_sha256,
+            len(admitted.producer_seal_bytes),
+        ),
+    }
+    for name, (digest, size) in expected.items():
+        value = snapshot.get(name)
+        if not isinstance(value, dict) or value.get("sha256") != digest:
+            raise ProducerError(
+                f"terminal {name} hash differs from admitted bytes"
+            )
+        if size is not None and value.get("sizeBytes") != size:
+            raise ProducerError(
+                f"terminal {name} size differs from admitted bytes"
+            )
+    for name in ("stageDirectory", "bundleDirectory"):
+        value = snapshot.get(name)
+        if (
+            not isinstance(value, dict)
+            or value.get("type") != "directory"
+            or type(value.get("device")) is not int
+            or type(value.get("inode")) is not int
+        ):
+            raise ProducerError(f"terminal {name} snapshot is invalid")
+
+
+def admission_state_path(layout: ProducerLayout) -> Path:
+    return layout.staging_root / ADMISSION_STATE_NAME
+
+
+def admission_lock_path(layout: ProducerLayout) -> Path:
+    return layout.staging_root / ADMISSION_LOCK_NAME
+
+
+def initial_admission_state() -> dict[str, Any]:
+    return {
+        "schemaVersion": ADMISSION_STATE_SCHEMA_VERSION,
+        "generation": 0,
+        "sealSha256": build_evidence.EMPTY_SHA256,
+        "identitySha256": build_evidence.EMPTY_SHA256,
+    }
+
+
+def admission_state_record(admitted: AdmittedBuild) -> dict[str, Any]:
+    return {
+        "schemaVersion": ADMISSION_STATE_SCHEMA_VERSION,
+        "generation": admitted.seal_generation,
+        "sealSha256": admitted.producer_seal_sha256,
+        "identitySha256": admitted.identity_sha256,
+    }
+
+
+def read_admission_state(
+    layout: ProducerLayout, producer_uid: int
+) -> dict[str, Any]:
+    path = admission_state_path(layout)
+    if not os.path.lexists(path):
+        return initial_admission_state()
+    raw, _ = read_regular_once(
+        path,
+        owner_uid=producer_uid,
+        mode=0o600,
+        label="F1 admission state",
+    )
+    try:
+        state = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProducerError("F1 admission state is not valid JSON") from exc
+    if not isinstance(state, dict) or set(state) != {
+        "schemaVersion",
+        "generation",
+        "sealSha256",
+        "identitySha256",
+    }:
+        raise ProducerError("F1 admission state fields are not exact")
+    if (
+        state["schemaVersion"] != ADMISSION_STATE_SCHEMA_VERSION
+        or type(state["generation"]) is not int
+        or state["generation"] < 1
+        or not isinstance(state["sealSha256"], str)
+        or SHA_RE.fullmatch(state["sealSha256"]) is None
+        or not isinstance(state["identitySha256"], str)
+        or SHA_RE.fullmatch(state["identitySha256"]) is None
+    ):
+        raise ProducerError("F1 admission state is invalid")
+    return state
+
+
+def permitted_admission_transition(
+    state: dict[str, Any], admitted: AdmittedBuild
+) -> dict[str, Any]:
+    if admitted.seal_generation <= state["generation"]:
+        raise ProducerError(
+            "seal replay refused: generation is not newer than admitted state"
+        )
+    return {
+        "kind": (
+            "initial-admission"
+            if state["generation"] == 0
+            else "monotonic-advance"
+        ),
+        "fromGeneration": state["generation"],
+        "fromSealSha256": state["sealSha256"],
+        "fromIdentitySha256": state["identitySha256"],
+        "toGeneration": admitted.seal_generation,
+        "toSealSha256": admitted.producer_seal_sha256,
+        "toIdentitySha256": admitted.identity_sha256,
+        "globalPreviousSealSha256": admitted.previous_seal_sha256,
+    }
+
+
+def open_admission_lock(
+    layout: ProducerLayout, producer_uid: int
+) -> int:
+    path = admission_lock_path(layout)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise ProducerError("F1 admission lock is unavailable") from exc
+    try:
+        value = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_uid != producer_uid
+            or stat.S_IMODE(value.st_mode) != 0o600
+        ):
+            raise ProducerError("F1 admission lock has unsafe ownership or mode")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def replace_admission_state(
+    layout: ProducerLayout,
+    producer_uid: int,
+    *,
+    expected: dict[str, Any],
+    admitted: AdmittedBuild,
+) -> dict[str, Any]:
+    if read_admission_state(layout, producer_uid) != expected:
+        raise ProducerError("F1 admission state changed before monotonic advance")
+    target = admission_state_record(admitted)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".f1-admission-state-", dir=layout.staging_root
+    )
+    temporary = Path(temporary_name)
+    parent_fd = os.open(
+        layout.staging_root,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(canonical_json(target))
+            handle.flush()
+            os.fsync(handle.fileno())
+        state_path = admission_state_path(layout)
+        if os.path.lexists(state_path):
+            current = os.lstat(state_path)
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or current.st_uid != producer_uid
+                or stat.S_IMODE(current.st_mode) != 0o600
+            ):
+                raise ProducerError(
+                    "F1 admission state has unsafe ownership or mode"
+                )
+        os.replace(temporary, state_path)
+        os.fsync(parent_fd)
+        if read_admission_state(layout, producer_uid) != target:
+            raise ProducerError("published F1 admission state changed")
+        return target
+    finally:
+        os.close(parent_fd)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        if temporary.exists():
+            temporary.unlink()
+
+
 def validate_imported_key(raw: bytes) -> bytes:
     if KEY_RE.fullmatch(raw) is None:
         raise ProducerError(
@@ -481,9 +790,14 @@ def inspect_admitted_bundle(
         reopened_seal = json.loads(seal_bytes.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ProducerError("independent producer seal is not valid JSON") from exc
-    expected_seal = build_evidence.producer_seal_record(identity_sha, mode)
-    if reopened_seal != expected_seal:
-        raise ProducerError("independent producer seal changed after verification")
+    try:
+        seal_record = build_evidence.validate_producer_seal_record(
+            reopened_seal, identity_sha, mode
+        )
+    except build_evidence.EvidenceError as exc:
+        raise ProducerError(
+            f"independent producer seal changed after verification: {exc}"
+        ) from exc
 
     executable_bytes, executable_stat = read_regular_once(
         bundle / build_evidence.FINAL_EXE,
@@ -526,6 +840,9 @@ def inspect_admitted_bundle(
         producer_seal=seal_path,
         producer_seal_bytes=seal_bytes,
         producer_seal_sha256=sha256_bytes(seal_bytes),
+        seal_generation=seal_record["generation"],
+        previous_seal_sha256=seal_record["previousSealSha256"],
+        seal_transition=seal_record["transition"],
     )
 
 
@@ -551,6 +868,8 @@ def preflight(
     admitted = inspect_admitted_bundle(
         bundle, internal_fixture_seal=internal_fixture_seal
     )
+    admission_state = read_admission_state(layout, producer.uid)
+    transition = permitted_admission_transition(admission_state, admitted)
     destination = staging_destination(layout, admitted)
     if os.path.lexists(destination):
         raise ProducerError(
@@ -566,12 +885,22 @@ def preflight(
         "executableSha256": admitted.executable_sha256,
         "loaderSha256": admitted.loader_sha256,
         "nativeWitnessKeyId": key_id,
+        "sealGeneration": admitted.seal_generation,
+        "previousSealSha256": admitted.previous_seal_sha256,
+        "sealTransition": admitted.seal_transition,
+        "admissionState": admission_state,
+        "admissionTransition": transition,
         "wouldStage": destination.as_posix(),
     }
 
 
 def receipt_for(
-    admitted: AdmittedBuild, key_id: str, destination: Path
+    admitted: AdmittedBuild,
+    key_id: str,
+    destination: Path,
+    *,
+    terminal_snapshot: dict[str, Any],
+    admission_transition: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -587,6 +916,9 @@ def receipt_for(
             "authorityPath": admitted.producer_seal.as_posix(),
             "path": (destination / "producer-seal.json").as_posix(),
             "sha256": admitted.producer_seal_sha256,
+            "generation": admitted.seal_generation,
+            "previousSealSha256": admitted.previous_seal_sha256,
+            "transition": admitted.seal_transition,
         },
         "executable": {
             "path": (destination / "bundle" / build_evidence.FINAL_EXE).as_posix(),
@@ -601,6 +933,11 @@ def receipt_for(
             "sizeBytes": admitted.loader_size,
         },
         "nativeWitnessKeyId": key_id,
+        "admissionTransition": admission_transition,
+        "terminalSnapshot": terminal_snapshot,
+        "terminalSnapshotSha256": sha256_bytes(
+            canonical_json(terminal_snapshot)
+        ),
     }
 
 
@@ -612,33 +949,49 @@ def stage(
     effective_uid: int | None = None,
     internal_fixture_seal: Path | None = None,
 ) -> dict[str, Any]:
-    summary = preflight(
+    # Refuse identity/layout failures before creating even the protected lock.
+    preflight(
         bundle,
         layout=layout,
         producer=producer,
         effective_uid=effective_uid,
         internal_fixture_seal=internal_fixture_seal,
     )
-    admitted = inspect_admitted_bundle(
-        bundle, internal_fixture_seal=internal_fixture_seal
-    )
-    if (
-        admitted.identity_sha256 != summary["buildIdentitySha256"]
-        or admitted.executable_sha256 != summary["executableSha256"]
-        or admitted.loader_sha256 != summary["loaderSha256"]
-    ):
-        raise ProducerError("build bundle changed after preflight")
-    destination = staging_destination(layout, admitted)
-    temporary = Path(
-        tempfile.mkdtemp(prefix=".f1-stage-", dir=layout.staging_root)
-    )
+    admission_lock = open_admission_lock(layout, producer.uid)
+    temporary: Path | None = None
+    destination: Path | None = None
     published = False
     published_inode: tuple[int, int] | None = None
-    parent_fd = os.open(
-        layout.staging_root,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-    )
+    parent_fd: int | None = None
     try:
+        # Re-run the entire dry preflight while holding the monotonic lock.
+        summary = preflight(
+            bundle,
+            layout=layout,
+            producer=producer,
+            effective_uid=effective_uid,
+            internal_fixture_seal=internal_fixture_seal,
+        )
+        admitted = inspect_admitted_bundle(
+            bundle, internal_fixture_seal=internal_fixture_seal
+        )
+        if (
+            admitted.identity_sha256 != summary["buildIdentitySha256"]
+            or admitted.executable_sha256 != summary["executableSha256"]
+            or admitted.loader_sha256 != summary["loaderSha256"]
+            or admitted.seal_generation != summary["sealGeneration"]
+            or admitted.producer_seal_sha256
+            != summary["admissionTransition"]["toSealSha256"]
+        ):
+            raise ProducerError("build bundle changed after preflight")
+        destination = staging_destination(layout, admitted)
+        temporary = Path(
+            tempfile.mkdtemp(prefix=".f1-stage-", dir=layout.staging_root)
+        )
+        parent_fd = os.open(
+            layout.staging_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         copied_bundle = temporary / "bundle"
         shutil.copytree(bundle, copied_bundle)
         copied = inspect_admitted_bundle(
@@ -646,15 +999,25 @@ def stage(
         )
         if copied != admitted:
             raise ProducerError("copied bundle differs from admitted source bytes")
-        receipt = receipt_for(
-            copied, summary["nativeWitnessKeyId"], destination
-        )
         retained_seal_path = temporary / "producer-seal.json"
         with retained_seal_path.open("xb") as handle:
             handle.write(copied.producer_seal_bytes)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(retained_seal_path, 0o400)
+        owned_snapshot = terminal_destination_snapshot(
+            temporary,
+            reported_root=destination,
+            producer_uid=producer.uid,
+        )
+        validate_terminal_snapshot(owned_snapshot, copied)
+        receipt = receipt_for(
+            copied,
+            summary["nativeWitnessKeyId"],
+            destination,
+            terminal_snapshot=owned_snapshot,
+            admission_transition=summary["admissionTransition"],
+        )
         receipt_path = temporary / "staging-receipt.json"
         with receipt_path.open("xb") as handle:
             handle.write(canonical_json(receipt))
@@ -672,6 +1035,11 @@ def stage(
         published = True
         final_stat = os.stat(destination, follow_symlinks=False)
         published_inode = (final_stat.st_dev, final_stat.st_ino)
+        if published_inode != (
+            owned_snapshot["stageDirectory"]["device"],
+            owned_snapshot["stageDirectory"]["inode"],
+        ):
+            raise ProducerError("published stage directory inode changed")
         os.fsync(parent_fd)
 
         final_bundle = destination / "bundle"
@@ -688,6 +1056,18 @@ def stage(
         )
         if final_seal_bytes != admitted.producer_seal_bytes:
             raise ProducerError("published producer seal changed")
+        _, final_key_id = read_witness_key(layout.key_path, producer.uid)
+        if final_key_id != summary["nativeWitnessKeyId"]:
+            raise ProducerError("witness key changed during publication")
+        before_state = summary["admissionState"]
+        final_state = replace_admission_state(
+            layout,
+            producer.uid,
+            expected=before_state,
+            admitted=admitted,
+        )
+        if final_state != admission_state_record(admitted):
+            raise ProducerError("F1 admission state did not advance exactly")
         final_receipt_bytes, final_receipt_stat = read_regular_once(
             destination / "staging-receipt.json",
             owner_uid=producer.uid,
@@ -699,9 +1079,25 @@ def stage(
             or final_receipt_stat.st_nlink != 1
         ):
             raise ProducerError("published staging receipt changed")
-        _, final_key_id = read_witness_key(layout.key_path, producer.uid)
-        if final_key_id != summary["nativeWitnessKeyId"]:
-            raise ProducerError("witness key changed during publication")
+        if read_admission_state(layout, producer.uid) != final_state:
+            raise ProducerError("F1 admission state changed after publication")
+
+        # This is deliberately the final destination access before return.
+        # Every receipt-bound inode and hash is reopened and recomputed.
+        terminal_snapshot = terminal_destination_snapshot(
+            destination,
+            reported_root=destination,
+            producer_uid=producer.uid,
+        )
+        validate_terminal_snapshot(terminal_snapshot, admitted)
+        if (
+            terminal_snapshot != receipt["terminalSnapshot"]
+            or sha256_bytes(canonical_json(terminal_snapshot))
+            != receipt["terminalSnapshotSha256"]
+        ):
+            raise ProducerError(
+                "terminal destination snapshot differs from staging receipt"
+            )
         return {
             **receipt,
             "receiptPath": (
@@ -710,9 +1106,13 @@ def stage(
             "receiptSha256": sha256_bytes(final_receipt_bytes),
         }
     except BaseException:
-        if not published and temporary.exists():
+        if not published and temporary is not None and temporary.exists():
             shutil.rmtree(temporary)
-        elif published and published_inode is not None:
+        elif (
+            published
+            and published_inode is not None
+            and destination is not None
+        ):
             try:
                 current = os.stat(destination, follow_symlinks=False)
                 if (
@@ -724,7 +1124,10 @@ def stage(
                 pass
         raise
     finally:
-        os.close(parent_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+        fcntl.flock(admission_lock, fcntl.LOCK_UN)
+        os.close(admission_lock)
 
 
 def build_parser() -> StrictParser:

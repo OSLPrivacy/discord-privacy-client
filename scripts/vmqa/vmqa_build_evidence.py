@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -57,7 +58,10 @@ FINAL_DIST = "outputs/dist"
 FINAL_EVIDENCE = "build-evidence"
 PRODUCTION_SEAL_DIRECTORY = Path("/var/lib/osl-vmqa/producer-seals")
 PRODUCTION_SEAL_USER = "osl-vmqa-producer"
-SEAL_SCHEMA_VERSION = 1
+SEAL_SCHEMA_VERSION = 2
+SEAL_STATE_SCHEMA_VERSION = 1
+PRODUCTION_SEAL_STATE = PRODUCTION_SEAL_DIRECTORY / ".seal-chain-state.json"
+PRODUCTION_SEAL_LOCK = PRODUCTION_SEAL_DIRECTORY / ".seal-chain.lock"
 FIXTURE_LOADER_BYTES = b"fixture-WebView2Loader-produced-by-vmqa\n"
 EVIDENCE_FILES = {
     "source.tar",
@@ -200,9 +204,29 @@ def production_seal_owner(*, for_write: bool) -> int:
     return producer.pw_uid
 
 
-def producer_seal_record(identity_sha: str, mode: str) -> dict[str, Any]:
+def producer_seal_record(
+    identity_sha: str,
+    mode: str,
+    *,
+    generation: int = 1,
+    previous_seal_sha256: str = EMPTY_SHA256,
+    transition: str | None = None,
+) -> dict[str, Any]:
     if not SHA_RE.fullmatch(identity_sha):
         raise EvidenceError("producer-seal identity digest is invalid")
+    if type(generation) is not int or generation < 1:
+        raise EvidenceError("producer-seal generation must be a positive integer")
+    if not SHA_RE.fullmatch(previous_seal_sha256):
+        raise EvidenceError("producer-seal predecessor digest is invalid")
+    expected_transition = "initial" if generation == 1 else "successor"
+    if transition is None:
+        transition = expected_transition
+    if transition != expected_transition:
+        raise EvidenceError("producer-seal transition is not permitted")
+    if generation == 1 and previous_seal_sha256 != EMPTY_SHA256:
+        raise EvidenceError("initial producer seal has a predecessor")
+    if generation > 1 and previous_seal_sha256 == EMPTY_SHA256:
+        raise EvidenceError("successor producer seal lacks its predecessor")
     return {
         "schemaVersion": SEAL_SCHEMA_VERSION,
         "producer": (
@@ -214,7 +238,250 @@ def producer_seal_record(identity_sha: str, mode: str) -> dict[str, Any]:
         "identitySha256": identity_sha,
         "sourceCommit": PINNED_COMMIT,
         "sourceTree": PINNED_TREE,
+        "generation": generation,
+        "previousSealSha256": previous_seal_sha256,
+        "transition": transition,
     }
+
+
+def validate_producer_seal_record(
+    value: Any, identity_sha: str, mode: str
+) -> dict[str, Any]:
+    seal = exact_object(
+        value,
+        {
+            "schemaVersion",
+            "producer",
+            "mode",
+            "identitySha256",
+            "sourceCommit",
+            "sourceTree",
+            "generation",
+            "previousSealSha256",
+            "transition",
+        },
+        "producerSeal",
+    )
+    expected = producer_seal_record(
+        identity_sha,
+        mode,
+        generation=seal["generation"],
+        previous_seal_sha256=seal["previousSealSha256"],
+        transition=seal["transition"],
+    )
+    if seal != expected:
+        raise EvidenceError(
+            "producer-authenticated seal does not bind the retained build identity"
+        )
+    return seal
+
+
+def seal_state_record(
+    generation: int, identity_sha: str, seal_sha: str
+) -> dict[str, Any]:
+    if type(generation) is not int or generation < 1:
+        raise EvidenceError("producer-seal state generation is invalid")
+    if not SHA_RE.fullmatch(identity_sha) or not SHA_RE.fullmatch(seal_sha):
+        raise EvidenceError("producer-seal state digest is invalid")
+    return {
+        "schemaVersion": SEAL_STATE_SCHEMA_VERSION,
+        "generation": generation,
+        "identitySha256": identity_sha,
+        "sealSha256": seal_sha,
+    }
+
+
+def read_production_seal_state(
+    owner_uid: int, *, required: bool
+) -> dict[str, Any] | None:
+    try:
+        value = os.lstat(PRODUCTION_SEAL_STATE)
+    except FileNotFoundError:
+        if required:
+            raise EvidenceError("producer-seal monotonic state is missing")
+        return None
+    except OSError as exc:
+        raise EvidenceError("producer-seal monotonic state is unavailable") from exc
+    if (
+        not stat.S_ISREG(value.st_mode)
+        or stat.S_ISLNK(value.st_mode)
+        or value.st_uid != owner_uid
+        or stat.S_IMODE(value.st_mode) != 0o600
+    ):
+        raise EvidenceError("producer-seal monotonic state has unsafe ownership or mode")
+    state = exact_object(
+        load_json(PRODUCTION_SEAL_STATE, "producer-seal monotonic state"),
+        {"schemaVersion", "generation", "identitySha256", "sealSha256"},
+        "producerSealState",
+    )
+    if state != seal_state_record(
+        state["generation"], state["identitySha256"], state["sealSha256"]
+    ):
+        raise EvidenceError("producer-seal monotonic state is not canonical")
+    return state
+
+
+def open_production_seal_lock(owner_uid: int) -> int:
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(PRODUCTION_SEAL_LOCK, flags, 0o600)
+    except OSError as exc:
+        raise EvidenceError("producer-seal lock is unavailable") from exc
+    try:
+        value = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_uid != owner_uid
+            or stat.S_IMODE(value.st_mode) != 0o600
+        ):
+            raise EvidenceError("producer-seal lock has unsafe ownership or mode")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def replace_production_seal_state(
+    state: dict[str, Any], owner_uid: int
+) -> None:
+    parent_fd = os.open(
+        PRODUCTION_SEAL_DIRECTORY,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=".vmqa-seal-state-", dir=PRODUCTION_SEAL_DIRECTORY
+    )
+    temporary = Path(temporary_name)
+    try:
+        payload = (
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        os.fchmod(temporary_fd, 0o600)
+        with os.fdopen(temporary_fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_stat = os.lstat(temporary)
+        if temporary_stat.st_uid != owner_uid:
+            raise EvidenceError("temporary producer-seal state has the wrong owner")
+        if os.path.lexists(PRODUCTION_SEAL_STATE):
+            existing = os.lstat(PRODUCTION_SEAL_STATE)
+            if (
+                not stat.S_ISREG(existing.st_mode)
+                or stat.S_ISLNK(existing.st_mode)
+                or existing.st_uid != owner_uid
+                or stat.S_IMODE(existing.st_mode) != 0o600
+            ):
+                raise EvidenceError(
+                    "producer-seal monotonic state has unsafe ownership or mode"
+                )
+        os.replace(temporary, PRODUCTION_SEAL_STATE)
+        os.fsync(parent_fd)
+        observed = read_production_seal_state(owner_uid, required=True)
+        if observed != state:
+            raise EvidenceError("published producer-seal state changed")
+    finally:
+        os.close(parent_fd)
+        if temporary.exists():
+            temporary.unlink()
+
+
+def read_seal_bytes(path: Path, expected_owner: int | None) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        before = os.lstat(path)
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise EvidenceError("producer-authenticated seal is unavailable") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or stat.S_IMODE(opened.st_mode) != 0o444
+            or (
+                expected_owner is not None
+                and opened.st_uid != expected_owner
+            )
+            or (before.st_dev, before.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
+            raise EvidenceError(
+                "producer-authenticated seal has unsafe ownership or mode"
+            )
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+        payload = b"".join(chunks)
+        after = os.lstat(path)
+        if (
+            (after.st_dev, after.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or after.st_mode != opened.st_mode
+        ):
+            raise EvidenceError("producer-authenticated seal changed while read")
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def validate_production_seal_chain(
+    seal: dict[str, Any], seal_sha: str, owner_uid: int
+) -> None:
+    current = seal
+    current_sha = seal_sha
+    seen: set[str] = set()
+    while current["generation"] > 1:
+        previous_sha = current["previousSealSha256"]
+        if previous_sha in seen or current_sha in seen:
+            raise EvidenceError("producer-seal chain contains a cycle")
+        seen.add(current_sha)
+        matches: list[tuple[dict[str, Any], str]] = []
+        for candidate in PRODUCTION_SEAL_DIRECTORY.iterdir():
+            if re.fullmatch(r"[0-9a-f]{64}\.json", candidate.name) is None:
+                continue
+            try:
+                candidate_bytes = read_seal_bytes(candidate, owner_uid)
+            except EvidenceError:
+                continue
+            candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
+            if candidate_sha != previous_sha:
+                continue
+            try:
+                candidate_value = json.loads(candidate_bytes.decode("utf-8"))
+                candidate_identity = candidate.name.removesuffix(".json")
+                candidate_record = validate_producer_seal_record(
+                    candidate_value, candidate_identity, "production"
+                )
+            except (UnicodeError, json.JSONDecodeError, EvidenceError):
+                continue
+            matches.append((candidate_record, candidate_sha))
+        if len(matches) != 1:
+            raise EvidenceError(
+                "producer-seal predecessor is missing or ambiguous"
+            )
+        predecessor, predecessor_sha = matches[0]
+        if predecessor["generation"] != current["generation"] - 1:
+            raise EvidenceError(
+                "producer-seal generation transition is not contiguous"
+            )
+        current = predecessor
+        current_sha = predecessor_sha
+    if (
+        current["generation"] != 1
+        or current["transition"] != "initial"
+        or current["previousSealSha256"] != EMPTY_SHA256
+    ):
+        raise EvidenceError("producer-seal chain lacks a permitted genesis")
 
 
 def verify_producer_seal(
@@ -258,22 +525,24 @@ def verify_producer_seal(
         or (expected_owner is not None and seal_stat.st_uid != expected_owner)
     ):
         raise EvidenceError("producer-authenticated seal has unsafe ownership or mode")
-    seal = exact_object(
-        load_json(seal_path, "producer seal"),
-        {
-            "schemaVersion",
-            "producer",
-            "mode",
-            "identitySha256",
-            "sourceCommit",
-            "sourceTree",
-        },
-        "producerSeal",
-    )
-    if seal != producer_seal_record(identity_sha, mode):
-        raise EvidenceError(
-            "producer-authenticated seal does not bind the retained build identity"
-        )
+    seal_bytes = read_seal_bytes(seal_path, expected_owner)
+    try:
+        seal_value = json.loads(seal_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise EvidenceError("producer seal is not valid UTF-8 JSON") from exc
+    seal = validate_producer_seal_record(seal_value, identity_sha, mode)
+    if mode == "production":
+        assert expected_owner is not None
+        state = read_production_seal_state(expected_owner, required=True)
+        assert state is not None
+        seal_sha = hashlib.sha256(seal_bytes).hexdigest()
+        if state != seal_state_record(
+            seal["generation"], identity_sha, seal_sha
+        ):
+            raise EvidenceError(
+                "producer seal is not the current monotonic generation"
+            )
+        validate_production_seal_chain(seal, seal_sha, expected_owner)
     return seal_path
 
 
@@ -284,25 +553,43 @@ def publish_producer_seal(
     fixture: bool,
 ) -> tuple[Path, tuple[int, int]]:
     mode = "fixture" if fixture else "production"
-    record = producer_seal_record(sha256_file(identity_path), mode)
-    if fixture:
-        seal_path = fixture_seal_path(bundle_output)
-        parent = bundle_output.parent
-    else:
-        production_seal_owner(for_write=True)
-        seal_path = PRODUCTION_SEAL_DIRECTORY / f"{record['identitySha256']}.json"
-        parent = PRODUCTION_SEAL_DIRECTORY
-    if os.path.lexists(seal_path):
-        raise EvidenceError(f"producer seal already exists: {seal_path}")
-    flags = os.O_RDONLY | os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    parent_fd = os.open(parent, flags)
-    temporary_fd, temporary_name = tempfile.mkstemp(
-        prefix=".vmqa-producer-seal-", dir=parent
-    )
-    temporary = Path(temporary_name)
+    identity_sha = sha256_file(identity_path)
+    lock_fd: int | None = None
+    parent_fd: int | None = None
+    temporary: Path | None = None
+    published_seal: Path | None = None
+    published_inode: tuple[int, int] | None = None
+    state_committed = False
     try:
+        if fixture:
+            record = producer_seal_record(identity_sha, mode)
+            seal_path = fixture_seal_path(bundle_output)
+            parent = bundle_output.parent
+            owner_uid = os.geteuid()
+        else:
+            owner_uid = production_seal_owner(for_write=True)
+            lock_fd = open_production_seal_lock(owner_uid)
+            state = read_production_seal_state(owner_uid, required=False)
+            generation = 1 if state is None else state["generation"] + 1
+            previous_sha = EMPTY_SHA256 if state is None else state["sealSha256"]
+            record = producer_seal_record(
+                identity_sha,
+                mode,
+                generation=generation,
+                previous_seal_sha256=previous_sha,
+            )
+            seal_path = PRODUCTION_SEAL_DIRECTORY / f"{identity_sha}.json"
+            parent = PRODUCTION_SEAL_DIRECTORY
+        if os.path.lexists(seal_path):
+            raise EvidenceError(f"producer seal already exists: {seal_path}")
+        flags = os.O_RDONLY | os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        parent_fd = os.open(parent, flags)
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=".vmqa-producer-seal-", dir=parent
+        )
+        temporary = Path(temporary_name)
         payload = (
             json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
         ).encode("utf-8")
@@ -314,13 +601,48 @@ def publish_producer_seal(
         temporary_stat = os.stat(temporary, follow_symlinks=False)
         inode = (temporary_stat.st_dev, temporary_stat.st_ino)
         rename_noreplace(temporary, parent_fd, seal_path.name)
+        published_seal = seal_path
+        published_inode = inode
         final_stat = os.stat(seal_path, follow_symlinks=False)
         if (final_stat.st_dev, final_stat.st_ino) != inode:
             raise EvidenceError("published producer seal path was swapped")
+        if not fixture:
+            seal_sha = hashlib.sha256(payload).hexdigest()
+            replace_production_seal_state(
+                seal_state_record(record["generation"], identity_sha, seal_sha),
+                owner_uid,
+            )
+            state_committed = True
+            verify_producer_seal(
+                identity_path,
+                mode="production",
+                identity_sha=identity_sha,
+            )
         return seal_path, inode
+    except BaseException:
+        if (
+            published_seal is not None
+            and published_inode is not None
+            and (fixture or not state_committed)
+        ):
+            try:
+                current = os.lstat(published_seal)
+                if (
+                    stat.S_ISREG(current.st_mode)
+                    and not stat.S_ISLNK(current.st_mode)
+                    and (current.st_dev, current.st_ino) == published_inode
+                ):
+                    published_seal.unlink()
+            except OSError:
+                pass
+        raise
     finally:
-        os.close(parent_fd)
-        if temporary.exists():
+        if parent_fd is not None:
+            os.close(parent_fd)
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+        if temporary is not None and temporary.exists():
             temporary.unlink()
 
 
@@ -1072,7 +1394,7 @@ def create_evidence(args: argparse.Namespace) -> None:
         print(f"producer_seal={seal_path}")
     except Exception:
         should_cleanup_seal = False
-        if seal_path is not None and seal_inode is not None:
+        if fixture and seal_path is not None and seal_inode is not None:
             try:
                 current_seal = os.stat(seal_path, follow_symlinks=False)
                 should_cleanup_seal = (
@@ -1085,7 +1407,14 @@ def create_evidence(args: argparse.Namespace) -> None:
         if should_cleanup_seal:
             seal_path.unlink()
         should_cleanup = False
-        if published and published_inode is not None:
+        committed_production_seal = (
+            not fixture and seal_path is not None and seal_inode is not None
+        )
+        if (
+            published
+            and published_inode is not None
+            and not committed_production_seal
+        ):
             try:
                 current = os.stat(output, follow_symlinks=False)
                 should_cleanup = (
