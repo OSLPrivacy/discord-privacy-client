@@ -91,6 +91,27 @@ Operational rules carried from `azure-vm-qa-workflow.md`, each of which has alre
   fine for liveness checks and log collection only.
 - **Reject any artifact older than run start.** A stale receipt will happily impersonate the current
   run; grade it `unmeasurable`, never pass or fail.
+- **Drive the UI for real. On the VM, input injection is allowed and expected.** `SendInput`,
+  `mouse_event`, `SetCursorPos` and real keyboard driving are all fine here — nobody is sitting at
+  that desktop. The `PostMessage`-only rule is about protecting the *owner's* cursor and applies to
+  his desktop only. This matters for this gate specifically: `onboarding`, `identityCreate` and
+  `twoAccountLogin` are consent flows that must actually be clicked, and under a PostMessage-only
+  reading they were effectively unprovable. Port retired click harnesses to the VM rather than
+  rebuilding them.
+- **Still forbidden on the VM**, because these bans are about consequence, not focus: no real
+  personal account, no real user data, nothing that reaches back to the host, and never a
+  destructive action against a target you did not seed yourself. Note the gate's `fullCleanup` case
+  is destructive by design — it must run only against identities and conversations this run created.
+- **Target the instance by its single-instance marker window class `<identifier>-sic`. Never by
+  window title, never by "first process with a window".** Every OSL build is titled `OSL Privacy`.
+  Selecting by name has already driven the wrong lane's application through six UI steps and graded
+  a stale instance. Enforced in CI by `scripts/ci/check-window-targeting.sh`, so this is
+  unexpressible rather than merely discouraged.
+- **Assert non-empty on the positive path.** A harness that guesses its subject confirms whatever it
+  happened to find, and a default-deny assertion that passes because it read nothing is the same
+  defect. Every case below must prove it observed something real before it may report a pass;
+  otherwise "correctly denied" and "found nothing" are indistinguishable and the gate grades
+  `unmeasurable`, never pass.
 - **Credentials come from Key Vault just in time on the VM** — vault `osl-test-secrets-a7d5d9`
   (resource group `osl-two-client-lab`), per `docs/testing/test-account-secrets.md`. They never
   enter a prompt, report, event, screenshot, log or the attestation.

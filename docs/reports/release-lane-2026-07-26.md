@@ -367,6 +367,47 @@ These are real and are **not** fixed by this lane, which does not own the files.
 - **Release record: none.** Zero releases, zero `hub-v*` tags. The existing tags are legacy
   `v0.0.x-phase*` markers pointing at the old client.
 
+## Working-tree safety — this lane holds nothing at risk
+
+Recorded because ~17,000 uncommitted lines across five lanes were measured at risk tonight on a box
+that has OOM-crashed twice today. **None of it is this lane's.**
+
+- This lane works in a dedicated worktree created from `origin/main`, not in the shared dirty tree.
+- Verified at `a688c3e`: **0 dirty tracked, 0 untracked, HEAD identical to the pushed remote.**
+- Verified in the shared `discord-privacy-client` tree: **none** of `.github/**`, `scripts/ci/**`,
+  `scripts/release/**`, `docs/testing/hub-release-candidate-vm-gate.md` or
+  `docs/reports/release-lane-*` is dirty there.
+
+Everything this lane produced is committed and pushed to `release-lane-2026-07-26` / PR #6. No
+`git add -A` was ever run against the shared tree, and no other lane's files were staged at any
+point.
+
+**PR #5 rebase is NOT started, per the coordinator hold.** It would rewrite history across files
+that currently hold five lanes' only copy. It stays blocked until those lanes confirm they have
+committed. Nothing in this report depends on it.
+
+## VM input rules — corrected, and it unblocks the gate
+
+The `PostMessage`-only ban applies to the owner's desktop only. On an isolated VM, `SendInput`,
+`mouse_event`, `SetCursorPos` and real keyboard driving are allowed and expected.
+
+This is not a footnote for this gate — it removes a real obstacle. Three of the nine required
+cases (`onboarding`, `identityCreate`, `twoAccountLogin`) are consent flows that must actually be
+clicked, and under a PostMessage-only reading they could not have been proven at all. Retired click
+harnesses should be ported to the VM, not rebuilt.
+
+What stays forbidden on the VM is about consequence, not focus: no real personal account, no real
+user data, nothing reaching back to the host, no destructive action on an unseeded target. Worth
+flagging that the gate's `fullCleanup` case is destructive by design, so it must run only against
+identities this run created.
+
+**Targeting is now enforced, not advised.** Every OSL build is titled `OSL Privacy`, so selecting a
+window by title has already driven the wrong lane's app through six UI steps. The gate doc now
+requires the `<identifier>-sic` marker class, and `scripts/ci/check-window-targeting.sh` fails CI on
+name-based selection so it is unexpressible rather than discouraged. The same family of defect —
+a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
+— is why every case must assert non-empty on the positive path before it may report a pass.
+
 ## PR #5 (Scrub) merge order — this lane owns the order, Scrub owns the content
 
 Verified by fetching `refs/pull/5/head` and running `git merge-tree` against `origin/main`
