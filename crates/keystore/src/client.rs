@@ -1193,6 +1193,11 @@ impl KeyServerClient {
         identity: &Identity,
         sender_id: &str,
     ) -> Result<Vec<ControlInboxItem>> {
+        if !valid_control_inbox_sender_id(sender_id) {
+            return Err(Error::Transport(
+                "control-inbox sender filter is invalid".into(),
+            ));
+        }
         let timestamp_ms = unix_timestamp_ms();
         let sig = sign_control_inbox_get_filtered(identity, timestamp_ms, Some(sender_id));
         let sig_q = urlencode_query_value(&STANDARD.encode(sig.as_bytes()));
@@ -1221,6 +1226,15 @@ impl KeyServerClient {
                         .into(),
                 ))
             }
+        }
+        if parsed
+            .items
+            .iter()
+            .any(|item| item.sender_id != sender_id)
+        {
+            return Err(Error::Transport(
+                "control-inbox drain returned a row outside its sender filter".into(),
+            ));
         }
         Ok(parsed.items)
     }
@@ -1379,6 +1393,16 @@ fn unix_timestamp_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn valid_control_inbox_sender_id(value: &str) -> bool {
+    const MAX_PROTOCOL_ID_BYTES: usize = 256;
+    !value.is_empty()
+        && value.len() <= MAX_PROTOCOL_ID_BYTES
+        && !value.chars().any(|character| {
+            let codepoint = character as u32;
+            codepoint <= 0x1f || (0x7f..=0x9f).contains(&codepoint)
+        })
 }
 
 fn fresh_request_id() -> String {

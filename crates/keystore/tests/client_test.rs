@@ -799,3 +799,127 @@ fn tampering_with_a_served_record_is_detected() {
         PeerCapabilities::Unverified
     );
 }
+
+fn control_inbox_response(filtered_sender: Option<&str>, senders: &[&str]) -> Vec<u8> {
+    let items: Vec<serde_json::Value> = senders
+        .iter()
+        .enumerate()
+        .map(|(index, sender)| {
+            serde_json::json!({
+                "id": format!("inbox-{index:02}"),
+                "sender_id": sender,
+                "scope_id": "scope-a",
+                "bundle_b64": "AQ==",
+                "created_at": 1_700_000_000 + index as i64,
+                "kind": "",
+            })
+        })
+        .collect();
+    let mut body = serde_json::json!({ "items": items });
+    if let Some(sender) = filtered_sender {
+        body["filtered_sender_id"] = serde_json::json!(sender);
+    }
+    let body = serde_json::to_vec(&body).unwrap();
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    response.extend_from_slice(&body);
+    response
+}
+
+fn request_target(request: &[u8]) -> &str {
+    std::str::from_utf8(request)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+}
+
+#[test]
+fn filtered_control_inbox_accepts_positive_rows_from_two_senders_independently() {
+    for sender in ["peer-a", "peer-b"] {
+        let response = control_inbox_response(Some(sender), &[sender]);
+        let (port, request) = one_shot_server(response);
+        let identity = generate_identity("recipient".to_owned());
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+        let items = client.get_control_inbox_from(&identity, sender).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].sender_id, sender);
+
+        let request = request.recv().unwrap();
+        let target = request_target(&request);
+        assert_eq!(query_value(target, "sender"), sender);
+        let timestamp_ms = query_value(target, "ts").parse::<i64>().unwrap();
+        let signature = STANDARD.decode(query_value(target, "sig")).unwrap();
+        let signature: [u8; 64] = signature.try_into().unwrap();
+        let canonical = keystore::control_inbox::canonical_control_inbox_get_bytes_filtered(
+            &identity.user_id,
+            timestamp_ms,
+            Some(sender),
+        );
+        assert!(
+            crypto::ed25519::verify(
+                &identity.ed25519_public,
+                &canonical,
+                &crypto::ed25519::Signature::from_bytes(signature),
+            )
+            .unwrap(),
+            "the sender filter must be covered by the recipient signature"
+        );
+    }
+}
+
+#[test]
+fn filtered_control_inbox_refuses_missing_invalid_and_cross_sender_values() {
+    let identity = generate_identity("recipient".to_owned());
+    let unreachable = KeyServerClient::new("http://127.0.0.1:9").unwrap();
+    for invalid in ["".to_owned(), "bad\nsender".to_owned(), "x".repeat(257)] {
+        assert!(matches!(
+            unreachable.get_control_inbox_from(&identity, &invalid),
+            Err(Error::Transport(message))
+                if message == "control-inbox sender filter is invalid"
+        ));
+    }
+
+    let response = control_inbox_response(Some("peer-a"), &["peer-b"]);
+    let (port, _) = one_shot_server(response);
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    assert!(matches!(
+        client.get_control_inbox_from(&identity, "peer-a"),
+        Err(Error::Transport(message))
+            if message == "control-inbox drain returned a row outside its sender filter"
+    ));
+}
+
+#[test]
+fn unfiltered_or_wrong_filter_echo_cannot_fall_back_to_a_wider_page() {
+    let identity = generate_identity("recipient".to_owned());
+
+    // This is the starvation shape: a complete unfiltered page from another
+    // sender, followed by the active peer's row. Even though the desired row is
+    // present in this mock response, absence of the server's filter echo makes
+    // the whole answer unusable.
+    let mut unfiltered_senders = vec!["peer-b"; 64];
+    unfiltered_senders.push("peer-a");
+    let response = control_inbox_response(None, &unfiltered_senders);
+    let (port, _) = one_shot_server(response);
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    assert!(matches!(
+        client.get_control_inbox_from(&identity, "peer-a"),
+        Err(Error::Transport(message))
+            if message.contains("did not confirm the sender filter")
+    ));
+
+    let response = control_inbox_response(Some("peer-b"), &["peer-b"]);
+    let (port, _) = one_shot_server(response);
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    assert!(matches!(
+        client.get_control_inbox_from(&identity, "peer-a"),
+        Err(Error::Transport(message))
+            if message.contains("did not confirm the sender filter")
+    ));
+}

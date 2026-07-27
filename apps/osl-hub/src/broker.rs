@@ -2664,7 +2664,7 @@ fn drain_peer_inbox_text(
     )?;
     let (identity, client) = keyserver_transport(core)?;
     let items = client
-        .get_control_inbox(&identity)
+        .get_control_inbox_from(&identity, &manual.peer_osl_user_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
     let mut messages = Vec::new();
     let mut pending_view_once = Vec::new();
@@ -3613,7 +3613,7 @@ fn native_overlay_attachment_plans(
         native_overlay_relay_scope_id(&context.conversation_id).map_err(|_| ERROR.to_owned())?;
     let (identity, client) = keyserver_transport(core)?;
     let items = client
-        .get_control_inbox(&identity)
+        .get_control_inbox_from(&identity, &manual.peer_osl_user_id)
         .map_err(|_| ERROR.to_owned())?;
     let now = ipc::main_password::now_unix_secs_pub();
     let limit = if wanted_id.is_some() {
@@ -6407,8 +6407,22 @@ mod tests {
             "a classified revocation row must reach the drain retirement decision"
         );
         assert!(
-            arm.contains("delete_control_inbox"),
-            "a classified revocation row must still be retired when terminal"
+            arm.contains("KeyserverRevocationControlInboxClient {")
+                && arm.contains("&mut control_inbox"),
+            "the classified arm must construct and pass the production inbox client"
+        );
+        let client_impl = source
+            .split_once(
+                "impl RevocationControlInboxClient for KeyserverRevocationControlInboxClient",
+            )
+            .expect("production control-inbox client implementation present")
+            .1
+            .split_once("fn drain_inbound_revocation_row")
+            .expect("client implementation ends before the retirement helper")
+            .0;
+        assert!(
+            client_impl.contains("delete_control_inbox"),
+            "the production client's delete_row implementation must call the keyserver delete"
         );
         let apply = source
             .split_once("fn apply_inbound_revocation_row")
@@ -6443,6 +6457,44 @@ mod tests {
             apply_call < retires && retires < delete,
             "a revocation row must not be deleted before its outcome is known"
         );
+    }
+
+    #[test]
+    fn text_and_attachment_drains_are_bound_to_the_active_peer_sender() {
+        let source = include_str!("broker.rs");
+        let text = source
+            .split_once("fn drain_peer_inbox_text(")
+            .expect("text drain present")
+            .1
+            .split_once("fn begin_peer_attachment(")
+            .expect("text drain boundary present")
+            .0;
+        let attachments = source
+            .split_once("fn native_overlay_attachment_plans(")
+            .expect("attachment drain present")
+            .1
+            .split_once("fn collect_valid_bounded")
+            .expect("attachment drain boundary present")
+            .0;
+        // Constructed in fragments so this source-introspection test cannot
+        // satisfy itself merely by containing its own expected call text.
+        let filtered = [
+            ".get_control_inbox",
+            "_from(&identity, &manual.peer_osl_user_id)",
+        ]
+        .concat();
+        let unfiltered = [".get_control_", "inbox(&identity)"].concat();
+
+        for (name, drain) in [("text", text), ("attachment", attachments)] {
+            assert!(
+                drain.contains(&filtered),
+                "{name} receive drain must request the active peer's signed sender filter"
+            );
+            assert!(
+                !drain.contains(&unfiltered),
+                "{name} receive drain must not fall back to an unfiltered inbox page"
+            );
+        }
     }
 
     fn literal_renderer_invokes(source: &str) -> std::collections::BTreeSet<String> {
