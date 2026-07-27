@@ -99,6 +99,10 @@ jobs:
           toolchain: '1.88.0'
       - name: Build the embedded frontend first
         working-directory: apps/osl-hub-ui
+        # windows-latest defaults to PowerShell, which does NOT stop on a
+        # non-zero native exit: the first command here could fail and the
+        # step would still pass on the last command's status.
+        shell: bash
         run: |
           npm ci --no-audit --no-fund
           npm run build

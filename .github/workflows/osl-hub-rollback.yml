@@ -97,7 +97,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release upload hub-latest target/latest.json --clobber
+          # --clobber DELETES the existing asset before uploading. If the upload
+          # then fails, hub-latest is left with NO latest.json and every
+          # installed client loses its update feed — during an emergency, which
+          # is precisely when this workflow runs. feed/latest.json is the copy
+          # downloaded earlier; keep it as the restore path.
+          if ! gh release upload hub-latest target/latest.json --clobber; then
+            echo "::error::feed upload failed; restoring the previous manifest" >&2
+            gh release upload hub-latest feed/latest.json --clobber
+            exit 1
+          fi
+          # Prove the feed actually serves the target now, rather than assuming
+          # a zero exit meant the asset landed.
+          rm -rf verify && mkdir -p verify
+          gh release download hub-latest --pattern latest.json --dir verify
+          served="$(python3 -c 'import json;print(json.load(open("verify/latest.json"))["version"])')"
+          if [ "$served" != "${{ steps.state.outputs.target_version }}" ]; then
+            echo "::error::feed serves $served, expected ${{ steps.state.outputs.target_version }}" >&2
+            exit 1
+          fi
+          echo "feed verified: now serving $served"
           {
             echo ""
             echo "Update feed moved from \`${{ steps.state.outputs.current_version }}\`"

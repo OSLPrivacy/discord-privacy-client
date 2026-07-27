@@ -48,6 +48,10 @@ jobs:
       # never got this far.
       - name: Build the embedded webview frontend first
         working-directory: webview
+        # windows-latest defaults to PowerShell, which does NOT stop on a
+        # non-zero native exit: the first command here could fail and the
+        # step would still pass on the last command's status.
+        shell: bash
         run: |
           npm ci --no-audit --no-fund
           npm run build
@@ -73,9 +77,17 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: apps/osl-hub
+      # Capture the output so the count can be asserted. A green suite that
+      # runs FEWER tests than before is indistinguishable from a complete one,
+      # and that is exactly how a feature gate silently excluded the module
+      # containing the irreversible-send decision.
       - name: Test OSL Privacy core
         shell: bash
-        run: bash scripts/ci/hub-core-tests.sh
+        run: bash scripts/ci/hub-core-tests.sh 2>&1 | tee hub-core-output.txt
+      - name: Assert the core suite did not shrink
+        if: always()
+        shell: bash
+        run: bash scripts/ci/assert-test-counts.sh osl-hub-core hub-core-output.txt
       - name: Test OSL Privacy Windows identity lifecycle
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle -- --test-threads=1
 
@@ -103,6 +115,10 @@ jobs:
           workspaces: apps/osl-hub
       - name: Build trusted frontend before any Rust build
         working-directory: apps/osl-hub-ui
+        # windows-latest defaults to PowerShell, which does NOT stop on a
+        # non-zero native exit: the first command here could fail and the
+        # step would still pass on the last command's status.
+        shell: bash
         run: |
           npm ci --no-audit --no-fund
           npm run build
@@ -130,6 +146,10 @@ jobs:
       # webview/dist for the same reason workspace-test does.
       - name: Build the embedded webview frontend first
         working-directory: webview
+        # windows-latest defaults to PowerShell, which does NOT stop on a
+        # non-zero native exit: the first command here could fail and the
+        # step would still pass on the last command's status.
+        shell: bash
         run: |
           npm ci --no-audit --no-fund
           npm run build
@@ -242,6 +262,8 @@ jobs:
         run: bash scripts/release/create-cold-snapshot.sh --self-test
       - name: Release preflight self-test
         run: bash scripts/release/preflight.sh --self-test
+      - name: Test-count floor guard self-test
+        run: bash scripts/ci/assert-test-counts.sh --self-test
 
   # Single stable check name for branch protection, so adding or renaming a
   # Rust job never silently un-enrols a required check.

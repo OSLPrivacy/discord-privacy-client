@@ -1,0 +1,7 @@
+# Minimum passing test counts measured from CI on origin/main.
+osl-hub-core=237
+osl-hub-ui=379
+webview=1
+keyserver-cf=3
+cipher-store-cf=18
+keyserver-legacy=72
