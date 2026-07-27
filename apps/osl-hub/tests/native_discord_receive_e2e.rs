@@ -16,8 +16,10 @@
 #![cfg(feature = "core")]
 
 use osl_privacy_hub::broker::{
-    activate_owned_native_manual_peer_context, drain_native_discord_overlay_text,
-    prepare_native_discord_overlay_text, HubBrokerState,
+    activate_owned_native_manual_peer_context, begin_native_overlay_attachment,
+    deliver_native_overlay_attachment, drain_native_discord_overlay_text,
+    list_native_overlay_attachments, prepare_native_discord_overlay_text,
+    take_native_overlay_attachment, HubBrokerState,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -26,7 +28,7 @@ use osl_privacy_hub::security::{
 };
 use osl_privacy_hub::service_host::ServiceHostState;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -71,12 +73,29 @@ struct BlobRow {
     fetch_token: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ControlInboxGetRecord {
+    recipient_id: String,
+    sender_id: Option<String>,
+}
+
+#[derive(Clone)]
+enum ControlInboxGetReply {
+    Honest,
+    MissingEcho,
+    MismatchedEcho(String),
+    CrossSender(String),
+    UnfilteredWithoutEcho,
+}
+
 #[derive(Default)]
 struct RelayState {
     next_id: u64,
     inbox: Vec<InboxRow>,
     posted: Vec<InboxRow>,
     blobs: BTreeMap<String, BlobRow>,
+    control_inbox_gets: Vec<ControlInboxGetRecord>,
+    control_inbox_get_replies: VecDeque<ControlInboxGetReply>,
 }
 
 struct RelayServer {
@@ -128,6 +147,29 @@ impl RelayServer {
             .iter()
             .filter(|row| row.recipient_id == recipient_id)
             .count()
+    }
+
+    fn pending_ids_for(&self, recipient_id: &str) -> BTreeSet<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .inbox
+            .iter()
+            .filter(|row| row.recipient_id == recipient_id)
+            .map(|row| row.id.clone())
+            .collect()
+    }
+
+    fn queue_control_inbox_get_reply(&self, reply: ControlInboxGetReply) {
+        self.state
+            .lock()
+            .unwrap()
+            .control_inbox_get_replies
+            .push_back(reply);
+    }
+
+    fn control_inbox_gets(&self) -> Vec<ControlInboxGetRecord> {
+        self.state.lock().unwrap().control_inbox_gets.clone()
     }
 
     /// The first row the sender actually posted for this recipient, exactly as
@@ -339,19 +381,53 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             state.inbox.push(row.clone());
             json_response(200, json!({ "id": row.id, "expires_at": now + 3600 }))
         }
-        ("GET", path) if path.starts_with("/v1/control-inbox/") => {
-            let recipient = path.trim_start_matches("/v1/control-inbox/");
-            let state = state.lock().unwrap();
-            let items = state
+        ("GET", route) if route.starts_with("/v1/control-inbox/") => {
+            let target = url::Url::parse(&format!("http://relay.invalid{path}"))
+                .expect("parse control-inbox request target");
+            let recipient = target
+                .path()
+                .trim_start_matches("/v1/control-inbox/")
+                .to_owned();
+            let sender = target
+                .query_pairs()
+                .find_map(|(key, value)| (key == "sender").then(|| value.into_owned()));
+            let mut state = state.lock().unwrap();
+            state.control_inbox_gets.push(ControlInboxGetRecord {
+                recipient_id: recipient.clone(),
+                sender_id: sender.clone(),
+            });
+            let reply = state
+                .control_inbox_get_replies
+                .pop_front()
+                .unwrap_or(ControlInboxGetReply::Honest);
+            let use_filter = !matches!(&reply, ControlInboxGetReply::UnfilteredWithoutEcho);
+            let mut rows = state
                 .inbox
                 .iter()
                 .filter(|row| row.recipient_id == recipient)
-                // The real worker is `ORDER BY created_at ASC LIMIT
-                // MAX_DRAIN_ROWS` with no continuation cursor
-                // (keyserver-cf/src/endpoints/control-inbox.ts). Insertion
-                // order here is creation order, so honouring the same cap is
-                // what makes the page boundary reachable from a test at all.
+                .filter(|row| {
+                    !use_filter
+                        || sender
+                            .as_deref()
+                            .is_none_or(|requested| row.sender_id == requested)
+                })
+                // The real worker applies the sender predicate before
+                // `ORDER BY created_at ASC LIMIT MAX_DRAIN_ROWS`.
                 .take(MAX_DRAIN_ROWS)
+                .cloned()
+                .collect::<Vec<_>>();
+            if let ControlInboxGetReply::CrossSender(ref other_sender) = reply {
+                if let Some(row) = state
+                    .inbox
+                    .iter()
+                    .find(|row| row.recipient_id == recipient && row.sender_id == *other_sender)
+                    .cloned()
+                {
+                    rows.push(row);
+                }
+            }
+            let items = rows
+                .iter()
                 .map(|row| {
                     json!({
                         "id": row.id,
@@ -362,7 +438,23 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                     })
                 })
                 .collect::<Vec<_>>();
-            json_response(200, json!({ "items": items }))
+            match reply {
+                ControlInboxGetReply::Honest => match sender {
+                    Some(sender) => {
+                        json_response(200, json!({ "items": items, "filtered_sender_id": sender }))
+                    }
+                    None => json_response(200, json!({ "items": items })),
+                },
+                ControlInboxGetReply::MissingEcho | ControlInboxGetReply::UnfilteredWithoutEcho => {
+                    json_response(200, json!({ "items": items }))
+                }
+                ControlInboxGetReply::MismatchedEcho(echoed) => {
+                    json_response(200, json!({ "items": items, "filtered_sender_id": echoed }))
+                }
+                ControlInboxGetReply::CrossSender(_) => {
+                    json_response(200, json!({ "items": items, "filtered_sender_id": sender }))
+                }
+            }
         }
         ("DELETE", path) if path.starts_with("/v1/control-inbox/") => {
             let id = path.trim_start_matches("/v1/control-inbox/");
@@ -592,7 +684,9 @@ impl Peer {
 /// * replaying the exact authenticated row does not produce a second open.
 #[test]
 fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_rows() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("single");
     let relay_url = relay.base_url();
@@ -869,7 +963,10 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
         replay.pending_view_once.is_empty(),
         "a replayed message produces no pending view-once entry"
     );
-    assert_eq!(replay.fetched, 0, "the replay batch reports nothing fetched");
+    assert_eq!(
+        replay.fetched, 0,
+        "the replay batch reports nothing fetched"
+    );
     assert_eq!(
         relay.pending_for(&bob.identity_id),
         0,
@@ -933,7 +1030,9 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
 /// never been exercised end to end for the native Discord carrier.
 #[test]
 fn native_discord_multi_chunk_message_reassembles_exactly_once() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("chunked");
     let relay_url = relay.base_url();
@@ -1036,7 +1135,9 @@ fn native_discord_multi_chunk_message_reassembles_exactly_once() {
 /// consumed or corrupted.
 #[test]
 fn native_discord_chunk_group_survives_reversed_and_split_arrival() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
     let storage = TestStorage::new("ordering");
     let relay_url = relay.base_url();
@@ -1143,114 +1244,375 @@ fn native_discord_chunk_group_survives_reversed_and_split_arrival() {
     drop(storage);
 }
 
-/// **Characterization of a live defect, not a specification of desired
-/// behaviour.**
-///
-/// `GET /v1/control-inbox/<self>` returns at most `MAX_DRAIN_ROWS` rows, oldest
-/// first, and has no continuation cursor. `drain_peer_inbox_text` skips every
-/// row whose `sender_id` is not the currently active peer, and deletes only rows
-/// it authenticated. So once one page's worth of rows for *other* conversations
-/// is older than a message for the active conversation, that message is
-/// unreachable -- and the drain reports the same empty batch it reports for an
-/// empty inbox, forever.
-///
-/// This is reachable without an attacker: the worker allows 32 pending rows per
-/// (sender, recipient) pair and 512 per recipient, so two friends whose
-/// conversations have not been opened are enough. The rows only clear when they
-/// expire or are evicted at the 512 ceiling.
-///
-/// When this is fixed -- the natural fix is a `sender_id` filter or a cursor on
-/// the GET, in `crates/keystore` and the worker, neither of which this test
-/// owns -- this test should start failing and be rewritten to assert delivery.
+struct FixtureAttachment {
+    attachment_id: String,
+    original_filename: String,
+    plaintext_size: u64,
+    expires_at: i64,
+    view_once: bool,
+    sealed_size: u64,
+    ciphertext_sha256: String,
+    object_id: String,
+    fetch_token: String,
+}
+
+fn deliver_fixture_attachment(sender: &Peer) -> FixtureAttachment {
+    const PLAINTEXT_SIZE: u64 = 128;
+    const SEALED_SIZE: u64 = 256;
+    sender.activate();
+    let plan = begin_native_overlay_attachment(
+        &sender.core,
+        &sender.broker,
+        "fixture.png".to_owned(),
+        PLAINTEXT_SIZE,
+        false,
+    )
+    .expect("begin the framed fixture attachment");
+    let expected = FixtureAttachment {
+        attachment_id: plan.attachment_id.clone(),
+        original_filename: plan.original_filename.clone(),
+        plaintext_size: plan.plaintext_size,
+        expires_at: plan.expires_at,
+        view_once: plan.view_once,
+        sealed_size: SEALED_SIZE,
+        ciphertext_sha256: "a".repeat(64),
+        object_id: "b".repeat(32),
+        fetch_token: "c".repeat(32),
+    };
+    let delivered = deliver_native_overlay_attachment(
+        &sender.core,
+        &sender.broker,
+        plan,
+        expected.sealed_size,
+        expected.ciphertext_sha256.clone(),
+        expected.object_id.clone(),
+        expected.fetch_token.clone(),
+    )
+    .expect("deliver the framed fixture attachment");
+    assert!(
+        delivered.attachment_id == expected.attachment_id
+            && delivered.original_filename == expected.original_filename
+            && delivered.plaintext_size == expected.plaintext_size
+            && delivered.expires_at == expected.expires_at
+            && delivered.view_once == expected.view_once
+            && delivered.delivered_to_osl_inbox,
+        "the attachment notice preserves the production seal plan"
+    );
+    expected
+}
+
+/// The signed sender filter is applied before the 64-row page bound for both
+/// production receive consumers. A's text and attachment remain reachable
+/// behind one full older page, every foreign row survives A's work, and B's
+/// authenticated row remains independently drainable afterward.
 #[test]
-fn foreign_sender_rows_head_of_line_block_the_drain_at_the_page_boundary() {
-    let _serial = fixture_lock().lock().unwrap_or_else(|error| error.into_inner());
+fn sender_filtered_text_and_attachment_drains_bypass_64_foreign_rows_and_preserve_other_peers() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = RelayServer::start();
-    let storage = TestStorage::new("headofline");
+    let storage = TestStorage::new("sender-filtered");
     let relay_url = relay.base_url();
 
-    let alice = Peer::new(&storage, "alice", &relay_url, "11118888");
-    let bob = Peer::new(&storage, "bob", &relay_url, "22229999");
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    let sender_a = Peer::new(&storage, "sender-a", &relay_url, "11118888");
+    let receiver = Peer::new(&storage, "receiver", &relay_url, "22229999");
+    let sender_b = Peer::new(&storage, "sender-b", &relay_url, "33330000");
+    sender_a.open_native_context_to(&receiver.friend_code, &receiver.safety_number);
+    sender_b.open_native_context_to(&receiver.friend_code, &receiver.safety_number);
+    let receiver_b_person =
+        receiver.open_native_context_to(&sender_b.friend_code, &sender_b.safety_number);
+    receiver.open_native_context_to(&sender_a.friend_code, &sender_a.safety_number);
 
-    // Exactly one page of older mail from two other peers, split 32/32 so it
-    // stays inside the worker's per-(sender, recipient) ceiling. Well-formed
-    // base64 that is not a relay bundle: the row is rejected on `sender_id`
-    // before its bytes matter.
+    const B_FIXTURE: &str = "independently drainable sender B fixture";
+    sender_b.activate();
+    prepare_native_discord_overlay_text(
+        &sender_b.core,
+        &sender_b.security,
+        &sender_b.broker,
+        B_FIXTURE.to_owned(),
+        false,
+    )
+    .expect("prepare B's protected message");
+    let b_honest = relay.posted_row(&sender_b.identity_id, &receiver.identity_id);
+
+    // B's authenticated row plus 31 B fillers and 32 C fillers make exactly one
+    // older page while respecting the real 32-row per-sender admission ceiling.
     let filler = base64_encode(&[0x7fu8; 96]);
-    let mut blocking_ids = Vec::new();
-    for index in 0..MAX_DRAIN_ROWS {
-        let other_sender = if index % 2 == 0 {
-            "osl-unopened-conversation-one"
-        } else {
-            "osl-unopened-conversation-two"
-        };
-        blocking_ids.push(relay.inject(
-            other_sender,
-            &bob.identity_id,
+    let mut foreign_ids = BTreeSet::from([b_honest.id.clone()]);
+    for _ in 0..31 {
+        foreign_ids.insert(relay.inject(
+            &sender_b.identity_id,
+            &receiver.identity_id,
             "native-overlay:some-unopened-conversation",
             &filler,
         ));
     }
+    let sender_c = "osl-unopened-conversation-c";
+    for _ in 0..32 {
+        foreign_ids.insert(relay.inject(
+            sender_c,
+            &receiver.identity_id,
+            "native-overlay:some-other-unopened-conversation",
+            &filler,
+        ));
+    }
+    assert_eq!(foreign_ids.len(), MAX_DRAIN_ROWS);
 
-    const FIXTURE: &str = "native discord receive fixture behind a full page";
-    alice.activate();
-    prepare_native_discord_overlay_text(
-        &alice.core,
-        &alice.security,
-        &alice.broker,
-        FIXTURE.to_owned(),
+    const A_FIXTURE: &str = "active sender A fixture behind a full foreign page";
+    sender_a.activate();
+    let a_prepared = prepare_native_discord_overlay_text(
+        &sender_a.core,
+        &sender_a.security,
+        &sender_a.broker,
+        A_FIXTURE.to_owned(),
         false,
     )
-    .expect("prepare the protected message");
+    .expect("prepare A's protected message");
+    let expected_attachment = deliver_fixture_attachment(&sender_a);
+    let a_rows = relay.posted_rows(&sender_a.identity_id, &receiver.identity_id);
     assert_eq!(
-        relay.pending_for(&bob.identity_id),
-        MAX_DRAIN_ROWS + 1,
-        "one full page of other peers' rows plus the honest message"
+        a_rows.len(),
+        2,
+        "A posts one framed text row and one framed attachment row"
+    );
+    let a_text_row = a_rows
+        .iter()
+        .find(|row| ipc::wire_v2::is_native_overlay_relay_bundle(&base64_decode(&row.bundle_b64)))
+        .expect("identify A's framed text row");
+    let a_attachment_row = a_rows
+        .iter()
+        .find(|row| ipc::wire_v2::is_attachment_bundle(&base64_decode(&row.bundle_b64)))
+        .expect("identify A's framed attachment row");
+    assert_eq!(
+        relay.pending_for(&receiver.identity_id),
+        MAX_DRAIN_ROWS + 2,
+        "64 older foreign rows precede A's text and attachment"
     );
 
-    bob.activate();
-    let blocked = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
-        .expect("the drain still reports success");
+    receiver.activate();
+    let opened =
+        drain_native_discord_overlay_text(&receiver.core, &receiver.security, &receiver.broker)
+            .expect("drain A through the sender-filtered production text path");
+    assert_eq!(opened.messages.len(), 1, "exactly A's text opens");
     assert!(
-        blocked.messages.is_empty(),
-        "DEFECT: a deliverable message behind one page of other peers' rows is \
-         never opened"
-    );
-    assert_eq!(
-        blocked.fetched, 0,
-        "DEFECT: the starved drain is indistinguishable from an empty inbox"
-    );
-    assert_eq!(
-        relay.pending_for(&bob.identity_id),
-        MAX_DRAIN_ROWS + 1,
-        "DEFECT: no row is consumed, so re-polling can never make progress"
-    );
-
-    // Proof that this is head-of-line starvation and nothing wrong with the
-    // message itself: retiring a single blocking row lets the honest row into
-    // the page, and it opens immediately.
-    relay.remove_inbox(&blocking_ids[0]);
-    let opened = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
-        .expect("drain once the page has room");
-    assert_eq!(
-        opened.messages.len(),
-        1,
-        "the message was always deliverable; only the page boundary hid it"
+        opened.messages[0].plaintext == A_FIXTURE,
+        "A's opened plaintext is byte-identical"
     );
     assert!(
-        opened.messages[0].plaintext == FIXTURE,
-        "the opened plaintext is byte-identical to what the sender encrypted"
+        opened.messages[0].message_id == a_prepared.prepared.message_id
+            && opened.messages[0].cover_pointer.as_deref() == a_prepared.flagtext.as_deref(),
+        "A's opened text retains its production message and cover correlation"
     );
-
-    if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
-        panic!("message plaintext reached persistent storage at {leaked:?}");
+    assert!(
+        !relay.still_pending(&a_text_row.id),
+        "A's authenticated text row is consumed"
+    );
+    assert!(
+        relay.still_pending(&a_attachment_row.id),
+        "the text drain leaves A's attachment for the attachment consumer"
+    );
+    for id in &foreign_ids {
+        assert!(
+            relay.still_pending(id),
+            "A's text drain preserves every exact foreign row ID"
+        );
     }
 
-    drop(alice);
-    drop(bob);
+    let listed =
+        list_native_overlay_attachments(&receiver.core, &receiver.security, &receiver.broker)
+            .expect("list A through the sender-filtered attachment path");
+    assert_eq!(listed.len(), 1, "exactly A's attachment is listed");
+    assert!(
+        listed[0].attachment_id == expected_attachment.attachment_id
+            && listed[0].original_filename == expected_attachment.original_filename
+            && listed[0].plaintext_size == expected_attachment.plaintext_size
+            && listed[0].expires_at == expected_attachment.expires_at
+            && listed[0].view_once == expected_attachment.view_once,
+        "the attachment list preserves A's authenticated notice metadata"
+    );
+    let plan = take_native_overlay_attachment(
+        &receiver.core,
+        &receiver.security,
+        &receiver.broker,
+        &listed[0].attachment_id,
+    )
+    .expect("take A's attachment open plan");
+    assert!(
+        plan.attachment_id == expected_attachment.attachment_id
+            && plan.original_filename == expected_attachment.original_filename
+            && plan.plaintext_size == expected_attachment.plaintext_size
+            && plan.view_once == expected_attachment.view_once
+            && plan.sealed_size == expected_attachment.sealed_size
+            && plan.ciphertext_sha256 == expected_attachment.ciphertext_sha256
+            && plan.object_id == expected_attachment.object_id
+            && plan.fetch_token == expected_attachment.fetch_token,
+        "the taken attachment plan is the exact one A framed"
+    );
+    assert!(
+        relay.still_pending(&a_attachment_row.id),
+        "listing and taking a plan are non-consuming"
+    );
+    for id in &foreign_ids {
+        assert!(
+            relay.still_pending(id),
+            "A's attachment consumers preserve every exact foreign row ID"
+        );
+    }
+
+    let gets = relay.control_inbox_gets();
+    assert_eq!(gets.len(), 3, "text, list and take each issue one GET");
+    assert!(
+        gets.iter().all(|get| {
+            get.recipient_id == receiver.identity_id
+                && get.sender_id.as_deref() == Some(sender_a.identity_id.as_str())
+        }),
+        "every A consumer requests the exact active sender"
+    );
+
+    receiver.reopen_native_context(&receiver_b_person);
+    let b_opened =
+        drain_native_discord_overlay_text(&receiver.core, &receiver.security, &receiver.broker)
+            .expect("drain B independently after A");
+    assert_eq!(b_opened.messages.len(), 1, "exactly B's valid text opens");
+    assert!(
+        b_opened.messages[0].plaintext == B_FIXTURE,
+        "B's independently opened plaintext is byte-identical"
+    );
+    assert!(
+        !relay.still_pending(&b_honest.id),
+        "B's authenticated row is consumed only by B's drain"
+    );
+    for id in foreign_ids
+        .iter()
+        .filter(|id| id.as_str() != b_honest.id.as_str())
+    {
+        assert!(
+            relay.still_pending(id),
+            "B's drain preserves all remaining foreign filler IDs"
+        );
+    }
+    assert!(
+        relay.still_pending(&a_attachment_row.id),
+        "B's drain leaves A's attachment independently available"
+    );
+    let gets = relay.control_inbox_gets();
+    assert_eq!(gets.len(), 4, "B adds exactly one independent GET");
+    assert!(
+        gets[3].recipient_id == receiver.identity_id
+            && gets[3].sender_id.as_deref() == Some(sender_b.identity_id.as_str()),
+        "the final GET requests B rather than widening the page"
+    );
+
+    if let Some(leaked) = file_containing(&storage.root, A_FIXTURE.as_bytes()) {
+        panic!("A plaintext reached persistent storage at {leaked:?}");
+    }
+    if let Some(leaked) = file_containing(&storage.root, B_FIXTURE.as_bytes()) {
+        panic!("B plaintext reached persistent storage at {leaked:?}");
+    }
+
+    drop(sender_a);
+    drop(sender_b);
+    drop(receiver);
     drop(storage);
+}
+
+fn assert_text_and_attachment_refuse_reply(reply: ControlInboxGetReply) {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("sender-filter-refusal");
+    let relay_url = relay.base_url();
+    let sender = Peer::new(&storage, "refusal-sender", &relay_url, "44441111");
+    let receiver = Peer::new(&storage, "refusal-receiver", &relay_url, "55552222");
+    sender.open_native_context_to(&receiver.friend_code, &receiver.safety_number);
+    receiver.open_native_context_to(&sender.friend_code, &sender.safety_number);
+
+    sender.activate();
+    prepare_native_discord_overlay_text(
+        &sender.core,
+        &sender.security,
+        &sender.broker,
+        "closed-path text fixture".to_owned(),
+        false,
+    )
+    .expect("prepare the refusal text row");
+    deliver_fixture_attachment(&sender);
+    relay.inject(
+        "osl-refusal-other-sender",
+        &receiver.identity_id,
+        "native-overlay:other-scope",
+        &base64_encode(&[0x7fu8; 96]),
+    );
+    let before = relay.pending_ids_for(&receiver.identity_id);
+
+    receiver.activate();
+    relay.queue_control_inbox_get_reply(reply.clone());
+    let text_error = match drain_native_discord_overlay_text(
+        &receiver.core,
+        &receiver.security,
+        &receiver.broker,
+    ) {
+        Ok(_) => panic!("the text drain accepted an unconfirmed or widened page"),
+        Err(error) => error,
+    };
+    assert!(
+        text_error == "OSL could not receive protected messages",
+        "the text drain fails through its closed production verdict"
+    );
+
+    relay.queue_control_inbox_get_reply(reply);
+    let attachment_error =
+        match list_native_overlay_attachments(&receiver.core, &receiver.security, &receiver.broker)
+        {
+            Ok(_) => panic!("the attachment drain accepted an unconfirmed or widened page"),
+            Err(error) => error,
+        };
+    assert!(
+        attachment_error == "OSL could not receive private attachments",
+        "the attachment drain fails through its closed production verdict"
+    );
+    assert!(
+        relay.pending_ids_for(&receiver.identity_id) == before,
+        "a refused page consumes no inbox row"
+    );
+    let gets = relay.control_inbox_gets();
+    assert_eq!(gets.len(), 2, "each consumer issues exactly one request");
+    assert!(
+        gets.iter().all(|get| {
+            get.recipient_id == receiver.identity_id
+                && get.sender_id.as_deref() == Some(sender.identity_id.as_str())
+        }),
+        "both refused requests remain signed-sender-shaped without fallback"
+    );
+
+    drop(sender);
+    drop(receiver);
+    drop(storage);
+}
+
+#[test]
+fn native_discord_text_and_attachment_drains_refuse_missing_sender_echo() {
+    assert_text_and_attachment_refuse_reply(ControlInboxGetReply::MissingEcho);
+}
+
+#[test]
+fn native_discord_text_and_attachment_drains_refuse_mismatched_sender_echo() {
+    assert_text_and_attachment_refuse_reply(ControlInboxGetReply::MismatchedEcho(
+        "osl-refusal-other-sender".to_owned(),
+    ));
+}
+
+#[test]
+fn native_discord_text_and_attachment_drains_refuse_cross_sender_rows_under_matching_echo() {
+    assert_text_and_attachment_refuse_reply(ControlInboxGetReply::CrossSender(
+        "osl-refusal-other-sender".to_owned(),
+    ));
+}
+
+#[test]
+fn native_discord_text_and_attachment_drains_refuse_unfiltered_fallback_without_echo() {
+    assert_text_and_attachment_refuse_reply(ControlInboxGetReply::UnfilteredWithoutEcho);
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,7 +1667,9 @@ fn base64_decode(text: &str) -> Vec<u8> {
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack.len() >= needle.len()
-        && haystack.windows(needle.len()).any(|window| window == needle)
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 /// Walk every regular file under `root` and return the first one whose bytes
@@ -1321,9 +1685,7 @@ fn file_containing(root: &Path, needle: &[u8]) -> Option<PathBuf> {
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => stack.push(entry_path),
                 Ok(kind) if kind.is_file() => {
-                    if fs::read(&entry_path)
-                        .is_ok_and(|bytes| contains_bytes(&bytes, needle))
-                    {
+                    if fs::read(&entry_path).is_ok_and(|bytes| contains_bytes(&bytes, needle)) {
                         return Some(entry_path);
                     }
                 }
