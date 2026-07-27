@@ -24,6 +24,7 @@ import {
   DEPLOYMENT_FIXTURE_BUNDLES,
   DEPLOYMENT_FIXTURE_MIGRATIONS,
   TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+  deploymentEvidenceChallenge,
   deploymentEvidenceEnvelope,
 } from "./deployment-evidence-test-fixture.js";
 
@@ -126,6 +127,7 @@ async function selectionInputs() {
     }),
     readinessReceipt: readinessReceipt(),
     producerReceipt: deploymentEvidenceEnvelope(),
+    verifierChallenge: deploymentEvidenceChallenge(),
     expectedMigrations: DEPLOYMENT_FIXTURE_MIGRATIONS,
     trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
     nowMs: NOW,
@@ -268,6 +270,13 @@ describe("trusted keyserver release selection", () => {
     expect(() =>
       parseTrustedReleaseArgs([...args, "--receipt", "/tmp/forged.json"]),
     ).toThrow(/usage/);
+    expect(() =>
+      parseTrustedReleaseArgs([
+        ...args,
+        "--state-dir",
+        "/tmp/caller-state",
+      ]),
+    ).toThrow(/usage/);
 
     let admittedArgs: string[] = [];
     let output = "";
@@ -276,6 +285,7 @@ describe("trusted keyserver release selection", () => {
       loadSource: async () => sourceInputs(),
       loadMigrations: async () => DEPLOYMENT_FIXTURE_MIGRATIONS,
       loadProducerReceipt: async () => deploymentEvidenceEnvelope(),
+      loadVerifierChallenge: async () => deploymentEvidenceChallenge(),
       trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
       consumeReceipt: async () => {
         consumed += 1;
@@ -367,7 +377,10 @@ describe("trusted keyserver release selection", () => {
     expect(senderFilterSection).toContain("npm run release:select");
     expect(senderFilterSection).toContain("--producer-receipt");
     expect(senderFilterSection).toContain(
-      "No production release-producer public key is enrolled",
+      "No production release-producer public key or verifier lineage is enrolled",
+    );
+    expect(senderFilterSection).toContain(
+      "There is deliberately no source bootstrap or genesis API",
     );
     expect(senderFilterSection).not.toMatch(
       /npx wrangler (?:deploy|d1 migrations apply)/,

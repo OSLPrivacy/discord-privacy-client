@@ -1,33 +1,30 @@
-import {
-  createPublicKey,
-  verify as verifySignature,
-} from "node:crypto";
+import { createPublicKey, verify as verifySignature } from "node:crypto";
 import {
   READINESS_DATABASE,
   READINESS_DATABASE_ID,
   READINESS_ENVIRONMENT,
   READINESS_WORKER,
 } from "./admit-readiness-archive.mjs";
-import {
-  canonicalJson,
-  sha256,
-} from "./readiness-artifact-contract.mjs";
+import { canonicalJson, sha256 } from "./readiness-artifact-contract.mjs";
 import {
   SENDER_FILTER_ROUTE_CONTRACT,
 } from "./sender-filter-deployment-contract.mjs";
 
 export const DEPLOYMENT_EVIDENCE_ENVELOPE_FORMAT =
-  "osl.keyserver.deployment-evidence-envelope.v1";
+  "osl.keyserver.deployment-evidence-envelope.v2";
 export const DEPLOYMENT_EVIDENCE_PAYLOAD_FORMAT =
-  "osl.keyserver.deployment-evidence-payload.v1";
+  "osl.keyserver.deployment-evidence-payload.v2";
+export const DEPLOYMENT_EVIDENCE_CHALLENGE_FORMAT =
+  "osl.keyserver.deployment-evidence-challenge.v2";
 export const DEPLOYMENT_EVIDENCE_DOMAIN =
-  "OSL-KEYSERVER-DEPLOYMENT-EVIDENCE-v1\u0000";
+  "OSL-KEYSERVER-DEPLOYMENT-EVIDENCE-v2\u0000";
 export const DEPLOYMENT_EVIDENCE_MAX_ACTION_MS = 15 * 60_000;
 export const DEPLOYMENT_EVIDENCE_MAX_AGE_MS = 120_000;
 export const DEPLOYMENT_EVIDENCE_CLOCK_SKEW_MS = 10_000;
+export const DEPLOYMENT_EVIDENCE_CHALLENGE_MAX_AGE_MS = 15 * 60_000;
 
-// A production key must be enrolled by a separate, reviewed trust-root change.
-// An empty registry is deliberate: it makes every real receipt fail closed.
+// Enrollment requires a separately reviewed trust-root change. This registry
+// intentionally stays empty, so source alone cannot trust or authorize anyone.
 export const TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS = Object.freeze({});
 
 export const DEPLOYMENT_MIGRATION_LIST_QUERY = `SELECT
@@ -46,6 +43,15 @@ FROM sqlite_schema
 WHERE name NOT LIKE 'sqlite_%'
 ORDER BY type ASC, name ASC, tbl_name ASC, sql ASC`;
 
+export const DEPLOYMENT_TRANSITIONS = Object.freeze({
+  "legacy:A": "legacy-to-artifact-a",
+  "legacy:B": "legacy-to-artifact-b",
+  "A:A": "artifact-a-forward",
+  "A:B": "artifact-a-to-artifact-b",
+  "B:B": "artifact-b-forward",
+});
+
+const ZERO_SHA256 = "0".repeat(64);
 const ENVELOPE_FIELDS = Object.freeze([
   "format",
   "payload",
@@ -53,13 +59,12 @@ const ENVELOPE_FIELDS = Object.freeze([
   "producer_key_id",
   "signature_b64",
 ]);
-
 const PAYLOAD_FIELDS = Object.freeze([
   "archive_id",
   "artifact",
   "artifact_bundle_sha256",
   "artifact_isolation",
-  "authorization_id",
+  "challenge",
   "database",
   "expected_commit",
   "format",
@@ -70,7 +75,27 @@ const PAYLOAD_FIELDS = Object.freeze([
   "producer_sequence",
   "sender_filter",
   "timestamps",
+  "transition",
   "worker",
+]);
+const CHALLENGE_FIELDS = Object.freeze([
+  "archive_id",
+  "artifact",
+  "artifact_bundle_sha256",
+  "challenge_id",
+  "expected_commit",
+  "expires_at",
+  "format",
+  "issued_at",
+  "nonce_b64",
+  "permitted_transition",
+  "previous_artifact",
+  "previous_deployment_id",
+  "previous_receipt_sha256",
+  "previous_sequence",
+  "previous_worker_version",
+  "producer_identity",
+  "producer_key_id",
 ]);
 
 function requireObject(value, label) {
@@ -97,15 +122,29 @@ function requireNonemptyString(value, label) {
   }
 }
 
+function requirePositiveInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be positive`);
+  }
+}
+
 function requireSha256(value, label) {
-  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
-    throw new Error(`${label} must be a lowercase SHA-256`);
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value) ||
+    value === ZERO_SHA256
+  ) {
+    throw new Error(`${label} must be a nonzero lowercase SHA-256`);
   }
 }
 
 function requireGitCommit(value, label) {
-  if (typeof value !== "string" || !/^[0-9a-f]{40}$/.test(value)) {
-    throw new Error(`${label} must be a full lowercase Git commit`);
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{40}$/.test(value) ||
+    value === "0".repeat(40)
+  ) {
+    throw new Error(`${label} must be a nonzero full lowercase Git commit`);
   }
 }
 
@@ -127,14 +166,15 @@ function decodeBase64(value, label, exactBytes) {
   const decoded = Buffer.from(value, "base64");
   if (
     decoded.toString("base64") !== value ||
+    decoded.byteLength === 0 ||
     (exactBytes !== undefined && decoded.byteLength !== exactBytes)
   ) {
-    throw new Error(`${label} is not canonical base64`);
+    throw new Error(`${label} is not canonical nonempty base64`);
   }
   return decoded;
 }
 
-function requireTimestamp(value, label) {
+function parseTimestamp(value, label) {
   if (
     typeof value !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) ||
@@ -145,7 +185,29 @@ function requireTimestamp(value, label) {
   return Date.parse(value);
 }
 
-function validateTimestamps(value, nowMs) {
+function observationDigest(value) {
+  return sha256(Buffer.from(canonicalJson(value)));
+}
+
+function requireRecomputedObservation(
+  observation,
+  claimedCount,
+  claimedDigest,
+  label,
+) {
+  const raw = requireObject(observation, `${label} raw observation`);
+  requirePositiveInteger(claimedCount, `${label} raw cardinality`);
+  if (Object.keys(raw).length !== claimedCount) {
+    throw new Error(`${label} raw cardinality mismatch`);
+  }
+  requireSha256(claimedDigest, `${label} observation digest`);
+  if (observationDigest(raw) !== claimedDigest) {
+    throw new Error(`${label} observation digest mismatch`);
+  }
+  return raw;
+}
+
+function validateTimestamps(value, challenge, nowMs) {
   const timestamps = requireObject(value, "deployment evidence timestamps");
   const fields = [
     "action_started_at",
@@ -156,7 +218,7 @@ function validateTimestamps(value, nowMs) {
   ];
   requireExactKeys(timestamps, fields, "deployment evidence timestamps");
   const values = fields.map((field) =>
-    requireTimestamp(timestamps[field], `deployment evidence ${field}`),
+    parseTimestamp(timestamps[field], `deployment evidence ${field}`),
   );
   for (let index = 1; index < values.length; index += 1) {
     if (values[index] < values[index - 1]) {
@@ -173,7 +235,22 @@ function validateTimestamps(value, nowMs) {
   ) {
     throw new Error("deployment evidence is stale or future-dated");
   }
-  return timestamps;
+  const challengeIssued = parseTimestamp(
+    challenge.issued_at,
+    "verifier challenge issued_at",
+  );
+  const challengeExpires = parseTimestamp(
+    challenge.expires_at,
+    "verifier challenge expires_at",
+  );
+  if (
+    challengeIssued > values[0] ||
+    challengeExpires < issued ||
+    challengeExpires <= challengeIssued ||
+    challengeExpires - challengeIssued > DEPLOYMENT_EVIDENCE_CHALLENGE_MAX_AGE_MS
+  ) {
+    throw new Error("verifier challenge does not cover the action interval");
+  }
 }
 
 function validateExpectedMigrations(value) {
@@ -182,11 +259,7 @@ function validateExpectedMigrations(value) {
   }
   return value.map((entryValue, index) => {
     const entry = requireObject(entryValue, "expected committed migration");
-    requireExactKeys(
-      entry,
-      ["name", "sha256"],
-      "expected committed migration",
-    );
+    requireExactKeys(entry, ["name", "sha256"], "expected committed migration");
     if (
       typeof entry.name !== "string" ||
       !/^\d{4}_[a-z0-9_]+\.sql$/.test(entry.name)
@@ -224,21 +297,74 @@ function validateMigrations(value, expectedMigrations, artifact) {
       throw new Error("producer migration order or digest mismatch");
     }
   });
-  const lastName = value.at(-1).name;
   if (artifact === "B") {
     if (
       value.length !== expectedMigrations.length ||
-      !lastName.startsWith("0031_") ||
+      !value.at(-1).name.startsWith("0031_") ||
       value.at(-2)?.name !==
         "0030_reserve_derived_identity_namespace.sql"
     ) {
       throw new Error("Artifact B requires the exact ordered 0030 then 0031 tail");
     }
-  } else if (
-    value.some((entry) => entry.name.startsWith("0031_"))
-  ) {
+  } else if (value.some((entry) => entry.name.startsWith("0031_"))) {
     throw new Error("Artifact A migration evidence includes migration 0031");
   }
+  return value;
+}
+
+function validateSchemaRows(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("producer schema rows are empty");
+  }
+  let previous = null;
+  for (const rowValue of value) {
+    const row = requireObject(rowValue, "producer schema row");
+    requireExactKeys(
+      row,
+      ["name", "sql", "tbl_name", "type"],
+      "producer schema row",
+    );
+    requireNonemptyString(row.type, "producer schema type");
+    requireNonemptyString(row.name, "producer schema name");
+    requireNonemptyString(row.tbl_name, "producer schema table name");
+    if (row.sql !== null) requireNonemptyString(row.sql, "producer schema SQL");
+    const ordering = canonicalJson([
+      row.type,
+      row.name,
+      row.tbl_name,
+      row.sql,
+    ]);
+    if (previous !== null && previous >= ordering) {
+      throw new Error("producer schema rows are not strictly ordered");
+    }
+    previous = ordering;
+  }
+  return value;
+}
+
+function validateMigrationRows(value, migrations) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("producer raw migration rows are empty");
+  }
+  if (value.length !== migrations.length) {
+    throw new Error("producer raw migration row cardinality mismatch");
+  }
+  value.forEach((rowValue, index) => {
+    const row = requireObject(rowValue, "producer raw migration row");
+    requireExactKeys(
+      row,
+      ["applied_at", "id", "name"],
+      "producer raw migration row",
+    );
+    requirePositiveInteger(row.id, "producer raw migration id");
+    requireNonemptyString(row.applied_at, "producer migration applied_at");
+    if (
+      row.name !== migrations[index].name ||
+      (index > 0 && row.id <= value[index - 1].id)
+    ) {
+      throw new Error("producer raw migration order mismatch");
+    }
+  });
   return value;
 }
 
@@ -251,11 +377,14 @@ function validateDatabase(value, migrations) {
       "id",
       "migration_list_output_sha256",
       "migration_list_query_sha256",
+      "migration_row_count",
+      "migration_rows",
       "name",
       "schema_fingerprint_sha256",
       "schema_object_count",
       "schema_output_sha256",
       "schema_query_sha256",
+      "schema_rows",
     ],
     "producer database evidence",
   );
@@ -266,72 +395,168 @@ function validateDatabase(value, migrations) {
   ) {
     throw new Error("producer database identity mismatch");
   }
+  const migrationQueryDigest = sha256(
+    Buffer.from(DEPLOYMENT_MIGRATION_LIST_QUERY),
+  );
+  const schemaQueryDigest = sha256(
+    Buffer.from(DEPLOYMENT_SCHEMA_FINGERPRINT_QUERY),
+  );
+  requireSha256(
+    database.migration_list_query_sha256,
+    "producer migration query digest",
+  );
+  requireSha256(database.schema_query_sha256, "producer schema query digest");
   if (
-    database.migration_list_query_sha256 !==
-      sha256(Buffer.from(DEPLOYMENT_MIGRATION_LIST_QUERY)) ||
-    database.schema_query_sha256 !==
-      sha256(Buffer.from(DEPLOYMENT_SCHEMA_FINGERPRINT_QUERY))
+    database.migration_list_query_sha256 !== migrationQueryDigest ||
+    database.schema_query_sha256 !== schemaQueryDigest
   ) {
     throw new Error("producer database query contract mismatch");
   }
-  for (const field of [
-    "migration_list_output_sha256",
-    "schema_fingerprint_sha256",
-    "schema_output_sha256",
-  ]) {
-    requireSha256(database[field], `producer database ${field}`);
-    if (database[field] === "0".repeat(64)) {
-      throw new Error(`producer database ${field} is an empty sentinel`);
-    }
+  requirePositiveInteger(
+    database.migration_row_count,
+    "producer migration row cardinality",
+  );
+  const migrationRows = validateMigrationRows(
+    database.migration_rows,
+    migrations,
+  );
+  if (database.migration_row_count !== migrationRows.length) {
+    throw new Error("producer migration row cardinality mismatch");
   }
-  if (
-    database.migration_list_output_sha256 !==
-      sha256(Buffer.from(canonicalJson(migrations))) ||
-    database.schema_output_sha256 !==
-      database.schema_fingerprint_sha256
-  ) {
-    throw new Error("producer database output or schema fingerprint mismatch");
-  }
-  if (
-    !Number.isSafeInteger(database.schema_object_count) ||
-    database.schema_object_count <= 0 ||
-    migrations.length === 0
-  ) {
-    throw new Error("producer schema evidence is empty");
-  }
-  return database;
-}
-
-function validateWorker(value, expectation) {
-  const worker = requireObject(value, "producer Worker evidence");
-  requireExactKeys(
-    worker,
-    [
-      "bundle_sha256",
-      "deployment_id",
-      "health_route",
-      "sender_filter_route",
-      "service",
-      "version_id",
-    ],
-    "producer Worker evidence",
+  requireSha256(
+    database.migration_list_output_sha256,
+    "producer migration output digest",
   );
   if (
-    worker.service !== READINESS_WORKER ||
-    worker.version_id !== expectation.expectedWorkerVersion ||
-    worker.deployment_id !== expectation.expectedDeploymentId ||
-    worker.bundle_sha256 !== expectation.artifactBundles[expectation.artifact]
+    database.migration_list_output_sha256 !==
+    observationDigest(migrationRows)
   ) {
-    throw new Error("producer Worker identity or bundle mismatch");
+    throw new Error("producer migration output digest mismatch");
   }
-  requireUuid(worker.version_id, "producer Worker version");
-  requireUuid(worker.deployment_id, "producer deployment id");
-  requireSha256(worker.bundle_sha256, "producer Worker bundle digest");
+  const schemaRows = validateSchemaRows(database.schema_rows);
+  requirePositiveInteger(
+    database.schema_object_count,
+    "producer schema object cardinality",
+  );
+  if (database.schema_object_count !== schemaRows.length) {
+    throw new Error("producer schema object cardinality mismatch");
+  }
+  const schemaDigest = observationDigest(schemaRows);
+  for (const field of [
+    "schema_output_sha256",
+    "schema_fingerprint_sha256",
+  ]) {
+    requireSha256(database[field], `producer database ${field}`);
+    if (database[field] !== schemaDigest) {
+      throw new Error("producer schema observation digest mismatch");
+    }
+  }
+}
 
-  const health = requireObject(worker.health_route, "producer health route");
+function validateChallenge(value, expectation, producerKeyId, producerIdentity) {
+  const challenge = requireObject(value, "deployment evidence challenge");
+  requireExactKeys(
+    challenge,
+    CHALLENGE_FIELDS,
+    "deployment evidence challenge",
+  );
+  if (challenge.format !== DEPLOYMENT_EVIDENCE_CHALLENGE_FORMAT) {
+    throw new Error("deployment evidence challenge format mismatch");
+  }
+  requireUuid(challenge.challenge_id, "verifier challenge id");
+  decodeBase64(challenge.nonce_b64, "verifier challenge nonce", 32);
+  requirePositiveInteger(
+    challenge.previous_sequence,
+    "verifier previous sequence",
+  );
+  requireSha256(
+    challenge.previous_receipt_sha256,
+    "verifier previous receipt digest",
+  );
+  requireUuid(
+    challenge.previous_worker_version,
+    "verifier previous Worker version",
+  );
+  requireUuid(
+    challenge.previous_deployment_id,
+    "verifier previous deployment id",
+  );
+  if (!["legacy", "A", "B"].includes(challenge.previous_artifact)) {
+    throw new Error("verifier previous artifact is invalid");
+  }
+  const transition =
+    DEPLOYMENT_TRANSITIONS[
+      `${challenge.previous_artifact}:${challenge.artifact}`
+    ];
+  if (!transition || transition !== challenge.permitted_transition) {
+    throw new Error("verifier challenge transition is not permitted");
+  }
+  requireGitCommit(challenge.expected_commit, "challenge expected commit");
+  requireSha256(challenge.archive_id, "challenge archive");
+  requireSha256(challenge.artifact_bundle_sha256, "challenge artifact bundle");
+  if (
+    challenge.producer_key_id !== producerKeyId ||
+    challenge.producer_identity !== producerIdentity ||
+    challenge.expected_commit !== expectation.expectedCommit ||
+    challenge.archive_id !== expectation.archiveId ||
+    challenge.artifact !== expectation.artifact ||
+    challenge.artifact_bundle_sha256 !==
+      expectation.artifactBundles[expectation.artifact] ||
+    canonicalJson(challenge) !== canonicalJson(expectation.verifierChallenge)
+  ) {
+    throw new Error("receipt does not carry the verifier-issued challenge");
+  }
+  return challenge;
+}
+
+function validateTransition(value, challenge, expectation) {
+  const transition = requireObject(value, "deployment transition");
+  requireExactKeys(
+    transition,
+    [
+      "current_artifact",
+      "current_deployment_id",
+      "current_worker_version",
+      "permitted_transition",
+      "previous_artifact",
+      "previous_deployment_id",
+      "previous_worker_version",
+    ],
+    "deployment transition",
+  );
+  if (
+    transition.previous_artifact !== challenge.previous_artifact ||
+    transition.previous_worker_version !== challenge.previous_worker_version ||
+    transition.previous_deployment_id !== challenge.previous_deployment_id ||
+    transition.current_artifact !== expectation.artifact ||
+    transition.current_worker_version !== expectation.expectedWorkerVersion ||
+    transition.current_deployment_id !== expectation.expectedDeploymentId ||
+    transition.permitted_transition !== challenge.permitted_transition
+  ) {
+    throw new Error("deployment transition does not match verifier state");
+  }
+  requireUuid(transition.current_worker_version, "current Worker version");
+  requireUuid(transition.current_deployment_id, "current deployment id");
+  if (
+    transition.current_worker_version === transition.previous_worker_version ||
+    transition.current_deployment_id === transition.previous_deployment_id
+  ) {
+    throw new Error("deployment transition did not advance Worker identity");
+  }
+}
+
+function validateHealthRoute(value) {
+  const health = requireObject(value, "producer health route");
   requireExactKeys(
     health,
-    ["method", "path", "response_sha256", "status"],
+    [
+      "method",
+      "path",
+      "response",
+      "response_field_count",
+      "response_sha256",
+      "status",
+    ],
     "producer health route",
   );
   if (
@@ -341,12 +566,16 @@ function validateWorker(value, expectation) {
   ) {
     throw new Error("producer health route contract mismatch");
   }
-  requireSha256(health.response_sha256, "producer health response digest");
-
-  const sender = requireObject(
-    worker.sender_filter_route,
-    "producer sender-filter route",
+  return requireRecomputedObservation(
+    health.response,
+    health.response_field_count,
+    health.response_sha256,
+    "producer health response",
   );
+}
+
+function validateSenderRoute(value, artifact) {
+  const sender = requireObject(value, "producer sender-filter route");
   requireExactKeys(
     sender,
     [
@@ -354,7 +583,11 @@ function validateWorker(value, expectation) {
       "item_count",
       "method",
       "path",
+      "request_signature_b64",
+      "request_signature_byte_count",
       "request_signature_sha256",
+      "response",
+      "response_field_count",
       "response_sha256",
       "status",
     ],
@@ -366,32 +599,119 @@ function validateWorker(value, expectation) {
   ) {
     throw new Error("producer sender-filter route contract mismatch");
   }
+  const signature = decodeBase64(
+    sender.request_signature_b64,
+    "producer sender-filter request signature",
+  );
+  requirePositiveInteger(
+    sender.request_signature_byte_count,
+    "producer request signature cardinality",
+  );
   requireSha256(
     sender.request_signature_sha256,
     "producer signed sender request digest",
   );
-  requireSha256(sender.response_sha256, "producer sender response digest");
-  if (expectation.artifact === "B") {
+  if (
+    sender.request_signature_byte_count !== signature.byteLength ||
+    sender.request_signature_sha256 !== sha256(signature)
+  ) {
+    throw new Error("producer signed sender request observation mismatch");
+  }
+  const response = requireRecomputedObservation(
+    sender.response,
+    sender.response_field_count,
+    sender.response_sha256,
+    "producer sender-filter response",
+  );
+  if (artifact === "B") {
     if (
       sender.status !== 200 ||
       typeof sender.filtered_sender_id !== "string" ||
       sender.filtered_sender_id.length === 0 ||
       !Number.isSafeInteger(sender.item_count) ||
-      sender.item_count <= 0
+      sender.item_count <= 0 ||
+      response.filtered_sender_id !== sender.filtered_sender_id ||
+      !Array.isArray(response.items) ||
+      response.items.length !== sender.item_count ||
+      response.items.some(
+        (item) =>
+          !item ||
+          item.sender_id !== sender.filtered_sender_id ||
+          typeof item.bundle_b64 !== "string" ||
+          decodeBase64(item.bundle_b64, "producer sender item bundle")
+            .byteLength === 0,
+      )
     ) {
       throw new Error("Artifact B sender-filter route proof is empty or mismatched");
     }
   } else if (
     sender.status !== 503 ||
     sender.filtered_sender_id !== null ||
-    sender.item_count !== 0
+    sender.item_count !== 0 ||
+    typeof response.error !== "string" ||
+    response.error.length === 0
   ) {
     throw new Error("Artifact A did not preserve sender-filter refusal");
   }
-  return worker;
+  return { sender, response };
 }
 
-function validateSenderFilter(value, worker, artifact) {
+function validateWorker(value, expectation) {
+  const worker = requireObject(value, "producer Worker evidence");
+  requireExactKeys(
+    worker,
+    [
+      "bundle_sha256",
+      "deployment_id",
+      "deployment_observation",
+      "deployment_observation_field_count",
+      "deployment_observation_sha256",
+      "health_route",
+      "sender_filter_route",
+      "service",
+      "version_id",
+    ],
+    "producer Worker evidence",
+  );
+  requireUuid(worker.version_id, "producer Worker version");
+  requireUuid(worker.deployment_id, "producer deployment id");
+  requireSha256(worker.bundle_sha256, "producer Worker bundle digest");
+  if (
+    worker.service !== READINESS_WORKER ||
+    worker.version_id !== expectation.expectedWorkerVersion ||
+    worker.deployment_id !== expectation.expectedDeploymentId ||
+    worker.bundle_sha256 !== expectation.artifactBundles[expectation.artifact]
+  ) {
+    throw new Error("producer Worker identity or bundle mismatch");
+  }
+  const deployment = requireRecomputedObservation(
+    worker.deployment_observation,
+    worker.deployment_observation_field_count,
+    worker.deployment_observation_sha256,
+    "producer Worker deployment",
+  );
+  requireExactKeys(
+    deployment,
+    ["bundle_sha256", "deployment_id", "service", "version_id"],
+    "producer Worker deployment observation",
+  );
+  if (
+    deployment.service !== worker.service ||
+    deployment.version_id !== worker.version_id ||
+    deployment.deployment_id !== worker.deployment_id ||
+    deployment.bundle_sha256 !== worker.bundle_sha256
+  ) {
+    throw new Error("producer Worker deployment observation mismatch");
+  }
+  const healthResponse = validateHealthRoute(worker.health_route);
+  const sender = validateSenderRoute(
+    worker.sender_filter_route,
+    expectation.artifact,
+  );
+  return { worker, healthResponse, sender };
+}
+
+function validateSenderFilter(value, workerEvidence, artifact) {
   const capability = requireObject(
     value,
     "producer sender-filter capability",
@@ -407,30 +727,40 @@ function validateSenderFilter(value, worker, artifact) {
     ],
     "producer sender-filter capability",
   );
+  requireSha256(
+    capability.health_response_sha256,
+    "producer capability health digest",
+  );
   if (
     capability.name !== SENDER_FILTER_ROUTE_CONTRACT.health_capability ||
-    capability.health_response_sha256 !== worker.health_route.response_sha256
+    capability.health_response_sha256 !==
+      workerEvidence.worker.health_route.response_sha256
   ) {
     throw new Error("producer sender-filter capability identity mismatch");
   }
+  const advertisedVersion =
+    workerEvidence.healthResponse.capabilities?.[
+      SENDER_FILTER_ROUTE_CONTRACT.health_capability
+    ];
   if (artifact === "B") {
     if (
       capability.advertised !== true ||
       capability.version !==
         SENDER_FILTER_ROUTE_CONTRACT.health_capability_version ||
+      advertisedVersion !== capability.version ||
       capability.probe_sender_id !==
-        worker.sender_filter_route.filtered_sender_id
+        workerEvidence.worker.sender_filter_route.filtered_sender_id
     ) {
       throw new Error("Artifact B capability advertisement mismatch");
     }
   } else if (
     capability.advertised !== false ||
     capability.version !== null ||
-    capability.probe_sender_id !== null
+    capability.probe_sender_id !== null ||
+    advertisedVersion !== undefined
   ) {
     throw new Error("Artifact A falsely advertises sender-filter capability");
   }
-  return capability;
 }
 
 function validateArtifactProbe(value, label, expectedBundle) {
@@ -440,19 +770,41 @@ function validateArtifactProbe(value, label, expectedBundle) {
     [
       "active",
       "bundle_sha256",
+      "observation",
+      "observation_field_count",
       "observed_version_id",
       "probe_sha256",
     ],
     `producer ${label} isolation probe`,
   );
+  requireSha256(probe.bundle_sha256, `producer ${label} bundle digest`);
   if (probe.bundle_sha256 !== expectedBundle) {
     throw new Error(`producer ${label} bundle mismatch`);
   }
-  requireSha256(probe.bundle_sha256, `producer ${label} bundle digest`);
-  requireSha256(probe.probe_sha256, `producer ${label} probe digest`);
-  if (probe.active) {
+  const observation = requireRecomputedObservation(
+    probe.observation,
+    probe.observation_field_count,
+    probe.probe_sha256,
+    `producer ${label} probe`,
+  );
+  requireExactKeys(
+    observation,
+    ["active", "bundle_sha256", "observed_version_id"],
+    `producer ${label} probe observation`,
+  );
+  if (
+    observation.active !== probe.active ||
+    observation.bundle_sha256 !== probe.bundle_sha256 ||
+    observation.observed_version_id !== probe.observed_version_id
+  ) {
+    throw new Error(`producer ${label} probe observation mismatch`);
+  }
+  if (probe.active === true) {
     requireUuid(probe.observed_version_id, `producer ${label} observed version`);
-  } else if (probe.observed_version_id !== null) {
+  } else if (
+    probe.active !== false ||
+    probe.observed_version_id !== null
+  ) {
     throw new Error(`inactive ${label} probe has a Worker version`);
   }
   return probe;
@@ -465,13 +817,33 @@ function validateArtifactIsolation(value, expectation) {
   );
   requireExactKeys(
     isolation,
-    ["artifact_a", "artifact_b", "probe_nonce_sha256"],
+    [
+      "artifact_a",
+      "artifact_b",
+      "probe_nonce_b64",
+      "probe_nonce_byte_count",
+      "probe_nonce_sha256",
+    ],
     "producer artifact isolation evidence",
+  );
+  const nonce = decodeBase64(
+    isolation.probe_nonce_b64,
+    "producer artifact isolation nonce",
+  );
+  requirePositiveInteger(
+    isolation.probe_nonce_byte_count,
+    "producer isolation nonce cardinality",
   );
   requireSha256(
     isolation.probe_nonce_sha256,
-    "producer artifact isolation nonce",
+    "producer artifact isolation nonce digest",
   );
+  if (
+    isolation.probe_nonce_byte_count !== nonce.byteLength ||
+    isolation.probe_nonce_sha256 !== sha256(nonce)
+  ) {
+    throw new Error("producer artifact isolation nonce observation mismatch");
+  }
   const artifactA = validateArtifactProbe(
     isolation.artifact_a,
     "Artifact A",
@@ -487,14 +859,11 @@ function validateArtifactIsolation(value, expectation) {
   if (
     selected.active !== true ||
     selected.observed_version_id !== expectation.expectedWorkerVersion ||
-    unselected.active !== false
+    unselected.active !== false ||
+    artifactA.bundle_sha256 === artifactB.bundle_sha256
   ) {
     throw new Error("producer Artifact A/B isolation mismatch");
   }
-  if (artifactA.bundle_sha256 === artifactB.bundle_sha256) {
-    throw new Error("Artifact A and B bundles are not isolated");
-  }
-  return isolation;
 }
 
 export function deploymentEvidenceSigningBytes(payload) {
@@ -519,6 +888,7 @@ export function validateDeploymentEvidenceExpectation(value) {
       "expectedDeploymentId",
       "expectedMigrations",
       "expectedWorkerVersion",
+      "verifierChallenge",
     ],
     "deployment evidence expectation",
   );
@@ -539,6 +909,7 @@ export function validateDeploymentEvidenceExpectation(value) {
   if (bundles.A === bundles.B) {
     throw new Error("expected Artifact A and B bundles are identical");
   }
+  requireObject(expectation.verifierChallenge, "expected verifier challenge");
   return {
     ...expectation,
     expectedMigrations: validateExpectedMigrations(
@@ -613,18 +984,11 @@ export function verifyDeploymentEvidenceReceipt(
   ) {
     throw new Error("deployment evidence producer signature is invalid");
   }
-
   if (payload.producer_identity !== producer.identity) {
     throw new Error("deployment evidence producer identity mismatch");
   }
   requireUuid(payload.producer_run_id, "producer run id");
-  requireUuid(payload.authorization_id, "producer authorization id");
-  if (
-    !Number.isSafeInteger(payload.producer_sequence) ||
-    payload.producer_sequence <= 0
-  ) {
-    throw new Error("producer sequence must be positive");
-  }
+  requirePositiveInteger(payload.producer_sequence, "producer sequence");
   requireSha256(
     payload.previous_receipt_sha256,
     "previous producer receipt digest",
@@ -641,8 +1005,20 @@ export function verifyDeploymentEvidenceReceipt(
   ) {
     throw new Error("producer commit, archive, artifact, or bundle mismatch");
   }
-
-  validateTimestamps(payload.timestamps, nowMs);
+  const challenge = validateChallenge(
+    payload.challenge,
+    expectation,
+    envelope.producer_key_id,
+    producer.identity,
+  );
+  if (
+    payload.producer_sequence !== challenge.previous_sequence + 1 ||
+    payload.previous_receipt_sha256 !== challenge.previous_receipt_sha256
+  ) {
+    throw new Error("producer receipt does not advance verifier state");
+  }
+  validateTransition(payload.transition, challenge, expectation);
+  validateTimestamps(payload.timestamps, challenge, nowMs);
   const migrations = validateMigrations(
     payload.migrations,
     expectation.expectedMigrations,

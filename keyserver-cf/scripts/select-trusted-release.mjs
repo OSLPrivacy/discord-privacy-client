@@ -17,6 +17,7 @@ import {
 import {
   consumeDeploymentEvidenceOnce,
   loadCommittedMigrationClosure,
+  loadDeploymentEvidenceVerifierChallenge,
   readDeploymentEvidenceReceipt,
 } from "./deployment-evidence-receipt-io.mjs";
 
@@ -100,6 +101,9 @@ export async function runTrustedReleaseSelectionCli(
     TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS;
   const consumeReceipt =
     dependencies.consumeReceipt ?? consumeDeploymentEvidenceOnce;
+  const loadVerifierChallenge =
+    dependencies.loadVerifierChallenge ??
+    loadDeploymentEvidenceVerifierChallenge;
 
   const producerReceipt = await loadProducerReceipt(
     options.producerReceiptPath,
@@ -115,6 +119,10 @@ export async function runTrustedReleaseSelectionCli(
       "deployment evidence producer is not independently trusted",
     );
   }
+  const verifierChallenge = await loadVerifierChallenge(
+    producerReceipt.producer_key_id,
+    { nowMs: now() },
+  );
   const expectedMigrations = await loadMigrations(options.expectedCommit);
   const sourceReceipt = createSenderFilterDeploymentReceipt({
     ...(await loadSource(options.expectedCommit)),
@@ -136,6 +144,7 @@ export async function runTrustedReleaseSelectionCli(
     sourceReceipt,
     readinessReceipt,
     producerReceipt,
+    verifierChallenge,
     expectedMigrations,
     trustedProducers,
     nowMs: now(),
@@ -150,6 +159,7 @@ export async function runTrustedReleaseSelectionCli(
       expectedDeploymentId: readinessReceipt.deployment_id,
       expectedMigrations,
       expectedWorkerVersion: readinessReceipt.active_worker_version,
+      verifierChallenge,
     },
     { trustedProducers, nowMs: now() },
   );

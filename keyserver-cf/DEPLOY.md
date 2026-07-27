@@ -781,27 +781,42 @@ npm run release:select -- \
 ```
 
 The receipt is not an operator-authored JSON form. Its Ed25519 signature must
-verify against a separately enrolled release-producer public key, and its
-producer identity, run id, monotonic sequence, previous-receipt digest, exact
-commit/archive and A/B bundle hashes are signed. The producer must capture the
-ordered committed D1 migration list, canonical applied-schema fingerprint,
-exact production database/environment, active Worker version/deployment,
-health and signed sender-filter routes, capability advertisement, and mutually
-exclusive Artifact A/B probes itself. Hashing a caller-supplied collection of
-those values is not a producer receipt.
+verify against a separately enrolled release-producer public key. Before any
+authorized production action, an independent verifier must already have a
+durable, private lineage record and must issue a one-use random challenge from
+that record. The producer signs the exact challenge, prior receipt, prior
+Worker version and deployment ID, permitted A/B transition, new Worker version
+and deployment ID, exact commit/archive, and A/B bundle hashes. A producer-
+chosen nonce, a challenge copied from another lineage, an unrecorded first
+receipt, a Worker or deployment ID seen earlier in the lineage, and every
+downgrade transition are refused.
+
+The producer must carry the raw ordered D1 migration rows, canonical
+`sqlite_schema` rows, Worker deployment observation, health response, signed
+sender-filter request bytes and response, capability advertisement, isolation
+nonce, and both Artifact A/B probe observations. Every observation digest is
+recomputed from those raw bytes or canonical rows, and every claimed raw
+cardinality must be positive and exact. A digest-only assertion, zero digest,
+empty schema/migration/signature/probe, or caller-supplied collection is not a
+producer receipt.
 
 The selector checks freshness and timestamp ordering, requires nonempty schema
-and positive Artifact B route fixtures, and atomically advances a private
-per-producer receipt chain. Reusing a receipt, skipping or rewinding a
-sequence, substituting a caller key, changing a signed field, or presenting a
-self-consistent envelope from an untrusted key is refused.
+and positive Artifact B route fixtures, and consumes the pending verifier
+challenge while atomically advancing its private lineage. The verifier state
+is not a receipt-side file and the selector exposes no state-directory flag.
+There is deliberately no source bootstrap or genesis API: if the state record
+is absent, deleted, malformed, or reset, challenge issue and receipt
+consumption both fail closed. Restoring lineage would require an independent
+operator-controlled recovery procedure and review; presenting sequence 1 or a
+zero previous-receipt hash never creates authority.
 
-No production release-producer public key is enrolled in source today. That is
-deliberate: inventing a public key without an independently controlled private
-producer would create fake authority. Therefore every production receipt
-currently refuses. A future key enrollment and producer implementation require
-a separate security review; the producer must own provider capture and must
-never accept caller-written evidence fields.
+No production release-producer public key or verifier lineage is enrolled in
+source today. That is deliberate: inventing a public key, challenge, or
+lineage anchor without an independently controlled producer and verifier would
+create fake authority. Therefore every production receipt currently refuses.
+A future key enrollment, durable verifier provisioning/recovery process, and
+producer implementation require separate security review; the producer must
+own provider capture and must never accept caller-written evidence fields.
 
 Even after a producer is independently enrolled, a passing selector result
 says `execution_authorized=false` and `execution_performed=false`; it records

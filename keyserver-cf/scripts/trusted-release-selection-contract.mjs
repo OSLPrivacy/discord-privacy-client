@@ -312,6 +312,7 @@ export function selectTrustedRelease({
   sourceReceipt,
   readinessReceipt,
   producerReceipt,
+  verifierChallenge,
   expectedMigrations,
   trustedProducers,
   nowMs = Date.now(),
@@ -338,6 +339,7 @@ export function selectTrustedRelease({
       expectedDeploymentId: readiness.deployment_id,
       expectedMigrations,
       expectedWorkerVersion: readiness.active_worker_version,
+      verifierChallenge,
     },
     { trustedProducers, nowMs },
   );
