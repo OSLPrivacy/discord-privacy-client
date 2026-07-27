@@ -22,6 +22,8 @@ If you are picking this lane up cold, this is the state:
 | **NEW — attachment uploads were broken on the real runtime** | **Pre-existing, not from these changes. Found by the probe, fixed** — see "Found during verification" |
 | Control-inbox reserve was check-then-act | **Closed** — admission cap moved into the insert statement, no migration |
 | Post-deploy probes for both workers | **Written and passing** against a local workerd (`scripts/post-deploy-probe.mjs` in each) |
+| Standing smoke suite | **`scripts/osl-server-smoke.sh`** — runs both probes, ties evidence to a build identity, redacts token-shaped hex, writes a dated file to `docs/evidence/server-smoke/` |
+| Attachment defect age | **Established: never worked in any committed state.** `attachment.ts` has two commits total — see "How far back it goes" |
 | Keyserver limiter — same KV race? | **Verified no.** It already uses Cloudflare's native rate-limit binding, not KV read/modify/write |
 | Residual of the open-registration critical | **Still open, documented** — 0029 closed the snowflake vector, not identifier binding |
 | HIGH-2b generic blobs had no aggregate quota | **Fixed, staged, proved** (`cipher-store-cf`, Worker only) |
@@ -59,8 +61,39 @@ Probe C's number is worth reading closely: probes A and B had already consumed 6
 session creations, and C was admitted exactly 18 more. 6 + 18 = 24, the budget,
 exactly. That is the ceiling being real, not approximately real.
 
-Status for the cipher-store fixes is therefore `runtime-proven` **locally**.
-Still not `verified-live`: nothing has been deployed to production.
+### Production status — what is confirmed, and what is not
+
+Both Workers were deployed by the owner: **cipher-store `3374d057`**, **keyserver
+`3f92f0f5`**. Three different confidence levels apply, and they should not be
+collapsed:
+
+| Fix | Status | Evidence |
+|---|---|---|
+| HIGH-1 session budget | `verified-live` | Owner confirmed on the production hostname: `held=900`, `promised=604800` — the reclaim deadline and the promised content TTL are exactly the two distinct values the fix introduces |
+| HIGH-2 atomic limiter | `deployed, not independently confirmed live` | Ships in the same Worker version; the decisive concurrency check has only been run against local workerd |
+| Control-inbox + pubkeys | `deployed, not independently confirmed live` | Keyserver `3f92f0f5`; the pubkeys check is free to run (one `curl`) |
+| **R2 upload fix** | **`unknown — must be checked`** | See below |
+
+**The R2 fix's live status is genuinely unknown and matters most.** The quota fix
+and the R2 fix both live in `attachment.ts` but were written hours apart, so a
+deploy cut from the tree between them would carry one without the other.
+`held=900` proves only the quota fix. The discriminator is a single small upload,
+because the old code returns 500 where the new one returns 201:
+
+```sh
+T=$(openssl rand -hex 16)
+ID=$(curl -sX POST https://ciphers.oslprivacy.com/v1/attachment \
+  -H "X-OSL-TTL-Seconds: 3600" -H "X-OSL-Fetch-Token: $T" \
+  --data-binary $'\x01\x02\x03\x04' | jq -r .id)
+curl -sX DELETE "https://ciphers.oslprivacy.com/v1/attachment/$ID" \
+  -H "X-OSL-Fetch-Token: $T" -i | head -1
+```
+
+201 plus an id means the fix is live. 500 means the deployed build predates it and
+attachments are still broken in production.
+
+Local `runtime-proven` remains true for all cipher-store fixes: a real workerd on
+this machine with all six migrations applied, 3/3 probes passing.
 
 Every fix below has a test that was **observed failing against the unmodified code
 first**. The captured baseline failures are quoted with each finding.
@@ -575,6 +608,68 @@ A unit guard now asserts R2 receives a `Uint8Array` and not a `ReadableStream`.
 That is a proxy for the real property — a test double cannot enforce workerd's
 rule — so the end-to-end proof remains the probe.
 
+### How far back it goes, and what it invalidates
+
+**Verdict: the R2 attachment upload path has never worked in any committed state
+of this repository. There is no window in which it functioned.**
+
+`cipher-store-cf/src/endpoints/attachment.ts` has had exactly two commits in its
+entire history:
+
+| Commit | Date | Subject |
+|---|---|---|
+| `08552e5` | 2026-07-26 10:02:35 -0700 | WIP snapshot: encrypted send working, eye decode one fix away |
+| `b6f456e` | 2026-07-26 | server lane: this fix |
+
+The first committed version already contained the defect in identical form —
+`pipeThrough` at line 90, feeding `uploadPart` at 275 and `put` at 368. So the
+file was born broken.
+
+One honest bound: `08552e5` is a *WIP snapshot*, which means the code existed
+uncommitted for an unknown period before it. Git cannot see that period, so the
+true age is unbounded below. What git does establish is that **no committed
+version ever worked**, and no tag contains a working one (6 tags exist; none
+predate the file with a functioning variant, because no functioning variant
+exists).
+
+**What this invalidates — in descending order of how much it should worry you:**
+
+1. **Every test that "proves" attachment upload.** The whole cipher-store
+   attachment suite, and `apps/osl-hub/tests/peer_attachment_network_e2e.rs`,
+   run against fakes or a stub HTTP server. None of them touch workerd's
+   known-length rule. They were green throughout and proved nothing about
+   whether an upload can execute. Treat any prior "attachment transport tested"
+   as covering wire shape and quota logic only.
+2. **Any claim that OSL can send a file.** Anything attachment-shaped on the
+   website, in the claim allowlist, or in the support matrix was describing a
+   path that could not run. Truth already has this.
+3. **Any prior "attachment sent" receipt or QA observation.** If one exists, it
+   did not go through `/v1/attachment`. Either it predates cipher-store, or it
+   observed something other than what it recorded. Crypto should treat all of
+   them as unproven, which I understand they have been told.
+4. **A consequence for the audit's own CRITICAL #4 that nobody has flagged.**
+   "Shipping non-image attachments are decrypted into durable plaintext files"
+   describes the *open* path: a recipient fetches an attachment and OSL writes
+   the decrypted bytes to LocalAppData. But a recipient can only fetch what a
+   sender uploaded, and `crates/ipc/src/cipher_store_client.rs` is the only
+   upload route. If nothing was ever uploadable, then no plaintext was ever
+   staged from this path in the wild — the defect is real in source and the fix
+   is still required, but its **historical exposure may be nil**.
+   I am flagging this as a question for crypto, not answering it, because it
+   turns on something outside my lane: whether any attachment ever reached a
+   recipient by another route. If the answer is no, CRITICAL #4 changes from
+   "plaintext has been hitting disk" to "plaintext would hit disk the moment
+   uploads start working" — which is a different remediation urgency and a
+   different disclosure posture.
+
+**The generalisable lesson,** which is why this belongs in the report and not
+just the commit message: three false greens today share one shape — a harness
+that cannot fail. A D1 fake that only models statements its author wrote, an R2
+double that accepts any stream, a default-deny assertion that passes vacuously.
+Each confirmed the author's belief rather than the system's behaviour. The
+countermeasure that actually worked here was not a better fake; it was running
+the real runtime once.
+
 ## Also closed — my own reserve was check-then-act
 
 The recipient-wide reserve I added for the control-inbox fix was itself a
@@ -592,6 +687,67 @@ Honest limit: the observable behaviour (429 at the cap) is tested, but I did not
 build a live interleaving test for the predicate itself, because the request
 boundary is not controllable from the harness. Its correctness rests on the same
 argument as the cipher-store counter: one statement, serialised by D1.
+
+## The open-registration residual — exact client contract for the crypto lane
+
+Recorded here in full rather than half-closed, because the server cannot fix it alone.
+
+**Where it stands.** `/v1/register` proves the caller possesses the submitted
+Ed25519 key. It proves nothing about who owns the *identifier*: `register.ts:110`
+validates `user_id` only with `isProtocolId` (bounded, no control characters).
+Migration 0029 refused Discord snowflakes and quarantined every legacy row behind
+`identity_lookup_enabled = 0`, which closed the vector the audit described. It did
+not make identifiers unforgeable. Any non-snowflake identifier is still
+first-come, so an attacker who learns Bob's opaque OSL id before Bob registers can
+claim it with attacker-controlled keys.
+
+**What already limits the damage.** Once an id is claimed, rotation is
+compare-and-swap against the registered key (`register.ts:302`), so the claim
+cannot be stolen afterwards. And the hub's friend-code path carries key material
+plus a safety number, so a substituted key is detected out of band rather than
+silently trusted. The exposure is first contact through keyserver-first discovery.
+
+**The fix, and the tension nobody should walk into.** The obvious move —
+`user_id = H(ik_ed25519_pub)` — is wrong, and it is wrong in a way that will not
+show up until someone rotates. Rotation deliberately keeps `user_id` and swaps the
+signing key (`register.ts:372`, `last_rotated_at`). Deriving the identifier from
+the rotatable key means every rotation changes the identity, which breaks every
+peer binding. The identifier must be derived from something that never rotates.
+
+OSL already has such a thing: the recovery entropy deterministically rederives the
+whole identity (audit medium, `crates/keystore/src/identity.rs:78-85`). So a
+non-rotating root already exists in substance; it just is not published.
+
+**Contract crypto would need to implement:**
+
+1. Derive a long-term, non-rotating `ik_root_ed25519` from the existing recovery
+   entropy, distinct from the rotatable `ik_ed25519`.
+2. Define the identifier as, exactly:
+   `user_id = base32-lowercase-nopad( SHA-256("OSL-ID-v1" || ik_root_ed25519_raw)[0..20] )`
+   — 160 bits, 32 characters. Domain-separated so the hash cannot be reused from
+   another context; 160 bits because this is a public commitment needing
+   second-preimage resistance, not merely collision resistance; base32 lowercase
+   so it can never be confused with the 17–20 digit snowflakes 0029 refuses, and
+   stays short enough to sit inside a friend code.
+3. Registration and rotation both carry a signature by `ik_root` over the
+   canonical bundle. Rotation changes `ik_ed25519` and leaves `user_id` intact,
+   preserving today's semantics.
+4. **Server side, mine, one small change once 1–3 ship:** `register.ts` recomputes
+   the identifier from the submitted root key and refuses any mismatch. That is
+   the actual fix — the server stops accepting a caller-asserted identifier at
+   all, so pre-registration becomes impossible without the root key.
+5. **Migration.** Existing identifiers are caller-chosen and will not match. Add
+   an `identity_scheme` column (0 = legacy caller-chosen, 1 = key-derived). Legacy
+   rows stay permanently unable to enable lookup — they are already quarantined by
+   0029 — and must re-onboard under a derived id. Do not grandfather: a
+   grandfathered row preserves exactly the attack.
+6. **Rollout order**, three deploys, never fail-closed against a client that has
+   not shipped: server accepts both schemes and records which → client emits
+   derived ids → server refuses scheme 0.
+
+**What this still does not give you.** It binds an identifier to a key, not a key
+to a person. Anyone can generate a root key and register its derived id. Human
+identity binding remains the safety-number ceremony, and nothing here replaces it.
 
 ## Remaining server-side audit items, checked
 
