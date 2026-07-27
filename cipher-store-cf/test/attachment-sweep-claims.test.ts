@@ -348,6 +348,98 @@ describe("transactional attachment sweep claims", () => {
     ).toBe(1);
   });
 
+  it("retains a wrong-size object and metadata when predecessor multipart abort fails", async () => {
+    const real = workerEnv();
+    const now = Math.floor(Date.now() / 1000);
+    const id = "8".repeat(32);
+    const key = "attachments/predecessor-wrong-size-abort-failure";
+    const upload = await real.ATTACHMENTS.createMultipartUpload(key);
+    await d1Run(
+      `INSERT INTO attachment_objects
+         (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
+          fetch_token_sha256_hex, state, upload_id)
+       VALUES (?, ?, 1, ?, ?, ?, ?, 'completing', ?)`,
+      id,
+      key,
+      now - 1,
+      now + 3600,
+      now - 60,
+      DIGEST,
+      upload.uploadId,
+    );
+    await real.ATTACHMENTS.put(key, new Uint8Array([8, 8]));
+
+    const head = vi.fn((objectKey: string) =>
+      real.ATTACHMENTS.head(objectKey)
+    );
+    const remove = vi.fn((objectKey: string | string[]) =>
+      real.ATTACHMENTS.delete(objectKey)
+    );
+    const abort = vi.fn().mockRejectedValue(new Error("r2 abort unavailable"));
+    const resume = vi.fn((objectKey: string, uploadId: string) => {
+      const multipart = real.ATTACHMENTS.resumeMultipartUpload(
+        objectKey,
+        uploadId,
+      );
+      return new Proxy(multipart, {
+        get(target, property, receiver) {
+          if (property === "abort") return abort;
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    const env = {
+      ...real,
+      ATTACHMENTS: r2WithOverrides(real.ATTACHMENTS, {
+        head,
+        delete: remove,
+        resumeMultipartUpload: resume,
+      }),
+    } as unknown as Env;
+
+    await expect(sweepExpiredAttachments(env)).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      failed: 1,
+    });
+    expect(head).toHaveBeenCalledTimes(2);
+    expect(resume).toHaveBeenCalledWith(key, upload.uploadId);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(remove).not.toHaveBeenCalled();
+    expect(await real.ATTACHMENTS.head(key)).toMatchObject({ size: 2 });
+    expect(
+      await d1First<{
+        state: string;
+        upload_id: string;
+      }>(
+        "SELECT state, upload_id FROM attachment_objects WHERE id = ?",
+        id,
+      ),
+    ).toEqual({
+      state: "completing",
+      upload_id: upload.uploadId,
+    });
+    expect(
+      await d1First<{
+        worker_id: string | null;
+        claim_token: string | null;
+        storage_fence_state: string;
+      }>(
+        `SELECT worker_id, claim_token, storage_fence_state
+           FROM attachment_sweep_claims WHERE attachment_id = ?`,
+        id,
+      ),
+    ).toEqual({
+      worker_id: null,
+      claim_token: null,
+      storage_fence_state: "pending",
+    });
+    await expect(
+      upload.uploadPart(1, new Uint8Array([8])),
+    ).resolves.toMatchObject({ partNumber: 1 });
+  });
+
   it("isolates a poisoned object, backs it off once, and completes unrelated work", async () => {
     const now = Math.floor(Date.now() / 1000);
     const poisonId = "0".repeat(32);

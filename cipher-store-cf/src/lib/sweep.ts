@@ -150,7 +150,7 @@ export async function sweepExpiredAttachments(
         let completedObject = await env.ATTACHMENTS.head(claim.object_key);
         let abortFailure: unknown = null;
         if (
-          !completedObject
+          completedObject?.size !== claim.size_bytes
           && claim.storage_fence_state !== "object_absent_confirmed"
         ) {
           if (!claim.upload_id) {
@@ -169,9 +169,11 @@ export async function sweepExpiredAttachments(
           } catch (error) {
             abortFailure = error;
           }
-          // This second HEAD is mandatory even when abort throws: a
+          // This second HEAD is mandatory even when abort throws. A
           // predecessor completion may have won the race and published the
           // exact object while the sweep was waiting on the multipart handle.
+          // A mismatched object does not fence that separate upload handle:
+          // abort must succeed before the mismatched object can be deleted.
           completedObject = await env.ATTACHMENTS.head(claim.object_key);
         }
         if (completedObject?.size === claim.size_bytes) {
@@ -190,9 +192,18 @@ export async function sweepExpiredAttachments(
           }
           continue;
         }
+        if (abortFailure) {
+          // A failed abort is ambiguous even when HEAD sees a mismatched
+          // completed object. Keep the object, metadata, and quota reserved:
+          // deleting the object cannot stop the still-live multipart upload
+          // from publishing after metadata removal.
+          throw abortFailure;
+        }
         if (completedObject) {
           // A completed object of the wrong size is not the declared
-          // ciphertext and must never be published as ready.
+          // ciphertext and must never be published as ready. Reaching this
+          // branch means the multipart upload was already fenced successfully
+          // in this attempt or by a durable prior absence confirmation.
           await env.ATTACHMENTS.delete(claim.object_key);
           const afterDelete = await env.ATTACHMENTS.head(claim.object_key);
           if (afterDelete) {
@@ -200,11 +211,6 @@ export async function sweepExpiredAttachments(
               "mismatched attachment object remained after deletion",
             );
           }
-        } else if (abortFailure) {
-          // Empty HEAD plus a failed abort is ambiguous. Keep both metadata and
-          // quota reserved for retry; never infer that the old multipart
-          // handle was fenced.
-          throw abortFailure;
         }
         if (claim.storage_fence_state !== "object_absent_confirmed") {
           const fenced = await confirmAttachmentObjectAbsent(env, claim, now);
