@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { buildRegMsg, buildRotMsg } from "../../src/lib/signed-request.js";
 import {
@@ -12,13 +12,28 @@ import {
 
 let n = 0;
 const uid = () => `u-${Date.now()}-${n++}`;
+const testDb = (env as unknown as { DB: D1Database }).DB;
+const reservedDerivedId = "osl1_" + "a".repeat(32);
+let registrationIp = 1;
 
 async function post(body: unknown) {
+  const ip = registrationIp++;
   return SELF.fetch("http://test/v1/register", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": `198.51.${Math.floor(ip / 254)}.${(ip % 254) + 1}`,
+    },
     body: JSON.stringify(body),
   });
+}
+
+async function userRowCount(userId: string): Promise<number | undefined> {
+  const row = await testDb
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE user_id = ?")
+    .bind(userId)
+    .first<{ count: number }>();
+  return row?.count;
 }
 
 describe("POST /v1/register — OPEN + Ed25519-signed", () => {
@@ -28,6 +43,65 @@ describe("POST /v1/register — OPEN + Ed25519-signed", () => {
       const res = await post(await signedRegisterBody(userId, pair));
       expect(res.status).toBe(400);
     }
+  });
+
+  it("refuses the reserved derived-identity namespace without creating a row", async () => {
+    const pair = await generateEd25519Pair();
+    const res = await post(await signedRegisterBody(reservedDerivedId, pair));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "reserved derived identity namespace requires root proof verification",
+    );
+    expect(await userRowCount(reservedDerivedId)).toBe(0);
+
+    const controlId = uid();
+    const control = await post(await signedRegisterBody(controlId, pair));
+    expect(control.status).toBe(201);
+    expect(await userRowCount(controlId)).toBe(1);
+  });
+
+  it("accepts reserved-namespace near misses as ordinary opaque ids", async () => {
+    const cases = [
+      "osl1_" + "a".repeat(31),
+      "osl1_" + "A".repeat(32),
+      "osl1" + "a".repeat(32),
+      uid(),
+    ];
+    for (const userId of cases) {
+      const pair = await generateEd25519Pair();
+      const res = await post(await signedRegisterBody(userId, pair));
+      expect(res.status, `${userId} should register normally`).toBe(201);
+      expect(await userRowCount(userId)).toBe(1);
+    }
+  });
+
+  it("refuses Discord snowflakes instead of granting first-write-wins ownership", async () => {
+    const pair = await generateEd25519Pair();
+    const snowflake = "900000000000000001";
+    const res = await post(await signedRegisterBody(snowflake, pair));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "Discord identifiers are not OSL identities",
+    );
+    expect(await userRowCount(snowflake)).toBe(0);
+  });
+
+  it("migration-disabled opaque rows remain invisible until current-key re-registration", async () => {
+    const pair = await generateEd25519Pair();
+    const userId = uid();
+    const body = await signedRegisterBody(userId, pair);
+    expect((await post(body)).status).toBe(201);
+    await testDb
+      .prepare("UPDATE users SET identity_lookup_enabled = 0 WHERE user_id = ?")
+      .bind(userId)
+      .run();
+    expect(
+      (await SELF.fetch(`http://test/v1/pubkeys/${userId}`)).status,
+    ).toBe(404);
+    expect((await post(body)).status).toBe(200);
+    expect(
+      (await SELF.fetch(`http://test/v1/pubkeys/${userId}`)).status,
+    ).toBe(200);
   });
 
   it("Case A: 201 on first registration with a valid signature (NO admin token)", async () => {

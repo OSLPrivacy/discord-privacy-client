@@ -6,6 +6,7 @@ const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 export const MAX_PROTOCOL_ID_BYTES = 256;
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
 const REQUEST_ID_RE = /^[A-Za-z0-9_-]{43}$/;
+const RESERVED_DERIVED_ID_RE = /^osl1_[a-z2-7]{32}$/;
 
 export function isNonEmptyBase64(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && BASE64_RE.test(value);
@@ -23,6 +24,11 @@ export function isProtocolId(value: unknown): value is string {
     !CONTROL_CHAR_RE.test(value) &&
     new TextEncoder().encode(value).length <= MAX_PROTOCOL_ID_BYTES
   );
+}
+
+/** Reserved derived-identity namespace: lowercase RFC4648 base32, no padding. */
+export function isReservedDerivedId(value: unknown): value is string {
+  return typeof value === "string" && RESERVED_DERIVED_ID_RE.test(value);
 }
 
 /** Discord snowflakes are transport observations, never OSL identities. */

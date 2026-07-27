@@ -8,10 +8,31 @@ import {
   STUB_X25519_PUB_B64,
 } from "./helpers.js";
 
+const reservedDerivedId = "osl1_" + "b".repeat(32);
+
 describe("GET /v1/pubkeys/:user_id", () => {
   it("404s for an unknown user_id", async () => {
     const res = await SELF.fetch("http://test/v1/pubkeys/ghost");
     expect(res.status).toBe(404);
+  });
+
+  it("404s for a reserved derived-identity id like any unknown id", async () => {
+    const pair = await generateEd25519Pair();
+    const controlId = "reserved-pubkeys-control";
+    const reg = await SELF.fetch("http://test/v1/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.20",
+      },
+      body: JSON.stringify(await signedRegisterBody(controlId, pair)),
+    });
+    expect(reg.status).toBe(201);
+    expect((await SELF.fetch(`http://test/v1/pubkeys/${controlId}`)).status).toBe(200);
+
+    const res = await SELF.fetch(`http://test/v1/pubkeys/${reservedDerivedId}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("unknown user_id");
   });
 
   it("returns the registered pubkey shape (no admin token required)", async () => {

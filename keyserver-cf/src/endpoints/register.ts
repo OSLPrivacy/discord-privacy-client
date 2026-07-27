@@ -7,9 +7,10 @@
 ///   P1  proof-of-key-control: the request is Ed25519-signed by the
 ///       identity key being registered (verified against the
 ///       submitted ik_ed25519_pub).
-///   P2  first-write-wins + owner-authenticated rotation: once a
-///       user_id has a row, only a signature under the CURRENTLY
-///       STORED ik_ed25519_pub can change it.
+///   P2  service separation: a Discord snowflake is refused as a
+///       registration or lookup identifier.
+///   P3  owner-authenticated rotation: once an opaque routing id has
+///       a row, only the current Ed25519 key can change it.
 /// plus strict decoded-length validation (kills the "AAAA" poison
 /// class) and defense-in-depth per-IP + per-user_id rate limiting.
 ///
@@ -22,8 +23,9 @@
 
 import type { Env } from "../env.js";
 import {
-  getSignedIdentity,
-  getUserForVerify,
+  enableIdentityLookup,
+  getSignedIdentityForRegistration,
+  getUserForRegistration,
   insertUser,
   raiseRnCapabilities,
   rotateUserKeys,
@@ -39,7 +41,13 @@ import {
   RN_CAP_MAX,
   verifySignedRequest,
 } from "../lib/signed-request.js";
-import { decodeBase64, isProtocolId, isPlainString } from "../lib/validation.js";
+import {
+  decodeBase64,
+  isDiscordSnowflake,
+  isProtocolId,
+  isPlainString,
+  isReservedDerivedId,
+} from "../lib/validation.js";
 
 /** Per-IP register attempts per minute. Legit clients register ~once. */
 const REGISTER_IP_MAX = 5;
@@ -104,6 +112,16 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     return badRequest("user_id must be a bounded identifier without control characters");
   }
   const userId = body.user_id;
+  // If this namespace is not reserved from the first deploy, an attacker can
+  // squat a future derived identity during rollout before root proofs exist.
+  if (isReservedDerivedId(userId)) {
+    return badRequest(
+      "reserved derived identity namespace requires root proof verification",
+    );
+  }
+  if (isDiscordSnowflake(userId)) {
+    return badRequest("Discord identifiers are not OSL identities");
+  }
 
   // Per-user_id throttle (separate native bucket so it cannot collide
   // with the per-IP counter).
@@ -175,7 +193,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   // REG_MSG reconstructed from the PARSED fields (never raw bytes).
   const regMsg = buildRegMsg(fields);
 
-  const existing = await getUserForVerify(env.DB, userId);
+  const existing = await getUserForRegistration(env.DB, userId);
 
   // ---------- Case A: brand-new user_id ----------
   if (!existing) {
@@ -201,6 +219,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
       body.registration_sig as string,
     );
     if (!ok) return badRequest("registration_sig invalid");
+    await enableIdentityLookup(env.DB, userId, existing.ik_ed25519_pub);
 
     // Write-FREE no-op: ed25519 is the identity anchor. Any change
     // to the other keys MUST go through Case C (authenticated
@@ -226,7 +245,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     if (!caps.present) {
       return json({ user_id: userId, status: "noop" }, { status: 200 });
     }
-    const stored = await getSignedIdentity(env.DB, userId);
+    const stored = await getSignedIdentityForRegistration(env.DB, userId);
     if (!stored) return json({ user_id: userId, status: "noop" }, { status: 200 });
     if (caps.value <= stored.rn_capabilities) {
       // Equal: nothing to do. Lower: deliberately ignored rather than
@@ -264,7 +283,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     if (!raised) {
       // Lost a race with a concurrent raise or a rotation. Either way
       // the durable value is at least as high as ours.
-      const now = await getSignedIdentity(env.DB, userId);
+      const now = await getSignedIdentityForRegistration(env.DB, userId);
       return json(
         {
           user_id: userId,
@@ -342,7 +361,7 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   // recoverable. The alternative is a silent authenticated downgrade.
   //
   // Raising through a rotation is fine and is allowed.
-  const priorRecord = await getSignedIdentity(env.DB, userId);
+  const priorRecord = await getSignedIdentityForRegistration(env.DB, userId);
   if (priorRecord && caps.value < priorRecord.rn_capabilities) {
     return conflict(
       "rotation would lower rn_capabilities; re-register with at least " +
