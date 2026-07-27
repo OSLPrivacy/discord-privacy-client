@@ -75,6 +75,23 @@ Focused local evidence:
     censuses, pagination, timestamp drift, and nested scalar substitutions.
 - Bash syntax, Python compilation, PowerShell parser, and `git diff --check`: passed.
 
+## Acceptance rows this earns
+
+| Acceptance condition | Evidence tier | Result |
+|---|---|---|
+| Exact V2 schemas; V999 and unknown fields refused | mutation-tested | accepted |
+| Normal and invalid/interrupted blocked producers carry the required V2 identity fields | source-shape mutation plus retained-contract test | accepted |
+| Independently selected commit/tree bind source archive, dist, argv, logs, and executable | archive tree recomputation plus product-shaped unrelated-source mutation | accepted |
+| Ordinary run independently hashes local executable bytes and retains build evidence | ordinary-run coherent-substitution mutation | accepted |
+| Nested schema scalars retain exact types | request, verdict, build, and cleanup object-for-scalar mutations | accepted |
+| Cleanup binds retained request, verdict, build identity, and coherent timestamps | cross-run and timestamp mutations | accepted |
+| Raw Azure state authoritatively proves `PowerState/deallocated` | raw/projection and prose-only deallocation mutations | accepted |
+| Detailed census equals a fully followed paginated subscription census and contains the target | target-absence, partial-census, and incomplete-`nextLink` mutations | accepted |
+
+This earns **8/8 VMQA contract acceptance conditions at test-proven tier**. It earns **zero
+checklist rows and F1 +0**: no Windows walkthrough was executed, and the product-side blockers above
+remain outside VM ownership.
+
 ## Cloud state
 
 No VM was started and no Windows build was shipped because the pre-spend contract audit failed.
