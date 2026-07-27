@@ -2343,3 +2343,16 @@ produced.
 
 - At-rest/privacy claim audit +0; no mismatch found.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — truth lane status checkpoint
+
+The in-scope website and `docs/**` claim surfaces remain clean after the
+homepage, threat-model, FAQ, feature-metadata, image, and privacy corrections.
+No new immutable runtime evidence or public claim mismatch is available within
+this lane. The remaining README ratchet claim is still blocked by the explicit
+path-ownership boundary recorded above.
+
+## Acceptance rows this earns
+
+- Status checkpoint +0; no new evidence or correction.
+- Checklist remains untouched; authority remains **100 / 303**.
