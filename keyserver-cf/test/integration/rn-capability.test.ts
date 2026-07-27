@@ -66,11 +66,13 @@ describe("rn_capabilities — field validation", () => {
     const userId = uid();
     // `signedRegisterBody` is the legacy helper: it signs the
     // pre-capability message and sends no bitmap.
-    expect((await post(await signedRegisterBody(userId, pair))).status).toBe(201);
+    const body = await signedRegisterBody(userId, pair);
+    expect((await post(body)).status).toBe(201);
     const j = await pubkeys(userId);
     expect(j.rn_capabilities).toBe(0);
-    // Nothing to verify, so nothing is exposed.
-    expect(j.registration_sig).toBeUndefined();
+    // The signature is mandatory for the bundle even when no
+    // capability is advertised.
+    expect(j.registration_sig).toBe(body.registration_sig);
     expect(j.ik_x25519_signature).toBeUndefined();
   });
 
@@ -153,6 +155,64 @@ describe("rn_capabilities — the signature binding", () => {
       rebuilt,
     );
     expect(ok).toBe(true);
+  });
+
+  it("refreshes a nonempty advertisement across production register and pubkeys", async () => {
+    const pair = await generateEd25519Pair();
+    const userId = uid();
+    const legacy = await signedRegisterBody(userId, pair);
+
+    expect((await post(legacy)).status).toBe(201);
+    const before = await pubkeys(userId);
+    expect(before.rn_capabilities).toBe(0);
+    expect(before.registration_sig).toBe(legacy.registration_sig);
+
+    // This must be a real positive, not a zero-valued round trip.
+    expect(RN_CAP_WIRE_RN).toBeGreaterThan(0);
+    const advertised = await signedRegisterBodyWithCaps(
+      userId,
+      pair,
+      RN_CAP_WIRE_RN,
+    );
+    const register = await post(advertised);
+    expect(register.status).toBe(200);
+    expect(await register.json()).toMatchObject({
+      status: "capabilities_raised",
+      rn_capabilities: RN_CAP_WIRE_RN,
+    });
+
+    // Fetch through the public production route. A lost bitmap, a stale
+    // zero record, or the legacy signature must each fail this boundary.
+    const served = await pubkeys(userId);
+    expect(served.rn_capabilities).toBe(RN_CAP_WIRE_RN);
+    expect(served.registration_sig).toBe(advertised.registration_sig);
+    expect(served.registration_sig).not.toBe(before.registration_sig);
+
+    const rebuilt = buildRegMsg({
+      user_id: served.user_id as string,
+      ik_x25519_pub: served.ik_x25519_pub as string,
+      ik_ed25519_pub: served.ik_ed25519_pub as string,
+      ik_mlkem768_pub: served.ik_mlkem768_pub as string,
+      ik_ratchet_initial_pub: served.ik_ratchet_initial_pub as string | null,
+      rn_capabilities: served.rn_capabilities as number,
+    });
+    expect(
+      await crypto.subtle.verify(
+        { name: "Ed25519" },
+        await crypto.subtle.importKey(
+          "raw",
+          pair.publicKey,
+          { name: "Ed25519" },
+          false,
+          ["verify"],
+        ),
+        Uint8Array.from(
+          atob(served.registration_sig as string),
+          (c) => c.charCodeAt(0),
+        ),
+        rebuilt,
+      ),
+    ).toBe(true);
   });
 
   it("a reader that lowers the served bitmap fails verification", async () => {
