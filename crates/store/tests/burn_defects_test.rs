@@ -162,6 +162,46 @@ fn put_cannot_resurrect_a_burned_message() {
     assert_all_bodies_shredded(&db_path);
 }
 
+/// An unknown burn is a refusal, not a successful no-op and not permission to
+/// touch an arbitrary row.  The fixture is deliberately nonempty across two
+/// channels and includes attachments: an implementation that maps a missing
+/// blind index to a default row, deletes everything, or always returns the
+/// same error cannot satisfy the exact postcondition.
+#[test]
+fn unknown_burn_refuses_without_mutating_a_nonempty_store() {
+    let tmp = TempDir::new().unwrap();
+    let store = open_a(tmp.path());
+    let first = sample("known-burn-a", "burn-channel-a", "sender-a", "first survives");
+    let second = sample("known-burn-b", "burn-channel-b", "sender-b", "second survives");
+    store.put(&first).unwrap();
+    store.put(&second).unwrap();
+    store
+        .put_attachment("known-burn-a", "a.png", "image/png", b"A-PIXELS", None, None, None)
+        .unwrap();
+    store
+        .put_attachment("known-burn-b", "b.png", "image/png", b"B-PIXELS", None, None, None)
+        .unwrap();
+    assert_eq!(store.get("known-burn-a").unwrap(), Some(first.clone()));
+    assert_eq!(store.get("known-burn-b").unwrap(), Some(second.clone()));
+
+    match store.mark_burned("missing-burn-id") {
+        Err(store::StoreError::NotFound(id)) => assert_eq!(id, "missing-burn-id"),
+        Err(other) => panic!("unknown burn returned the wrong error: {other}"),
+        Ok(()) => panic!("unknown burn reported a successful no-op"),
+    }
+
+    assert_eq!(store.get("known-burn-a").unwrap(), Some(first));
+    assert_eq!(store.get("known-burn-b").unwrap(), Some(second));
+    assert_eq!(
+        store.get_attachment("known-burn-a", "a.png").unwrap(),
+        Some(("image/png".to_string(), b"A-PIXELS".to_vec()))
+    );
+    assert_eq!(
+        store.get_attachment("known-burn-b", "b.png").unwrap(),
+        Some(("image/png".to_string(), b"B-PIXELS".to_vec()))
+    );
+}
+
 /// The same resurrection seen through the other public reader.
 #[test]
 fn list_by_channel_cannot_resurrect_a_burned_message() {
@@ -612,6 +652,19 @@ fn tampered_metadata_ciphertext_is_rejected_not_returned() {
     store
         .put(&sample("m13", "chan", "sender1", "I never said this"))
         .unwrap();
+    let unaffected = sample("m13-sibling", "other-chan", "sender2", "still authentic");
+    store.put(&unaffected).unwrap();
+    store
+        .put_attachment(
+            "m13-sibling",
+            "sibling.png",
+            "image/png",
+            b"SIBLING-PIXELS",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
     assert_eq!(
         store.get("m13").unwrap().unwrap().sender_osl_user_id,
         "alice",
@@ -621,16 +674,27 @@ fn tampered_metadata_ciphertext_is_rejected_not_returned() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let mut meta_ct: Vec<u8> = conn
-            .query_row("SELECT meta_ct FROM messages", [], |r| r.get(0))
+        let (target_mid_bi, mut meta_ct): (Vec<u8>, Vec<u8>) = conn
+            .query_row(
+                "SELECT mid_bi, meta_ct FROM messages ORDER BY seq ASC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert!(
             !meta_ct.is_empty(),
             "positive path: sealed metadata must exist before tampering"
         );
         meta_ct[0] ^= 0x01;
-        conn.execute("UPDATE messages SET meta_ct = ?1", [meta_ct])
-            .unwrap();
+        assert_eq!(
+            conn.execute(
+                "UPDATE messages SET meta_ct = ?1 WHERE mid_bi = ?2",
+                rusqlite::params![meta_ct, target_mid_bi],
+            )
+            .unwrap(),
+            1,
+            "the tamper must alter exactly the target row"
+        );
     }
 
     let store = open_a(tmp.path());
@@ -638,6 +702,13 @@ fn tampered_metadata_ciphertext_is_rejected_not_returned() {
         matches!(store.get("m13"), Err(store::StoreError::Corrupted(_))),
         "tampered metadata must produce Corrupted, not an unrelated error or \
          a hidden row"
+    );
+    // A constant Corrupted response or delete-all recovery is not a valid
+    // tamper defense.  The unrelated row and attachment must remain exact.
+    assert_eq!(store.get("m13-sibling").unwrap(), Some(unaffected));
+    assert_eq!(
+        store.get_attachment("m13-sibling", "sibling.png").unwrap(),
+        Some(("image/png".to_string(), b"SIBLING-PIXELS".to_vec()))
     );
 }
 

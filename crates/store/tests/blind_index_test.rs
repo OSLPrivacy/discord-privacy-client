@@ -1881,6 +1881,59 @@ fn all_equality_lookups_still_work_after_blinding() {
     assert_eq!(live, 1, "scope burn must preserve the other sender's body");
 }
 
+/// Attachment lookup must bind both components of its logical key.  A query
+/// keyed only by filename, only by parent message, or by a default/first row
+/// can look correct on a one-attachment fixture.  Two parents deliberately
+/// reuse a filename and are checked again after restart; crossed and unknown
+/// lookups must be a precise absence rather than an unrelated error.
+#[test]
+fn attachment_lookup_requires_exact_parent_and_filename_after_restart() {
+    let tmp = TempDir::new().unwrap();
+    let first = sample("lookup-parent-a", "lookup-channel-a", "sender-a", "alice", "one", 1);
+    let second = sample("lookup-parent-b", "lookup-channel-b", "sender-b", "bob", "two", 2);
+    {
+        let store = open_a(tmp.path());
+        store.put(&first).unwrap();
+        store.put(&second).unwrap();
+        store
+            .put_attachment("lookup-parent-a", "same.png", "image/png", b"A-BYTES", None, None, None)
+            .unwrap();
+        store
+            .put_attachment("lookup-parent-b", "same.png", "image/png", b"B-BYTES", None, None, None)
+            .unwrap();
+        assert_eq!(
+            store.get_attachment("lookup-parent-a", "same.png").unwrap(),
+            Some(("image/png".to_string(), b"A-BYTES".to_vec()))
+        );
+        assert_eq!(
+            store.get_attachment("lookup-parent-b", "same.png").unwrap(),
+            Some(("image/png".to_string(), b"B-BYTES".to_vec()))
+        );
+    }
+
+    let store = open_a(tmp.path());
+    assert_eq!(store.get("lookup-parent-a").unwrap(), Some(first));
+    assert_eq!(store.get("lookup-parent-b").unwrap(), Some(second));
+    assert_eq!(
+        store.get_attachment("lookup-parent-a", "same.png").unwrap(),
+        Some(("image/png".to_string(), b"A-BYTES".to_vec()))
+    );
+    assert_eq!(
+        store.get_attachment("lookup-parent-b", "same.png").unwrap(),
+        Some(("image/png".to_string(), b"B-BYTES".to_vec()))
+    );
+    assert_eq!(
+        store.get_attachment("lookup-parent-a", "other.png").unwrap(),
+        None,
+        "wrong filename must not return the parent’s other attachment"
+    );
+    assert_eq!(
+        store.get_attachment("lookup-parent-missing", "same.png").unwrap(),
+        None,
+        "unknown parent must not return an attachment from another message"
+    );
+}
+
 /// Burn must remain terminal through the blinded schema — the defect-1 fix must
 /// not be undone by the migration.
 #[test]
