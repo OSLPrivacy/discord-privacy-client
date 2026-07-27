@@ -48,17 +48,24 @@ jobs:
         with:
           toolchain: 1.88.0
 
+      # Ref values arrive through env, not ${{ }} interpolation. A git tag may
+      # legally contain $(...), and PowerShell expands that inside a double
+      # quoted string, so interpolating a tag name here was a smaller-radius
+      # version of the injection fixed in the rollback workflow.
       - name: Resolve and verify the app release version
         id: hub-version
         shell: pwsh
+        env:
+          GIT_REF: ${{ github.ref }}
+          GIT_REF_NAME: ${{ github.ref_name }}
         run: |
           $config = Get-Content apps/osl-hub/tauri.conf.json | ConvertFrom-Json
           $tag = "hub-v$($config.version)"
-          if ("${{ github.ref }}" -notlike "refs/tags/hub-v*") {
-            throw "OSL Privacy releases require a hub-v* tag, not ${{ github.ref }}"
+          if ($env:GIT_REF -notlike "refs/tags/hub-v*") {
+            throw "OSL Privacy releases require a hub-v* tag, not $($env:GIT_REF)"
           }
-          if ("${{ github.ref_name }}" -ne $tag) {
-            throw "Tag ${{ github.ref_name }} does not match OSL Privacy version tag $tag"
+          if ($env:GIT_REF_NAME -ne $tag) {
+            throw "Tag $($env:GIT_REF_NAME) does not match OSL Privacy version tag $tag"
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
