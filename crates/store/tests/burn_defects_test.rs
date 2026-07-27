@@ -1,4 +1,4 @@
-//! Regression tests for the six store defects raised in
+//! Regression tests for the store defects raised in
 //! `docs/security/osl-audit-2026-07-26-codex.md`.
 //!
 //! ## Why this file exists separately
@@ -46,31 +46,51 @@ fn sample(msg_id: &str, channel_id: &str, sender_did: &str, plaintext: &str) -> 
     }
 }
 
-/// Read `(ciphertext, nonce, burned)` straight off disk, bypassing every
-/// filter the store applies on the read path. A burn that only hides a row
-/// from `get` is not a burn.
-fn raw_row(db_path: &Path, msg_id: &str) -> (Vec<u8>, Vec<u8>, i64) {
-    let conn = rusqlite::Connection::open(db_path).unwrap();
-    conn.query_row(
-        "SELECT ciphertext, nonce, burned FROM messages WHERE discord_message_id = ?1",
-        rusqlite::params![msg_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )
-    .unwrap()
+fn all_zero(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| *b == 0)
 }
 
-fn assert_shredded(db_path: &Path, msg_id: &str, context: &str) {
-    let (ct, nonce, burned) = raw_row(db_path, msg_id);
-    assert_eq!(burned, 1, "{context}: row is not marked burned");
-    assert!(
-        ct.iter().all(|b| *b == 0),
-        "{context}: sealed body survives on disk ({} non-zero bytes)",
-        ct.iter().filter(|b| **b != 0).count()
-    );
-    assert!(
-        nonce.iter().all(|b| *b == 0),
-        "{context}: AEAD nonce survives on disk"
-    );
+/// Assert every message body on disk is shredded, bypassing every filter the
+/// store applies on the read path. v4 deliberately hides message ids behind
+/// private blind indexes, so these checks prove the whole table state without
+/// naming a row by plaintext id.
+fn assert_all_bodies_shredded(db_path: &Path) {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT ciphertext, nonce, burned FROM messages")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .unwrap();
+
+    let mut seen = 0usize;
+    for row in rows {
+        let (ct, nonce, burned) = row.unwrap();
+        seen += 1;
+        assert_eq!(burned, 1, "row {seen}: row is not marked burned");
+        assert!(
+            all_zero(&ct),
+            "row {seen}: sealed body survives on disk ({} non-zero bytes)",
+            ct.iter().filter(|b| **b != 0).count()
+        );
+        assert!(all_zero(&nonce), "row {seen}: AEAD nonce survives on disk");
+    }
+    assert!(seen > 0, "no message rows existed to verify");
+}
+
+fn count_live_bodies(db_path: &Path) -> usize {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let mut stmt = conn.prepare("SELECT ciphertext FROM messages").unwrap();
+    let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)).unwrap();
+    rows.map(|row| row.unwrap())
+        .filter(|ct| ct.iter().any(|b| *b != 0))
+        .count()
 }
 
 // ---- Defect 1: burn must be terminal ----
@@ -108,7 +128,7 @@ fn put_cannot_resurrect_a_burned_message() {
         store.get("m1").unwrap().is_none(),
         "defect 1: burn is not terminal — a plain put un-burned the row"
     );
-    assert_shredded(&db_path, "m1", "defect 1: after re-put");
+    assert_all_bodies_shredded(&db_path);
 }
 
 /// The same resurrection seen through the other public reader.
@@ -155,11 +175,7 @@ fn put_with_burned_false_cannot_clear_the_burn_flag() {
     unburn.burned = false;
     store.put(&unburn).unwrap();
 
-    let (_, _, burned) = raw_row(&db_path, "m3");
-    assert_eq!(
-        burned, 1,
-        "defect 1: caller-supplied burned=false cleared a burn"
-    );
+    assert_all_bodies_shredded(&db_path);
 }
 
 // ---- Defect 2: mark_burned must not report success without shredding ----
@@ -180,11 +196,7 @@ fn put_with_burned_true_never_writes_a_live_body() {
     pre_flagged.burned = true;
     store.put(&pre_flagged).unwrap();
 
-    assert_shredded(
-        &db_path,
-        "m4",
-        "defect 2: put wrote a live sealed body under burned = 1",
-    );
+    assert_all_bodies_shredded(&db_path);
 }
 
 /// The rows the shipped build already created: `burned = 1` over an intact
@@ -206,9 +218,9 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     store
         .put(&sample("m4b", "chan", "sender1", "still on disk"))
         .unwrap();
-    let (ct_before, _, _) = raw_row(&db_path, "m4b");
-    assert!(
-        ct_before.iter().any(|b| *b != 0),
+    assert_eq!(
+        count_live_bodies(&db_path),
+        1,
         "positive path: a sealed body must exist on disk before the burn"
     );
     drop(store);
@@ -216,21 +228,13 @@ fn mark_burned_shreds_a_row_left_live_by_an_older_build() {
     // Reproduce the pre-fix state: flag set, body untouched.
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute(
-            "UPDATE messages SET burned = 1 WHERE discord_message_id = 'm4b'",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE messages SET burned = 1", []).unwrap();
     }
 
     let store = open_a(tmp.path());
     store.mark_burned("m4b").unwrap();
 
-    assert_shredded(
-        &db_path,
-        "m4b",
-        "defect 2: mark_burned returned Ok while the sealed body survived",
-    );
+    assert_all_bodies_shredded(&db_path);
 }
 
 /// Re-burning must remain safe and must not restamp `burned_at`, or an old
@@ -249,12 +253,8 @@ fn repeat_mark_burned_is_safe_and_keeps_the_original_burn_time() {
 
     let first_burn_at: Option<i64> = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row(
-            "SELECT burned_at FROM messages WHERE discord_message_id = 'm5'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap()
+        conn.query_row("SELECT burned_at FROM messages", [], |r| r.get(0))
+            .unwrap()
     };
     assert!(
         first_burn_at.is_some(),
@@ -266,18 +266,14 @@ fn repeat_mark_burned_is_safe_and_keeps_the_original_burn_time() {
 
     let second_burn_at: Option<i64> = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row(
-            "SELECT burned_at FROM messages WHERE discord_message_id = 'm5'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap()
+        conn.query_row("SELECT burned_at FROM messages", [], |r| r.get(0))
+            .unwrap()
     };
     assert_eq!(
         first_burn_at, second_burn_at,
         "a second burn restamped burned_at and made an old destruction look fresh"
     );
-    assert_shredded(&db_path, "m5", "after repeat burn");
+    assert_all_bodies_shredded(&db_path);
 }
 
 // ---- Defect 4: legacy / unscoped attachments survive scope burns ----
@@ -436,180 +432,13 @@ fn delete_messages_in_channel_spares_other_channels_attachments() {
     );
 }
 
-// ---- Upgrade / downgrade behaviour for the metadata authenticator ----
-
-/// Turn a store written by this build back into the shape a pre-fix build
-/// left behind: rows with no authenticator, and no strict marker.
-///
-/// This is the state sitting in every already-installed database, and it is
-/// the state an upgrade must not destroy.
-fn degrade_to_legacy(db_path: &Path) {
-    let conn = rusqlite::Connection::open(db_path).unwrap();
-    conn.execute("UPDATE messages SET meta_tag = NULL", [])
-        .unwrap();
-    conn.execute("DELETE FROM _meta WHERE key = 'meta_auth_strict'", [])
-        .unwrap();
-}
-
-/// An installed user's history predates the authenticator. Upgrading must keep
-/// every one of those messages readable — a privacy tool that eats the user's
-/// own history on update has done more damage than the defect it fixed.
-#[test]
-fn legacy_untagged_rows_survive_the_upgrade_and_stay_readable() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("messages.sqlite");
-
-    let store = open_a(tmp.path());
-    store
-        .put(&sample("old1", "chan", "sender1", "history worth keeping"))
-        .unwrap();
-    store
-        .put(&sample("old2", "chan", "sender1", "more history"))
-        .unwrap();
-    assert_eq!(store.list_by_channel("chan", 10).unwrap().len(), 2);
-    drop(store);
-
-    degrade_to_legacy(&db_path);
-
-    // Re-open: this is the upgrade.
-    let store = open_a(tmp.path());
-    assert_eq!(
-        store.get("old1").unwrap().unwrap().plaintext,
-        "history worth keeping",
-        "upgrade orphaned a legacy row"
-    );
-    assert_eq!(
-        store.list_by_channel("chan", 10).unwrap().len(),
-        2,
-        "upgrade orphaned legacy history from the channel view"
-    );
-}
-
-/// The authenticator column is additive and the schema version must stay put,
-/// because bumping it is what makes an older binary refuse to open the file.
-/// This is the mechanical basis of the documented downgrade behaviour.
-#[test]
-fn adding_the_authenticator_does_not_bump_the_schema_version() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("messages.sqlite");
-    let store = open_a(tmp.path());
-    store.put(&sample("v", "chan", "sender1", "body")).unwrap();
-    drop(store);
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let version: Vec<u8> = conn
-        .query_row(
-            "SELECT value FROM _meta WHERE key = 'schema_version'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        u32::from_le_bytes(version.try_into().unwrap()),
-        3,
-        "the metadata authenticator bumped the schema version, which makes an \
-         older binary refuse to open an upgraded database"
-    );
-
-    let cols: Vec<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(messages)").unwrap();
-        let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
-        rows.map(|r| r.unwrap()).collect()
-    };
-    assert!(
-        cols.iter().any(|c| c == "meta_tag"),
-        "positive path: the authenticator column must actually exist"
-    );
-}
-
-/// Once a store has no legacy rows left, it latches strict and an untagged row
-/// is refused. Without this, stripping the authenticator would be a trivial
-/// bypass of the whole defect-5 fix.
-#[test]
-fn a_store_with_no_legacy_rows_refuses_an_untagged_row() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("messages.sqlite");
-
-    let store = open_a(tmp.path());
-    store.put(&sample("s1", "chan", "sender1", "body")).unwrap();
-    assert!(
-        store.get("s1").unwrap().is_some(),
-        "positive path: the row reads back before the tag is stripped"
-    );
-    drop(store);
-
-    // Strip only the authenticator, leaving the strict marker in place — this
-    // is the downgrade an offline editor would attempt.
-    {
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute(
-            "UPDATE messages SET meta_tag = NULL WHERE discord_message_id = 's1'",
-            [],
-        )
-        .unwrap();
-    }
-
-    let store = open_a(tmp.path());
-    assert!(
-        store.get("s1").is_err(),
-        "a strict store served a row whose metadata authenticator had been stripped"
-    );
-}
-
-/// A database that still holds legacy rows must stay lenient, or the fix above
-/// would refuse the very history it is meant to preserve.
-#[test]
-fn a_store_with_legacy_rows_stays_lenient_until_they_drain() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("messages.sqlite");
-
-    let store = open_a(tmp.path());
-    store
-        .put(&sample("leg", "chan", "sender1", "legacy body"))
-        .unwrap();
-    drop(store);
-    degrade_to_legacy(&db_path);
-
-    let store = open_a(tmp.path());
-    assert!(
-        store.get("leg").unwrap().is_some(),
-        "legacy row must still read"
-    );
-    // Drain the legacy row, then re-open: the store should now latch strict.
-    store.mark_burned("leg").unwrap();
-    drop(store);
-
-    let store = open_a(tmp.path());
-    store
-        .put(&sample("new", "chan", "sender1", "new body"))
-        .unwrap();
-    assert!(store.get("new").unwrap().is_some());
-    drop(store);
-
-    {
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let marker: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT value FROM _meta WHERE key = 'meta_auth_strict'",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-        assert!(
-            marker.is_some(),
-            "the store never latched strict after its legacy rows drained"
-        );
-    }
-}
-
 // ---- Defect 5: security-relevant metadata sits outside AEAD ----
 
-/// The AAD is only `discord_message_id`, so `sender_osl_user_id`,
-/// `sender_discord_id`, `channel_id` and `decrypted_at` are unauthenticated.
-/// Someone with write access to the file can re-attribute a message to another
-/// person and the AEAD tag still verifies.
+/// The sealed v4 metadata blob authenticates attribution. An offline editor
+/// who flips a byte inside `meta_ct` must get a tag failure, not a readable
+/// row with forged sender or channel fields.
 #[test]
-fn tampered_sender_attribution_is_rejected_not_returned() {
+fn tampered_metadata_ciphertext_is_rejected_not_returned() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let store = open_a(tmp.path());
@@ -626,61 +455,97 @@ fn tampered_sender_attribution_is_rejected_not_returned() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute(
-            "UPDATE messages SET sender_osl_user_id = 'mallory' \
-             WHERE discord_message_id = 'm13'",
-            [],
-        )
-        .unwrap();
+        let mut meta_ct: Vec<u8> = conn
+            .query_row("SELECT meta_ct FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            !meta_ct.is_empty(),
+            "positive path: sealed metadata must exist before tampering"
+        );
+        meta_ct[0] ^= 0x01;
+        conn.execute("UPDATE messages SET meta_ct = ?1", [meta_ct])
+            .unwrap();
     }
 
     let store = open_a(tmp.path());
     match store.get("m13") {
         Err(_) => {}
-        Ok(None) => {}
+        Ok(None) => panic!("defect 5: tampered metadata disappeared instead of failing closed"),
         Ok(Some(msg)) => panic!(
-            "defect 5: forged attribution accepted — store returned sender_osl_user_id={:?} \
-             for a row an offline editor rewrote",
+            "defect 5: forged metadata accepted — store returned sender_osl_user_id={:?} \
+             for a row whose sealed metadata was edited",
             msg.sender_osl_user_id
         ),
     }
 }
 
-/// Moving a row into another channel is the same forgery through a different
-/// column, and it is the one that changes who sees the message.
+/// Swapping sealed metadata blobs between two rows must not let an offline
+/// editor re-attribute either row. The blob is authenticated with the row's
+/// own blind index as AAD, so a swap must fail or hide the row, never return
+/// another row's sender/channel as if it belonged here.
 #[test]
-fn tampered_channel_id_is_rejected_not_returned() {
+fn swapped_metadata_blobs_cannot_forge_attribution() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let store = open_a(tmp.path());
 
     store
-        .put(&sample("m14", "private", "sender1", "private business"))
+        .put(&sample("m14a", "private", "sender1", "private business"))
+        .unwrap();
+    store
+        .put(&sample("m14b", "public", "sender2", "public business"))
         .unwrap();
     assert_eq!(
-        store.list_by_channel("private", 10).unwrap().len(),
-        1,
-        "positive path"
+        store.get("m14a").unwrap().unwrap().channel_id,
+        "private",
+        "positive path: first row must read with its honest channel"
+    );
+    assert_eq!(
+        store.get("m14b").unwrap().unwrap().sender_discord_id,
+        "sender2",
+        "positive path: second row must read with its honest sender"
     );
     drop(store);
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = {
+            let mut stmt = conn
+                .prepare("SELECT mid_bi, meta_nonce, meta_ct FROM messages ORDER BY seq ASC")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(
+            rows.len(),
+            2,
+            "positive path: the metadata swap test needs exactly two rows"
+        );
+        let (first_mid_bi, first_meta_nonce, first_meta_ct) = rows[0].clone();
+        let (second_mid_bi, second_meta_nonce, second_meta_ct) = rows[1].clone();
         conn.execute(
-            "UPDATE messages SET channel_id = 'public' WHERE discord_message_id = 'm14'",
-            [],
+            "UPDATE messages SET meta_nonce = ?1, meta_ct = ?2 WHERE mid_bi = ?3",
+            rusqlite::params![second_meta_nonce, second_meta_ct, first_mid_bi],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE messages SET meta_nonce = ?1, meta_ct = ?2 WHERE mid_bi = ?3",
+            rusqlite::params![first_meta_nonce, first_meta_ct, second_mid_bi],
         )
         .unwrap();
     }
 
     let store = open_a(tmp.path());
-    let listed = store.list_by_channel("public", 10);
-    match listed {
-        Err(_) => {}
-        Ok(rows) => assert!(
-            rows.is_empty(),
-            "defect 5: a row relocated by an offline editor was served as \
-             belonging to the attacker's channel"
-        ),
+    for id in ["m14a", "m14b"] {
+        match store.get(id) {
+            Err(_) => {}
+            Ok(None) => {}
+            Ok(Some(msg)) => panic!(
+                "defect 5: swapped metadata was served for {id} as sender={:?} channel={:?}",
+                msg.sender_discord_id, msg.channel_id
+            ),
+        }
     }
 }

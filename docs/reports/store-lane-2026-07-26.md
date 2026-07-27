@@ -210,6 +210,147 @@ is the only risky change.
 **Escalation, the only one in this report:** *do you want the blind-index migration, and in which
 release?* Until answered, the invariant text outside my crate still overstates — see below.
 
+---
+
+# Round 2 — defect 6 executed (schema v4)
+
+The owner decided to run the blind-index migration and target it at v1, on the
+reasoning that a schema migration is cheapest when nobody has data in the schema and
+gets permanently more expensive the day after launch. That is right. One factual
+correction to the premise, which does not change the conclusion: "effectively no real
+user data" understates the live two-identity QA databases, and
+`shred_expired_messages` is documented to avoid exactly this hazard. That is why the
+defined-downgrade requirement is the load-bearing one, and it is treated as such below.
+
+## Scope check — this is 95% self-contained, not 100%
+
+The owner's asymmetry argument was that blind indexes live entirely in this crate,
+with an instruction to stop and say so if that stopped being true. It is very nearly
+true and the exception is worth naming:
+
+- `scripts/find-corrupted-rows.ps1:52` selects `discord_message_id, channel_id,
+  datetime(decrypted_at…)` ordered by `decrypted_at`.
+- `scripts/delete-rows.ps1:58` runs `DELETE … WHERE discord_message_id IN (<plaintext ids>)`.
+
+Both stop working, because both query the table with plaintext identifiers that no
+longer exist. Worth seeing what that means rather than treating it as breakage:
+`find-corrupted-rows.ps1` is a tool that reads the social graph out of the database
+*without the key*. It works **because** of defect 6. Blinding necessarily breaks it,
+and that is the fix doing its job.
+
+Neither is product code and `scripts/` is not this lane's. Recommendation: let them
+break and retire them. Not started, not blocking.
+
+## What v4 does
+
+- **No identifier is stored.** `messages` holds `mid_bi`, `chan_bi`, `sender_bi`
+  (32-byte keyed blind indexes) plus `meta_nonce`/`meta_ct` sealing the real ids and
+  timestamp. `attachments` holds `ck_bi`, `mid_bi`, `sender_bi` plus its own sealed
+  metadata. The plaintext `scope_type`/`scope_id` columns are **removed** — nothing
+  ever wrote them, and a column that is never written is a lie about capability.
+- **Blind index** = `HKDF-SHA256(salt = index_key, ikm = field_value, info = per-field
+  domain)`, where `index_key` is a second, domain-separated HKDF derivation from the
+  same identity secret. Per-field domains stop the same string in two roles producing
+  the same index.
+- **Ordering** moves from `decrypted_at` to an opaque monotonic `seq`. Sealing the
+  timestamp would otherwise force a full-channel decrypt just to sort. Relative order
+  is inherent to storing rows at all; wall-clock timing was the leak, so the leak goes
+  and the ordering stays. `seq` also makes re-`put` stop shuffling re-decrypted
+  history to the top of a channel.
+- **`meta_tag` and the strict latch from round 1 are deleted.** Sealing the metadata
+  under AEAD both hides and authenticates it, with the row's own blind index as AAD,
+  so a separate authenticator is redundant and moving a metadata blob between rows is
+  a tag failure.
+
+## Migration, and the two proofs that were required
+
+- Rewrites every row inside **one transaction**; a crash leaves a whole v3 database or
+  a whole v4 one, never a half.
+- `ciphertext`, `nonce`, `burned`, `burned_at`, `wrapped_key` are copied byte-for-byte.
+  **No message body is ever re-encrypted** — the body AAD is still
+  `discord_message_id`, recovered from sealed metadata before opening the body.
+- `seq` is assigned in `decrypted_at` order, so channel listing is unchanged.
+- `VACUUM` afterwards, because dropping a table frees pages without scrubbing them and
+  leaving the identifiers recoverable in free pages would defeat the entire migration.
+- The **canary is verified before the migration runs**, so a wrong secret cannot
+  trigger a destructive rewrite of someone's database.
+
+Required proof 1 — *forward migration does not orphan installed history*:
+`old_v3_database_migrates_and_stays_fully_readable`, plus
+`old_v3_attachment_still_decrypts_after_migration`.
+
+Required proof 2 — *no plaintext identifier recoverable without the key*:
+`no_plaintext_identifier_survives_anywhere_in_the_file` enumerates every table from
+`sqlite_master` and every column from `PRAGMA table_info` and asserts no identifier
+appears in any value — it checks the file, not the fields the author remembered to
+seal. `no_plaintext_identifier_survives_in_the_raw_file_bytes` does the same against
+the raw file and WAL. `migrating_a_v3_database_removes_its_plaintext_identifiers`
+proves the migration scrubs what it converted, and asserts the fixture *did* contain
+the identifier first so it cannot pass vacuously.
+
+**Defined downgrade:** `SCHEMA_VERSION` goes to 4, and `migrate` refuses any on-disk
+version it does not recognise. An older binary therefore **refuses to open** an
+upgraded database with a clear `Schema` error rather than misreading it. That is a
+deliberate reversal of round 1's reasoning, where the additive column was kept
+version-neutral precisely so rollback stayed safe. It is the honest cost of actually
+removing the identifiers, and it is asserted by
+`migration_bumps_schema_version_so_older_binaries_refuse_cleanly`. **Do not run mixed
+binaries against one database.**
+
+## Two defects found in my own work, and how
+
+### A data-loss bug the documentation caught
+
+v3 sealed attachment bodies with AAD = the plaintext `cache_key`. My first v4 draft
+sealed them under `ck_bi` instead. Since the migration copies attachment ciphertext
+byte-for-byte, **every migrated attachment would have failed to decrypt** — silent
+loss of every cached image on upgrade.
+
+Nothing detected it. It surfaced because the delegated SECURITY.md draft accurately
+wrote down what the code did — "copied byte-for-byte" — and that accurate sentence is
+what made the contradiction visible. Fixed by keeping the body AAD as `cache_key`,
+exactly as message bodies keep `discord_message_id`.
+
+### The test for it could not fail
+
+The regression test I then wrote **passed with the bug deliberately reintroduced**.
+Its fixture built the v3 attachment by writing through the *current* store and lifting
+the sealed bytes back out, so it reproduced whatever AAD the code happened to use. It
+was self-referential: it could only confirm that the implementation agreed with itself.
+This is the same failure as the R2 double that accepted any stream and the D1 fakes
+that could only re-assert what their author believed — arrived at independently, in a
+file whose own module doc warns against it.
+
+Fixed by adding `crypto` as a dev-dependency and sealing the fixture with the audited
+primitives directly, reproducing **v3's** AAD rules with no reference to the crate.
+Re-verified by reintroducing the bug: the test now fails with
+`migration made the cached attachment undecryptable`, and passes once reverted.
+
+### Crash-safety gap in the migration
+
+The version stamp was written after the migration transaction committed. A crash in
+that window produced v4 tables recorded as version 3; the next open would try to add
+legacy columns to the new schema and then fail reading `discord_message_id`, so the
+store would not open at all. The stamp now happens **inside** the same transaction as
+the rename. The post-commit `VACUUM` cannot be transactional, so a `vacuum_pending`
+marker records that the scrub is owed and the next open finishes it — otherwise a
+crash there would silently leave behind exactly what the migration exists to remove.
+
+## What is still visible without the key — do not overstate this
+
+Blinding removes the labels, not the shape. An offline reader still learns:
+
+- the number of message and attachment rows;
+- that two rows share a channel or a sender, because blind indexes are deterministic —
+  the value is hidden, the equality is not, and frequency analysis over those groupings
+  remains possible;
+- the size of each sealed body, which leaks message length and attachment size;
+- the relative order of rows via `seq`;
+- which rows are burned, and when.
+
+So: **the social graph's labels are gone; its shape is not.** The phrase "the social
+graph is protected" is still unearned and `crates/store/SECURITY.md` says so.
+
 ## Handoffs
 
 ### To the crypto lane
@@ -271,7 +412,8 @@ takes the same lock internally.
 
 ```
 flock /tmp/osl-cargo.lock -c "cargo test -p store"
-  → 17 passed (burn_defects_test), 17 passed (store_test), 0 failed, 0 ignored.  34 total.
+  → 10 passed (blind_index_test), 13 passed (burn_defects_test),
+    17 passed (store_test), 0 failed, 0 ignored.  40 total.
 
 flock /tmp/osl-cargo.lock -c "cargo clippy -p store --all-targets"   → clean, no warnings
 cargo fmt -p store -- --check                                        → clean
@@ -279,7 +421,7 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
   → Finished. store cross-compiles for the shipping target.
 ```
 
-**On the test count:** 34 is measured, not inherited. `crates/store/Cargo.toml` declares no
+**On the test count:** 40 is measured, not inherited. `crates/store/Cargo.toml` declares no
 `[features]`, so there is no feature gate that could silently exclude a module from `-p store` —
 the failure mode that hid `qa_selftest_request` from the workspace runs does not exist here. All
 17 pre-existing tests still pass; none were modified.
@@ -315,31 +457,41 @@ its evidence:
 | Upgrade does not orphan installed history | 2 migration tests incl. a version-pin assertion | Earned |
 | `crates/store/SECURITY.md` matches the code | file rewritten against re-read source | Earned |
 | Store crate builds for the shipping Windows target | `cargo check -p store --target …` | Earned |
+| No plaintext identifier is recoverable from the file without the key | whole-file + raw-bytes sweeps, failing-first | Earned |
+| A v3 database migrates with every message and attachment still readable | 2 migration tests over a fixture built against v3's own format | Earned |
+| The migration scrubs the identifiers it converted | raw-file assertion, with a positive path proving they were there | Earned |
+| Older binaries refuse an upgraded database cleanly | version-pin assertion | Earned |
 | **Hub builds with these changes** | **not established — blocked by keystore** | **Not earned** |
 | **Burn is cryptographic / revokes recipient access** | **false; unchanged by this work** | **Not earned** |
-| **`messages.sqlite` hides the social graph** | **false; exposure now documented, not fixed** | **Not earned** |
+| **`messages.sqlite` hides the social graph** | **labels yes, shape no — see "What is still visible"** | **Partially earned; do not state unqualified** |
+| **Operator scripts still work** | **false; two `scripts/*.ps1` are broken by design** | **Not earned** |
 
 ## Resume here
 
-**State:** defects 1, 2, 4, 5 fixed with failing-first evidence and committed. Defects 3 and 6
-deliberately not executed; both need an owner decision. `crates/store/**` is green, formatted, and
-lint-clean; the crate is otherwise untouched by other lanes.
+**State:** defects 1, 2, 4, 5 and **6** fixed with failing-first evidence and committed. Defect 3
+deliberately not executed; it needs keyserver work before the store can play any part.
+`crates/store/**` is green (40 tests), formatted, clippy-clean, and cross-compiles for the
+shipping Windows target. Schema is v4.
 
 **Next, in order:**
 
 1. **Blocked, not mine:** re-run the hub gate once the crypto lane adds `tracing` to
    `crates/keystore/Cargo.toml`. Command is in Verification above. Until then no lane can prove a
    hub build.
-2. **Awaiting decision (defect 6):** the blind-index migration. Do not start it without an explicit
-   yes and a release slot — it is irreversible against real user data.
+2. **Needs an owner call, small:** the two `scripts/*.ps1` diagnostics that v4 breaks. Recommend
+   retiring them; they only worked because of the defect just fixed.
 3. **Awaiting decision (defect 3):** per-message `wrapped_key`. Needs keyserver lifecycle work
    first; the store is the last part, not the first.
-4. **Unblocked and small:** extend the metadata authenticator to `attachments` rows (`mime`,
-   `byte_len`, scope, sender). Same helper, same additive shape, no version bump.
-5. **Unblocked and small:** the pre-existing orphan attachments described under defect 4. Needs a
+4. **Unblocked and small:** the pre-existing orphan attachments described under defect 4. Needs a
    decision on whether a one-time scan may delete attachments with no surviving message row.
-6. **For the document owners:** correct the product-level at-rest invariant to match the store, or
-   decide item 2 and make the invariant true.
+5. **For the document owners:** 26 burn statements still overstate what the code does; the
+   at-rest invariant can now be *strengthened* to match v4, but only with the
+   "labels not shape" qualification.
+
+**If you extend this crate, read this first:** the v3 fixtures in `blind_index_test.rs` are
+written against the **old** format on purpose, using `crypto` directly. Do not "simplify" them to
+build fixtures through `MessageStore` — that exact change once made a data-loss bug invisible,
+and the module doc records why.
 
 **Traps for whoever resumes:** `flock` is not reentrant — wrap only `cargo` you type, never
 `scripts/qa/osl-instance-b-build-wsl.sh`, which locks internally at `:88`. The store's tests use a
@@ -356,6 +508,10 @@ can only re-assert what its author already believed.
    pictures go too.
 4. Someone who could get at your database file could rewrite it to make it look like you said
    something you never said. Your app now detects that and refuses to show it.
-5. Two problems are deliberately left alone because fixing them safely is the owner's call: the
-   database still shows an intruder *who* you talk to and *when*, though not what you said — and
-   burning still cannot reach the copy Discord already has.
+5. Your database file used to show anyone who opened it who you talk to and when, without needing
+   your password at all. Those names, ids and times are now scrambled and unreadable. Someone can
+   still see the *shape* of things — how many messages there are, that two of them belong to the
+   same conversation, roughly how long each is, and which were burned — but not who, not what, and
+   not when. Upgrading keeps all your existing messages; going back to an older version will not
+   open the file.
+6. One thing is still deliberately left alone: burning cannot reach the copy Discord already has.

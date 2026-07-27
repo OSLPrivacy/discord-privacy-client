@@ -23,6 +23,18 @@ binding the ciphertext to its row identity (an attacker who
 shuffles `ciphertext` / `nonce` blobs across rows triggers AEAD
 tag failure rather than recovering cross-row plaintext).
 
+The blind-index key is a separate HKDF-SHA256 derivation from the
+same `identity_secret`:
+
+```
+index_key = HKDF-SHA256(salt = "", ikm = identity_secret, info = "osl-message-store-index-v1")
+blind_index = HKDF-SHA256(salt = index_key, ikm = field_value, info = per-field domain)
+```
+
+The per-field domains are distinct for message id, channel id,
+sender id and attachment cache key. That prevents the same string
+appearing in two roles from producing the same blind index.
+
 A canary row in `_meta` (`canary_nonce`, `canary_ct`) holds a
 fixed plaintext sealed under the same key. On open we attempt
 to unseal; failure surfaces as `StoreError::Sealer` and the
@@ -34,65 +46,78 @@ rather than producing a misleading `Corrupted` on first read.
 
 Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
 
-- `_meta(key, value)` — `schema_version`, the sealed canary, and the
-  sealed `meta_auth_strict` marker.
-- `messages(discord_message_id, channel_id, sender_discord_id,
-  sender_osl_user_id, ciphertext, nonce, decrypted_at, burned,
-  burned_at, wrapped_key, scope_type, scope_id, meta_tag)`
-  — row metadata is plaintext (Discord ids, OSL user ids,
-  channel ids, the unix-seconds timestamp) so SQLite can run
-  `WHERE channel_id = ? ORDER BY decrypted_at DESC`. The
-  message body lives only in `ciphertext` and is never written
-  unencrypted. `wrapped_key`, `scope_type` and `scope_id` are
-  present but **no code in this repository has ever written them**;
-  they are NULL on every row.
-- `attachments(cache_key, discord_message_id, random_filename, mime,
-  ciphertext, nonce, byte_len, created_at, scope_type, scope_id,
-  sender_discord_id)` — the decrypted attachment bytes are sealed;
-  the linkage, filename, MIME type, byte count and timestamp are
-  plaintext.
-- `idx_messages_channel` — the `(channel_id, decrypted_at DESC)`
-  index used by `list_by_channel`. Indexes the same plaintext
-  ids; no message body content.
+- `_meta(key, value)` — `schema_version`, `canary_nonce` and
+  `canary_ct`. A transient `vacuum_pending` marker also lives here
+  between a committed migration and the `VACUUM` that scrubs the
+  pages it freed; it is deleted once that scrub completes, and a
+  store that crashed in between finishes the job on next open.
+- `messages(mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct,
+  ciphertext, nonce, seq, burned, burned_at, wrapped_key)` —
+  `mid_bi`, `chan_bi` and `sender_bi` are 32-byte keyed blind
+  indexes. The real Discord message id, channel id, sender Discord
+  id, sender OSL user id and `decrypted_at` timestamp live in
+  `meta_ct`, sealed with `meta_nonce`. The message body lives in
+  `ciphertext`. `seq` is an opaque monotonic ordering counter; it
+  replaces the old plaintext `decrypted_at` ordering index.
+- `attachments(ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct,
+  ciphertext, nonce, seq)` — `ck_bi`, `mid_bi` and `sender_bi` are
+  blind indexes. The real cache key, message id, random filename,
+  MIME type, byte length, creation timestamp, optional scope fields
+  and optional sender id live in the sealed metadata blob. The
+  attachment bytes live in `ciphertext`.
+- `idx_messages_chan_seq` — `(chan_bi, seq DESC)`, used by
+  `list_by_channel`.
+- `idx_attachments_mid` — `mid_bi`, used to find/delete cached
+  attachments for a message.
+- `idx_attachments_seq` — `seq`, used to trim the oldest attachment
+  rows.
 
 **No FTS tables, no tokenized plaintext, no other plaintext
 content surface.** Deliberately. (See "Search" below.)
 
 ### The metadata exposure, stated as a defect and not as a design note
 
-Message *bodies* are sealed. The **social graph is not.** Someone who
-reads this file offline — a disk thief, a backup, a forensic tool —
-can enumerate, without ever holding the store key:
+Schema v4 fixes the old plaintext metadata exposure, but it does not
+make the database opaque.
 
-- which Discord accounts and which OSL identities are talking,
-- which channels/conversations they are talking in,
-- when each message was decrypted, and therefore activity timing,
-- which messages carried attachments, of what type and what size,
-- which conversations were burned and when.
+What is now hidden from an offline reader without the
+`identity_secret`:
 
-Correlated against Discord's own local cache, that reconstructs the
-protected relationship graph. This is the exposure the audit records
-as *"Plaintext message/social metadata is persisted"*.
+- Discord message ids.
+- Discord channel ids.
+- Sender Discord ids.
+- Sender OSL user ids.
+- Exact message and attachment timestamps.
+- Attachment random filenames.
+- Attachment MIME types.
+- Attachment byte lengths as metadata fields.
 
-This file has always described that accurately. The **product-level
-at-rest invariant does not**, and the two disagree. Until one of them
-moves, this file is the one that matches the code — do not cite the
-stronger claim.
+What remains visible:
 
-Fixing the code rather than the claim means keyed-hash (blind) index
-columns replacing the plaintext ids, plus a sealed metadata blob. That
-is a rewrite of every installed row and is **not** something to start
-without the owner's decision, because rolling back afterwards orphans
-the user's history. The design and its blast radius are written up in
-`docs/reports/store-lane-2026-07-26.md`; it is deliberately not
-started.
+- The number of message rows and attachment rows.
+- That two rows share a channel or sender, because blind indexes are
+  deterministic. The value is hidden; equality is not.
+- Frequency analysis over groups of equal blind indexes.
+- The size of each sealed body. For messages this leaks message
+  length; for attachments it leaks attachment size even though the
+  sealed `byte_len` metadata field is hidden.
+- The relative order of rows via `seq`.
+- Which message rows are burned, and their `burned_at` value when set.
+
+Plainly: the social graph's labels are gone; its shape is not. Do not
+describe the social graph as protected without that qualification.
+
+The old plaintext channel/time index is gone. `list_by_channel` looks
+up the channel by `chan_bi` and sorts by `seq DESC`. `seq` exists
+because sealing `decrypted_at` otherwise would force a full-channel
+decrypt just to sort.
 
 ## Search
 
 v1 has no search. The public API is `get` + `list_by_channel`
 only. This is a deliberate privacy property: a forensic dump of
-`messages.sqlite` reveals no message body content, only the
-metadata listed above.
+`messages.sqlite` reveals no message body content, only the remaining
+non-content surfaces listed above.
 
 The earlier prototype shipped a contentless FTS5 virtual table
 (`messages_fts`) for full-text search. FTS5's "contentless" mode
@@ -168,39 +193,48 @@ long-term recipient keys and no per-message key is held anywhere
 revocable. See `docs/THREAT_MODEL.md` § "Revocability" — and do not
 describe this as "cryptographic burn".
 
-## Row metadata authentication
+## Sealed metadata authentication
 
-Added 2026-07-26 in response to the audit finding that
-security-relevant metadata sat outside AEAD authentication.
+There is no `meta_tag` column and no `meta_auth_strict` latch in
+schema v4. They are obsolete.
 
-The body AAD is the row's `discord_message_id` only, so
-`channel_id`, `sender_discord_id`, `sender_osl_user_id` and
-`decrypted_at` were unauthenticated: someone who could write the
-file could re-attribute a message to another person, or move it into
-another conversation, and the AEAD tag still verified.
+Metadata is hidden and authenticated by the same AEAD operation:
+`meta_nonce` + `meta_ct` seal the canonical, length-prefixed metadata
+blob. For message rows, the metadata AAD is the row's own `mid_bi`.
+For attachment rows, the metadata AAD is the row's own `ck_bi`.
 
-Each row now carries `meta_tag`, a 40-byte `nonce || tag`
-authenticator produced by sealing an *empty* plaintext with the
-canonical, length-prefixed encoding of those fields as AAD. It holds
-no secret, so it adds nothing to what the file discloses. Both read
-paths verify it and return `Corrupted` on mismatch.
+That means an offline editor who moves a metadata blob between rows,
+or edits one in place, gets an AEAD tag failure on read. A separate
+authenticator would be redundant because the sealed blob already
+authenticates the metadata it hides.
 
-Limits, stated plainly:
+The message body AAD is still the real `discord_message_id`, recovered
+from sealed metadata before opening the body. That is why the v3 to v4
+migration can leave every message body ciphertext untouched.
 
-- Rows written before this existed carry no tag. They are accepted,
-  because refusing them would erase an installed user's history on
-  upgrade. Once a database holds no untagged unburned rows it latches
-  a sealed strict marker and refuses untagged rows from then on, so a
-  database created by this build is strict from birth.
-- A writer who can edit the file can also delete that marker from
-  `_meta`, downgrading the store to lenient. `_meta` is no better
-  protected than the rest of the file. Closing this needs a
-  whole-database MAC anchored outside SQLite.
-- `burned` / `burned_at` are outside the tag. Flipping `burned`
-  exposes nothing, because burn zeroes the body it would expose.
-- Attachment rows are **not** covered. Their AAD is the `cache_key`,
-  so `mime`, `byte_len`, `scope_type`, `scope_id` and
-  `sender_discord_id` on those rows remain unauthenticated.
+## Schema v4 migration
+
+The v3 to v4 migration rewrites every row inside one SQLite
+transaction. It builds v4 tables beside the old tables, computes blind
+indexes, seals metadata, drops the old tables, renames the v4 tables,
+recreates the indexes and then runs `VACUUM`.
+
+For message rows, `ciphertext`, `nonce`, `burned`, `burned_at` and
+`wrapped_key` are copied byte-for-byte. Message bodies are never
+re-encrypted, because the body AAD remains `discord_message_id`.
+For attachment rows, `ciphertext` and `nonce` are copied
+byte-for-byte while the metadata is sealed into the new v4 shape.
+
+`seq` is assigned in legacy `decrypted_at ASC, rowid ASC` order, so
+newest-first channel listing stays in the same order after migration.
+Attachment `seq` is assigned in legacy `created_at ASC, rowid ASC`
+order.
+
+The canary is verified before migration runs. A wrong
+`identity_secret` therefore cannot trigger a destructive rewrite. The
+post-migration `VACUUM` matters because dropping the old tables frees
+pages that used to contain plaintext identifiers; rewriting the file
+stops those freed pages from retaining the old plaintext.
 
 ## Threading & concurrency
 

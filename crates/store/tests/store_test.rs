@@ -135,13 +135,13 @@ fn mark_burned_makes_get_return_none() {
         .unwrap();
     assert!(store.get("vanish").unwrap().is_some());
     let db_path = tmp.path().join("messages.sqlite");
+    // Schema v4 stores no plaintext identifier, so the row cannot be named in
+    // SQL. This database holds exactly one row, which is enough.
     let before: (Vec<u8>, Vec<u8>) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row(
-            "SELECT ciphertext, nonce FROM messages WHERE discord_message_id = 'vanish'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        conn.query_row("SELECT ciphertext, nonce FROM messages", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .unwrap()
     };
     store.mark_burned("vanish").unwrap();
@@ -149,7 +149,7 @@ fn mark_burned_makes_get_return_none() {
     let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.query_row(
-            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages WHERE discord_message_id = 'vanish'",
+            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -208,22 +208,17 @@ fn corrupted_ciphertext_returns_corrupted_not_panic() {
     // raw bad blob. Tag will fail on next read.
     {
         let conn = rusqlite::Connection::open(path.join("messages.sqlite")).unwrap();
+        // Schema v4 stores no plaintext identifier, so the row cannot be named
+        // in SQL. This database holds exactly one row, which is enough.
         let mut ct: Vec<u8> = conn
-            .query_row(
-                "SELECT ciphertext FROM messages WHERE discord_message_id = ?1",
-                params!["corrupt-me"],
-                |r| r.get(0),
-            )
+            .query_row("SELECT ciphertext FROM messages", [], |r| r.get(0))
             .unwrap();
         // Flip the last byte (Poly1305 tag tail). Any single-bit
         // flip in either ciphertext or tag invalidates AEAD.
         let last = ct.len() - 1;
         ct[last] ^= 0x01;
-        conn.execute(
-            "UPDATE messages SET ciphertext = ?1 WHERE discord_message_id = ?2",
-            params![ct, "corrupt-me"],
-        )
-        .unwrap();
+        conn.execute("UPDATE messages SET ciphertext = ?1", params![ct])
+            .unwrap();
     }
     let store = open_a(&path);
     let err = store.get("corrupt-me").unwrap_err();
@@ -455,20 +450,49 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
     );
 
     let db_path = tmp.path().join("messages.sqlite");
-    let after: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64) = {
+    // Schema v4 stores no plaintext identifier, so the shredded rows cannot be
+    // named in SQL. Assert over the whole table instead, which is a stronger
+    // claim than naming one row: of the three messages, exactly the two expired
+    // ones must be burned with a zeroed body, and exactly one must still hold a
+    // live body.
+    let (burned_zeroed, live_bodies, any_wrapped_key): (usize, usize, bool) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row(
-            "SELECT ciphertext, nonce, wrapped_key, burned FROM messages \
-               WHERE discord_message_id = 'expired-1'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap()
+        let mut stmt = conn
+            .prepare("SELECT ciphertext, nonce, wrapped_key, burned FROM messages")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .unwrap();
+        let mut burned_zeroed = 0;
+        let mut live = 0;
+        let mut wrapped = false;
+        for row in rows {
+            let (ct, nonce, wk, burned) = row.unwrap();
+            if wk.is_some() {
+                wrapped = true;
+            }
+            if burned == 1 && ct.iter().all(|b| *b == 0) && nonce.iter().all(|b| *b == 0) {
+                burned_zeroed += 1;
+            }
+            if ct.iter().any(|b| *b != 0) {
+                live += 1;
+            }
+        }
+        (burned_zeroed, live, wrapped)
     };
-    assert!(after.0.iter().all(|byte| *byte == 0));
-    assert!(after.1.iter().all(|byte| *byte == 0));
-    assert!(after.2.is_none());
-    assert_eq!(after.3, 1);
+    assert_eq!(
+        burned_zeroed, 2,
+        "both expired rows must be burned and zeroed"
+    );
+    assert_eq!(live_bodies, 1, "the unexpired row must keep its live body");
+    assert!(!any_wrapped_key, "a shred must null wrapped_key");
     let wal = db_path.with_extension("sqlite-wal");
     assert!(
         !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
