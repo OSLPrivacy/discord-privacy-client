@@ -127,7 +127,7 @@ export function validateAttachmentPredecessorAdoption(
   );
   requirePattern(
     sweep,
-    /else if \(abortFailure\) \{[\s\S]*?throw abortFailure; \}[\s\S]*?confirmAttachmentObjectAbsent\(env, claim, now\)[\s\S]*?completeAttachmentSweepClaim\(env, claim, now\)/,
+    /if \(abortFailure\) \{[\s\S]*?throw abortFailure; \}[\s\S]*?if \(completedObject\) \{[\s\S]*?delete\(claim\.object_key\)[\s\S]*?confirmAttachmentObjectAbsent\(env, claim, now\)[\s\S]*?completeAttachmentSweepClaim\(env, claim, now\)/,
     "ambiguous abort or absence-marker ordering is unsafe",
   );
 
