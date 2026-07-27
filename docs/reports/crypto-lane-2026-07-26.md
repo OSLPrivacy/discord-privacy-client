@@ -1678,3 +1678,86 @@ Status: `source/test-proven-only`, `+0`.
 None. The change corrects an implemented-unwired source claim and adds a
 reachability/mutation gate; it does not make signed burn alerts available or
 prove any two-identity runtime behavior.
+
+## Round 17 — local burn cleanup is not remote wrapped-key destruction
+
+Source/test commit:
+`a3ec41275428286ec6f393d3d2c7dcae7654f20b` (parent
+`62adfe52b2c291ac3ad260785906a2467d3868f1`, tree
+`b5d974fb113d110c1ed008e38477abaf408514a7`). Exact paths:
+
+- `apps/osl-hub/src/security.rs`
+- `crates/ipc/src/commands.rs`
+- `apps/osl-hub-ui/src/security.test.ts`
+
+The registered `burn_active_hub_context` command reaches
+`security::burn_scope`, which calls `cmd_osl_apply_burn`, shreds matching
+local message-store rows, and attempts deletion of each known OSL cipher-store
+blob. Production does not construct `WrappedKeyUpload` or call
+`post_wrapped_key`/`fetch_wrapped_key`.
+
+Reachable source comments nevertheless said:
+
+- local rows, wrapped keys, and remote blobs were unconditionally gone;
+- a peer that had not fetched could never fetch;
+- clearing the local `wrapped_key` column destroyed local decryptability;
+- local decrypt was gated solely by that column; and
+- a peer marker wiped decrypt capability.
+
+Those statements conflated three separate facts and ignored failure state.
+The corrected contract now says:
+
+- `messages.sqlite` ciphertext/nonce shredding and its legacy
+  `wrapped_key` column are local store cleanup only;
+- remote blob deletion is best effort and failures remain represented by
+  `remote_blobs_deleted`/`remote_cleanup_complete`;
+- successful OSL blob deletion blocks a later fetch through that store but
+  does not erase connected-service/provider copies;
+- no server-held per-message wrapped-key lifecycle is wired; and
+- neither local row cleanup nor a sender-scoped marker destroys long-term
+  recipient decryption authority or proves visible-row authorship.
+
+Exact corrected locations:
+
+- `security.rs:2070-2077`
+- `commands.rs:6371-6385,6511-6525,6596-6614,6657-6680,6767-6779`
+
+### Nonvacuous gate and focused evidence
+
+`security.test.ts:655-821` binds five positive production stages:
+
+1. registered `burn_active_hub_context`;
+2. main calls `security::burn_scope`;
+3. security calls `cmd_osl_apply_burn`;
+4. IPC calls the legacy-named local row-shred method; and
+5. security attempts the real prose-token/blob deletion.
+
+It independently requires zero production wrapped-key POST, GET, or upload
+construction and contains a positive synthetic mutation for each. One
+stage-removal mutation per real burn edge must change the classifier.
+Reinstating the former key-destruction wording fails, and comment/cfg(test)
+decoys remain negative.
+
+Focused command:
+
+`./node_modules/.bin/vitest run src/security.test.ts -t "does not describe
+local burn cleanup as remote wrapped-key destruction" --reporter=dot`
+
+Result: 1 test passed, 0 failed, 7 skipped.
+
+The first two stage-removal runs correctly failed because the registration
+mutation initially did not match the no-comma final handler entry, then used
+an alias containing the original substring. The mutation was changed to a
+non-overlapping token before the passing run.
+
+`git diff-tree --check a3ec412^ a3ec412` produced no output. No Cargo, build,
+install, browser, deployment, live peer, remote deletion, or runtime action
+ran.
+
+Status: `source/test-proven-only`, `+0`.
+
+## Acceptance rows this earns
+
+None. This is reachable source-claim hardening with a production-path gate;
+it changes no burn behavior and proves no remote deletion or cryptographic
+erasure at runtime.
