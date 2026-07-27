@@ -105,6 +105,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # THE SAME determinism levers reproducible-build.yml proved. Without
+          # these the signed binary is built by a different configuration than
+          # the one measured, so the reproducibility result described a binary
+          # nobody receives. tauri-action shells out to cargo, so cargo's
+          # environment applies here too.
+          RUSTFLAGS: >-
+            --remap-path-prefix=${{ github.workspace }}=.
+            -Clink-arg=/Brepro
+          CARGO_INCREMENTAL: '0'
+          SOURCE_DATE_EPOCH: '1700000000'
         with:
           projectPath: apps/osl-hub
           tagName: hub-v__VERSION__
@@ -116,4 +126,4 @@ jobs:
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           releaseAssetNamePattern: osl-hub-[version]-[arch]-[bundle].[ext]
-          args: --features desktop
+          args: --features desktop --config profile.release.codegen-units=1

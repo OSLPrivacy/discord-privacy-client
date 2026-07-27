@@ -32,15 +32,20 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
+      # Every value reaches bash through env. An earlier pass fixed only the
+      # guard step and left these summary echoes splicing the raw tag, which is
+      # the same injection with a friendlier name.
       - name: Record the operator's stated reason
         env:
           REASON: ${{ inputs.reason }}
+          TARGET_TAG: ${{ inputs.rollback_to_tag }}
+          ACTOR: ${{ github.actor }}
         run: |
           {
             echo "### Rollback requested"
             echo ""
-            echo "- target: \`${{ inputs.rollback_to_tag }}\`"
-            echo "- actor: \`${{ github.actor }}\`"
+            echo "- target: \`$TARGET_TAG\`"
+            echo "- actor: \`$ACTOR\`"
             echo "- reason: $REASON"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -101,6 +106,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_VERSION: ${{ steps.state.outputs.target_version }}
+          CURRENT_VERSION: ${{ steps.state.outputs.current_version }}
+          TARGET_TAG: ${{ inputs.rollback_to_tag }}
         run: |
           set -euo pipefail
           # --clobber DELETES the existing asset before uploading. If the upload
@@ -125,8 +132,8 @@ jobs:
           echo "feed verified: now serving $served"
           {
             echo ""
-            echo "Update feed moved from \`${{ steps.state.outputs.current_version }}\`"
-            echo "to \`${{ steps.state.outputs.target_version }}\` (\`${{ inputs.rollback_to_tag }}\`)."
+            echo "Update feed moved from \`$CURRENT_VERSION\`"
+            echo "to \`$TARGET_VERSION\` (\`$TARGET_TAG\`)."
             echo ""
             echo "The withdrawn release was NOT deleted or unpublished; only the"
             echo "update feed moved. Roll forward by promoting a new candidate."

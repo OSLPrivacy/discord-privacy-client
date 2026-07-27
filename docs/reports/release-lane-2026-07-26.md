@@ -408,6 +408,44 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## What actually ships, and what was actually proven
+
+Tracing the artefact chain, because my reproducibility claim was about the wrong thing:
+
+| Stage | Produced by | Had the determinism flags? |
+|---|---|---|
+| `osl-privacy-hub.exe` I measured | `reproducible-build.yml` → `hub-binary` | **yes** — that is why it reproduced |
+| `osl-privacy-hub.exe` that ships | `osl-hub-release.yml` → `tauri-action` | **no** |
+| `osl-hub-<ver>-<arch>-nsis.exe` | `tauri-action` NSIS bundler | no |
+| what the attestation hashes | **the NSIS installer** | no |
+
+So the thing users download is the **installer**, the attestation binds to the **installer**, and
+neither was covered by the reproducibility run. I measured a binary built by a job that does not
+ship anything.
+
+**Fixed:** the signing step now carries the identical levers — `RUSTFLAGS` with
+`--remap-path-prefix` and `-Clink-arg=/Brepro`, `CARGO_INCREMENTAL=0`, a pinned `SOURCE_DATE_EPOCH`,
+and `--config profile.release.codegen-units=1` through `args`, since `tauri-action` shells out to
+cargo and inherits its environment.
+
+**Still unproven, and I am not claiming otherwise.** Aligning the configuration is necessary, not
+sufficient. Nobody has built the signed artefact twice and compared, because the signing workflow
+**cannot run at all** — two independent blockers, both found today: the Windows `npm test` that
+cannot pass (fixed), and `hub-release` permitting **zero refs** (owner decision, unfixed). And the
+NSIS installer adds its own timestamp and compression, so the binary reproducing does not imply the
+installer does. Those are separate claims and need separate measurements.
+
+Current honest status: **the hub binary is reproducible under the reproducible-build configuration;
+the shipped installer's reproducibility is unmeasured.**
+
+## Correction: my injection fix was incomplete
+
+I reported "everything now reaches bash through `env`". That was **not true**. I fixed the guard
+step and left four `${{ }}` splices in the summary steps — `${{ inputs.rollback_to_tag }}` echoed
+directly into `run:` blocks in a `contents: write` job. A friendlier-looking line is the same
+injection. All splices are now gone from `run:` blocks in both the rollback and promote workflows,
+verified by scanning for them rather than by assertion.
+
 ## Adversarial review of my own guards — it found real defects in my work
 
 I dispatched a reasoning model to hunt tonight's defect shape *in the guards I built to prevent it*,
