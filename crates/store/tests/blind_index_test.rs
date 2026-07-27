@@ -1203,3 +1203,97 @@ fn ambiguous_cache_key_components_are_refused() {
         "a message id containing '/' was stored"
     );
 }
+
+/// A migration that cannot complete must leave the original database intact.
+///
+/// The v3→v4 rewrite runs inside one transaction, but nothing exercised the
+/// failure arm: every test migrated a well-formed fixture. This one forces the
+/// abort by handing the migration two rows that map to the same blind index —
+/// constructed by building the legacy table *without* its primary key so the
+/// duplicate can exist at all.
+///
+/// The property under test is not the duplicate. It is that a failed migration
+/// rolls back: the user's original rows must still be there afterwards, because
+/// the alternative is a half-converted database and a lost history.
+#[test]
+fn a_failed_migration_rolls_back_and_leaves_the_legacy_data_intact() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+
+    let (canary_nonce, canary_ct) =
+        v3_seal(b"osl-message-store/canary", b"osl-message-store-canary-v1");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    // Deliberately no PRIMARY KEY, so two rows can share an identifier.
+    conn.execute_batch(
+        r#"
+CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+CREATE TABLE messages (
+    discord_message_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    sender_discord_id TEXT NOT NULL,
+    sender_osl_user_id TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    decrypted_at INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0
+);
+"#,
+    )
+    .unwrap();
+    for (k, v) in [("canary_nonce", canary_nonce), ("canary_ct", canary_ct)] {
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES(?1, ?2)",
+            rusqlite::params![k, v],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO _meta(key, value) VALUES('schema_version', ?1)",
+        rusqlite::params![3u32.to_le_bytes().to_vec()],
+    )
+    .unwrap();
+    for body in ["first copy", "second copy"] {
+        let (nonce, ct) = v3_seal(b"dup-id", body.as_bytes());
+        conn.execute(
+            "INSERT INTO messages (discord_message_id, channel_id, sender_discord_id, \
+                sender_osl_user_id, ciphertext, nonce, decrypted_at, burned) \
+             VALUES ('dup-id', 'chan', 's', 'alice', ?1, ?2, 1, 0)",
+            rusqlite::params![ct, nonce],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    // Positive path: the legacy rows really are there before the attempt.
+    let before: i64 = {
+        let c = rusqlite::Connection::open(&db_path).unwrap();
+        c.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(before, 2, "positive path: the fixture must hold both rows");
+
+    // The migration must refuse rather than silently drop one of them.
+    assert!(
+        MessageStore::open(tmp.path(), SECRET_A).is_err(),
+        "a migration that cannot represent both rows reported success"
+    );
+
+    // And the original data must survive the failure.
+    let c = rusqlite::Connection::open(&db_path).unwrap();
+    let cols: Vec<String> = {
+        let mut stmt = c.prepare("PRAGMA table_info(messages)").unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert!(
+        cols.iter().any(|col| col == "discord_message_id"),
+        "rollback did not restore the legacy table shape"
+    );
+    let after: i64 = c
+        .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "a failed migration destroyed rows it could not convert"
+    );
+}

@@ -323,7 +323,17 @@ CREATE TABLE attachments_v4 (
                 let (meta_nonce, meta_ct) =
                     cipher::seal(key, &mid_bi, &cipher::encode_message_meta(&meta))?;
                 conn.execute(
-                    "INSERT OR REPLACE INTO messages_v4 \
+                    // Plain INSERT, not INSERT OR REPLACE.
+                    //
+                    // Two legacy rows cannot share an identifier — v1/v3 make
+                    // `discord_message_id` and `cache_key` PRIMARY KEYs — so the
+                    // only way two rows collide here is a blind-index collision,
+                    // which is not a case to paper over. `OR REPLACE` would
+                    // silently drop one of the user's messages and report a
+                    // successful migration. A plain INSERT aborts inside the
+                    // migration transaction instead, so the original database
+                    // is rolled back intact and the failure is visible.
+                    "INSERT INTO messages_v4 \
                         (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
                          ciphertext, nonce, seq, burned, burned_at, wrapped_key) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -409,7 +419,8 @@ CREATE TABLE attachments_v4 (
                 let (meta_nonce, meta_ct) =
                     cipher::seal(key, &ck_bi, &cipher::encode_attachment_meta(&meta))?;
                 conn.execute(
-                    "INSERT OR REPLACE INTO attachments_v4 \
+                    // Plain INSERT for the same reason as `messages_v4`.
+                    "INSERT INTO attachments_v4 \
                         (ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, \
                          ciphertext, nonce, seq) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

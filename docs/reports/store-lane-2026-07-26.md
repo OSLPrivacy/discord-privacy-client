@@ -462,8 +462,19 @@ Two left unfixed and recorded rather than dropped:
   that two accepted pairs would collapse onto one row and serve one message's attachment for
   another's — is derived from the cache-key format `"{id}/{filename}"`, not separately observed,
   because the validation now prevents constructing it.
-- Migration `INSERT OR REPLACE` would collapse two legacy rows sharing a blind index (Low).
-  Requires an identifier collision.
+- **Migration `INSERT OR REPLACE` (Low) — now closed.** Reachability first: v1 and v3 both make
+  `discord_message_id` and `cache_key` PRIMARY KEYs, so two legacy rows cannot share an
+  identifier; only a 2^-256 blind-index collision could trigger it. The finding was therefore not
+  reachable — but the *behaviour* was still wrong, because `OR REPLACE` would silently drop one of
+  the user's messages and report a successful migration. Now a plain `INSERT`, so a collision
+  aborts inside the migration transaction and the original database rolls back intact.
+
+  This also closed a gap nothing had tested: **every migration test used a well-formed fixture, so
+  the failure arm had never run.** `a_failed_migration_rolls_back_and_leaves_the_legacy_data_intact`
+  forces the abort by building the legacy table without its primary key so a duplicate can exist,
+  then asserts the open is refused *and* that both original rows and the legacy table shape
+  survive. Observed failing with `OR REPLACE` restored (`a migration that cannot represent both
+  rows reported success`).
 
 ## Handoffs
 
@@ -526,8 +537,8 @@ takes the same lock internally.
 
 ```
 flock /tmp/osl-cargo.lock -c "cargo test -p store"
-  → 17 passed (blind_index_test), 13 passed (burn_defects_test),
-    17 passed (store_test), 0 failed, 0 ignored.  47 total.
+  → 18 passed (blind_index_test), 13 passed (burn_defects_test),
+    17 passed (store_test), 0 failed, 0 ignored.  48 total.
 
 flock /tmp/osl-cargo.lock -c "cargo clippy -p store --all-targets"   → clean, no warnings
 cargo fmt -p store -- --check                                        → clean
@@ -535,7 +546,7 @@ flock /tmp/osl-cargo.lock -c "cargo check -p store --target x86_64-pc-windows-gn
   → Finished. store cross-compiles for the shipping target.
 ```
 
-**On the test count and the gate that produced it.** 47 is measured, not inherited, and the gate
+**On the test count and the gate that produced it.** 48 is measured, not inherited, and the gate
 is the bare one: `osl-cargo test -p store`, no features.
 
 Naming the gate matters now, because the fleet learned tonight that a gate can move a number in
@@ -607,6 +618,7 @@ its evidence:
 | Five pre-existing tests no longer pass against a no-op | each observed failing against a stubbed writer | Earned |
 | Message bodies and attachment bytes are unreadable in the file | failing-first against a no-op cipher | Earned |
 | Ambiguous cache-key identifiers are refused | failing-first, with a positive control | Earned |
+| A failed migration rolls back and preserves legacy data | failing-first; the abort arm had never been exercised | Earned |
 | Four tests now exercise the property their name claims | two never reached it before; verified by reading the assertions | Earned |
 | Hub builds with these changes | `osl-cargo -C apps/osl-hub check --features desktop …` → Finished | Earned |
 | **Burn is cryptographic / revokes recipient access** | **false; unchanged by this work** | **Not earned** |
