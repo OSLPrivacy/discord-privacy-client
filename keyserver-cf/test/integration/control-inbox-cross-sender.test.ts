@@ -157,6 +157,61 @@ describe("control inbox admission never destroys an unrelated sender's rows", ()
     expect(response.status).toBe(201);
   });
 
+  it("destroys nothing when it refuses, not even the sender's own rows", async () => {
+    // Regression test for a defect introduced by the cross-sender fix itself
+    // and caught in adversarial review. Eviction used to run BEFORE the
+    // recipient-wide check, so a sender at its pair cap posting to a congested
+    // recipient had one of its OWN queued rows deleted to make room and was
+    // then refused anyway: undelivered control state destroyed on a path that
+    // reports failure. A refusal must be inert.
+    const recipientId = userId("recipient");
+    const senderId = userId("capped");
+    await registerTestUser(SELF, recipientId);
+    const sender = await registerTestUser(SELF, senderId);
+
+    const now = Math.floor(Date.now() / 1000);
+    // 32 rows from this sender — exactly the per-pair cap — plus 480 from
+    // others, putting the recipient at the 512 recipient-wide cap.
+    const own = [];
+    for (let index = 0; index < 32; index++) {
+      const id = new Uint8Array(16);
+      crypto.getRandomValues(id);
+      own.push(
+        env.DB.prepare(
+          `INSERT INTO control_inbox
+             (id, recipient_id, sender_id, scope_id, bundle, expires_at, created_at, kind, collapse_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, '', NULL)`,
+        ).bind(
+          id,
+          recipientId,
+          senderId,
+          `own-scope-${index}`,
+          new Uint8Array([1]),
+          now + SEVEN_DAYS,
+          now + index,
+        ),
+      );
+    }
+    await env.DB.batch(own);
+    await fillOrdinaryLane(recipientId, 480, now + 100);
+    expect(await liveRowCount(recipientId)).toBe(512);
+
+    const response = await post(await signedPostBody(senderId, recipientId, sender.signingKey));
+    expect(response.status).toBe(429);
+
+    // The whole point: the sender still holds all 32. A refusal that quietly
+    // costs the sender a queued message is not a refusal, it is a deletion.
+    const held = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM control_inbox
+        WHERE recipient_id = ? AND sender_id = ? AND kind = ''`,
+    )
+      .bind(recipientId, senderId)
+      .first<{ count: number }>();
+    expect(held?.count).toBe(32);
+    // ...and the lane as a whole is untouched.
+    expect(await liveRowCount(recipientId)).toBe(512);
+  });
+
   it("recycles a sender's own oldest rows rather than refusing them", async () => {
     const recipientId = userId("recipient");
     const senderId = userId("chatty");

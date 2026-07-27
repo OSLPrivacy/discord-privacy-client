@@ -442,16 +442,6 @@ export async function handleControlInboxPost(
     )
     .bind(body.recipient_id, body.sender_id, KIND_ORDINARY, now)
     .first<{ count: number }>();
-  const recycled = await evictOldestPending(
-    env,
-    `recipient_id = ? AND sender_id = ? AND kind = ''`,
-    [body.recipient_id, body.sender_id],
-    now,
-    pendingFromSenderBefore?.count ?? 0,
-    MAX_PENDING_ROWS_PER_SENDER_RECIPIENT,
-  );
-  const heldBySender = Math.max(0, (pendingFromSenderBefore?.count ?? 0) - recycled);
-
   const pending = await env.DB
     .prepare(
       `SELECT COUNT(*) AS count
@@ -460,15 +450,42 @@ export async function handleControlInboxPost(
     )
     .bind(body.recipient_id, KIND_ORDINARY, now)
     .first<{ count: number }>();
+
+  // DECIDE BEFORE MUTATING.
+  //
+  // Eviction used to run here, before the recipient-wide check. That made the
+  // refusal path destructive: a sender at its 32-row pair cap posting to a
+  // congested recipient had one of its OWN queued rows deleted to make room,
+  // and was then refused anyway — losing undelivered control state while being
+  // told the send had failed. Fixing cross-sender deletion only to introduce
+  // same-sender deletion on a failure path is not a fix.
+  //
+  // So the outcome is computed from what eviction *would* free, and nothing is
+  // deleted unless the row is actually going to be inserted.
+  const heldBySender = pendingFromSenderBefore?.count ?? 0;
+  const wouldRecycle = Math.max(
+    0,
+    heldBySender - MAX_PENDING_ROWS_PER_SENDER_RECIPIENT + 1,
+  );
   // A sender still holding a real backlog may only use the ordinary allowance;
   // the reserve is there so congestion caused by others cannot make a first
   // contact undeliverable.
-  const admissionCap = heldBySender < FRESH_SENDER_ROWS
+  const admissionCap = heldBySender - wouldRecycle < FRESH_SENDER_ROWS
     ? MAX_PENDING_ROWS_PER_RECIPIENT
     : MAX_PENDING_ROWS_PER_RECIPIENT - RESERVED_FRESH_SENDER_ROWS;
-  if ((pending?.count ?? 0) >= admissionCap) {
+  if ((pending?.count ?? 0) - wouldRecycle >= admissionCap) {
     return recipientInboxFull(60, "recipient");
   }
+
+  // Admitted. Only now may this sender recycle its own stalest rows.
+  await evictOldestPending(
+    env,
+    `recipient_id = ? AND sender_id = ? AND kind = ''`,
+    [body.recipient_id, body.sender_id],
+    now,
+    heldBySender,
+    MAX_PENDING_ROWS_PER_SENDER_RECIPIENT,
+  );
   // The check above is a pre-check, not the enforcement. Two concurrent posts
   // could both read a count under the cap and both insert. Migration 0027's
   // trigger backstops the hard 512, but it knows nothing about the reserve, so
