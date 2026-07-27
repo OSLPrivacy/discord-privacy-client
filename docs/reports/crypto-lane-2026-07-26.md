@@ -1242,3 +1242,110 @@ header proof, no runtime provider path or second identity was exercised, and I3 
 
 None. The QA release blocker and mutation gate are closed `test-proven-only`; I3 remains
 `blocked`.
+
+## Round 12 — 0031 control-inbox disposition boundary
+
+Source commit:
+`e4c9318f14951c2206109c57a5f0b145dab6d216` (tree
+`527974c54850c428b8161a8536d9ba46b58e73d9`).
+
+The client change consumes the exact aggregate response contract committed by the keyserver
+lane in `16fcf490a2d4e07b6616e21b9f51df1690b8d2bf`:
+`filtered_sender_delivery` contains required, nonnegative safe-integer `live`, `retryable`,
+`quarantined`, and `retired` counts
+(`keyserver-cf/src/endpoints/control-inbox.ts:907-945` at that commit). This lane inspected that
+contract but did not edit, deploy, or probe the Worker.
+
+### Fail-closed client boundary
+
+`get_control_inbox_from` now returns a typed page rather than a bare row list
+(`crates/keystore/src/client.rs:1191-1258`). Before a page reaches the broker it requires:
+
+- a valid local recipient identity and requested sender;
+- the exact signed sender echo and no row naming a different sender;
+- the complete disposition object, with unknown top-level or nested fields refused;
+- four valid bounded counts; and
+- `delivery.live == items.len()`, so a retained payload cannot be relabelled as a live delete
+  candidate.
+
+The typed disposition and page are at `client.rs:1491-1552`. A pre-0031 filtered response
+without the disposition object is refused; there is no filtered legacy fallback. The older
+unfiltered method and its `{items}` parser remain source-compatible, but the production text
+and attachment drains do not use that method. This round makes no broader legacy-runtime
+compatibility claim.
+
+### Broker behavior
+
+The common filtered fetch returns the typed page, and
+`ControlInboxDeliveryFacts` preserves all five broker-relevant facts: deliverable rows,
+retained-disabled total, retryable, quarantined/untrusted, and retired/terminal
+(`apps/osl-hub/src/broker.rs:752-758,2646-2680`).
+
+- A retained-only response is an explicit retryable, untrusted, or terminal refusal rather
+  than an empty inbox.
+- A mixed text page applies its live authenticated rows and includes every retained count in
+  `deferred_rows` (`broker.rs:2713-2729`).
+- The attachment path processes deliverable plans; if it produces no plan while retained rows
+  exist, it returns the same explicit refusal (`:3667-3749`).
+- Retained rows carry no payload or row ID in the 0031 response, so neither drain can apply or
+  delete them. The broker never fabricates a delete candidate from an aggregate count.
+
+The attachment result type has no deferred-count field, so a mixed live-plus-retained
+attachment page is distinguished internally while returning its live plans. That is a
+documented interface limit, not an empty-inbox or deletion claim.
+
+### Exact committed evidence
+
+`git archive e4c9318` was extracted to
+`/tmp/osl-0031-final-e4c9318.EJMBV0`. These commands ran through `osl-cargo` against only those
+archived bytes:
+
+- `osl-cargo test -p keystore --test client_test filtered_control_inbox -- --nocapture
+  --test-threads=1`: 4 passed, 0 failed, 28 filtered out.
+- `osl-cargo test -p keystore --test client_test
+  retained_or_spoofed_rows_cannot_be_relabelled_as_live_delete_candidates -- --exact
+  --nocapture --test-threads=1`: 1 passed, 0 failed, 31 filtered out.
+- From `apps/osl-hub`, `osl-cargo test --features core --lib
+  broker::tests::control_inbox_delivery_facts_keep_mixed_retained_states_nonempty -- --exact
+  --nocapture --test-threads=1`: 1 passed, 0 failed, 668 filtered out.
+- From `apps/osl-hub`, `osl-cargo test --features core --lib
+  broker::tests::production_receive_boundary -- --nocapture --test-threads=1`: 2 passed,
+  0 failed, 667 filtered out.
+- From `apps/osl-hub`, `osl-cargo check --features core --lib`: exit 0, 26 existing
+  dead-code warnings, no errors.
+
+The tests cover positive filtered rows for two senders, missing and malformed disposition
+fields, unknown fields, invalid/spoofed sender and recipient values, retained-versus-cleaned
+observable boundary states, live-count/payload disagreement, all three retained
+classifications, and the existing four unfiltered/widened-page refusals
+(`client_test.rs:854-1103`; `broker.rs:6654-6899`).
+
+The retention-boundary client test is deliberately narrow: the response has no timestamp, so
+it proves that a nonzero retained count is not empty before server cleanup and that zero is
+empty afterward. Exact seven-day timing and transition legality remain server-lane evidence.
+
+### Independent semantic mutations
+
+Three disposable archives used fresh target directories where source differed. Each one-sided
+mutation failed its focused gate:
+
+1. Defaulting a missing disposition object to all-zero counts failed with exit 101 at
+   `missing disposition object must be refused`.
+2. Removing `live == items.len()` failed with exit 101 at
+   `retained payload exposed as an item must not reach the broker`.
+3. Dropping the broker's retained total to zero failed with exit 101 because the mixed
+   `3 + 5 + 7` page produced 0 instead of 15.
+
+The final commit was rebased after an unrelated C4 tools commit. `git diff --quiet` between the
+original verified candidate and `e4c9318` over `Cargo.toml`, `Cargo.lock`, `apps`, and `crates`
+returned exit 0, and all five baseline commands above were then rerun from the final
+`e4c9318` archive.
+
+Status is `test-proven-only` for the committed Rust parsing and broker behavior.
+The 0031 server migration and Worker are not deployed by this lane, so production remains
+`unknown`; there is no verified-live, B5, provider, I3, or two-identity claim.
+
+## Acceptance rows this earns
+
+None. This is a fail-closed 0031 client/broker readiness slice; truth must adjudicate any
+future row only after the server and runtime evidence exist.
