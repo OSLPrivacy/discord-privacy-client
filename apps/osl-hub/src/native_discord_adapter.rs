@@ -3019,6 +3019,168 @@ fn msaa_bridge_stage(outcome: MsaaBridgeOutcome) -> &'static str {
     }
 }
 
+/// Why `msaa_bridge_call_failed` happened, one step below the outcome.
+///
+/// `MsaaBridgeOutcome::CallFailed` fuses two genuinely different events -- the
+/// `ElementFromIAccessible` call itself erroring, and the call succeeding but
+/// handing back an element the unchanged trust rules refuse -- and each of those
+/// fans out further. On 2026-07-26 the bridge went from 96 consecutive
+/// `msaa_bridge_accepted` to failing on every locate, and the trail could say
+/// only "it failed", which is the difference between a five-minute fix and a
+/// night of guessing.
+///
+/// NOTHING here changes a verdict. Every check keeps exactly the strictness it
+/// had; this only names which one spoke first.
+///
+/// PRIVACY: fixed `&'static str` labels and an HRESULT integer. No name, draft,
+/// conversation or measurement is representable.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MsaaBridgeRefusal {
+    /// `ElementFromIAccessible` returned an error. The class of that error.
+    Call(MsaaBridgeCallClass),
+    /// The bridged element would not report its owning process.
+    ProcessUnreadable,
+    /// The bridged element belongs to a process OSL has not verified.
+    ProcessUntrusted,
+    /// UI Automation reports the element off screen. THE one to look at after a
+    /// minimize/restore: Chromium's intermediate D3D window is left off-screen
+    /// and the composer's element follows it.
+    Offscreen,
+    /// UI Automation reports the element disabled.
+    Disabled,
+    /// The bridged element would not report a rectangle.
+    BoundsUnreadable,
+    /// The element's live rectangle is not inside the Discord window's live
+    /// rectangle. Both are read microseconds apart in the same locate, so this
+    /// is a live-vs-live comparison and not the stale-geometry trap -- it means
+    /// the composer genuinely is outside its own window right now.
+    OutsideRoot,
+}
+
+/// The class of an `ElementFromIAccessible` HRESULT, chosen so each class maps
+/// to a different action.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MsaaBridgeCallClass {
+    /// COM apartment or threading: this thread is not initialised, or is
+    /// initialised in the wrong model, or the proxy is being used from the wrong
+    /// thread. A bug in OSL's own call site, and permanent until fixed.
+    Apartment,
+    /// The provider is gone: Discord's UI Automation server disconnected, the
+    /// element no longer exists, or the RPC channel died. Permanent for THIS
+    /// element; a fresh discovery can still succeed.
+    ProviderGone,
+    /// The provider is alive and busy or slow: the call was rejected, asked to
+    /// retry, or timed out. RETRYABLE, and the only class where trying again is
+    /// the correct response.
+    Busy,
+    /// UI Automation understood the request and refused this element.
+    Refused,
+    /// The call was denied. Usually an integrity-level or UIAccess mismatch.
+    AccessDenied,
+    /// Out of memory or an equivalent resource failure.
+    Resources,
+    /// A code this table does not name. The raw value is in the bridge file.
+    Unclassified,
+}
+
+/// Classify one `ElementFromIAccessible` HRESULT.
+///
+/// The constants are written as literals rather than imported so this function
+/// compiles and is testable on a host that has no Windows headers at all -- the
+/// whole point is that one live run answers the question, and a classifier that
+/// can only be exercised on Windows is a classifier nobody checks.
+#[cfg(any(target_os = "windows", test))]
+fn msaa_bridge_call_class(hresult: i32) -> MsaaBridgeCallClass {
+    const CO_E_NOTINITIALIZED: i32 = 0x8004_01F0u32 as i32;
+    const RPC_E_CHANGED_MODE: i32 = 0x8001_0106u32 as i32;
+    const RPC_E_WRONG_THREAD: i32 = 0x8001_010Eu32 as i32;
+    const RPC_E_THREAD_NOT_INIT: i32 = 0x8001_010Fu32 as i32;
+
+    const RPC_E_DISCONNECTED: i32 = 0x8001_0108u32 as i32;
+    const RPC_E_SERVERFAULT: i32 = 0x8001_0105u32 as i32;
+    const RPC_S_SERVER_UNAVAILABLE: i32 = 0x8007_06BAu32 as i32;
+    const RPC_S_CALL_FAILED: i32 = 0x8007_06BEu32 as i32;
+    const UIA_E_ELEMENTNOTAVAILABLE: i32 = 0x8004_0201u32 as i32;
+
+    const RPC_E_CALL_REJECTED: i32 = 0x8001_0001u32 as i32;
+    const RPC_E_SERVERCALL_RETRYLATER: i32 = 0x8001_010Au32 as i32;
+    const RPC_E_TIMEOUT: i32 = 0x8001_011Fu32 as i32;
+    const UIA_E_TIMEOUT: i32 = 0x8013_1505u32 as i32;
+
+    const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
+    const E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
+    const E_POINTER: i32 = 0x8000_4003u32 as i32;
+    const E_FAIL: i32 = 0x8000_4005u32 as i32;
+    const UIA_E_ELEMENTNOTENABLED: i32 = 0x8004_0200u32 as i32;
+    const UIA_E_NOTSUPPORTED: i32 = 0x8004_0204u32 as i32;
+
+    const E_ACCESSDENIED: i32 = 0x8007_0005u32 as i32;
+    const E_OUTOFMEMORY: i32 = 0x8007_000Eu32 as i32;
+
+    match hresult {
+        CO_E_NOTINITIALIZED | RPC_E_CHANGED_MODE | RPC_E_WRONG_THREAD | RPC_E_THREAD_NOT_INIT => {
+            MsaaBridgeCallClass::Apartment
+        }
+        RPC_E_DISCONNECTED
+        | RPC_E_SERVERFAULT
+        | RPC_S_SERVER_UNAVAILABLE
+        | RPC_S_CALL_FAILED
+        | UIA_E_ELEMENTNOTAVAILABLE => MsaaBridgeCallClass::ProviderGone,
+        RPC_E_CALL_REJECTED | RPC_E_SERVERCALL_RETRYLATER | RPC_E_TIMEOUT | UIA_E_TIMEOUT => {
+            MsaaBridgeCallClass::Busy
+        }
+        E_INVALIDARG | E_NOINTERFACE | E_POINTER | E_FAIL | UIA_E_ELEMENTNOTENABLED
+        | UIA_E_NOTSUPPORTED => MsaaBridgeCallClass::Refused,
+        E_ACCESSDENIED => MsaaBridgeCallClass::AccessDenied,
+        E_OUTOFMEMORY => MsaaBridgeCallClass::Resources,
+        _ => MsaaBridgeCallClass::Unclassified,
+    }
+}
+
+/// The one fixed label naming why the bridge refused, written beside
+/// `msaa_bridge_call_failed` so one run answers "which of these is it".
+#[cfg(any(target_os = "windows", test))]
+fn msaa_bridge_refusal_stage(refusal: MsaaBridgeRefusal) -> &'static str {
+    match refusal {
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::Apartment) => "msaa_bridge_failed_apartment",
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::ProviderGone) => {
+            "msaa_bridge_failed_provider_gone"
+        }
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::Busy) => "msaa_bridge_failed_busy",
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::Refused) => "msaa_bridge_failed_uia_refused",
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::AccessDenied) => {
+            "msaa_bridge_failed_access_denied"
+        }
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::Resources) => "msaa_bridge_failed_resources",
+        MsaaBridgeRefusal::Call(MsaaBridgeCallClass::Unclassified) => {
+            "msaa_bridge_failed_unclassified"
+        }
+        MsaaBridgeRefusal::ProcessUnreadable => "msaa_bridge_failed_process_unreadable",
+        MsaaBridgeRefusal::ProcessUntrusted => "msaa_bridge_failed_process_untrusted",
+        MsaaBridgeRefusal::Offscreen => "msaa_bridge_failed_element_offscreen",
+        MsaaBridgeRefusal::Disabled => "msaa_bridge_failed_element_disabled",
+        MsaaBridgeRefusal::BoundsUnreadable => "msaa_bridge_failed_bounds_unreadable",
+        MsaaBridgeRefusal::OutsideRoot => "msaa_bridge_failed_outside_root",
+    }
+}
+
+/// Whether asking again could plausibly produce a different answer.
+///
+/// Only `Busy` qualifies: the provider is alive and declined this instant.
+/// Everything else is a statement about the element, the process or OSL's own
+/// threading, and a retry would ask the same question and get the same answer.
+/// Nothing consumes this yet -- it is the honest, testable statement of which
+/// failure a recovery would even be allowed to act on, written down now so the
+/// recovery, when the live label says one is warranted, cannot quietly retry a
+/// permanent refusal. `#[cfg(test)]` precisely because it has no consumer:
+/// neither shipping configuration carries an unused function.
+#[cfg(test)]
+fn msaa_bridge_refusal_is_retryable(refusal: MsaaBridgeRefusal) -> bool {
+    matches!(refusal, MsaaBridgeRefusal::Call(MsaaBridgeCallClass::Busy))
+}
+
 /// Which cross-check refused the bridged element, in the order the checks are
 /// stated.
 ///
@@ -5529,6 +5691,25 @@ pub const MAX_VISIBLE_CARRIER_ROWS: usize = 32;
 #[cfg(any(test, target_os = "windows"))]
 const REHYDRATE_MAX_ROW_TEXT_BYTES: usize = 2_000;
 
+/// Shortest string, in UTF-8 bytes, that could possibly be a wordbank cover.
+///
+/// Derived, not guessed. A cover has to carry 96 payload bits -- 8 id bytes plus
+/// a 12-byte truncated HMAC tag -- under either codec:
+///
+///   * the bigram codec draws from a 128-word vocabulary, so no word can carry
+///     more than 7 bits and no cover can be shorter than `ceil(96 / 7) = 14`
+///     whitespace-separated words;
+///   * the retired template codec carries 20 bits per sentence and every
+///     template is longer than three tokens, so it needs strictly more.
+///
+/// Fourteen one-character words joined by thirteen single spaces is 27 bytes, so
+/// nothing shorter than that can decode under any codec and asking is pure cost.
+/// This is a COST filter and never a correctness one: the HMAC is what decides
+/// whether a candidate is a token, and this only declines to ask it a question
+/// whose answer is already known.
+#[cfg(any(test, target_os = "windows"))]
+const REHYDRATE_MIN_CANDIDATE_BYTES: usize = 27;
+
 /// Height of the band at the bottom of Discord's window that a rehydration read
 /// treats as "the composer", purely so the transcript probe points have
 /// something to climb above. It is never used as a binding, a proof or a
@@ -5593,6 +5774,15 @@ pub const REHYDRATE_READ_LIST_FOUND: &str = "rehydrate_read_list_found";
 pub const REHYDRATE_READ_LIST_NOT_FOUND: &str = "rehydrate_read_list_not_found";
 pub const REHYDRATE_READ_LIST_FOREIGN: &str = "rehydrate_read_list_foreign";
 pub const REHYDRATE_READ_CHILDREN_UNAVAILABLE: &str = "rehydrate_read_children_unavailable";
+/// Candidate covers the walk extracted across every kept row, summed.
+///
+/// THE number that says whether the body node was reached at all. Zero with rows
+/// > 0 means every descendant name was shorter than a cover can be -- the walk
+/// found rows and never found their text. A count at or above the row count
+/// means each row offered the decoder something worth asking about, so a
+/// `rehydrate_decode_pointer_absent` beside it really does mean "no token here",
+/// not "the decoder was never shown the body".
+pub const REHYDRATE_READ_CANDIDATES: &str = "rehydrate_read_candidates";
 /// Probe points offered, hit tests that answered with any node at all, and
 /// ancestor steps walked off those answers. Zero answered hit tests means the
 /// provider never replied; answers with no accepted list means the identity test
@@ -5686,6 +5876,18 @@ pub struct VisibleMessageRow {
     /// The reader's own content-free key for this row.
     pub locator_sha256: String,
     pub line: String,
+    /// Each descendant node's own text, as separate candidate covers, most
+    /// specific first and the whole concatenated `line` last.
+    ///
+    /// The decode leg tries these in order and takes the first that
+    /// authenticates. `line` is the row as a human sees it and is what the
+    /// renderer labels the row with; it is NOT what a decoder can use, because it
+    /// is every descendant's name run together -- author, timestamp, badges and
+    /// the body, the body repeated once per ancestor that contains it.
+    ///
+    /// Bounded, deduped and length-filtered by the reader; see
+    /// `RehydrateRowText::candidates`.
+    pub decode_candidates: Vec<String>,
     pub bounds: Option<[i32; 4]>,
 }
 
@@ -5711,8 +5913,8 @@ enum RehydrateReadOutcome {
 /// screen, which is strictly better than an opaque rectangle.
 #[cfg(any(test, target_os = "windows"))]
 struct RehydrateRead {
-    /// `(row locator, row text, row on-screen rectangle)`, in row order.
-    rows: Vec<(String, String, Option<[i32; 4]>)>,
+    /// Every kept row, in row order.
+    rows: Vec<RehydratedRowRead>,
     /// Date separators filtered out of the row sequence.
     separators: usize,
     /// Children whose role, geometry or text could not be read at all.
@@ -5728,13 +5930,58 @@ struct RehydrateRead {
     outcome: RehydrateReadOutcome,
 }
 
+/// One kept row, as the walk read it.
+///
+/// Was a `(String, String, Option<[i32; 4]>)` tuple; naming it is what let the
+/// decode candidates travel beside the display line without a fourth anonymous
+/// position nobody could read at a call site.
+///
+/// PRIVACY: `Debug` is deliberately not derived. `line` and `candidates` are both
+/// public Discord text, but neither may reach a diagnostic by accident.
+#[cfg(any(test, target_os = "windows"))]
+struct RehydratedRowRead {
+    /// The reader's content-free key for this row.
+    locator_sha256: String,
+    /// The row's concatenated descendant text: what is on screen, for display.
+    line: String,
+    /// Per-descendant candidate covers, for decoding. See `RehydrateRowText`.
+    candidates: Vec<String>,
+    /// The row's on-screen rectangle, or `None` when it could not be read.
+    bounds: Option<[i32; 4]>,
+}
+
 /// One row's descendant text plus what reading it cost, so the global node
 /// ceiling really is global rather than per-row.
 #[cfg(any(test, target_os = "windows"))]
 struct RehydrateRowText {
     /// The finished single printable line, or `None` when the row had nothing
     /// printable or could not be read.
+    ///
+    /// DISPLAY ONLY. It is what is on screen, so it is the honest flagtext for
+    /// the row -- and it is exactly what cannot be decoded, because it is the
+    /// concatenation of EVERY descendant name: author, timestamp, badges and the
+    /// body, with the body's own ancestors repeating it two or three times over.
+    /// `decode_token` arithmetic-decodes the whole word sequence, so one extra or
+    /// duplicated word means the payload never reconstructs.
     line: Option<String>,
+    /// Each descendant name, on its own, as a separate candidate cover.
+    ///
+    /// DECODING ONLY. The decoder is handed these one at a time and the first
+    /// that authenticates wins. That is safe because the 12-byte pointer is
+    /// HMAC-authenticated: a wrong candidate cannot forge a token, so trying N
+    /// candidates has exactly the security properties of trying one. It is also
+    /// why no role or depth heuristic picks "the body node" here -- a heuristic
+    /// that guesses which node is the body is a guess, and every guess of that
+    /// shape has broken this feature; asking all of them and letting the HMAC
+    /// decide is not.
+    ///
+    /// Bounded by the same `MSAA_ROW_TEXT_MAX_NODES` ceiling the walk already
+    /// enforces, deduped so ancestor duplication costs nothing, and filtered to
+    /// `REHYDRATE_MIN_CANDIDATE_BYTES` so author names, timestamps and badge
+    /// text are never asked. Ordered most specific first, with the whole
+    /// concatenated line last, so the deepest text node is tried before any
+    /// ancestor that merely contains it.
+    candidates: Vec<String>,
     nodes: usize,
 }
 
@@ -5801,6 +6048,41 @@ fn rehydrate_push_row_name(line: &mut String, name: &str, max_bytes: usize) {
 fn rehydrate_row_line(line: &str) -> Option<String> {
     let trimmed = line.trim();
     (!trimmed.is_empty() && !trimmed.chars().any(char::is_control)).then(|| trimmed.to_owned())
+}
+
+/// Offer one descendant's accessible name to the row's candidate cover list.
+///
+/// The three bounds, in the order they are applied:
+///
+///   1. NORMALISE through exactly the same helper the display line uses, so a
+///      candidate is one printable line with control characters folded to single
+///      spaces and runs of spaces collapsed. `parse_words` splits on ASCII
+///      whitespace, so folding a line-shaped cover's `\n` separators to spaces
+///      preserves every word boundary.
+///   2. LENGTH. Anything below `REHYDRATE_MIN_CANDIDATE_BYTES` cannot carry 96
+///      payload bits under any codec, so an author name, a timestamp or a badge
+///      is never asked. Cost only -- the HMAC still decides everything else.
+///   3. DEDUPE. A row's body appears once per ancestor that contains it, and
+///      asking the identical string twice can only produce the identical answer
+///      twice. Linear scan: the list is bounded by `MSAA_ROW_TEXT_MAX_NODES` and
+///      is a handful of entries in practice, so nothing here needs a set.
+///
+/// PLAINTEXT: the name is public Discord text and is only ever moved into the
+/// candidate list. Nothing is logged, hashed or persisted here.
+#[cfg(any(test, target_os = "windows"))]
+fn rehydrate_push_candidate(candidates: &mut Vec<String>, name: &str) {
+    let mut candidate = String::new();
+    rehydrate_push_row_name(&mut candidate, name, REHYDRATE_MAX_ROW_TEXT_BYTES);
+    let Some(candidate) = rehydrate_row_line(&candidate) else {
+        return;
+    };
+    if candidate.len() < REHYDRATE_MIN_CANDIDATE_BYTES {
+        return;
+    }
+    if candidates.iter().any(|seen| *seen == candidate) {
+        return;
+    }
+    candidates.push(candidate);
 }
 
 /// A stable, content-free key for one rehydrated row.
@@ -6055,11 +6337,12 @@ fn rehydrate_collect_rows<T>(
         // out above -- see the doc comment on `bounds_of`.
         let bounds = (readers.bounds_of)(&child);
         let index = read.rows.len();
-        read.rows.push((
-            rehydrate_row_locator(scope_binding, index, &line),
+        read.rows.push(RehydratedRowRead {
+            locator_sha256: rehydrate_row_locator(scope_binding, index, &line),
             line,
+            candidates: text.candidates,
             bounds,
-        ));
+        });
     }
     read
 }
@@ -8472,6 +8755,7 @@ mod windows {
     /// it only ever reads the trusted Discord window's transcript list.
     fn msaa_row_visible_line(row: &IAccessible, deadline: Instant) -> RehydrateRowText {
         let mut line = String::with_capacity(REHYDRATE_MAX_ROW_TEXT_BYTES + 64);
+        let mut candidates = Vec::<String>::new();
         let mut nodes = 0usize;
         let mut stack = msaa_child_refs(row, MSAA_ROW_MAX_LIST_CHILDREN)
             .unwrap_or_default()
@@ -8488,6 +8772,17 @@ mod windows {
             }
             if let Some(name) = node.name() {
                 rehydrate_push_row_name(&mut line, &name, REHYDRATE_MAX_ROW_TEXT_BYTES);
+                // ...and the SAME name again, on its own, as its own candidate
+                // cover. Normalised through the identical helper so a candidate
+                // is shaped exactly like the line the renderer validates -- one
+                // printable line, control characters (including the newlines a
+                // line-shaped cover carries) folded to single spaces, which
+                // `parse_words` treats as word boundaries either way.
+                //
+                // No node budget of its own: the loop above is already bounded by
+                // `MSAA_ROW_TEXT_MAX_NODES`, so this can add at most that many
+                // strings before dedupe and the length floor cut it to a handful.
+                rehydrate_push_candidate(&mut candidates, &name);
             }
             if depth >= MSAA_ROW_TEXT_MAX_DEPTH {
                 continue;
@@ -8503,8 +8798,19 @@ mod windows {
                 stack.push((child, depth + 1));
             }
         }
+        let line = rehydrate_row_line(&line);
+        // The whole concatenated line goes in LAST, so every individual node is
+        // tried before the concatenation of all of them. It is kept at all
+        // because a row whose body Discord splits across two sibling text nodes
+        // would otherwise have no candidate that contains the whole cover; the
+        // dedupe drops it whenever the row had exactly one printable node, so a
+        // single-node row costs exactly one candidate, as it always did.
+        if let Some(line) = line.as_deref() {
+            rehydrate_push_candidate(&mut candidates, line);
+        }
         RehydrateRowText {
-            line: rehydrate_row_line(&line),
+            line,
+            candidates,
             nodes,
         }
     }
@@ -8627,6 +8933,7 @@ mod windows {
                     // walked. Counted as unreadable, never as an empty row.
                     None => RehydrateRowText {
                         line: None,
+                        candidates: Vec::new(),
                         nodes: 1,
                     },
                 },
@@ -8647,6 +8954,13 @@ mod windows {
         // The two verdicts the walk used to reach by a bare `continue`.
         qa_rehydrate_stage(super::REHYDRATE_READ_ROWS_OTHER_ROLE, Some(read.other_role));
         qa_rehydrate_stage(super::REHYDRATE_READ_ROWS_OFFSCREEN, Some(read.offscreen));
+        // A COUNT of candidate covers, never one of them. See
+        // `REHYDRATE_READ_CANDIDATES`: this is the line that separates "the
+        // decoder said no" from "the decoder was never asked".
+        qa_rehydrate_stage(
+            super::REHYDRATE_READ_CANDIDATES,
+            Some(read.rows.iter().map(|row| row.candidates.len()).sum()),
+        );
         // Geometry only, never text, crosses into the cache: rows without a
         // usable rectangle are simply not represented in it, exactly like the
         // QA shell's own just-sent-carrier cache already treats an unusable
@@ -8654,7 +8968,7 @@ mod windows {
         let rects: Vec<[i32; 4]> = read
             .rows
             .iter()
-            .filter_map(|(_, _, bounds)| *bounds)
+            .filter_map(|row| row.bounds)
             .filter(|[left, top, right, bottom]| right > left && bottom > top)
             .collect();
         record_rehydrated_row_rects(scope_binding, target.generation, rects);
@@ -8671,10 +8985,12 @@ mod windows {
         // renderer that had to paint over them did not.
         read.rows
             .into_iter()
-            .map(|(locator_sha256, line, bounds)| VisibleMessageRow {
-                locator_sha256,
-                line,
-                bounds: bounds
+            .map(|row| VisibleMessageRow {
+                locator_sha256: row.locator_sha256,
+                line: row.line,
+                decode_candidates: row.candidates,
+                bounds: row
+                    .bounds
                     .filter(|[left, top, right, bottom]| right > left && bottom > top),
             })
             .collect()
@@ -9657,21 +9973,45 @@ mod windows {
         root_bounds: AccessibilityBounds,
         process_is_trusted: &dyn Fn(u32) -> bool,
     ) -> Option<AccessibilityBounds> {
-        let process_id = unsafe { element.CurrentProcessId() }.ok()?;
+        trusted_visible_element_classified(element, root_bounds, process_is_trusted).ok()
+    }
+
+    /// Exactly the checks `trusted_visible_element` has always applied, in
+    /// exactly the same order, with the first refusal NAMED instead of collapsed
+    /// into `None`.
+    ///
+    /// `trusted_visible_element` is now a `.ok()` wrapper over this, so every
+    /// other caller keeps the identical behaviour and no check anywhere became
+    /// one degree less strict.
+    fn trusted_visible_element_classified(
+        element: &IUIAutomationElement,
+        root_bounds: AccessibilityBounds,
+        process_is_trusted: &dyn Fn(u32) -> bool,
+    ) -> Result<AccessibilityBounds, MsaaBridgeRefusal> {
+        let Ok(process_id) = (unsafe { element.CurrentProcessId() }) else {
+            return Err(MsaaBridgeRefusal::ProcessUnreadable);
+        };
         if process_id <= 0 || !process_is_trusted(process_id as u32) {
-            return None;
+            return Err(MsaaBridgeRefusal::ProcessUntrusted);
         }
-        if unsafe { element.CurrentIsOffscreen() }.is_ok_and(|value| value.as_bool())
-            || !unsafe { element.CurrentIsEnabled() }.is_ok_and(|value| value.as_bool())
-        {
-            return None;
+        if unsafe { element.CurrentIsOffscreen() }.is_ok_and(|value| value.as_bool()) {
+            return Err(MsaaBridgeRefusal::Offscreen);
         }
-        let bounds = element_bounds(element)?;
-        (bounds.left >= root_bounds.left
+        if !unsafe { element.CurrentIsEnabled() }.is_ok_and(|value| value.as_bool()) {
+            return Err(MsaaBridgeRefusal::Disabled);
+        }
+        let Some(bounds) = element_bounds(element) else {
+            return Err(MsaaBridgeRefusal::BoundsUnreadable);
+        };
+        if bounds.left >= root_bounds.left
             && bounds.top >= root_bounds.top
             && bounds.right <= root_bounds.right
-            && bounds.bottom <= root_bounds.bottom)
-            .then_some(bounds)
+            && bounds.bottom <= root_bounds.bottom
+        {
+            Ok(bounds)
+        } else {
+            Err(MsaaBridgeRefusal::OutsideRoot)
+        }
     }
 
     fn composer_display_bounds(
@@ -10123,11 +10463,11 @@ mod windows {
         /// The bridge answered with an element that passed the unchanged
         /// trusted-process and trusted-visible checks.
         Bridged(IUIAutomationElement),
-        /// `ElementFromIAccessible` itself returned an error.
-        CallFailed,
+        /// `ElementFromIAccessible` itself returned an error, classified.
+        CallFailed(MsaaBridgeRefusal),
         /// The bridge answered, but with an element OSL is not allowed to touch.
-        /// Still a refusal, and still not relaxable.
-        Untrusted,
+        /// Still a refusal, and still not relaxable -- now it says which rule.
+        Untrusted(MsaaBridgeRefusal),
     }
 
     /// Bridge one MSAA object into UI Automation under exactly the same identity
@@ -10140,19 +10480,29 @@ mod windows {
         root_bounds: AccessibilityBounds,
         process_is_trusted: &dyn Fn(u32) -> bool,
     ) -> MsaaBridgeElement {
-        let Ok(element) = (unsafe { automation.ElementFromIAccessible(accessible, 0) }) else {
-            return MsaaBridgeElement::CallFailed;
+        let element = match unsafe { automation.ElementFromIAccessible(accessible, 0) } {
+            Ok(element) => element,
+            // The HRESULT is the one fact that separates "this thread's COM
+            // apartment is wrong" from "Discord's provider is gone" from "it is
+            // busy, ask again". It is an integer, never text, so classifying it
+            // cannot leak anything.
+            Err(error) => {
+                return MsaaBridgeElement::CallFailed(MsaaBridgeRefusal::Call(
+                    msaa_bridge_call_class(error.code().0),
+                ));
+            }
         };
         let Ok(process_id) = (unsafe { element.CurrentProcessId() }) else {
-            return MsaaBridgeElement::Untrusted;
+            return MsaaBridgeElement::Untrusted(MsaaBridgeRefusal::ProcessUnreadable);
         };
         if process_id <= 0 || !process_is_trusted(process_id as u32) {
-            return MsaaBridgeElement::Untrusted;
+            return MsaaBridgeElement::Untrusted(MsaaBridgeRefusal::ProcessUntrusted);
         }
-        if trusted_visible_element(&element, root_bounds, process_is_trusted).is_none() {
-            return MsaaBridgeElement::Untrusted;
+        // Same call, same strictness; it now says which of its five checks spoke.
+        match trusted_visible_element_classified(&element, root_bounds, process_is_trusted) {
+            Ok(_) => MsaaBridgeElement::Bridged(element),
+            Err(refusal) => MsaaBridgeElement::Untrusted(refusal),
         }
-        MsaaBridgeElement::Bridged(element)
     }
 
     fn exact_msaa_process_element(
@@ -10163,7 +10513,7 @@ mod windows {
     ) -> Option<IUIAutomationElement> {
         match bridge_msaa_element(automation, accessible, root_bounds, process_is_trusted) {
             MsaaBridgeElement::Bridged(element) => Some(element),
-            MsaaBridgeElement::CallFailed | MsaaBridgeElement::Untrusted => None,
+            MsaaBridgeElement::CallFailed(_) | MsaaBridgeElement::Untrusted(_) => None,
         }
     }
 
@@ -10249,6 +10599,10 @@ mod windows {
         Composer {
             outcome: MsaaBridgeOutcome,
             element: Option<IUIAutomationElement>,
+            /// One step below `outcome`: which check inside a `CallFailed`
+            /// actually spoke. `None` for every other outcome, which already
+            /// names itself exactly.
+            refusal: Option<MsaaBridgeRefusal>,
         },
     }
 
@@ -10306,32 +10660,38 @@ mod windows {
         let element =
             match bridge_msaa_element(automation, accessible, root_bounds, process_is_trusted) {
                 MsaaBridgeElement::Bridged(element) => element,
-                MsaaBridgeElement::CallFailed => {
+                // Both arms keep the identical verdict they always had. The only
+                // change is that the refusal now travels out with it, so the
+                // locate trail can name which check spoke instead of leaving
+                // "the bridge failed" as the whole diagnosis.
+                MsaaBridgeElement::CallFailed(refusal) => {
                     qa_record_msaa_bridge(
                         msaa_bridge_stage(MsaaBridgeOutcome::CallFailed),
                         bounds,
                         None,
                         None,
                         None,
-                        "bridge_error",
+                        msaa_bridge_refusal_stage(refusal),
                     );
                     return MsaaComposerProbe::Composer {
                         outcome: MsaaBridgeOutcome::CallFailed,
                         element: None,
+                        refusal: Some(refusal),
                     };
                 }
-                MsaaBridgeElement::Untrusted => {
+                MsaaBridgeElement::Untrusted(refusal) => {
                     qa_record_msaa_bridge(
                         msaa_bridge_stage(MsaaBridgeOutcome::CallFailed),
                         bounds,
                         None,
                         None,
                         None,
-                        "bridge_untrusted",
+                        msaa_bridge_refusal_stage(refusal),
                     );
                     return MsaaComposerProbe::Composer {
                         outcome: MsaaBridgeOutcome::CallFailed,
                         element: None,
+                        refusal: Some(refusal),
                     };
                 }
             };
@@ -10382,6 +10742,10 @@ mod windows {
         MsaaComposerProbe::Composer {
             element: matches!(outcome, MsaaBridgeOutcome::Accepted).then_some(element),
             outcome,
+            // The bridge call itself succeeded and every trust rule passed to get
+            // here. Whatever `outcome` says now is a cross-check verdict, and
+            // each of those already has its own fixed label.
+            refusal: None,
         }
     }
 
@@ -10450,6 +10814,10 @@ mod windows {
         /// Why the bridge refused, first refusal only. `None` means the bridge
         /// was never reached.
         bridge_outcome: Option<MsaaBridgeOutcome>,
+        /// One step below `bridge_outcome`: which check inside a `CallFailed`
+        /// spoke first. `None` for every other outcome, and for a bridge that
+        /// was never reached.
+        bridge_refusal: Option<MsaaBridgeRefusal>,
         /// A time or probe-count bound stopped the scan before it finished, so
         /// "found nothing" is not a statement about Discord.
         bound_tripped: bool,
@@ -10493,6 +10861,7 @@ mod windows {
         let mut candidates = Vec::<(IUIAutomationElement, Vec<i32>)>::new();
         let mut candidate_found = false;
         let mut bridge_outcome = None::<MsaaBridgeOutcome>;
+        let mut bridge_refusal = None::<MsaaBridgeRefusal>;
         let mut bound_tripped = false;
         let mut target_owned_points = 0usize;
         let mut accessible_nodes = 0usize;
@@ -10517,7 +10886,11 @@ mod windows {
                         bound_tripped = true;
                         break 'points;
                     }
-                    if let MsaaComposerProbe::Composer { outcome, element } = msaa_composer_element(
+                    if let MsaaComposerProbe::Composer {
+                        outcome,
+                        element,
+                        refusal,
+                    } = msaa_composer_element(
                         automation,
                         &accessible,
                         root_bounds,
@@ -10526,6 +10899,10 @@ mod windows {
                         candidate_found = true;
                         if bridge_outcome.is_none() {
                             bridge_outcome = Some(outcome);
+                            // First refusal only, exactly like the outcome beside
+                            // it, so a twenty-point scan names one cause instead
+                            // of twenty lines of the same one.
+                            bridge_refusal = refusal;
                         }
                         if let Some(element) = element {
                             let id = runtime_id(&element)?;
@@ -10552,6 +10929,7 @@ mod windows {
             candidates,
             candidate_found,
             bridge_outcome,
+            bridge_refusal,
             bound_tripped,
             target_owned_points,
             accessible_nodes,
@@ -10622,6 +11000,7 @@ mod windows {
         let mut candidates = Vec::<(IUIAutomationElement, Vec<i32>)>::new();
         let mut candidate_found = false;
         let mut bridge_outcome = None::<MsaaBridgeOutcome>;
+        let mut bridge_refusal = None::<MsaaBridgeRefusal>;
         let mut bound_tripped = false;
         let mut target_owned_points = 0usize;
         let mut accessible_nodes = 0usize;
@@ -10633,6 +11012,7 @@ mod windows {
                 candidates,
                 candidate_found,
                 bridge_outcome,
+                bridge_refusal,
                 bound_tripped,
                 target_owned_points,
                 accessible_nodes,
@@ -10659,12 +11039,17 @@ mod windows {
                     bound_tripped = true;
                     break 'points;
                 }
-                if let MsaaComposerProbe::Composer { outcome, element } =
-                    msaa_composer_element(automation, &accessible, root_bounds, process_is_trusted)
+                if let MsaaComposerProbe::Composer {
+                    outcome,
+                    element,
+                    refusal,
+                } = msaa_composer_element(automation, &accessible, root_bounds, process_is_trusted)
                 {
                     candidate_found = true;
                     if bridge_outcome.is_none() {
                         bridge_outcome = Some(outcome);
+                        // First refusal only; see the sibling route.
+                        bridge_refusal = refusal;
                     }
                     if let Some(element) = element {
                         let id = runtime_id(&element)?;
@@ -10690,6 +11075,7 @@ mod windows {
             candidates,
             candidate_found,
             bridge_outcome,
+            bridge_refusal,
             bound_tripped,
             target_owned_points,
             accessible_nodes,
@@ -11386,6 +11772,14 @@ mod windows {
                     }
                     if let Some(outcome) = scan.bridge_outcome {
                         qa_locate_stage(msaa_bridge_stage(outcome));
+                    }
+                    // Immediately after it, and only when there is one: the
+                    // step below the outcome. `msaa_bridge_call_failed` alone
+                    // cannot tell "UIA refused this element" from "the provider
+                    // is gone" from "this thread's COM apartment is wrong", and
+                    // those have three different fixes.
+                    if let Some(refusal) = scan.bridge_refusal {
+                        qa_locate_stage(msaa_bridge_refusal_stage(refusal));
                     }
                     used_msaa_fallback = !scan.candidates.is_empty();
                     let msaa_outcome = msaa_route_outcome(
@@ -17261,10 +17655,12 @@ mod tests {
         let source = adapter_source();
         let read = nested_function_body(source, "fn read_visible_message_rows(\n        target:");
         assert!(read.contains("record_rehydrated_row_rects(scope_binding, target.generation, rects)"));
-        assert!(read.contains("bounds: bounds"));
+        assert!(read.contains("bounds: row\n                    .bounds"));
         let collect = function_body_at(source, "fn rehydrate_collect_rows<T>(");
         assert!(collect.contains("let bounds = (readers.bounds_of)(&child);"));
-        assert!(collect.contains("            line,\n            bounds,\n        ));"));
+        assert!(collect.contains(
+            "            line,\n            candidates: text.candidates,\n            bounds,\n        });"
+        ));
     }
 
     /// A top-level (module-scope) function body, for the parts of the read path
@@ -20982,8 +21378,12 @@ mod tests {
             assert!(!stages[..index].contains(stage));
         }
         // In a `--features core` test build the QA feature is off, which is the cfg
-        // that ships: enforcement is on.
-        assert!(header_proof_is_enforced());
+        // that ships: enforcement is on. In a `--features core,discord-qa-shell`
+        // test build, QA records what production would have refused instead.
+        assert_eq!(
+            header_proof_is_enforced(),
+            !cfg!(feature = "discord-qa-shell")
+        );
     }
 
     /// The live run's six `locate_header_proof_not_unique` against one
@@ -21504,6 +21904,172 @@ mod tests {
             msaa_bridge_stage(MsaaBridgeOutcome::Accepted),
             "msaa_bridge_accepted"
         );
+    }
+
+    /// `msaa_bridge_call_failed` fuses two events and each fans out further.
+    ///
+    /// On 2026-07-26 the bridge went from 96 consecutive `msaa_bridge_accepted`
+    /// to failing on every locate, and the trail could say only "it failed" --
+    /// so "this thread's COM apartment is wrong", "Discord's provider is gone"
+    /// and "the composer element is off screen after a restore" were one
+    /// indistinguishable label with three different fixes.
+    #[test]
+    fn every_bridge_failure_names_which_check_spoke_and_they_are_all_distinct() {
+        use MsaaBridgeCallClass as Class;
+        use MsaaBridgeRefusal as Refusal;
+
+        let refusals = [
+            Refusal::Call(Class::Apartment),
+            Refusal::Call(Class::ProviderGone),
+            Refusal::Call(Class::Busy),
+            Refusal::Call(Class::Refused),
+            Refusal::Call(Class::AccessDenied),
+            Refusal::Call(Class::Resources),
+            Refusal::Call(Class::Unclassified),
+            Refusal::ProcessUnreadable,
+            Refusal::ProcessUntrusted,
+            Refusal::Offscreen,
+            Refusal::Disabled,
+            Refusal::BoundsUnreadable,
+            Refusal::OutsideRoot,
+        ];
+        let labels: Vec<&str> = refusals
+            .iter()
+            .copied()
+            .map(msaa_bridge_refusal_stage)
+            .collect();
+
+        // Distinct, or two different causes read as one -- which is the defect.
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len());
+
+        // Fixed, self-describing, and free of anything a draft or conversation
+        // could be recovered from.
+        for label in &labels {
+            assert!(label.starts_with("msaa_bridge_failed_"));
+            assert!(label.is_ascii());
+            assert!(!label.contains(' '));
+            assert!(!label.contains('{'));
+        }
+        // Distinguishable from the outcome label they sit beside, so a grep for
+        // one never matches the other.
+        assert!(!labels.contains(&msaa_bridge_stage(MsaaBridgeOutcome::CallFailed)));
+    }
+
+    #[test]
+    fn the_bridge_hresult_table_separates_apartment_from_a_dead_provider() {
+        use MsaaBridgeCallClass as Class;
+
+        // OSL's own threading, and permanent until the call site is fixed.
+        for (code, name) in [
+            (0x8004_01F0u32, "CO_E_NOTINITIALIZED"),
+            (0x8001_0106, "RPC_E_CHANGED_MODE"),
+            (0x8001_010E, "RPC_E_WRONG_THREAD"),
+            (0x8001_010F, "RPC_E_THREAD_NOT_INIT"),
+        ] {
+            assert_eq!(
+                msaa_bridge_call_class(code as i32),
+                Class::Apartment,
+                "{name} is an apartment failure"
+            );
+        }
+        // Discord's provider or the RPC channel is gone. Permanent for THIS
+        // element; a fresh discovery can still succeed.
+        for (code, name) in [
+            (0x8001_0108u32, "RPC_E_DISCONNECTED"),
+            (0x8001_0105, "RPC_E_SERVERFAULT"),
+            (0x8007_06BA, "RPC_S_SERVER_UNAVAILABLE"),
+            (0x8007_06BE, "RPC_S_CALL_FAILED"),
+            (0x8004_0201, "UIA_E_ELEMENTNOTAVAILABLE"),
+        ] {
+            assert_eq!(
+                msaa_bridge_call_class(code as i32),
+                Class::ProviderGone,
+                "{name} means the provider is gone"
+            );
+        }
+        // Alive and declining right now. The ONLY retryable class.
+        for (code, name) in [
+            (0x8001_0001u32, "RPC_E_CALL_REJECTED"),
+            (0x8001_010A, "RPC_E_SERVERCALL_RETRYLATER"),
+            (0x8001_011F, "RPC_E_TIMEOUT"),
+            (0x8013_1505, "UIA_E_TIMEOUT"),
+        ] {
+            assert_eq!(
+                msaa_bridge_call_class(code as i32),
+                Class::Busy,
+                "{name} is retryable"
+            );
+        }
+        assert_eq!(msaa_bridge_call_class(0x8007_0057u32 as i32), Class::Refused);
+        assert_eq!(
+            msaa_bridge_call_class(0x8007_0005u32 as i32),
+            Class::AccessDenied
+        );
+        assert_eq!(
+            msaa_bridge_call_class(0x8007_000Eu32 as i32),
+            Class::Resources
+        );
+        // An unknown code is named as unknown, never silently folded into a
+        // class whose fix would then be the wrong one.
+        assert_eq!(
+            msaa_bridge_call_class(0x8000_BEEFu32 as i32),
+            Class::Unclassified
+        );
+
+        // Exactly one class may be retried, and it is the one where the provider
+        // answered. Everything else is a statement about the element, the
+        // process or OSL's threading, and asking again gets the same answer.
+        assert!(msaa_bridge_refusal_is_retryable(MsaaBridgeRefusal::Call(
+            Class::Busy
+        )));
+        for refusal in [
+            MsaaBridgeRefusal::Call(Class::Apartment),
+            MsaaBridgeRefusal::Call(Class::ProviderGone),
+            MsaaBridgeRefusal::Call(Class::Refused),
+            MsaaBridgeRefusal::Call(Class::AccessDenied),
+            MsaaBridgeRefusal::Call(Class::Resources),
+            MsaaBridgeRefusal::Call(Class::Unclassified),
+            MsaaBridgeRefusal::ProcessUnreadable,
+            MsaaBridgeRefusal::ProcessUntrusted,
+            MsaaBridgeRefusal::Offscreen,
+            MsaaBridgeRefusal::Disabled,
+            MsaaBridgeRefusal::BoundsUnreadable,
+            MsaaBridgeRefusal::OutsideRoot,
+        ] {
+            assert!(!msaa_bridge_refusal_is_retryable(refusal));
+        }
+    }
+
+    /// The classification must never have cost a check its strictness.
+    #[test]
+    fn naming_the_bridge_refusal_relaxed_no_trust_rule() {
+        let source = adapter_source();
+        // `trusted_visible_element` is now a `.ok()` wrapper, so every one of its
+        // existing callers keeps the identical behaviour it had.
+        assert!(source.contains(
+            "trusted_visible_element_classified(element, root_bounds, process_is_trusted).ok()"
+        ));
+        let classified = nested_function_body(source, "fn trusted_visible_element_classified(");
+        // All five checks survive, in the order they were always stated.
+        for check in [
+            "CurrentProcessId",
+            "process_is_trusted(process_id as u32)",
+            "CurrentIsOffscreen",
+            "CurrentIsEnabled",
+            "element_bounds(element)",
+            "bounds.left >= root_bounds.left",
+            "bounds.bottom <= root_bounds.bottom",
+        ] {
+            assert!(classified.contains(check), "{check} must still be asked");
+        }
+        // And the bridge still returns an element ONLY when the classified check
+        // said `Ok` -- naming a refusal must not become a way past it.
+        let bridge = nested_function_body(source, "fn bridge_msaa_element(");
+        assert!(bridge.contains("Ok(_) => MsaaBridgeElement::Bridged(element),"));
+        assert!(bridge.contains("Err(refusal) => MsaaBridgeElement::Untrusted(refusal),"));
     }
 
     #[test]
@@ -22536,12 +23102,22 @@ mod tests {
             },
             |row: &FakeRow| row.visible,
             |row: &FakeRow| {
+                // The same two things the real walk builds from one pass: the
+                // concatenation, for display, and each name on its own, for
+                // decoding.
                 let mut line = String::new();
+                let mut candidates = Vec::new();
                 for name in &row.names {
                     rehydrate_push_row_name(&mut line, name, REHYDRATE_MAX_ROW_TEXT_BYTES);
+                    rehydrate_push_candidate(&mut candidates, name);
+                }
+                let line = rehydrate_row_line(&line);
+                if let Some(line) = line.as_deref() {
+                    rehydrate_push_candidate(&mut candidates, line);
                 }
                 RehydrateRowText {
-                    line: rehydrate_row_line(&line),
+                    line,
+                    candidates,
                     nodes: row.nodes,
                 }
             },
@@ -22601,13 +23177,151 @@ mod tests {
         assert_eq!(
             read.rows
                 .iter()
-                .map(|(_, line, _)| line.as_str())
+                .map(|row| row.line.as_str())
                 .collect::<Vec<_>>(),
             vec!["ok i will weekend again with you", "ordinary unprotected chat"]
         );
         // Row locators are content-free, scoped, and distinguish the two rows.
-        assert!(read.rows.iter().all(|(locator, _, _)| locator.len() == 64));
-        assert_ne!(read.rows[0].0, read.rows[1].0);
+        assert!(read
+            .rows
+            .iter()
+            .all(|row| row.locator_sha256.len() == 64));
+        assert_ne!(read.rows[0].locator_sha256, read.rows[1].locator_sha256);
+    }
+
+    /// THE defect of 2026-07-26: a row's descendants were concatenated and the
+    /// concatenation was handed to the decoder.
+    ///
+    /// Discord spells one message across several nodes and repeats it inside
+    /// every ancestor that contains it -- the live measurement was
+    /// `d=1 DOCUMENT(69) / d=2 GROUPING(42) / d=4 PUSHBUTTON(4) /
+    /// d=3 STATICTEXT(22)`, four nodes with overlapping text. `decode_token`
+    /// arithmetic-decodes the WHOLE word sequence and then demands the parsed
+    /// words equal the canonical encoder output exactly, so a single extra or
+    /// duplicated word destroys the payload. Nine visible rows produced nine
+    /// `pointer_absent` and zero `blob_gone` because of exactly this.
+    #[test]
+    fn each_descendant_name_is_its_own_candidate_cover_and_the_line_stays_the_display_text() {
+        const COVER: &str = "ok i will weekend again with you";
+        let (read, _) = walk(
+            vec![FakeRow {
+                role: MSAA_ROLE_SYSTEM_LISTITEM,
+                visible: true,
+                // Author, timestamp, a badge, the body, and the body a second
+                // time from the ancestor that contains it.
+                names: vec!["Deckard", "Today at 3:15 PM", "1", COVER, COVER],
+                nodes: 5,
+                bounds: Some([0, 0, 700, 44]),
+            }],
+            MAX_VISIBLE_CARRIER_ROWS,
+            REHYDRATE_MAX_NODES,
+            usize::MAX,
+        );
+        assert_eq!(read.rows.len(), 1);
+        let row = &read.rows[0];
+
+        // The DISPLAY line is unchanged: it is what is on screen, so it stays the
+        // row's honest flagtext, duplication and all.
+        assert_eq!(
+            row.line,
+            format!("Deckard Today at 3:15 PM 1 {COVER} {COVER}")
+        );
+        // ...and it is exactly what a decoder cannot use, which is why it is not
+        // the first thing offered to one.
+        assert_ne!(row.line, COVER);
+
+        // The body node, ON ITS OWN, is the first candidate. Nothing here picked
+        // it by role or by depth -- every printable name long enough to be a
+        // cover is offered, and the HMAC decides. A role/depth heuristic is what
+        // broke this feature three separate times on 2026-07-26.
+        assert_eq!(row.candidates.first().map(String::as_str), Some(COVER));
+
+        // Author, timestamp and badge are below the length floor, so they are
+        // never asked; the duplicated body is deduped away; the whole
+        // concatenated line is kept LAST as the fallback for a body Discord
+        // splits across sibling nodes.
+        assert_eq!(
+            row.candidates,
+            vec![COVER.to_owned(), row.line.clone()],
+            "candidates: body first, deduped, whole line last"
+        );
+    }
+
+    #[test]
+    fn a_candidate_cover_is_normalised_length_floored_and_deduped() {
+        const COVER: &str = "ok i will weekend again with you";
+        let mut candidates = Vec::new();
+
+        // Too short to carry 96 payload bits under any codec: never asked.
+        for short in ["Deckard", "Today at 3:15 PM", "1", "", "   "] {
+            rehydrate_push_candidate(&mut candidates, short);
+        }
+        assert!(candidates.is_empty());
+
+        // Line-shaped covers reach MSAA with real newlines. They are folded to
+        // single spaces by the same helper the display line uses, and
+        // `parse_words` splits on whitespace either way, so every word boundary
+        // survives and no control character can reach the renderer's contract.
+        rehydrate_push_candidate(&mut candidates, "ok i will\nweekend again\twith you");
+        assert_eq!(candidates, vec![COVER.to_owned()]);
+
+        // The same text arriving again from an ancestor costs nothing: asking an
+        // identical string twice can only produce the identical answer twice.
+        rehydrate_push_candidate(&mut candidates, COVER);
+        rehydrate_push_candidate(&mut candidates, "  ok i will weekend   again with you  ");
+        assert_eq!(candidates.len(), 1);
+
+        // A genuinely different node is a genuinely different question.
+        rehydrate_push_candidate(&mut candidates, "the quiet harbour waits for morning");
+        assert_eq!(candidates.len(), 2);
+
+        // Never a control character, never longer than the row-text cap, never
+        // shorter than a cover can be.
+        for candidate in &candidates {
+            assert!(!candidate.chars().any(char::is_control));
+            assert!(candidate.len() >= REHYDRATE_MIN_CANDIDATE_BYTES);
+            assert!(candidate.len() <= REHYDRATE_MAX_ROW_TEXT_BYTES);
+        }
+    }
+
+    #[test]
+    fn the_candidate_length_floor_is_derived_from_the_payload_and_never_rejects_a_cover() {
+        // 96 payload bits (8 id bytes + a 12-byte truncated HMAC tag) over a
+        // 128-word vocabulary is at most 7 bits per word, so no cover is shorter
+        // than 14 words -- 14 one-character words and 13 separators = 27 bytes.
+        assert_eq!(REHYDRATE_MIN_CANDIDATE_BYTES, 27);
+        assert_eq!(REHYDRATE_MIN_CANDIDATE_BYTES, 14 + 13);
+        // Well under the row-text cap, so the floor and the ceiling can never
+        // cross and silently reject every candidate.
+        assert!(REHYDRATE_MIN_CANDIDATE_BYTES < REHYDRATE_MAX_ROW_TEXT_BYTES);
+        // A real wordbank cover clears it comfortably; this is a cost filter, not
+        // a correctness one, and the HMAC decides everything it lets through.
+        let mut candidates = Vec::new();
+        rehydrate_push_candidate(&mut candidates, "ok i will weekend again with you");
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn a_row_the_reader_cannot_walk_offers_no_candidates_rather_than_a_guess() {
+        // Fail closed: an unreadable row is unreadable, never an empty cover the
+        // decoder would be asked about and never a row painted at a guess.
+        let (read, _) = walk(
+            vec![FakeRow {
+                role: MSAA_ROLE_SYSTEM_LISTITEM,
+                visible: true,
+                names: vec!["Deckard", "Today at 3:15 PM"],
+                nodes: 2,
+                bounds: Some([0, 0, 700, 44]),
+            }],
+            MAX_VISIBLE_CARRIER_ROWS,
+            REHYDRATE_MAX_NODES,
+            usize::MAX,
+        );
+        // The row is still kept -- it is on screen and Discord is showing it --
+        // and it simply has nothing worth asking the decoder about.
+        assert_eq!(read.rows.len(), 1);
+        assert_eq!(read.rows[0].line, "Deckard Today at 3:15 PM");
+        assert!(read.rows[0].candidates.is_empty());
     }
 
     #[test]
@@ -22691,7 +23405,7 @@ mod tests {
             usize::MAX,
         );
         assert_eq!(read.rows.len(), 1);
-        assert_eq!(read.rows[0].1, "still here");
+        assert_eq!(read.rows[0].line, "still here");
         // A row that could not be reduced to anything printable is counted, never
         // silently treated as an empty message.
         assert_eq!(read.unreadable, 1);
@@ -22712,7 +23426,7 @@ mod tests {
         assert_eq!(
             read.rows
                 .iter()
-                .map(|(_, _, bounds)| *bounds)
+                .map(|row| row.bounds)
                 .collect::<Vec<_>>(),
             vec![Some([10, 20, 300, 44]), Some([10, 48, 300, 72])]
         );
@@ -22731,7 +23445,7 @@ mod tests {
         // A row is kept by its text; a rectangle that could not be read is not a
         // reason to drop it -- see `RehydrateRowReaders::bounds_of`.
         assert_eq!(read.rows.len(), 1);
-        assert_eq!(read.rows[0].2, None);
+        assert_eq!(read.rows[0].bounds, None);
     }
 
     #[test]
@@ -22852,11 +23566,13 @@ mod tests {
         let placed = VisibleMessageRow {
             locator_sha256: "locator".to_owned(),
             line: "see you at six".to_owned(),
+            decode_candidates: Vec::new(),
             bounds: Some([10, 20, 300, 44]),
         };
         let unplaceable = VisibleMessageRow {
             locator_sha256: "locator-2".to_owned(),
             line: "and again tomorrow".to_owned(),
+            decode_candidates: Vec::new(),
             bounds: None,
         };
         assert_eq!(placed.bounds, Some([10, 20, 300, 44]));
@@ -22873,6 +23589,7 @@ mod tests {
         VisibleMessageRow {
             locator_sha256: stable_hash("test-row", line),
             line: line.to_owned(),
+            decode_candidates: Vec::new(),
             bounds: Some([0, top, 700, bottom]),
         }
     }
@@ -22942,6 +23659,7 @@ mod tests {
             VisibleMessageRow {
                 locator_sha256: "a".to_owned(),
                 line: "Deckard invisible".to_owned(),
+                decode_candidates: Vec::new(),
                 bounds: None,
             },
             read_row("Deckard visible", 0, 44),

@@ -182,7 +182,7 @@ pub fn cmd_osl_reset_v4_session(state: &AppState, discord_id: String) -> Result<
                     false
                 }
             }
-            None => return Err(format!("OSL: no peer {discord_id} in peer_map")),
+            None => return Err(format!("OSL: no peer {discord_id} in peer_map", discord_id = crate::log_id::log_id(&discord_id))),
         }
     };
     if changed {
@@ -456,7 +456,7 @@ pub fn cmd_osl_build_session_reset(
                 true
             }
             Some(_) => false,
-            None => return Err(format!("OSL: no peer {peer_discord_id} in peer_map")),
+            None => return Err(format!("OSL: no peer {peer_discord_id} in peer_map", peer_discord_id = crate::log_id::log_id(&peer_discord_id))),
         }
     };
     if changed {
@@ -655,7 +655,8 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
             // unregister, or rotate the locally bound identity. Account
             // changes require an explicit trusted-local flow.
             return Err(format!(
-                "OSL: register_self_snowflake: snowflake mismatch with identity bound to {bound_to}"
+                "OSL: register_self_snowflake: snowflake mismatch with identity bound to {bound_to}",
+                bound_to = crate::log_id::log_id(&bound_to)
             ));
         } else if id.discord_snowflake.is_some()
             && !(id.user_id.chars().all(|c| c.is_ascii_digit())
@@ -1455,15 +1456,16 @@ pub fn cmd_osl_encrypt_message(
     for user_id in &sorted {
         let resp = client
             .fetch_pubkeys(user_id)
-            .map_err(|e| format!("OSL: fetch_pubkeys({user_id}): {e}"))?;
+            .map_err(|e| format!("OSL: fetch_pubkeys({user_id}): {e}", user_id = crate::log_id::log_id(user_id)))?;
         let peer_pub_vec = STANDARD
             .decode(&resp.ik_x25519_pub)
-            .map_err(|e| format!("OSL: decode peer pubkey ({user_id}): {e}"))?;
+            .map_err(|e| format!("OSL: decode peer pubkey ({user_id}): {e}", user_id = crate::log_id::log_id(user_id)))?;
         if peer_pub_vec.len() != x25519::PUBLIC_KEY_SIZE {
             return Err(format!(
                 "OSL: peer pubkey wrong length ({user_id}): got {}, want {}",
                 peer_pub_vec.len(),
-                x25519::PUBLIC_KEY_SIZE
+                x25519::PUBLIC_KEY_SIZE,
+                user_id = crate::log_id::log_id(user_id)
             ));
         }
         let mut peer_pub_bytes = [0u8; x25519::PUBLIC_KEY_SIZE];
@@ -1849,15 +1851,16 @@ pub fn cmd_osl_decrypt_message_with_id(
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
         let resp = client
             .fetch_pubkeys(&osl_user_id)
-            .map_err(|e| format!("OSL: fetch_pubkeys({osl_user_id}): {e}"))?;
+            .map_err(|e| format!("OSL: fetch_pubkeys({osl_user_id}): {e}", osl_user_id = crate::log_id::log_id(&osl_user_id)))?;
         let pub_vec = STANDARD
             .decode(&resp.ik_x25519_pub)
-            .map_err(|e| format!("OSL: decode sender pubkey ({osl_user_id}): {e}"))?;
+            .map_err(|e| format!("OSL: decode sender pubkey ({osl_user_id}): {e}", osl_user_id = crate::log_id::log_id(&osl_user_id)))?;
         if pub_vec.len() != x25519::PUBLIC_KEY_SIZE {
             return Err(format!(
                 "OSL: sender pubkey wrong length ({osl_user_id}): got {}, want {}",
                 pub_vec.len(),
-                x25519::PUBLIC_KEY_SIZE
+                x25519::PUBLIC_KEY_SIZE,
+                osl_user_id = crate::log_id::log_id(&osl_user_id)
             ));
         }
         let mut bytes = [0u8; x25519::PUBLIC_KEY_SIZE];
@@ -1889,7 +1892,8 @@ pub fn cmd_osl_decrypt_message_with_id(
                 let diag = decode_slot_diagnostic(&content);
                 return Err(format!(
                     "OSL: not a recipient of this message \
-                 [diag: our_hint=0x{our_hint:02x} {diag} osl_user_id={osl_user_id}]"
+                 [diag: our_hint=0x{our_hint:02x} {diag} osl_user_id={osl_user_id}]",
+                    osl_user_id = crate::log_id::log_id(&osl_user_id)
                 ));
             }
             Err(e) => return Err(format!("OSL: {e}")),
@@ -2491,11 +2495,11 @@ fn lookup_peer_pubkey(
 ) -> Result<crypto::x25519::PublicKey, String> {
     let entry = peer_map
         .get(discord_id)
-        .ok_or_else(|| format!("OSL: no peer entry for discord_id={discord_id}"))?;
+        .ok_or_else(|| format!("OSL: no peer entry for discord_id={discord_id}", discord_id = crate::log_id::log_id(discord_id)))?;
     let b64 = entry
         .pubkey
         .as_deref()
-        .ok_or_else(|| format!("OSL: no pubkey for discord_id={discord_id}"))?;
+        .ok_or_else(|| format!("OSL: no pubkey for discord_id={discord_id}", discord_id = crate::log_id::log_id(discord_id)))?;
     let bytes = STANDARD
         .decode(b64)
         .map_err(|e| format!("OSL: peer pubkey base64 decode failed: {e}"))?;
@@ -2810,7 +2814,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                         "OSL: can't encrypt to peer {discord_id}: keys \
                          unavailable and keyserver refresh failed: \
                          {refresh_err} (fail-closed; message NOT sent \
-                         plaintext or self-only)"
+                         plaintext or self-only)",
+                        discord_id = crate::log_id::log_id(&discord_id)
                     ));
                 }
             }
@@ -2890,7 +2895,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                         "OSL: v=4 send: keyserver refresh for recipient \
                          {peer_did} failed: {e} — refusing to encrypt with \
                          a possibly-stale X25519 key (fail-closed; message \
-                         NOT sent)"
+                         NOT sent)",
+                        peer_did = crate::log_id::log_id(&peer_did)
                     ));
                 }
                 let fresh_recipients =
@@ -2902,7 +2908,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
                     .ok_or_else(|| {
                         format!(
                             "OSL: v=4 send: recipient {peer_did} vanished \
-                             from peer_map after keyserver refresh"
+                             from peer_map after keyserver refresh",
+                            peer_did = crate::log_id::log_id(&peer_did)
                         )
                     })?
                     .1;
@@ -3401,11 +3408,11 @@ fn encrypt_v4_send(
         let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
         let pe = pm_guard
             .get(peer_did)
-            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} not in peer_map"))?;
+            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} not in peer_map", peer_did = crate::log_id::log_id(peer_did)))?;
         let b64 = pe
             .ik_mlkem768_pub
             .as_deref()
-            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} missing ik_mlkem768_pub"))?;
+            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} missing ik_mlkem768_pub", peer_did = crate::log_id::log_id(peer_did)))?;
         STANDARD
             .decode(b64)
             .map_err(|e| format!("OSL: v=4 send: peer ik_mlkem768_pub b64: {e}"))?
@@ -3439,7 +3446,7 @@ fn encrypt_v4_send(
         let pe = pm_guard
             .get(peer_did)
             .cloned()
-            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} not in peer_map"))?;
+            .ok_or_else(|| format!("OSL: v=4 send: peer {peer_did} not in peer_map", peer_did = crate::log_id::log_id(peer_did)))?;
         match pe.ratchet_state {
             Some(disk) => {
                 let dr: DoubleRatchet = disk
@@ -3449,7 +3456,7 @@ fn encrypt_v4_send(
             }
             None => {
                 let peer_ratchet_b64 = pe.ik_ratchet_initial_pub.as_deref().ok_or_else(|| {
-                    format!("OSL: v=4 send: peer {peer_did} ratchet bootstrap pub missing")
+                    format!("OSL: v=4 send: peer {peer_did} ratchet bootstrap pub missing", peer_did = crate::log_id::log_id(peer_did))
                 })?;
                 let peer_ratchet_bytes = STANDARD
                     .decode(peer_ratchet_b64)
@@ -3523,15 +3530,15 @@ fn build_v4_bootstrap_ping(state: &AppState, peer_did: &str) -> Result<String, S
         let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
         let entry = pm
             .get(peer_did)
-            .ok_or_else(|| format!("OSL: bootstrap ping: no peer entry for {peer_did}"))?;
+            .ok_or_else(|| format!("OSL: bootstrap ping: no peer entry for {peer_did}", peer_did = crate::log_id::log_id(peer_did)))?;
         let x_b64 = entry
             .pubkey
             .as_ref()
-            .ok_or_else(|| format!("OSL: bootstrap ping: peer {peer_did} missing x25519"))?;
+            .ok_or_else(|| format!("OSL: bootstrap ping: peer {peer_did} missing x25519", peer_did = crate::log_id::log_id(peer_did)))?;
         let mlkem_b64 = entry
             .ik_mlkem768_pub
             .as_ref()
-            .ok_or_else(|| format!("OSL: bootstrap ping: peer {peer_did} missing ml-kem"))?;
+            .ok_or_else(|| format!("OSL: bootstrap ping: peer {peer_did} missing ml-kem", peer_did = crate::log_id::log_id(peer_did)))?;
         let x_bytes = STANDARD
             .decode(x_b64)
             .map_err(|e| format!("OSL: bootstrap ping: x25519 b64: {e}"))?;
@@ -3983,7 +3990,8 @@ pub fn cmd_osl_open_attachment_v2(
                     "[OSL] attachment open blocked: scope burned by sender"
                 );
                 return Err(format!(
-                    "OSL: attachment open blocked: scope burned by sender {sender_discord_id}"
+                    "OSL: attachment open blocked: scope burned by sender {sender_discord_id}",
+                    sender_discord_id = crate::log_id::log_id(&sender_discord_id)
                 ));
             }
         }
@@ -3996,7 +4004,8 @@ pub fn cmd_osl_open_attachment_v2(
                     "[OSL] attachment open blocked: in_burn_kill_list"
                 );
                 return Err(format!(
-                    "OSL: attachment open blocked: msg={msg_id} reason=in_burn_kill_list"
+                    "OSL: attachment open blocked: msg={msg_id} reason=in_burn_kill_list",
+                    msg_id = crate::log_id::log_id(msg_id)
                 ));
             }
         }
@@ -4360,7 +4369,8 @@ pub fn cmd_osl_decrypt_message_v2(
         if is_message_in_burn_kill_list(state, scope, msg_id) {
             tracing::info!(msg_id = %crate::log_id::log_id(msg_id), "[OSL] decrypt blocked: in_burn_kill_list");
             return Err(format!(
-                "OSL: decrypt blocked: msg={msg_id} reason=in_burn_kill_list"
+                "OSL: decrypt blocked: msg={msg_id} reason=in_burn_kill_list",
+                msg_id = crate::log_id::log_id(msg_id)
             ));
         }
     }
@@ -4680,7 +4690,8 @@ fn decrypt_v4_recv(
                 .note_v4_failure(&sender_discord_id, now_unix_secs());
             return Err(format!(
                 "OSL: v=4 continuation: peer {sender_discord_id} has no ratchet_state \
-                 — bootstrap flag was false but local state is None (desync)"
+                 — bootstrap flag was false but local state is None (desync)",
+                sender_discord_id = crate::log_id::log_id(&sender_discord_id)
             ));
         }
     };
@@ -5103,7 +5114,8 @@ fn apply_skdm_recv(
     // malformed storage keys.
     if crate::scope::Scope::parse(&scope_key).is_none() {
         return Err(format!(
-            "OSL: SKDM: payload.scope_storage_key '{scope_key}' is not a valid scope"
+            "OSL: SKDM: payload.scope_storage_key '{scope_key}' is not a valid scope",
+            scope_key = crate::log_id::log_id(&scope_key)
         ));
     }
 
@@ -5715,12 +5727,14 @@ fn decrypt_v5_recv(
             .expect("sender_key_state mutex poisoned");
         match g.states.get(&scope_key) {
             Some(disk) => disk.clone().try_into().map_err(|e| {
-                format!("OSL: v=5 decode: load sender_key_state for scope {scope_key}: {e}")
+                format!("OSL: v=5 decode: load sender_key_state for scope {scope_key}: {e}", scope_key = crate::log_id::log_id(&scope_key))
             })?,
             None => {
                 return Err(format!(
                     "OSL: v=5 decode: no installed sender-key state for peer \
-                     {sender_discord_id} in scope {scope_key} — awaiting SKDM"
+                     {sender_discord_id} in scope {scope_key} — awaiting SKDM",
+                    sender_discord_id = crate::log_id::log_id(&sender_discord_id),
+                    scope_key = crate::log_id::log_id(&scope_key)
                 ));
             }
         }
@@ -5730,7 +5744,9 @@ fn decrypt_v5_recv(
     if sks.receiver_chain(&peer_bytes).is_none() {
         return Err(format!(
             "OSL: v=5 decode: no installed sender-key state for peer \
-             {sender_discord_id} in scope {scope_key} — awaiting SKDM"
+             {sender_discord_id} in scope {scope_key} — awaiting SKDM",
+            sender_discord_id = crate::log_id::log_id(&sender_discord_id),
+            scope_key = crate::log_id::log_id(&scope_key)
         ));
     }
 
@@ -5810,14 +5826,15 @@ fn resolve_sender_pubkey(
         .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
     let resp = client
         .fetch_pubkeys(&osl_user_id)
-        .map_err(|e| format!("OSL: fetch_pubkeys({osl_user_id}): {e}"))?;
+        .map_err(|e| format!("OSL: fetch_pubkeys({osl_user_id}): {e}", osl_user_id = crate::log_id::log_id(&osl_user_id)))?;
     let pub_vec = STANDARD
         .decode(&resp.ik_x25519_pub)
-        .map_err(|e| format!("OSL: decode sender pubkey ({osl_user_id}): {e}"))?;
+        .map_err(|e| format!("OSL: decode sender pubkey ({osl_user_id}): {e}", osl_user_id = crate::log_id::log_id(&osl_user_id)))?;
     if pub_vec.len() != crypto::x25519::PUBLIC_KEY_SIZE {
         return Err(format!(
             "OSL: sender pubkey wrong length ({osl_user_id}): got {}",
-            pub_vec.len()
+            pub_vec.len(),
+            osl_user_id = crate::log_id::log_id(&osl_user_id)
         ));
     }
     let mut bytes = [0u8; crypto::x25519::PUBLIC_KEY_SIZE];
@@ -5892,11 +5909,12 @@ pub fn populate_peer_from_fetch_response(
     // Validate decode shape early so we error before mutating peer_map.
     let x_vec = STANDARD
         .decode(&resp.ik_x25519_pub)
-        .map_err(|e| format!("OSL: decode X25519 pubkey for {discord_id}: {e}"))?;
+        .map_err(|e| format!("OSL: decode X25519 pubkey for {discord_id}: {e}", discord_id = crate::log_id::log_id(discord_id)))?;
     if x_vec.len() != crypto::x25519::PUBLIC_KEY_SIZE {
         return Err(format!(
             "OSL: X25519 pubkey for {discord_id} wrong length: got {}",
-            x_vec.len()
+            x_vec.len(),
+            discord_id = crate::log_id::log_id(discord_id)
         ));
     }
     // Probe-2 Rust Bug 6 (security): peek the TOFU outcome before
@@ -5924,12 +5942,13 @@ pub fn populate_peer_from_fetch_response(
     if !resp.ik_mlkem768_pub.is_empty() {
         let mlkem_vec = STANDARD
             .decode(&resp.ik_mlkem768_pub)
-            .map_err(|e| format!("OSL: decode ML-KEM pubkey for {discord_id}: {e}"))?;
+            .map_err(|e| format!("OSL: decode ML-KEM pubkey for {discord_id}: {e}", discord_id = crate::log_id::log_id(discord_id)))?;
         if mlkem_vec.len() != crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE {
             return Err(format!(
                 "OSL: ML-KEM pubkey for {discord_id} wrong length: got {} (expected {})",
                 mlkem_vec.len(),
-                crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE
+                crypto::ml_kem_768::ENCAPSULATION_KEY_SIZE,
+                discord_id = crate::log_id::log_id(discord_id)
             ));
         }
         let mut pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
@@ -7322,7 +7341,8 @@ pub fn cmd_osl_get_self_user_id(state: &AppState) -> Result<String, String> {
     Err(format!(
         "OSL: self not registered in peer_map.json \
          (osl_user_id={osl_user_id}); add an entry mapping your Discord \
-         snowflake to {{\"osl_user_id\":\"{osl_user_id}\"}}"
+         snowflake to {{\"osl_user_id\":\"{osl_user_id}\"}}",
+        osl_user_id = crate::log_id::log_id(&osl_user_id)
     ))
 }
 
@@ -9110,7 +9130,8 @@ fn cmd_osl_recover_account_from_export_with_dir(
         .map(str::to_string);
     if active_snowflake.as_deref() != Some(imported_snowflake) {
         return Err(format!(
-            "OSL: import belongs to Discord account {imported_snowflake}, not the currently active account. Switch Discord accounts first; nothing was changed."
+            "OSL: import belongs to Discord account {imported_snowflake}, not the currently active account. Switch Discord accounts first; nothing was changed.",
+            imported_snowflake = crate::log_id::log_id(imported_snowflake)
         ));
     }
     let files = bundle
@@ -9595,13 +9616,15 @@ pub fn cmd_osl_burn_scope_data(
         "gc_per_user" => {
             return Err(format!(
                 "OSL: burn_scope_data: gc_per_user burn not yet implemented (scope_id={scope_id}) — \
-                 deferred to a later cleanup pass, see 7d-D spec"
+                 deferred to a later cleanup pass, see 7d-D spec",
+                scope_id = crate::log_id::log_id(&scope_id)
             ));
         }
         "server_full" | "server_full_per_user" => {
             return Err(format!(
                 "OSL: burn_scope_data: server_full burn not yet implemented (scope_id={scope_id}) — \
-                 deferred, see 7d-D spec"
+                 deferred, see 7d-D spec",
+                scope_id = crate::log_id::log_id(&scope_id)
             ));
         }
         other => {
