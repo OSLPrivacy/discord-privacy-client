@@ -861,3 +861,44 @@ keyserver redemption change; only promotion is done.
 
 Recorded for other lanes rather than claimed here: the C3 resend hazard (hub/overlay lane) and the
 `core_bridge.rs` latent capability labels (whoever owns that file).
+
+---
+
+## 17 · The Rust claim surface now has a gate, and it declares its own incompleteness
+
+I had recorded the Rust surface as ungated because no rule selects all and only user-visible strings
+among ~8,838 literals. That was true, and I was letting it stand as a reason to do nothing.
+
+The inventory had actually supplied the answer: a **high-precision, incomplete** selector is feasible
+even though a complete one is not. So `scripts/check-app-claims.mjs` now scans a third target,
+`apps/osl-hub/src/**/*.rs`, selecting literals only from positions that are user-visible by
+construction — struct fields named `label`/`title`/`detail`/`message`/`warning`/`display_name` and
+similar, arguments to `.title()`/`.set_title()`/`.add_filter()`/`.set_message()`, and returned `Err`
+strings — while excluding `cfg(test)` blocks, comments and identifier-shaped literals.
+
+**163 literals selected, 0 violations.**
+
+The design constraint that mattered: an incomplete gate that implies completeness is the same
+false-confidence failure this whole exercise has been about. So it prints its own limitation on every
+run:
+
+> Rust scan is a KNOWN-INCOMPLETE high-precision subset: 163 literals from user-visible positions.
+> It does not prove the absence of banned phrases elsewhere in Rust.
+
+It reuses the existing analyse path, so §D parsing, negation awareness and context gating apply
+unchanged — one ban list, one matcher, three surfaces.
+
+**Verified in both directions.** 16/16 fixtures, four of them new and asserting the **selected
+count** rather than only the verdict, which tests the selector rather than just the matcher: a banned
+phrase in a struct label is caught, one in an `Err` is caught, one inside `cfg(test)` is not selected,
+and an identifier-shaped literal is not selected. The new floor of 40 selected literals fires on a
+starved tree — verified by starving it, exit 1.
+
+**What this still does not cover, stated plainly:** any user-visible Rust string that reaches a person
+through a position not in the selector list. That set is unknown and unbounded, which is precisely why
+the gate announces its incompleteness rather than reporting a clean scan.
+
+## Acceptance rows this earns — none
+
+The gate closes part of a gap this lane identified itself, and the H/J rows already cover claim
+tooling. **H1 remains 3/4** — promotion is done, the keyserver redemption change is not.
