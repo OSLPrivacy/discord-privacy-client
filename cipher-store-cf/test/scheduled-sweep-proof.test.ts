@@ -55,8 +55,21 @@ describe("natural attachment sweep witness", () => {
     const objectKey = "attachments/scheduled-proof-success";
     const upload = await real.ATTACHMENTS.createMultipartUpload(objectKey);
     await insertStaleLegacy(id, objectKey, upload.uploadId);
+    await upload.uploadPart(1, new Uint8Array([7]));
+    await real.ATTACHMENTS.put(objectKey, new Uint8Array([7, 7]));
+    await d1Run(
+      `UPDATE attachment_objects
+          SET state = 'completing',
+              content_expires_at = ?,
+              expires_at = ?
+        WHERE id = ?`,
+      Math.floor(Date.now() / 1000) + 3600,
+      Math.floor(Date.now() / 1000) - 1,
+      id,
+    );
 
     const marker = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    let abortFinished = false;
     const resume = vi.fn((key: string, uploadId: string) => {
       const multipart = real.ATTACHMENTS.resumeMultipartUpload(key, uploadId);
       return new Proxy(multipart, {
@@ -71,6 +84,7 @@ describe("natural attachment sweep witness", () => {
                 ),
               ).toBe(1);
               await target.abort();
+              abortFinished = true;
             };
           }
           const value = Reflect.get(target, property, receiver);
@@ -78,17 +92,24 @@ describe("natural attachment sweep witness", () => {
         },
       });
     });
+    const remove = vi.fn(async (key: string | string[]) => {
+      expect(abortFinished).toBe(true);
+      await real.ATTACHMENTS.delete(key);
+    });
     const env = {
       ...real,
       ATTACHMENTS: r2WithOverrides(real.ATTACHMENTS, {
         resumeMultipartUpload: resume,
+        delete: remove,
       }),
     } as unknown as Env;
 
     await worker.scheduled(event, env, context);
 
     expect(resume).toHaveBeenCalledWith(objectKey, upload.uploadId);
+    expect(remove).toHaveBeenCalledWith(objectKey);
     expect(await d1Count("SELECT COUNT(*) AS c FROM attachment_objects WHERE id = ?", id)).toBe(0);
+    expect(await real.ATTACHMENTS.head(objectKey)).toBeNull();
     expect(marker).toHaveBeenCalledTimes(1);
     expect(marker).toHaveBeenCalledWith(CYCLE_MARKER);
   });
@@ -121,4 +142,5 @@ describe("natural attachment sweep witness", () => {
       ),
     ).toBe(1);
   });
+
 });

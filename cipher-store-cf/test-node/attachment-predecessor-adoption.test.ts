@@ -154,6 +154,24 @@ function d1WithOneAbsenceFenceFailure(real: D1Database): D1Database {
   }) as D1Database;
 }
 
+function d1RecordingAbsenceFence(
+  real: D1Database,
+  events: string[],
+): D1Database {
+  return new Proxy(real, {
+    get(target, property, receiver) {
+      if (property !== "prepare") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return (sql: string) => {
+        if (/SET storage_fence_state/.test(sql)) events.push("absence");
+        return target.prepare(sql);
+      };
+    },
+  }) as D1Database;
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((accept) => {
@@ -243,6 +261,123 @@ describe("bounded predecessor completing-row adoption", () => {
       database.count("SELECT COALESCE(SUM(size_bytes), 0) AS bytes FROM attachment_objects"),
     ).toBe(bytes.byteLength);
     expect(database.count("SELECT COUNT(*) AS c FROM attachment_sweep_claims")).toBe(0);
+  });
+
+  it("aborts before deleting a wrong-size completed object and only then confirms absence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
+    const database = migratedD1();
+    const storage = memoryR2();
+    openBoundedAdoption(database);
+    const id = "5".repeat(32);
+    const objectKey = "attachments/predecessor-wrong-size";
+    await predecessorCompleting(
+      database,
+      storage,
+      id,
+      objectKey,
+      new Uint8Array([5]),
+    );
+    await storage.bucket.put(objectKey, new Uint8Array([5, 5]));
+    const events: string[] = [];
+    const bucket = new Proxy(storage.bucket, {
+      get(target, property, receiver) {
+        if (property === "resumeMultipartUpload") {
+          return (key: string, uploadId: string) => {
+            const multipart = target.resumeMultipartUpload(key, uploadId);
+            return new Proxy(multipart, {
+              get(uploadTarget, uploadProperty, uploadReceiver) {
+                if (uploadProperty === "abort") {
+                  return async () => {
+                    events.push("abort");
+                    await uploadTarget.abort();
+                  };
+                }
+                const value = Reflect.get(
+                  uploadTarget,
+                  uploadProperty,
+                  uploadReceiver,
+                );
+                return typeof value === "function"
+                  ? value.bind(uploadTarget)
+                  : value;
+              },
+            });
+          };
+        }
+        if (property === "delete") {
+          return async (key: string | string[]) => {
+            events.push("delete");
+            await target.delete(key);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+
+    await expect(
+      sweepExpiredAttachments(envWith(
+        d1RecordingAbsenceFence(database.d1, events),
+        bucket,
+      )),
+    ).resolves.toEqual({ claimed: 1, completed: 1, failed: 0 });
+    expect(events).toEqual(["abort", "delete", "absence"]);
+    expect(storage.liveUploads()).toBe(0);
+    expect(await storage.bucket.head(objectKey)).toBeNull();
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
+  });
+
+  it("still aborts a wrong-size object when a prior absence marker exists", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
+    const database = migratedD1();
+    const storage = memoryR2();
+    openBoundedAdoption(database);
+    const id = "7".repeat(32);
+    const objectKey = "attachments/predecessor-wrong-size-after-marker";
+    const { multipart } = await predecessorCompleting(
+      database,
+      storage,
+      id,
+      objectKey,
+      new Uint8Array([7]),
+    );
+    database.exec(
+      `INSERT INTO attachment_sweep_claims
+         (attachment_id, worker_id, claim_token, lease_version,
+          lease_expires_at, retry_not_before, attempt_count, last_claimed_at,
+          claim_origin, storage_fence_state)
+       VALUES (?, NULL, NULL, 1, 0, 0, 1, ?, 'predecessor_adoption',
+               'object_absent_confirmed')`,
+      id,
+      NOW - 1,
+    );
+    await storage.bucket.put(objectKey, new Uint8Array([7, 7]));
+    const remove = vi.fn((key: string | string[]) =>
+      storage.bucket.delete(key)
+    );
+    const abort = vi.fn().mockRejectedValue(
+      new Error("ambiguous abort after prior marker"),
+    );
+    const bucket = new Proxy(storage.bucket, {
+      get(target, property, receiver) {
+        if (property === "resumeMultipartUpload") return () => ({ abort });
+        if (property === "delete") return remove;
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+
+    await expect(
+      sweepExpiredAttachments(envWith(database.d1, bucket)),
+    ).resolves.toEqual({ claimed: 1, completed: 0, failed: 1 });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(remove).not.toHaveBeenCalled();
+    expect(await storage.bucket.head(objectKey)).toMatchObject({ size: 2 });
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(1);
+    expect(storage.liveUploads()).toBe(1);
+    await multipart.abort();
   });
 
   it("retains quota across a crash after abort, then retries without a second abort", async () => {
@@ -360,6 +495,68 @@ describe("bounded predecessor completing-row adoption", () => {
     expect(abort).toHaveBeenCalledTimes(2);
     expect(storage.liveUploads()).toBe(0);
     expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(0);
+  });
+
+  it("keeps metadata and quota when retry abort fails ambiguously after an absence-CAS crash", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW * 1000);
+    const database = migratedD1();
+    const storage = memoryR2();
+    openBoundedAdoption(database);
+    const id = "6".repeat(32);
+    const objectKey = "attachments/predecessor-unknown-retry";
+    await predecessorCompleting(
+      database,
+      storage,
+      id,
+      objectKey,
+      new Uint8Array([6, 6]),
+    );
+    let abortCalls = 0;
+    const abort = vi.fn(async () => {
+      abortCalls += 1;
+      if (abortCalls === 1) {
+        await storage.bucket
+          .resumeMultipartUpload(objectKey, "upload-1")
+          .abort();
+        return;
+      }
+      throw new Error("provider outcome unknown");
+    });
+    const bucket = new Proxy(storage.bucket, {
+      get(target, property, receiver) {
+        if (property === "resumeMultipartUpload") return () => ({ abort });
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+
+    await expect(
+      sweepExpiredAttachments(envWith(
+        d1WithOneAbsenceFenceFailure(database.d1),
+        bucket,
+      )),
+    ).resolves.toEqual({ claimed: 1, completed: 0, failed: 1 });
+    database.exec(
+      "UPDATE attachment_sweep_claims SET retry_not_before = 0 WHERE attachment_id = ?",
+      id,
+    );
+    await expect(
+      sweepExpiredAttachments(envWith(database.d1, bucket)),
+    ).resolves.toEqual({ claimed: 1, completed: 0, failed: 1 });
+    expect(abort).toHaveBeenCalledTimes(2);
+    expect(database.count("SELECT COUNT(*) AS c FROM attachment_objects")).toBe(1);
+    expect(
+      database.count(
+        "SELECT COALESCE(SUM(size_bytes), 0) AS bytes FROM attachment_objects",
+      ),
+    ).toBe(2);
+    expect(
+      database.raw.prepare(
+        `SELECT storage_fence_state
+           FROM attachment_sweep_claims WHERE attachment_id = ?`,
+      ).get(id),
+    ).toEqual({ storage_fence_state: "pending" });
   });
 
   it("promotes when predecessor completion wins between HEAD and abort", async () => {

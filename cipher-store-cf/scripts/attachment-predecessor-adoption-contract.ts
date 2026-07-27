@@ -24,6 +24,14 @@ function functionText(
   source: string,
   name: string,
 ): string {
+  const { node, parsed } = functionNode(source, name);
+  return node.getText(parsed);
+}
+
+function functionNode(
+  source: string,
+  name: string,
+): { node: ts.FunctionDeclaration; parsed: ts.SourceFile } {
   const parsed = ts.createSourceFile(
     `${name}.ts`,
     source,
@@ -44,7 +52,100 @@ function functionText(
   };
   visit(parsed);
   if (!found) fail(`missing function ${name}`);
-  return (found as ts.FunctionDeclaration).getText(parsed);
+  return { node: found as ts.FunctionDeclaration, parsed };
+}
+
+function bindingContains(
+  name: ts.BindingName,
+  expected: string,
+): boolean {
+  if (ts.isIdentifier(name)) return name.text === expected;
+  return name.elements.some((element) =>
+    !ts.isOmittedExpression(element)
+    && bindingContains(element.name, expected)
+  );
+}
+
+function functionHasLocalBinding(
+  source: string,
+  functionName: string,
+  bindingName: string,
+): boolean {
+  const { node } = functionNode(source, functionName);
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (
+      (ts.isVariableDeclaration(child) || ts.isParameter(child))
+      && bindingContains(child.name, bindingName)
+    ) {
+      found = true;
+      return;
+    }
+    if (
+      (
+        ts.isFunctionDeclaration(child)
+        || ts.isClassDeclaration(child)
+        || ts.isEnumDeclaration(child)
+      )
+      && child.name?.text === bindingName
+    ) {
+      found = true;
+      return;
+    }
+    child.forEachChild(visit);
+  };
+  node.body?.forEachChild(visit);
+  return found;
+}
+
+interface PreparedStatement {
+  sql: string;
+  bindArguments: string[];
+}
+
+function preparedStatements(
+  source: string,
+  functionName: string,
+  marker: string,
+): PreparedStatement[] {
+  const { node, parsed } = functionNode(source, functionName);
+  const statements: PreparedStatement[] = [];
+  const visit = (child: ts.Node): void => {
+    if (
+      ts.isCallExpression(child)
+      && ts.isPropertyAccessExpression(child.expression)
+      && child.expression.name.text === "prepare"
+      && compact(child.expression.expression.getText(parsed)) === "env.DB"
+      && child.arguments.length === 1
+    ) {
+      const argument = child.arguments[0]!;
+      const sql = (
+        ts.isStringLiteral(argument)
+        || ts.isNoSubstitutionTemplateLiteral(argument)
+      )
+        ? argument.text
+        : "";
+      if (sql.includes(marker)) {
+        const bindAccess = child.parent;
+        const bindCall = ts.isPropertyAccessExpression(bindAccess)
+          && bindAccess.expression === child
+          && bindAccess.name.text === "bind"
+          && ts.isCallExpression(bindAccess.parent)
+          && bindAccess.parent.expression === bindAccess
+          ? bindAccess.parent
+          : null;
+        statements.push({
+          sql,
+          bindArguments: bindCall
+            ? bindCall.arguments.map((value) => compact(value.getText(parsed)))
+            : [],
+        });
+      }
+    }
+    child.forEachChild(visit);
+  };
+  node.body?.forEachChild(visit);
+  return statements;
 }
 
 function compact(value: string): string {
@@ -128,7 +229,7 @@ export function validateAttachmentPredecessorAdoption(
   );
   requirePattern(
     sweep,
-    /completedObject\?\.size !== claim\.size_bytes[\s\S]*?claim\.storage_fence_state !== "object_absent_confirmed"[\s\S]*?resumeMultipartUpload\(claim\.object_key, claim\.upload_id\)/,
+    /completedObject\?\.size !== claim\.size_bytes[\s\S]*?completedObject !== null[\s\S]*?claim\.storage_fence_state !== "object_absent_confirmed"[\s\S]*?resumeMultipartUpload\(claim\.object_key, claim\.upload_id\)/,
     "wrong-size objects do not unconditionally enter the multipart abort fence",
   );
   requirePattern(
@@ -141,6 +242,15 @@ export function validateAttachmentPredecessorAdoption(
     /function isConsumedMultipartUpload\(error: unknown\): boolean[\s\S]*?NoSuchUpload[\s\S]*?abortFailure = isConsumedMultipartUpload\(error\) \? null : error/,
     "retry does not distinguish terminal consumed-upload aborts from unknown failures",
   );
+  if (
+    functionHasLocalBinding(
+      sources.sweep,
+      "sweepExpiredAttachments",
+      "isConsumedMultipartUpload",
+    )
+  ) {
+    fail("sweep locally shadows the exact consumed-upload classifier");
+  }
   requirePattern(
     sweep,
     /if \(abortFailure\) \{[\s\S]*?throw abortFailure; \}[\s\S]*?if \(completedObject\) \{[\s\S]*?delete\(claim\.object_key\)[\s\S]*?confirmAttachmentObjectAbsent\(env, claim, now\)[\s\S]*?completeAttachmentSweepClaim\(env, claim, now\)/,
@@ -155,9 +265,16 @@ export function validateAttachmentPredecessorAdoption(
     /owned\.worker_id = \? AND owned\.claim_token = \? AND owned\.lease_version = \? AND owned\.lease_expires_at > \?/,
     "ready publication is missing exact token/version lease CAS",
   );
-  const absence = compact(
-    functionText(sources.claims, "confirmAttachmentObjectAbsent"),
+  const absenceStatements = preparedStatements(
+    sources.claims,
+    "confirmAttachmentObjectAbsent",
+    "SET storage_fence_state = 'object_absent_confirmed'",
   );
+  if (absenceStatements.length !== 1) {
+    fail("absence marker is not bound to one executable prepare call");
+  }
+  const absenceStatement = absenceStatements[0]!;
+  const absence = compact(absenceStatement.sql);
   requirePattern(
     absence,
     /UPDATE attachment_sweep_claims SET storage_fence_state = 'object_absent_confirmed' WHERE attachment_id = \? AND worker_id = \? AND claim_token = \? AND lease_version = \? AND lease_expires_at > \?/,
@@ -168,6 +285,17 @@ export function validateAttachmentPredecessorAdoption(
     /worker_id = \? AND claim_token = \? AND lease_version = \? AND lease_expires_at > \?/,
     "absence marker is missing exact token/version lease CAS",
   );
+  if (
+    absenceStatement.bindArguments.join(",") !== [
+      "claim.attachment_id",
+      "claim.worker_id",
+      "claim.claim_token",
+      "claim.lease_version",
+      "now",
+    ].join(",")
+  ) {
+    fail("absence marker prepare call has stale or reordered CAS bindings");
+  }
   const completion = compact(
     functionText(sources.claims, "completeAttachmentSweepClaim"),
   );

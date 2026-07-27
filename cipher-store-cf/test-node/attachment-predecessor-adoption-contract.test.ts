@@ -36,6 +36,17 @@ function mutateFunction(
   return prefix + mutated;
 }
 
+function moveAbortGuard(source: string, destinationNeedle: string): string {
+  const start = source.indexOf("        if (abortFailure) {");
+  const end = source.indexOf("        if (completedObject) {", start);
+  if (start < 0 || end < 0) throw new Error("missing abort guard mutation");
+  const block = source.slice(start, end);
+  const without = source.slice(0, start) + source.slice(end);
+  const destination = without.indexOf(destinationNeedle, start);
+  if (destination < 0) throw new Error("missing abort guard destination");
+  return without.slice(0, destination) + block + without.slice(destination);
+}
+
 describe("attachment predecessor adoption source closure", () => {
   it("accepts the nonempty shipping migration/claim/R2 closure", () => {
     expect(validateAttachmentPredecessorAdoption(sources())).toEqual({
@@ -109,6 +120,65 @@ describe("attachment predecessor adoption source closure", () => {
     );
   });
 
+  it("rejects treating every abort error as retryable instead of terminal", () => {
+    const value = sources();
+    value.sweep = value.sweep.replace(
+      "abortFailure = isConsumedMultipartUpload(error) ? null : error;",
+      "abortFailure = error;",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /post-abort HEAD|terminal consumed-upload aborts/,
+    );
+  });
+
+  it("rejects classifying AccessDenied as a consumed upload", () => {
+    const value = sources();
+    value.sweep = value.sweep.replace(
+      '    || candidate.name === "NoSuchUpload";',
+      `    || candidate.name === "NoSuchUpload"
+    || candidate.code === "AccessDenied";`,
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /classifier is widened/,
+    );
+  });
+
+  it("rejects a function-local unconditional classifier shadow", () => {
+    const value = sources();
+    value.sweep = mutateFunction(
+      value.sweep,
+      "sweepExpiredAttachments",
+      "  const now = Math.floor(Date.now() / 1000);",
+      `  const isConsumedMultipartUpload = (_error: unknown): boolean => true;
+  const now = Math.floor(Date.now() / 1000);`,
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /locally shadows.*classifier/,
+    );
+  });
+
+  it("rejects moving abort failure handling after object deletion", () => {
+    const value = sources();
+    value.sweep = moveAbortGuard(
+      value.sweep,
+      `        if (claim.storage_fence_state !== "object_absent_confirmed") {`,
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /ordering is unsafe/,
+    );
+  });
+
+  it("rejects moving abort failure handling after absence confirmation", () => {
+    const value = sources();
+    value.sweep = moveAbortGuard(
+      value.sweep,
+      "        const completion = await completeAttachmentSweepClaim",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /ordering is unsafe/,
+    );
+  });
+
   it("rejects absence CAS without lease version in the UPDATE", () => {
     const value = sources();
     value.claims = value.claims.replace(
@@ -117,6 +187,59 @@ describe("attachment predecessor adoption source closure", () => {
     );
     expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
       /absence marker UPDATE.*lease-version CAS/,
+    );
+  });
+
+  it("rejects unsafe absence SQL hidden behind an unused exact SQL decoy", () => {
+    const value = sources();
+    value.claims = mutateFunction(
+      value.claims,
+      "confirmAttachmentObjectAbsent",
+      `  validateClaim(claim);
+`,
+      `  validateClaim(claim);
+  void \`UPDATE attachment_sweep_claims SET storage_fence_state = 'object_absent_confirmed' WHERE attachment_id = ? AND worker_id = ? AND claim_token = ? AND lease_version = ? AND lease_expires_at > ?\`;
+`,
+    );
+    value.claims = mutateFunction(
+      value.claims,
+      "confirmAttachmentObjectAbsent",
+      `        AND lease_version = ?
+        AND lease_expires_at > ?
+        AND EXISTS (`,
+      `        AND lease_expires_at > ?
+        AND EXISTS (`,
+    );
+    value.claims = mutateFunction(
+      value.claims,
+      "confirmAttachmentObjectAbsent",
+      `    claim.claim_token,
+    claim.lease_version,
+    now,
+`,
+      `    claim.claim_token,
+    now,
+`,
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /absence marker UPDATE.*lease-version CAS/,
+    );
+  });
+
+  it("rejects reordered absence CAS bindings", () => {
+    const value = sources();
+    value.claims = mutateFunction(
+      value.claims,
+      "confirmAttachmentObjectAbsent",
+      `    claim.claim_token,
+    claim.lease_version,
+`,
+      `    claim.lease_version,
+    claim.claim_token,
+`,
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /reordered CAS bindings/,
     );
   });
 
@@ -130,6 +253,23 @@ describe("attachment predecessor adoption source closure", () => {
     );
     expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
       /ready publication.*version/,
+    );
+  });
+
+  it("rejects metadata deletion without the durable absence fence", () => {
+    const value = sources();
+    value.claims = mutateFunction(
+      value.claims,
+      "completeAttachmentSweepClaim",
+      `             AND (
+               attachment_objects.state <> 'completing'
+               OR owned.storage_fence_state = 'object_absent_confirmed'
+             )
+`,
+      "",
+    );
+    expect(() => validateAttachmentPredecessorAdoption(value)).toThrow(
+      /metadata deletion.*confirmed R2 absence/,
     );
   });
 });

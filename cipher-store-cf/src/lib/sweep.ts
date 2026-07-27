@@ -158,7 +158,10 @@ export async function sweepExpiredAttachments(
         let abortFailure: unknown = null;
         if (
           completedObject?.size !== claim.size_bytes
-          && claim.storage_fence_state !== "object_absent_confirmed"
+          && (
+            completedObject !== null
+            || claim.storage_fence_state !== "object_absent_confirmed"
+          )
         ) {
           if (!claim.upload_id) {
             throw new Error(
