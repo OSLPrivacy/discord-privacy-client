@@ -900,6 +900,36 @@ function Process-RunDirectory {
         return $true
     }
 
+    # CLAIM THE RUN BEFORE EXECUTING ANY STEP.
+    #
+    # A run is skipped once a verdict exists. But if the agent dies mid-run - crash, restart,
+    # reboot - no verdict was ever written, so the run is re-picked and EVERY step executes a
+    # second time. Steps are not all idempotent (launch starts a process, and any future verb with
+    # a real side effect would be worse), and the re-run can still finish green, so the replay is
+    # invisible in the verdict.
+    #
+    # An interrupted run is therefore refused rather than replayed. "Some steps may already have
+    # run and I cannot tell which" is not a measurement, and quietly redoing them to reach a clean
+    # result would be manufacturing the evidence rather than collecting it.
+    $startedBlob = "$RunBlobPrefix/started.json"
+    $priorClaim = Get-BlobText -Name $startedBlob
+    if ($null -ne $priorClaim) {
+        Write-Log "interrupted run $RunBlobPrefix already claimed; refusing to re-execute its steps"
+        $blocked = New-BlockedVerdict -RunId $runIdFromPrefix -VmName $VmName -RequestSha256 $actualSha `
+            -Diagnosis 'interrupted-run: this run was already started by an agent that did not finish, so an unknown prefix of its steps has already executed; re-running them could double a side effect and still grade green'
+        Write-Verdict -RunBlobPrefix $RunBlobPrefix -Verdict $blocked
+        return $true
+    }
+    $claim = [ordered]@{
+        schemaVersion = 1
+        runId = $runIdFromPrefix
+        vmName = $VmName
+        agentSha = Get-AgentSha
+        claimedUtc = [datetime]::UtcNow.ToString('o')
+        agentPid = [Diagnostics.Process]::GetCurrentProcess().Id
+    }
+    Put-BlobText -Name $startedBlob -Text (($claim | ConvertTo-Json -Depth 6) + [Environment]::NewLine)
+
     # Clear the pin per run. A pid carried over from a previous run would block this one for a
     # reason that has nothing to do with it.
     $script:VmqaPinnedPid = 0
