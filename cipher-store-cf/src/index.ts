@@ -48,6 +48,7 @@ import { handleHealthz } from "./endpoints/healthz.js";
 import { handleLanding, handleRobots } from "./lib/landing.js";
 import { clientIp, error, notFound, serverError } from "./lib/http.js";
 import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
+import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
 import {
   sweepExpired,
   sweepExpiredAttachments,
@@ -88,7 +89,7 @@ export default {
       // marker to distinguish a natural Cron Trigger from a guessed time
       // window. Observability remains disabled; this is visible only to an
       // operator who opens an ephemeral, exact-message real-time tail.
-      console.log("[attachment-sweep-cycle] complete");
+      console.log(CYCLE_MARKER);
     } catch {
       console.error("[attachment-sweep] failed");
     }

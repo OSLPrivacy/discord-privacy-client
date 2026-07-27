@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { INCOMPLETE_SESSION_TTL_SECONDS } from "../src/lib/attachment-limits.js";
+import { CYCLE_MARKER, NATURAL_CRON } from "../src/lib/d2-proof-contract.js";
 import { d1Count, d1Run, workerEnv } from "./helpers/workerd.js";
 
 const DIGEST = "a".repeat(64);
-const CYCLE_MARKER = "[attachment-sweep-cycle] complete";
 
 function r2WithOverrides(real: R2Bucket, overrides: Record<PropertyKey, unknown>): R2Bucket {
   return new Proxy(real, {
@@ -38,7 +38,7 @@ async function insertStaleLegacy(
 }
 
 const event = {
-  cron: "*/5 * * * *",
+  cron: NATURAL_CRON,
   scheduledTime: 300_000,
   type: "scheduled",
 } as ScheduledEvent;

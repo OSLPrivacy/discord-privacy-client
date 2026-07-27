@@ -20,14 +20,18 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { CYCLE_MARKER, NATURAL_CRON } from "../src/lib/d2-proof-contract.js";
+import {
+  assertD2TestClosure,
+  readD2ClosureSources,
+} from "./d2-test-closure.ts";
 
 const execFileAsync = promisify(execFile);
 
 export const BASELINE_COMMIT = "e8fbd3ffa857d5bfd5f173b556a88a6a3bfee88f";
 export const WORKER_NAME = "oslprivacy-cipher-store";
 export const DATABASE_NAME = "osl-cipher-store-prod";
-export const NATURAL_CRON = "*/5 * * * *";
-export const CYCLE_MARKER = "[attachment-sweep-cycle] complete";
+export { CYCLE_MARKER, NATURAL_CRON };
 export const CONFIRMATION = "D2_PROMOTE_EXACT_ARCHIVE_AND_WAIT_NATURAL_CRON";
 export const VERSION_TAG_PREFIX = "osl-d2";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -603,6 +607,7 @@ async function observeNaturalCycle(
 
 async function executePromotionAndProof(projectRoot: string, repoRoot: string): Promise<PromotionProof> {
   assertAggregateSql(AGGREGATE_SQL);
+  assertD2TestClosure(readD2ClosureSources(projectRoot));
   const source = await sourceFacts(repoRoot, realRunner);
   await realRunner.run("npm", ["run", "typecheck"], projectRoot);
   await realRunner.run("npm", ["test"], projectRoot);

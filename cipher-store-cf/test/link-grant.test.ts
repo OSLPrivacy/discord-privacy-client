@@ -10,10 +10,11 @@ import {
 import { sweepExpiredLinkGrantConsumptions } from "../src/lib/sweep.js";
 import { d1Count, d1Run, workerEnv } from "./helpers/workerd.js";
 import {
-  loadIssuerKey,
-  mintGrant,
-  resetIssuerKeyCache,
-} from "../../keyserver-cf/src/lib/link-grant-issuer.js";
+  ISSUER_GRANT_AUDIENCE,
+  ISSUER_GRANT_DOMAIN,
+  ISSUER_GRANT_SCHEME,
+  mintKeyserverGrantFixture,
+} from "./helpers/link-grant-issuer-fixture.js";
 
 function b64u(bytes: Uint8Array): string {
   let s = "";
@@ -31,12 +32,7 @@ async function issuer() {
   );
   let bin = "";
   for (const b of raw) bin += String.fromCharCode(b);
-  const pkcs8 = new Uint8Array(
-    (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer,
-  );
-  let secret = "";
-  for (const b of pkcs8) secret += String.fromCharCode(b);
-  return { pair, pubB64: btoa(bin), secretB64: btoa(secret) };
+  return { pair, pubB64: btoa(bin) };
 }
 
 function randomJti(): string {
@@ -76,16 +72,19 @@ function request(auth?: string): Request {
 const now = () => Math.floor(Date.now() / 1000);
 
 describe("link-creation grants", () => {
-  it("accepts a grant minted by the real keyserver issuer", async () => {
+  it("accepts the standalone keyserver issuer wire fixture", async () => {
     const iss = await issuer();
-    resetIssuerKeyCache();
-    const key = await loadIssuerKey({
-      LINK_GRANT_SECRET_B64: iss.secretB64,
-      LINK_GRANT_PUBKEY_B64: iss.pubB64,
-    } as never);
-    expect(key).not.toBeNull();
-
-    const grant = await mintGrant(key!, now());
+    expect({
+      audience: ISSUER_GRANT_AUDIENCE,
+      domain: ISSUER_GRANT_DOMAIN,
+      scheme: ISSUER_GRANT_SCHEME,
+    }).toEqual({
+      audience: GRANT_AUDIENCE,
+      domain: GRANT_DOMAIN,
+      scheme: GRANT_SCHEME,
+    });
+    const grant = await mintKeyserverGrantFixture(iss.pair.privateKey, now());
+    expect(Object.keys(JSON.parse(grant.payload)).sort()).toEqual(["aud", "exp", "jti"]);
     await expect(
       verifyLinkGrant(request(grant.authorization), testEnv(iss.pubB64)),
     ).resolves.toEqual({ ok: true });
