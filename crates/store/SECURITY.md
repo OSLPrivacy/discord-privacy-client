@@ -42,6 +42,17 @@ caller is denied access without ever touching the message rows.
 This catches the "wrong identity_secret" case at open time
 rather than producing a misleading `Corrupted` on first read.
 
+A **missing** canary is only accepted on a genuinely new file. If the
+store already has a `schema_version` or a `messages` table, an absent
+canary means it was removed, and `open` refuses. Treating that as
+first-run would let anyone who can delete two `_meta` rows open the
+database under a secret of their choosing — and because the migration
+runs immediately afterwards, a legacy file would be rewritten with its
+metadata sealed under the attacker's key while its message bodies
+stayed under the owner's, committing a store neither secret can fully
+open. The canary's two rows are also written in one transaction, so a
+crash cannot leave a half-canary that bricks every later open.
+
 ## What's on disk
 
 Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:

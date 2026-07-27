@@ -975,3 +975,51 @@ fn retargeting_a_rows_channel_selector_is_rejected() {
         ),
     }
 }
+
+/// Deleting the canary must not turn a populated store into one that opens
+/// under any secret.
+///
+/// `check_canary` treats a missing canary as first-run. Applied
+/// unconditionally that means anyone able to delete two `_meta` rows can open
+/// the database with a secret of their choosing — and because `migrate` runs
+/// next, a legacy file would then be rewritten with its metadata sealed under
+/// the attacker's key while its message bodies stay under the owner's,
+/// committing a store neither secret can fully open.
+#[test]
+fn a_populated_store_with_its_canary_deleted_refuses_to_open() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let store = open_a(tmp.path());
+    store
+        .put(&sample("m", "chan", "s", "alice", "secret body", 1))
+        .unwrap();
+    assert!(store.get("m").unwrap().is_some(), "positive path");
+    drop(store);
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let n = conn
+            .execute(
+                "DELETE FROM _meta WHERE key IN ('canary_nonce','canary_ct')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            n, 2,
+            "positive path: the canary must have been there to delete"
+        );
+    }
+
+    // A secret that never wrote this store must not be accepted.
+    assert!(
+        MessageStore::open(tmp.path(), &[9u8; 32]).is_err(),
+        "a populated store opened under an arbitrary secret after its canary \
+         was deleted"
+    );
+    // And the owner's own secret must not silently re-seal it either.
+    assert!(
+        MessageStore::open(tmp.path(), SECRET_A).is_err(),
+        "a populated store with a deleted canary must refuse rather than \
+         re-seal a fresh one"
+    );
+}

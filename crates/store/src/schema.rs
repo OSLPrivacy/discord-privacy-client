@@ -595,9 +595,41 @@ pub(crate) fn check_canary(conn: &Connection, key: &aead::Key) -> Result<(), Sto
     let ct_opt = read_meta_blob(conn, "canary_ct")?;
     match (nonce_opt, ct_opt) {
         (None, None) => {
+            // A missing canary is only legitimate on a genuinely new file.
+            //
+            // Treating it as first-run unconditionally means anyone who can
+            // delete two `_meta` rows makes the store open under ANY secret:
+            // this function would seal a fresh canary under the caller's key
+            // and report success. On a legacy file that is destructive, not
+            // just a bypass — `migrate` runs next, and the v3→v4 rewrite would
+            // seal metadata under the wrong key while copying message bodies
+            // byte-for-byte under the old one, committing a store whose two
+            // halves can never be opened by the same secret again.
+            //
+            // Every version of this schema stamps `schema_version`, and any
+            // populated store has a `messages` table, so either being present
+            // means the canary was removed rather than never written.
+            if read_meta_u32(conn, "schema_version")?.is_some() || table_exists(conn, "messages")? {
+                return Err(StoreError::Sealer(
+                    "message store has data but no canary — refusing to open. \
+                     The canary was removed; opening would re-seal it under \
+                     whatever secret was supplied and could destroy the store"
+                        .to_string(),
+                ));
+            }
             let (nonce, ct) = cipher::seal(key, CANARY_AAD, CANARY_PLAINTEXT)?;
-            write_meta_blob(conn, "canary_nonce", &nonce)?;
-            write_meta_blob(conn, "canary_ct", &ct)?;
+            // One transaction: a crash between the two writes would leave a
+            // half-canary, and every later open would refuse the file below.
+            conn.execute_batch("BEGIN IMMEDIATE;")?;
+            let seeded = (|| -> Result<(), StoreError> {
+                write_meta_blob(conn, "canary_nonce", &nonce)?;
+                write_meta_blob(conn, "canary_ct", &ct)
+            })();
+            if let Err(e) = seeded {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+            conn.execute_batch("COMMIT;")?;
             Ok(())
         }
         (Some(nonce), Some(ct)) => {
