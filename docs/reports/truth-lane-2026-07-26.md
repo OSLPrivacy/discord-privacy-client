@@ -902,3 +902,49 @@ the gate announces its incompleteness rather than reporting a clean scan.
 
 The gate closes part of a gap this lane identified itself, and the H/J rows already cover claim
 tooling. **H1 remains 3/4** — promotion is done, the keyserver redemption change is not.
+
+---
+
+## 18 · Self-consistency pass over my own edits
+
+I made roughly a dozen allowlist edits tonight, several under time pressure and one during a live
+production incident. Auditing my own output found two things.
+
+### 18.1 A7's heading still carried the claim I had removed from its wording
+
+An hour after narrowing A7 — because "nobody can register your Discord identity" is true only for
+snowflake-shaped ids, and any opaque identifier including a **username** is still first-come — the
+section heading still read *"Nobody can claim your account before you do."*
+
+The corrected wording sat directly underneath it. **Headings are what people skim**, so the overclaim
+survived in the most-read position in the row while the correction sat in the least-read one. Now
+"The key server refuses Discord account numbers", which is what the code actually does.
+
+This is worth recording rather than quietly fixing: correcting a claim's *body* and leaving its
+*title* is a specific failure mode, and I would have flagged it in another lane's work.
+
+### 18.2 A structural gap: two lists that must agree, and nothing enforcing it
+
+Capability statuses live in **two** places — the rows in the allowlist, and `capability_registry` in
+`data/pricing.json`. `check-claims` verifies that every page badge matches **the manifest**. Nothing
+verifies that the manifest matches **the allowlist**.
+
+So the manifest could drift from the allowlist and **both gates would still pass**: a page badge
+agreeing with a registry entry that no longer agrees with the claim authorising it.
+
+This is precisely the duplication that was designed out for §D banned phrases, where the app gate
+*parses* the allowlist rather than holding a copy. Statuses did not get the same treatment because
+the two files live in different repositories, and a cross-repository path dependency is its own
+fragility — a real reason, not a good outcome.
+
+Checked by hand: they currently agree. **A hand check is not a mechanism**, and recording it as one
+would be the same false-confidence move as an incomplete gate that reports a clean scan. Until a
+mechanism exists, a status change in either file requires the matching edit in the same task.
+
+## Acceptance rows this earns — none
+
+A self-consistency fix earns nothing; it repairs my own output. **H1 remains 3/4.**
+
+**Open in this lane, honestly:** the allowlist/manifest agreement has no enforcing mechanism, only a
+hand check and a rule; and user-visible Rust strings outside the selector list remain unbounded and
+ungated.
