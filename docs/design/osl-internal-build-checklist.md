@@ -107,7 +107,9 @@ away, per master §16.3.
   migration-second rollout. Migration `0030` and this Worker are not deployed; scheme 1 remains
   `implemented-unwired`.
 - D2 +0 · exact `e8fbd3f` proves local D1/R2 stale-upload reclamation, R2-before-D1 ordering, and
-  retry on abort failure. The repair is local-only and production cleanup remains `unknown`.
+  retry on abort failure. Exact recovery source `3938a73` is `runtime-proven` locally; exact release
+  contract `1e9e635` is `test-proven-only`. Migration `0010` is unapplied and its matching Worker is
+  inactive, so production wrong-size/abandoned recovery and quota release remain `unknown`.
 - F5 +0 · exact `f0bd0e1` records rejection of the proposed isolated scan-only commit: the retained
   exact tree is not type-coherent and the passing exploratory tests were removed.
 - C4 +0 · exact `31edb63` is inadmissible as shipping evidence. Its verifier accepts caller-authored
@@ -534,15 +536,14 @@ timestamped deltas, not keep this number manually forever.
   production, and had been before today**: the body was piped through a `TransformStream`, and R2
   requires a known length, so **every upload failed**. It passed its tests only because the R2 test
   double accepts any stream — a textbook false green, the same family as a harness that confirms
-  whatever it happens to find. The server side is now fixed **and deployed**: cipher-store version `0a17547d`, production
-  re-probed, part upload returns 201 where it previously returned HTTP 500. **Apparent conflict
-  reconciled (master §0.2):** `docs/reports/server-lane-2026-07-26.md` states "nothing here is
-  `verified-live`. No deploy has happened", while the owner reports deploying `0a17547d` and
-  re-probing production. Both are true at different scopes — the lane is describing what *its own
-  work* proved (a real local workerd, not production), and the owner deployed separately. Not a
-  contradiction, so nothing is marked `superseded`. The writer did **not** independently probe
-  production; the 201 rests on the owner's report (authority order item 1), and the lane's own
-  ceiling remains `runtime-proven` (local). The single earned point stands because it was
+  whatever it happens to find. **Superseding evidence correction, 2026-07-27:** historical Worker
+  `0a17547d` was not bound to a reviewed source object; its production 201 proves only that a
+  known-length part upload succeeded on that Worker. It does not prove the newer recovery logic.
+  Exact recovery source `3938a73` is `runtime-proven` locally against the real local
+  Workerd/D1/R2 boundary. Exact `1e9e635` is a `test-proven-only` release contract; it is not a
+  deployment receipt or Cloudflare observation. Migration `0010` is unapplied and the matching
+  Worker is inactive. Production recovery of wrong-size or abandoned completing rows, and the
+  corresponding quota release, therefore remain `unknown`. The single earned point stands because it was
   awarded for substantial source existing, **not** for uploads succeeding; withdrawing it would be
   over-correction. But 🧪 "test-proven" was an untrue label for a path that could not execute, so
   the marker is corrected. **Treat any "attachment sent successfully" reported anywhere before
@@ -551,10 +552,8 @@ timestamped deltas, not keep this number manually forever.
   R2-before-D1 ordering and retryable abort failure, but it is not deployed and production cleanup
   remains `unknown`. Exact `05282a4`, `9de23ba`, and `fc91401` strengthen a fail-closed promotion
   proof and its starvation/bypass controls, but the helper is `implemented-unwired`; it does not
-  bind the active Worker UUID to source or prove a natural production scheduled cycle. The
-  2026-07-27 read-only Wrangler check found active cipher-store deployment `785314a9…`, version 15
-  at 100%, but no Git SHA and migration 0007 still pending; the newer helper/cleanup commits are
-  not deployment-proven.
+  bind an active Worker UUID to source or prove a natural production scheduled cycle. None of
+  `e8fbd3f`, `3938a73`, or `1e9e635` is deployment proof.
   `needs: A6,D1` `weight: 5` `earned: 1`
 - 🧪 **D3 · View-once text** — mechanisms exist; two-identity second-open refusal unproved.
   `needs: B6` `weight: 4` `earned: 1`

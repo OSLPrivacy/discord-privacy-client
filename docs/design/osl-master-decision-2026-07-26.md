@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r16`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r17`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,14 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r17` — superseding attachment-evidence correction; historical `r8` remains unchanged as a record
+  of what was reported then. Worker `0a17547d` was not bound to reviewed source, so its production
+  201 proves only a known-length part upload on that Worker, not the later recovery behavior.
+  Exact recovery source `3938a73` is `runtime-proven` locally; exact release contract `1e9e635` is
+  `test-proven-only`, not a deployment receipt. Migration `0010` is unapplied and its matching
+  Worker is inactive, leaving production wrong-size/abandoned recovery and quota release
+  `unknown`. Attachment ciphertext/decoy behavior also remains unproved on a named release build.
+  No acceptance evidence changed; checklist remains **100 / 303**.
 - `r16` — non-scoring D7 safety reconciliation on committed product HEAD
   `05282a493fbb165e2011edc2991a273ead3dddc6`: D7 remains **1/4** for its authenticated,
   sent-record-correlated receipt foundation, but is now explicitly `open-security-finding`.

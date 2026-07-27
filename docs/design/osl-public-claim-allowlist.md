@@ -158,7 +158,7 @@ when the distinction matters.
 | Group sender keys / bounded blast radius | `implemented-unwired` | gated off at `crates/ipc/src/commands.rs:2938`; default documented false at `crates/ipc/src/state.rs:280` | "Planned. Group messages currently use the same scheme as direct messages." |
 | Unlock password, 15-minute auto-lock, 10-attempt auto-burn, duress password | `implemented-unwired` | `crates/keystore/src/password.rs:62`, `:283-288`; `crates/keystore/src/duress.rs` — zero production callers, only the `crates/keystore/src/lib.rs:58-59` re-export and keystore tests | "Planned." Do not list under device security. Master §7.14-adjacent copy must not imply the app locks itself. |
 | Bilateral burn | `implemented-unwired`, plus an open defect | `apps/osl-hub/src/broker.rs:2635-2640` deletes the revocation notice unapplied | "Planned." See `docs/qa/two-identity-p2p-verification.md` §6 item 4. |
-| View-once, timed deletion, attachments | `implemented-unwired`; attachments additionally **could not execute in production** | master §9 rows. **2026-07-26:** attachment upload was broken in production and had been before that date — the body was piped through a `TransformStream` and R2 requires a known length, so every upload failed. It passed tests only because the R2 test double accepts any stream. Server side now fixed and probed on a real workerd, not deployed. | "Planned." Master §8.2 forbids marketing these as available before the exact release build has evidence. **Treat any "attachment sent successfully" reported before 2026-07-26 as unproven** — including any earlier award or badge that rested on it. Re-derive from evidence, never from a prior award. |
+| View-once, timed deletion, attachments | `implemented-unwired`; attachment transport and recovery remain unproved on a named release build | master §9 rows. Historical source-unbound Worker `0a17547d` proved only a known-length part upload returned 201. Exact recovery `3938a73` is `runtime-proven` locally; exact release contract `1e9e635` is `test-proven-only`. Migration `0010` is unapplied and its matching Worker is inactive, so production wrong-size/abandoned recovery and quota release are `unknown`. | "Planned." Master §8.2 forbids marketing these as available before the exact release build has evidence. The intended property—that Discord receives ciphertext/decoy material rather than the protected attachment—is unproved on a release build. Treat earlier attachment-success reports as unproven unless they bind the exact app and Worker source, migration state, and runtime evidence. |
 | Signal, WhatsApp, Telegram, Outlook support | `designed-only` / `externally-blocked` | master §7.8, §9 | Must carry `Coming soon`, `Experimental`, or `Externally blocked`. Master §7.8: a logo does not imply support unless the support matrix says so. |
 | Scrub discovery ("find the accounts you left behind") | `unknown-recheck-required` → published as `Planned` | Master §9 "active dirty integration work"; no evidence names an exact build; the last live report (2026-07-25) was that pressing "do scrub" detected **0 accounts**, because browser import never creates an `AccountRecord` or hands anything to Scrub | "Planned. Not in the shipping app yet." Describe the scan as *designed to* stay on the device, not as something it does today. Never publish a finding count, real or illustrative, as if it came from a real scan. |
 | Scrub guided deletion handoff | `implemented-unwired` → `Planned` | **Weaker than previously recorded (2026-07-27 audit).** Not merely blocked on discovery: the Discord guided-deletion backend is itself unwired on its input half — `apps/osl-hub/src/native_discord_adapter.rs:6662` leaves focus, menu opening, delete selection, activation, confirmation and verification unperformed, and holds every candidate. | "Planned." The user-confirms-on-the-service-page rule is a **design rule, not an earned capability** — do not phrase it as something OSL does today. Must always say OSL does **not** erase anything for you. Master §7.5: requested deletion is never shown as verified deletion. |
@@ -205,6 +205,7 @@ Each is listed with why, so nobody re-derives it and reintroduces the phrase.
 | **"Audited" / "reviewed" / "independently verified"** | No audit has been commissioned. THREAT_MODEL "Audit status" requires the *opposite* disclosure in onboarding: the construction is custom and unaudited. The only completed review is an internal source audit that found 5 critical and 2 high findings (`docs/security/osl-audit-2026-07-26-codex.md`). |
 | **"Military-grade" / "unbreakable" / "NSA-proof"** | Meaningless or false. THREAT_MODEL "Out of scope": OSL is explicitly *not* intended to resist targeted federal investigation, and points such users to Signal, Briar or Cwtch. |
 | **"Screenshot-proof" / "prevents screenshots"** | Overstates A5. Capture protection is a platform affordance that can silently fail and cannot stop a camera. |
+| **"Discord attachment scanning defeated"** / **"defeats Discord attachment scanning"** / **"Discord cannot scan attachments"** / **"Discord sees only decoys"** | These assert the intended ciphertext/decoy transport property as a shipping fact. Attachment transport is still `Planned`; no named release build proves the app-to-Discord path, and migration `0010` plus its matching recovery Worker are inactive. A historical source-unbound Worker returning 201 for one known-length part upload does not establish what Discord received or what the release app can send. |
 | **"End-to-end encrypted" applied to Pro cloud carrier generation or cloud AutoScrub** | Master §7.1 forbids it directly: do not describe it as end-to-end encrypted if the service can see the context. |
 | **"Your month starts when you enter the code"** | Master §7.14: the deployed implementation grants **lifetime** access on `checkout.session.completed`, and no redemption timestamp exists anywhere. Eligible only after that is fixed. The price, "nothing renews", and "nothing stored" *are* eligible today (A6). |
 | **"Anti-spyware" / "malware detection"** | Master §8.4: remains a research concept. Call it a privacy-posture or risk monitor, and keep the compromised-device exclusion. |
@@ -304,8 +305,8 @@ live incorrect claim on the site, not a documentation backlog item.
 
 `apps/osl-hub/src/core_bridge.rs` builds a feature list whose labels include **"Group and server
  encryption"**, **"Encrypted images and attachments"** and **"Ciphertext-only relay"**. Group
-protection is switched off and attachments could not execute in production until 2026-07-27, so as
-user-facing capability lines those would be false.
+protection is switched off, and attachment ciphertext/decoy transport remains unproved on a named
+release build, so as user-facing capability lines those would be false.
 
 **They are not currently false, because nothing shows them.** Traced before judging severity:
 `list_core_features` is defined and registered in `generate_handler!`, but **no UI code invokes it**;
@@ -417,9 +418,10 @@ and not about missing harness time:
 - `cover-carrier-text` → `Beta` (not a downgrade in substance; it was `Available` with no row
   granting it).
 - `image-send` → `Planned` — the picker offers PNG/JPEG and the streaming AEAD exists, but master §9
-  puts the attachment lane at `implemented-unwired` and §10 critical class 4 has non-image
-  attachments staged as durable plaintext. Zhao's own instruction in the same correction — "do not
-  silently sell image sending as a present-tense feature" — agrees.
+  puts the attachment lane at `implemented-unwired`. Historical Worker `0a17547d` is source-unbound,
+  recovery `3938a73` is local runtime evidence only, release contract `1e9e635` is test-only, and
+  no named release build proves ciphertext/decoy delivery to Discord. Zhao's instruction in the
+  same correction — "do not silently sell image sending as a present-tense feature" — agrees.
 - `scrub-discovery` / `scrub-guided-deletion` → `Planned` **on the matrix only**. The marketing page
   is deliberately *not* watered down; Scrub is presented as a full v1 capability, because that lane
   may land exact-build evidence within the week and the site must not whipsaw.
