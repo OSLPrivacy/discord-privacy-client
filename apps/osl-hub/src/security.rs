@@ -2269,11 +2269,10 @@ fn revoke_manual_scope_state(
 // destruction in `burn_scope` / `burn_manual_peer_scope` has already committed.
 // That ordering is not a nicety:
 //
-// - Deleting our own source ciphertext (and the remote cipher-store blobs, and
-//   the keys) is **unilateral**. It needs no peer cooperation, no network, and
-//   no cooperation from a peer's client. A peer who has not yet fetched a
-//   message can never fetch it, so for that peer the burn is real, enforced
-//   deletion rather than a request.
+// - Deleting our own local rows and OSL-managed remote cipher-store blobs is
+//   **unilateral**. It needs no peer cooperation. It destroys no per-message
+//   key or long-term decryption authority; a peer that already retained the
+//   payload or keys remains outside this device's control.
 // - The notice only ever has to cover the residue: peers who already fetched.
 //
 // Reversing the order would be strictly worse — a notice sent first, then a
@@ -2288,11 +2287,9 @@ fn revoke_manual_scope_state(
 // line is `Sent request` / `Acknowledged by peer` / `Not acknowledged`, and per
 // `:494` it is never `Deleted`.
 //
-// `README.md:78-88` currently promises something stronger — "a burn notice goes
-// to the other members so their copies go dark too" — which reads as guaranteed
-// remote deletion and contradicts both the spec and this implementation. That is
-// an owner decision about the README, not a licence to build platform deletion,
-// and nothing here deletes a Discord message.
+// `README.md:78-88` now says the peer-notification path is not end-to-end proved,
+// is unavailable as a working peer action, and must not be relied on to remove
+// another member's copy. Nothing here deletes a Discord message.
 
 /// The three claims, in display order.
 pub fn burn_claims() -> Vec<String> {
@@ -2479,9 +2476,13 @@ pub fn admit_peer_content_seq(
 /// function never learns which conversation the *peer* meant except by
 /// recognising one of our own.
 ///
-/// The durable ledger write is the commit point: the ack is only produced after
-/// the burn floor is on disk, so a crash between the two cannot leave a peer
-/// believing a burn was honoured that we then forgot.
+/// Implemented contract helper for a future sequence-bearing content path.
+///
+/// A durable floor is not proof that a burn is enforced: production content
+/// currently carries no authenticated `send_seq`/scope commitment and does not
+/// call [`admit_peer_content_seq`] before plaintext release. Production callers
+/// must therefore retain the notice and emit no acknowledgement until that
+/// admission chain is wired.
 pub fn apply_peer_revocation(
     core: &HubCoreState,
     security: &HubSecurityState,
@@ -2520,9 +2521,9 @@ pub fn apply_peer_revocation(
         .map_err(|_| "OSL burn state could not be persisted".to_owned())?;
 
     // Forget this sender's cached attachment capabilities in the matched
-    // conversation. Text content in the Hub's manual-peer transport is never
-    // persisted as plaintext (see `burn_manual_peer_scope`), so the enforcement
-    // for text is the durable floor above plus `admit_peer_content_seq`.
+    // conversation. This helper also records the intended text burn floor, but
+    // recording is not enforcement: the production decrypt path does not yet
+    // call `admit_peer_content_seq`.
     if outcome.decision == ipc::revocation::InboundDecision::Applied {
         if let Some(storage_key) = matched.as_deref() {
             let attachments_path = config_dir()?.join(ATTACHMENT_BURN_FILE);

@@ -3363,15 +3363,19 @@ fn drain_peer_inbox_text(
         // ignoring them: the row had already passed this drain's sender/scope
         // routing guard, so OSL destroyed a burn request it could have honoured
         // and left the peer's copy of the conversation standing while its own
-        // ledger recorded nothing. Both types now go through the same verified
-        // apply path the local burn commands use.
+        // ledger recorded nothing. Both types now go through the verified
+        // control path. A receipt can be applied today. A notice stays queued
+        // without an acknowledgement until protected content carries the
+        // authenticated sequence/commitment that makes its burn floor
+        // enforceable before plaintext release.
         //
-        // The row is retired only once the burn floor is durable on disk, or the
-        // row is proven un-appliable. A row this device merely cannot process
-        // right now -- locked, unavailable storage -- stays in the inbox and is
-        // counted as deferred, because the bounded per-pair inbox is not worth
-        // more than the burn. Attachment rows still belong to the attachment
-        // drain, and unknown framing is left untouched rather than guessed about.
+        // The row is retired only once its effect is both durable and enforced,
+        // or the row is proven un-appliable. A row this device cannot safely
+        // honour -- locked, unavailable storage, or missing production content
+        // admission -- stays in the inbox and is counted as deferred, because
+        // falsely acknowledging a burn is worse than retaining its request.
+        // Attachment rows still belong to the attachment drain, and unknown
+        // framing is left untouched rather than guessed about.
         if let Some(control) = InboundRevocationControl::classify(&bundle) {
             let mut control_inbox = KeyserverRevocationControlInboxClient {
                 core,
@@ -5459,7 +5463,7 @@ impl InboundRevocationControl {
 /// here so neither failure can be reached by accident.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RevocationRowOutcome {
-    /// The burn floor (or the acknowledgement) is durably recorded.
+    /// The requested effect (or the acknowledgement) is durable and enforced.
     Applied,
     /// This device can never apply this row: it did not authenticate as the type
     /// it claims, or its body is malformed. Nothing is lost by retiring it.
@@ -5467,12 +5471,16 @@ enum RevocationRowOutcome {
     /// A transient local condition -- locked account, unavailable storage, a
     /// ledger that could not be replaced. The row stays for a later drain.
     Deferred,
+    /// The authenticated request names a contract this build implements but
+    /// does not enforce on the production content path. Keep it for a later
+    /// build; never send a positive acknowledgement or retire it.
+    EnforcementUnavailable,
 }
 
 impl RevocationRowOutcome {
     /// True only when the row may be deleted from the control inbox.
     fn retires_row(self) -> bool {
-        !matches!(self, Self::Deferred)
+        matches!(self, Self::Applied | Self::Unappliable)
     }
 }
 
@@ -5528,11 +5536,10 @@ fn drain_inbound_revocation_row<ApplyRow, ControlInbox>(
 {
     let (outcome, ack_b64) = apply_row(control);
     if outcome.retires_row() {
-        // Receipt first, then retire the row. The burn floor is already
-        // durable, so this ordering costs nothing on failure: the peer re-sends
-        // the notice, this device re-applies it idempotently, and the receipt
-        // is produced again. Deleting first and posting after would be the same
-        // order the audit found on the apply path itself.
+        // Receipt first, then retire the row. Applied means the requested effect
+        // is both durable and enforced; an unsupported notice cannot reach this
+        // branch. Deleting first and posting after would recreate the ordering
+        // defect this seam exists to prevent.
         if let Some(ack_b64) = ack_b64 {
             control_inbox.post_ack(&ack_b64);
         }
@@ -5584,26 +5591,15 @@ fn apply_inbound_revocation_row(
             if ipc::control_messages::deserialize_revocation_notice(&plaintext).is_err() {
                 return (RevocationRowOutcome::Unappliable, None);
             }
-            let candidates = [storage_key.to_owned()];
-            // The durable half -- this device's own burn floor, which is what
-            // stops the peer's already-fetched content from being readable here
-            // -- is committed before this returns. The receipt is handed back to
-            // the caller rather than posted here, because posting needs the
-            // keyserver client and the caller owns it. A receipt that fails to
-            // post is not lost: the peer's own outbox keeps the notice queued
-            // until it is acknowledged, and re-applying a notice already in
-            // force is idempotent and produces the same receipt again.
-            match security::apply_peer_revocation(
-                core,
-                security_state,
-                &verified.peer_x25519_public,
-                &candidates,
-                &body_b64,
-                ipc::main_password::now_unix_secs_pub(),
-            ) {
-                Ok(applied) => (RevocationRowOutcome::Applied, Some(applied.ack_b64)),
-                Err(_) => (RevocationRowOutcome::Deferred, None),
-            }
+            // `next_peer_send_seq`, `peer_scope_commitment`, and
+            // `admit_peer_content_seq` are implemented contracts, but the
+            // production content envelope and decrypt path call none of them.
+            // Recording a floor and returning `applied=true` would therefore
+            // acknowledge an effect that later plaintext opens do not enforce.
+            // Preserve the authenticated request without applying, receipting,
+            // or deleting it until that production admission chain exists.
+            let _ = (core, security_state, verified, storage_key);
+            (RevocationRowOutcome::EnforcementUnavailable, None)
         }
         InboundRevocationControl::Ack => {
             if ipc::control_messages::deserialize_revocation_ack(&plaintext).is_err() {
@@ -7279,6 +7275,7 @@ mod tests {
         assert!(RevocationRowOutcome::Applied.retires_row());
         assert!(RevocationRowOutcome::Unappliable.retires_row());
         assert!(!RevocationRowOutcome::Deferred.retires_row());
+        assert!(!RevocationRowOutcome::EnforcementUnavailable.retires_row());
     }
 
     #[test]
@@ -7378,6 +7375,32 @@ mod tests {
             delete_requires_durable_apply: false,
         };
         drain_inbound_revocation_row(
+            InboundRevocationControl::Notice,
+            &mut deferred_rows,
+            {
+                let events = Rc::clone(&events);
+                move |control| {
+                    assert_eq!(control, InboundRevocationControl::Notice);
+                    events.borrow_mut().push("unsupported_notice");
+                    (
+                        RevocationRowOutcome::EnforcementUnavailable,
+                        Some("ack-body".to_owned()),
+                    )
+                }
+            },
+            &mut control_inbox,
+        );
+
+        assert_eq!(deferred_rows, 2);
+        assert_eq!(events.borrow().as_slice(), ["unsupported_notice"]);
+
+        events.borrow_mut().clear();
+        let mut control_inbox = FakeControlInboxClient {
+            events: Rc::clone(&events),
+            durable_apply_done: Rc::clone(&durable_apply_done),
+            delete_requires_durable_apply: false,
+        };
+        drain_inbound_revocation_row(
             InboundRevocationControl::Ack,
             &mut deferred_rows,
             {
@@ -7391,93 +7414,182 @@ mod tests {
             &mut control_inbox,
         );
 
-        assert_eq!(deferred_rows, 1);
+        assert_eq!(deferred_rows, 2);
         assert_eq!(
             events.borrow().as_slice(),
             ["reject_unappliable", "delete_row"]
         );
     }
 
-    /// Audit: bilateral burn was inert because `apply_peer_revocation` and
-    /// `record_revocation_ack` had zero callers outside `security.rs`, and the
-    /// drain deleted every `0x0A`/`0x0B` instead. This pins the call path itself,
-    /// which no runtime rig can currently exercise: the outbound revocation lane
-    /// depends on keyserver migration 0027, so no peer can send us a `0x0A` yet.
+    /// A peer notice must not be acknowledged merely because its dormant floor
+    /// contract can be written. Production content still carries no authenticated
+    /// sequence/commitment and calls no admission gate, so the only honest
+    /// behavior is authenticate + parse + retain without apply, ack, or delete.
     ///
-    /// Supportive evidence only — it proves the wiring exists, not that a real
-    /// burn was honoured. The two-identity proof stays blocked until that lane
-    /// lands (`docs/qa/two-identity-p2p-verification.md` §6.4).
+    /// This source gate is mutation-capable: it separately pins the live drain,
+    /// authentication/decrypt/parse stages, the refusal outcome and retirement
+    /// policy, the still-live ack branch, and all three zero-caller contracts.
     #[test]
-    fn the_text_drain_applies_inbound_revocations_instead_of_deleting_them() {
-        let source = include_str!("broker.rs");
-        let drain = source
-            .split_once("fn drain_peer_inbox_text")
-            .expect("drain present")
-            .1;
-        let arm = drain
-            .split_once("InboundRevocationControl::classify")
-            .expect("the drain classifies revocation frames")
-            .1;
-        let (arm, _) = arm.split_once("if ipc::wire_v2::is_native_overlay_ack_bundle").unwrap();
-        assert!(
-            arm.contains("apply_inbound_revocation_row"),
-            "a classified revocation row must reach the apply path"
-        );
-        assert!(
-            arm.contains("drain_inbound_revocation_row"),
-            "a classified revocation row must reach the drain retirement decision"
-        );
-        assert!(
-            arm.contains("KeyserverRevocationControlInboxClient {")
-                && arm.contains("&mut control_inbox"),
-            "the classified arm must construct and pass the production inbox client"
-        );
-        let client_impl = source
-            .split_once(
-                "impl RevocationControlInboxClient for KeyserverRevocationControlInboxClient",
-            )
-            .expect("production control-inbox client implementation present")
-            .1
-            .split_once("fn drain_inbound_revocation_row")
-            .expect("client implementation ends before the retirement helper")
-            .0;
-        assert!(
-            client_impl.contains("delete_control_inbox"),
-            "the production client's delete_row implementation must call the keyserver delete"
-        );
-        let apply = source
-            .split_once("fn apply_inbound_revocation_row")
-            .expect("apply path present")
-            .1;
-        for required in [
-            "verify_manual_v3_type",
-            "security::apply_peer_revocation",
-            "security::record_revocation_ack",
-        ] {
+    fn production_revocation_notice_refuses_until_content_admission_is_reachable() {
+        fn production_prefix(source: &str) -> &str {
+            source
+                .split_once("\n#[cfg(test)]\nmod tests")
+                .map_or(source, |(production, _)| production)
+        }
+
+        fn between<'a>(source: &'a str, start: &str, end: &str) -> Option<&'a str> {
+            source
+                .split_once(start)
+                .and_then(|(_, tail)| tail.split_once(end).map(|(body, _)| body))
+        }
+
+        fn gate(broker: &str, security: &str, main: &str) -> bool {
+            let broker = production_prefix(broker);
+            let security = production_prefix(security);
+            let Some(drain) = between(
+                broker,
+                "fn drain_peer_inbox_text",
+                "fn begin_peer_attachment",
+            ) else {
+                return false;
+            };
+            let Some(classified) = between(
+                drain,
+                "InboundRevocationControl::classify",
+                "if ipc::wire_v2::is_native_overlay_ack_bundle",
+            ) else {
+                return false;
+            };
+            let Some(apply) = between(
+                broker,
+                "fn apply_inbound_revocation_row",
+                "fn decode_revocation_wire",
+            ) else {
+                return false;
+            };
+            let Some(notice) = between(
+                apply,
+                "InboundRevocationControl::Notice => {",
+                "InboundRevocationControl::Ack => {",
+            ) else {
+                return false;
+            };
+            let ack = apply
+                .split_once("InboundRevocationControl::Ack => {")
+                .map(|(_, ack)| ack)
+                .unwrap_or_default();
+            let Some(retirement) = between(
+                broker,
+                "fn drain_inbound_revocation_row",
+                "fn apply_inbound_revocation_row",
+            ) else {
+                return false;
+            };
+            let stages = [
+                apply.find(
+                    "if verify_manual_v3_type(core, verified, &wire, ManualWireSender::Peer, message_type).is_err() {",
+                ),
+                apply.find("let Ok(plaintext) = decrypt_direct_manual_v3_payload("),
+                apply.find(
+                    "if ipc::control_messages::deserialize_revocation_notice(&plaintext).is_err() {",
+                ),
+                apply.find("(RevocationRowOutcome::EnforcementUnavailable, None)"),
+            ];
+            let ordered = stages
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .is_some_and(|stages| stages.windows(2).all(|pair| pair[0] < pair[1]));
+            let zero_callers = [
+                "next_peer_send_seq",
+                "peer_scope_commitment",
+                "admit_peer_content_seq",
+            ]
+            .into_iter()
+            .all(|symbol| {
+                let needle = format!("{symbol}(");
+                [security, broker, main]
+                    .into_iter()
+                    .map(|source| source.matches(&needle).count())
+                    .sum::<usize>()
+                    == 1
+            });
+            classified.contains("apply_inbound_revocation_row(")
+                && classified.contains("drain_inbound_revocation_row(")
+                && classified.contains("KeyserverRevocationControlInboxClient {")
+                && classified.contains("&mut control_inbox")
+                && ordered
+                && !notice.contains("security::apply_peer_revocation")
+                && ack.contains(
+                    "match security::record_revocation_ack(security_state, &body_b64) {",
+                )
+                && broker.contains("matches!(self, Self::Applied | Self::Unappliable)")
+                && retirement.contains("let (outcome, ack_b64) = apply_row(control)")
+                && retirement.contains("outcome.retires_row()")
+                && retirement.contains("control_inbox.delete_row()")
+                && zero_callers
+        }
+
+        let broker = include_str!("broker.rs");
+        let security = include_str!("security.rs");
+        let main = include_str!("main.rs");
+        assert!(gate(broker, security, main), "baseline production gate");
+
+        let mutations = [
+            broker.replacen(
+                "(RevocationRowOutcome::EnforcementUnavailable, None)",
+                "(RevocationRowOutcome::Applied, Some(body_b64))",
+                1,
+            ),
+            broker.replacen(
+                "matches!(self, Self::Applied | Self::Unappliable)",
+                "true",
+                1,
+            ),
+            broker.replacen(
+                "if verify_manual_v3_type(core, verified, &wire, ManualWireSender::Peer, message_type).is_err() {",
+                "if verify_manual_v3_type_DISABLED(core, verified, &wire, ManualWireSender::Peer, message_type).is_err() {",
+                1,
+            ),
+            broker.replacen(
+                "let Ok(plaintext) = decrypt_direct_manual_v3_payload(\n        core,\n        verified,\n        ManualWireSender::Peer,\n        &wire,\n        message_type,",
+                "let Ok(plaintext) = decrypt_direct_manual_v3_payload_DISABLED(\n        core,\n        verified,\n        ManualWireSender::Peer,\n        &wire,\n        message_type,",
+                1,
+            ),
+            broker.replacen(
+                "deserialize_revocation_notice",
+                "deserialize_revocation_notice_DISABLED",
+                1,
+            ),
+            broker.replacen(
+                "security::record_revocation_ack",
+                "security::record_revocation_ack_DISABLED",
+                1,
+            ),
+            broker.replacen(
+                "apply_inbound_revocation_row(",
+                "apply_inbound_revocation_row_DISABLED(",
+                1,
+            ),
+        ];
+        for (index, mutated) in mutations.into_iter().enumerate() {
+            assert_ne!(mutated, broker, "mutation {index} must alter source");
             assert!(
-                apply.contains(required),
-                "the apply path must still call {required}"
+                !gate(&mutated, security, main),
+                "mutation {index} must fail the production gate"
             );
         }
-        let retirement = source
-            .split_once("fn drain_inbound_revocation_row")
-            .expect("drain retirement helper present")
-            .1;
-        // The delete is downstream of the runtime apply outcome, never
-        // unconditional.
-        let apply_call = retirement
-            .find("let (outcome, ack_b64) = apply_row(control)")
-            .expect("retirement helper calls the apply seam");
-        let retires = retirement
-            .find("outcome.retires_row()")
-            .expect("retirement is decided by the outcome");
-        let delete = retirement
-            .find("control_inbox.delete_row()")
-            .expect("the row is still retired when it may be");
-        assert!(
-            apply_call < retires && retires < delete,
-            "a revocation row must not be deleted before its outcome is known"
-        );
+        for symbol in [
+            "next_peer_send_seq",
+            "peer_scope_commitment",
+            "admit_peer_content_seq",
+        ] {
+            let mutated_main =
+                format!("{main}\nfn synthetic_reachability() {{ security::{symbol}(");
+            assert!(
+                !gate(broker, security, &mutated_main),
+                "a production caller for {symbol} must change the reachability verdict"
+            );
+        }
     }
 
     #[test]
