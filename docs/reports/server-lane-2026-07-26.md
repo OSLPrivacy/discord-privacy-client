@@ -905,6 +905,41 @@ load 45 on 10 cores with 46 concurrent Codex processes when this landed, and the
 concurrency cap had just been reduced. Queued behind the load gate rather than
 added to it.
 
+## Correction to this report: the sweep does NOT self-heal above 100 rows
+
+I wrote earlier that an abandoned reservation "self-heals within one sweep cycle
+without an operator". That is only true below 100 expired rows, and I should not
+have claimed it without testing the sweep at scale.
+
+**D1 accepts 100 bound parameters per query and rejects 101.** Measured against
+real D1 in this repo, not recalled: 99 and 100 succeed, 101 and 102 fail with
+`D1_ERROR: too many SQL variables`.
+
+`sweepExpiredAttachments` (`src/lib/sweep.ts:93-97`) builds
+`DELETE ... WHERE expires_at < ? AND id IN (<one ? per row>)` with up to
+`ATTACHMENT_SWEEP_BATCH_SIZE` = 100 ids. That is **101 bound parameters** whenever
+a full batch exists. So the attachment sweep works below 100 expired rows and
+**fails entirely at 100 or more**, swallowed by the `try/catch` in `index.ts` and
+surfacing only as `[attachment-sweep] failed`.
+
+The consequence is the failure mode HIGH-1 was supposed to remove: once 100
+attachments expire together nothing is reclaimed, the 512-row / 8 GiB quota fills
+permanently, and every later upload gets `503 storage_capacity` — with no
+attacker required. And bulk-expiring 15-minute reservations is precisely how a
+busy period reaches 100, so my own fix makes the trigger *more* likely, not less.
+
+**Pre-existing**, from the original attachment commit `08552e5`; the placeholder
+loop is untouched by tonight's work. The `node:sqlite` shim could never have
+caught it, because SQLite itself permits 999 parameters — **only real D1 enforces
+100.** This is the second production defect found by moving off doubles, and on
+its own it justifies the pool-workers migration.
+
+Fix in progress: chunk the DELETE at 90 ids per statement, preserving the
+existing per-id semantics rather than switching to a subquery that could delete
+rows whose R2 objects this pass did not handle. Gated on a regression test that
+seeds more than 100 expired rows and is observed failing with `too many SQL
+variables` before the change.
+
 ## Remaining server-side audit items, checked
 
 - **Does the keyserver have the same KV limiter race?** No — verified, not
