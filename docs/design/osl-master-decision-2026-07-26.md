@@ -478,7 +478,8 @@ account deletion and is not a broker-removal service unless a separately named f
 
 - The desktop app may run one or more isolated embedded WebViews.
 - During automated work the Scrub UI provides a view-only monitor of each surface. The owner cannot
-  click into the controlled page and corrupt the run, but can always pause, stop, or revoke it.
+  click into the controlled page and corrupt the run; the only active-run control is emergency
+  Stop/Revoke.
 - With explicit consent, Scrub can reuse a selected signed-in native-app session when a verified
   adapter exists.
 - If the user has additional accounts signed into browsers, the equivalent service may also run in
@@ -486,8 +487,8 @@ account deletion and is not a broker-removal service unless a separately named f
 - Concurrency is resource- and dependency-aware. Multiple independent WebViews/apps may run when
   system load is safe and the owner is not using those exact surfaces.
 - Presence is transport-scoped. Background protocols such as IMAP can continue while the owner
-  uses Discord or other apps. UI automation pauses only when the owner contends for that specific
-  hosted surface.
+  uses Discord or other apps. If the owner or another process contends for a controlled surface,
+  automation stops and revokes that run authority; continuing requires fresh review and launch.
 - Every destructive flow remains `Scan → Preview → Confirm/authorized plan → Execute → Verify →
   Receipt`. Requested deletion is never displayed as verified deletion.
 
@@ -498,9 +499,17 @@ structurally out of reach. The website/phone never receives browser-profile data
 
 ### 7.6 Free Scrub, Pro AutoScrub, and optional proprietary module
 
-- Free Scrub and its contracts remain open source and require attended review/confirmation.
-- Pro AutoScrub may reuse an owner-approved plan and operate unattended within strict native
-  authority, bounds, pacing, stop conditions, visible global status, and an always-available stop.
+- Free Scrub and its contracts remain open source and require the owner to review the exact
+  one-time list and explicitly launch it. After launch, the reviewed run may continue while the
+  owner is away; “attended” describes review and launch, not continuous watching.
+- Every active Scrub or AutoScrub surface is view-only and locked to the approved plan. It may show
+  status, progress, and the current item, plus an always-available emergency **Stop/Revoke** action.
+  The owner cannot click through the controlled provider surface, edit targets, manually advance
+  steps, or alter the running plan. Stop/Revoke ends that authority; continuing requires a fresh
+  review and explicit launch, never an ordinary pause/resume.
+- Pro AutoScrub may reuse an owner-approved plan for later or repeated runs within strict native
+  authority, bounds, pacing, stop conditions, visible global status, and the same locked
+  Stop/Revoke contract. Running without someone watching is not by itself a Pro distinction.
 - Only the minimum AutoScrub implementation that would make trivial cloning possible may remain
   proprietary. This exception does not extend to cryptography, trust, deletion receipts, data
   formats, policy contracts, or the free implementation.
@@ -1348,7 +1357,7 @@ authoritative spec + status baseline
 │   └── bilateral burn + receipts
 ├── Scrub account model + consent/ownership contracts
 │   ├── browser/profile discovery
-│   ├── Free attended deletion
+│   ├── Free reviewed one-time deletion
 │   ├── native-app/hosted-session ports
 │   ├── optional Pro AutoScrub module
 │   └── website username-only demo
@@ -1804,7 +1813,7 @@ Every new feature lists the existing controls and lifecycle events it can intera
 - app/account/conversation switch;
 - offline, rate limit, server error, stale response, revoked key, expired/viewed/burned content;
 - attachment/text/image/video/file;
-- Scrub running/paused/stopped while the user uses another app;
+- Scrub running/stopped/revoked/review-required while the user uses another app;
 - capture protection allowed/refused;
 - Free/Pro/expired entitlement;
 - first launch/onboarding complete;
@@ -1823,7 +1832,9 @@ After deterministic paths pass, exercise realistic messy sequences:
 - switch accounts/conversations mid-operation;
 - close via `X`, taskbar, Alt+F4, host close, OSL close, and crash at each stage;
 - scroll during rehydrate/paint; focus native/OSL composer back and forth;
-- pause/resume/stop Scrub while unrelated apps are used;
+- try to click the provider surface, edit targets, advance steps, or alter the plan while Scrub is
+  running, then exercise emergency Stop/Revoke and prove ordinary resume is refused until a fresh
+  review and explicit launch;
 - duplicate/stale/reordered events and repeated view/burn/expiry requests;
 - restart at every persisted state transition;
 - resource pressure and delayed responses.
