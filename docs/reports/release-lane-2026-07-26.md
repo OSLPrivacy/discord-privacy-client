@@ -4,7 +4,7 @@
 runners); `designed-only` for anything requiring an actual release, because the repository
 has zero releases and zero `hub-v*` tags.
 
-- **Worktree:** `/home/liamw/osl-release-lane` (created for this lane; no other lane's tree touched)
+- **Worktree:** `<workspace>/osl-release-lane` (created for this lane; no other lane's tree touched)
 - **Branch:** `release-lane-2026-07-26`, based on `origin/main` @ `38d0867`
 - **PR:** [#6](https://github.com/OSLPrivacy/discord-privacy-client/pull/6)
 - **Master control revision at time of run:** `OSL-MASTER-2026-07-26-r6`
@@ -16,7 +16,7 @@ has zero releases and zero `hub-v*` tags.
 `docs/testing/hub-release-candidate-vm-gate.md`, `rust-toolchain.toml`, and this report.
 
 Nothing under `apps/**`, `crates/**`, `webview/**`, the website, `docs/design/**`, the build
-checklist, `/home/liamw/osl-newest-integration`, or the root `Cargo.toml` was modified.
+checklist, `<workspace>/osl-newest-integration`, or the root `Cargo.toml` was modified.
 `rust-toolchain.toml` was read and left unchanged — it already pins `1.88.0`, matching CI.
 
 ## Starting evidence
@@ -265,7 +265,7 @@ green CI **and** no new capability drift (the 115→118 permission drift recorde
   published. No release, tag, branch or file was deleted.
 - Rollback of this change is `gh pr close 6` — the previous CI configuration is untouched on
   `main` and is recoverable by not merging.
-- The new worktree `/home/liamw/osl-release-lane` is additive and holds no unique uncommitted
+- The new worktree `<workspace>/osl-release-lane` is additive and holds no unique uncommitted
   work; everything in it is committed and pushed.
 
 ## Resume here
@@ -273,7 +273,7 @@ green CI **and** no new capability drift (the 115→118 permission drift recorde
 - **Current verified state:** TypeScript CI green on real runners for the first time since
   2026-07-19; both release gates proven to refuse bad input (20/20 and 9/9); frontend proven
   byte-reproducible; governance gaps identified with a prepared payload.
-- **Exact worktree/branch:** `/home/liamw/osl-release-lane` @ `release-lane-2026-07-26`,
+- **Exact worktree/branch:** `<workspace>/osl-release-lane` @ `release-lane-2026-07-26`,
   based on `38d0867`. Clean apart from gitignored `node_modules`/`dist`.
 - **Next unblocked actions, in order:**
   1. Confirm the four Rust jobs on PR #6 (see *Rust CI outcome*); fix forward if any fail.

@@ -70,8 +70,10 @@ done
   echo ""
   echo "Quarantined until \`$QUARANTINE_EXPIRES\` (host-environment dependent, cannot pass on a hosted runner):"
   echo ""
+  # `--` is required: the format string starts with `-` and bash's builtin
+  # printf would otherwise parse it as an option.
   # shellcheck disable=SC2016  # the backticks are literal Markdown, not a subshell
-  printf '- `%s`\n' "${QUARANTINED[@]}"
+  printf -- '- `%s`\n' "${QUARANTINED[@]}"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 echo "Quarantined until $QUARANTINE_EXPIRES:"
