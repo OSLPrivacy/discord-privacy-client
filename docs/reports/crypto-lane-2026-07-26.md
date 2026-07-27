@@ -1135,6 +1135,58 @@ plus exact mutation-sensitive tests, combined with the separately verified-live 
 server filter, as one partial row point. This lane does not award the point: prekeys and wrapped
 keys remain outside this change, and no authenticated live or two-identity receive occurred.
 
+## Round 10 — B5 nonempty production-fixture correction
+
+Source commit:
+`aca9dae54dd8496b0af780bbe9f7ee96920f0454`.
+
+### Correction to Round 9
+
+Round 9 established the signed-filter client policy and source reachability, but it did not
+establish a nonempty positive through the broker's production fetch boundary. The three
+pre-existing broker E2E relay fakes returned `{"items": ...}` without the mandatory
+`filtered_sender_id`, so the strengthened client correctly refused their replies before a
+nonempty broker assertion could pass. The earlier B5 candidacy therefore depended on client
+tests plus source shape, not a production-boundary positive. This correction does not weaken
+the echo requirement or add an unfiltered fallback.
+
+Both production consumers now share `fetch_peer_control_inbox`, whose only client operation is
+`get_control_inbox_from` (`broker.rs:2637-2644`). The text and attachment drains pass the active
+manual peer identity to that boundary at `:2677` and `:3625`. The existing source gate now pins
+all three links rather than independently searching both drains for a method name.
+
+### Exact committed focused evidence
+
+`git archive aca9dae` was extracted to `/tmp/osl-b5-aca9dae.R4XoBd`. With the independent target
+directory `/tmp/osl-b5-target-aca9dae`, exact committed bytes produced:
+
+- `CARGO_TARGET_DIR=/tmp/osl-b5-target-aca9dae osl-cargo test --features core --lib
+  broker::tests::production_receive_boundary -- --nocapture --test-threads=1`:
+  2 passed, 0 failed, 666 filtered out.
+- The positive test (`broker.rs:6604-6674`) sends real HTTP GETs through
+  `KeyServerClient`. Requesting A returns exactly A's framed text and attachment rows, then a
+  separate B request returns B's still-available row. Captured request lines require the
+  signed `ts`, `sig`, and exact `sender` query fields.
+- The refusal test (`broker.rs:6677-6739`) reaches the same production function and separately
+  refuses: a missing echo; an echo mismatch; an A echo containing a B row; and an unfiltered
+  A+B page with no echo.
+- Exact named `core` runs for
+  `text_and_attachment_drains_are_bound_to_the_active_peer_sender`,
+  `the_text_drain_applies_inbound_revocations_instead_of_deleting_them`, and
+  `inbound_revocation_drain_retirement_follows_runtime_apply_outcome` each produced
+  1 passed, 0 failed, 667 filtered out.
+
+A disposable mutation changed only `fetch_peer_control_inbox` back to
+`get_control_inbox(identity)`. The exact positive test failed with exit 101 at
+`production boundary includes the requested sender filter`. The positive is therefore
+mutation-sensitive to the production boundary silently falling back to the unfiltered client.
+
+Status is `test-proven-only`. No live authenticated drain, provider mutation, runtime UI,
+identity creation, or two-identity receive occurred. The separately committed truth
+adjudication `a509cb2cf3e2bd1e499de646552fe7e6ffd1f30e` records B5 at `2/4`; this addendum supplies
+the nonempty production-path fixture that the independent exact audit found missing, rather
+than earning another point.
+
 ## Acceptance rows this earns
 
-B5 `1/4 -> 2/4` candidate for truth adjudication; not self-awarded.
+No additional row. B5 remains `2/4`, now with the nonempty production-path proof gap closed.
