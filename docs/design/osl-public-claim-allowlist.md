@@ -86,7 +86,7 @@ tree; re-verify anchors before relying on a row.
 | **Evidence** | Master §7.14; `keyserver-cf/src/lib/stripe.ts:57` uses `mode=payment`, not a subscription. **Limit of repository evidence (recorded 2026-07-27):** the `$5` figure lives behind an external Stripe price ID and cannot be verified from this checkout — it is owner-attested, not source-verifiable. The "nothing renews" and "nothing stored" halves ARE source-supported. |
 | **Required alongside** | Nothing extra. **But:** "your month starts when you enter the code" is **NOT eligible** — see D8. |
 
-### A7 · Nobody can claim your account before you do
+### A7 · The key server refuses Discord account numbers
 
 | | |
 |---|---|
@@ -233,6 +233,24 @@ Two rules that follow from the table and are easy to get wrong:
   Identity/trust and live v3 crypto are both in this state (master §9).
 - **A claim assembled from two eligible rows is not automatically eligible.** "Encrypted
   and it disappears" is not A2 + burn; it is a new claim, and it is false.
+
+## F0 · Structural gap — two lists that must agree, with nothing enforcing it
+
+**Recorded 2026-07-27.** Capability statuses exist in **two places**: the rows in this file, and
+`capability_registry` in `data/pricing.json` in the website repository. `check-claims` verifies that
+every page badge matches **the manifest**. Nothing verifies that the manifest matches **this file**.
+
+So the manifest could drift from the allowlist and *both* gates would still pass — a page badge would
+agree with a registry entry that no longer agrees with the claim that authorises it. This is exactly
+the duplication that was designed out for §D banned phrases, where the app gate **parses this
+document** rather than keeping a copy. Statuses were not given the same treatment because the two
+files live in different repositories and a cross-repository path dependency is its own fragility.
+
+**Checked by hand 2026-07-27 and they currently agree:** manifest has `per-message-sealing` and
+`protected-text` at `Beta`, everything else `Planned` or `Illustration`; this file has A1/A2/A3 at
+`Beta`, A4/A6/A7 at `Available` for claims with no registry capability behind them, and the rest
+`Planned`. **A hand check is not a mechanism.** Until one exists, treat a status change here as
+requiring a matching manifest edit in the same task, and vice versa.
 
 ## F · Maintenance
 
