@@ -1,39 +1,81 @@
-# Branch protection setup (manual GitHub UI step)
+# Branch protection and release environments
 
-CI runs the full quality gate (`rust-test.yml` — fmt, clippy, tests,
-node parse, capability audit) on every push and PR. To make those
-checks merge-blocking on `main`, configure branch protection once
-in the GitHub UI. The CLI route is also supported via
-`gh api repos/:owner/:repo/branches/main/protection` but the UI
-checklist below is what most contributors will follow.
+As of 2026-07-26 `main` on this **public** repository had no branch protection
+and no rulesets at all (`gh api .../branches/main/protection` returned 404), so
+every check described below was advisory and anyone with write access could push
+straight to `main`. This document is the applied configuration, not a wish list.
 
-## One-time setup
+## Required status checks
 
-1. Open the repo on GitHub → **Settings** → **Branches**.
-2. Under "Branch protection rules" click **Add rule**.
-3. **Branch name pattern**: `main`
-4. Enable:
-   - **Require a pull request before merging**
-   - **Require status checks to pass before merging**
-     - Click **Add checks** and pick:
-       - `test` (the rust-test workflow's main job)
-       - `quality-checks` (the workflow's boot.js + capability-audit job)
-     - **Require branches to be up to date before merging**
-   - **Do not allow bypassing the above settings** (so admins can't
-     accidentally skip CI in a hurry)
-5. **Save changes**.
+Two aggregate checks gate `main`. They exist specifically so that adding,
+renaming or re-sharding a CI job never silently un-enrols a required check —
+GitHub matches required checks **by name**, and a matrix job's name changes
+whenever its matrix does.
 
-## Verifying
+| Required check | Workflow | What it aggregates |
+|---|---|---|
+| `Rust gate` | `rust-test.yml` | workspace build+test, osl-hub core tests, osl-hub desktop binary compile, lint, quality checks |
+| `TypeScript gate` | `ts-test.yml` | webview, osl-hub-ui, keyserver-cf, cipher-store-cf, legacy keyserver |
+| `Public release audit` | `public-release-audit.yml` | `scripts/audit_public_release.py` |
 
-Open any PR. Both required checks should appear in the merge box.
-The **Merge** button is disabled until both pass.
+Do **not** enrol the individual jobs (`lint`, `osl-hub core tests`,
+`osl-hub-ui`, …). They are already required transitively through the two gate
+jobs, and enrolling them directly reintroduces the rename problem.
 
-If a check name appears in the UI as `test` but doesn't actually
-gate the merge, GitHub may be matching a stale check from an
-earlier workflow version. Re-add it from the dropdown after the
-next CI run.
+## Applying it with the CLI
+
+```bash
+gh api -X PUT repos/OSLPrivacy/discord-privacy-client/branches/main/protection \
+  --input .github/branch-protection.json
+```
+
+The exact payload lives in `.github/branch-protection.json` so the configuration
+is reviewable in a diff rather than existing only inside the GitHub UI.
+
+Verify with:
+
+```bash
+gh api repos/OSLPrivacy/discord-privacy-client/branches/main/protection \
+  --jq '{checks: .required_status_checks.contexts,
+         strict: .required_status_checks.strict,
+         reviews: .required_pull_request_reviews.required_approving_review_count,
+         admins: .enforce_admins.enabled,
+         force_push: .allow_force_pushes.enabled,
+         deletions: .allow_deletions.enabled}'
+```
+
+## Deliberate settings
+
+- **`allow_force_pushes: false` and `allow_deletions: false`.** Roughly twenty
+  worktrees currently hold unique uncommitted work whose only reachable base is
+  a branch in this repository. A force-push or branch deletion is unrecoverable
+  for that work, so both are refused at the server rather than by convention.
+- **`enforce_admins: true`.** A red pipeline under deadline pressure is exactly
+  when someone reaches for the bypass.
+- **`strict: true`** (branches must be up to date before merging), because the
+  integration line is `main` and several long-lived branches are 9+ commits
+  behind it.
+- **One approving review, with stale reviews dismissed on new commits.**
+
+## Release environments
+
+Two protected environments carry the release path. They are separate on
+purpose: the identity that can *sign* a build must not be the identity that
+decides a build is *fit to publish*.
+
+| Environment | Used by | Must have |
+|---|---|---|
+| `hub-release` | `osl-hub-release.yml` | signing secrets; required reviewers |
+| `hub-vm-qa` | `osl-hub-promote.yml`, `osl-hub-rollback.yml` | required reviewers; **no signing secrets** |
+
+> **Open finding (2026-07-26):** `hub-release` exists with `required_reviewers`
+> and `branch_policy`. **`hub-vm-qa` did not exist.** A `workflow_dispatch` job
+> naming a non-existent environment does not fail — GitHub creates it on first
+> use with *no* protection rules — so the "separate human approval" in front of
+> promotion was not being enforced by anything. It must be created with required
+> reviewers before the first promotion, or the two-VM gate is advisory.
 
 ## When to update
 
-Add new required checks here every time you add a new CI job in
-`.github/workflows/`. Existing rules don't auto-enroll new jobs.
+Add every new aggregate gate here. If you add a CI job, add it to the existing
+gate job's `needs:` list rather than enrolling it as a new required check.

@@ -1,0 +1,108 @@
+name: Roll back the OSL Privacy update feed
+
+# Rollback is the procedure everyone assumes exists and nobody has run. It is
+# deliberately the mirror image of promotion: same human-approved environment,
+# same attestation verifier, and it can only ever land on a build that was
+# already published AND already passed the two-clean-VM gate.
+#
+# This does not delete, unpublish or rewrite anything. It repoints the
+# `hub-latest` update feed at an earlier attested release, which is the only
+# reversible control we have over clients that have already installed.
+on:
+  workflow_dispatch:
+    inputs:
+      rollback_to_tag:
+        description: Published hub-v* release to roll the update feed back to
+        required: true
+        type: string
+      reason:
+        description: Why the current release is being withdrawn (recorded in the run)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    # Same protected environment as promotion: moving the feed backwards is
+    # every bit as user-visible as moving it forwards.
+    environment: hub-vm-qa
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Record the operator's stated reason
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          {
+            echo "### Rollback requested"
+            echo ""
+            echo "- target: \`${{ inputs.rollback_to_tag }}\`"
+            echo "- actor: \`${{ github.actor }}\`"
+            echo "- reason: $REASON"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Read the current feed and the proposed target
+        id: state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_TAG: ${{ inputs.rollback_to_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p feed target
+
+          # What are installed clients being served right now?
+          gh release download hub-latest --pattern latest.json --dir feed
+          current_version="$(python3 -c 'import json;print(json.load(open("feed/latest.json"))["version"])')"
+
+          # What is being proposed, and was it ever actually published?
+          target_is_draft="$(gh release view "$TARGET_TAG" --json isDraft --jq .isDraft)"
+          gh release download "$TARGET_TAG" --pattern latest.json --dir target
+          target_version="$(python3 -c 'import json;print(json.load(open("target/latest.json"))["version"])')"
+
+          {
+            echo "current_version=$current_version"
+            echo "target_is_draft=$target_is_draft"
+            echo "target_version=$target_version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply the rollback guards
+        run: |
+          bash scripts/release/rollback-guard.sh \
+            "${{ inputs.rollback_to_tag }}" \
+            "${{ steps.state.outputs.target_is_draft }}" \
+            "${{ steps.state.outputs.current_version }}" \
+            "${{ steps.state.outputs.target_version }}"
+
+      # A published release is not automatically a VM-tested one. Re-run the
+      # exact same verifier the promote path uses, against the target's own
+      # installer, so a rollback can never reach a build that skipped the gate.
+      - name: Re-verify the target passed the two-clean-VM gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_TAG: ${{ inputs.rollback_to_tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TARGET_TAG" --pattern '*.exe' --dir target
+          gh release download "$TARGET_TAG" --pattern hub-vm-qa-attestation.json --dir target
+          python3 scripts/verify_hub_vm_qa_attestation.py \
+            --tag "$TARGET_TAG" \
+            --candidate-dir target \
+            --attestation target/hub-vm-qa-attestation.json
+
+      - name: Point the update feed at the earlier attested release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload hub-latest target/latest.json --clobber
+          {
+            echo ""
+            echo "Update feed moved from \`${{ steps.state.outputs.current_version }}\`"
+            echo "to \`${{ steps.state.outputs.target_version }}\` (\`${{ inputs.rollback_to_tag }}\`)."
+            echo ""
+            echo "The withdrawn release was NOT deleted or unpublished; only the"
+            echo "update feed moved. Roll forward by promoting a new candidate."
+          } >> "$GITHUB_STEP_SUMMARY"

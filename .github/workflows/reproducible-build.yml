@@ -1,13 +1,87 @@
 name: Reproducible Build
 
+# WHAT SHIPS is apps/osl-hub -> osl-privacy-hub.exe, tagged `hub-v*` and built
+# by osl-hub-release.yml. Until 2026-07-26 this workflow triggered on `v*` and
+# hashed target/release-deterministic/discord-privacy-client.exe — the legacy
+# src-tauri binary, on a tag pattern the release path never uses. It therefore
+# proved the reproducibility of an artifact no user receives, and had never run
+# on any release. Both the hub and the legacy binary are covered below, and the
+# hub is the one that gates a release.
 on:
   push:
-    tags: ['v*']
+    tags: ['hub-v*', 'v*']
   workflow_dispatch:
 
+concurrency:
+  group: reproducible-build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
-  build:
+  # The Tauri bundle embeds apps/osl-hub-ui/dist at COMPILE time, so a
+  # non-deterministic frontend makes a deterministic binary impossible no
+  # matter what the Rust profile says. Verified reproducible on 2026-07-26.
+  frontend-determinism:
+    name: frontend dist is reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - name: Build the frontend twice and compare the whole tree
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci --no-audit --no-fund
+          tree_hash() { find dist -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1; }
+          rm -rf dist && npm run build >/dev/null && first="$(tree_hash)"
+          rm -rf dist && npm run build >/dev/null && second="$(tree_hash)"
+          echo "first:  $first"
+          echo "second: $second"
+          if [ "$first" != "$second" ]; then
+            echo "::error::apps/osl-hub-ui/dist is not byte-reproducible; the embedded UI differs between builds" >&2
+            exit 1
+          fi
+          echo "frontend dist tree-hash \`$first\` reproduced exactly." >> "$GITHUB_STEP_SUMMARY"
+
+  # apps/osl-hub declares its OWN [workspace], so it does not inherit the root
+  # Cargo.toml's [profile.release-deterministic]. The shipped binary currently
+  # has no deterministic profile at all. This preflight makes that a loud,
+  # actionable failure instead of a silent gap behind a green legacy check.
+  hub-profile-preflight:
+    name: hub deterministic profile exists
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Require a deterministic profile on the shipped crate
+        run: |
+          if grep -q '^\[profile\.release-deterministic\]' apps/osl-hub/Cargo.toml; then
+            echo "apps/osl-hub declares [profile.release-deterministic]."
+            exit 0
+          fi
+          cat >&2 <<'MSG'
+          ::error::apps/osl-hub/Cargo.toml has no [profile.release-deterministic].
+          apps/osl-hub is an isolated Cargo workspace and does NOT inherit the root
+          profile, so the binary that actually ships cannot be built deterministically.
+          Owner: the crate owner for apps/osl-hub (this release lane does not edit
+          apps/**). Required addition to apps/osl-hub/Cargo.toml:
+
+            [profile.release-deterministic]
+            inherits = "release"
+            # keep these pinned in step with the root profile
+
+          Tracked in docs/reports/release-lane-2026-07-26.md.
+          MSG
+          exit 1
+
+  hub-binary:
+    name: hub binary build ${{ matrix.run }}
     runs-on: windows-latest
+    needs: frontend-determinism
     strategy:
       matrix:
         run: [1, 2]   # build twice; compare hashes
@@ -15,26 +89,102 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.88.0'
+      - name: Build the embedded frontend first
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      # Uses the deterministic profile when the crate declares one and falls
+      # back to plain release otherwise, so this still measures the real
+      # current reproducibility while hub-profile-preflight reports the gap.
+      - name: Build the shipped binary
+        shell: bash
+        run: |
+          if grep -q '^\[profile\.release-deterministic\]' apps/osl-hub/Cargo.toml; then
+            profile=release-deterministic
+          else
+            profile=release
+          fi
+          echo "profile=$profile" >> "$GITHUB_ENV"
+          cargo build --manifest-path apps/osl-hub/Cargo.toml \
+            --features desktop --bin osl-privacy-hub --profile "$profile"
+      - name: Hash the shipped binary
+        shell: bash
+        run: |
+          sha256sum "apps/osl-hub/target/$profile/osl-privacy-hub.exe" \
+            | cut -d' ' -f1 > "hub-hash-${{ matrix.run }}.txt"
+          cat "hub-hash-${{ matrix.run }}.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hub-hash-${{ matrix.run }}
+          path: hub-hash-${{ matrix.run }}.txt
+
+  hub-compare:
+    name: hub binary is reproducible
+    needs: hub-binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - name: Compare the two hub builds
+        run: |
+          first="$(cat hub-hash-1/hub-hash-1.txt)"
+          second="$(cat hub-hash-2/hub-hash-2.txt)"
+          echo "build 1: $first"
+          echo "build 2: $second"
+          {
+            echo "### Shipped binary (osl-privacy-hub.exe)"
+            echo ""
+            echo "- build 1: \`$first\`"
+            echo "- build 2: \`$second\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$first" != "$second" ]; then
+            echo "::error::osl-privacy-hub.exe is NOT reproducible across two identical builds" >&2
+            echo "- **result: NOT reproducible**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- **result: reproduced exactly**" >> "$GITHUB_STEP_SUMMARY"
+
+  # Retained coverage for the legacy src-tauri binary. This is the check that
+  # existed before 2026-07-26; it is kept so nothing loses coverage, but it is
+  # explicitly NOT the artifact that ships as OSL Privacy.
+  legacy-binary:
+    name: legacy binary build ${{ matrix.run }}
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        run: [1, 2]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: '1.88.0'
       - name: Build deterministic
         run: cargo build --profile release-deterministic
       - name: Hash artifact
-        shell: pwsh
+        shell: bash
         run: |
-          Get-FileHash target\release-deterministic\discord-privacy-client.exe -Algorithm SHA256 | Out-File hash-${{ matrix.run }}.txt
-      - name: Upload hash
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          sha256sum target/release-deterministic/discord-privacy-client.exe \
+            | cut -d' ' -f1 > "legacy-hash-${{ matrix.run }}.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: hash-${{ matrix.run }}
-          path: hash-${{ matrix.run }}.txt
+          name: legacy-hash-${{ matrix.run }}
+          path: legacy-hash-${{ matrix.run }}.txt
 
-  compare:
-    needs: build
+  legacy-compare:
+    name: legacy binary is reproducible
+    needs: legacy-binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-      - name: Compare hashes
-        run: diff hash-1/hash-1.txt hash-2/hash-2.txt
+      - name: Compare the two legacy builds
+        run: diff legacy-hash-1/legacy-hash-1.txt legacy-hash-2/legacy-hash-2.txt

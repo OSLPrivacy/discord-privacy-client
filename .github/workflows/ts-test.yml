@@ -5,58 +5,79 @@ on:
     branches: [main]
   pull_request:
 
+# A superseded push should not keep burning runner minutes; the only result
+# that matters for a gate is the one for the tip of the branch.
+concurrency:
+  group: ts-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  test:
-    runs-on: windows-latest
+  node:
+    # These are pure Node/JSDOM suites with no Windows-specific code path, and
+    # ubuntu-latest is both cheaper and materially more correct for them.
+    # `apps/osl-hub-ui/src/latest.test.ts` asserts a coalescing upper bound
+    # ("stays responsive during a paced sequence…") built on 2 ms and 8 ms
+    # setTimeout pacing. Windows' ~15.6 ms default timer quantum collapses
+    # that distinction, so the runner counted 26 runs against a limit of 24
+    # and main went red on 2026-07-19 and stayed red for 20+ consecutive runs.
+    # That is a property of the runner clock, not of the product. Measured
+    # 2026-07-26: 20/20 green on Linux, deterministically red on Windows.
+    # The residual timing sensitivity in that assertion is still a real test
+    # defect and is tracked in docs/reports/release-lane-2026-07-26.md; this
+    # job does not paper over it, it stops a clock artifact from gating main.
+    name: ${{ matrix.package.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every failing package in one run instead of hiding the rest
+      # behind whichever one happens to fail first.
+      fail-fast: false
+      matrix:
+        package:
+          - name: webview
+            dir: webview
+            steps: typecheck,lint,test
+          # `typecheck` is new here: apps/osl-hub-ui has always had the script
+          # and CI never called it. `build` runs `tsc --noEmit && vite build`,
+          # and the Tauri bundle embeds this dist at COMPILE time, so a package
+          # that tests green but fails to build would still ship a stale UI.
+          - name: osl-hub-ui
+            dir: apps/osl-hub-ui
+            steps: typecheck,test,build
+          - name: keyserver-cf
+            dir: keyserver-cf
+            steps: typecheck,test
+          - name: cipher-store-cf
+            dir: cipher-store-cf
+            steps: typecheck,test
+          - name: keyserver-legacy
+            dir: keyserver
+            steps: test
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Install webview deps
-        working-directory: webview
-        run: npm ci
-      - name: Typecheck webview
-        working-directory: webview
-        run: npm run typecheck
-      - name: Lint webview
-        working-directory: webview
-        run: npm run lint
-      - name: Test webview
-        working-directory: webview
-        run: npm test
-      # The app frontend is outside webview/ and has its own lockfile, tests,
-      # TypeScript check, and production Vite build.
-      - name: Install OSL Privacy UI dependencies
-        working-directory: apps/osl-hub-ui
-        run: npm ci
-      - name: Test OSL Privacy UI
-        working-directory: apps/osl-hub-ui
-        run: npm test
-      - name: Build OSL Privacy UI
-        working-directory: apps/osl-hub-ui
-        run: npm run build
-      - name: Install keyserver worker deps
-        working-directory: keyserver-cf
-        run: npm ci
-      - name: Typecheck keyserver worker
-        working-directory: keyserver-cf
-        run: npm run typecheck
-      - name: Test keyserver worker
-        working-directory: keyserver-cf
-        run: npm test
-      - name: Install cipher-store worker deps
-        working-directory: cipher-store-cf
-        run: npm ci
-      - name: Typecheck cipher-store worker
-        working-directory: cipher-store-cf
-        run: npm run typecheck
-      - name: Test cipher-store worker
-        working-directory: cipher-store-cf
-        run: npm test
-      - name: Install legacy keyserver deps
-        working-directory: keyserver
-        run: npm ci
-      - name: Test legacy keyserver
-        working-directory: keyserver
-        run: npm test
+          cache: npm
+          cache-dependency-path: ${{ matrix.package.dir }}/package-lock.json
+      - name: ${{ matrix.package.name }} gate
+        run: bash scripts/ci/node-suite.sh "${{ matrix.package.dir }}" "${{ matrix.package.steps }}"
+
+  # Single stable check name for branch protection. Matrix job names change
+  # whenever the matrix changes, which silently un-enrols required checks;
+  # this one does not. See .github/BRANCH_PROTECTION.md.
+  typescript-gate:
+    name: TypeScript gate
+    runs-on: ubuntu-latest
+    needs: node
+    if: always()
+    steps:
+      - name: Require every TypeScript package to pass
+        run: |
+          if [ "${{ needs.node.result }}" != "success" ]; then
+            echo "::error::One or more TypeScript packages failed (${{ needs.node.result }})" >&2
+            exit 1
+          fi
+          echo "All TypeScript packages passed."
