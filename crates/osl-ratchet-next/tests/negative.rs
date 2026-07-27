@@ -258,3 +258,74 @@ fn a_restored_session_cannot_reuse_a_consumed_message_key() {
     let mut restored = Session::import_state(&after).expect("import");
     assert_eq!(restored.decrypt(&w, &mut rng), Err(Error::AuthFailed));
 }
+
+#[test]
+fn sender_rollback_replays_send_state_but_receiver_rejects_and_recovers() {
+    let (mut alice, mut bob, mut rng) = established_pair(311);
+    let before_send = alice.export_state().expect("export");
+    let mut replayed_rng = rng.clone();
+
+    let first = alice
+        .encrypt(0, b"rollback send", &mut rng)
+        .expect("first send");
+    let mut restored_sender = Session::import_state(&before_send).expect("restore sender");
+    let repeated = restored_sender
+        .encrypt(0, b"rollback send", &mut replayed_rng)
+        .expect("repeat send");
+
+    assert_eq!(
+        repeated, first,
+        "current protocol permits exact wire replay when sender state and RNG both roll back"
+    );
+    assert_eq!(
+        bob.decrypt(&first, &mut rng).expect("first decrypt").plaintext,
+        b"rollback send"
+    );
+    assert_eq!(
+        bob.decrypt(&repeated, &mut rng),
+        Err(Error::AuthFailed),
+        "receiver silently accepted a sender-rollback duplicate"
+    );
+
+    let fresh = restored_sender
+        .encrypt(0, b"after rollback rejection", &mut replayed_rng)
+        .expect("fresh after rollback");
+    assert_eq!(
+        bob.decrypt(&fresh, &mut rng)
+            .expect("receiver must remain usable")
+            .plaintext,
+        b"after rollback rejection"
+    );
+}
+
+#[test]
+fn skipped_message_replay_stays_rejected_after_restart() {
+    let (mut alice, mut bob, mut rng) = established_pair(312);
+    let first = alice.encrypt(0, b"skip first", &mut rng).expect("first");
+    let second = alice.encrypt(0, b"skip second", &mut rng).expect("second");
+    let third = alice.encrypt(0, b"skip third", &mut rng).expect("third");
+
+    assert_eq!(
+        bob.decrypt(&third, &mut rng).expect("third first").plaintext,
+        b"skip third"
+    );
+    assert_eq!(
+        bob.decrypt(&first, &mut rng).expect("open skipped").plaintext,
+        b"skip first"
+    );
+
+    let exported = bob.export_state().expect("export");
+    let mut restored = Session::import_state(&exported).expect("import");
+    assert_eq!(
+        restored.decrypt(&first, &mut rng),
+        Err(Error::AuthFailed),
+        "accepted skipped-message replay after restart"
+    );
+    assert_eq!(
+        restored
+            .decrypt(&second, &mut rng)
+            .expect("remaining skipped key must survive restart")
+            .plaintext,
+        b"skip second"
+    );
+}

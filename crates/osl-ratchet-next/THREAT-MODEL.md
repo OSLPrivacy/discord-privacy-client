@@ -143,6 +143,41 @@ keychain) is entirely the integrator's job.
   nonce reuse under a reused key, which is catastrophic for
   XChaCha20-Poly1305. There is a test for the restore case; there is no
   proof.
+- **Deterministic body nonce reuse under sender state rollback.** This is the entry above,
+  narrowed from a hypothesis to a demonstrated path. The entry above says "there is a test for
+  the restore case; there is no proof" and frames the trigger as a *bug*; both are now out of
+  date, and the detail below supersedes them.
+  `kdf::body_nonce` (`src/kdf.rs:130`) derives the body nonce as
+  `hkdf(message_key)` with no per-message randomness. In the send path
+  (`src/session.rs:516-560`), `Session::encrypt` derives one message key
+  from the sending chain, seals the body with `body_nonce(&mk)`, and only
+  then advances the in-memory sending chain. If persisted sender state
+  rolls back and the same message key is used again, the same body key
+  and nonce are reused. If the second plaintext differs, the two
+  ciphertexts are a two-time pad.
+
+  The receiver rejects a replayed counter after it has consumed the
+  first message. That prevents silent desynchronisation, but it does not
+  un-emit the second ciphertext. Receiver rejection is irrelevant to an
+  attacker who captured both ciphertexts.
+
+  The test at `src/kdf.rs:217`, `body_nonce_is_key_bound`, only asserts
+  that different message keys produce different nonces. It cannot detect
+  reuse under the same message key, which is the failure mode here. This
+  can be triggered by a crash between emitting and persisting, restore
+  from backup, filesystem snapshot rollback, or VM restore. This
+  project's QA practice routinely restores VM snapshots, so this is an
+  operational trigger, not a theoretical one.
+
+  The current integration-layer mitigation is the ordering in
+  `ipc::wire_rn::send_rn`: it persists the advanced session state before
+  returning the wire to its caller. For the crash-between-emit-and-save
+  case, that converts a crash into a lost message rather than key reuse.
+  It does not close wholesale state restore. Closing that requires
+  either binding the nonce to per-message wire randomness or adding an
+  explicit anti-rollback measure. Both are wire-format or protocol
+  changes to unreviewed cryptography, so they are deferred to external
+  review, not decided here.
 - **Header nonce collisions.** 96 random bits per header key. The
   birthday bound is 2^48 messages under one header key; chains are
   capped far below that, but the bound is stated rather than eliminated.

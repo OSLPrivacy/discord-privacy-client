@@ -1,11 +1,11 @@
 //! The session: header-encrypted Double Ratchet with a hybrid
 //! (X25519 + fragmented ML-KEM-768) root ratchet.
 //!
-//! # Wire format, version `0x06`
+//! # Wire format, version `0x10`
 //!
 //! ```text
 //! DPC0::base64(
-//!     version(1) = 0x06
+//!     version(1) = 0x10
 //!     flags(1)                     bit0 = BOOTSTRAP preamble present
 //!   [ preamble                     only when BOOTSTRAP: 1153 bytes ]
 //!     header_nonce(12)

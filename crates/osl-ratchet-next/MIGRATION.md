@@ -133,6 +133,34 @@ must survive the migration:
 4. In-flight `v=3` messages sent before the switch remain decryptable
    forever, because the `v=3` decoder is untouched.
 
+### Capability advertisement is absent end-to-end
+
+`keystore::client::build_register_request` (`crates/keystore/src/client.rs:601`)
+signs the legacy `reg_msg` and does not call `reg_msg_with_capabilities`.
+`RegisterRequest` (`crates/keystore/src/client.rs:63-87`) has no
+`rn_capabilities` field. `verify_peer_capabilities`
+(`crates/keystore/src/client.rs:301`) has zero production callers. The
+result is that every client registers as a legacy peer, every peer
+resolves to `PeerCapabilities::Absent`, and
+`ipc::wire_rn::select_wire_version` returns `LegacyV3` for every peer
+permanently.
+
+Integrator warning: wiring the ratchet without fixing this yields a
+system that appears to negotiate and in fact sends `v=3` one hundred
+percent of the time.
+
+The advertisement bit must be switched on in the same change as the
+wire-in, and never before it. Advertising a capability the build cannot
+honour causes peers to pin this identity to OSL-RN and then be refused
+every send. The pin has no lowering operation at all.
+
+Once advertisement ships, a user who downgrades to a pre-ratchet build
+while keeping the same identity key becomes permanently unreachable from
+peers that pinned them. For those peers, `select_wire_version` returns
+`Err(PinnedToRn)` with no recovery path. A new identity key resets this;
+a version rollback does not. No documented recovery procedure exists
+today.
+
 ---
 
 ## 2. Call sites that change

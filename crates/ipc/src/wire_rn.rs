@@ -75,6 +75,13 @@ use zeroize::Zeroize;
 /// the guard cannot be silently broken by an edit over there.
 pub const LEGACY_WIRE_VERSION_V3: u8 = 0x03;
 
+/// Single switch that turns OSL-RN send/receive wire-in on.
+///
+/// This must stay off until flipping it has passed the external
+/// cryptographic review required by `crates/osl-ratchet-next/DESIGN.md`
+/// and master 7.11.
+pub const RN_WIRE_IN_ENABLED: bool = false;
+
 /// Negotiation context for the Discord manual-peer path. A fixed
 /// constant: it is an input to the handshake `SK`, so both sides must
 /// use the identical value, and it must never be derived from anything
@@ -141,6 +148,10 @@ const MAX_SKIPPED_KEYS_POLICY: usize = 4096;
 /// this enum looking for permission to downgrade will not find it.
 #[derive(Debug, thiserror::Error)]
 pub enum RnError {
+    /// OSL-RN send/receive is present but deliberately not wired in.
+    #[error("OSL-RN wire-in is disabled")]
+    WireInDisabled,
+
     /// The peer is pinned to OSL-RN but we were asked to consider, or
     /// could not produce, anything else. Fail closed.
     #[error("peer is pinned to OSL-RN; refusing to send a legacy v=3 message")]
@@ -166,7 +177,9 @@ pub enum RnError {
     /// A sealed state blob was larger than the on-disk bound. Refused
     /// rather than written, so the bound cannot be exceeded by a bug in
     /// the layer above.
-    #[error("refusing to persist ratchet state: sealed blob is {got} bytes, over the {max}-byte bound")]
+    #[error(
+        "refusing to persist ratchet state: sealed blob is {got} bytes, over the {max}-byte bound"
+    )]
     StateTooLarge { got: usize, max: u64 },
 
     /// The store already holds the maximum number of peer records.
@@ -192,6 +205,22 @@ impl From<osl_ratchet_next::Error> for RnError {
         // variant, so forwarding its `Display` leaks nothing.
         RnError::Protocol(e.to_string())
     }
+}
+
+#[cfg(not(test))]
+fn wire_in_enabled() -> bool {
+    RN_WIRE_IN_ENABLED
+}
+
+#[cfg(test)]
+thread_local! {
+    static RN_WIRE_IN_TEST_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn wire_in_enabled() -> bool {
+    RN_WIRE_IN_TEST_OVERRIDE.with(|enabled| enabled.get().unwrap_or(RN_WIRE_IN_ENABLED))
 }
 
 // ---------------------------------------------------------------
@@ -278,12 +307,12 @@ impl RnPeerPin {
 /// caller remembering to check.
 pub fn select_wire_version(
     pin: &RnPeerPin,
-    peer_supports_rn: bool,
+    peer_capabilities: keystore::client::PeerCapabilities,
     policy: RnPolicy,
 ) -> Result<SelectedVersion, RnError> {
     if pin.is_pinned_to_rn() {
         // Pinned. The only permitted outcomes are OSL-RN or an error.
-        return if peer_supports_rn {
+        return if peer_capabilities.supports_rn() {
             Ok(SelectedVersion::Rn)
         } else {
             // A peer that previously spoke OSL-RN and now claims not to
@@ -293,6 +322,7 @@ pub fn select_wire_version(
         };
     }
 
+    let peer_supports_rn = peer_capabilities.supports_rn();
     match (policy, peer_supports_rn) {
         (_, true) => Ok(SelectedVersion::Rn),
         (RnPolicy::Required, false) => Err(RnError::RnRequiredButUnsupported),
@@ -658,12 +688,61 @@ pub fn accept_and_persist(
         initiator.as_bytes(),
         context,
     )?;
-    let (session, opened) = osl_ratchet_next::accept_rn_bound(local, wire, &binding, params)
-        .map_err(RnError::from)?;
+    let (session, opened) =
+        osl_ratchet_next::accept_rn_bound(local, wire, &binding, params).map_err(RnError::from)?;
     let peer_id = *initiator.as_bytes();
     store.save_session(&peer_id, &session, sealer)?;
     store.raise_pin_to_rn(&peer_id)?;
     Ok((session, opened))
+}
+
+/// Encrypt with a persisted OSL-RN session.
+///
+/// The gate is checked before any state load or crypto operation. When
+/// enabled in a reviewed future build, the ordering is load, encrypt
+/// (advancing the session), save the advanced session, then return the
+/// wire. If saving fails, the wire is not returned.
+pub fn send_rn(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_identity_x25519: &[u8; 32],
+    msg_type: u8,
+    plaintext: &[u8],
+) -> Result<String, RnError> {
+    if !wire_in_enabled() {
+        return Err(RnError::WireInDisabled);
+    }
+
+    let mut session = store
+        .load_session(peer_identity_x25519, sealer)?
+        .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
+    let wire =
+        osl_ratchet_next::encrypt_rn(&mut session, msg_type, plaintext).map_err(RnError::from)?;
+    store.save_session(peer_identity_x25519, &session, sealer)?;
+    Ok(wire)
+}
+
+/// Decrypt with a persisted OSL-RN session.
+///
+/// The gate is checked before any state load or crypto operation. When
+/// enabled in a reviewed future build, the receive-side ratchet advance
+/// is persisted before the opened plaintext is returned.
+pub fn receive_rn(
+    store: &RnSessionStore,
+    sealer: &dyn keystore::sealer::Sealer,
+    peer_identity_x25519: &[u8; 32],
+    wire: &str,
+) -> Result<Opened, RnError> {
+    if !wire_in_enabled() {
+        return Err(RnError::WireInDisabled);
+    }
+
+    let mut session = store
+        .load_session(peer_identity_x25519, sealer)?
+        .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
+    let opened = osl_ratchet_next::decrypt_rn(&mut session, wire).map_err(RnError::from)?;
+    store.save_session(peer_identity_x25519, &session, sealer)?;
+    Ok(opened)
 }
 
 // ---------------------------------------------------------------
@@ -764,9 +843,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
     use keystore::sealer::{MemorySealer, NoOpSealer};
-    use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
     use osl_ratchet_next::primitives::x25519_keypair;
+    use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
     use tempfile::TempDir;
 
     const CTX: &[u8] = b"ipc/tests/wire_rn/v1";
@@ -776,8 +856,12 @@ mod tests {
     #[test]
     fn an_unpinned_peer_without_rn_support_uses_v3() {
         assert_eq!(
-            select_wire_version(&RnPeerPin::UNKNOWN, false, RnPolicy::Opportunistic)
-                .expect("select"),
+            select_wire_version(
+                &RnPeerPin::UNKNOWN,
+                PeerCapabilities::Absent,
+                RnPolicy::Opportunistic
+            )
+            .expect("select"),
             SelectedVersion::LegacyV3
         );
     }
@@ -785,8 +869,12 @@ mod tests {
     #[test]
     fn an_unpinned_peer_with_rn_support_uses_rn() {
         assert_eq!(
-            select_wire_version(&RnPeerPin::UNKNOWN, true, RnPolicy::Opportunistic)
-                .expect("select"),
+            select_wire_version(
+                &RnPeerPin::UNKNOWN,
+                PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+                RnPolicy::Opportunistic
+            )
+            .expect("select"),
             SelectedVersion::Rn
         );
     }
@@ -797,9 +885,12 @@ mod tests {
     fn a_pinned_peer_can_never_be_downgraded_to_v3() {
         let mut pin = RnPeerPin::UNKNOWN;
         pin.raise_to_rn();
-        for supports in [true, false] {
+        for caps in [
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            PeerCapabilities::Absent,
+        ] {
             for policy in [RnPolicy::Opportunistic, RnPolicy::Required] {
-                let got = select_wire_version(&pin, supports, policy);
+                let got = select_wire_version(&pin, caps, policy);
                 assert_ne!(
                     got.ok(),
                     Some(SelectedVersion::LegacyV3),
@@ -808,7 +899,7 @@ mod tests {
             }
         }
         assert!(matches!(
-            select_wire_version(&pin, false, RnPolicy::Opportunistic),
+            select_wire_version(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic),
             Err(RnError::PinnedToRn)
         ));
     }
@@ -816,9 +907,142 @@ mod tests {
     #[test]
     fn required_policy_refuses_a_peer_without_rn_support() {
         assert!(matches!(
-            select_wire_version(&RnPeerPin::UNKNOWN, false, RnPolicy::Required),
+            select_wire_version(
+                &RnPeerPin::UNKNOWN,
+                PeerCapabilities::Absent,
+                RnPolicy::Required
+            ),
             Err(RnError::RnRequiredButUnsupported)
         ));
+    }
+
+    #[test]
+    fn unverified_capabilities_do_not_enable_rn_or_downgrade_pinned_peer() {
+        let mut pinned = RnPeerPin::UNKNOWN;
+        pinned.raise_to_rn();
+
+        assert!(
+            matches!(
+                select_wire_version(
+                    &pinned,
+                    PeerCapabilities::Unverified,
+                    RnPolicy::Opportunistic
+                ),
+                Err(RnError::PinnedToRn)
+            ),
+            "Unverified capabilities on a pinned peer must fail closed"
+        );
+        assert_eq!(
+            select_wire_version(
+                &RnPeerPin::UNKNOWN,
+                PeerCapabilities::Unverified,
+                RnPolicy::Opportunistic
+            )
+            .expect("select unpinned"),
+            SelectedVersion::LegacyV3,
+            "Unverified capabilities on an unpinned peer must resolve to legacy"
+        );
+    }
+
+    #[test]
+    fn unverified_raised_bitmap_cannot_promote_unpinned_peer_to_rn() {
+        let caps = PeerCapabilities::Unverified;
+        assert_eq!(
+            caps.bitmap(),
+            0,
+            "Unverified capabilities must erase the advertised bitmap"
+        );
+        assert_eq!(
+            select_wire_version(&RnPeerPin::UNKNOWN, caps, RnPolicy::Opportunistic)
+                .expect("select opportunistic"),
+            SelectedVersion::LegacyV3,
+            "an unverified raised bitmap must not select OSL-RN"
+        );
+        assert!(
+            matches!(
+                select_wire_version(&RnPeerPin::UNKNOWN, caps, RnPolicy::Required),
+                Err(RnError::RnRequiredButUnsupported)
+            ),
+            "an unverified raised bitmap must not satisfy Required policy"
+        );
+    }
+
+    #[test]
+    fn verified_zero_bitmap_does_not_read_as_capable() {
+        let caps = PeerCapabilities::Verified(0);
+        assert!(
+            !caps.supports_rn(),
+            "Verified(0) must not support OSL-RN"
+        );
+        assert_eq!(
+            select_wire_version(&RnPeerPin::UNKNOWN, caps, RnPolicy::Opportunistic)
+                .expect("select opportunistic"),
+            SelectedVersion::LegacyV3,
+            "Verified(0) must not select OSL-RN opportunistically"
+        );
+        assert!(
+            matches!(
+                select_wire_version(&RnPeerPin::UNKNOWN, caps, RnPolicy::Required),
+                Err(RnError::RnRequiredButUnsupported)
+            ),
+            "Verified(0) must not satisfy Required policy"
+        );
+
+        let mut pinned = RnPeerPin::UNKNOWN;
+        pinned.raise_to_rn();
+        assert!(
+            matches!(
+                select_wire_version(&pinned, caps, RnPolicy::Opportunistic),
+                Err(RnError::PinnedToRn)
+            ),
+            "Verified(0) on a pinned peer must fail closed"
+        );
+    }
+
+    #[test]
+    fn selection_is_exhaustive_over_pin_capabilities_and_policy() {
+        let mut raised = RnPeerPin::UNKNOWN;
+        raised.raise_to_rn();
+
+        for (pin_name, pin) in [("UNKNOWN", RnPeerPin::UNKNOWN), ("raised", raised)] {
+            for (caps_name, caps) in [
+                ("Absent", PeerCapabilities::Absent),
+                ("Unverified", PeerCapabilities::Unverified),
+                ("Verified(RN_CAP_WIRE_RN)", PeerCapabilities::Verified(RN_CAP_WIRE_RN)),
+            ] {
+                for policy in [RnPolicy::Opportunistic, RnPolicy::Required] {
+                    let got = select_wire_version(&pin, caps, policy);
+                    if pin.is_pinned_to_rn() {
+                        assert!(
+                            !matches!(&got, Ok(SelectedVersion::LegacyV3)),
+                            "pinned peer selected LegacyV3 for caps={caps_name} policy={policy:?}"
+                        );
+                    }
+                    match (pin.is_pinned_to_rn(), caps.supports_rn(), policy) {
+                        (true, true, _) => assert!(
+                            matches!(got, Ok(SelectedVersion::Rn)),
+                            "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
+                        ),
+                        (true, false, _) => assert!(
+                            matches!(got, Err(RnError::PinnedToRn)),
+                            "expected PinnedToRn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
+                        ),
+                        (false, true, _) => assert!(
+                            matches!(got, Ok(SelectedVersion::Rn)),
+                            "expected Rn for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
+                        ),
+                        (false, false, RnPolicy::Required) => assert!(
+                            matches!(got, Err(RnError::RnRequiredButUnsupported)),
+                            "expected RnRequiredButUnsupported for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
+                        ),
+                        (false, false, RnPolicy::Opportunistic) => assert!(
+                            matches!(got, Ok(SelectedVersion::LegacyV3)),
+                            "expected LegacyV3 for pin={pin_name} caps={caps_name} policy={policy:?}, got {got:?}"
+                        ),
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -838,6 +1062,197 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let store = RnSessionStore::new(dir.path().join("rn"));
         (dir, store)
+    }
+
+    fn with_wire_in_enabled_for_test<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+        struct Reset(Option<bool>);
+
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                RN_WIRE_IN_TEST_OVERRIDE.with(|slot| slot.set(self.0));
+            }
+        }
+
+        let previous = RN_WIRE_IN_TEST_OVERRIDE.with(|slot| {
+            let previous = slot.get();
+            slot.set(Some(enabled));
+            previous
+        });
+        let _reset = Reset(previous);
+        f()
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct FileSnapshot(Vec<(String, Vec<u8>)>);
+
+    fn snapshot_files(dir: &Path) -> FileSnapshot {
+        fn visit(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(e) => panic!("read snapshot dir: {e}"),
+            };
+            for entry in entries {
+                let entry = entry.expect("snapshot entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, out);
+                } else {
+                    let rel = path
+                        .strip_prefix(root)
+                        .expect("snapshot path under root")
+                        .to_string_lossy()
+                        .into_owned();
+                    let bytes = std::fs::read(&path).expect("snapshot file");
+                    out.push((rel, bytes));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        visit(dir, dir, &mut out);
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        FileSnapshot(out)
+    }
+
+    struct SealFailure<'a> {
+        loader: &'a MemorySealer,
+    }
+
+    impl keystore::sealer::Sealer for SealFailure<'_> {
+        fn method_label(&self) -> &'static str {
+            keystore::sealer::METHOD_MEMORY
+        }
+
+        fn is_tpm_backed(&self) -> bool {
+            false
+        }
+
+        fn requires_insecure_banner(&self) -> bool {
+            false
+        }
+
+        fn seal(&self, _plaintext: &[u8]) -> keystore::sealer::Result<Vec<u8>> {
+            Err(keystore::sealer::SealerError::Malformed(
+                "forced save failure".into(),
+            ))
+        }
+
+        fn unseal(&self, ciphertext: &[u8]) -> keystore::sealer::Result<zeroize::Zeroizing<Vec<u8>>> {
+            self.loader.unseal(ciphertext)
+        }
+    }
+
+    #[test]
+    fn rn_wire_gate_refuses_send_and_receive_without_touching_store_files() {
+        let (_d, store) = fresh_store();
+        std::fs::create_dir_all(&store.dir).expect("mkdir");
+        std::fs::write(store.dir.join("sentinel"), b"unchanged").expect("sentinel");
+        let before = snapshot_files(&store.dir);
+        let sealer = MemorySealer::new();
+        let peer = [31u8; 32];
+
+        assert!(matches!(
+            send_rn(&store, &sealer, &peer, 7, b"blocked"),
+            Err(RnError::WireInDisabled)
+        ));
+        assert!(matches!(
+            receive_rn(&store, &sealer, &peer, "not touched"),
+            Err(RnError::WireInDisabled)
+        ));
+
+        assert_eq!(
+            snapshot_files(&store.dir),
+            before,
+            "disabled send/receive must not create or modify store files"
+        );
+    }
+
+    #[test]
+    fn send_rn_persists_advanced_state_before_returning_wire() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(31);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        let loaded_before = store
+            .load_session(&peer, &sealer)
+            .expect("load before")
+            .expect("session before");
+        let mut exported_before = SecureSession::export(&loaded_before).expect("export before");
+        let wire = with_wire_in_enabled_for_test(true, || {
+            send_rn(&store, &sealer, &peer, 7, b"persist before return").expect("send")
+        });
+        assert!(!wire.is_empty(), "send must return the wire after saving");
+
+        let loaded_after = store
+            .load_session(&peer, &sealer)
+            .expect("load after")
+            .expect("session after");
+        let mut exported_after = SecureSession::export(&loaded_after).expect("export after");
+        assert!(
+            exported_after != exported_before,
+            "persisted session must already be advanced after send_rn returns"
+        );
+        exported_before.zeroize();
+        exported_after.zeroize();
+    }
+
+    #[test]
+    fn send_rn_returns_error_without_wire_when_save_fails() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let failing = SealFailure { loader: &sealer };
+        let mut rng = seeded_rng(32);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        let result = with_wire_in_enabled_for_test(true, || {
+            send_rn(&store, &failing, &peer, 8, b"must not escape")
+        });
+        assert!(
+            result.is_err(),
+            "save failure must not return a wire string"
+        );
+        let err = result.err().expect("checked err");
+        assert!(
+            matches!(&err, RnError::Storage(msg) if msg.contains("forced save failure")),
+            "expected forced save failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn send_rn_reload_after_crash_does_not_reuse_the_previous_wire() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(33);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (ik, _) = x25519_keypair(&mut rng);
+        let session =
+            Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store.save_session(&peer, &session, &sealer).expect("save");
+
+        let wire1 = with_wire_in_enabled_for_test(true, || {
+            send_rn(&store, &sealer, &peer, 9, b"same plaintext").expect("first send")
+        });
+        let wire2 = with_wire_in_enabled_for_test(true, || {
+            send_rn(&store, &sealer, &peer, 9, b"same plaintext").expect("second send after reload")
+        });
+
+        assert_ne!(
+            wire2, wire1,
+            "reloading from persisted post-send state must not reuse the first wire"
+        );
     }
 
     #[test]
@@ -872,14 +1287,18 @@ mod tests {
             Session::initiate(&ik, &bundle, SessionParams::default(), &mut rng).expect("initiate");
         let peer = *bundle.identity.as_bytes();
 
-        let wire = alice.encrypt(0, b"before restart", &mut rng).expect("encrypt");
+        let wire = alice
+            .encrypt(0, b"before restart", &mut rng)
+            .expect("encrypt");
         store.save_session(&peer, &alice, &sealer).expect("save");
 
         let mut restored = store
             .load_session(&peer, &sealer)
             .expect("load")
             .expect("session present");
-        let wire2 = restored.encrypt(0, b"after restart", &mut rng).expect("encrypt");
+        let wire2 = restored
+            .encrypt(0, b"after restart", &mut rng)
+            .expect("encrypt");
 
         // Both messages open on the far side, in order.
         let (mut bob, first) =
@@ -949,7 +1368,7 @@ mod tests {
         assert!(pin.is_pinned_to_rn(), "the pin must outlive the session");
         assert!(
             matches!(
-                select_wire_version(&pin, false, RnPolicy::Opportunistic),
+                select_wire_version(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic),
                 Err(RnError::PinnedToRn)
             ),
             "state loss must not open a downgrade window"
@@ -1028,7 +1447,7 @@ mod tests {
         assert!(matches!(
             select_wire_version(
                 &store.load_pin(&peer).expect("pin"),
-                false,
+                PeerCapabilities::Absent,
                 RnPolicy::Opportunistic
             ),
             Err(RnError::PinnedToRn)
@@ -1044,11 +1463,7 @@ mod tests {
         let peer = [42u8; 32];
         std::fs::create_dir_all(&store.dir).expect("mkdir");
         let path = store.session_path(&peer);
-        std::fs::write(
-            &path,
-            vec![b'x'; MAX_SESSION_FILE_BYTES as usize + 1],
-        )
-        .expect("write");
+        std::fs::write(&path, vec![b'x'; MAX_SESSION_FILE_BYTES as usize + 1]).expect("write");
         assert!(matches!(
             store.load_session(&peer, &sealer),
             Err(RnError::Storage(_))
@@ -1090,8 +1505,7 @@ mod tests {
         // Fill the remaining slots with placeholder records. Their
         // contents do not matter; only the record count does.
         for i in 0..(MAX_SESSION_RECORDS - 1) {
-            std::fs::write(store.dir.join(format!("filler{i:04}.session")), b"{}")
-                .expect("filler");
+            std::fs::write(store.dir.join(format!("filler{i:04}.session")), b"{}").expect("filler");
         }
 
         let (_p2, bundle2) = fresh_bundle(&mut rng);
