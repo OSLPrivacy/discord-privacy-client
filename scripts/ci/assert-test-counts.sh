@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ON SUMMING MULTIPLE SUMMARIES, because it is right in one place and risky in
+# another. cargo prints one `test result:` line per test binary, and
+# keyserver-cf's `npm test` runs two vitest invocations (310 + 3 = 313), so
+# summing is the CORRECT reading for both. But the same behaviour would also
+# sum a RETRIED job's duplicate summary and report twice the tests that exist,
+# which would let a real drop hide behind a retry. If retries are ever enabled
+# for these jobs, this needs to de-duplicate identical summaries rather than
+# add them. Recorded here rather than only in the report so it is read by
+# whoever changes this function.
+
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 FLOORS_FILE="$SCRIPT_DIR/test-count-floors.txt"
 SELF_TEST_TEMP_DIR=
@@ -142,6 +152,11 @@ expect_status() {
   fi
 }
 
+floor_for() {
+  # Single source of truth for a floor, so fixtures and the real check agree.
+  grep -E "^$1=" "$FLOORS_FILE" | head -1 | cut -d= -f2 | tr -d '[:space:]' | cut -d'#' -f1
+}
+
 run_self_test() {
   self_test_passed=0
   self_test_failed=0
@@ -149,21 +164,32 @@ run_self_test() {
   SELF_TEST_TEMP_DIR=$(mktemp -d)
   trap 'rm -rf -- "$SELF_TEST_TEMP_DIR"' EXIT
 
+  # Fixtures are DERIVED FROM THE FLOORS FILE, never hard-coded. A fixture
+  # tuned to a specific floor silently stops testing anything the moment that
+  # floor moves: the `vitest below floor` case was written as 378 against a
+  # floor of 379, and when the floor gained headroom at 360 the fixture became
+  # an above-floor case that could no longer fail. Computing at/below from the
+  # live floor means these cases cannot rot.
+  local f_core f_ui f_node
+  f_core="$(floor_for osl-hub-core)"
+  f_ui="$(floor_for osl-hub-ui)"
+  f_node="$(floor_for keyserver-legacy)"
+
   write_fixture "$SELF_TEST_TEMP_DIR/cargo-at-floor.txt" \
-'test result: ok. 237 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+"test result: ok. $f_core passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
   write_fixture "$SELF_TEST_TEMP_DIR/cargo-above-floor.txt" \
-'test result: ok. 247 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+"test result: ok. $((f_core + 10)) passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
   write_fixture "$SELF_TEST_TEMP_DIR/vitest-at-floor.txt" \
-'Tests  379 passed (379)'
+"Tests  $f_ui passed ($f_ui)"
   write_fixture "$SELF_TEST_TEMP_DIR/node-at-floor.txt" \
-'# pass 72'
+"# pass $f_node"
   write_fixture "$SELF_TEST_TEMP_DIR/cargo-multiple.txt" \
-'test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+"test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. $((f_core - 100)) passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
   write_fixture "$SELF_TEST_TEMP_DIR/cargo-below-floor.txt" \
-'test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+"test result: ok. $((f_core - 1)) passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
   write_fixture "$SELF_TEST_TEMP_DIR/vitest-below-floor.txt" \
-'Tests  1 failed | 378 passed (379)'
+"Tests  1 failed | $((f_ui - 1)) passed ($f_ui)"
   write_fixture "$SELF_TEST_TEMP_DIR/no-count.txt" \
 'all done, nothing to see here'
   : > "$SELF_TEST_TEMP_DIR/empty.txt"

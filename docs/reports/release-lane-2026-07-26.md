@@ -1056,6 +1056,48 @@ behaviour — same mechanism, right in one place and risky in another. And `webv
 but **not** git-ignored, so a stray `git add -A` would commit build output; another reason this lane
 commits with explicit pathspecs only.
 
+## Floors given headroom, and one proven by starving it
+
+**Headroom, and the reasoning.** Every floor is now set ~5% **below** its measured count, rounded
+down: `osl-hub-core` 237→225, `keyserver-cf` 313→297, `osl-hub-ui` 379→360, `keyserver-legacy`
+72→68, `cipher-store-cf` 18→17. A floor at exactly the current count fires on every legitimate
+change — merging two tests, deleting a redundant case — and a gate that cries wolf on ordinary work
+is switched off within a week. 5% absorbs normal churn while still catching what this exists for: a
+module silently ceasing to compile and taking tens or hundreds of tests with it. `webview` stays at
+**1 with no headroom**, because a one-test suite cannot have a floor below 1 without disabling the
+check; that is stated in the file rather than left as an oddity.
+
+**Changing the floors immediately broke the self-test, which is the self-test working.** The
+`vitest below floor` fixture was hard-coded as `378 passed` against a floor of 379. Once the floor
+gained headroom at 360, that fixture became an *above*-floor case that could no longer fail —
+10 passed, 1 failed. A fixture tuned to a specific number silently stops testing anything the moment
+that number moves. Fixed at the root: at-floor and below-floor fixtures are now **derived from the
+floors file** via a shared `floor_for` helper, so they cannot rot when a floor changes. Back to
+11 passed, 0 failed, and now structurally rot-proof rather than re-tuned.
+
+**Starvation proof, with the honest detail of which path fired.** Against a real suite and real
+output, not a fixture:
+
+```
+cipher-store-cf full run    -> Tests 18 passed   -> gate PASSES (floor 17)
+cipher-store-cf starved     -> no count emitted  -> gate REJECTS
+```
+
+The starved run was rejected via the **unparseable-count** path, not the below-floor path: vitest
+with zero matching tests prints no `Tests N passed` line at all. That is the fail-closed branch, and
+it is the more dangerous case — a suite that produces no count is a suite nobody measured, and
+treating that as a pass is the whole defect family. The below-floor branch itself is exercised by
+the derived fixtures. Both are proven; they are proven by different means, and I would rather say
+which than let one result cover both.
+
+**The summing caveat now sits beside the code**, not only here: cargo prints one summary per test
+binary and `keyserver-cf` runs two vitest invocations, so summing is *correct* for both — but it
+would also sum a retried job's duplicate summary and hide a real drop behind a retry. If retries are
+ever enabled for these jobs, that function must de-duplicate rather than add.
+
+Five of six floors remain **unwired**. They are now trustworthy numbers; wiring them is the next
+step and was not done here.
+
 ## Acceptance rows this earns
 
 Proposed for the single writer of the build checklist to adjudicate; deliberately conservative.

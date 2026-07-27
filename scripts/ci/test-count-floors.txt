@@ -2,27 +2,35 @@
 # fails CI, because the count can only drop when something stopped being
 # compiled or collected. See scripts/ci/assert-test-counts.sh.
 #
-# PROVENANCE MATTERS. Every floor here must be a number somebody measured and
-# can point at. An unverified floor is worse than none: it looks like
-# enforcement and enforces nothing.
+# PROVENANCE MATTERS. Every floor must be a number somebody measured and can
+# point at. An unverified floor is worse than none: it reads as protection
+# and enforces nothing. A floor of 3 against a real 313 would have stayed
+# silent while 99% of a suite vanished - that happened here on 2026-07-27.
 #
-# STATUS 2026-07-27: only `osl-hub-core` is actually asserted anywhere
-# (rust-test.yml). The rest are declared and NOT wired, so they currently
-# enforce nothing. Do not read them as protection.
+# MEASURE ON A CLEAN TREE. webview reports 2 in a built working tree and 1 in
+# a clean checkout, because vitest collects the compiled dist/index.test.js as
+# well as src/index.test.ts. Raising that floor to the dirty-tree number would
+# fail every clean CI run permanently. All measurements below were taken with
+# build output absent.
 #
-# MEASURE ON A CLEAN TREE. webview's count is 2 in a working tree that has
-# been built and 1 in a clean checkout, because vitest collects the compiled
-# dist/index.test.js as well as src/index.test.ts. Raising that floor to the
-# dirty-tree number would fail every clean CI run, permanently. All values
-# below were taken with build output absent.
+# HEADROOM, and why. Each floor is set roughly 5% BELOW its measured count,
+# rounded down. A floor set at exactly the current count fires on every
+# legitimate change - merging two tests, deleting a redundant case - and a
+# gate that cries wolf on ordinary work gets switched off within a week. 5%
+# absorbs normal churn while still catching the failure this exists for, which
+# is a module silently ceasing to compile and taking tens or hundreds of tests
+# with it. Raise a floor deliberately when a suite grows; never lower one to
+# make a red build go away.
+#
+# STATUS 2026-07-27: only `osl-hub-core` is asserted anywhere (rust-test.yml).
+# The other five are measured but NOT yet wired, so they enforce nothing today.
 
-osl-hub-core=237        # measured, Windows CI, --features core (NOT core,discord-qa-shell)
-keyserver-cf=313        # measured 2026-07-27; `npm test` runs TWO vitest invocations,
-                        # 310 + 3. The previous floor of 3 was read from the tail of the
-                        # output and missed the first invocation entirely - off by ~100x,
-                        # so a drop from 313 to 4 would have passed.
-cipher-store-cf=18      # measured 2026-07-27, matches
-osl-hub-ui=379          # measured 2026-07-27, matches; not wired
-webview=1               # measured 2026-07-27 on a CLEAN tree. Do NOT raise to 2:
-                        # that is src + the compiled dist copy. Not wired.
-keyserver-legacy=72     # measured 2026-07-27, matches; not wired
+# suite            floor  measured  headroom
+osl-hub-core=225        # 237, ~5%. Windows CI, --features core (NOT core,discord-qa-shell)
+keyserver-cf=297        # 313, ~5%. npm test runs TWO vitest invocations, 310 + 3
+osl-hub-ui=360          # 379, ~5%
+keyserver-legacy=68     # 72, ~5%
+cipher-store-cf=17      # 18, ~5% rounds to 17
+webview=1               # 1, NO headroom possible - a one-test suite cannot have a
+                        # floor below 1 without disabling the check entirely. Do NOT
+                        # raise to 2: that is src plus the compiled dist copy.
