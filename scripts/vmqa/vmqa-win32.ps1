@@ -36,10 +36,39 @@ $ErrorActionPreference = 'Stop'
 # Refuse to load anywhere but a QA VM. This is the whole safety story for the injection APIs
 # below, so it is a load-time hard failure with no override switch. A -Force here would be a
 # loaded gun pointed at the owner's desktop.
+#
+# The check is IMDS, NOT the Windows hostname. Two reasons, the first found the hard way:
+#   1. This fleet's Windows hostnames are OSLCLIENT1, OSLCLIENT2 and so on. They do NOT match
+#      'OSL-*', which needs a literal hyphen, so a hostname guard refused to load on the exact
+#      machines it exists to permit. A guard that fails closed on its own fleet is still a bug.
+#   2. A hostname is trivially spoofable - anyone can rename a desktop 'OSL-whatever'. The Azure
+#      Instance Metadata Service at 169.254.169.254 is link-local and answers only on an Azure
+#      VM, so a developer desktop cannot satisfy it at all, and the name it returns is the
+#      authoritative Azure resource name rather than something a user typed.
+# The allow-list is closed: an Azure VM outside this fleet is refused too.
 # --------------------------------------------------------------------------------------------
-if ($env:COMPUTERNAME -notlike 'OSL-*') {
-    throw "VMQA_WRONG_MACHINE: vmqa-win32.ps1 synthesises real mouse and keyboard input and may " +
-          "only load on an isolated OSL-* QA VM. This machine is '$env:COMPUTERNAME'."
+$script:VmqaAllowedVms = @(
+    'OSL-Azure-Client-1', 'OSL-Azure-Client-2',
+    'OSL-Independent-Client-1', 'OSL-Independent-Client-2',
+    'OSL-WhatsApp-Client-1', 'OSL-WhatsApp-Client-2',
+    'OSL-Telegram-QA-1', 'OSL-Telegram-QA-2',
+    'OSL-Signal-Client-1', 'OSL-Signal-Client-2'
+)
+
+$script:VmqaMachineName = $null
+try {
+    $script:VmqaMachineName = ([string](Invoke-RestMethod -Method Get -TimeoutSec 5 `
+        -Uri 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text' `
+        -Headers @{ Metadata = 'true' })).Trim()
+} catch {
+    throw "VMQA_NOT_A_QA_VM: vmqa-win32.ps1 synthesises real mouse and keyboard input and may " +
+          "only load on an isolated Azure QA VM. Azure IMDS did not answer, so this is not one " +
+          "(hostname '$env:COMPUTERNAME')."
+}
+
+if ($script:VmqaAllowedVms -notcontains $script:VmqaMachineName) {
+    throw "VMQA_WRONG_MACHINE: IMDS reports this VM is '$($script:VmqaMachineName)', which is not " +
+          "in the QA fleet allow-list. Refusing to load an input-synthesis module here."
 }
 
 Add-Type -AssemblyName System.Windows.Forms

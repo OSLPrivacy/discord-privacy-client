@@ -34,8 +34,27 @@ $Win32ModulePath = Join-Path $AgentRoot 'vmqa-win32.ps1'
 $LogPath = Join-Path $AgentRoot 'agent.log'
 $AgentStartedUtc = [datetime]::UtcNow
 
-if ($env:COMPUTERNAME -notlike 'OSL-*') {
-    throw "VMQA_WRONG_MACHINE: refusing to run the VMQA agent on '$env:COMPUTERNAME'. These scripts synthesize input and are only allowed on disposable OSL-* QA VMs."
+# Guard on Azure IMDS, not the Windows hostname. This fleet's hostnames are OSLCLIENT1 etc, which
+# do not match 'OSL-*' (that needs a literal hyphen), so a hostname guard refused to load on the
+# exact machines it exists to permit. IMDS is also unspoofable off-Azure: 169.254.169.254 is
+# link-local and answers only on an Azure VM, and it returns the authoritative resource name
+# rather than something a user can rename.
+$VmqaAllowedVms = @(
+    'OSL-Azure-Client-1', 'OSL-Azure-Client-2',
+    'OSL-Independent-Client-1', 'OSL-Independent-Client-2',
+    'OSL-WhatsApp-Client-1', 'OSL-WhatsApp-Client-2',
+    'OSL-Telegram-QA-1', 'OSL-Telegram-QA-2',
+    'OSL-Signal-Client-1', 'OSL-Signal-Client-2'
+)
+try {
+    $VmqaImdsName = ([string](Invoke-RestMethod -Method Get -TimeoutSec 5 `
+        -Uri 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text' `
+        -Headers @{ Metadata = 'true' })).Trim()
+} catch {
+    throw "VMQA_NOT_A_QA_VM: Azure IMDS did not answer, so this is not a QA VM (hostname '$env:COMPUTERNAME'). The VMQA agent synthesizes input and refuses to run here."
+}
+if ($VmqaAllowedVms -notcontains $VmqaImdsName) {
+    throw "VMQA_WRONG_MACHINE: IMDS reports '$VmqaImdsName', which is not in the QA fleet allow-list. Refusing to run the VMQA agent."
 }
 
 . $Win32ModulePath
@@ -85,8 +104,13 @@ function Clear-StorageToken {
 }
 
 function Get-StorageToken {
-    $refreshAfterUtc = $script:StorageTokenExpiresUtc.AddMinutes(-5)
-    if (-not [string]::IsNullOrWhiteSpace($script:StorageToken) -and [datetime]::UtcNow -lt $refreshAfterUtc) {
+    # Do the arithmetic on UtcNow, not on the cached expiry. The expiry starts at
+    # [datetime]::MinValue, and MinValue.AddMinutes(-5) UNDERFLOWS with "the added or subtracted
+    # value results in an un-representable DateTime" — thrown on the very first call, before a
+    # token was ever fetched, so the agent could not make a single blob request. Adding to UtcNow
+    # cannot overflow, and it also short-circuits on the empty-token check first.
+    if (-not [string]::IsNullOrWhiteSpace($script:StorageToken) -and
+        $script:StorageTokenExpiresUtc -gt [datetime]::UtcNow.AddMinutes(5)) {
         return $script:StorageToken
     }
 
@@ -129,14 +153,40 @@ function New-BlobUri {
 
 function Get-HttpStatusCode {
     param([Parameter(Mandatory)]$ErrorRecord)
-    $response = $ErrorRecord.Exception.Response
-    if ($null -eq $response) {
-        return $null
+    # Probe for the property instead of dereferencing it. Under Set-StrictMode -Version Latest,
+    # touching a property the object does not have is a THROWN error, so reading
+    # $ErrorRecord.Exception.Response directly turns every non-web exception into
+    # "The property 'Response' cannot be found on this object" — an error handler that
+    # manufactures its own failure and destroys the original one. That masked the real blob
+    # error for an entire agent run and looked like a transport outage.
+    $ex = $ErrorRecord.Exception
+    while ($null -ne $ex) {
+        $responseProperty = $ex.PSObject.Properties['Response']
+        if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
+            $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+            if ($null -ne $statusProperty -and $null -ne $statusProperty.Value) {
+                $status = $statusProperty.Value
+                if ($status -is [int]) { return [int]$status }
+                $enumValue = $status.PSObject.Properties['value__']
+                if ($null -ne $enumValue) { return [int]$enumValue.Value }
+            }
+        }
+        $ex = $ex.InnerException
     }
-    if ($response.StatusCode -is [int]) {
-        return [int]$response.StatusCode
+    return $null
+}
+
+function Get-ErrorDetail {
+    <# The full exception chain, so a failure is diagnosable from the log alone. An agent that
+       cannot be reached except by RDP is exactly what this transport exists to avoid. #>
+    param([Parameter(Mandatory)]$ErrorRecord)
+    $parts = @()
+    $ex = $ErrorRecord.Exception
+    while ($null -ne $ex) {
+        $parts += "$($ex.GetType().FullName): $($ex.Message)"
+        $ex = $ex.InnerException
     }
-    return [int]$response.StatusCode.value__
+    return ($parts -join ' <- ')
 }
 
 function Invoke-BlobRequest {
@@ -215,7 +265,21 @@ function Get-BlobText {
     param([Parameter(Mandatory)][string]$Name)
     try {
         $response = Invoke-BlobRequest -Method GET -Name $Name
-        return [string]$response.Content
+        # Decode bytes explicitly. These blobs are uploaded as application/octet-stream, so
+        # Invoke-WebRequest hands back a byte[], and [string] on a byte[] renders it as
+        # space-separated DECIMAL BYTE VALUES ("102 97 49 ...") rather than the text. That made
+        # every request's sha256 comparison fail and graded legitimate requests 'torn-request' -
+        # a harness that refuses to run anything while reporting a plausible-looking reason.
+        $content = $response.Content
+        if ($content -is [byte[]]) {
+            $text = [Text.UTF8Encoding]::new($false).GetString($content)
+        } else {
+            $text = [string]$content
+        }
+        # Decoding the bytes as UTF-8 turns any real BOM into a single U+FEFF, which trims
+        # cleanly. This must stay generic: a .ready blob is a bare 64-char hex digest with no
+        # JSON punctuation to anchor on, so anything cleverer than a BOM trim risks corrupting it.
+        return $text.TrimStart([char]0xFEFF)
     } catch {
         if ((Get-HttpStatusCode -ErrorRecord $_) -eq 404) {
             return $null
@@ -272,7 +336,20 @@ function Get-BlobList {
             $query['marker'] = $marker
         }
         $response = Invoke-BlobRequest -Method GET -Query $query
-        [xml]$xml = [string]$response.Content
+        # Strip the byte-order mark before the [xml] cast. Azure returns the List Blobs body
+        # BOM-prefixed, and casting a string that starts with U+FEFF throws "the specified node
+        # cannot be inserted as the valid child of this node" - which names the XML tree and reads
+        # like malformed markup rather than a leading character. Same BOM family as the trap where
+        # a BOM makes the app's QA trigger fall through to the legacy SEND verb.
+        $listBody = [string]$response.Content
+        # Trim to the first '<' rather than to U+FEFF. Invoke-WebRequest hands back the BOM as the
+        # three mis-decoded characters "ï»¿" (the raw EF BB BF read as Latin-1), NOT as a single
+        # U+FEFF, so TrimStart([char]0xFEFF) silently matches nothing and the cast still fails.
+        # Cutting to the first angle bracket is decoding-agnostic and cannot be fooled by however
+        # the stream happened to be interpreted.
+        $angle = $listBody.IndexOf('<')
+        if ($angle -gt 0) { $listBody = $listBody.Substring($angle) }
+        [xml]$xml = $listBody
         foreach ($blob in @($xml.EnumerationResults.Blobs.Blob)) {
             if ($null -ne $blob -and -not [string]::IsNullOrWhiteSpace($blob.Name)) {
                 $names += [string]$blob.Name
@@ -650,14 +727,19 @@ function Invoke-Step {
 
 function Get-OverallStatus {
     param([Parameter(Mandatory)]$Steps)
+    # Every filter result is wrapped in @() before .Count. Where-Object that matches nothing
+    # returns $null, and under Set-StrictMode -Version Latest $null.Count is a thrown
+    # PropertyNotFoundException — so a run in which EVERY step passed (the empty not-pass filter)
+    # crashed the grader instead of returning 'pass'. The all-green path was the broken one, which
+    # is why it survived every earlier failing run.
     $statuses = @($Steps | ForEach-Object { $_['status'] })
-    if (($statuses | Where-Object { $_ -ne 'pass' }).Count -eq 0) {
+    if (@($statuses | Where-Object { $_ -ne 'pass' }).Count -eq 0) {
         return 'pass'
     }
-    if (($statuses | Where-Object { $_ -eq 'blocked' }).Count -gt 0) {
+    if (@($statuses | Where-Object { $_ -eq 'blocked' }).Count -gt 0) {
         return 'blocked'
     }
-    if (($statuses | Where-Object { $_ -eq 'fail' }).Count -gt 0) {
+    if (@($statuses | Where-Object { $_ -eq 'fail' }).Count -gt 0) {
         return 'fail'
     }
     return 'unmeasurable'
@@ -830,7 +912,7 @@ while ($true) {
         }
         Start-Sleep -Seconds $PollSeconds
     } catch {
-        $failure = $_.Exception.Message
+        $failure = Get-ErrorDetail -ErrorRecord $_
         Write-Log "loop error: $failure"
         try {
             if ([string]::IsNullOrWhiteSpace($vmName)) {
@@ -838,7 +920,7 @@ while ($true) {
             }
             Write-Heartbeat -VmName $vmName -BlobState 'failed' -Failure $failure
         } catch {
-            Write-Log ("heartbeat failed: " + $_.Exception.Message)
+            Write-Log ("heartbeat failed: " + (Get-ErrorDetail -ErrorRecord $_))
         }
         if ($RunOnce) {
             break

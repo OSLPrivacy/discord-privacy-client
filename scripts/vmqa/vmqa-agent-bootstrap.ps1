@@ -29,8 +29,26 @@ function Assert-Elevated {
 }
 
 function Assert-QaMachine {
-    if ($env:COMPUTERNAME -notlike 'OSL-*') {
-        throw "VMQA_WRONG_MACHINE: refusing to install the VMQA agent on '$env:COMPUTERNAME'. These scripts synthesize input and are only allowed on disposable OSL-* QA VMs."
+    # Guard on Azure IMDS, not the Windows hostname. This fleet's hostnames are OSLCLIENT1 etc,
+    # which do not match 'OSL-*' (that needs a literal hyphen), so a hostname guard refused to
+    # install on the exact machines it exists to permit. IMDS is also unspoofable off-Azure:
+    # 169.254.169.254 is link-local and answers only on an Azure VM.
+    $allowedVms = @(
+        'OSL-Azure-Client-1', 'OSL-Azure-Client-2',
+        'OSL-Independent-Client-1', 'OSL-Independent-Client-2',
+        'OSL-WhatsApp-Client-1', 'OSL-WhatsApp-Client-2',
+        'OSL-Telegram-QA-1', 'OSL-Telegram-QA-2',
+        'OSL-Signal-Client-1', 'OSL-Signal-Client-2'
+    )
+    try {
+        $imdsName = ([string](Invoke-RestMethod -Method Get -TimeoutSec 5 `
+            -Uri 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text' `
+            -Headers @{ Metadata = 'true' })).Trim()
+    } catch {
+        throw "VMQA_NOT_A_QA_VM: Azure IMDS did not answer, so this is not a QA VM (hostname '$env:COMPUTERNAME'). Refusing to install an input-synthesis agent here."
+    }
+    if ($allowedVms -notcontains $imdsName) {
+        throw "VMQA_WRONG_MACHINE: IMDS reports '$imdsName', which is not in the QA fleet allow-list. Refusing to install the VMQA agent."
     }
 }
 
