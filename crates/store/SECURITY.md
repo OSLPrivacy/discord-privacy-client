@@ -10,18 +10,22 @@ disk.
 
 ## At-rest encryption
 
-Each `messages` row stores XChaCha20-Poly1305 ciphertext + a
-per-row 24-byte random nonce. The data key is HKDF-SHA256
-derived from the caller-supplied 32-byte `identity_secret`:
+The store master key is HKDF-SHA256 derived from the caller-supplied
+32-byte `identity_secret`:
 
 ```
 key = HKDF-SHA256(salt = "", ikm = identity_secret, info = "osl-message-store-v1")
 ```
 
-The AAD for each row is its `discord_message_id` UTF-8 bytes,
-binding the ciphertext to its row identity (an attacker who
-shuffles `ciphertext` / `nonce` blobs across rows triggers AEAD
-tag failure rather than recovering cross-row plaintext).
+Each live message gets a unique random 32-byte content key. Its body
+is sealed under that key, and the content key is separately sealed
+under the store master key. Body, wrapper and sealed metadata use
+separate AAD domains; each includes the message blind-index selector
+and `content_version`. Moving an envelope across rows or replaying
+only an old envelope/version therefore fails authentication.
+
+Attachments still use the pre-v5 direct-master-key construction. They
+are an explicit remaining A7 gap, not covered by the message-key claim.
 
 The blind-index key is a separate HKDF-SHA256 derivation from the
 same `identity_secret`:
@@ -64,13 +68,16 @@ Dumping `messages.sqlite` with `sqlite3 .schema` shows exactly:
   finishes the job on next open. See the migration section for what
   `VACUUM` does and does not do.
 - `messages(mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct,
-  ciphertext, nonce, seq, burned, burned_at, wrapped_key)` —
+  ciphertext, nonce, seq, burned, burned_at, content_version,
+  wrapped_key_nonce, wrapped_key)` —
   `mid_bi`, `chan_bi` and `sender_bi` are 32-byte keyed blind
   indexes. The real Discord message id, channel id, sender Discord
   id, sender OSL user id and `decrypted_at` timestamp live in
   `meta_ct`, sealed with `meta_nonce`. The message body lives in
-  `ciphertext`. `seq` is an opaque monotonic ordering counter; it
-  replaces the old plaintext `decrypted_at` ordering index.
+  `ciphertext`; the per-record content-key envelope lives in
+  `wrapped_key_nonce` / `wrapped_key`. `seq` is an opaque monotonic
+  ordering counter; it replaces the old plaintext `decrypted_at`
+  ordering index.
 - `attachments(ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct,
   ciphertext, nonce, seq)` — `ck_bi`, `mid_bi` and `sender_bi` are
   blind indexes. The real cache key, message id, random filename,
@@ -163,7 +170,7 @@ a `mark_burned` that only set a flag; it had not been true for some
 time, and the section understated what the code does.
 
 - Overwrites `ciphertext` and `nonce` with zeroes in place, and
-  nulls `wrapped_key`.
+  nulls both `wrapped_key_nonce` and `wrapped_key`.
 - Sets `messages.burned = 1` so `get` returns `None` and
   `list_by_channel` filters the row out. The zeroed row remains as
   a burn-acknowledgment stub.
@@ -230,20 +237,24 @@ index key are both in hand after unsealing. A separate
 authenticator would be redundant because the sealed blob already
 authenticates the metadata it hides.
 
-The message body AAD is still the real `discord_message_id`, recovered
-from sealed metadata before opening the body. That is why the v3 to v4
-migration can leave every message body ciphertext untouched.
+In schema v5, message metadata, wrapped key and body are independently
+authenticated against the row's blind-index selector and content
+version. The v4 to v5 migration therefore re-encrypts live message
+bodies under fresh content keys.
 
-## Schema v4 migration
+## Schema v4 and v5 migrations
 
 The v3 to v4 migration rewrites every row inside one SQLite
 transaction. It builds v4 tables beside the old tables, computes blind
 indexes, seals metadata, drops the old tables, renames the v4 tables,
 recreates the indexes and then runs `VACUUM`.
 
-For message rows, `ciphertext`, `nonce`, `burned`, `burned_at` and
-`wrapped_key` are copied byte-for-byte. Message bodies are never
-re-encrypted, because the body AAD remains `discord_message_id`.
+The subsequent v4 to v5 migration atomically rebuilds `messages`,
+decrypts each live v4 body under the verified master key, generates a
+fresh content key, re-encrypts the body, and stores the authenticated
+wrapper. A live legacy row with a non-NULL wrapper is refused
+byte-for-byte before migration because those bytes have no
+authenticated format marker. Burned rows remain zeroed and wrapperless.
 For attachment rows, `ciphertext` and `nonce` are copied
 byte-for-byte while the metadata is sealed into the new v4 shape.
 

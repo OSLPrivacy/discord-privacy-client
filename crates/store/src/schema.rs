@@ -13,7 +13,7 @@
 //!     `identity_secret` does not match the secret that
 //!     initialised the store.
 //!
-//! ## v4 schema (current)
+//! ## Current schema
 //!
 //! Identifiers are not stored. Each row keeps:
 //!
@@ -51,7 +51,11 @@ use rusqlite::{params, Connection};
 ///        keyed blind indexes; ordering runs against an opaque `seq`. Closes
 ///        the audit finding that an offline reader could reconstruct the
 ///        protected social graph without the store key.
-pub(crate) const SCHEMA_VERSION: u32 = 4;
+///   v5 — Message bodies use a fresh per-record content key. The store master
+///        key authenticates and wraps that content key; it no longer encrypts
+///        live message bodies directly.
+pub(crate) const SCHEMA_VERSION: u32 = 5;
+const PRIVACY_SCHEMA_VERSION: u32 = 4;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -72,8 +76,8 @@ CREATE TABLE IF NOT EXISTS _meta (
 );
 "#;
 
-/// v4 tables. No column here holds an identifier in the clear.
-const SCHEMA_V4: &str = r#"
+/// Current tables. No column here holds an identifier in the clear.
+const SCHEMA_CURRENT: &str = r#"
 CREATE TABLE IF NOT EXISTS messages (
     mid_bi BLOB PRIMARY KEY,
     chan_bi BLOB NOT NULL,
@@ -85,6 +89,8 @@ CREATE TABLE IF NOT EXISTS messages (
     seq INTEGER NOT NULL,
     burned INTEGER NOT NULL DEFAULT 0,
     burned_at INTEGER,
+    content_version INTEGER NOT NULL DEFAULT 1,
+    wrapped_key_nonce BLOB,
     wrapped_key BLOB,
 
     -- Null downgrade-guard columns. The exact final v3 reader (adff4e45)
@@ -194,7 +200,7 @@ pub(crate) fn migrate(
             )));
         }
         None if !table_exists(conn, "messages")? => {
-            // First-ever open with this DB file: straight to v4.
+            // First-ever open with this DB file: straight to the current schema.
             //
             // Creating the tables and stamping the version must commit
             // together. A crash between them leaves a `messages` table with no
@@ -204,7 +210,7 @@ pub(crate) fn migrate(
             // would leave a store that cannot be opened again at all.
             conn.execute_batch("BEGIN IMMEDIATE;")?;
             let created = (|| -> Result<(), StoreError> {
-                conn.execute_batch(SCHEMA_V4)?;
+                conn.execute_batch(SCHEMA_CURRENT)?;
                 write_meta_u32(conn, "schema_version", SCHEMA_VERSION)
             })();
             if let Err(e) = created {
@@ -215,19 +221,29 @@ pub(crate) fn migrate(
             return Ok(());
         }
         Some(v) if v == SCHEMA_VERSION => {
-            // Already current. An earlier v4 build may predate the null
-            // downgrade-guard columns, so add those before SCHEMA_V4 creates
+            // Already current. An earlier privacy-schema build may predate the null
+            // downgrade-guard columns, so add those before SCHEMA_CURRENT creates
             // the exact-v3 compatibility indexes that reference them.
             apply_columns(conn, "messages", V4_MESSAGE_DOWNGRADE_COLUMNS)?;
             apply_columns(conn, "attachments", V4_ATTACHMENT_DOWNGRADE_COLUMNS)?;
             // CREATE IF NOT EXISTS keeps this idempotent.
-            conn.execute_batch(SCHEMA_V4)?;
+            conn.execute_batch(SCHEMA_CURRENT)?;
             // Finish a scrub a previous run committed but did not complete.
+            run_pending_vacuum(conn)?;
+            return Ok(());
+        }
+        Some(PRIVACY_SCHEMA_VERSION) => {
+            migrate_v4_to_v5(conn, key)?;
             run_pending_vacuum(conn)?;
             return Ok(());
         }
         _ => {}
     }
+
+    // A pre-v4 live `wrapped_key` has no authenticated format or algorithm
+    // marker. Refuse before any legacy rewrite commits, so a later v5
+    // migration failure cannot strand the profile halfway between schemas.
+    refuse_ambiguous_legacy_wrappers(conn)?;
 
     // Legacy database (v1, v2 or v3, or an unstamped file that already has a
     // `messages` table). Bring the old shape up to a known v3 first so the
@@ -236,6 +252,7 @@ pub(crate) fn migrate(
     // The version stamp is written inside the migration's own transaction, so
     // there is deliberately no stamp here — see `migrate_v3_to_v4`.
     migrate_v3_to_v4(conn, key, index_key)?;
+    migrate_v4_to_v5(conn, key)?;
     Ok(())
 }
 
@@ -574,7 +591,9 @@ ALTER TABLE messages_v4 RENAME TO messages;
 ALTER TABLE attachments_v4 RENAME TO attachments;
 "#,
     )?;
-    // Stamp the version INSIDE the same transaction as the rename.
+    // Stamp the privacy-schema version INSIDE the same transaction as the
+    // rename. The v4→v5 message-key migration runs as a separate atomic rewrite
+    // immediately after this function returns.
     //
     // Stamping after the commit leaves a window in which a crash produces a
     // database whose tables are v4 but whose recorded version is still 3. The
@@ -582,7 +601,7 @@ ALTER TABLE attachments_v4 RENAME TO attachments;
     // then fail reading `discord_message_id`, so the store would not open at
     // all. Committing the shape and the version together makes the migration
     // atomic: a crash either leaves a whole v3 database or a whole v4 one.
-    write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+    write_meta_u32(conn, "schema_version", PRIVACY_SCHEMA_VERSION)?;
     // The VACUUM that scrubs the old plaintext pages cannot run inside a
     // transaction, so it necessarily happens after this commit. Record that it
     // is owed. If the process dies in between, the data is already correct but
@@ -594,7 +613,185 @@ ALTER TABLE attachments_v4 RENAME TO attachments;
 
     // Recreate indexes and scrub the freed pages that still hold the old
     // plaintext identifiers.
-    conn.execute_batch(SCHEMA_V4)?;
+    conn.execute_batch(SCHEMA_CURRENT)?;
+    run_pending_vacuum(conn)?;
+    Ok(())
+}
+
+/// Rewrite v4 message bodies into the v5 per-record content-key envelope.
+///
+/// Attachments deliberately remain byte-for-byte on their v4 construction.
+/// They have a different selector and lifecycle and therefore require their own
+/// schema change rather than borrowing a message wrapper by implication.
+fn migrate_v4_to_v5(conn: &Connection, key: &aead::Key) -> Result<(), StoreError> {
+    conn.execute_batch(
+        r#"
+BEGIN IMMEDIATE;
+CREATE TABLE messages_v5 (
+    mid_bi BLOB PRIMARY KEY,
+    chan_bi BLOB NOT NULL,
+    sender_bi BLOB NOT NULL,
+    meta_nonce BLOB NOT NULL,
+    meta_ct BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    seq INTEGER NOT NULL,
+    burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
+    content_version INTEGER NOT NULL,
+    wrapped_key_nonce BLOB,
+    wrapped_key BLOB,
+    discord_message_id TEXT,
+    channel_id TEXT,
+    sender_discord_id TEXT,
+    sender_osl_user_id TEXT,
+    decrypted_at INTEGER,
+    scope_type TEXT,
+    scope_id TEXT,
+    meta_tag BLOB
+);
+"#,
+    )?;
+
+    let result = (|| -> Result<(), StoreError> {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            i64,
+            i64,
+            Option<i64>,
+            Option<Vec<u8>>,
+        )> = {
+            let mut stmt = conn.prepare(
+                "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
+                        ciphertext, nonce, seq, burned, burned_at, wrapped_key \
+                   FROM messages ORDER BY seq ASC, rowid ASC",
+            )?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+
+        for (
+            mid_bi,
+            chan_bi,
+            sender_bi,
+            old_meta_nonce,
+            old_meta_ct,
+            old_ciphertext,
+            old_nonce,
+            seq,
+            burned,
+            burned_at,
+            legacy_wrapped_key,
+        ) in rows
+        {
+            let meta_bytes = cipher::unseal(key, &mid_bi, &old_meta_nonce, &old_meta_ct)?;
+            let meta = cipher::decode_message_meta(&meta_bytes)?;
+            let content_version = 1i64;
+            let (meta_nonce, meta_ct) = cipher::seal(
+                key,
+                &cipher::message_meta_aad(&mid_bi, content_version),
+                &meta_bytes,
+            )?;
+
+            let (ciphertext, nonce, wrapped_key_nonce, wrapped_key) = if burned != 0 {
+                (
+                    vec![0; old_ciphertext.len()],
+                    vec![0; old_nonce.len()],
+                    None,
+                    None,
+                )
+            } else {
+                if legacy_wrapped_key.is_some() {
+                    return Err(StoreError::Schema(
+                        "live v4 message has an ambiguous non-NULL wrapped_key; \
+                         refusing to guess its format"
+                            .to_string(),
+                    ));
+                }
+                let plaintext = cipher::unseal(
+                    key,
+                    meta.discord_message_id.as_bytes(),
+                    &old_nonce,
+                    &old_ciphertext,
+                )?;
+                let sealed = cipher::seal_message_body(key, &mid_bi, content_version, &plaintext)?;
+                (
+                    sealed.ciphertext,
+                    sealed.nonce,
+                    Some(sealed.wrapped_key_nonce),
+                    Some(sealed.wrapped_key),
+                )
+            };
+
+            conn.execute(
+                "INSERT INTO messages_v5 \
+                    (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
+                     ciphertext, nonce, seq, burned, burned_at, content_version, \
+                     wrapped_key_nonce, wrapped_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    mid_bi,
+                    chan_bi,
+                    sender_bi,
+                    meta_nonce,
+                    meta_ct,
+                    ciphertext,
+                    nonce,
+                    seq,
+                    burned,
+                    burned_at,
+                    content_version,
+                    wrapped_key_nonce,
+                    wrapped_key
+                ],
+            )?;
+        }
+
+        conn.execute_batch(
+            r#"
+DROP TABLE messages;
+ALTER TABLE messages_v5 RENAME TO messages;
+"#,
+        )?;
+        write_meta_u32(conn, "schema_version", SCHEMA_VERSION)?;
+        // Old v4 pages contain bodies directly encrypted by the master key.
+        // Record the post-commit scrub before committing the new shape.
+        write_meta_blob(conn, VACUUM_PENDING_KEY, &[1])?;
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(error);
+    }
+
+    conn.execute_batch(SCHEMA_CURRENT)?;
     run_pending_vacuum(conn)?;
     Ok(())
 }
@@ -624,6 +821,38 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, StoreError> {
         |r| r.get(0),
     )?;
     Ok(n > 0)
+}
+
+/// Refuse live wrappers written before v5, whose bytes have no authenticated
+/// format marker. v5 itself is excluded by its `content_version` column.
+///
+/// `MessageStore::open` calls this before persistent pragmas so refusal leaves
+/// the input file byte-for-byte unchanged. `migrate` calls it again to keep the
+/// migration entry point fail-closed if its call order is ever reused.
+pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), StoreError> {
+    if !table_exists(conn, "messages")? {
+        return Ok(());
+    }
+    let columns = existing_columns(conn, "messages")?;
+    if columns.iter().any(|column| column == "content_version")
+        || !columns.iter().any(|column| column == "wrapped_key")
+    {
+        return Ok(());
+    }
+    let ambiguous_live_wrappers: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages \
+          WHERE burned = 0 AND wrapped_key IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if ambiguous_live_wrappers != 0 {
+        return Err(StoreError::Schema(
+            "live legacy message has an ambiguous non-NULL wrapped_key; \
+             refusing to guess its format"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Apply a list of `ALTER TABLE <table> ADD COLUMN <name> <type>` statements,

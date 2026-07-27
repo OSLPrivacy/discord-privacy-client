@@ -596,7 +596,10 @@ fn store_persistence_surface_inventory_is_closed() {
     let connection_sites = sources
         .iter()
         .flat_map(|(name, source)| {
-            source
+            let production_source = source
+                .split_once("\n#[cfg(test)]")
+                .map_or(*source, |(production, _)| production);
+            production_source
                 .lines()
                 .filter(|line| line.contains("Connection::open"))
                 .map(|text| (*name, text.trim().to_owned()))
@@ -922,7 +925,7 @@ CREATE INDEX idx_messages_channel ON messages(channel_id, decrypted_at DESC);
                 ct,
                 nonce,
                 row.decrypted_at,
-                vec![0x5au8; 32],
+                Option::<Vec<u8>>::None,
             ],
         )
         .unwrap();
@@ -1004,7 +1007,7 @@ fn assert_legacy_privacy_migration(stamped: bool) {
     );
     drop(store);
 
-    assert_eq!(schema_version(&db_path), 4);
+    assert_eq!(schema_version(&db_path), 5);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let burned_rows: Vec<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64)> = {
         let mut stmt = conn
@@ -1066,10 +1069,79 @@ fn unstamped_legacy_database_migrates_without_identifiers_or_burned_bodies() {
     assert_legacy_privacy_migration(false);
 }
 
-/// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
-/// to v4 without losing anything.
 #[test]
-fn v1_database_migrates_all_the_way_to_v4() {
+fn ambiguous_live_legacy_wrapper_refuses_before_any_migration_mutation() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let live = sample(
+        "legacy-ambiguous-wrapper",
+        "legacy-wrapper-channel",
+        "legacy-wrapper-sender",
+        "legacy-wrapper-osl",
+        "legacy wrapper body",
+        10,
+    );
+    build_v2_shape_fixture(tmp.path(), std::slice::from_ref(&live), Some(2));
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    assert_eq!(
+        conn.execute(
+            "UPDATE messages SET wrapped_key = ?1 WHERE discord_message_id = ?2",
+            rusqlite::params![vec![0x5au8; 32], live.discord_message_id],
+        )
+        .unwrap(),
+        1
+    );
+    drop(conn);
+
+    let before = raw_file_bytes(&db_path);
+    let refusal = match MessageStore::open(tmp.path(), SECRET_A) {
+        Ok(_) => panic!("an unauthenticated legacy wrapper format was accepted"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        refusal,
+        store::StoreError::Schema(ref message)
+            if message == "live legacy message has an ambiguous non-NULL wrapped_key; refusing to guess its format"
+    ));
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let version: Vec<u8> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 2);
+    let legacy_columns: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') \
+              WHERE name = 'discord_message_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_columns, 1);
+    let wrapper: Vec<u8> = conn
+        .query_row(
+            "SELECT wrapped_key FROM messages WHERE discord_message_id = ?1",
+            rusqlite::params![live.discord_message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(wrapper, vec![0x5au8; 32]);
+    drop(conn);
+    assert_eq!(
+        raw_file_bytes(&db_path),
+        before,
+        "refusal must not rewrite the legacy database"
+    );
+}
+
+/// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
+/// to the current schema without losing anything.
+#[test]
+fn v1_database_migrates_all_the_way_to_v5() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let rows = vec![
@@ -1106,7 +1178,7 @@ fn v1_database_migrates_all_the_way_to_v4() {
         "v1 migration did not preserve newest-first ordering"
     );
 
-    // And it must land on v4, not stall at an intermediate version.
+    // And it must land on v5, not stall at an intermediate version.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let version: Vec<u8> = conn
         .query_row(
@@ -1115,7 +1187,46 @@ fn v1_database_migrates_all_the_way_to_v4() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 4);
+    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 5);
+    let (ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version): (
+        Vec<u8>,
+        Vec<u8>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        i64,
+    ) = conn
+        .query_row(
+            "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version \
+               FROM messages ORDER BY seq ASC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(content_version, 1);
+    assert!(
+        wrapped_key_nonce.is_some() && wrapped_key.is_some(),
+        "migration must create an authenticated per-record wrapper"
+    );
+    let nonce_array: [u8; crypto::aead::NONCE_SIZE] =
+        nonce.try_into().expect("migrated body nonce length");
+    assert!(
+        crypto::aead::open(
+            &v3_key(),
+            &crypto::aead::Nonce::from_bytes(nonce_array),
+            b"v1-message-998877",
+            &ciphertext,
+        )
+        .is_err(),
+        "a no-op v5 migration left the body directly decryptable by the master key"
+    );
 
     // The store must be usable afterwards, not merely readable.
     store
@@ -1435,11 +1546,11 @@ fn exact_adff4e45_reader_reaches_explicit_version_refusal() {
     drop(store);
 
     let refusal = adff4e45_schema_reader::open_schema(tmp.path())
-        .expect_err("the exact pre-v4 reader opened schema v4");
+        .expect_err("the exact pre-v4 reader opened schema v5");
     match refusal {
         store::StoreError::Schema(message) => assert_eq!(
             message,
-            "on-disk schema version 4 is newer than this binary supports (3); refusing to open",
+            "on-disk schema version 5 is newer than this binary supports (3); refusing to open",
             "the exact reader refused for a reason other than its version gate"
         ),
         other => panic!("exact pre-v4 reader did not reach its version refusal: {other}"),

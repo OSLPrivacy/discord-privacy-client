@@ -26,6 +26,8 @@ use thiserror::Error;
 ///   `Ok(None)` for absent rows; `mark_burned` returns
 ///   `NotFound` so callers can tell apart "I burned it" from
 ///   "there was nothing to burn."
+/// - `StorageBinding` — the opened SQLite connection does not resolve to the
+///   exact `messages.sqlite` path selected by the caller.
 /// - `Corrupted` — AEAD tag check failed at runtime
 ///   (`get` / `list_by_channel` / `search`). Either the row
 ///   was tampered with on disk OR the data key drifted from
@@ -74,6 +76,11 @@ pub enum StoreError {
     /// of this crate enforces that.
     #[error("invalid identifier: {0}")]
     InvalidId(String),
+
+    /// The SQLite connection did not resolve to the exact database path the
+    /// caller requested, or another database was attached to the connection.
+    #[error("storage binding: {0}")]
+    StorageBinding(String),
 
     #[error("corrupted: {0}")]
     Corrupted(String),

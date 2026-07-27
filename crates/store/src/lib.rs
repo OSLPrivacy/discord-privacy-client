@@ -12,9 +12,10 @@
 //! ## Wire layout
 //!
 //! - SQLite file at `<app_data_dir>/messages.sqlite`.
-//! - `messages` rows store opaque XChaCha20-Poly1305 ciphertext +
-//!   per-row nonce. AAD = `discord_message_id` UTF-8 bytes (binds
-//!   row identity).
+//! - Each live `messages` row has a unique random content key. The body is
+//!   XChaCha20-Poly1305 ciphertext under that key; the store master key wraps
+//!   the content key. Both AEAD layers bind the record type, blind-index
+//!   selector, and content version.
 //! - Identifiers are **not** stored. Each row carries keyed blind indexes
 //!   (`mid_bi`, `chan_bi`, `sender_bi`) for equality lookup, and a sealed
 //!   `meta_ct` holding the real ids and timestamp. Ordering uses an opaque
@@ -28,11 +29,11 @@
 //!
 //! ## Crypto
 //!
-//! No new crypto in this crate. The data key is HKDF-SHA256
+//! No new crypto in this crate. The store master key is HKDF-SHA256
 //! derived from the caller-supplied 32-byte `identity_secret`
 //! (info = `"osl-message-store-v1"`, salt empty); the blind-index key is a
-//! second, domain-separated derivation from the same secret. Per-row AEAD
-//! is `crypto::aead::seal` with a fresh random 24-byte nonce.
+//! second, domain-separated derivation from the same secret. Message content
+//! keys and AEAD nonces come from the audited crypto crate's RNG.
 //!
 //! ## Threading
 //!
@@ -53,7 +54,7 @@ pub use error::StoreError;
 use cipher::{AttachmentMeta, MessageMeta};
 use crypto::aead;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// A single decrypted Discord message persisted in the local
@@ -99,11 +100,11 @@ pub struct StoredMessage {
 
 /// At-rest-encrypted message store backed by SQLite.
 ///
-/// Each row's plaintext is sealed with XChaCha20-Poly1305 keyed
-/// off an HKDF-SHA256 derivation of the caller-supplied
-/// `identity_secret`. The same secret on every open is required;
-/// a canary row in `_meta` detects mismatches at `open()` time
-/// (returns [`StoreError::Sealer`] without unlocking).
+/// Each message body is sealed under a unique random content key. An
+/// HKDF-SHA256 derivation of the caller-supplied `identity_secret` wraps those
+/// keys and seals metadata. The same secret on every open is required; a
+/// canary row in `_meta` detects mismatches at `open()` time (returns
+/// [`StoreError::Sealer`] without unlocking).
 ///
 /// Plaintext never lands on disk in any form, including
 /// tokenized. v1 deliberately ships without search — see
@@ -117,8 +118,20 @@ pub struct MessageStore {
     index_key: [u8; 32],
 }
 
-/// Columns a `get` fetches: `(meta_nonce, meta_ct, ciphertext, nonce, burned)`.
-type MessageRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>);
+/// Complete cryptographic and selector state needed to authenticate a live
+/// message row.
+struct MessageRow {
+    meta_nonce: Vec<u8>,
+    meta_ct: Vec<u8>,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    burned: i64,
+    chan_bi: Vec<u8>,
+    sender_bi: Vec<u8>,
+    content_version: i64,
+    wrapped_key_nonce: Option<Vec<u8>>,
+    wrapped_key: Option<Vec<u8>>,
+}
 
 /// Columns an attachment fetch returns:
 /// `(meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi)`.
@@ -159,6 +172,7 @@ fn shred_row(conn: &Connection, mid_bi: &[u8]) -> Result<usize, StoreError> {
         "UPDATE messages
             SET ciphertext = zeroblob(length(ciphertext)),
                 nonce = zeroblob(length(nonce)),
+                wrapped_key_nonce = NULL,
                 wrapped_key = NULL,
                 burned = 1,
                 burned_at = COALESCE(burned_at, strftime('%s','now'))
@@ -195,6 +209,45 @@ fn next_seq(conn: &Connection, table: &str) -> Result<i64, StoreError> {
     Ok(seq)
 }
 
+/// Bind a SQLite connection to the exact file selected by `open`.
+///
+/// This check runs before any schema or pragma write. It prevents a harness,
+/// refactor, or future connection factory from validating one path while
+/// persisting protected rows in another, and refuses attached databases rather
+/// than silently widening the storage root.
+fn verify_connection_binding(conn: &Connection, expected_path: &Path) -> Result<(), StoreError> {
+    let expected = expected_path.canonicalize()?;
+    let databases: Vec<(String, PathBuf)> = {
+        let mut stmt = conn.prepare("PRAGMA database_list")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                PathBuf::from(row.get::<_, String>(2)?),
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        out
+    };
+    if databases.len() != 1 || databases[0].0 != "main" {
+        return Err(StoreError::StorageBinding(format!(
+            "expected one main database, found {} database bindings",
+            databases.len()
+        )));
+    }
+    let actual = databases[0].1.canonicalize()?;
+    if actual != expected {
+        return Err(StoreError::StorageBinding(format!(
+            "connection resolved to {}, expected {}",
+            actual.display(),
+            expected.display()
+        )));
+    }
+    Ok(())
+}
+
 impl MessageStore {
     /// Open or create the message store at
     /// `<app_data_dir>/messages.sqlite`.
@@ -208,6 +261,11 @@ impl MessageStore {
         std::fs::create_dir_all(app_data_dir)?;
         let path = app_data_dir.join("messages.sqlite");
         let conn = Connection::open(&path)?;
+        verify_connection_binding(&conn, &path)?;
+        // This format refusal is key-independent and must run before even the
+        // persistent journal-mode pragma. A refused legacy profile is left
+        // byte-for-byte unchanged, not merely logically un-migrated.
+        schema::refuse_ambiguous_legacy_wrappers(&conn)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // Probe-4 fix: WAL's default synchronous=NORMAL is fast but
         // loses uncheckpointed writes on a hard kill (force-close,
@@ -240,10 +298,10 @@ impl MessageStore {
 
     /// Insert or replace a message in the store.
     ///
-    /// Sealing happens inside this call: `msg.plaintext` is
-    /// AEAD-encrypted under the derived key, AAD =
-    /// `msg.discord_message_id` bytes, with a fresh random
-    /// nonce per call.
+    /// Sealing happens inside this call: `msg.plaintext` is encrypted under a
+    /// fresh per-write content key. That key is wrapped under the store master
+    /// key, and both layers authenticate the message selector, record type,
+    /// and monotonically increasing row version.
     ///
     /// ## Burn is terminal
     ///
@@ -280,45 +338,117 @@ impl MessageStore {
             sender_osl_user_id: msg.sender_osl_user_id.clone(),
             decrypted_at: msg.decrypted_at,
         };
-        let (meta_nonce, meta_ct) =
-            cipher::seal(&self.key, &mid_bi, &cipher::encode_message_meta(&meta))?;
-
         let conn = self.conn.lock().expect("store mutex poisoned");
         let seq = next_seq(&conn, "messages")?;
+        let existing: Option<(Vec<u8>, Vec<u8>, i64, i64)> = conn
+            .query_row(
+                "SELECT meta_nonce, meta_ct, burned, content_version \
+                   FROM messages WHERE mid_bi = ?1",
+                params![mid_bi],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+
+        if matches!(existing, Some((_, _, burned, _)) if burned != 0) {
+            return Ok(());
+        }
+
+        let content_version = match existing {
+            Some((old_meta_nonce, old_meta_ct, _, old_version)) => {
+                if old_version < 1 {
+                    return Err(StoreError::Corrupted(
+                        "message content version must be positive".to_string(),
+                    ));
+                }
+                let old_meta_bytes = cipher::unseal(
+                    &self.key,
+                    &cipher::message_meta_aad(&mid_bi, old_version),
+                    &old_meta_nonce,
+                    &old_meta_ct,
+                )?;
+                let old_meta = cipher::decode_message_meta(&old_meta_bytes)?;
+                if old_meta.discord_message_id != msg.discord_message_id {
+                    return Err(StoreError::Corrupted(
+                        "message blind-index selector collision".to_string(),
+                    ));
+                }
+                old_version.checked_add(1).ok_or_else(|| {
+                    StoreError::Corrupted("message content version overflow".to_string())
+                })?
+            }
+            None => 1,
+        };
 
         if msg.burned {
+            let (meta_nonce, meta_ct) = cipher::seal(
+                &self.key,
+                &cipher::message_meta_aad(&mid_bi, content_version),
+                &cipher::encode_message_meta(&meta),
+            )?;
             conn.execute(
                 "INSERT INTO messages \
                     (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
-                     ciphertext, nonce, seq, burned, burned_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, x'', x'', ?6, 1, strftime('%s','now')) \
+                     ciphertext, nonce, seq, burned, burned_at, content_version, \
+                     wrapped_key_nonce, wrapped_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, x'', x'', ?6, 1, \
+                         strftime('%s','now'), ?7, NULL, NULL) \
                  ON CONFLICT(mid_bi) DO NOTHING",
-                params![mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, seq],
+                params![
+                    mid_bi,
+                    chan_bi,
+                    sender_bi,
+                    meta_nonce,
+                    meta_ct,
+                    seq,
+                    content_version
+                ],
             )?;
             shred_row(&conn, &mid_bi)?;
             checkpoint_after_shred(&conn)?;
             return Ok(());
         }
 
-        let (nonce, ct) = cipher::seal(
+        let (meta_nonce, meta_ct) = cipher::seal(
             &self.key,
-            msg.discord_message_id.as_bytes(),
+            &cipher::message_meta_aad(&mid_bi, content_version),
+            &cipher::encode_message_meta(&meta),
+        )?;
+        let sealed = cipher::seal_message_body(
+            &self.key,
+            &mid_bi,
+            content_version,
             msg.plaintext.as_bytes(),
         )?;
         conn.execute(
             "INSERT INTO messages \
                 (mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, \
-                 ciphertext, nonce, seq, burned) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0) \
+                 ciphertext, nonce, seq, burned, content_version, \
+                 wrapped_key_nonce, wrapped_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11) \
              ON CONFLICT(mid_bi) DO UPDATE SET \
                 chan_bi = excluded.chan_bi, \
                 sender_bi = excluded.sender_bi, \
                 meta_nonce = excluded.meta_nonce, \
                 meta_ct = excluded.meta_ct, \
                 ciphertext = excluded.ciphertext, \
-                nonce = excluded.nonce \
+                nonce = excluded.nonce, \
+                content_version = excluded.content_version, \
+                wrapped_key_nonce = excluded.wrapped_key_nonce, \
+                wrapped_key = excluded.wrapped_key \
              WHERE messages.burned = 0",
-            params![mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ct, nonce, seq],
+            params![
+                mid_bi,
+                chan_bi,
+                sender_bi,
+                meta_nonce,
+                meta_ct,
+                sealed.ciphertext,
+                sealed.nonce,
+                seq,
+                content_version,
+                sealed.wrapped_key_nonce,
+                sealed.wrapped_key
+            ],
         )?;
         Ok(())
     }
@@ -334,19 +464,23 @@ impl MessageStore {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let row_opt: Option<MessageRow> = conn
             .query_row(
-                "SELECT meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi \
+                "SELECT meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi, \
+                        content_version, wrapped_key_nonce, wrapped_key \
                  FROM messages WHERE mid_bi = ?1 AND burned = 0",
                 params![mid_bi],
                 |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                    ))
+                    Ok(MessageRow {
+                        meta_nonce: r.get(0)?,
+                        meta_ct: r.get(1)?,
+                        ciphertext: r.get(2)?,
+                        nonce: r.get(3)?,
+                        burned: r.get(4)?,
+                        chan_bi: r.get(5)?,
+                        sender_bi: r.get(6)?,
+                        content_version: r.get(7)?,
+                        wrapped_key_nonce: r.get(8)?,
+                        wrapped_key: r.get(9)?,
+                    })
                 },
             )
             .optional()?;
@@ -370,7 +504,8 @@ impl MessageStore {
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
-            "SELECT mid_bi, meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi \
+            "SELECT mid_bi, meta_nonce, meta_ct, ciphertext, nonce, burned, chan_bi, sender_bi, \
+                    content_version, wrapped_key_nonce, wrapped_key \
              FROM messages \
              WHERE chan_bi = ?1 AND burned = 0 \
              ORDER BY seq DESC, mid_bi DESC \
@@ -379,22 +514,24 @@ impl MessageStore {
         let rows = stmt.query_map(params![chan_bi, i64::from(limit)], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, Vec<u8>>(2)?,
-                r.get::<_, Vec<u8>>(3)?,
-                r.get::<_, Vec<u8>>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, Vec<u8>>(6)?,
-                r.get::<_, Vec<u8>>(7)?,
+                MessageRow {
+                    meta_nonce: r.get(1)?,
+                    meta_ct: r.get(2)?,
+                    ciphertext: r.get(3)?,
+                    nonce: r.get(4)?,
+                    burned: r.get(5)?,
+                    chan_bi: r.get(6)?,
+                    sender_bi: r.get(7)?,
+                    content_version: r.get(8)?,
+                    wrapped_key_nonce: r.get(9)?,
+                    wrapped_key: r.get(10)?,
+                },
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (mid_bi, meta_nonce, meta_ct, ct, nonce, burned, chan_bi, sender_bi) = row?;
-            out.push(self.materialize(
-                &mid_bi,
-                (meta_nonce, meta_ct, ct, nonce, burned, chan_bi, sender_bi),
-            )?);
+            let (mid_bi, row) = row?;
+            out.push(self.materialize(&mid_bi, row)?);
         }
         Ok(out)
     }
@@ -459,9 +596,9 @@ impl MessageStore {
     /// over-delete: snowflakes are unique. `scope_type` is retained in the
     /// signature for caller compatibility.
     ///
-    /// This does not make burn cryptographic. It destroys the **local cached
-    /// plaintext**, which is what `THREAT_MODEL.md:160-162` claims burn
-    /// achieves locally and no more.
+    /// For v5 message bodies this is cryptographic erasure of the selected
+    /// local content keys plus physical zeroing of their ciphertext fields. It
+    /// says nothing about Discord's copy, peer devices, or backups.
     pub fn wipe_wrapped_keys_in_scope(
         &self,
         _scope_type: &str,
@@ -476,7 +613,8 @@ impl MessageStore {
                 conn.execute(
                     "UPDATE messages \
                         SET ciphertext = zeroblob(length(ciphertext)), \
-                            nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
+                            nonce = zeroblob(length(nonce)), \
+                            wrapped_key_nonce = NULL, wrapped_key = NULL, \
                             burned = 1, \
                             burned_at = COALESCE(burned_at, strftime('%s','now')) \
                       WHERE chan_bi = ?1 AND sender_bi = ?2",
@@ -486,7 +624,8 @@ impl MessageStore {
             None => conn.execute(
                 "UPDATE messages \
                     SET ciphertext = zeroblob(length(ciphertext)), \
-                        nonce = zeroblob(length(nonce)), wrapped_key = NULL, \
+                        nonce = zeroblob(length(nonce)), \
+                        wrapped_key_nonce = NULL, wrapped_key = NULL, \
                         burned = 1, \
                         burned_at = COALESCE(burned_at, strftime('%s','now')) \
                   WHERE chan_bi = ?1",
@@ -771,6 +910,7 @@ impl MessageStore {
                 "UPDATE messages
                     SET ciphertext = zeroblob(length(ciphertext)),
                         nonce = zeroblob(length(nonce)),
+                        wrapped_key_nonce = NULL,
                         wrapped_key = NULL,
                         burned = 1,
                         burned_at = strftime('%s','now')
@@ -793,8 +933,17 @@ impl MessageStore {
     /// between rows, or edits one, produces a tag failure rather than a
     /// forged attribution.
     fn materialize(&self, mid_bi: &[u8], row: MessageRow) -> Result<StoredMessage, StoreError> {
-        let (meta_nonce, meta_ct, ct, nonce, burned_flag, chan_bi, sender_bi) = row;
-        let meta_bytes = cipher::unseal(&self.key, mid_bi, &meta_nonce, &meta_ct)?;
+        if row.content_version < 1 {
+            return Err(StoreError::Corrupted(
+                "message content version must be positive".to_string(),
+            ));
+        }
+        let meta_bytes = cipher::unseal(
+            &self.key,
+            &cipher::message_meta_aad(mid_bi, row.content_version),
+            &row.meta_nonce,
+            &row.meta_ct,
+        )?;
         let meta = cipher::decode_message_meta(&meta_bytes)?;
 
         // Re-derive the selector columns and check them against what is on
@@ -821,7 +970,7 @@ impl MessageStore {
             ));
         }
         let expect_chan = self.bi(cipher::BI_CHANNEL_ID, &meta.channel_id)?;
-        if expect_chan != chan_bi {
+        if expect_chan != row.chan_bi {
             return Err(StoreError::Corrupted(
                 "row channel selector does not match its sealed metadata — \
                  the row was retargeted on disk"
@@ -829,14 +978,28 @@ impl MessageStore {
             ));
         }
         let expect_sender = self.bi(cipher::BI_SENDER_ID, &meta.sender_discord_id)?;
-        if expect_sender != sender_bi {
+        if expect_sender != row.sender_bi {
             return Err(StoreError::Corrupted(
                 "row sender selector does not match its sealed metadata — \
                  the row was retargeted on disk"
                     .to_string(),
             ));
         }
-        let pt = cipher::unseal(&self.key, meta.discord_message_id.as_bytes(), &nonce, &ct)?;
+        let wrapped_key_nonce = row.wrapped_key_nonce.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live message row has no wrapped-key nonce".to_string())
+        })?;
+        let wrapped_key = row.wrapped_key.as_deref().ok_or_else(|| {
+            StoreError::Corrupted("live message row has no wrapped content key".to_string())
+        })?;
+        let pt = cipher::unseal_message_body(
+            &self.key,
+            mid_bi,
+            row.content_version,
+            wrapped_key_nonce,
+            wrapped_key,
+            &row.nonce,
+            &row.ciphertext,
+        )?;
         let plaintext = String::from_utf8(pt).map_err(|_| {
             StoreError::Corrupted("decoded plaintext is not valid UTF-8".to_string())
         })?;
@@ -847,7 +1010,51 @@ impl MessageStore {
             sender_osl_user_id: meta.sender_osl_user_id,
             plaintext,
             decrypted_at: meta.decrypted_at,
-            burned: burned_flag != 0,
+            burned: row.burned != 0,
         })
+    }
+}
+
+#[cfg(test)]
+mod storage_binding_tests {
+    use super::*;
+
+    #[test]
+    fn wrong_root_connection_is_refused_without_touching_either_decoy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = tmp.path().join("messages.sqlite");
+        let wrong = tmp.path().join("payload.sqlite");
+        Connection::open(&expected)
+            .unwrap()
+            .execute_batch("CREATE TABLE expected_sentinel (value TEXT);")
+            .unwrap();
+        let wrong_conn = Connection::open(&wrong).unwrap();
+        wrong_conn
+            .execute_batch(
+                "CREATE TABLE wrong_sentinel (value TEXT);
+                 INSERT INTO wrong_sentinel VALUES ('untouched');",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            verify_connection_binding(&wrong_conn, &expected),
+            Err(StoreError::StorageBinding(_))
+        ));
+        assert_eq!(
+            wrong_conn
+                .query_row("SELECT value FROM wrong_sentinel", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "untouched"
+        );
+        assert_eq!(
+            Connection::open(&expected)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM expected_sentinel", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }

@@ -13,31 +13,24 @@
 //!
 //! Each `messages` row stores:
 //!
-//! - `nonce` (24 bytes) — the random XChaCha20-Poly1305 nonce.
-//! - `ciphertext` — the AEAD ciphertext + tag (so any tag failure
-//!   surfaces as `StoreError::Corrupted`, not as silent garbage).
+//! - `nonce` / `ciphertext` — body ciphertext under a unique random content key.
+//! - `wrapped_key_nonce` / `wrapped_key` — that content key authenticated and
+//!   wrapped under the store master key.
 //! - `meta_nonce` / `meta_ct` — the row's identifiers and timestamp, sealed.
 //! - `*_bi` — keyed blind indexes, the only searchable form of those
 //!   identifiers.
 //!
 //! ## AAD binds row identity
 //!
-//! The AAD passed to `aead::seal` for the **body** is the row's
-//! `discord_message_id` UTF-8 bytes. This binds the ciphertext to its
-//! row-identifier so an attacker who shuffles `ciphertext` / `nonce` blobs
-//! across rows produces tag failures instead of cross-row plaintext recovery.
-//!
-//! That AAD is deliberately unchanged by schema v4: the v3→v4 migration
-//! rewrites metadata columns only and never re-encrypts a message body, so a
-//! body sealed by any earlier build stays openable.
+//! Body, wrapper, and metadata use separate AAD domains. Every one includes
+//! the row's blind-index selector and content version, so cross-row transplant
+//! and stale partial replay fail authentication.
 
 use crate::StoreError;
 use crypto::{aead, hkdf, random};
 
-/// HKDF info label for the body/metadata encryption key. Hard-coded; never
-/// read from disk. Bumping the suffix ("-v1" → "-v2") forces a re-derive and
-/// would invalidate every existing row's ciphertext, so it pairs with a schema
-/// migration that re-encrypts under the new key.
+/// HKDF info label for the store master key. It seals metadata and attachments
+/// and wraps v5 message content keys. Hard-coded; never read from disk.
 const HKDF_INFO: &[u8] = b"osl-message-store-v1";
 
 /// HKDF info label for the **blind index** key. A separate derivation from the
@@ -56,6 +49,10 @@ pub(crate) const BI_MESSAGE_ID: &[u8] = b"osl-store-bi/discord_message_id-v1";
 pub(crate) const BI_CHANNEL_ID: &[u8] = b"osl-store-bi/channel_id-v1";
 pub(crate) const BI_SENDER_ID: &[u8] = b"osl-store-bi/sender_discord_id-v1";
 pub(crate) const BI_CACHE_KEY: &[u8] = b"osl-store-bi/cache_key-v1";
+
+const MESSAGE_BODY_AAD_V5: &[u8] = b"osl-store/body/v5/message";
+const MESSAGE_WRAP_AAD_V5: &[u8] = b"osl-store/wrap/v5/message";
+const MESSAGE_META_AAD_V5: &[u8] = b"osl-store/meta/v5/message";
 
 /// Derive the message-store AEAD key from the caller-supplied
 /// 32-byte identity secret. Returns an opaque
@@ -158,6 +155,86 @@ pub(crate) fn unseal_canary(
     let nonce = aead::Nonce::from_bytes(nb);
     aead::open(key, &nonce, aad, ciphertext)
         .map_err(|_| StoreError::Sealer("wrong identity_secret (canary unseal failed)".to_string()))
+}
+
+fn versioned_aad(domain: &[u8], selector: &[u8], version: i64) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(domain.len() + 8 + selector.len() + 8);
+    aad.extend_from_slice(domain);
+    aad.extend_from_slice(&(selector.len() as u64).to_le_bytes());
+    aad.extend_from_slice(selector);
+    aad.extend_from_slice(&version.to_le_bytes());
+    aad
+}
+
+pub(crate) fn message_meta_aad(mid_bi: &[u8], version: i64) -> Vec<u8> {
+    versioned_aad(MESSAGE_META_AAD_V5, mid_bi, version)
+}
+
+pub(crate) struct SealedMessageBody {
+    pub(crate) nonce: Vec<u8>,
+    pub(crate) ciphertext: Vec<u8>,
+    pub(crate) wrapped_key_nonce: Vec<u8>,
+    pub(crate) wrapped_key: Vec<u8>,
+}
+
+/// Seal one message body under a fresh, one-record content key, then wrap that
+/// key under the store master key. The body and envelope use distinct,
+/// versioned AAD domains so neither can be transplanted across rows or record
+/// types.
+pub(crate) fn seal_message_body(
+    master_key: &aead::Key,
+    mid_bi: &[u8],
+    version: i64,
+    plaintext: &[u8],
+) -> Result<SealedMessageBody, StoreError> {
+    let content_key = random::random_aead_key();
+    let (nonce, ciphertext) = seal(
+        &content_key,
+        &versioned_aad(MESSAGE_BODY_AAD_V5, mid_bi, version),
+        plaintext,
+    )?;
+    let (wrapped_key_nonce, wrapped_key) = seal(
+        master_key,
+        &versioned_aad(MESSAGE_WRAP_AAD_V5, mid_bi, version),
+        content_key.as_bytes(),
+    )?;
+    Ok(SealedMessageBody {
+        nonce,
+        ciphertext,
+        wrapped_key_nonce,
+        wrapped_key,
+    })
+}
+
+pub(crate) fn unseal_message_body(
+    master_key: &aead::Key,
+    mid_bi: &[u8],
+    version: i64,
+    wrapped_key_nonce: &[u8],
+    wrapped_key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, StoreError> {
+    let key_bytes = unseal(
+        master_key,
+        &versioned_aad(MESSAGE_WRAP_AAD_V5, mid_bi, version),
+        wrapped_key_nonce,
+        wrapped_key,
+    )?;
+    let key_array: [u8; aead::KEY_SIZE] = key_bytes.try_into().map_err(|bytes: Vec<u8>| {
+        StoreError::Corrupted(format!(
+            "wrapped message content key has length {} (want {})",
+            bytes.len(),
+            aead::KEY_SIZE
+        ))
+    })?;
+    let content_key = aead::Key::from_bytes(key_array);
+    unseal(
+        &content_key,
+        &versioned_aad(MESSAGE_BODY_AAD_V5, mid_bi, version),
+        nonce,
+        ciphertext,
+    )
 }
 
 // ---- canonical metadata encoding ----

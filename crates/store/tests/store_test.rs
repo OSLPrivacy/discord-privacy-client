@@ -599,7 +599,7 @@ fn reopen_with_correct_secret_migration_idempotent() {
     let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
     assert_migrated_rows(&store2, &rows);
     let second_open_version = schema_version(tmp.path());
-    assert_eq!(first_open_version, 4);
+    assert_eq!(first_open_version, 5);
     assert_eq!(second_open_version, first_open_version);
     store2
         .put(&sample(
@@ -985,7 +985,7 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
     // claim than naming one row: of the four messages, exactly the two expired
     // ones must be burned with a zeroed body, and exactly two must still hold
     // live body.
-    let (burned_zeroed, live_bodies, any_wrapped_key): (usize, usize, bool) = {
+    let (burned_zeroed, live_bodies, burned_with_wrapper, live_without_wrapper) = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let mut stmt = conn
             .prepare("SELECT ciphertext, nonce, wrapped_key, burned FROM messages")
@@ -1002,11 +1002,15 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
             .unwrap();
         let mut burned_zeroed = 0;
         let mut live = 0;
-        let mut wrapped = false;
+        let mut burned_with_wrapper = 0;
+        let mut live_without_wrapper = 0;
         for row in rows {
             let (ct, nonce, wk, burned) = row.unwrap();
-            if wk.is_some() {
-                wrapped = true;
+            if burned == 1 && wk.is_some() {
+                burned_with_wrapper += 1;
+            }
+            if burned == 0 && wk.is_none() {
+                live_without_wrapper += 1;
             }
             if burned == 1 && ct.iter().all(|b| *b == 0) && nonce.iter().all(|b| *b == 0) {
                 burned_zeroed += 1;
@@ -1015,7 +1019,12 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
                 live += 1;
             }
         }
-        (burned_zeroed, live, wrapped)
+        (
+            burned_zeroed,
+            live,
+            burned_with_wrapper,
+            live_without_wrapper,
+        )
     };
     assert_eq!(
         burned_zeroed, 2,
@@ -1025,7 +1034,14 @@ fn shred_expired_messages_destroys_named_rows_and_their_attachments() {
         live_bodies, 2,
         "the unexpired rows must keep their live bodies"
     );
-    assert!(!any_wrapped_key, "a shred must null wrapped_key");
+    assert_eq!(
+        burned_with_wrapper, 0,
+        "a shred must null each selected wrapped key"
+    );
+    assert_eq!(
+        live_without_wrapper, 0,
+        "untouched live survivors must retain their wrapped keys"
+    );
     let wal = db_path.with_extension("sqlite-wal");
     assert!(
         !wal.exists() || std::fs::metadata(wal).unwrap().len() == 0,
