@@ -408,6 +408,86 @@ name-based selection so it is unexpressible rather than discouraged. The same fa
 a harness that guesses its subject, or a default-deny assertion that passes because it read nothing
 — is why every case must assert non-empty on the positive path before it may report a pass.
 
+## Verified before rebasing: the keyserver fix is NOT on the integration line
+
+Asked to verify `5cd4f81` from HEAD before starting the rebase. The answer is that it does not yet
+protect the rebase:
+
+- `5cd4f81` is reachable **only from `osl-eye-and-features-2026-07-26`**, a local branch in the
+  shared dirty worktree. `git branch -a --contains` lists no remote ref.
+- `origin/main` is still `38d0867`.
+- `isDiscordSnowflake` is **absent from `origin/main`'s `keyserver-cf/src/lib/validation.ts`**, and
+  migration `0029` is not in `origin/main`'s tracked tree.
+
+So the build break is still live on the authoritative line. The commit exists but is unpushed, and
+a rebase onto `origin/main` today would still cross the broken range. **PR #5 rebase stays held**,
+now for a second independent reason. It unblocks the moment `5cd4f81` reaches `origin/main`.
+
+## `release-deterministic` is a name with nothing behind it
+
+The obvious lever turns out to be empty. Before proposing to copy the root profile into
+`apps/osl-hub`, I read what it actually contains:
+
+```toml
+[profile.release-deterministic]
+inherits = "release"
+# Reproducible-build profile. Build flags pinned in CI.
+# See docs/design/reproducible-builds.md (v2.5).
+```
+
+That is the whole profile. And:
+
+- **`docs/design/reproducible-builds.md` does not exist** in the repository. The comment cites a
+  v2.5 document that is not there.
+- **No determinism flags are pinned anywhere.** `grep -rE 'RUSTFLAGS|SOURCE_DATE_EPOCH|remap-path-prefix|Brepro' .github/workflows/` returns nothing. The workflow simply runs
+  `cargo build --profile release-deterministic`, and that profile differs from plain `release` in
+  no respect whatsoever.
+
+So copying this profile into `apps/osl-hub/Cargo.toml` would change nothing and would let a
+reproducibility claim rest on a no-op. **This fully explains the measured result** — the build was
+never configured to be deterministic, on either crate.
+
+### What actually has to change
+
+Determinism has to be configured, not merely named. My proposed set, worst-offender first:
+
+| Lever | Why |
+|---|---|
+| `codegen-units = 1` | parallel codegen partitions non-deterministically; the single most likely cause of two differing hashes |
+| `-Clink-arg=/Brepro` (MSVC) | the PE header carries a **build timestamp** by default; `/Brepro` replaces it with a content hash. On Windows this alone can defeat reproducibility |
+| `--remap-path-prefix=$PWD=.` | absolute build paths are embedded in debug info and panic messages, so the runner's directory leaks into the binary |
+| `incremental = false`, `debug = false`/`strip` | incremental artefacts and debug records carry ordering and path noise |
+
+These belong in the profile **and** in CI together, and the `hub-binary` job already builds twice
+and compares — so the change is directly measurable. The proof is not the diff; it is
+`reproducible-build.yml` going green afterwards. Until then `Reproducible release` stays off the
+eligible-claim list, which truth is already actioning.
+
+**Ownership note:** the profile lives in `apps/osl-hub/Cargo.toml`, which is outside this lane's
+declared files and is one of the serialized central files PR #5 also edits (+26/−4 on `main` vs
++22/−2 on the branch). An appended `[profile.*]` block is low-conflict, but it should land before
+PR #5 is rebased, not during.
+
+## Routed out of this lane: silently skipped tests
+
+Recorded, not chased. From the feature-gate sweep, on `origin/main`:
+
+- **12 `#[ignore]`d tests** and **11 env/availability-gated tests that early-return**.
+- Env gates: `OSL_LIVE_TESTS` (`crates/ipc/tests/prose_token_live.rs:37,78,91`),
+  `OSL_LIVE_KEYSERVER_URL` (`crates/keystore/tests/live_keyserver_smoke.rs:14`),
+  `OSL_HUB_LIFECYCLE_CHILD` (`apps/osl-hub/tests/windows_identity_lifecycle.rs:35`).
+- **PATH/node availability gates — the dangerous ones**, because they early-return to a *pass* when
+  a tool is missing rather than failing: `crates/keystore/tests/prekeys_e2e_test.rs:119,161`,
+  `crates/keystore/tests/burn_e2e_test.rs:173,218`,
+  `crates/selectors/tests/keyserver_e2e_test.rs:233,282`. These are burn, prekeys and keyserver
+  end-to-end tests — exactly the paths where a silent skip is least acceptable. **Owner: crypto lane.**
+- Also from the double audit, **owner: `apps/osl-hub-ui`** — 7 source-string negative assertions
+  that would pass on empty extracted source: `overlay.test.ts:54`, `security.test.ts:13`,
+  `scrub-provider-preloads.test.ts:18`, `scrub-imap-native-authority.test.ts:29`,
+  `scrub-safety.test.ts:53`, `password-gate-ui.test.ts:10`, `local-message-import.test.ts:94`.
+
+Same family as everything else: a check that passes because it read nothing.
+
 ## Reproducible build — run for the first time, and the answer is no
 
 `reproducible-build.yml` was not merely untested. It ran **twice, on 2026-05-09 and 2026-05-10,
