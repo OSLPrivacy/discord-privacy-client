@@ -1018,3 +1018,87 @@ for it.
 ## Acceptance rows this earns
 
 None.
+
+---
+
+## 20 · README closure and completed keyserver/release adjudication
+
+### README `dae12da`: the r12 SOLD blocker is closed, reachability is not
+
+`git show dae12da -- README.md` changes only the public Burn paragraph. The present-tense sentence
+“A signed burn notice is also sent” is gone. Current `README.md:85-87` instead says the
+peer-notification path has not been proved end to end, is not available as a working peer action
+today, and must not be relied on to remove another member's copy. That wording matches r12's
+reachability decision exactly: it does not confuse the newer authenticated `0x0A` path with the
+zero-production-caller `BurnAlertPayload` signature layer.
+
+The requested current-shared-bytes gate was rerun explicitly under Node 24:
+
+```text
+TOTAL                                                       7509   0
+Rust scan is a KNOWN-INCOMPLETE high-precision subset: 163 literals from user-visible positions.
+Counts: phrases parsed=28, TypeScript strings extracted=7345, Rust strings extracted=163,
+README bytes=9682, violations found=0
+```
+
+The 7,509 count includes unrelated dirty in-flight source and is used only to verify the current
+claim surface. An archive of committed HEAD `e83a487` separately reported 7,458 units and 0
+violations, because those in-flight strings were absent. Neither result is reachability evidence.
+The claim classification moves from **SOLD** to **UNCLAIMED**; implementation status remains
+`implemented-unwired`. No point is awarded for correcting an overclaim.
+
+### Keyserver `284f0a5`: completed, `test-proven-only`, no B5 point
+
+The amended diff matches its title. `keyserver-cf/src/lib/control-inbox-sweep.ts:1-46` limits each
+tick to the 100 oldest expired `control_inbox` rows and 100 oldest expired
+`control_inbox_requests` receipts. `keyserver-cf/src/index.ts:189-199` calls that helper from the
+scheduled handler. The committed real-D1 test seeds 101 expired rows and 101 expired receipts,
+preserves one live row of each kind, observes 1+1 remaining after tick one, then 0+0 after tick two
+(`keyserver-cf/test/integration/control-inbox-sweep.test.ts:111-139`).
+
+The committed report's failing-first output is non-vacuous:
+
+```text
+FAIL expected expiredInbox=1, expiredReceipts=1
+     received expiredInbox=0, expiredReceipts=0
+```
+
+An independent archived-copy rerun of exact commit `284f0a5` under Node 24 produced:
+
+```text
+Test Files  1 passed (1)
+Tests       1 passed (1)
+```
+
+`npx --yes node@24 node_modules/typescript/bin/tsc --noEmit` also exited 0. This proves the local
+worker/D1 behaviour only. It does not prove a Cloudflare scheduled invocation, a deployment of the
+changed Worker, or B5's client-side prekey/wrapped-key production path. The server report correctly
+claims no checklist row.
+
+### Release `b9aa48e`: completed locally, still unpushed, no release-row point
+
+The dedicated release worktree is clean at
+`b9aa48ee7e94cbe2dde2e03148b1e8e9b9c8e684`. Its origin is
+`f0f738df3394b23f4207e048bd1b39448210288f`, and
+`git rev-list --left-right --count origin/release-lane-2026-07-26...HEAD` reports `0 1`.
+The commit wires `keyserver-cf`'s existing TypeScript matrix output through `tee` with `pipefail`,
+then calls `assert-test-counts.sh` only for that matrix entry
+(`.github/workflows/ts-test.yml:65-78`). The floor is 297 against a measured two-invocation total of
+313 (`scripts/ci/test-count-floors.txt:25-39`). `git diff --check HEAD^ HEAD` exited 0, the worktree
+status was empty, and `bash scripts/ci/assert-test-counts.sh --self-test` reported:
+
+```text
+11 passed, 0 failed
+```
+
+This is `test-proven-only`. The edited workflow has no GitHub-hosted execution because the commit is
+unpushed. I3's real boundary is green public Rust/TypeScript/selector/security CI, and Rust remains
+red in the accepted evidence. I3 stays 1/3. The commit produces no signed candidate, installer
+reproducibility proof, rollback exercise, PR cleanup or release record, so I2, I4 and I6 also stay
+unchanged.
+
+Checklist score remains **96 / 303**. Crypto, Scrub and VM in-flight claims were not consumed.
+
+## Acceptance rows this earns
+
+None.

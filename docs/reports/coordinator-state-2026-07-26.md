@@ -2,7 +2,7 @@
 
 Written so a fresh context can resume coordination without re-deriving it. This is the
 *coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
-authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r12**), and the
+authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r13**), and the
 scoreboard remains `docs/design/osl-internal-build-checklist.md` (**96 / 303**).
 
 ## Lane roster and exclusive ownership
@@ -71,11 +71,21 @@ discard the whole import.
    separate **cold** lineage — two lineages, never one.
 5. **`NCryptDeleteKey` result discarded** on machines that *do* have a TPM — a failed delete was
    reported as a successful wipe. Already shipping. Crypto owns.
-6. **Public signed-burn overclaim.** Current source re-verifies `BurnAlertPayload`/sign/verify have
-   zero production callers, but `README.md:85` says a signed burn notice is sent. The truth lane
-   cannot edit README under its exclusive scope and has recorded this as **SOLD**. The website-owned
-   peer-Burn sentence is corrected to `Planned`; the newer authenticated `0x0A` path is separate and
-   still needs two-identity runtime proof.
+
+## Closed evidence since r12 — no acceptance points
+
+- **Public signed-burn overclaim closed by `dae12da`.** `README.md:85-87` now says the
+  peer-notification path is not proved end to end, is not available as a working peer action today,
+  and must not be relied on to remove another member's copy. Node 24 reports 7,509 scanned units and
+  0 violations on current shared bytes. That closes the **SOLD** string blocker; it does not make
+  `BurnAlertPayload` reachable. Triage is now **UNCLAIMED**, status `implemented-unwired`.
+- **Keyserver `284f0a5`: `test-proven-only`.** The committed real-D1 test proves a 100-row-per-table
+  scheduled cleanup bound, request-receipt cleanup, live-row preservation and second-tick progress.
+  It is not evidence of a live Worker deploy or the B5 client production contract.
+- **Release `b9aa48e`: `test-proven-only`.** The clean release worktree is one commit ahead of
+  `origin/release-lane-2026-07-26`; the keyserver test-count floor accepts the complete local output
+  and refuses starvation, but the edited workflow has not run on GitHub-hosted CI. I3 stays 1/3;
+  I2, I4 and I6 are unchanged.
 
 ## Coordination infrastructure built today
 

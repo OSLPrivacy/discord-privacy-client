@@ -98,9 +98,13 @@ logged here so they cannot be quietly forgotten or later re-counted as new work.
   re-verification confirms `post_wrapped_key`, `fetch_wrapped_key`, `BurnAlertPayload`, and the
   `osl_notes`/`osl_assets`/`osl_lan` cluster have no production caller. Triage: wrapped-key POST/GET
   are **INTERNAL ONLY**; the Notes cluster is now **INTERNAL ONLY** after removing one website terms
-  sentence that implied it worked; the burn-alert signature layer remains **SOLD** because
-  `README.md:85` says a signed notice is sent. The newer `0x0A` revocation path is separate and does
-  not make that signature layer reachable. Negative control: `pricing-sync --check`,
+  sentence that implied it worked. **Superseding r12:** commit `dae12da` removes README's
+  present-tense signed-notice promise; `README.md:85-87` now says the peer path is not proved, not
+  available today, and must not be relied on to remove a peer's copy. The signature layer is now
+  **UNCLAIMED**, while remaining `implemented-unwired`. The newer `0x0A` revocation path is separate
+  and does not make that signature layer reachable. Node 24 reports 7,509 scanned units and 0
+  violations on current shared bytes; this remains string evidence only. Negative control:
+  `pricing-sync --check`,
   `build-status --check`, and `check-claims` all passed while the website leaks were present. These
   are string/status gates, not call-graph evidence. J7/H8 keep their points because their real
   boundary is the allowlist and tested string/status consistency; no row here claims a reachability
@@ -193,7 +197,10 @@ timestamped deltas, not keep this number manually forever.
   `NOT DEPLOYED` migration header does not override that live evidence. The broader row is not
   complete: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the
   hand-checked evidence does not establish the prekey client path. No point added merely for
-  resolving the old deployment uncertainty. `needs: A2` `weight: 4` `earned: 1`
+  resolving the old deployment uncertainty. **2026-07-27 no-point adjudication:** commit `284f0a5`
+  bounds scheduled control-inbox and request-receipt cleanup to 100 rows per table per tick and is
+  `test-proven-only`; local worker tests do not prove the changed Worker is deployed or complete the
+  client production contract. `needs: A2` `weight: 4` `earned: 1`
 - ⬜ **B6 · Controlled two-identity proof** — handshake, send, receive, offline queue, restart,
   drain, peer attribution. `needs: B3,B4,B5` `weight: 3` `earned: 0`
 - ⬜ **B7 · Independent crypto review** — required before uncontrolled traffic/public superiority
@@ -402,8 +409,11 @@ timestamped deltas, not keep this number manually forever.
   (2026-07-27 00:11, 00:20, 00:28, 00:40), all on `release-lane-2026-07-26` rather than `main`.
   The row's headline promise is *green* CI **including Rust**. Scoring 2 of 3 would read as
   "nearly satisfied" when the heaviest gate fails on every run, so the remaining 2 points are held
-  until Rust is green. The three defects are not owned by that lane, which is why this is a cut and
-  not a criticism. `needs: integration` `weight: 3` `earned: 1`
+  until Rust is green. **2026-07-27 no-point adjudication:** `b9aa48e` locally wires and
+  refusal-tests the keyserver test-count floor, but the clean release worktree is one commit ahead
+  of origin and the edited workflow has no GitHub-hosted run. That is `test-proven-only`, not green
+  public CI. The three Rust defects are not owned by that lane, which is why this is a cut and not a
+  criticism. `needs: integration` `weight: 3` `earned: 1`
 - 🟨 **I4 · Signed candidate, VM promotion, reproducible release, rollback** — **+2 2026-07-26,
   approved as claimed. The strongest evidence in this batch.** The promotion gate was proven by
   **refusal**, not by a happy path: `scripts/release/prove-promotion-gate.sh` contains **20

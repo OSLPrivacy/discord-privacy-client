@@ -5,7 +5,7 @@
 > An agent should be able to start or resume work by reading this file and then following the
 > linked subsystem document for its task. Do not reconstruct product intent from old chats.
 >
-> **Control revision:** `OSL-MASTER-2026-07-26-r12`. A model/account reads this document completely
+> **Control revision:** `OSL-MASTER-2026-07-26-r13`. A model/account reads this document completely
 > the first time only. On later work it checks this revision and its saved memory card, then reads
 > only changed sections and the linked subsystem/report. Every semantic edit must increment the
 > revision and add a one-line delta to section 0.5.
@@ -81,6 +81,18 @@ Capture a fact once and link to it elsewhere.
 
 ### 0.5 Revision digest
 
+- `r13` — the r12 public signed-burn blocker is closed without converting source existence into
+  reachability. Commit `dae12da` removes README's present-tense “signed burn notice is also sent”
+  promise and replaces it with the explicit limitation that the peer-notification path is not
+  end-to-end proved, is not available as a working peer action today, and must not be relied on to
+  remove another member's copy (`README.md:85-87`). The Node 24 app-claim gate reports 7,509 units
+  and 0 violations on the current shared bytes, but remains a string gate, not call-path proof.
+  `BurnAlertPayload`/sign/verify therefore remain `implemented-unwired`; their claim triage moves
+  from **SOLD** to **UNCLAIMED**. Completed keyserver commit `284f0a5` is
+  `test-proven-only` bounded scheduled cleanup, not a live Worker deployment or client-contract
+  proof. Completed release commit `b9aa48e` is also `test-proven-only`: its keyserver test-count
+  floor is locally wired and refusal-tested, but the clean release worktree is still one unpushed
+  commit ahead of origin. Neither earns an acceptance point. Score remains **96 / 303**.
 - `r12` — truth-lane reachability correction. Four hand-checked zero-production-caller findings
   were re-verified on current source: `post_wrapped_key`, `fetch_wrapped_key`,
   `BurnAlertPayload`, and the `osl_notes`/`osl_assets`/`osl_lan` cluster. The first two are
