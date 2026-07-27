@@ -563,6 +563,101 @@ producer, but the renderer half is proven only structurally and nothing has been
 screen. Claiming either would be exactly the "code written = point earned" failure the rule exists
 to prevent.
 
+## Round 5 — two confirmed defects IN THIS LANE'S OWN WORK
+
+Both were found by an adversarial review this lane commissioned against itself, and both were then
+verified in source by hand rather than accepted on the reviewer's word. **Both are cases where
+making a path work converted a dormant inaccuracy into a delivered claim.**
+
+### Defect 1 — carrier replay: a peer can make OSL label their own row "You"
+
+**Mechanism.** `prose_token_recv_classified` (`crates/ipc/src/prose_token.rs:268`) derives its MAC
+key from `derive_scope_primitives(scope_input)` — **the scope only**. There is no binding to the
+Discord row, to the posting account, or to a per-message nonce. So one cover text authenticates
+identically in *any* row of that conversation, whoever posted it.
+
+**Trigger.** The operator sends a protected message; its cover is public text visible in Discord.
+The peer copies that still-live cover into a new message they post. The eye decodes the peer's row,
+the wire verifies as signed by the local identity, `authenticate_oriented_prose_pointer` resolves
+`SelfToPeer`, and `overlay.ts` renders the row as outgoing with `author: localIdentity`.
+
+**This lane made it worse.** Before tonight every decoded row was stamped `incoming` / friend —
+wrong for the operator's own rows, but it never asserted the operator authored a row a peer posted.
+The orientation work introduced that assertion.
+
+**Impact.** No new plaintext is exposed; the ciphertext is the operator's own message. The harm is
+transcript integrity: the peer chooses where and when the operator's words appear and OSL certifies
+them as the operator's.
+
+**Real fix** binds the token to the posting identity or a per-row nonce — a wire change.
+**Immediate mitigation is an owner decision**, because failing closed on `SelfToPeer` rows restores
+safety but removes the operator's ability to read their own half of a transcript, which the code
+comments at `broker.rs` explicitly argue is required for a transcript to be a transcript.
+
+### Defect 2 — bilateral burn: an authenticated receipt for enforcement that does not happen
+
+**Mechanism.** `apply_peer_revocation` (`apps/osl-hub/src/security.rs`) durably records a burn floor
+and returns an ack with `applied: true`. The gate that would refuse peer content below that floor,
+`admit_peer_content_seq` (`security.rs:2435`), together with `peer_scope_commitment` (`:2416`) and
+`next_peer_send_seq` (`:2387`), has **zero callers anywhere in the repository** — verified by
+grepping all `*.rs`; each name resolves only to its own definition, plus one comment at `:2525`
+referencing `admit_peer_content_seq`. Protected content also carries no sequence for such a gate to
+check (`PeerProtectedPayload`, `broker.rs`).
+
+**This lane made it reachable.** Before tonight the ack was produced and dropped, because nothing
+posted the outbox — so no false assurance ever left the device. Wiring the outbound lane means the
+sender now receives a cryptographically authenticated receipt attesting to enforcement the receiver
+has not implemented.
+
+**Impact.** An operator can be shown that a peer honoured their burn while that peer retains no
+enforceable floor over the affected content. Worse than a visible delivery failure, because the
+receipt authenticates a claim the implementation has not made true.
+
+**Recommendation.** Until the admission gate is wired and content carries a sequence, the receipt
+should assert only what is true today — that the burn floor was *recorded* — rather than implying
+enforcement. That wording change is small; wiring the gate is a wire-format decision, not a defect
+fix.
+
+### The pattern, stated plainly
+
+Both defects share one shape: **this lane made a path work without re-reading what the working path
+would then assert.** Connecting something is not the same as making its claim true, and the moment
+a surface becomes reachable is exactly when to re-read what it promises. Recorded here because it
+is a failure mode of the author, not of the code.
+
+### Also this round
+
+- **Both hub gates now pass**, and the permanent expected-failure is gone. The
+  `native_discord_adapter` header-proof test asserted `header_proof_is_enforced()` unconditionally
+  while that function is defined as `!cfg!(feature = "discord-qa-shell")`. It was a *test* defect,
+  now cfg-aware. A standing red that everyone is told to ignore trains people to ignore red.
+- **Neither gate alone is honest.** `--features core` omits `qa_selftest_request` — the module
+  deciding whether a trigger becomes a status read or the irreversible send. `--features
+  core,discord-qa-shell` compiles it but turns header-proof enforcement **off** by design. Both runs
+  are needed, and a count without its gate means nothing.
+- **Error strings were leaking identifiers.** The earlier redaction pass covered `tracing::` macros
+  only and missed `format!` error strings, which reach the UI and are logged by callers. Now
+  tokenised via named arguments; one site deliberately left because a test asserts its exact text.
+- **keystore tracing break: RESOLVED.** The dependency is declared and both gates plus the Windows
+  check pass. This lane guessed the cause twice before asking, and the second guess (the sibling
+  worktree) was wrong — that tree's keystore contains no `tracing::` calls at all. Recorded because
+  a confidently wrong diagnosis costs another lane real time.
+
+## Acceptance rows this earns
+
+**None. This lane claims nothing, and two rows moved backwards.**
+
+| Row | State after tonight | Why not earned |
+|---|---|---|
+| **D6** Bilateral Burn | **Regressed to a confirmed defect** | The outbound lane is wired and every unit gate passes, but the receipt now delivers an authenticated claim of enforcement that has no implementation (Defect 2). Not merely unproven — actively misleading. Needs the admission gate wired, content sequencing, and a burn observed crossing two identities. |
+| **C5** (attribution part) | **Regressed to a confirmed defect** | Orientation is carried end to end and fails closed on unproven rows, but a peer can replay a cover to have their row labelled as the operator's (Defect 1). Needs token-to-poster binding, or the fail-closed mitigation and its product trade-off accepted. |
+| **A7** Honest Burn / duress | Improved, not earned | The TPM tri-state now refuses to report a wipe that did not happen, including the case where a key existed and deletion *failed* but was reported as success. Unlike memory zeroization this **is** observable end to end — a duress wipe on a TPM-less VM, journal cleared — so a unit test is the wrong proof for it. Unknown until that runs. |
+| **A8** Secret zeroization | Already awarded by the checklist writer | Not claimed here. Recorded only so the +1 is not double-counted. |
+| **B-rows** | Unchanged | Nothing in this lane produced two-identity evidence. |
+
+`unknown` is the honest state for A7 and for every B row this lane touches. Truth should judge and
+apply; this lane has deliberately not edited the checklist.
+
 ## Resume here
 
 - **Current verified state:** all five lane gates green (keystore 176/0/1, store 17/0, hub core
