@@ -768,24 +768,44 @@ exists because the current evidence has no trusted mapping from the active
 bridge Worker version to its exact Git commit and ordered migration. Do not
 replace either command with a direct Wrangler invocation.
 
-The only positive release selector runs source closure and trusted readiness
-admission in the same process; it accepts no receipt-file argument:
+The release selector runs source closure and trusted readiness admission in the
+same process, then consumes one independently signed producer receipt:
 
 ```sh
 npm run release:select -- \
   --expected-commit "$EXPECTED_COMMIT" \
   --archive-dir "$READINESS_ARCHIVE_DIR" \
   --artifact B \
-  --expected-active-version "$EXPECTED_ACTIVE_VERSION"
+  --expected-active-version "$EXPECTED_ACTIVE_VERSION" \
+  --producer-receipt "$ABSOLUTE_PRODUCER_RECEIPT"
 ```
 
-This selector requires the exact commit, repository/keyserver trees, all seven
-nonempty sender-filter source paths and hashes, signed route contract, exact
-production database/environment, fresh stable Worker version, archive id,
-schema query hashes, capability table, and disposition marker. Missing,
-mismatched, or stale evidence is refused. Even a passing result says
-`execution_authorized=false` and `execution_performed=false`; it is not
-permission to deploy or migrate.
+The receipt is not an operator-authored JSON form. Its Ed25519 signature must
+verify against a separately enrolled release-producer public key, and its
+producer identity, run id, monotonic sequence, previous-receipt digest, exact
+commit/archive and A/B bundle hashes are signed. The producer must capture the
+ordered committed D1 migration list, canonical applied-schema fingerprint,
+exact production database/environment, active Worker version/deployment,
+health and signed sender-filter routes, capability advertisement, and mutually
+exclusive Artifact A/B probes itself. Hashing a caller-supplied collection of
+those values is not a producer receipt.
+
+The selector checks freshness and timestamp ordering, requires nonempty schema
+and positive Artifact B route fixtures, and atomically advances a private
+per-producer receipt chain. Reusing a receipt, skipping or rewinding a
+sequence, substituting a caller key, changing a signed field, or presenting a
+self-consistent envelope from an untrusted key is refused.
+
+No production release-producer public key is enrolled in source today. That is
+deliberate: inventing a public key without an independently controlled private
+producer would create fake authority. Therefore every production receipt
+currently refuses. A future key enrollment and producer implementation require
+a separate security review; the producer must own provider capture and must
+never accept caller-written evidence fields.
+
+Even after a producer is independently enrolled, a passing selector result
+says `execution_authorized=false` and `execution_performed=false`; it records
+post-action evidence and is not permission to deploy or migrate.
 
 ### Exact safe order (blocked at production mutation)
 

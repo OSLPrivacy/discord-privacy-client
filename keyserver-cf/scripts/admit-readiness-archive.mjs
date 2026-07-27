@@ -747,6 +747,10 @@ export async function runAdmissionCli(argv, dependencies = {}) {
     expected_commit: options.expectedCommit,
     archive_id: verified.index.archive_id,
     artifact: options.artifact,
+    artifact_bundles: {
+      A: verified.manifests.A.build.bundle_sha256,
+      B: verified.manifests.B.build.bundle_sha256,
+    },
     database: evidence.database,
     database_id: evidence.database_id,
     environment: evidence.environment,

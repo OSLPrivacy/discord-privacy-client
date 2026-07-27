@@ -20,6 +20,12 @@ import {
   selectTrustedRelease,
   TRUSTED_RELEASE_SELECTION_FORMAT,
 } from "./trusted-release-selection-contract.mjs";
+import {
+  DEPLOYMENT_FIXTURE_BUNDLES,
+  DEPLOYMENT_FIXTURE_MIGRATIONS,
+  TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+  deploymentEvidenceEnvelope,
+} from "./deployment-evidence-test-fixture.js";
 
 const COMMIT = "a".repeat(40);
 const NOW = Date.parse("2026-07-27T12:00:00.000Z");
@@ -85,6 +91,7 @@ function readinessReceipt(overrides: Record<string, unknown> = {}) {
     expected_commit: COMMIT,
     archive_id: "d".repeat(64),
     artifact: "B",
+    artifact_bundles: DEPLOYMENT_FIXTURE_BUNDLES,
     database: "osl-keyserver-prod",
     database_id: "1de837cd-3bf6-4d33-be82-12d358523600",
     environment: "production",
@@ -118,6 +125,9 @@ async function selectionInputs() {
       nowMs: NOW,
     }),
     readinessReceipt: readinessReceipt(),
+    producerReceipt: deploymentEvidenceEnvelope(),
+    expectedMigrations: DEPLOYMENT_FIXTURE_MIGRATIONS,
+    trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
     nowMs: NOW,
   };
 }
@@ -133,6 +143,8 @@ describe("trusted keyserver release selection", () => {
       expected_commit: COMMIT,
       artifact: "B",
       capability_table_exists: 1,
+      post_deploy_evidence_admitted: true,
+      producer_identity: "test://independent-release-producer",
     });
     expect(selected.route_contract).toMatchObject({
       method: "GET",
@@ -235,7 +247,7 @@ describe("trusted keyserver release selection", () => {
     );
   });
 
-  it("runs source and readiness admission in-process without accepting a receipt file", async () => {
+  it("runs source/readiness admission and consumes only a signed producer receipt", async () => {
     const args = [
       "--expected-commit",
       COMMIT,
@@ -245,6 +257,8 @@ describe("trusted keyserver release selection", () => {
       "B",
       "--expected-active-version",
       ACTIVE_VERSION,
+      "--producer-receipt",
+      "/tmp/signed-producer-receipt.json",
     ];
     expect(parseTrustedReleaseArgs(args)).toMatchObject({
       expectedCommit: COMMIT,
@@ -257,8 +271,15 @@ describe("trusted keyserver release selection", () => {
 
     let admittedArgs: string[] = [];
     let output = "";
+    let consumed = 0;
     const selected = await runTrustedReleaseSelectionCli(args, {
       loadSource: async () => sourceInputs(),
+      loadMigrations: async () => DEPLOYMENT_FIXTURE_MIGRATIONS,
+      loadProducerReceipt: async () => deploymentEvidenceEnvelope(),
+      trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+      consumeReceipt: async () => {
+        consumed += 1;
+      },
       admit: async (received: string[]) => {
         admittedArgs = received;
         return readinessReceipt();
@@ -268,10 +289,38 @@ describe("trusted keyserver release selection", () => {
         output += text;
       },
     });
-    expect(admittedArgs).toEqual(args);
+    expect(admittedArgs).toEqual(args.slice(0, -2));
+    expect(consumed).toBe(1);
     expect(selected.selection_admitted).toBe(true);
+    expect(selected.post_deploy_evidence_admitted).toBe(true);
     expect(selected.execution_authorized).toBe(false);
     expect(output).toContain('"execution_performed": false');
+  });
+
+  it("refuses an unenrolled producer before trusted rebuild or live capture", async () => {
+    const args = [
+      "--expected-commit",
+      COMMIT,
+      "--archive-dir",
+      "/tmp/nonempty-trusted-archive",
+      "--artifact",
+      "B",
+      "--expected-active-version",
+      ACTIVE_VERSION,
+      "--producer-receipt",
+      "/tmp/unenrolled-producer-receipt.json",
+    ];
+    let admitted = false;
+    await expect(
+      runTrustedReleaseSelectionCli(args, {
+        loadProducerReceipt: async () => deploymentEvidenceEnvelope(),
+        admit: async () => {
+          admitted = true;
+          throw new Error("admission must not run");
+        },
+      }),
+    ).rejects.toThrow(/producer is not independently trusted/);
+    expect(admitted).toBe(false);
   });
 
   it("blocks both package production actions and never exposes an executor", () => {
@@ -316,6 +365,10 @@ describe("trusted keyserver release selection", () => {
       .split("## §12 Next:")[0];
     expect(senderFilterSection).toContain("execution_authorized=false");
     expect(senderFilterSection).toContain("npm run release:select");
+    expect(senderFilterSection).toContain("--producer-receipt");
+    expect(senderFilterSection).toContain(
+      "No production release-producer public key is enrolled",
+    );
     expect(senderFilterSection).not.toMatch(
       /npx wrangler (?:deploy|d1 migrations apply)/,
     );

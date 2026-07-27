@@ -10,19 +10,30 @@ import {
   loadSenderFilterReceiptInputs,
 } from "./create-sender-filter-deployment-receipt.mjs";
 import { selectTrustedRelease } from "./trusted-release-selection-contract.mjs";
+import {
+  TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS,
+  verifyDeploymentEvidenceReceipt,
+} from "./deployment-evidence-receipt-contract.mjs";
+import {
+  consumeDeploymentEvidenceOnce,
+  loadCommittedMigrationClosure,
+  readDeploymentEvidenceReceipt,
+} from "./deployment-evidence-receipt-io.mjs";
 
 const FLAGS = Object.freeze([
   "--expected-commit",
   "--archive-dir",
   "--artifact",
   "--expected-active-version",
+  "--producer-receipt",
 ]);
 
 function usage() {
   throw new Error(
     "usage: node scripts/select-trusted-release.mjs " +
       "--expected-commit <full-git-commit> --archive-dir <archive-directory> " +
-      "--artifact <A|B> --expected-active-version <worker-version-uuid>",
+      "--artifact <A|B> --expected-active-version <worker-version-uuid> " +
+      "--producer-receipt <absolute-signed-receipt-path>",
   );
 }
 
@@ -59,6 +70,7 @@ export function parseTrustedReleaseArgs(argv) {
     archiveDir: path.resolve(values["--archive-dir"]),
     artifact: values["--artifact"],
     expectedActiveVersion: values["--expected-active-version"],
+    producerReceiptPath: values["--producer-receipt"],
   };
 }
 
@@ -78,7 +90,32 @@ export async function runTrustedReleaseSelectionCli(
     dependencies.admit ??
     ((args) => runAdmissionCli(args, { write: () => {} }));
   const write = dependencies.write ?? ((text) => process.stdout.write(text));
+  const loadMigrations =
+    dependencies.loadMigrations ??
+    ((commit) => loadCommittedMigrationClosure(repoRoot, commit));
+  const loadProducerReceipt =
+    dependencies.loadProducerReceipt ?? readDeploymentEvidenceReceipt;
+  const trustedProducers =
+    dependencies.trustedProducers ??
+    TRUSTED_DEPLOYMENT_EVIDENCE_PRODUCERS;
+  const consumeReceipt =
+    dependencies.consumeReceipt ?? consumeDeploymentEvidenceOnce;
 
+  const producerReceipt = await loadProducerReceipt(
+    options.producerReceiptPath,
+  );
+  if (
+    !producerReceipt ||
+    typeof producerReceipt !== "object" ||
+    Array.isArray(producerReceipt) ||
+    typeof producerReceipt.producer_key_id !== "string" ||
+    !trustedProducers[producerReceipt.producer_key_id]
+  ) {
+    throw new Error(
+      "deployment evidence producer is not independently trusted",
+    );
+  }
+  const expectedMigrations = await loadMigrations(options.expectedCommit);
   const sourceReceipt = createSenderFilterDeploymentReceipt({
     ...(await loadSource(options.expectedCommit)),
     nowMs: now(),
@@ -98,8 +135,25 @@ export async function runTrustedReleaseSelectionCli(
     ...options,
     sourceReceipt,
     readinessReceipt,
+    producerReceipt,
+    expectedMigrations,
+    trustedProducers,
     nowMs: now(),
   });
+  const verifiedProducerReceipt = verifyDeploymentEvidenceReceipt(
+    producerReceipt,
+    {
+      archiveId: readinessReceipt.archive_id,
+      artifact: options.artifact,
+      artifactBundles: readinessReceipt.artifact_bundles,
+      expectedCommit: options.expectedCommit,
+      expectedDeploymentId: readinessReceipt.deployment_id,
+      expectedMigrations,
+      expectedWorkerVersion: readinessReceipt.active_worker_version,
+    },
+    { trustedProducers, nowMs: now() },
+  );
+  await consumeReceipt(verifiedProducerReceipt);
   write(`${JSON.stringify(selection, null, 2)}\n`);
   return selection;
 }

@@ -16,6 +16,9 @@ import {
   SENDER_FILTER_SOURCE_FILES,
   sha256,
 } from "./sender-filter-deployment-contract.mjs";
+import {
+  verifyDeploymentEvidenceReceipt,
+} from "./deployment-evidence-receipt-contract.mjs";
 
 export const TRUSTED_RELEASE_SELECTION_FORMAT =
   "osl.keyserver.trusted-release-selection.v1";
@@ -27,6 +30,7 @@ const READINESS_FIELDS = Object.freeze([
   "admitted",
   "archive_id",
   "artifact",
+  "artifact_bundles",
   "capability_table_exists",
   "captured_finished_at",
   "captured_started_at",
@@ -218,6 +222,20 @@ function validateReadinessReceipt(
   }
   requireGitObject(receipt.expected_commit, "trusted readiness commit");
   requireSha256(receipt.archive_id, "trusted readiness archive id");
+  const artifactBundles = requireObject(
+    receipt.artifact_bundles,
+    "trusted readiness artifact bundles",
+  );
+  requireExactKeys(
+    artifactBundles,
+    ["A", "B"],
+    "trusted readiness artifact bundles",
+  );
+  requireSha256(artifactBundles.A, "trusted readiness Artifact A bundle");
+  requireSha256(artifactBundles.B, "trusted readiness Artifact B bundle");
+  if (artifactBundles.A === artifactBundles.B) {
+    throw new Error("trusted readiness Artifact A and B bundles are identical");
+  }
   requireUuid(receipt.active_worker_version, "active Worker version");
   requireUuid(receipt.deployment_id, "active deployment id");
   if (receipt.active_worker_version !== expectedActiveVersion) {
@@ -293,6 +311,9 @@ export function selectTrustedRelease({
   expectedActiveVersion,
   sourceReceipt,
   readinessReceipt,
+  producerReceipt,
+  expectedMigrations,
+  trustedProducers,
   nowMs = Date.now(),
 }) {
   requireGitObject(expectedCommit, "expected release commit");
@@ -307,6 +328,19 @@ export function selectTrustedRelease({
     expectedActiveVersion,
     nowMs,
   });
+  const producerEvidence = verifyDeploymentEvidenceReceipt(
+    producerReceipt,
+    {
+      archiveId: readiness.archive_id,
+      artifact,
+      artifactBundles: readiness.artifact_bundles,
+      expectedCommit,
+      expectedDeploymentId: readiness.deployment_id,
+      expectedMigrations,
+      expectedWorkerVersion: readiness.active_worker_version,
+    },
+    { trustedProducers, nowMs },
+  );
   return {
     format: TRUSTED_RELEASE_SELECTION_FORMAT,
     selection_admitted: true,
@@ -327,5 +361,14 @@ export function selectTrustedRelease({
     markers: readiness.markers,
     route_contract: sourceReceipt.route_contract,
     source_payload_sha256: sourceReceipt.payload_sha256,
+    post_deploy_evidence_admitted: true,
+    producer_key_id: producerEvidence.producer_key_id,
+    producer_identity: producerEvidence.producer_identity,
+    producer_run_id: producerEvidence.payload.producer_run_id,
+    producer_sequence: producerEvidence.payload.producer_sequence,
+    producer_receipt_sha256: producerEvidence.receipt_sha256,
+    applied_schema_fingerprint_sha256:
+      producerEvidence.payload.database.schema_fingerprint_sha256,
+    applied_migrations: producerEvidence.payload.migrations,
   };
 }

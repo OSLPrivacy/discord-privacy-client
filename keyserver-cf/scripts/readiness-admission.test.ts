@@ -738,9 +738,11 @@ database_id = "${READINESS_DATABASE_ID}"
       write: () => {},
       now: () => now,
     });
-    await expect(
-      runAdmissionCli(args("A"), dependencies(evidence(now))),
-    ).resolves.toMatchObject({
+    const admitted = await runAdmissionCli(
+      args("A"),
+      dependencies(evidence(now)),
+    );
+    expect(admitted).toMatchObject({
       format: "osl.keyserver.readiness-admission.v2",
       admitted: true,
       expected_commit: COMMIT,
@@ -752,6 +754,17 @@ database_id = "${READINESS_DATABASE_ID}"
         control_inbox_sender_reconciliation_started: null,
       },
     });
+    expect(admitted.artifact_bundles).toEqual(
+      Object.fromEntries(
+        fixture.index.artifacts.map((entry) => [
+          entry.artifact,
+          entry.bundle_sha256,
+        ]),
+      ),
+    );
+    expect(admitted.artifact_bundles.A).not.toBe(
+      admitted.artifact_bundles.B,
+    );
     await expect(
       runAdmissionCli(
         args("A"),
