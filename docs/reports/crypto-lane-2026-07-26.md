@@ -1190,3 +1190,55 @@ than earning another point.
 ## Acceptance rows this earns
 
 No additional row. B5 remains `2/4`, now with the nonempty production-path proof gap closed.
+
+## Round 11 — Peer-bundle proof refusal mutation gate
+
+Source commit:
+`01e7ba2` (tree `7e4d4d88a838eab5af3ad877a3b3e7287cac877b`).
+
+The earlier functional fix remains intact: `PeerBundleProofInvalid` has its own
+`peer_bundle_proof_invalid` class, and an error-classified control-inbox receipt cannot report
+transport success (`discord_qa_inbound_receipt.rs:449,475-491`). This round replaces the
+self-referential source-text search with two semantic policy gates:
+
+- `#[deny(unreachable_patterns)]` on the exhaustive `keystore::Error` classifier makes an
+  inserted wildcard/default arm a compile error when it would absorb an explicitly classified
+  error (`:430-454`).
+- The classifier test requires proof-invalid, transport, and local-state inputs to produce their
+  exact distinct labels (`:989-1005`). The receipt test exercises all valid
+  entered/ready/error states plus the five invalid outcome/error combinations, including both
+  unknown-outcome forms (`:930-986`).
+
+### Exact committed evidence
+
+`git archive 01e7ba2` was extracted to
+`/tmp/osl-proof-policy-01e7ba2.jtfUZz`, with target directory
+`/tmp/osl-proof-policy-target-01e7ba2`. Exact committed bytes produced:
+
+- `CARGO_TARGET_DIR=/tmp/osl-proof-policy-target-01e7ba2 osl-cargo test --features
+  core,discord-qa-shell --lib
+  discord_qa_inbound_receipt::tests::peer_bundle_proof_invalid_is_an_explicit_terminal_control_inbox_refusal
+  -- --exact --nocapture --test-threads=1`: 1 passed, 0 failed, 725 filtered out.
+- The same command for
+  `discord_qa_inbound_receipt::tests::keyserver_error_classifier_semantically_separates_proof_invalid`:
+  1 passed, 0 failed, 725 filtered out.
+- `CARGO_TARGET_DIR=/tmp/osl-proof-policy-target-01e7ba2 osl-cargo check --features
+  core,discord-qa-shell --lib`: exit 0, with 52 dead-code warnings and no errors.
+
+Two independent disposable mutations failed:
+
+1. Replacing only the explicit `PeerBundleProofInvalid` arm with a wildcard caused compile exit
+   101: the later local-state arm was an `unreachable pattern` denied at
+   `discord_qa_inbound_receipt.rs:430`.
+2. Removing unknown-outcome rejection while preserving the error-presence check caused test exit
+   101 at `an unknown outcome must not gain a default accepted state`.
+
+Status is `test-proven-only` for the QA receipt classifier and policy gate. This is release
+compile/readiness evidence only. It is not shipping evidence: `discord-qa-shell` weakens the
+header proof, no runtime provider path or second identity was exercised, and I3 remains
+`blocked`. The dirty `lib.rs` was not touched by this round.
+
+## Acceptance rows this earns
+
+None. The QA release blocker and mutation gate are closed `test-proven-only`; I3 remains
+`blocked`.
