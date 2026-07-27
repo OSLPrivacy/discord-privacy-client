@@ -181,14 +181,16 @@ away, per master §16.3.
 - H1 stays **3/4; +0**. Independent review rejected `f39b805` because “An activation code grants
   30 days of Pro” bypassed its exact phrases, then rejected `5a84d77` because “One month of Pro
   comes with each activation code” bypassed its verb-dependent rule while honest planned and
-  once-implemented copy false-failed. Exact successor
-  `4aea9fe153dbc58e0b75c6a4422912f828d3343d` instead prohibits any same-sentence code/licence plus
-  30-day/one-month duration unless the clause explicitly says it is planned, unimplemented, or
-  conditional on implementation. Its adversarial positives and honest negatives make 35/35
-  crawler fixtures pass; 16/16 public pages, 18 pricing markers with zero drift, and 10/10
-  fail-closed checkout tests also pass. Exact keyserver `90da747` adds a source-owned,
+  once-implemented copy false-failed. Independent review also rejects `4aea9fe`: activation-key
+  and paid-Pro-voucher synonyms plus a two-paragraph “It lasts 30 days” continuation bypass it,
+  while “is a planned feature,” “is unimplemented,” and “if automatic expiry is implemented”
+  false-fail. Exact successor `be16e7c71c2ab3f3740a68db8b032e3ca898ac30` adds those credential
+  synonyms and a bounded adjacent-pronoun rule while accepting those explicit limitations. Its
+  adversarial positives and honest negatives make 41/41 crawler fixtures pass; 16/16 public pages,
+  18 pricing markers with zero drift, and 10/10 fail-closed checkout tests also pass. Exact
+  keyserver `90da747` adds a source-owned,
   non-operator-configurable refusal at paid issuance boundaries, but it implements no redemption
-  clock and is not deployment-proven. The website is seven commits ahead of its local
+  clock and is not deployment-proven. The website is eight commits ahead of its local
   `origin/main`, unpushed and undeployed; live Pages identity remains `unknown`. The successor is
   `test-proven-only` pending independent acceptance.
 - C4 stays **1/4; +0**. `48162bd` publishes a real Rust return through a renderer seam, while
@@ -594,17 +596,16 @@ timestamped deltas, not keep this number manually forever.
   `web-pricing-truth-2026-07-26`. **The remaining point is held for actual promotion to production
   plus the keyserver redemption change** — nothing is deployed. The "your month starts when you enter the code" claim stays
   unpublished until the keyserver redemption change lands.
-  **Independent reviews rejected local `f39b805` and `5a84d77`: the first missed a 30-day
-  paraphrase, and the second missed “comes with each activation code” while false-failing honest
-  planned/conditional copy. Exact successor `4aea9fe153dbc58e0b75c6a4422912f828d3343d`
-  makes same-sentence code/licence plus 30-day/one-month duration fail unless explicitly planned,
-  unimplemented, or conditional on implementation. It passes 16/16 public pages, 35/35 crawler
-  known-bad/honest fixtures, 18 pricing markers with zero drift, and 10/10 checkout tests. It is a
-  clean `test-proven-only` commit pending independent acceptance, seven commits ahead of the local
-  `origin/main` ref, unpushed and undeployed. Keyserver `90da747` fails closed at paid issuance
-  boundaries in local source but intentionally implements no redemption clock and is not
-  deployment-proven. Pages dashboard/build evidence and a public SHA-bound `/build.json` remain
-  `unknown`; redemption is absent.**
+  **Independent reviews rejected local `f39b805`, `5a84d77`, and `4aea9fe`: the first two missed
+  direct paraphrases; the third missed activation-key, paid-Pro-voucher, and adjacent-pronoun
+  variants while false-failing explicit planned/unimplemented/conditional copy. Exact successor
+  `be16e7c71c2ab3f3740a68db8b032e3ca898ac30` adds those synonyms and a bounded adjacent-text rule.
+  It passes 16/16 public pages, 41/41 crawler known-bad/honest fixtures, 18 pricing markers with
+  zero drift, and 10/10 checkout tests. It is a clean `test-proven-only` commit pending independent
+  acceptance, eight commits ahead of the local `origin/main` ref, unpushed and undeployed.
+  Keyserver `90da747` fails closed at paid issuance boundaries in local source but intentionally
+  implements no redemption clock and is not deployment-proven. Pages dashboard/build evidence and
+  a public SHA-bound `/build.json` remain `unknown`; redemption is absent.**
   `needs: keyserver redemption period (DEC-2026-07-26-PRO-CODES)` `weight: 4` `earned: 3`
 - 🟨 **H2 · Responsive visual fixes from Zhao/Jester screenshots** — preview branches contain newer
   work; exact screenshot mapping and canonical integration remain. `needs: screenshot refs`
@@ -737,9 +738,9 @@ timestamped deltas, not keep this number manually forever.
   [`osl-public-claim-allowlist.md`](osl-public-claim-allowlist.md). A feature can no longer become
   `Available` through a copy edit. **The crawler now exists** (`scripts/check-claims.mjs` in the website repo): it asserts that no page
   contains a forbidden phrase and that every badge matches the manifest, and it carries a known-bad
-  fixture suite (`--self-test`; exact website `4aea9fe` passes 35/35 known-bad/honest fixtures,
-  including redemption-record, redemption-start, automatic-return-to-Free, adversarial
-  code-duration paraphrases, and honest planned/once-implemented controls) so it
+  fixture suite (`--self-test`; exact website `be16e7c` passes 41/41 known-bad/honest fixtures,
+  including redemption-record, redemption-start, automatic-return-to-Free, code/key/voucher and
+  bounded-adjacent duration paraphrases, plus honest planned/unimplemented/conditional controls) so it
   cannot decay into an all-green source-shape test. It caught real live false
   claims on 2026-07-26. **Scope addition 2026-07-26: +3 points to the denominator.** Residual gap:
   it is a pre-deploy command, not a CI gate, so nothing yet blocks a deploy that skips it.
