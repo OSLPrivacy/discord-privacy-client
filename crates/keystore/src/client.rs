@@ -210,6 +210,67 @@ impl PeerCapabilities {
     }
 }
 
+/// Verify the signature over every public key in a fetched identity
+/// record. This is required independently of capability negotiation:
+/// the keyserver is a carrier for the bundle, not its integrity
+/// authority.
+///
+/// A zero capability bitmap has two deployed canonical encodings:
+/// legacy clients omitted the field, while newer clients signed an
+/// explicit `0`. Both bind the same key bundle and advertise no
+/// capability, so either signature is accepted for zero only.
+pub fn verify_peer_bundle(resp: &PubkeysResponse) -> bool {
+    let Some(sig_b64) = resp.registration_sig.as_deref() else {
+        return false;
+    };
+    let Ok(pub_bytes) = STANDARD.decode(&resp.ik_ed25519_pub) else {
+        return false;
+    };
+    let Ok(sig_bytes) = STANDARD.decode(sig_b64) else {
+        return false;
+    };
+    let Ok(pub_arr) = <[u8; 32]>::try_from(pub_bytes.as_slice()) else {
+        return false;
+    };
+    let Ok(sig_arr) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
+        return false;
+    };
+    let verifying = crypto::ed25519::PublicKey::from_bytes(pub_arr);
+    let signature = crypto::ed25519::Signature::from_bytes(sig_arr);
+    let capabilities = resp.rn_capabilities.unwrap_or(0);
+    if capabilities > RN_CAP_MAX {
+        return false;
+    }
+    let extended = reg_msg_with_capabilities(
+        &resp.user_id,
+        &resp.ik_x25519_pub,
+        &resp.ik_ed25519_pub,
+        &resp.ik_mlkem768_pub,
+        resp.ik_ratchet_initial_pub.as_deref(),
+        capabilities,
+    );
+    if matches!(
+        crypto::ed25519::verify(&verifying, &extended, &signature),
+        Ok(true)
+    ) {
+        return true;
+    }
+    if capabilities != 0 {
+        return false;
+    }
+    let legacy = reg_msg(
+        &resp.user_id,
+        &resp.ik_x25519_pub,
+        &resp.ik_ed25519_pub,
+        &resp.ik_mlkem768_pub,
+        resp.ik_ratchet_initial_pub.as_deref(),
+    );
+    matches!(
+        crypto::ed25519::verify(&verifying, &legacy, &signature),
+        Ok(true)
+    )
+}
+
 /// Verify a peer's advertised capability bitmap against the signature
 /// served alongside it.
 ///

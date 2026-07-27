@@ -357,6 +357,11 @@ pub enum V2Error {
     #[error("cover string missing DPC0:: prefix")]
     BadPrefix,
 
+    /// The v3 header authenticated a sender identity key other than
+    /// the locally pinned key for the attributed peer.
+    #[error("authenticated sender identity mismatch")]
+    SenderIdentityMismatch,
+
     /// Base64 decode of the cover body failed (truncation or
     /// hand-editing).
     #[error("base64 decode of cover body failed: {0}")]
@@ -775,6 +780,33 @@ pub fn decrypt_v3(
     recipient_ik_sk: &x25519::SecretKey,
     recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
 ) -> Result<DecryptedV2, V2Error> {
+    decrypt_v3_inner(wire, recipient_ik_sk, recipient_mlkem_sk, None)
+}
+
+/// Decode v3 only for an already-pinned sender identity. Generic
+/// receive paths must use this entry point; the unbound decoder is
+/// retained for framing tests and callers that perform their own
+/// complete manual-peer bundle verification.
+pub fn decrypt_v3_for_sender(
+    wire: &str,
+    recipient_ik_sk: &x25519::SecretKey,
+    recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
+    expected_sender_ik: &x25519::PublicKey,
+) -> Result<DecryptedV2, V2Error> {
+    decrypt_v3_inner(
+        wire,
+        recipient_ik_sk,
+        recipient_mlkem_sk,
+        Some(expected_sender_ik),
+    )
+}
+
+fn decrypt_v3_inner(
+    wire: &str,
+    recipient_ik_sk: &x25519::SecretKey,
+    recipient_mlkem_sk: &ml_kem_768::DecapsulationKey,
+    expected_sender_ik: Option<&x25519::PublicKey>,
+) -> Result<DecryptedV2, V2Error> {
     let body = wire.strip_prefix("DPC0::").ok_or(V2Error::BadPrefix)?;
     let raw = STANDARD
         .decode(body)
@@ -798,6 +830,9 @@ pub fn decrypt_v3(
     let mut sender_ik_bytes = [0u8; 32];
     sender_ik_bytes.copy_from_slice(&raw[2..34]);
     let sender_ik_pub = x25519::PublicKey::from_bytes(sender_ik_bytes);
+    if expected_sender_ik.is_some_and(|expected| sender_ik_pub != *expected) {
+        return Err(V2Error::SenderIdentityMismatch);
+    }
     let n = raw[34] as usize;
     if n == 0 {
         return Err(V2Error::ZeroRecipients);

@@ -150,11 +150,10 @@ impl SenderPubkeyCache {
     }
 }
 
-/// REGISTER-FIX (TOFU): one peer key-change the user must
-/// acknowledge. Raised when a peer's `ik_ed25519_pub` returned by
-/// `fetch_pubkeys` differs from the trusted first-seen baseline in
-/// `peer_map`. Surfaced (NOT warn-swallowed) and held until the user
-/// explicitly accepts (baseline → new) or declines (baseline kept).
+/// One complete peer-bundle change the user must acknowledge. Raised
+/// when any signed Ed25519, X25519, ML-KEM or ratchet-bootstrap key
+/// differs from the trusted baseline. The live keys remain unchanged
+/// until the user verifies the new bundle number and accepts it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct KeyChangeAlert {
     pub discord_id: String,
@@ -163,10 +162,15 @@ pub struct KeyChangeAlert {
     pub old_ed25519_pub: String,
     /// base64 Ed25519 pub the keyserver just returned.
     pub new_ed25519_pub: String,
-    /// Safety number of the NEW key (for out-of-band comparison).
+    /// Safety number of the complete new bundle.
     pub new_safety_number: String,
     /// First time this change was observed (ISO-8601).
     pub first_observed: String,
+    /// Complete pending bundle. Public key material, but not part of
+    /// the renderer DTO; acceptance adopts exactly what the displayed
+    /// bundle safety number covered.
+    #[serde(skip_serializing)]
+    pub pending_bundle: crate::tofu::KeyBundle,
 }
 
 #[derive(Default)]

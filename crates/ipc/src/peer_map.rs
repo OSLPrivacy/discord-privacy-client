@@ -143,18 +143,19 @@ pub struct PeerEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratchet_state: Option<crypto::ratchet::RatchetStateOnDisk>,
 
-    /// REGISTER-FIX (TOFU): the peer's trusted Ed25519 identity pub
-    /// (base64), recorded the FIRST time we ever saw this peer's keys
-    /// via `fetch_pubkeys`. Trust-on-first-use baseline: every later
-    /// fetch compares the keyserver's `ik_ed25519_pub` against this.
-    /// A mismatch raises a `KeyChangeAlert` (Signal-style "safety
-    /// number changed") and does NOT silently update this value —
-    /// only an explicit user-accept does. `None` for peers seen
-    /// before this field existed (back-compatible: serde default;
-    /// the next fetch sets the baseline). Decrypt is NEVER blocked
-    /// on this — warn, don't break.
+    /// Legacy Ed25519-only TOFU baseline. Retained for migration only:
+    /// current trust decisions use `tofu_key_bundle`, reconstructed
+    /// from this field plus the already-pinned transport keys when an
+    /// older entry is first loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tofu_ed25519_pub: Option<String>,
+
+    /// Complete trust object used by the safety-number ceremony.
+    /// Legacy entries retain `tofu_ed25519_pub`; the first verified
+    /// full-bundle fetch reconstructs or seeds this field without
+    /// silently replacing any already-pinned transport key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tofu_key_bundle: Option<crate::tofu::KeyBundle>,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to
