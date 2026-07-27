@@ -2268,3 +2268,22 @@ release evidence was produced.
 
 - Threat-model scope qualification +0.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — homepage message-scope qualification
+
+The homepage message-protection paragraph said “OSL encrypts it” without
+limiting the claim to the supported direct-message path. Website commit
+`f8d8510ef677e88a0bc5a4e8d58be40b4cb2b524`, tree
+`61185146fa3631f2c74855b368cfccfa9ba3e7f5`, parent
+`46c1789398a2cefbdd872a1c39991e2ff4e487cc`, qualifies the paragraph to
+“supported direct messages” and preserves the existing metadata and cover-text
+limitations. Exact `index.html` blob:
+`3283258f986b38cd760f08924884f553e115fb1f`.
+
+`git diff --check` passed. No browser, build, install, runtime, deployment, or
+release evidence was produced.
+
+## Acceptance rows this earns
+
+- Homepage message-scope qualification +0.
+- Checklist remains untouched; authority remains **100 / 303**.
