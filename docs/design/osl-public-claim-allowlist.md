@@ -209,6 +209,20 @@ Update this file in the same task as any change to security truth or feature sta
 any page currently using the old wording — a row that no longer earns its badge is a
 live incorrect claim on the site, not a documentation backlog item.
 
+### Known enforcement gap — in-app copy is UNGUARDED (recorded 2026-07-26)
+
+Section D says it governs "Website, in-app copy, README, store listing, social posts, screenshots,
+alt text". Only **one** of those is mechanically enforced. `scripts/check-claims.mjs` runs against
+the website repository; **nothing checks the strings a user actually reads inside the app** —
+`apps/osl-hub-ui/src/**` and user-facing text in `apps/osl-hub/src/**`. README is now correct but is
+likewise unguarded, as tonight demonstrated: it carried an inverted burn claim on the repository's
+front page while THREAT_MODEL already said those words were unearned.
+
+So the strongest claim surface a user touches is the least guarded one. **Queued, deliberately not
+started at load 41:** a §D sweep of in-app copy, then a gate that runs the same forbidden-phrase and
+badge rules over the app strings and README, not just the site. Until that exists, treat in-app copy
+as manually reviewed — which is to say, not reviewed.
+
 **The crawler now exists.** `scripts/check-claims.mjs` in the website repository asserts that no
 page contains a section D phrase, that no bare price appears outside the pricing manifest, that
 every capability badge matches the manifest's registry, and that the mandatory limitation sentences

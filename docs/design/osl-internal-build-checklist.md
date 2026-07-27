@@ -81,6 +81,14 @@ logged here so they cannot be quietly forgotten or later re-counted as new work.
   `wrapped_key`). Owner decision 2026-07-26: **NOT NOW**, revisit after the deadline. The threat
   model and the public-claim allowlist already ban the phrase, so this is an architectural gap, not
   a live false claim.
+- **In-app copy is unguarded against the claim allowlist (truth lane, open).** Allowlist §D governs
+  website, **in-app copy**, README, store listing and alt text, but only the website is mechanically
+  checked. Nothing validates the strings a user reads inside the app (`apps/osl-hub-ui/src/**`,
+  user-facing text in `apps/osl-hub/src/**`) or README. Tonight showed why that matters: README
+  carried an *inverted* burn claim on the public front page while THREAT_MODEL already said the
+  words were unearned. Sweep queued and deliberately not started — the box was at load 41 with 46
+  Codex processes, and a truncated result you then trust is worse than a slow one. No point until a
+  gate exists and is proven to fire.
 - **Received/Opened receipts collapse into one `acknowledgmentCount`** (`broker.rs`), losing order —
   the operator cannot distinguish delivered from read.
 
