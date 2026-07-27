@@ -1205,6 +1205,49 @@ function semanticAtRestClaimSpans(text) {
   return spans;
 }
 
+function semanticScrubClaimSpans(text) {
+  const spans = [];
+  const scrubContext = /\b(?:auto\s*scrub|scrub)\b/i;
+  const attachedLimitation =
+    /\b(?:planned|coming\s+soon|unavailable|not\s+(?:available|implemented|wired|supported|proved|proven|qualified)|not\s+yet\s+(?:available|implemented|wired|supported|proved|proven|qualified)|implemented[-\s]+unwired|test[-\s]+proven(?:[-\s]+only)?|unwired|unproved|unproven|unknown|view[-\s]+only|manual(?:ly|\s+only)?|requires?\s+(?:your\s+)?(?:review|confirmation)|does\s+not|cannot|never|may\s+(?:omit|exclude|miss)|can\s+be\s+incomplete|future|intended|design)\b/i;
+  const completeHistory =
+    /(?:\b(?:complete|full|entire|whole|all)\b.{0,45}\b(?:history|content|messages?|posts?|records?|account\s+data|exports?)\b|\b(?:history|content|messages?|posts?|records?|account\s+data|exports?)\b.{0,45}\b(?:complete|full|entire|whole|all)\b)/i;
+  const awayOperation =
+    /(?:\b(?:works?|runs?|scans?|cleans?|deletes?|removes?)\b.{0,55}\b(?:while\s+you.{0,8}\baway|while\s+the\s+user\s+is\s+away|while\s+away|unattended|in\s+the\s+background|without\s+(?:you|the\s+user))\b|\b(?:while\s+you.{0,8}\baway|while\s+the\s+user\s+is\s+away|while\s+away|unattended|in\s+the\s+background|without\s+(?:you|the\s+user))\b.{0,55}\b(?:works?|runs?|scans?|cleans?|deletes?|removes?)\b)/i;
+  const automaticDeletion =
+    /(?:\b(?:automatically|autonomously|on\s+its\s+own|without\s+(?:your\s+)?(?:review|confirmation|approval))\b.{0,45}\b(?:deletes?|removes?|cleans?|erases?)\b|\b(?:deletes?|removes?|cleans?|erases?)\b.{0,45}\b(?:automatically|autonomously|on\s+its\s+own|without\s+(?:your\s+)?(?:review|confirmation|approval))\b)/i;
+  const providerSupport =
+    /\b(?:supports?|works?\s+with|handles?|imports?\s+from|covers?|available\s+(?:for|across|on)|compatible\s+with)\b/i;
+  const fiveProviderWording =
+    /\b(?:five|5)[-\s]+(?:providers?|services?|platforms?|apps?|connectors?)\b/i;
+  const providerPatterns = [
+    /\bdiscord\b/i,
+    /\b(?:meta|facebook|instagram)\b/i,
+    /\bwhats\s*app\b/i,
+    /\b(?:google|gmail)\b/i,
+    /\b(?:twitter|x\/twitter|x)\b/i,
+  ];
+
+  for (const sentenceMatch of text.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
+    const sentence = sentenceMatch[0].trim();
+    if (!sentence || !scrubContext.test(sentence) || attachedLimitation.test(sentence)) {
+      continue;
+    }
+    const providerCount = providerPatterns.filter((pattern) => pattern.test(sentence)).length;
+    if (
+      completeHistory.test(sentence)
+      || awayOperation.test(sentence)
+      || automaticDeletion.test(sentence)
+      || fiveProviderWording.test(sentence)
+      || (providerSupport.test(sentence) && providerCount >= 5)
+    ) {
+      const start = sentenceMatch.index ?? 0;
+      spans.push({ start, end: start + sentenceMatch[0].length });
+    }
+  }
+  return spans;
+}
+
 function countNewlinesBefore(text, index) {
   let count = 0;
   for (let i = 0; i < index; i += 1) {
@@ -1298,6 +1341,20 @@ function analyseFragments(file, fragments, bannedPhrases) {
         file,
         line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
         phrase: "at-rest/local-protection overclaim",
+        excerpt: excerptAround(
+          fragment.text,
+          sourceIndex,
+          Math.max(1, span.end - span.start),
+        ),
+      });
+    }
+
+    for (const span of semanticScrubClaimSpans(lower)) {
+      const sourceIndex = normalized.sourceIndexes[span.start] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: "Scrub capability overclaim",
         excerpt: excerptAround(
           fragment.text,
           sourceIndex,
@@ -2068,6 +2125,86 @@ async function runSelfTest() {
       text: "Whether Discord sees only gibberish is unknown.",
       shouldFlag: false,
     },
+    {
+      name: "catches complete Scrub history claim",
+      text: "Scrub imports your complete account history.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches reversed full-history claim",
+      text: "Your full history is covered by Scrub.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches all-content markup and entity claim",
+      text: "Scrub scans <strong>all&nbsp;content</strong> in the export.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches away-operation public comment",
+      text: "<!-- Scrub runs unattended. -->",
+      shouldFlag: true,
+    },
+    {
+      name: "catches works-while-away phrasing",
+      text: "Scrub works while you're away.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches automatic deletion data attribute",
+      text: '<button data-public-claim="AutoScrub automatically deletes old posts.">Run</button>',
+      shouldFlag: true,
+    },
+    {
+      name: "catches generic five-provider wording",
+      text: "Scrub works with five providers.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches enumerated five-provider support",
+      text: "Scrub supports Discord, Meta, WhatsApp, Google, and X.",
+      shouldFlag: true,
+    },
+    {
+      name: "unrelated planned sentence cannot launder complete-history claim",
+      text: "AutoScrub is Planned. Scrub imports your complete history.",
+      shouldFlag: true,
+    },
+    {
+      name: "passes explicit incomplete-export limitation",
+      text: "A Scrub provider export may omit remote-only messages and can be incomplete.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes view-only away-operation denial",
+      text: "Free Scrub is view-only and never works while you are away.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes planned automatic-deletion statement",
+      text: "AutoScrub automatic deletion is Planned and unavailable in this build.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes implemented-unwired parser statement",
+      text: "Scrub provider-export parsing is implemented-unwired and test-proven-only.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes planned five-provider targets",
+      text: "Discord, Meta, WhatsApp, Google, and X are Planned targets for Scrub.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes explicit provider-support unknown",
+      text: "Whether Scrub supports five providers is unknown.",
+      shouldFlag: false,
+    },
+    {
+      name: "passes non-Scrub provider list",
+      text: "The roadmap names Discord, Meta, WhatsApp, Google, and X.",
+      shouldFlag: false,
+    },
   ];
   const rustFixtures = [
     {
@@ -2194,8 +2331,32 @@ async function runSelfTest() {
     `${readmeMutationCaught ? "PASS" : "FAIL"} actual README broad at-rest mutation is nonvacuous and caught`,
   );
 
+  const productionMain = await readUtf8(path.join(APP_SRC_ROOT, "main.ts"));
+  const scrubMarker = "<h3>Review an export</h3>";
+  const scrubMarkerOccurrences = productionMain.split(scrubMarker).length - 1;
+  const mutatedMain = productionMain.replace(
+    scrubMarker,
+    `${scrubMarker}<p>Scrub imports your complete account history.</p>`,
+  );
+  const scrubMutationViolations = analyseFragments(
+    "apps/osl-hub-ui/src/main.ts",
+    extractTypeScriptStrings(mutatedMain),
+    bannedPhrases,
+  );
+  const scrubMutationCaught = scrubMarkerOccurrences === 1
+    && mutatedMain !== productionMain
+    && scrubMutationViolations.some(
+      ({ phrase }) => phrase === "Scrub capability overclaim",
+    );
+  if (!scrubMutationCaught) {
+    failures += 1;
+  }
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 1}, failures=${failures}`,
+    `${scrubMutationCaught ? "PASS" : "FAIL"} actual Scrub UI completeness mutation is nonvacuous and caught`,
+  );
+
+  console.log(
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + 2}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
