@@ -2138,6 +2138,26 @@ The full public scan passed 16/16 files with zero failures and
 - FAQ image-protection wording correction +0.
 - No checklist edit or score movement; authority remains **100 / 303**.
 
+## 2026-07-27 — forward-looking feature metadata correction
+
+The reachable `features.html` metadata description said OSL “clears sensitive
+history, cleans attachments, and expires readable content” in present tense,
+while the page’s own sections mark those features Arriving at v1. Website
+commit `185319c60897879a3833dd51552badca380f7862`, tree
+`c198a091cb5b6db38c4a9377aed5dfe5b96955a7`, parent
+`e1127020a890f698e734873c09301074a5017b87`, changes only the description to
+“features OSL is building”. Blob: `features.html`
+`2347916b97ca7d04fae89c8c7a25849b9cb85bee`.
+
+The full public scan passed 16/16 files with zero failures and
+`git diff --check` passed. No implementation, runtime, or release evidence was
+claimed.
+
+## Acceptance rows this earns
+
+- Feature metadata qualification +0.
+- No checklist edit or score movement; authority remains **100 / 303**.
+
 ## Acceptance rows this earns
 
 - D2 retry-window implementation +0 pending independent acceptance.
