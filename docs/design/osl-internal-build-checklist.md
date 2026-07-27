@@ -211,7 +211,14 @@ timestamped deltas, not keep this number manually forever.
   requires a known length, so **every upload failed**. It passed its tests only because the R2 test
   double accepts any stream — a textbook false green, the same family as a harness that confirms
   whatever it happens to find. The server side is now fixed **and deployed**: cipher-store version `0a17547d`, production
-  re-probed, part upload returns 201 where it previously returned HTTP 500. The single earned point stands because it was
+  re-probed, part upload returns 201 where it previously returned HTTP 500. **Apparent conflict
+  reconciled (master §0.2):** `docs/reports/server-lane-2026-07-26.md` states "nothing here is
+  `verified-live`. No deploy has happened", while the owner reports deploying `0a17547d` and
+  re-probing production. Both are true at different scopes — the lane is describing what *its own
+  work* proved (a real local workerd, not production), and the owner deployed separately. Not a
+  contradiction, so nothing is marked `superseded`. The writer did **not** independently probe
+  production; the 201 rests on the owner's report (authority order item 1), and the lane's own
+  ceiling remains `runtime-proven` (local). The single earned point stands because it was
   awarded for substantial source existing, **not** for uploads succeeding; withdrawing it would be
   over-correction. But 🧪 "test-proven" was an untrue label for a path that could not execute, so
   the marker is corrected. **Treat any "attachment sent successfully" reported anywhere before
