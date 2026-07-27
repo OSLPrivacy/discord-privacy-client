@@ -2229,3 +2229,22 @@ runtime, push, or deployment command ran.
 
 - Attachment/image claim audit +0; no mismatch found.
 - Checklist remains untouched; authority remains **100 / 303**.
+
+## 2026-07-27 — remaining public capability claim audit
+
+A second bounded read-only pass over the public HTML found no additional
+present-tense capability overclaim. `docs/status.html:87-102` marks image and
+file sending, Scrub discovery, guided deletion, AutoScrub, group protection,
+Burn, timed expiry, view-once, and related tools as Planned with explicit
+shipping-app limitations. `docs/faq.html:95,126,129,132-139` repeats those
+boundaries, and `docs/how-it-works.html:79,98` keeps group protection and
+AutoScrub forward-looking. The website tree was clean after the prior
+corrections (`185319c`, `e112702`, `ea4f26c`). No correction was justified.
+
+The bounded scan used `rg` only; no browser, build, install, runtime,
+deployment, or release evidence was produced.
+
+## Acceptance rows this earns
+
+- Remaining public capability claim audit +0; no mismatch found.
+- Checklist remains untouched; authority remains **100 / 303**.
