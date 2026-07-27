@@ -256,19 +256,24 @@ complete. **That is the false-confidence failure the gates exist to prevent**, s
 which is a different gate with a different input, and which the crypto lane has now built once by
 hand. It belongs with whoever owns app Rust.
 
-**Cross-check performed against the 17 (2026-07-27).** Every one maps to a capability already
-recorded here as `Planned` / `implemented-unwired` — duress, bilateral burn and burn alerts, keyserver
-wrapped-key deletion, one-time prekeys, timed deletion, opened receipts, attachments, overlay guards —
-or to something claimed nowhere at all: **Notes, assets, LAN collaboration and plugins have no row in
-this file and no mention on the website.** So the sweep produced **no live false claim** on the
-surfaces this file governs. That is the conservatism holding against a defect class it was not
-designed for, not evidence the gates are sufficient.
+**Independent truth-lane cross-check of the four hand-verified findings (2026-07-27).**
 
-**Scope of that statement, stated precisely:** it was checked against the rows in this file and
-against the deployed website copy. It was **not** checked against every checklist row, and thirteen
-of the seventeen are Codex counts the crypto lane explicitly marked **unverified** — only
-`post_wrapped_key`, `fetch_wrapped_key`, `BurnAlertPayload` and one other were hand-verified. Anyone
-acting on the other thirteen must re-grep first.
+| Finding | Reachability evidence | Human claim surface | Triage |
+|---|---|---|---|
+| `post_wrapped_key` | Definition at `crates/keystore/src/client.rs:805`; current `git grep` finds callers only in keystore tests, including the explicitly named live smoke test—not in production code. | Internal keyserver/design material describes the model and the threat model explicitly says the send path never built it. No user-facing sentence says production messages upload wrapped keys. | **INTERNAL ONLY** |
+| `fetch_wrapped_key` | Definition at `crates/keystore/src/client.rs:782`; current `git grep` likewise finds callers only in keystore tests. | Same. No user-facing sentence says production receive fetches a wrapped key. | **INTERNAL ONLY** |
+| `BurnAlertPayload` / sign / verify | Definitions at `crates/keystore/src/burn_alert.rs:34,75,83`; outside that file the only source hit is the re-export at `crates/keystore/src/lib.rs:44`. | `README.md:85` says “A signed burn notice is also sent.” That is present tense and public. A newer, separate authenticated `0x0A` revocation path exists in `broker.rs`; it does not call this signature layer, and no two-identity runtime proof earns the whole peer promise. | **SOLD — open outside this lane's path scope** |
+| `osl_notes` / `osl_assets` / `osl_lan` wiring | None of the modules is declared in `apps/osl-hub/src/lib.rs:1-80`; none of their command names appears in `generate_handler!` at `apps/osl-hub/src/main.rs:7207-7336`; their TypeScript wrappers have no production UI consumer. | The app is honest: `main.ts:2555` sets Notes `available: false` and `:5117` says it is planned. Website terms had said Pro expiry leaves “your … notes” unaffected; that present-tense leak is now removed from both the manifest disclosure and `docs/terms.html`. | **INTERNAL ONLY after website correction** |
+
+The website baseline is the negative control, not supporting proof:
+`node scripts/pricing-sync.mjs --check`, `node scripts/build-status.mjs --check`, and
+`node scripts/check-claims.mjs` all exited 0 (16 pages, 0 failed) while the Notes and peer-Burn
+leaks were present. The gates behaved according to their declared string/status scope; they did
+not and cannot establish reachability.
+
+**Scope of this adjudication:** it covers only the four entries the crypto lane had already
+hand-verified, now re-checked against current source and the current website worktree. The other
+thirteen remain unverified counts and must be re-grepped before anyone acts on them.
 
 ## F1 · Structural gap — two lists that must agree, with nothing enforcing it
 

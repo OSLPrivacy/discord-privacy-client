@@ -948,3 +948,73 @@ A self-consistency fix earns nothing; it repairs my own output. **H1 remains 3/4
 **Open in this lane, honestly:** the allowlist/manifest agreement has no enforcing mechanism, only a
 hand check and a rule; and user-visible Rust strings outside the selector list remain unbounded and
 ungated.
+
+---
+
+## 19 · Four hand-verified zero-caller findings — independent claim triage
+
+Re-verified on `/home/liamw/discord-privacy-client`, branch
+`osl-eye-and-features-2026-07-26`, HEAD `5822a8f` before this documentation edit, and on the clean
+website worktree `/mnt/c/Users/liamw/projects/oslprivacy-web`, `main` at `007907c`.
+
+### Production reachability
+
+- `git grep -n -E 'post_wrapped_key|fetch_wrapped_key'` found the two definitions at
+  `crates/keystore/src/client.rs:805` and `:782`, plus keystore test callers only
+  (`client_test.rs` and `live_keyserver_smoke.rs`). No production caller.
+- `git grep -n -E 'BurnAlertPayload|sign_burn_alert|verify_burn_alert'` found definitions/tests in
+  `crates/keystore/src/burn_alert.rs` and only the re-export at
+  `crates/keystore/src/lib.rs:44` outside it. No production caller.
+- `apps/osl-hub/src/lib.rs:1-80` declares none of `osl_notes`, `osl_assets`, or `osl_lan`;
+  `apps/osl-hub/src/main.rs:7207-7336` registers none of their command strings; and grep of the
+  TypeScript wrapper exports found no consumer beyond their defining files. The app itself labels
+  Notes unavailable at `apps/osl-hub-ui/src/main.ts:2555` and says “planned for a later release”
+  at `:5117`.
+
+This is source proof of `implemented-unwired`, not runtime proof.
+
+### Claim surface and decision
+
+| Hand-verified finding | Decision | Why |
+|---|---|---|
+| `post_wrapped_key` | **INTERNAL ONLY** | Internal designs discuss it and the threat model explicitly calls it unbuilt; no human-facing current-capability sentence says production send uploads wrapped keys. |
+| `fetch_wrapped_key` | **INTERNAL ONLY** | Same boundary for receive. |
+| `BurnAlertPayload` | **SOLD — open** | `README.md:85` says a signed burn notice is sent. The newer authenticated `0x0A` revocation path is separate and does not call this signature layer; no runtime/two-identity evidence earns the whole peer action. README is outside this lane's exclusive write scope. |
+| `osl_notes` / `osl_assets` / `osl_lan` cluster | **INTERNAL ONLY after correction** | Website terms had said Pro expiry leaves “your … notes” unaffected, which presupposed a working Notes product. That phrase is removed from `data/pricing.json` and `docs/terms.html`; the app's remaining mention explicitly says Planned/unavailable. |
+
+The website peer-Burn FAQ also changed from present-tense “can send” to an explicit `Planned`,
+not-working-today statement. This preserves the owner-approved pre-launch/v1 framing rather than
+erasing the feature.
+
+### Negative control: string gates are not reachability gates
+
+Before the correction:
+
+```text
+pricing-sync: scanned 16 files, found 18 markers, would rewrite 0, unknown paths 0.
+build-status --check: docs/status.html matches the manifest.
+check-claims: scanned 16 files, 0 failed.
+```
+
+All three commands exited 0 while the Notes and peer-Burn leaks were present. That is not a gate
+bug; it proves the documented structural boundary. The gates compare strings, markers, badges and
+manifest state. No property of a truthful-looking sentence proves the named Rust/Tauri path is
+reachable. A future reachability control must be a separate call-graph/command-registration gate
+owned with app Rust and must carry its own known-good/known-bad fixtures. Bolting a token search onto
+the string crawler would cover only named cases while falsely implying completeness.
+
+Changed truth surfaces:
+
+- master advanced to r12 and records the structural limit;
+- allowlist F0 now carries the exact four-entry triage;
+- checklist B5's stale deployment blocker is corrected without adding a point;
+- website FAQ/terms/manifest withdraw the two website-owned present-tense leaks;
+- coordinator records the remaining public README blocker.
+
+No checklist score changes. J7/H8 already earn policy/string/status-test work; neither row promises a
+Rust call graph, so withdrawing points for an unscoped gate would be as dishonest as awarding points
+for it.
+
+## Acceptance rows this earns
+
+None.

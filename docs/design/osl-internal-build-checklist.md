@@ -44,7 +44,8 @@ security identity/attribution → reviewed ratchet → two-identity proof
 Parallel paths:
 Scrub/AutoScrub · website truth/demo · Notes minimum · test/mirror infrastructure
 
-Owner-blocked: keyserver migration 0027 deploy state (B5) — blocks Tab 5.
+Resolved external blocker: keyserver migration 0027 is deployed; B5 remains partial because the
+client-side prekey/wrapped-key production path is not established.
 ```
 
 **2026-07-26 recheck — why the number went down.** Three earned points were withdrawn after
@@ -93,6 +94,21 @@ logged here so they cannot be quietly forgotten or later re-counted as new work.
   cover claim tooling.
 - **Received/Opened receipts collapse into one `acknowledgmentCount`** (`broker.rs`), losing order —
   the operator cannot distinguish delivered from read.
+- **Zero-caller claim seam (truth lane, no point claimed or withdrawn).** Current-source
+  re-verification confirms `post_wrapped_key`, `fetch_wrapped_key`, `BurnAlertPayload`, and the
+  `osl_notes`/`osl_assets`/`osl_lan` cluster have no production caller. Triage: wrapped-key POST/GET
+  are **INTERNAL ONLY**; the Notes cluster is now **INTERNAL ONLY** after removing one website terms
+  sentence that implied it worked; the burn-alert signature layer remains **SOLD** because
+  `README.md:85` says a signed notice is sent. The newer `0x0A` revocation path is separate and does
+  not make that signature layer reachable. Negative control: `pricing-sync --check`,
+  `build-status --check`, and `check-claims` all passed while the website leaks were present. These
+  are string/status gates, not call-graph evidence. J7/H8 keep their points because their real
+  boundary is the allowlist and tested string/status consistency; no row here claims a reachability
+  gate. The open seam is recorded in the allowlist and truth report.
+- **B5 deployment blocker resolved, no point restored.** Coordinator evidence names keyserver
+  Worker `3f92f0f5`, cipher-store `0a17547d`, and deployed migration `0027`; the earlier recheck
+  entry that called B5 owner-blocked is historical and no longer on the critical path. B5 remains
+  partial because its prekey/wrapped-key client production path is not established.
 
 - H5 +1 · the master §8.4 versioned support matrix now exists at `/docs/status`, generated from the
   pricing manifest and guarded by `build-status --check`. Added in the owner reframe (master r7),
@@ -172,12 +188,12 @@ timestamped deltas, not keep this number manually forever.
   and sealed. `needs: B2` `weight: 5` `earned: 1`
 - ⬜ **B4 · Capability negotiation and monotone downgrade pin** — no silent fallback after a peer
   proves stronger support. `needs: B2` `weight: 4` `earned: 0`
-- ♻️ **B5 · Keyserver/prekey/control-inbox production contract** — `unknown-recheck-required`.
-  Three repository sources disagree on whether migration 0027 is deployed and none names a Worker
-  version or deploy timestamp; remote D1 state is external to this checkout. **Escalated to the
-  owner** — one read-only command in Conflict C2 of
-  [`osl-completion-plan-2026-07-26.md`](osl-completion-plan-2026-07-26.md) resolves it.
-  Blocks Tab 5. `needs: A2` `weight: 4` `earned: 1`
+- 🟨 **B5 · Keyserver/prekey/control-inbox production contract** — server deployment is
+  `verified-live`: migration `0027` is deployed and the named Worker is `3f92f0f5`; the stale
+  `NOT DEPLOYED` migration header does not override that live evidence. The broader row is not
+  complete: `post_wrapped_key` and `fetch_wrapped_key` are `implemented-unwired`, and the
+  hand-checked evidence does not establish the prekey client path. No point added merely for
+  resolving the old deployment uncertainty. `needs: A2` `weight: 4` `earned: 1`
 - ⬜ **B6 · Controlled two-identity proof** — handshake, send, receive, offline queue, restart,
   drain, peer attribution. `needs: B3,B4,B5` `weight: 3` `earned: 0`
 - ⬜ **B7 · Independent crypto review** — required before uncontrolled traffic/public superiority
@@ -361,7 +377,9 @@ timestamped deltas, not keep this number manually forever.
   `min-width: 44px`, and the audit reports **0 images missing alt, 0 controls without a name,
   0 tap targets under 44px, 0 horizontal overflow** across all 120 combinations. Still unasserted,
   recorded not hidden: non-colour-only state communication, and whether every illustration has an
-  equivalent text description (the audit proves no image lacks `alt`, which is weaker).
+  equivalent text description (the audit proves no image lacks `alt`, which is weaker). The claim
+  crawler is also explicitly a string/status gate: its clean result does not prove that code named
+  by a truthful sentence has a production caller.
   `needs: H1-H7` `weight: 3` `earned: 3`
 
 ## I · Release, repository, and infrastructure — 20 points (6 earned)
@@ -441,7 +459,9 @@ timestamped deltas, not keep this number manually forever.
   *not* be flagged) so it cannot decay into an all-green source-shape test. It caught real live false
   claims on 2026-07-26. **Scope addition 2026-07-26: +3 points to the denominator.** Residual gap:
   it is a pre-deploy command, not a CI gate, so nothing yet blocks a deploy that skips it.
-  `needs: none` `weight: 3` `earned: 3`
+  It does **not** prove Rust/Tauri reachability; the separately recorded zero-caller seam passed
+  this gate by construction. That limit does not withdraw a point from this row because a call-graph
+  gate is not J7's acceptance boundary. `needs: none` `weight: 3` `earned: 3`
 
 ## Head developer / website suggestions
 

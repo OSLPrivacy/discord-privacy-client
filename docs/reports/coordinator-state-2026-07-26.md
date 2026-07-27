@@ -1,0 +1,137 @@
+# Coordinator state — 2026-07-26 evening
+
+Written so a fresh context can resume coordination without re-deriving it. This is the
+*coordination* layer only: who owns what, what is decided, what is live, what is blocked. Product
+authority remains `docs/design/osl-master-decision-2026-07-26.md` (currently **r12**), and the
+scoreboard remains `docs/design/osl-internal-build-checklist.md` (**96 / 303**).
+
+## Lane roster and exclusive ownership
+
+Eight tabs, disjoint by construction. Collisions are the main failure mode: two tabs editing one
+file broke the build today, and a third drove another lane's running application through six UI
+steps. Ownership is not advisory.
+
+| Lane | Owns exclusively | Working on |
+|---|---|---|
+| **crypto** | `apps/osl-hub/src/{security,broker,main}.rs`, `apps/osl-hub-ui/src/{overlay,security.test}.ts`, `crates/keystore/**`, `crates/ipc/**` | four VM agent verbs; control-inbox dead-letter |
+| **scrub** | all of `/home/liamw/osl-newest-integration` | review host-driver draft → verify loop → re-snapshot → film |
+| **truth** | `oslprivacy-web`, `docs/**` except other lanes' report files. **Single writer of the checklist.** | applies points; website v1 reframe; zero-caller claim triage |
+| **release** | `.github/**`, `scripts/{ci,release}/**`, VM release gate doc, `rust-toolchain.toml` | cold snapshot lineage; signed candidate |
+| **keyserver** | `cipher-store-cf/**`, `keyserver-cf/**` | open-registration residual; smoke suite |
+| **vm** | `scripts/vmqa/**`, the Azure share/agent, crypto's VM pair | build the rig |
+| **store** | `crates/store/**` (released by crypto) | six audit defects; burn is terminal |
+| codex-master | — | Telegram `/osl` bot |
+
+Point claims never edit the checklist. A lane ends its report with an "Acceptance rows this earns"
+section; **truth** judges and applies it in one atomic edit. A half-edited checklist makes the bot
+discard the whole import.
+
+## Live in production
+
+| Thing | State |
+|---|---|
+| Keyserver migration `0029` | **applied**; all 111 identities quarantined until re-registration; snowflakes refused (`400 Discord identifiers are not OSL identities`) — closes audit CRITICAL P0-3 |
+| Keyserver worker | `3f92f0f5` — control-inbox per-sender recycling, `429 recipient_inbox_full`, pubkeys minimisation |
+| cipher-store worker | `0a17547d` — attachment quota fix **and** the R2 known-length fix |
+| Attachment part upload | **`201`**. Was `500` for an unbounded period; verified fixed by live probe |
+| `0028` link-grant | applied but **dark** behind default-off `LINK_GRANT_ENABLED` in `src/index.ts` |
+| `0027` | deployed. The "NOT DEPLOYED" header in that migration file is stale — ignore it |
+| Backups | D1 pre-`0029` dump + tree snapshots under `/home/liamw/osl-backups/` |
+
+## Owner decisions made — do not re-litigate
+
+- **Pricing:** Pro is $5/month; compute credits are separate one-time purchases.
+- **Crypto-shred: not now.** `crates/store/src/lib.rs:194` never writes `wrapped_key`, so burn
+  deletes bookkeeping rather than decryption capability. Design it, document blast radius, do not
+  execute. "Cryptographic burn" stays a banned claim.
+- **Control-inbox dead-letter:** snowflake-shaped sender post-`0029` can *never* resolve → retire
+  with a recorded reason. Everything else → bounded retry, then quarantine. Never silently delete an
+  authenticated row. Surface the count.
+- **Duress TPM:** tri-state (`evicted` / `no-TPM-nothing-to-evict` / `failed`). Never return `Ok(())`
+  to paper over it — that reports destruction that did not happen.
+- **VM input injection:** banned on the owner's desktop, **allowed and expected on an isolated VM**.
+  A harness that refuses to click on a disposable VM cannot prove a consent flow.
+- **Website framing:** pre-launch marketing for v1, not a status dashboard. Honesty concentrates in
+  the support matrix and at checkout, not as a "Planned" badge on every card.
+- **QA-only TLS cert** for seeded IMAP: approved, inside the disposable VM only.
+- **PR #5:** release rebases and takes mechanical conflicts; scrub adjudicates scrub-semantic ones by
+  intent. `permissions/hub.toml` (+110 vs +40) is a contested capability surface — security review,
+  not a merge.
+
+## Open blockers
+
+1. **Aug 2 Scrub demo.** Critical path: VM agent verbs (crypto) → loop verified → re-snapshot →
+   film. Capability risk retired; capture is what remains.
+2. **Two-identity proof (B6, 0/3).** Gates B7, C5, D3–D7. Needs the VM rig.
+3. **Rust CI red.** Three defects release cannot fix. Branch protection requires only
+   `["TypeScript gate","audit"]` — Rust is *not* required and `enforce_admins` is **false**, so main
+   can merge with Rust red and an admin can bypass.
+4. **No golden snapshots for the release gate.** One warm iteration snapshot now exists
+   (`OSL-Independent-Client-1-WARM-iteration-20260726`, tagged `warm_verified: NO`). The gate needs a
+   separate **cold** lineage — two lineages, never one.
+5. **`NCryptDeleteKey` result discarded** on machines that *do* have a TPM — a failed delete was
+   reported as a successful wipe. Already shipping. Crypto owns.
+6. **Public signed-burn overclaim.** Current source re-verifies `BurnAlertPayload`/sign/verify have
+   zero production callers, but `README.md:85` says a signed burn notice is sent. The truth lane
+   cannot edit README under its exclusive scope and has recorded this as **SOLD**. The website-owned
+   peer-Burn sentence is corrected to `Planned`; the newer authenticated `0x0A` path is separate and
+   still needs two-identity runtime proof.
+
+## Coordination infrastructure built today
+
+- **`osl-say`** (`~/.local/bin`) — sends a prompt straight into a lane tab through its mirror FIFO
+  using bracketed paste, Enter sent separately. Routes via `~/.osl-lanes.json` pinned session ids,
+  because Claude Code rewrites terminal titles by activity and title matching misroutes.
+  `osl-say <lane> "msg"`, `osl-say <lane> < file`, `osl-say --all`, `osl-say --list`.
+- **`~/osl-lanewatch/lanewatchd.py`** — polls every 5 min. Passive by construction: never builds,
+  never takes the cargo lock (an earlier version did and helped cause an OOM crash). Guards memory
+  and indexer count, nudges stalled lanes, and **relays a lane's report into the coordinator tab**
+  when it goes quiet *and* has written something new. Digest, not decision — routing stays human.
+- **`docs/testing/azure-vm-qa-workflow.md`** — the shared VM design. 10 Windows VMs, vault
+  `osl-test-secrets-a7d5d9`, build-on-host, file rendezvous, warm-vs-cold lineages.
+
+## The pattern that defined this session
+
+Six separate systems reported success without ever doing the thing:
+
+1. An R2 test double accepted any stream → **every attachment upload had been failing in production**.
+2. Hand-rolled D1 fakes could only re-assert what their author already believed.
+3. A release workflow that had **never once been executed** would have died before reaching the signer.
+4. A feature gate (`all(core, discord-qa-shell)`) silently excluded the module deciding whether a
+   trigger becomes a status read or the **irreversible send**. Every Rust count quoted was wrong.
+5. A default-deny assertion passed vacuously because it read the wrong root — "found nothing" is
+   indistinguishable from "correctly denied".
+6. Every website gate would have exited 0 on a broken glob — `"scanned 0 files, 0 failed"`.
+
+**Standing rule:** prefer a real runtime over a double; when you must use a double, ask what it would
+fail to catch. A test that cannot fail is not evidence, and an inherited number is not a measurement.
+Assert non-empty on the positive path so the negative path cannot pass vacuously.
+
+## Standing operational rules
+
+- **Delegation is inverted:** Codex is the default executor, Claude the reviewer. The question is
+  "why is this *not* a Codex job?" Only proof-judgement, security calls, adjudication, review and the
+  report stay in Claude.
+  `CODEX_HOME=$HOME/.codex-b codex exec -m gpt-5.5 -C <dir> "<task>" < /dev/null`, backgrounded.
+  `.codex-b` 98% remaining → `.codex` 72% → **avoid `.codex-c`, 8%**. Statusline shows *remaining*.
+  `codex2`/`codex3` are `.bashrc` aliases that silently vanish inside a script. `-p fast` does not exist.
+- **Max 2 concurrent Codex per lane.** Wait if available memory < 4 GB or load > 12. A 0-byte output
+  is a suspected OOM kill, not a result.
+- **`flock` is not reentrant.** Wrap cargo you type; never a script that locks internally
+  (`scripts/qa/osl-instance-b-build-wsl.sh:88`). Nested acquisition hangs silently with no process in `ps`.
+- **`--features core` does not compile `main.rs`,** and excludes `qa_selftest_request`. The honest
+  gate is `--features core,discord-qa-shell` (731 tests, one pre-existing `native_discord_adapter` failure).
+- **Commit with explicit pathspecs.** `git add <your files> && git commit -- <your files>`. Never
+  `-A`. ~17,000 lines sat uncommitted across two trees with zero commits before this rule landed.
+- **rust-analyzer is the OOM cause** — it crashed the box twice at ~4 GB per instance. Parents are
+  `claude` processes directly, so the serena `languages: []` fix does not fully hold. Watch the count.
+
+## Resume here
+
+Machine healthy: 10 GB used, 15 GB available, load 9.1, one indexer, watchdog running.
+17 commits today across both trees. Reports on disk: baseline, crypto, server, truth, vmqa
+(scrub's lives in its own worktree; release's is pending).
+
+Next coordination beats, in order: crypto dispatches the VM verbs and dead-letter → vm builds the
+share and agent → scrub verifies the loop and films → release creates the cold lineage → truth keeps
+applying points. Nothing is waiting on the owner except promoting the website branch.
