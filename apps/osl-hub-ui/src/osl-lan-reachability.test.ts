@@ -123,6 +123,10 @@ describe("OSL LAN production reachability", () => {
     const productionReachable =
       moduleDeclared && commandsRegistered && uiImported && uiCalled;
 
+    expect(moduleDeclared).toBe(false);
+    expect(commandsRegistered).toBe(false);
+    expect(uiImported).toBe(false);
+    expect(uiCalled).toBe(false);
     expect(productionReachable).toBe(false);
     if (!productionReachable) {
       expect(creativeSuite).not.toMatch(CURRENT_PLUGIN_AVAILABILITY_CLAIM);
